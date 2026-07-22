@@ -47,6 +47,39 @@ npm install
 npm run dev
 ```
 
+## Releases (unsigned)
+
+Builds are currently **unsigned**: there is no Windows code-signing certificate
+and no Apple notarization credential configured, so `forge.config.ts` sets no
+`certificateFile` or `osxNotarize`. Unsigned artifacts are fully functional; the
+only difference is a first-launch OS trust prompt for end users.
+
+Build the installers locally with `npm run make`, which produces (per platform):
+
+```
+Windows   out/make/squirrel.windows/x64/*.Setup.exe   unsigned installer
+Windows   out/make/zip/win32/x64/*.zip                portable (unzip & run)
+macOS     out/make/*.dmg  and  out/make/zip/darwin/*   unsigned disk image / zip
+```
+
+CI builds unsigned artifacts on every push (the "Package smoke" jobs), and
+tagging a release (`v*`) runs `.github/workflows/release.yml`, which builds on
+Windows + macOS and attaches the artifacts to a GitHub Release.
+
+**End-user trust prompts (expected for unsigned builds):**
+
+- **Windows / SmartScreen** — "Windows protected your PC / unknown publisher".
+  Users click **More info → Run anyway**. The portable ZIP avoids the installer
+  but the bundled `PrintFarmer Desktop.exe` still shows this on first run.
+- **macOS / Gatekeeper** — "cannot be opened because the developer cannot be
+  verified". Users **right-click → Open** once (or run
+  `xattr -dr com.apple.quarantine "/Applications/PrintFarmer Desktop.app"`).
+
+To ship without any prompt later, add a Windows code-signing certificate
+(`MakerSquirrel({ certificateFile, certificatePassword })`) and Apple
+notarization (`packagerConfig.osxSign` + `osxNotarize`); no other changes are
+required.
+
 ## License
 
 Proprietary — OlyForge3D. All rights reserved.

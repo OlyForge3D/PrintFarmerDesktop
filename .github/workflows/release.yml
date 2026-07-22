@@ -1,0 +1,83 @@
+name: Release (unsigned)
+
+# Builds unsigned installers on Windows + macOS and publishes them to a GitHub
+# Release. No code-signing certificate or notarization credential is required;
+# end users clear a first-launch SmartScreen / Gatekeeper prompt (see README).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build artifacts without creating a GitHub Release'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  make:
+    name: Make (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build sidecar (release)
+        working-directory: native
+        run: cargo build --release -p model-core --features sqlite
+
+      - name: Make unsigned artifacts
+        env:
+          # The sidecar is built in the dedicated step above; the packaging hook
+          # only needs to stage it.
+          PRINTFARMER_SKIP_SIDECAR_BUILD: '1'
+        run: npm run make
+
+      - name: Verify the sidecar was bundled
+        run: node scripts/verify-packaged-sidecar.mjs
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          # Installers / disk images / portable archives, excluding Squirrel's
+          # internal RELEASES/nupkg bookkeeping files.
+          find out/make -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \) -print0 \
+            | xargs -0 -I {} cp "{}" dist/
+          ls -la dist
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: printfarmer-desktop-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          body: |
+            Unsigned build. On first launch:
+            - Windows (SmartScreen): More info -> Run anyway
+            - macOS (Gatekeeper): right-click -> Open, or
+              `xattr -dr com.apple.quarantine "/Applications/PrintFarmer Desktop.app"`
