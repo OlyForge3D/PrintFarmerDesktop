@@ -291,9 +291,18 @@ export class SidecarClient {
 /**
  * Resolve the path to the compiled sidecar binary.
  *
- * Priority: an explicit `PRINTFARMER_SIDECAR_PATH` override, then the packaged
- * location under Electron's `resourcesPath`, then the local debug build used
- * during `electron-forge start`.
+ * Priority:
+ *  1. an explicit `PRINTFARMER_SIDECAR_PATH` override;
+ *  2. in a packaged build, the bundled location under Electron's
+ *     `resourcesPath` (`<resources>/sidecar/<binary>`);
+ *  3. in development (`electron-forge start`), the sidecar staged into the repo
+ *     by `npm run stage:sidecar` at `<cwd>/resources/sidecar/<binary>`.
+ *
+ * Packaging is detected via `process.defaultApp`, which Electron sets only when
+ * running an unpackaged app; a packaged build leaves it undefined. This matters
+ * because `process.resourcesPath` is populated in *both* modes (pointing at
+ * Electron's own resources during `start`), so it cannot be used on its own to
+ * tell dev from packaged.
  */
 export function resolveSidecarPath(): string {
   const override = process.env.PRINTFARMER_SIDECAR_PATH;
@@ -304,13 +313,16 @@ export function resolveSidecarPath(): string {
   const binaryName =
     process.platform === 'win32' ? 'model-core.exe' : 'model-core';
 
+  const isUnpackaged = Boolean(
+    (process as NodeJS.Process & { defaultApp?: boolean }).defaultApp,
+  );
   const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string })
     .resourcesPath;
-  if (resourcesPath) {
+  if (!isUnpackaged && resourcesPath) {
     return path.join(resourcesPath, 'sidecar', binaryName);
   }
 
-  return path.resolve(process.cwd(), 'native', 'target', 'debug', binaryName);
+  return path.resolve(process.cwd(), 'resources', 'sidecar', binaryName);
 }
 
 /**

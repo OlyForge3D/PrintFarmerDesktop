@@ -16,7 +16,9 @@ const createMainWindow = (): void => {
     backgroundColor: '#14151a',
     show: false,
     webPreferences: {
-      preload: path.join(import.meta.dirname, '../preload/preload.js'),
+      // main.js and preload.js are emitted side by side in `.vite/build`
+      // (dev) and packaged together, so resolve the preload from this dir.
+      preload: path.join(import.meta.dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -26,6 +28,23 @@ const createMainWindow = (): void => {
   });
 
   hardenWindow(mainWindow);
+
+  // Surface renderer-side failures in the main process log. Without this a
+  // crashing renderer just shows a blank window with no diagnostics.
+  mainWindow.webContents.on(
+    'console-message',
+    (_event, level, message, line, sourceId) => {
+      if (level >= 2) {
+        console.error(`[renderer:${level}] ${message} (${sourceId}:${line})`);
+      }
+    },
+  );
+  mainWindow.webContents.on('did-fail-load', (_event, code, desc, url) => {
+    console.error(`[renderer] did-fail-load ${code} ${desc} ${url}`);
+  });
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error(`[renderer] render-process-gone: ${details.reason}`);
+  });
 
   mainWindow.once('ready-to-show', () => mainWindow.show());
 
@@ -47,7 +66,10 @@ if (!enforceSingleInstance()) {
   app.quit();
 } else {
   void app.whenReady().then(() => {
-    applyContentSecurityPolicy(session.defaultSession);
+    applyContentSecurityPolicy(
+      session.defaultSession,
+      MAIN_WINDOW_VITE_DEV_SERVER_URL,
+    );
     // Persist the model catalog under the per-user data directory so it
     // survives restarts. The sidecar reads this via PRINTFARMER_CATALOG_DB.
     if (!process.env.PRINTFARMER_CATALOG_DB) {

@@ -47,20 +47,33 @@ export function hardenWindow(window: BrowserWindow): void {
 }
 
 /**
- * Attach a strict Content-Security-Policy to every response served to the
- * renderer. This is a runtime backstop in addition to the static CSP meta tag.
+ * Attach a Content-Security-Policy to every response served to the renderer.
+ * This session header is the authoritative CSP and applies in both dev
+ * (`http://localhost` dev server) and production (`file://` app bundle).
+ *
+ * In production the policy is strict: no remote code, no inline script. In
+ * development it is relaxed just enough for the Vite dev server, which injects
+ * an inline React Fast Refresh preamble and opens a websocket for HMR — both of
+ * which a strict `script-src 'self'`/`connect-src 'self'` policy would block,
+ * leaving the renderer blank. `devServerUrl` is the Vite dev server origin when
+ * running under `electron-forge start`, otherwise `null`/`undefined`.
  */
-export function applyContentSecurityPolicy(session: Session): void {
-  const csp = [
-    "default-src 'self'",
-    "script-src 'self'",
-    "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob:",
-    "connect-src 'self'",
-    "object-src 'none'",
-    "base-uri 'none'",
-    "frame-ancestors 'none'",
-  ].join('; ');
+export function applyContentSecurityPolicy(
+  session: Session,
+  devServerUrl?: string | null,
+): void {
+  const csp = devServerUrl
+    ? developmentCsp(devServerUrl)
+    : [
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob:",
+        "connect-src 'self'",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "frame-ancestors 'none'",
+      ].join('; ');
 
   session.webRequest.onHeadersReceived((details, callback) => {
     callback({
@@ -70,6 +83,33 @@ export function applyContentSecurityPolicy(session: Session): void {
       },
     });
   });
+}
+
+/**
+ * Development CSP: permits the Vite dev server origin, its HMR websocket, and
+ * the inline preamble script `@vitejs/plugin-react` injects. Never used in a
+ * packaged build.
+ */
+function developmentCsp(devServerUrl: string): string {
+  let httpOrigin = devServerUrl;
+  let wsOrigin = devServerUrl;
+  try {
+    const url = new URL(devServerUrl);
+    httpOrigin = url.origin;
+    wsOrigin = `ws://${url.host}`;
+  } catch {
+    // Fall back to the raw string if it is not a parseable URL.
+  }
+  return [
+    `default-src 'self' ${httpOrigin}`,
+    `script-src 'self' 'unsafe-inline' ${httpOrigin}`,
+    `style-src 'self' 'unsafe-inline' ${httpOrigin}`,
+    "img-src 'self' data: blob:",
+    `connect-src 'self' ${httpOrigin} ${wsOrigin}`,
+    "object-src 'none'",
+    "base-uri 'none'",
+    "frame-ancestors 'none'",
+  ].join('; ');
 }
 
 /**

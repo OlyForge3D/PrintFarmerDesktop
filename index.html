@@ -4,14 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!--
-      Content Security Policy: no remote code, no inline script. The renderer
-      may only load assets from the app bundle and connect to configured
-      PrintFarmer servers (added at runtime via a stricter session policy).
+      Content-Security-Policy is enforced authoritatively by the Electron main
+      process via a session response header (see src/main/security.ts). It is
+      strict in production and relaxed only for the Vite dev server in
+      development, so it is intentionally not duplicated as a static meta tag
+      here (a hardcoded strict meta tag would block Vite's dev preamble).
     -->
-    <meta
-      http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'"
-    />
     <title>PrintFarmer Desktop</title>
   </head>
   <body>

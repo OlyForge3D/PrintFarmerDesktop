@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import path from 'node:path';
 import {
   SidecarClient,
   resolveSidecarPath,
@@ -322,15 +323,60 @@ describe('resolveSidecarPath', () => {
     }
   });
 
-  it('falls back to a debug build path with the platform binary name', () => {
+  it('uses the staged repo sidecar during development', () => {
     const original = process.env.PRINTFARMER_SIDECAR_PATH;
     delete process.env.PRINTFARMER_SIDECAR_PATH;
+    const proc = process as unknown as {
+      defaultApp?: boolean;
+      resourcesPath?: string;
+    };
+    const originalDefaultApp = proc.defaultApp;
+    proc.defaultApp = true;
     try {
       const resolved = resolveSidecarPath();
       const expectedName =
         process.platform === 'win32' ? 'model-core.exe' : 'model-core';
-      expect(resolved).toContain(expectedName);
+      expect(resolved).toContain(
+        path.join('resources', 'sidecar', expectedName),
+      );
     } finally {
+      if (originalDefaultApp === undefined) {
+        delete proc.defaultApp;
+      } else {
+        proc.defaultApp = originalDefaultApp;
+      }
+      if (original !== undefined) {
+        process.env.PRINTFARMER_SIDECAR_PATH = original;
+      }
+    }
+  });
+
+  it('uses the bundled resources path in a packaged build', () => {
+    const original = process.env.PRINTFARMER_SIDECAR_PATH;
+    delete process.env.PRINTFARMER_SIDECAR_PATH;
+    const proc = process as unknown as {
+      defaultApp?: boolean;
+      resourcesPath?: string;
+    };
+    const originalDefaultApp = proc.defaultApp;
+    const originalResources = proc.resourcesPath;
+    delete proc.defaultApp;
+    proc.resourcesPath = path.join('/opt', 'app', 'resources');
+    try {
+      const expectedName =
+        process.platform === 'win32' ? 'model-core.exe' : 'model-core';
+      expect(resolveSidecarPath()).toBe(
+        path.join('/opt', 'app', 'resources', 'sidecar', expectedName),
+      );
+    } finally {
+      if (originalDefaultApp !== undefined) {
+        proc.defaultApp = originalDefaultApp;
+      }
+      if (originalResources === undefined) {
+        delete proc.resourcesPath;
+      } else {
+        proc.resourcesPath = originalResources;
+      }
       if (original !== undefined) {
         process.env.PRINTFARMER_SIDECAR_PATH = original;
       }

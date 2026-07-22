@@ -26,6 +26,13 @@ import {
 export function registerIpcHandlers(channelFactory?: ChannelFactory): void {
   const sidecar = new SidecarClient(channelFactory ?? spawnSidecarChannel);
 
+  // Terminate the sidecar child process when the app exits. Windows does not
+  // reap child processes on parent exit, so without this the `model-core`
+  // process would linger as an orphan after every quit.
+  app.on('will-quit', () => {
+    sidecar.dispose();
+  });
+
   ipcMain.handle(IpcChannel.AppInfo, () => {
     const response: AppInfoResponse = {
       contractVersion: IPC_CONTRACT_VERSION,
