@@ -162,6 +162,44 @@ describe('useLibrary', () => {
     expect(result.current.lastReport?.added).toBe(1);
   });
 
+  it('exposes the selected folder path while a scan is running', async () => {
+    const report = {
+      added: 0,
+      changed: 0,
+      unchanged: 0,
+      missing: 0,
+      hashErrors: 0,
+    };
+    let finishScan!: (value: typeof report) => void;
+    const scanPromise = new Promise<typeof report>((resolve) => {
+      finishScan = resolve;
+    });
+    const openFolder = vi.fn().mockResolvedValue({ path: 'C:\\models' });
+    const scanRoot = vi.fn().mockReturnValue(scanPromise);
+    const listModels = vi.fn().mockResolvedValue([]);
+    installApi({ openFolder, scanRoot, listModels });
+
+    const { result } = renderHook(() => useLibrary());
+    await waitFor(() => expect(listModels).toHaveBeenCalledTimes(1));
+
+    let addFolderPromise: Promise<void> | undefined;
+    await act(async () => {
+      addFolderPromise = result.current.addFolder();
+      await Promise.resolve();
+    });
+
+    expect(result.current.status).toBe('scanning');
+    expect(result.current.scanningPath).toBe('C:\\models');
+
+    await act(async () => {
+      finishScan(report);
+      await addFolderPromise;
+    });
+
+    expect(result.current.status).toBe('idle');
+    expect(result.current.scanningPath).toBeNull();
+  });
+
   it('does not scan when the folder dialog is cancelled', async () => {
     const openFolder = vi.fn().mockResolvedValue(null);
     const scanRoot = vi.fn();

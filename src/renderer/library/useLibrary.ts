@@ -11,6 +11,8 @@ export interface Library {
   error: string | null;
   /** Reconciliation summary from the most recent folder scan. */
   lastReport: ReconcileReport | null;
+  /** Absolute path for the folder currently being scanned, if any. */
+  scanningPath: string | null;
   /** Prompt for a folder, scan it in place, then refresh the model list. */
   addFolder: () => Promise<void>;
   /** Re-read the catalog without scanning. */
@@ -31,6 +33,7 @@ export function useLibrary(): Library {
   const [status, setStatus] = useState<LibraryStatus>('idle');
   const [error, setError] = useState<string | null>(null);
   const [lastReport, setLastReport] = useState<ReconcileReport | null>(null);
+  const [scanningPath, setScanningPath] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setStatus('loading');
@@ -58,6 +61,7 @@ export function useLibrary(): Library {
     }
 
     setStatus('scanning');
+    setScanningPath(selection.path);
     try {
       const report = await window.printFarmer.scanRoot({
         rootId: rootIdForPath(selection.path),
@@ -68,6 +72,7 @@ export function useLibrary(): Library {
     } catch (err: unknown) {
       setError(messageOf(err));
     } finally {
+      setScanningPath(null);
       setStatus('idle');
     }
   }, []);
@@ -76,5 +81,13 @@ export function useLibrary(): Library {
     void refresh();
   }, [refresh]);
 
-  return { models, status, error, lastReport, addFolder, refresh };
+  return {
+    models,
+    status,
+    error,
+    lastReport,
+    scanningPath,
+    addFolder,
+    refresh,
+  };
 }

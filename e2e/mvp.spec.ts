@@ -106,6 +106,17 @@ test('loads the catalog from the sidecar', async () => {
   await expect(page.getByLabel('Search models')).toBeVisible();
 });
 
+test('shows onboarding CTA for a fresh empty catalog', async () => {
+  await expect(
+    page.getByRole('heading', { name: 'Build your model library' }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', {
+      name: 'Add folder to start building your model library',
+    }),
+  ).toBeVisible();
+});
+
 test('the 3D viewer supports reset and keyboard controls', async () => {
   // The viewer canvas is an accessible, focusable application widget.
   const viewer = page.getByRole('application', {

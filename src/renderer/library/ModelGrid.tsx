@@ -21,14 +21,14 @@ export function ModelGrid({
 }: ModelGridProps): React.JSX.Element {
   if (models.length === 0) {
     return (
-      <p className="library-empty">
+      <div className="library-empty">
         {emptyLabel ?? (
           <>
             No models yet. Add a folder to scan for <code>.stl</code> and{' '}
             <code>.3mf</code> files.
           </>
         )}
-      </p>
+      </div>
     );
   }
 

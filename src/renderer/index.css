@@ -83,7 +83,8 @@ body {
   margin-bottom: 0.75rem;
 }
 
-.library-toolbar button {
+.library-toolbar button,
+.library-empty-cta {
   background: var(--surface);
   color: var(--text);
   border: 1px solid #2c2f3a;
@@ -93,11 +94,15 @@ body {
   font: inherit;
 }
 
-.library-toolbar button:hover {
+.library-toolbar button:hover,
+.library-empty-cta:hover {
   border-color: var(--accent);
 }
 
-.library-toolbar button:disabled {
+.library-toolbar button:disabled,
+.library-empty-cta:disabled,
+.library-search:disabled,
+.library-select select:disabled {
   opacity: 0.6;
   cursor: default;
 }
@@ -127,7 +132,9 @@ body {
   font: inherit;
 }
 
-.library-search:focus {
+.library-search:focus,
+.library-select select:focus,
+.library-empty-cta:focus {
   outline: none;
   border-color: var(--accent);
 }
@@ -409,6 +416,15 @@ body {
   font-size: 0.85rem;
 }
 
+.library-scan-status {
+  margin: 0 0 0.75rem;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid #2c2f3a;
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+}
+
 .library-empty {
   color: var(--muted);
   background: var(--surface);
@@ -418,8 +434,22 @@ body {
   text-align: center;
 }
 
+.library-empty h2 {
+  margin: 0 0 0.5rem;
+  color: var(--text);
+  font-size: 1.1rem;
+}
+
+.library-empty p {
+  margin: 0.35rem 0;
+}
+
 .library-empty code {
   color: var(--text);
+}
+
+.library-empty-cta {
+  margin-top: 0.9rem;
 }
 
 .model-grid {

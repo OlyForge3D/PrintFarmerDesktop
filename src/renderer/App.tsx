@@ -21,10 +21,10 @@ import { useVendorMetadata } from './library/useVendorMetadata';
 import { modelDisplayName, preferredPath } from './library/model';
 import {
   defaultLibraryView,
-  selectLibraryView,
   type FilterKey,
   type SortKey,
 } from './library/filter';
+import { folderBasename, libraryPresentation } from './library/presentation';
 
 export function App(): React.JSX.Element {
   const [info, setInfo] = useState<AppInfoResponse | null>(null);
@@ -53,10 +53,61 @@ export function App(): React.JSX.Element {
     loadedMesh ? loadedMesh.sourceFormat : null,
   );
 
-  const visibleModels = useMemo(
-    () => selectLibraryView(library.models, { query, filter, sort, favorites }),
-    [library.models, query, filter, sort, favorites],
+  const libraryView = useMemo(
+    () => ({ query, filter, sort, favorites }),
+    [query, filter, sort, favorites],
   );
+  const presentation = useMemo(
+    () =>
+      libraryPresentation(
+        library.models,
+        library.status,
+        library.lastReport,
+        libraryView,
+      ),
+    [library.models, library.status, library.lastReport, libraryView],
+  );
+  const isScanning = library.status === 'scanning';
+  const scanningFolder = folderBasename(library.scanningPath);
+  let libraryEmptyLabel: React.ReactNode | undefined;
+  if (presentation.state === 'onboarding') {
+    libraryEmptyLabel = (
+      <>
+        <h2>Build your model library</h2>
+        <p>
+          Add a folder and PrintFarmer will scan it for <code>.stl</code> and{' '}
+          <code>.3mf</code> files.
+        </p>
+        <p>
+          Your catalog stays local so you can browse, tag, and organize models
+          from one place.
+        </p>
+        <button
+          type="button"
+          className="library-empty-cta"
+          aria-label="Add folder to start building your model library"
+          onClick={() => {
+            void library.addFolder();
+          }}
+          disabled={isScanning}
+        >
+          Add folder…
+        </button>
+      </>
+    );
+  } else if (presentation.state === 'empty-scan') {
+    libraryEmptyLabel = (
+      <>
+        Last scan finished, but no <code>.stl</code> or <code>.3mf</code> files
+        were found. Try adding another folder.
+      </>
+    );
+  } else if (presentation.state === 'empty-filter') {
+    libraryEmptyLabel = 'No models match your search or filter.';
+  } else if (presentation.state === 'scanning') {
+    libraryEmptyLabel =
+      'Scanning your folder. Models will appear here when the scan finishes.';
+  }
 
   const sampleMesh = useMemo(() => sampleCubeScene(20), []);
   // The shared LoadSceneResponse is structurally the viewer's SceneMesh.
@@ -146,18 +197,24 @@ export function App(): React.JSX.Element {
       </header>
 
       <section className="app-library" aria-label="Model library">
-        <div className="library-toolbar">
+        <div
+          className="library-toolbar"
+          role="toolbar"
+          aria-label="Library actions"
+        >
           <button
             type="button"
+            aria-label="Add folder to library"
             onClick={() => {
               void library.addFolder();
             }}
-            disabled={library.status === 'scanning'}
+            disabled={isScanning}
           >
-            {library.status === 'scanning' ? 'Scanning…' : 'Add folder…'}
+            {isScanning ? 'Scanning…' : 'Add folder…'}
           </button>
           <button
             type="button"
+            aria-label="Refresh model library"
             onClick={() => {
               void library.refresh();
             }}
@@ -171,7 +228,11 @@ export function App(): React.JSX.Element {
           </span>
         </div>
 
-        <div className="library-controls">
+        <div
+          className="library-controls"
+          role="group"
+          aria-label="Library search and filters"
+        >
           <input
             type="search"
             className="library-search"
@@ -179,6 +240,7 @@ export function App(): React.JSX.Element {
             aria-label="Search models"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
+            disabled={isScanning}
           />
           <label className="library-select">
             Show
@@ -186,6 +248,7 @@ export function App(): React.JSX.Element {
               aria-label="Filter models"
               value={filter}
               onChange={(event) => setFilter(event.target.value as FilterKey)}
+              disabled={isScanning}
             >
               <option value="all">All</option>
               <option value="favorites">Favorites</option>
@@ -199,6 +262,7 @@ export function App(): React.JSX.Element {
               aria-label="Sort models"
               value={sort}
               onChange={(event) => setSort(event.target.value as SortKey)}
+              disabled={isScanning}
             >
               <option value="name">Name</option>
               <option value="size">Size</option>
@@ -212,8 +276,20 @@ export function App(): React.JSX.Element {
           </p>
         ) : null}
 
+        {isScanning ? (
+          <p
+            className="library-scan-status"
+            role="status"
+            aria-live="polite"
+            aria-busy="true"
+          >
+            Scanning {scanningFolder ?? 'selected folder'}… This can take a
+            moment for large libraries.
+          </p>
+        ) : null}
+
         {library.lastReport ? (
-          <p className="library-report">
+          <p className="library-report" role="status" aria-live="polite">
             Last scan: {library.lastReport.added} added,{' '}
             {library.lastReport.changed} changed, {library.lastReport.unchanged}{' '}
             unchanged, {library.lastReport.missing} missing.
@@ -221,18 +297,14 @@ export function App(): React.JSX.Element {
         ) : null}
 
         <ModelGrid
-          models={visibleModels}
+          models={presentation.visibleModels}
           selectedHash={selectedHash}
           onSelect={(model) => {
             void openFromLibrary(model);
           }}
           isFavorite={isFavorite}
           onToggleFavorite={(model) => toggleFavorite(model.hash)}
-          emptyLabel={
-            library.models.length > 0
-              ? 'No models match your search or filter.'
-              : undefined
-          }
+          {...(libraryEmptyLabel ? { emptyLabel: libraryEmptyLabel } : {})}
         />
       </section>
 
