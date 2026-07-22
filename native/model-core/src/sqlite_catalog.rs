@@ -17,7 +17,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::catalog::{CatalogStore, LocationUpsert, LogicalModel, ModelLocation, StoredLocation};
+use crate::catalog::normalize_tag;
+use crate::catalog::{
+    CatalogStore, LocationUpsert, LogicalModel, ModelLocation, StoredLocation, Tag,
+};
 use crate::model::{FileFingerprint, ModelFormat};
 use crate::schema::{SCHEMA_V1, SCHEMA_VERSION};
 
@@ -252,6 +255,91 @@ impl CatalogStore for SqliteCatalog {
             .filter_map(|h| self.build_model(&h))
             .collect()
     }
+
+    fn all_tags(&self) -> Vec<Tag> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name FROM tags ORDER BY LOWER(name)")
+            .expect("catalog read failed: tags prepare");
+        stmt.query_map([], |row| {
+            Ok(Tag {
+                id: row.get(0)?,
+                name: row.get(1)?,
+            })
+        })
+        .expect("catalog read failed: tags query")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("catalog read failed: tags collect")
+    }
+
+    fn tags_for_model(&self, hash: &str) -> Vec<Tag> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT t.id, t.name FROM tags t \
+                 JOIN model_tags mt ON mt.tag_id = t.id \
+                 WHERE mt.model_hash = ?1 ORDER BY LOWER(t.name)",
+            )
+            .expect("catalog read failed: model tags prepare");
+        stmt.query_map(params![hash], |row| {
+            Ok(Tag {
+                id: row.get(0)?,
+                name: row.get(1)?,
+            })
+        })
+        .expect("catalog read failed: model tags query")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("catalog read failed: model tags collect")
+    }
+
+    fn add_model_tag(&mut self, hash: &str, name: &str) -> Option<Tag> {
+        // Only tag models the catalog actually knows about (FK safety).
+        let known: bool = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM models WHERE hash = ?1",
+                params![hash],
+                |_| Ok(()),
+            )
+            .optional()
+            .expect("catalog read failed: model exists")
+            .is_some();
+        if !known {
+            return None;
+        }
+        let tag = normalize_tag(name)?;
+        self.conn
+            .execute(
+                "INSERT INTO tags(id, name) VALUES(?1, ?2) \
+                 ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+                params![tag.id, tag.name],
+            )
+            .expect("catalog write failed: upsert tag");
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO model_tags(model_hash, tag_id) VALUES(?1, ?2)",
+                params![hash, tag.id],
+            )
+            .expect("catalog write failed: assign tag");
+        Some(tag)
+    }
+
+    fn remove_model_tag(&mut self, hash: &str, tag_id: &str) {
+        self.conn
+            .execute(
+                "DELETE FROM model_tags WHERE model_hash = ?1 AND tag_id = ?2",
+                params![hash, tag_id],
+            )
+            .expect("catalog write failed: unassign tag");
+        // Prune the tag once nothing references it anymore.
+        self.conn
+            .execute(
+                "DELETE FROM tags WHERE id = ?1 \
+                 AND NOT EXISTS (SELECT 1 FROM model_tags WHERE tag_id = ?1)",
+                params![tag_id],
+            )
+            .expect("catalog write failed: prune tag");
+    }
 }
 
 /// Whole seconds since the Unix epoch, as text, for `*_at` columns.
@@ -421,5 +509,31 @@ mod tests {
             })
             .unwrap();
         assert_eq!(path, "/models/root");
+    }
+
+    #[test]
+    fn tags_persist_dedupe_and_prune() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("m.stl"), b"bytes");
+
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        reconcile_root(&mut store, "r", &scan(root));
+        let hash = store.models()[0].hash.clone();
+
+        let tag = store.add_model_tag(&hash, " Terrain ").unwrap();
+        assert_eq!(tag.id, "terrain");
+        assert_eq!(tag.name, "Terrain");
+        // Re-adding with different casing keeps a single assignment.
+        store.add_model_tag(&hash, "TERRAIN");
+        assert_eq!(store.tags_for_model(&hash).len(), 1);
+        assert_eq!(store.all_tags().len(), 1);
+
+        // Unknown models cannot be tagged.
+        assert!(store.add_model_tag("missing", "x").is_none());
+
+        store.remove_model_tag(&hash, &tag.id);
+        assert!(store.tags_for_model(&hash).is_empty());
+        assert!(store.all_tags().is_empty());
     }
 }

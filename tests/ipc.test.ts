@@ -285,4 +285,34 @@ describe('ipc contract', () => {
       ipcSchemas[IpcChannel.OpenFolder].response.parse({ path: '' }),
     ).toThrow();
   });
+
+  it('accepts an add-model-tag request and tag-array response', () => {
+    const request = ipcSchemas[IpcChannel.AddModelTag].request.parse({
+      hash: 'abc',
+      name: 'Minis',
+    });
+    expect(request.name).toBe('Minis');
+
+    const response = ipcSchemas[IpcChannel.AddModelTag].response.parse([
+      { id: 'minis', name: 'Minis' },
+    ]);
+    expect(response).toEqual([{ id: 'minis', name: 'Minis' }]);
+  });
+
+  it('rejects an add-model-tag request with a blank name', () => {
+    expect(() =>
+      ipcSchemas[IpcChannel.AddModelTag].request.parse({
+        hash: 'abc',
+        name: '',
+      }),
+    ).toThrow();
+  });
+
+  it('accepts a remove-model-tag request', () => {
+    const request = ipcSchemas[IpcChannel.RemoveModelTag].request.parse({
+      hash: 'abc',
+      tagId: 'minis',
+    });
+    expect(request.tagId).toBe('minis');
+  });
 });

@@ -21,6 +21,10 @@ export const IpcChannel = {
   RenderThumbnail: 'model:renderThumbnail',
   ScanRoot: 'catalog:scanRoot',
   ListModels: 'catalog:listModels',
+  ListTags: 'catalog:listTags',
+  TagsForModel: 'catalog:tagsForModel',
+  AddModelTag: 'catalog:addModelTag',
+  RemoveModelTag: 'catalog:removeModelTag',
   OpenFolder: 'dialog:openFolder',
 } as const;
 
@@ -226,6 +230,46 @@ export type ListModelsRequest = z.infer<typeof ListModelsRequest>;
 export const ListModelsResponse = z.array(LogicalModel);
 export type ListModelsResponse = z.infer<typeof ListModelsResponse>;
 
+// --- catalog tags ---------------------------------------------------------
+
+/** A user-defined organizational label. `id` is the normalized name. */
+export const Tag = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+});
+export type Tag = z.infer<typeof Tag>;
+
+export const ListTagsRequest = z.void();
+export type ListTagsRequest = z.infer<typeof ListTagsRequest>;
+
+export const ListTagsResponse = z.array(Tag);
+export type ListTagsResponse = z.infer<typeof ListTagsResponse>;
+
+export const TagsForModelRequest = z.object({ hash: z.string().min(1) });
+export type TagsForModelRequest = z.infer<typeof TagsForModelRequest>;
+
+export const TagsForModelResponse = z.array(Tag);
+export type TagsForModelResponse = z.infer<typeof TagsForModelResponse>;
+
+export const AddModelTagRequest = z.object({
+  hash: z.string().min(1),
+  name: z.string().min(1).max(128),
+});
+export type AddModelTagRequest = z.infer<typeof AddModelTagRequest>;
+
+/** All tags for the model after the change. */
+export const AddModelTagResponse = z.array(Tag);
+export type AddModelTagResponse = z.infer<typeof AddModelTagResponse>;
+
+export const RemoveModelTagRequest = z.object({
+  hash: z.string().min(1),
+  tagId: z.string().min(1),
+});
+export type RemoveModelTagRequest = z.infer<typeof RemoveModelTagRequest>;
+
+export const RemoveModelTagResponse = z.array(Tag);
+export type RemoveModelTagResponse = z.infer<typeof RemoveModelTagResponse>;
+
 // --- dialog:openFolder ----------------------------------------------------
 
 export const OpenFolderRequest = z.void();
@@ -274,6 +318,22 @@ export const ipcSchemas = {
     request: ListModelsRequest,
     response: ListModelsResponse,
   },
+  [IpcChannel.ListTags]: {
+    request: ListTagsRequest,
+    response: ListTagsResponse,
+  },
+  [IpcChannel.TagsForModel]: {
+    request: TagsForModelRequest,
+    response: TagsForModelResponse,
+  },
+  [IpcChannel.AddModelTag]: {
+    request: AddModelTagRequest,
+    response: AddModelTagResponse,
+  },
+  [IpcChannel.RemoveModelTag]: {
+    request: RemoveModelTagRequest,
+    response: RemoveModelTagResponse,
+  },
   [IpcChannel.OpenFolder]: {
     request: OpenFolderRequest,
     response: OpenFolderResponse,
@@ -296,5 +356,11 @@ export interface PrintFarmerApi {
   ): Promise<RenderThumbnailResponse>;
   scanRoot(request: ScanRootRequest): Promise<ScanRootResponse>;
   listModels(): Promise<ListModelsResponse>;
+  listTags(): Promise<ListTagsResponse>;
+  tagsForModel(request: TagsForModelRequest): Promise<TagsForModelResponse>;
+  addModelTag(request: AddModelTagRequest): Promise<AddModelTagResponse>;
+  removeModelTag(
+    request: RemoveModelTagRequest,
+  ): Promise<RemoveModelTagResponse>;
   openFolder(): Promise<OpenFolderResponse>;
 }

@@ -10,6 +10,8 @@ import {
 import type { LogicalModel, PrintFarmerApi } from '@shared/ipc';
 import { useLibrary } from '../src/renderer/library/useLibrary.js';
 import { ModelGrid } from '../src/renderer/library/ModelGrid.js';
+import { TagEditor } from '../src/renderer/library/TagEditor.js';
+import { useModelTags } from '../src/renderer/library/useModelTags.js';
 import {
   defaultLibraryView,
   selectLibraryView,
@@ -363,6 +365,65 @@ describe('<ModelGrid />', () => {
     expect(onToggleFavorite).toHaveBeenCalledWith(
       expect.objectContaining({ hash: 'a' }),
     );
+  });
+});
+
+describe('useModelTags', () => {
+  it('loads tags for the selected model and adds/removes them', async () => {
+    const tagsForModel = vi.fn().mockResolvedValue([{ id: 'a', name: 'A' }]);
+    const addModelTag = vi.fn().mockResolvedValue([
+      { id: 'a', name: 'A' },
+      { id: 'b', name: 'B' },
+    ]);
+    const removeModelTag = vi.fn().mockResolvedValue([{ id: 'b', name: 'B' }]);
+    installApi({ tagsForModel, addModelTag, removeModelTag });
+
+    const { result } = renderHook(() => useModelTags('h1'));
+    await waitFor(() => expect(result.current.tags).toHaveLength(1));
+    expect(tagsForModel).toHaveBeenCalledWith({ hash: 'h1' });
+
+    await act(async () => {
+      await result.current.add('B');
+    });
+    expect(addModelTag).toHaveBeenCalledWith({ hash: 'h1', name: 'B' });
+    expect(result.current.tags).toHaveLength(2);
+
+    await act(async () => {
+      await result.current.remove('a');
+    });
+    expect(removeModelTag).toHaveBeenCalledWith({ hash: 'h1', tagId: 'a' });
+    expect(result.current.tags).toEqual([{ id: 'b', name: 'B' }]);
+  });
+
+  it('holds no tags and makes no calls when nothing is selected', () => {
+    const tagsForModel = vi.fn();
+    installApi({ tagsForModel });
+    const { result } = renderHook(() => useModelTags(null));
+    expect(result.current.tags).toEqual([]);
+    expect(tagsForModel).not.toHaveBeenCalled();
+  });
+});
+
+describe('<TagEditor />', () => {
+  it('renders chips and reports add/remove', () => {
+    const onAdd = vi.fn();
+    const onRemove = vi.fn();
+    render(
+      <TagEditor
+        tags={[{ id: 'minis', name: 'Minis' }]}
+        onAdd={onAdd}
+        onRemove={onRemove}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Remove tag Minis/i }));
+    expect(onRemove).toHaveBeenCalledWith('minis');
+
+    fireEvent.change(screen.getByLabelText(/Add a tag/i), {
+      target: { value: '  Terrain ' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^Add$/i }));
+    expect(onAdd).toHaveBeenCalledWith('Terrain');
   });
 });
 

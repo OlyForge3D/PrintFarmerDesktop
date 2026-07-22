@@ -71,6 +71,28 @@ pub struct LocationUpsert {
 /// Storage abstraction for the catalog. Implementations must keep logical model
 /// identity and physical locations consistent: a location belongs to exactly
 /// one model at a time (its current content hash).
+/// A user-defined organizational label. `id` is the normalized (lowercased,
+/// trimmed) name and doubles as a stable identity so the same label typed in
+/// different cases collapses to one tag.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Tag {
+    pub id: String,
+    pub name: String,
+}
+
+/// Normalizes a raw tag name into `(id, display)`. Returns `None` when the
+/// name is empty after trimming.
+pub fn normalize_tag(name: &str) -> Option<Tag> {
+    let display = name.trim();
+    if display.is_empty() {
+        return None;
+    }
+    Some(Tag {
+        id: display.to_lowercase(),
+        name: display.to_string(),
+    })
+}
+
 pub trait CatalogStore {
     /// Look up what is currently recorded for a path under a root.
     fn get_location(&self, root_id: &str, path: &Path) -> Option<StoredLocation>;
@@ -98,6 +120,26 @@ pub trait CatalogStore {
             .filter(LogicalModel::is_duplicate_group)
             .collect()
     }
+
+    /// Every tag known to the catalog, sorted by display name. Default: none.
+    fn all_tags(&self) -> Vec<Tag> {
+        Vec::new()
+    }
+
+    /// Tags assigned to one model, sorted by display name. Default: none.
+    fn tags_for_model(&self, _hash: &str) -> Vec<Tag> {
+        Vec::new()
+    }
+
+    /// Assign a (possibly new) tag to a model, creating the tag if needed.
+    /// Returns the normalized tag, or `None` if the name was blank. Default:
+    /// no-op returning `None`.
+    fn add_model_tag(&mut self, _hash: &str, _name: &str) -> Option<Tag> {
+        None
+    }
+
+    /// Remove a tag assignment from a model. Default: no-op.
+    fn remove_model_tag(&mut self, _hash: &str, _tag_id: &str) {}
 }
 
 /// Summary of a reconciliation pass over one root.
@@ -201,6 +243,10 @@ pub struct InMemoryCatalog {
     models: HashMap<ContentHash, ModelRecord>,
     /// Maps a physical location to the content hash it currently belongs to.
     index: HashMap<(RootId, PathBuf), ContentHash>,
+    /// Tag id -> display name.
+    tags: HashMap<String, String>,
+    /// Content hash -> assigned tag ids.
+    model_tags: HashMap<ContentHash, std::collections::BTreeSet<String>>,
 }
 
 impl InMemoryCatalog {
@@ -308,6 +354,64 @@ impl CatalogStore for InMemoryCatalog {
             .collect();
         out.sort_by(|a, b| a.hash.cmp(&b.hash));
         out
+    }
+
+    fn all_tags(&self) -> Vec<Tag> {
+        let mut out: Vec<Tag> = self
+            .tags
+            .iter()
+            .map(|(id, name)| Tag {
+                id: id.clone(),
+                name: name.clone(),
+            })
+            .collect();
+        out.sort_by_key(|t| t.name.to_lowercase());
+        out
+    }
+
+    fn tags_for_model(&self, hash: &str) -> Vec<Tag> {
+        let Some(ids) = self.model_tags.get(hash) else {
+            return Vec::new();
+        };
+        let mut out: Vec<Tag> = ids
+            .iter()
+            .filter_map(|id| {
+                self.tags.get(id).map(|name| Tag {
+                    id: id.clone(),
+                    name: name.clone(),
+                })
+            })
+            .collect();
+        out.sort_by_key(|t| t.name.to_lowercase());
+        out
+    }
+
+    fn add_model_tag(&mut self, hash: &str, name: &str) -> Option<Tag> {
+        // Only tag models the catalog actually knows about.
+        if !self.models.contains_key(hash) {
+            return None;
+        }
+        let tag = normalize_tag(name)?;
+        self.tags.insert(tag.id.clone(), tag.name.clone());
+        self.model_tags
+            .entry(hash.to_string())
+            .or_default()
+            .insert(tag.id.clone());
+        Some(tag)
+    }
+
+    fn remove_model_tag(&mut self, hash: &str, tag_id: &str) {
+        if let Some(ids) = self.model_tags.get_mut(hash) {
+            ids.remove(tag_id);
+            if ids.is_empty() {
+                self.model_tags.remove(hash);
+            }
+        }
+        // Prune the tag entirely if no model references it anymore.
+        let still_used = self.model_tags.values().any(|ids| ids.contains(tag_id));
+        if !still_used {
+            self.tags.remove(tag_id);
+        }
     }
 }
 
@@ -439,5 +543,45 @@ mod tests {
         let report = reconcile_root(&mut store, "r", &cancelled);
         assert_eq!(report.missing, 0);
         assert!(store.models()[0].locations[0].available);
+    }
+
+    fn one_model_store() -> (InMemoryCatalog, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("m.stl"), b"bytes");
+        let mut store = InMemoryCatalog::new();
+        reconcile_root(&mut store, "r", &scan(root));
+        let hash = store.models()[0].hash.clone();
+        (store, hash)
+    }
+
+    #[test]
+    fn tags_are_normalized_deduped_and_assigned() {
+        let (mut store, hash) = one_model_store();
+
+        let tag = store.add_model_tag(&hash, "  Miniatures ").unwrap();
+        assert_eq!(tag.id, "miniatures");
+        assert_eq!(tag.name, "Miniatures");
+
+        // Different casing collapses to the same tag id.
+        store.add_model_tag(&hash, "MINIATURES");
+        assert_eq!(store.tags_for_model(&hash).len(), 1);
+        assert_eq!(store.all_tags().len(), 1);
+
+        // Blank names are rejected.
+        assert!(store.add_model_tag(&hash, "   ").is_none());
+        // Unknown models cannot be tagged.
+        assert!(store.add_model_tag("nope", "x").is_none());
+    }
+
+    #[test]
+    fn removing_the_last_assignment_prunes_the_tag() {
+        let (mut store, hash) = one_model_store();
+        let tag = store.add_model_tag(&hash, "wip").unwrap();
+        assert_eq!(store.all_tags().len(), 1);
+
+        store.remove_model_tag(&hash, &tag.id);
+        assert!(store.tags_for_model(&hash).is_empty());
+        assert!(store.all_tags().is_empty());
     }
 }

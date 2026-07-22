@@ -247,6 +247,24 @@ impl From<&crate::catalog::LogicalModel> for LogicalModelDto {
     }
 }
 
+/// A user-defined organizational label, in wire form. Mirrors the `Tag` Zod
+/// schema in `src/shared/ipc.ts`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagDto {
+    pub id: String,
+    pub name: String,
+}
+
+impl From<&crate::catalog::Tag> for TagDto {
+    fn from(tag: &crate::catalog::Tag) -> Self {
+        Self {
+            id: tag.id.clone(),
+            name: tag.name.clone(),
+        }
+    }
+}
+
 /// Summary of one reconciliation pass over a source root, in wire form. Mirrors
 /// the `ReconcileReport` Zod schema in `src/shared/ipc.ts`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

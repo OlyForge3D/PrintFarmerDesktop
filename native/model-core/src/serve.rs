@@ -39,7 +39,7 @@ use serde_json::Value;
 use crate::catalog::{reconcile_root, CatalogStore, InMemoryCatalog};
 use crate::rpc::{
     extract_vendor_metadata_dto, load_scene_dto, render_thumbnail_dto, LogicalModelDto,
-    ReconcileReportDto,
+    ReconcileReportDto, TagDto,
 };
 use crate::{sidecar_version, RPC_PROTOCOL_VERSION};
 
@@ -102,6 +102,21 @@ struct ScanRootParams {
     path: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct HashParams {
+    hash: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelTagParams {
+    hash: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    tag_id: Option<String>,
+}
+
 /// Handle one decoded request, producing the response value or an error message.
 /// `store` backs the stateful catalog methods; stateless methods ignore it.
 fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result<Value, String> {
@@ -145,6 +160,48 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             let models: Vec<LogicalModelDto> =
                 store.models().iter().map(LogicalModelDto::from).collect();
             serde_json::to_value(models).map_err(|e| format!("failed to serialize models: {e}"))
+        }
+        "listTags" => {
+            let tags: Vec<TagDto> = store.all_tags().iter().map(TagDto::from).collect();
+            serde_json::to_value(tags).map_err(|e| format!("failed to serialize tags: {e}"))
+        }
+        "tagsForModel" => {
+            let params: HashParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid tagsForModel params: {e}"))?;
+            let tags: Vec<TagDto> = store
+                .tags_for_model(&params.hash)
+                .iter()
+                .map(TagDto::from)
+                .collect();
+            serde_json::to_value(tags).map_err(|e| format!("failed to serialize tags: {e}"))
+        }
+        "addModelTag" => {
+            let params: ModelTagParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid addModelTag params: {e}"))?;
+            let name = params
+                .name
+                .ok_or_else(|| "addModelTag requires a name".to_string())?;
+            store.add_model_tag(&params.hash, &name);
+            let tags: Vec<TagDto> = store
+                .tags_for_model(&params.hash)
+                .iter()
+                .map(TagDto::from)
+                .collect();
+            serde_json::to_value(tags).map_err(|e| format!("failed to serialize tags: {e}"))
+        }
+        "removeModelTag" => {
+            let params: ModelTagParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid removeModelTag params: {e}"))?;
+            let tag_id = params
+                .tag_id
+                .ok_or_else(|| "removeModelTag requires a tagId".to_string())?;
+            store.remove_model_tag(&params.hash, &tag_id);
+            let tags: Vec<TagDto> = store
+                .tags_for_model(&params.hash)
+                .iter()
+                .map(TagDto::from)
+                .collect();
+            serde_json::to_value(tags).map_err(|e| format!("failed to serialize tags: {e}"))
         }
         other => Err(format!("unknown method: {other}")),
     }

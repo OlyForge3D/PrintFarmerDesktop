@@ -112,6 +112,26 @@ export class SidecarClient {
     return this.request('listModels', {});
   }
 
+  /** List every tag known to the catalog (raw wire array). */
+  async listTags(): Promise<unknown> {
+    return this.request('listTags', {});
+  }
+
+  /** List the tags assigned to one model (raw wire array). */
+  async tagsForModel(hash: string): Promise<unknown> {
+    return this.request('tagsForModel', { hash });
+  }
+
+  /** Assign a tag to a model; returns the model's tags (raw wire array). */
+  async addModelTag(hash: string, name: string): Promise<unknown> {
+    return this.request('addModelTag', { hash, name });
+  }
+
+  /** Remove a tag from a model; returns the model's tags (raw wire array). */
+  async removeModelTag(hash: string, tagId: string): Promise<unknown> {
+    return this.request('removeModelTag', { hash, tagId });
+  }
+
   /** Stop the sidecar and reject any in-flight requests. */
   dispose(): void {
     const channel = this.channel;

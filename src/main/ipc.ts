@@ -101,6 +101,41 @@ export function registerIpcHandlers(channelFactory?: ChannelFactory): void {
     return ipcSchemas[IpcChannel.ListModels].response.parse(raw);
   });
 
+  ipcMain.handle(IpcChannel.ListTags, async () => {
+    const raw = await sidecar.listTags();
+    return ipcSchemas[IpcChannel.ListTags].response.parse(raw);
+  });
+
+  ipcMain.handle(
+    IpcChannel.TagsForModel,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.TagsForModel].request.parse(rawRequest);
+      const raw = await sidecar.tagsForModel(request.hash);
+      return ipcSchemas[IpcChannel.TagsForModel].response.parse(raw);
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.AddModelTag,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.AddModelTag].request.parse(rawRequest);
+      const raw = await sidecar.addModelTag(request.hash, request.name);
+      return ipcSchemas[IpcChannel.AddModelTag].response.parse(raw);
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.RemoveModelTag,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.RemoveModelTag].request.parse(rawRequest);
+      const raw = await sidecar.removeModelTag(request.hash, request.tagId);
+      return ipcSchemas[IpcChannel.RemoveModelTag].response.parse(raw);
+    },
+  );
+
   ipcMain.handle(IpcChannel.OpenFolder, async (event) => {
     // Same trust model as OpenModelFile: the renderer can only ask us to show
     // the OS picker; we return only the directory the user explicitly chose.

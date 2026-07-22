@@ -9,7 +9,9 @@ import { sampleCubeScene } from './viewer/geometry';
 import type { SceneMesh } from './viewer/types';
 import { useLibrary } from './library/useLibrary';
 import { useFavorites } from './library/useFavorites';
+import { useModelTags } from './library/useModelTags';
 import { ModelGrid } from './library/ModelGrid';
+import { TagEditor } from './library/TagEditor';
 import { modelDisplayName, preferredPath } from './library/model';
 import {
   defaultLibraryView,
@@ -33,6 +35,7 @@ export function App(): React.JSX.Element {
 
   const library = useLibrary();
   const { favorites, isFavorite, toggle: toggleFavorite } = useFavorites();
+  const modelTags = useModelTags(selectedHash);
 
   const visibleModels = useMemo(
     () => selectLibraryView(library.models, { query, filter, sort, favorites }),
@@ -228,6 +231,25 @@ export function App(): React.JSX.Element {
           projection={projection}
           className="viewer-canvas"
         />
+        {selectedHash ? (
+          <div className="viewer-tags">
+            <h2 className="viewer-tags-title">Tags</h2>
+            <TagEditor
+              tags={modelTags.tags}
+              onAdd={(name) => {
+                void modelTags.add(name);
+              }}
+              onRemove={(tagId) => {
+                void modelTags.remove(tagId);
+              }}
+            />
+            {modelTags.error ? (
+              <p role="alert" className="status-error">
+                {modelTags.error}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </section>
 
       <section

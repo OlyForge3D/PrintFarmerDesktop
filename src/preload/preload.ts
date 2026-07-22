@@ -14,6 +14,13 @@ import {
   type ScanRootRequest,
   type ScanRootResponse,
   type ListModelsResponse,
+  type ListTagsResponse,
+  type TagsForModelRequest,
+  type TagsForModelResponse,
+  type AddModelTagRequest,
+  type AddModelTagResponse,
+  type RemoveModelTagRequest,
+  type RemoveModelTagResponse,
   type SidecarPingRequest,
   type SidecarPingResponse,
 } from '@shared/ipc';
@@ -61,6 +68,25 @@ const api: PrintFarmerApi = {
     ) as Promise<ScanRootResponse>,
   listModels: (): Promise<ListModelsResponse> =>
     ipcRenderer.invoke(IpcChannel.ListModels) as Promise<ListModelsResponse>,
+  listTags: (): Promise<ListTagsResponse> =>
+    ipcRenderer.invoke(IpcChannel.ListTags) as Promise<ListTagsResponse>,
+  tagsForModel: (request: TagsForModelRequest): Promise<TagsForModelResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.TagsForModel,
+      request,
+    ) as Promise<TagsForModelResponse>,
+  addModelTag: (request: AddModelTagRequest): Promise<AddModelTagResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.AddModelTag,
+      request,
+    ) as Promise<AddModelTagResponse>,
+  removeModelTag: (
+    request: RemoveModelTagRequest,
+  ): Promise<RemoveModelTagResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.RemoveModelTag,
+      request,
+    ) as Promise<RemoveModelTagResponse>,
   openFolder: (): Promise<OpenFolderResponse> =>
     ipcRenderer.invoke(IpcChannel.OpenFolder) as Promise<OpenFolderResponse>,
 };
