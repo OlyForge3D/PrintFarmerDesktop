@@ -68,3 +68,38 @@ jobs:
 
       - name: Test (sqlite feature)
         run: cargo test --features sqlite
+
+  package:
+    name: Package smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build sidecar (release)
+        working-directory: native
+        run: cargo build --release -p model-core
+
+      - name: Package app (bundles the prebuilt sidecar)
+        env:
+          # The sidecar is built in the dedicated step above; the packaging
+          # hook only needs to stage it.
+          PRINTFARMER_SKIP_SIDECAR_BUILD: '1'
+        run: npm run package
+
+      - name: Verify the sidecar was bundled
+        run: node scripts/verify-packaged-sidecar.mjs

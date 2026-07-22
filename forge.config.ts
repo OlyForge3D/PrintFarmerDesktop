@@ -5,13 +5,43 @@ import { MakerDMG } from '@electron-forge/maker-dmg';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+
+const repoRoot = path.dirname(fileURLToPath(import.meta.url));
+
+/** Build and stage the Rust sidecar into `resources/sidecar/` before packaging. */
+function stageSidecar(): void {
+  const script = path.join(repoRoot, 'scripts', 'stage-sidecar.mjs');
+  const result = spawnSync(process.execPath, [script], {
+    cwd: repoRoot,
+    stdio: 'inherit',
+  });
+  if (result.status !== 0) {
+    throw new Error(
+      `staging the sidecar failed (exit code ${result.status ?? 'unknown'})`,
+    );
+  }
+}
 
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
     name: 'PrintFarmer Desktop',
+    // Ship the compiled sidecar next to the app so the packaged main process
+    // resolves it via `resolveSidecarPath()` at `<resources>/sidecar/<binary>`.
+    extraResource: ['./resources/sidecar'],
   },
   rebuildConfig: {},
+  hooks: {
+    // Compile + stage the sidecar before the app is packaged, so the
+    // `extraResource` directory above exists and is current.
+    prePackage: () => {
+      stageSidecar();
+      return Promise.resolve();
+    },
+  },
   makers: [
     new MakerSquirrel({}),
     new MakerZIP({}, ['darwin']),
