@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron';
 import {
   IpcChannel,
   type AppInfoResponse,
+  type ExtractVendorMetadataRequest,
+  type ExtractVendorMetadataResponse,
   type LoadSceneRequest,
   type LoadSceneResponse,
   type OpenModelFileResponse,
@@ -32,6 +34,13 @@ const api: PrintFarmerApi = {
     ipcRenderer.invoke(
       IpcChannel.OpenModelFile,
     ) as Promise<OpenModelFileResponse>,
+  extractVendorMetadata: (
+    request: ExtractVendorMetadataRequest,
+  ): Promise<ExtractVendorMetadataResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ExtractVendorMetadata,
+      request,
+    ) as Promise<ExtractVendorMetadataResponse>,
 };
 
 contextBridge.exposeInMainWorld('printFarmer', api);

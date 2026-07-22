@@ -69,6 +69,18 @@ impl Slicer {
             Slicer::Unknown
         }
     }
+
+    /// Stable camelCase wire name, matching the desktop string-enum convention.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Slicer::PrusaSlicer => "prusaSlicer",
+            Slicer::SuperSlicer => "superSlicer",
+            Slicer::BambuStudio => "bambuStudio",
+            Slicer::OrcaSlicer => "orcaSlicer",
+            Slicer::Cura => "cura",
+            Slicer::Unknown => "unknown",
+        }
+    }
 }
 
 /// Core Dublin-Core-style metadata declared on the model root as
@@ -454,6 +466,16 @@ mod tests {
         );
         assert_eq!(Slicer::from_application("Cura 5.6"), Slicer::Cura);
         assert_eq!(Slicer::from_application("Some Other Tool"), Slicer::Unknown);
+    }
+
+    #[test]
+    fn slicer_wire_names_are_camel_case() {
+        assert_eq!(Slicer::PrusaSlicer.as_str(), "prusaSlicer");
+        assert_eq!(Slicer::BambuStudio.as_str(), "bambuStudio");
+        assert_eq!(Slicer::OrcaSlicer.as_str(), "orcaSlicer");
+        assert_eq!(Slicer::SuperSlicer.as_str(), "superSlicer");
+        assert_eq!(Slicer::Cura.as_str(), "cura");
+        assert_eq!(Slicer::Unknown.as_str(), "unknown");
     }
 
     #[test]

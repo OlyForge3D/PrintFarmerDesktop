@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::ModelFormat;
 use crate::scene::{self, SceneError, SceneMesh};
+use crate::threemf::ThreeMfError;
+use crate::vendor;
 
 /// Axis-aligned bounds in wire form.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -64,6 +66,96 @@ impl From<&SceneMesh> for SceneMeshDto {
 /// Load a model file and return the renderer-facing scene DTO.
 pub fn load_scene_dto(path: &Path) -> Result<SceneMeshDto, SceneError> {
     Ok(SceneMeshDto::from(&scene::load_scene(path)?))
+}
+
+/// Core model metadata in wire form. Every field is optional; absent fields are
+/// omitted from JSON rather than serialized as null.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoreMetadataDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub designer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub application: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub creation_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modification_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license_terms: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub copyright: Option<String>,
+}
+
+impl From<&vendor::CoreMetadata> for CoreMetadataDto {
+    fn from(c: &vendor::CoreMetadata) -> Self {
+        Self {
+            title: c.title.clone(),
+            designer: c.designer.clone(),
+            description: c.description.clone(),
+            application: c.application.clone(),
+            creation_date: c.creation_date.clone(),
+            modification_date: c.modification_date.clone(),
+            license_terms: c.license_terms.clone(),
+            copyright: c.copyright.clone(),
+        }
+    }
+}
+
+/// Per-plate slice statistics in wire form.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlateSliceInfoDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prediction_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weight_grams: Option<f64>,
+    pub filament_types: Vec<String>,
+}
+
+impl From<&vendor::PlateSliceInfo> for PlateSliceInfoDto {
+    fn from(p: &vendor::PlateSliceInfo) -> Self {
+        Self {
+            index: p.index,
+            prediction_seconds: p.prediction_seconds,
+            weight_grams: p.weight_grams,
+            filament_types: p.filament_types.clone(),
+        }
+    }
+}
+
+/// Vendor (slicer-project) metadata in renderer-facing wire form.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VendorMetadataDto {
+    /// Slicer identity as a camelCase string enum (e.g. `"bambuStudio"`).
+    pub slicer: String,
+    pub core: CoreMetadataDto,
+    pub plates: Vec<PlateSliceInfoDto>,
+    /// ZIP part names of embedded plate thumbnails, sorted for determinism.
+    pub thumbnails: Vec<String>,
+}
+
+impl From<&vendor::VendorMetadata> for VendorMetadataDto {
+    fn from(m: &vendor::VendorMetadata) -> Self {
+        Self {
+            slicer: m.slicer.as_str().to_string(),
+            core: CoreMetadataDto::from(&m.core),
+            plates: m.plates.iter().map(PlateSliceInfoDto::from).collect(),
+            thumbnails: m.parts.thumbnails.clone(),
+        }
+    }
+}
+
+/// Extract slicer-project (vendor) metadata and return the wire DTO.
+pub fn extract_vendor_metadata_dto(path: &Path) -> Result<VendorMetadataDto, ThreeMfError> {
+    Ok(VendorMetadataDto::from(&vendor::extract_file(path)?))
 }
 
 #[cfg(test)]
@@ -119,10 +211,35 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_through_json() {
-        let dto = SceneMeshDto::from(&sample_scene());
+    fn vendor_metadata_dto_serializes_camel_case_and_omits_empty() {
+        let md = vendor::VendorMetadata {
+            slicer: vendor::Slicer::OrcaSlicer,
+            core: vendor::CoreMetadata {
+                title: Some("Widget".to_string()),
+                application: Some("OrcaSlicer-2.1.0".to_string()),
+                ..Default::default()
+            },
+            plates: vec![vendor::PlateSliceInfo {
+                index: Some(1),
+                prediction_seconds: Some(3600),
+                weight_grams: Some(12.5),
+                filament_types: vec!["PLA".to_string()],
+            }],
+            parts: vendor::VendorParts {
+                thumbnails: vec!["Metadata/plate_1.png".to_string()],
+            },
+        };
+        let dto = VendorMetadataDto::from(&md);
         let json = serde_json::to_string(&dto).unwrap();
-        let parsed: SceneMeshDto = serde_json::from_str(&json).unwrap();
+        assert!(json.contains("\"slicer\":\"orcaSlicer\""));
+        assert!(json.contains("\"predictionSeconds\":3600"));
+        assert!(json.contains("\"weightGrams\":12.5"));
+        assert!(json.contains("\"filamentTypes\":[\"PLA\"]"));
+        assert!(json.contains("\"thumbnails\":[\"Metadata/plate_1.png\"]"));
+        // Absent core fields are omitted, not null.
+        assert!(!json.contains("designer"));
+        // Round-trips.
+        let parsed: VendorMetadataDto = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, dto);
     }
 }

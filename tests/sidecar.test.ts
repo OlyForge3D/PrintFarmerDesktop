@@ -91,6 +91,32 @@ describe('SidecarClient', () => {
     expect(request.params.path).toBe('C:/models/part.stl');
   });
 
+  it('sends a well-formed extractVendorMetadata request and resolves the result', async () => {
+    const { channel, sent } = makeFakeChannel((req, emit) => {
+      emit(
+        JSON.stringify({
+          id: req.id,
+          ok: true,
+          result: {
+            slicer: 'bambuStudio',
+            core: { title: 'Widget' },
+            plates: [],
+            thumbnails: ['Metadata/plate_1.png'],
+          },
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel);
+    const result = await client.extractVendorMetadata('C:/models/project.3mf');
+    expect(result).toMatchObject({ slicer: 'bambuStudio' });
+    const request = JSON.parse(sent[0] ?? '{}') as {
+      method: string;
+      params: { path: string };
+    };
+    expect(request.method).toBe('extractVendorMetadata');
+    expect(request.params.path).toBe('C:/models/project.3mf');
+  });
+
   it('rejects when the sidecar returns an error envelope', async () => {
     const { channel } = makeFakeChannel((req, emit) => {
       emit(

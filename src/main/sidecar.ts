@@ -88,6 +88,11 @@ export class SidecarClient {
     return this.request('loadScene', { path: filePath });
   }
 
+  /** Extract slicer-project (vendor) metadata from a 3MF file (raw wire object). */
+  async extractVendorMetadata(filePath: string): Promise<unknown> {
+    return this.request('extractVendorMetadata', { path: filePath });
+  }
+
   /** Stop the sidecar and reject any in-flight requests. */
   dispose(): void {
     const channel = this.channel;

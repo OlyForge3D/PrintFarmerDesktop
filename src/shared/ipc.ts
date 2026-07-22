@@ -17,6 +17,7 @@ export const IpcChannel = {
   SidecarPing: 'sidecar:ping',
   LoadScene: 'model:loadScene',
   OpenModelFile: 'dialog:openModelFile',
+  ExtractVendorMetadata: 'model:extractVendorMetadata',
 } as const;
 
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel];
@@ -100,6 +101,65 @@ export const OpenModelFileResponse = z
   .nullable();
 export type OpenModelFileResponse = z.infer<typeof OpenModelFileResponse>;
 
+// --- model:extractVendorMetadata ------------------------------------------
+
+/**
+ * The authoring slicer, matching the sidecar's `Slicer::as_str` camelCase wire
+ * names. `unknown` means no slicer could be identified.
+ */
+export const Slicer = z.enum([
+  'prusaSlicer',
+  'superSlicer',
+  'bambuStudio',
+  'orcaSlicer',
+  'cura',
+  'unknown',
+]);
+export type Slicer = z.infer<typeof Slicer>;
+
+/** Dublin-Core-style model metadata; every field is optional. */
+export const CoreMetadata = z.object({
+  title: z.string().optional(),
+  designer: z.string().optional(),
+  description: z.string().optional(),
+  application: z.string().optional(),
+  creationDate: z.string().optional(),
+  modificationDate: z.string().optional(),
+  licenseTerms: z.string().optional(),
+  copyright: z.string().optional(),
+});
+export type CoreMetadata = z.infer<typeof CoreMetadata>;
+
+/** Per-plate slice statistics from a slicer project. */
+export const PlateSliceInfo = z.object({
+  index: z.number().int().nonnegative().optional(),
+  predictionSeconds: z.number().int().nonnegative().optional(),
+  weightGrams: z.number().nonnegative().optional(),
+  filamentTypes: z.array(z.string()),
+});
+export type PlateSliceInfo = z.infer<typeof PlateSliceInfo>;
+
+/** Slicer-project (vendor) metadata extracted from a 3MF. */
+export const VendorMetadata = z.object({
+  slicer: Slicer,
+  core: CoreMetadata,
+  plates: z.array(PlateSliceInfo),
+  thumbnails: z.array(z.string()),
+});
+export type VendorMetadata = z.infer<typeof VendorMetadata>;
+
+export const ExtractVendorMetadataRequest = z.object({
+  path: z.string().min(1).max(4096),
+});
+export type ExtractVendorMetadataRequest = z.infer<
+  typeof ExtractVendorMetadataRequest
+>;
+
+export const ExtractVendorMetadataResponse = VendorMetadata;
+export type ExtractVendorMetadataResponse = z.infer<
+  typeof ExtractVendorMetadataResponse
+>;
+
 /**
  * Registry mapping each channel to its request/response schemas. Used by both
  * the main-process handler registration and the preload bridge.
@@ -121,6 +181,10 @@ export const ipcSchemas = {
     request: OpenModelFileRequest,
     response: OpenModelFileResponse,
   },
+  [IpcChannel.ExtractVendorMetadata]: {
+    request: ExtractVendorMetadataRequest,
+    response: ExtractVendorMetadataResponse,
+  },
 } as const;
 
 export type IpcSchemas = typeof ipcSchemas;
@@ -131,4 +195,7 @@ export interface PrintFarmerApi {
   pingSidecar(request: SidecarPingRequest): Promise<SidecarPingResponse>;
   loadScene(request: LoadSceneRequest): Promise<LoadSceneResponse>;
   openModelFile(): Promise<OpenModelFileResponse>;
+  extractVendorMetadata(
+    request: ExtractVendorMetadataRequest,
+  ): Promise<ExtractVendorMetadataResponse>;
 }

@@ -108,4 +108,59 @@ describe('ipc contract', () => {
       ipcSchemas[IpcChannel.OpenModelFile].response.parse({ path: '' }),
     ).toThrow();
   });
+
+  it('accepts a valid extract-vendor-metadata request', () => {
+    const value = ipcSchemas[IpcChannel.ExtractVendorMetadata].request.parse({
+      path: 'C:\\models\\project.3mf',
+    });
+    expect(value.path).toContain('project.3mf');
+  });
+
+  it('rejects an extract-vendor-metadata request with an empty path', () => {
+    expect(() =>
+      ipcSchemas[IpcChannel.ExtractVendorMetadata].request.parse({ path: '' }),
+    ).toThrow();
+  });
+
+  it('accepts a full vendor-metadata response', () => {
+    const value = ipcSchemas[IpcChannel.ExtractVendorMetadata].response.parse({
+      slicer: 'bambuStudio',
+      core: { title: 'Widget', application: 'BambuStudio-01.08.00.55' },
+      plates: [
+        {
+          index: 1,
+          predictionSeconds: 3600,
+          weightGrams: 12.5,
+          filamentTypes: ['PLA'],
+        },
+      ],
+      thumbnails: ['Metadata/plate_1.png'],
+    });
+    expect(value.slicer).toBe('bambuStudio');
+    expect(value.core.title).toBe('Widget');
+    expect(value.plates[0]?.filamentTypes).toEqual(['PLA']);
+    expect(value.thumbnails).toEqual(['Metadata/plate_1.png']);
+  });
+
+  it('accepts a minimal vendor-metadata response (unknown slicer)', () => {
+    const value = ipcSchemas[IpcChannel.ExtractVendorMetadata].response.parse({
+      slicer: 'unknown',
+      core: {},
+      plates: [],
+      thumbnails: [],
+    });
+    expect(value.slicer).toBe('unknown');
+    expect(value.plates).toEqual([]);
+  });
+
+  it('rejects a vendor-metadata response with an unknown slicer value', () => {
+    expect(() =>
+      ipcSchemas[IpcChannel.ExtractVendorMetadata].response.parse({
+        slicer: 'simplify3d',
+        core: {},
+        plates: [],
+        thumbnails: [],
+      }),
+    ).toThrow();
+  });
 });
