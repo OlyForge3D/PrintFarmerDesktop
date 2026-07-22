@@ -207,7 +207,9 @@ pub fn parse_bytes(data: &[u8]) -> Result<ThreeMfMesh, ThreeMfError> {
 
 /// Resolve the model part path, preferring the package relationships and
 /// falling back to the conventional `3D/3dmodel.model`.
-fn locate_model_part<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<String, ThreeMfError> {
+pub(crate) fn locate_model_part<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+) -> Result<String, ThreeMfError> {
     if let Some(rels) = read_entry(archive, RELATIONSHIPS_PART)? {
         if let Some(target) = model_target_from_rels(&rels)? {
             let cleaned = target.trim_start_matches('/').to_string();
@@ -223,7 +225,7 @@ fn locate_model_part<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<Stri
 }
 
 /// Read a named entry to a string, returning `None` if it is absent.
-fn read_entry<R: Read + Seek>(
+pub(crate) fn read_entry<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     name: &str,
 ) -> Result<Option<String>, ThreeMfError> {
@@ -231,6 +233,22 @@ fn read_entry<R: Read + Seek>(
         Ok(mut file) => {
             let mut contents = String::new();
             file.read_to_string(&mut contents)?;
+            Ok(Some(contents))
+        }
+        Err(ZipError::FileNotFound) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Read a named entry to raw bytes, returning `None` if it is absent.
+pub(crate) fn read_entry_bytes<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    name: &str,
+) -> Result<Option<Vec<u8>>, ThreeMfError> {
+    match archive.by_name(name) {
+        Ok(mut file) => {
+            let mut contents = Vec::new();
+            file.read_to_end(&mut contents)?;
             Ok(Some(contents))
         }
         Err(ZipError::FileNotFound) => Ok(None),
@@ -445,7 +463,7 @@ fn expand(
 }
 
 /// Fetch an attribute's raw string value by name.
-fn get_attr(e: &BytesStart, name: &[u8]) -> Option<String> {
+pub(crate) fn get_attr(e: &BytesStart, name: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == name)

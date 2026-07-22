@@ -18,6 +18,7 @@ pub mod serve;
 pub mod sqlite_catalog;
 pub mod stl;
 pub mod threemf;
+pub mod vendor;
 pub mod watch;
 
 /// Version of the RPC protocol spoken by this sidecar. Bumped on any
