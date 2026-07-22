@@ -11,6 +11,10 @@ import type { LogicalModel, PrintFarmerApi } from '@shared/ipc';
 import { useLibrary } from '../src/renderer/library/useLibrary.js';
 import { ModelGrid } from '../src/renderer/library/ModelGrid.js';
 import {
+  clearThumbnailCache,
+  useThumbnail,
+} from '../src/renderer/library/useThumbnail.js';
+import {
   basename,
   formatBytes,
   formatLabel,
@@ -164,6 +168,14 @@ describe('useLibrary', () => {
 });
 
 describe('<ModelGrid />', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    clearThumbnailCache();
+    installApi({
+      renderThumbnail: vi.fn().mockRejectedValue(new Error('no renderer')),
+    });
+  });
+
   it('shows an empty-state prompt with no models', () => {
     render(<ModelGrid models={[]} selectedHash={null} onSelect={vi.fn()} />);
     expect(screen.getByText(/Add a folder to scan/i)).toBeInTheDocument();
@@ -209,5 +221,58 @@ describe('<ModelGrid />', () => {
       />,
     );
     expect(screen.getByRole('button', { name: /gone.stl/i })).toBeDisabled();
+  });
+});
+
+describe('useThumbnail', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    clearThumbnailCache();
+  });
+
+  it('renders a data URL once the sidecar returns a PNG', async () => {
+    const renderThumbnail = vi.fn().mockResolvedValue({
+      width: 256,
+      height: 256,
+      pngBase64: 'iVBORw0KGgo=',
+    });
+    installApi({ renderThumbnail });
+
+    const { result } = renderHook(() => useThumbnail(model()));
+
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    expect(result.current.src).toBe('data:image/png;base64,iVBORw0KGgo=');
+    expect(renderThumbnail).toHaveBeenCalledWith({
+      path: 'C:\\models\\widget.stl',
+      size: 256,
+    });
+  });
+
+  it('caches by content hash across hook instances', async () => {
+    const renderThumbnail = vi.fn().mockResolvedValue({
+      width: 256,
+      height: 256,
+      pngBase64: 'AAAA',
+    });
+    installApi({ renderThumbnail });
+
+    const first = renderHook(() => useThumbnail(model({ hash: 'shared' })));
+    await waitFor(() => expect(first.result.current.status).toBe('ready'));
+
+    const second = renderHook(() => useThumbnail(model({ hash: 'shared' })));
+    await waitFor(() => expect(second.result.current.status).toBe('ready'));
+
+    expect(renderThumbnail).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports an error when the sidecar cannot render', async () => {
+    installApi({
+      renderThumbnail: vi.fn().mockRejectedValue(new Error('unsupported')),
+    });
+
+    const { result } = renderHook(() => useThumbnail(model({ hash: 'bad' })));
+
+    await waitFor(() => expect(result.current.status).toBe('error'));
+    expect(result.current.src).toBeNull();
   });
 });

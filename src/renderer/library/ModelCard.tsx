@@ -5,6 +5,7 @@ import {
   isAvailable,
   modelDisplayName,
 } from './model';
+import { useThumbnail } from './useThumbnail';
 
 export interface ModelCardProps {
   model: LogicalModel;
@@ -21,6 +22,7 @@ export function ModelCard({
   const name = modelDisplayName(model);
   const available = isAvailable(model);
   const format = formatLabel(model.format);
+  const thumbnail = useThumbnail(model);
 
   return (
     <li className="model-card">
@@ -35,7 +37,11 @@ export function ModelCard({
         title={available ? name : `${name} (file missing)`}
       >
         <span className="model-thumb" aria-hidden="true">
-          {format}
+          {thumbnail.status === 'ready' && thumbnail.src ? (
+            <img className="model-thumb-img" src={thumbnail.src} alt="" />
+          ) : (
+            format
+          )}
         </span>
         <span className="model-name">{name}</span>
         <span className="model-meta">
