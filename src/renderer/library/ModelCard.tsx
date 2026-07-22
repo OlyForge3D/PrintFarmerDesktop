@@ -6,11 +6,13 @@ import {
   modelDisplayName,
 } from './model';
 import { useThumbnail } from './useThumbnail';
+import { Icon } from '../ui/Icon';
 
 export interface ModelCardProps {
   model: LogicalModel;
   selected: boolean;
   onSelect: (model: LogicalModel) => void;
+  onPreview?: (model: LogicalModel) => void;
   favorite?: boolean;
   onToggleFavorite?: (model: LogicalModel) => void;
 }
@@ -20,6 +22,7 @@ export function ModelCard({
   model,
   selected,
   onSelect,
+  onPreview,
   favorite = false,
   onToggleFavorite,
 }: ModelCardProps): React.JSX.Element {
@@ -39,7 +42,7 @@ export function ModelCard({
           title={favorite ? 'Remove from favorites' : 'Add to favorites'}
           onClick={() => onToggleFavorite(model)}
         >
-          {favorite ? '★' : '☆'}
+          <Icon name="star" />
         </button>
       ) : null}
       <button
@@ -48,8 +51,13 @@ export function ModelCard({
           selected ? 'model-card-button selected' : 'model-card-button'
         }
         aria-pressed={selected}
+        aria-label={`Select ${name}`}
         onClick={() => onSelect(model)}
-        disabled={!available}
+        onDoubleClick={() => {
+          if (available) {
+            onPreview?.(model);
+          }
+        }}
         title={available ? name : `${name} (file missing)`}
       >
         <span className="model-thumb" aria-hidden="true">
@@ -63,9 +71,27 @@ export function ModelCard({
         <span className="model-meta">
           <span className="model-format">{format}</span>
           <span className="model-size">{formatBytes(model.size)}</span>
+          {model.locations.length > 1 ? (
+            <span className="model-copies">
+              {model.locations.length} copies
+            </span>
+          ) : null}
           {!available && <span className="model-missing">Missing</span>}
         </span>
       </button>
+      {onPreview ? (
+        <button
+          type="button"
+          className="model-preview-button"
+          onClick={() => onPreview(model)}
+          disabled={!available}
+          aria-label={`Preview ${name} in 3D`}
+          title={available ? 'Preview in 3D' : 'File unavailable'}
+        >
+          <Icon name="preview" />
+          <span>Preview</span>
+        </button>
+      ) : null}
     </li>
   );
 }

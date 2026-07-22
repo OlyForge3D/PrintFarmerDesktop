@@ -93,6 +93,7 @@ describe('library model helpers', () => {
   it('labels formats and formats bytes', () => {
     expect(formatLabel('stl')).toBe('STL');
     expect(formatLabel('threeMf')).toBe('3MF');
+    expect(formatLabel('obj')).toBe('OBJ');
     expect(formatBytes(512)).toBe('512 B');
     expect(formatBytes(2048)).toBe('2.0 KB');
     expect(formatBytes(5 * 1024 * 1024)).toBe('5.0 MB');
@@ -309,6 +310,36 @@ describe('selectLibraryView', () => {
       selectLibraryView(models, { ...defaultLibraryView, filter: 'favorites' }),
     ).toHaveLength(0);
   });
+
+  it('filters by model format and searches physical paths', () => {
+    const obj = model({
+      hash: 'h-obj',
+      format: 'obj',
+      locations: [
+        {
+          rootId: 'r',
+          path: 'D:\\Archive\\Robots\\armature.obj',
+          rootRelative: 'Robots\\armature.obj',
+          size: 12,
+          available: true,
+        },
+      ],
+    });
+    const withObj = [...models, obj];
+
+    expect(
+      selectLibraryView(withObj, {
+        ...defaultLibraryView,
+        filter: 'obj',
+      }).map((item) => item.hash),
+    ).toEqual(['h-obj']);
+    expect(
+      selectLibraryView(withObj, {
+        ...defaultLibraryView,
+        query: 'robots',
+      }).map((item) => item.hash),
+    ).toEqual(['h-obj']);
+  });
 });
 
 describe('useFavorites', () => {
@@ -368,7 +399,7 @@ describe('<ModelGrid />', () => {
       />,
     );
 
-    const button = screen.getByRole('button', { name: /widget.stl/i });
+    const button = screen.getByRole('button', { name: 'Select widget.stl' });
     fireEvent.click(button);
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(onSelect).toHaveBeenCalledWith(
@@ -376,7 +407,9 @@ describe('<ModelGrid />', () => {
     );
   });
 
-  it('disables cards whose files are missing', () => {
+  it('keeps missing cards selectable but disables their preview action', () => {
+    const onSelect = vi.fn();
+    const onPreview = vi.fn();
     render(
       <ModelGrid
         models={[
@@ -394,10 +427,44 @@ describe('<ModelGrid />', () => {
           }),
         ]}
         selectedHash={null}
-        onSelect={vi.fn()}
+        onSelect={onSelect}
+        onPreview={onPreview}
       />,
     );
-    expect(screen.getByRole('button', { name: /gone.stl/i })).toBeDisabled();
+    const select = screen.getByRole('button', { name: 'Select gone.stl' });
+    expect(select).toBeEnabled();
+    fireEvent.click(select);
+    expect(onSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ hash: 'gone' }),
+    );
+    expect(
+      screen.getByRole('button', { name: 'Preview gone.stl in 3D' }),
+    ).toBeDisabled();
+    expect(onPreview).not.toHaveBeenCalled();
+  });
+
+  it('separates selection from explicit 3D preview', () => {
+    const onSelect = vi.fn();
+    const onPreview = vi.fn();
+    render(
+      <ModelGrid
+        models={[model({ hash: 'a' })]}
+        selectedHash={null}
+        onSelect={onSelect}
+        onPreview={onPreview}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select widget.stl' }));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onPreview).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Preview widget.stl in 3D' }),
+    );
+    expect(onPreview).toHaveBeenCalledWith(
+      expect.objectContaining({ hash: 'a' }),
+    );
   });
 
   it('renders a favorite toggle and reports the model', () => {

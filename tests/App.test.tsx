@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { App } from '../src/renderer/App.js';
 import type { PrintFarmerApi } from '@shared/ipc';
 
@@ -29,8 +29,11 @@ describe('<App />', () => {
 
     render(<App />);
 
-    await waitFor(() => expect(screen.getByText('0.1.0')).toBeInTheDocument());
-    expect(screen.getByText('darwin')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByLabelText('Application status')).toHaveTextContent(
+        'v0.1.0 / darwin',
+      ),
+    );
   });
 
   it('shows an error when the main process call fails', async () => {
@@ -42,11 +45,7 @@ describe('<App />', () => {
     render(<App />);
 
     await waitFor(() =>
-      expect(
-        within(screen.getByRole('region', { name: 'App status' })).getByRole(
-          'alert',
-        ),
-      ).toHaveTextContent('bridge down'),
+      expect(screen.getByRole('alert')).toHaveTextContent('bridge down'),
     );
   });
 });

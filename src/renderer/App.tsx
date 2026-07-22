@@ -4,53 +4,80 @@ import type {
   LoadSceneResponse,
   LogicalModel,
 } from '@shared/ipc';
-import { ModelViewer, type Projection } from './viewer/ModelViewer';
-import { sampleCubeScene } from './viewer/geometry';
-import type { SceneMesh } from './viewer/types';
 import { useLibrary } from './library/useLibrary';
 import { useFavorites } from './library/useFavorites';
 import { useModelTags } from './library/useModelTags';
 import { useModelCollections } from './library/useModelCollections';
 import { ModelGrid } from './library/ModelGrid';
-import { TagEditor } from './library/TagEditor';
-import { CollectionEditor } from './library/CollectionEditor';
-import { PartTree } from './library/PartTree';
-import { ModelStats } from './library/ModelStats';
-import { VendorPanel } from './library/VendorPanel';
-import { useVendorMetadata } from './library/useVendorMetadata';
-import { modelDisplayName, preferredPath } from './library/model';
+import { PropertiesInspector } from './library/PropertiesInspector';
+import {
+  FILTER_LABELS,
+  LibrarySidebar,
+  type LibraryCounts,
+} from './library/LibrarySidebar';
+import { isAvailable, modelDisplayName, preferredPath } from './library/model';
 import {
   defaultLibraryView,
   type FilterKey,
   type SortKey,
 } from './library/filter';
 import { folderBasename, libraryPresentation } from './library/presentation';
+import { useVendorMetadata } from './library/useVendorMetadata';
+import { PreviewWorkspace } from './viewer/PreviewWorkspace';
+import type { Projection } from './viewer/ModelViewer';
+import { Icon } from './ui/Icon';
+import {
+  DESIGN_CONCEPTS,
+  initialDesignConcept,
+  persistDesignConcept,
+  type DesignConcept,
+} from './ui/design';
+
+interface PreviewTarget {
+  path: string;
+  name: string;
+  hash: string | null;
+}
 
 export function App(): React.JSX.Element {
   const [info, setInfo] = useState<AppInfoResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [wireframe, setWireframe] = useState(false);
-  const [projection, setProjection] = useState<Projection>('perspective');
-  const [resetToken, setResetToken] = useState(0);
-  const [loadedMesh, setLoadedMesh] = useState<LoadSceneResponse | null>(null);
-  const [loadedName, setLoadedName] = useState<string | null>(null);
-  const [loadedPath, setLoadedPath] = useState<string | null>(null);
-  const [hiddenParts, setHiddenParts] = useState<ReadonlySet<number>>(
-    () => new Set(),
-  );
-  const [loading, setLoading] = useState(false);
-  const [selectedHash, setSelectedHash] = useState<string | null>(null);
+  const [appError, setAppError] = useState<string | null>(null);
+  const [design, setDesign] = useState<DesignConcept>(initialDesignConcept);
   const [query, setQuery] = useState(defaultLibraryView.query);
   const [filter, setFilter] = useState<FilterKey>(defaultLibraryView.filter);
   const [sort, setSort] = useState<SortKey>(defaultLibraryView.sort);
+  const [selectedHash, setSelectedHash] = useState<string | null>(null);
+
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(
+    null,
+  );
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadedMesh, setLoadedMesh] = useState<LoadSceneResponse | null>(null);
+  const [wireframe, setWireframe] = useState(false);
+  const [projection, setProjection] = useState<Projection>('perspective');
+  const [resetToken, setResetToken] = useState(0);
+  const [hiddenParts, setHiddenParts] = useState<ReadonlySet<number>>(
+    () => new Set(),
+  );
+  const previewReturnFocusRef = useRef<HTMLElement | null>(null);
 
   const library = useLibrary();
   const { favorites, isFavorite, toggle: toggleFavorite } = useFavorites();
   const modelTags = useModelTags(selectedHash);
   const modelCollections = useModelCollections(selectedHash);
   const vendor = useVendorMetadata(
-    loadedPath,
-    loadedMesh ? loadedMesh.sourceFormat : null,
+    previewTarget?.path ?? null,
+    loadedMesh?.sourceFormat ?? null,
+  );
+
+  const selectedModel = useMemo(
+    () =>
+      selectedHash
+        ? (library.models.find((model) => model.hash === selectedHash) ?? null)
+        : null,
+    [library.models, selectedHash],
   );
 
   const libraryView = useMemo(
@@ -67,116 +94,131 @@ export function App(): React.JSX.Element {
       ),
     [library.models, library.status, library.lastReport, libraryView],
   );
-  const isScanning = library.status === 'scanning';
-  const scanningFolder = folderBasename(library.scanningPath);
+  const counts = useMemo<LibraryCounts>(
+    () => ({
+      all: library.models.length,
+      favorites: library.models.filter((model) => favorites.has(model.hash))
+        .length,
+      stl: library.models.filter((model) => model.format === 'stl').length,
+      threeMf: library.models.filter((model) => model.format === 'threeMf')
+        .length,
+      obj: library.models.filter((model) => model.format === 'obj').length,
+      duplicates: library.models.filter((model) => model.locations.length > 1)
+        .length,
+      missing: library.models.filter((model) => !isAvailable(model)).length,
+    }),
+    [library.models, favorites],
+  );
 
-  // When a scan starts, the onboarding CTA that likely held focus is unmounted.
-  // Move focus to the (always-mounted) scan status region so keyboard/screen
-  // reader users are not dropped back to <body> and hear the announcement.
+  const isScanning = library.status === 'scanning';
+  const busy = library.status !== 'idle';
+  const scanningFolder = folderBasename(library.scanningPath);
   const scanStatusRef = useRef<HTMLParagraphElement | null>(null);
   const wasScanningRef = useRef(false);
+
   useEffect(() => {
     if (isScanning && !wasScanningRef.current) {
       scanStatusRef.current?.focus();
     }
     wasScanningRef.current = isScanning;
   }, [isScanning]);
-  let libraryEmptyLabel: React.ReactNode | undefined;
-  if (presentation.state === 'onboarding') {
-    libraryEmptyLabel = (
-      <>
-        <h2>Build your model library</h2>
-        <p>
-          Add a folder and PrintFarmer will scan it for <code>.stl</code>,{' '}
-          <code>.3mf</code>, and <code>.obj</code> files.
-        </p>
-        <p>
-          Your catalog stays local so you can browse, tag, and organize models
-          from one place.
-        </p>
-        <button
-          type="button"
-          className="library-empty-cta"
-          aria-label="Add folder to start building your model library"
-          onClick={() => {
-            void library.addFolder();
-          }}
-          disabled={isScanning}
-        >
-          Add folder…
-        </button>
-      </>
-    );
-  } else if (presentation.state === 'empty-scan') {
-    libraryEmptyLabel = (
-      <>
-        Last scan finished, but no <code>.stl</code>, <code>.3mf</code>, or{' '}
-        <code>.obj</code> files were found. Try adding another folder.
-      </>
-    );
-  } else if (presentation.state === 'empty-filter') {
-    libraryEmptyLabel = 'No models match your search or filter.';
-  } else if (presentation.state === 'scanning') {
-    libraryEmptyLabel =
-      'Scanning your folder. Models will appear here when the scan finishes.';
-  }
-
-  const sampleMesh = useMemo(() => sampleCubeScene(20), []);
-  // The shared LoadSceneResponse is structurally the viewer's SceneMesh.
-  const mesh: SceneMesh = loadedMesh ?? sampleMesh;
 
   useEffect(() => {
     window.printFarmer
       .getAppInfo()
       .then(setInfo)
       .catch((err: unknown) =>
-        setError(err instanceof Error ? err.message : String(err)),
+        setAppError(err instanceof Error ? err.message : String(err)),
       );
   }, []);
 
-  const openModel = useCallback(async () => {
-    setError(null);
+  useEffect(() => {
+    const focusSearch = (event: KeyboardEvent): void => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        document
+          .querySelector<HTMLInputElement>('.sidebar-search input')
+          ?.focus();
+      }
+    };
+    document.addEventListener('keydown', focusSearch);
+    return () => document.removeEventListener('keydown', focusSearch);
+  }, []);
+
+  const selectDesign = useCallback((concept: DesignConcept) => {
+    setDesign(concept);
+    persistDesignConcept(concept);
+  }, []);
+
+  const rememberPreviewTrigger = useCallback(() => {
+    previewReturnFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+  }, []);
+
+  const loadPreview = useCallback(async (target: PreviewTarget) => {
+    setPreviewTarget(target);
+    setPreviewOpen(true);
+    setPreviewError(null);
+    setLoadedMesh(null);
+    setHiddenParts(new Set());
+    setLoading(true);
+    try {
+      const scene = await window.printFarmer.loadScene({ path: target.path });
+      setLoadedMesh(scene);
+    } catch (err: unknown) {
+      setPreviewError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const previewModel = useCallback(
+    (model: LogicalModel) => {
+      if (!isAvailable(model)) {
+        return;
+      }
+      const path = preferredPath(model);
+      if (!path) {
+        return;
+      }
+      setSelectedHash(model.hash);
+      rememberPreviewTrigger();
+      void loadPreview({
+        path,
+        name: modelDisplayName(model),
+        hash: model.hash,
+      });
+    },
+    [loadPreview, rememberPreviewTrigger],
+  );
+
+  const openModelFile = useCallback(async () => {
+    setAppError(null);
     try {
       const selection = await window.printFarmer.openModelFile();
       if (!selection) {
         return;
       }
-      setLoading(true);
-      const scene = await window.printFarmer.loadScene({
-        path: selection.path,
-      });
-      setLoadedMesh(scene);
-      setLoadedName(selection.path.replace(/^.*[\\/]/, ''));
-      setLoadedPath(selection.path);
-      setSelectedHash(null);
-      setHiddenParts(new Set());
+      rememberPreviewTrigger();
+      const name = selection.path.replace(/^.*[\\/]/, '');
+      void loadPreview({ path: selection.path, name, hash: null });
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
+      setAppError(err instanceof Error ? err.message : String(err));
     }
+  }, [loadPreview, rememberPreviewTrigger]);
+
+  const closePreview = useCallback(() => {
+    setPreviewOpen(false);
+    queueMicrotask(() => previewReturnFocusRef.current?.focus());
   }, []);
 
-  const openFromLibrary = useCallback(async (model: LogicalModel) => {
-    const path = preferredPath(model);
-    if (!path) {
-      return;
+  const retryPreview = useCallback(() => {
+    if (previewTarget) {
+      void loadPreview(previewTarget);
     }
-    setError(null);
-    setSelectedHash(model.hash);
-    setLoading(true);
-    try {
-      const scene = await window.printFarmer.loadScene({ path });
-      setLoadedMesh(scene);
-      setLoadedName(modelDisplayName(model));
-      setLoadedPath(path);
-      setHiddenParts(new Set());
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  }, [loadPreview, previewTarget]);
 
   const togglePart = useCallback((index: number) => {
     setHiddenParts((current) => {
@@ -195,263 +237,290 @@ export function App(): React.JSX.Element {
       setHiddenParts(
         visible
           ? new Set()
-          : new Set((mesh.parts ?? []).map((_, index) => index)),
+          : new Set((loadedMesh?.parts ?? []).map((_, index) => index)),
       );
     },
-    [mesh],
+    [loadedMesh],
   );
+
+  const inspectedMesh =
+    selectedHash && previewTarget?.hash === selectedHash ? loadedMesh : null;
+  const inspectedVendor =
+    selectedHash && previewTarget?.hash === selectedHash
+      ? vendor.metadata
+      : null;
+  const organizationError = modelTags.error ?? modelCollections.error;
 
   return (
-    <main className="app-shell">
-      <header className="app-header">
-        <h1>PrintFarmer Desktop</h1>
-        <p className="tagline">Local-first 3D model library</p>
+    <div
+      className={`app-root design-${design}${info ? ` platform-${info.platform}` : ''}`}
+      data-design={design}
+    >
+      <header className="window-titlebar">
+        <div className="product-identity">
+          <Icon name="app" size={18} />
+          <h1>PrintFarmer Desktop</h1>
+        </div>
+        <div className="design-review" aria-label="UI design concepts">
+          <span className="design-review-label">Design review</span>
+          {DESIGN_CONCEPTS.map((concept) => (
+            <button
+              key={concept.id}
+              type="button"
+              aria-pressed={design === concept.id}
+              title={`${concept.name}: ${concept.description}`}
+              onClick={() => selectDesign(concept.id)}
+            >
+              {concept.shortName}
+            </button>
+          ))}
+        </div>
+        <div className="titlebar-drag-region" aria-hidden="true" />
       </header>
 
-      <section className="app-library" aria-label="Model library">
-        <div
-          className="library-toolbar"
-          role="toolbar"
-          aria-label="Library actions"
-        >
-          <button
-            type="button"
-            aria-label="Add folder to library"
-            onClick={() => {
-              void library.addFolder();
-            }}
-            disabled={isScanning}
-          >
-            {isScanning ? 'Scanning…' : 'Add folder…'}
-          </button>
-          <button
-            type="button"
-            aria-label="Refresh model library"
-            onClick={() => {
-              void library.refresh();
-            }}
-            disabled={library.status !== 'idle'}
-          >
-            Refresh
-          </button>
-          <span className="library-count">
-            {library.models.length}{' '}
-            {library.models.length === 1 ? 'model' : 'models'}
-          </span>
-        </div>
-
-        <div
-          className="library-controls"
-          role="group"
-          aria-label="Library search and filters"
-        >
-          <input
-            type="search"
-            className="library-search"
-            placeholder="Search models…"
-            aria-label="Search models"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            disabled={isScanning}
-          />
-          <label className="library-select">
-            Show
-            <select
-              aria-label="Filter models"
-              value={filter}
-              onChange={(event) => setFilter(event.target.value as FilterKey)}
-              disabled={isScanning}
-            >
-              <option value="all">All</option>
-              <option value="favorites">Favorites</option>
-              <option value="duplicates">Duplicates</option>
-              <option value="missing">Missing files</option>
-            </select>
-          </label>
-          <label className="library-select">
-            Sort
-            <select
-              aria-label="Sort models"
-              value={sort}
-              onChange={(event) => setSort(event.target.value as SortKey)}
-              disabled={isScanning}
-            >
-              <option value="name">Name</option>
-              <option value="size">Size</option>
-            </select>
-          </label>
-        </div>
-
-        {library.error ? (
-          <p role="alert" className="status-error">
-            {library.error}
-          </p>
-        ) : null}
-
-        {isScanning ? (
-          <p
-            ref={scanStatusRef}
-            tabIndex={-1}
-            className="library-scan-status"
-            role="status"
-            aria-live="polite"
-            aria-busy="true"
-          >
-            Scanning {scanningFolder ?? 'selected folder'}… This can take a
-            moment for large libraries.
-          </p>
-        ) : (
-          <p
-            ref={scanStatusRef}
-            tabIndex={-1}
-            className="library-scan-status"
-            role="status"
-            aria-live="polite"
-            aria-busy="false"
-          />
-        )}
-
-        <p className="library-report" role="status" aria-live="polite">
-          {library.lastReport
-            ? `Last scan: ${library.lastReport.added} added, ${library.lastReport.changed} changed, ${library.lastReport.unchanged} unchanged, ${library.lastReport.missing} missing.`
-            : ''}
-        </p>
-
-        <ModelGrid
-          models={presentation.visibleModels}
-          selectedHash={selectedHash}
-          onSelect={(model) => {
-            void openFromLibrary(model);
+      <div className="workspace" aria-hidden={previewOpen ? 'true' : undefined}>
+        <LibrarySidebar
+          query={query}
+          filter={filter}
+          counts={counts}
+          scanningFolder={scanningFolder}
+          lastReport={library.lastReport}
+          busy={busy}
+          onQueryChange={setQuery}
+          onFilterChange={setFilter}
+          onAddFolder={() => {
+            void library.addFolder();
           }}
-          isFavorite={isFavorite}
-          onToggleFavorite={(model) => toggleFavorite(model.hash)}
-          {...(libraryEmptyLabel ? { emptyLabel: libraryEmptyLabel } : {})}
+          onRefresh={() => {
+            void library.refresh();
+          }}
         />
-      </section>
 
-      <section className="app-viewer" aria-label="Model preview">
-        <div className="viewer-toolbar">
-          <button
-            type="button"
-            onClick={() => {
-              void openModel();
-            }}
-            disabled={loading}
+        <main className="library-pane" aria-label="Model library">
+          <header className="library-commandbar">
+            <div>
+              <p className="pane-eyebrow">Model library</p>
+              <h2>{FILTER_LABELS[filter]}</h2>
+              <span className="library-result-count">
+                {presentation.visibleModels.length} of {library.models.length}
+              </span>
+            </div>
+            <div className="library-command-actions">
+              <label className="sort-control">
+                <span>Sort by</span>
+                <select
+                  aria-label="Sort models"
+                  value={sort}
+                  onChange={(event) => setSort(event.target.value as SortKey)}
+                >
+                  <option value="name">Name</option>
+                  <option value="size">Size</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                className="command-button"
+                onClick={() => {
+                  void openModelFile();
+                }}
+              >
+                <Icon name="folder" />
+                Open file
+              </button>
+            </div>
+          </header>
+
+          <p
+            ref={scanStatusRef}
+            tabIndex={-1}
+            className="library-live-status"
+            role="status"
+            aria-live="polite"
+            aria-busy={isScanning}
           >
-            {loading ? 'Loading…' : 'Open model…'}
-          </button>
-          <button
-            type="button"
-            aria-pressed={wireframe}
-            onClick={() => setWireframe((value) => !value)}
-          >
-            {wireframe ? 'Solid' : 'Wireframe'}
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              setProjection((value) =>
-                value === 'perspective' ? 'orthographic' : 'perspective',
-              )
+            {isScanning
+              ? `Scanning ${scanningFolder ?? 'selected folder'}...`
+              : ''}
+          </p>
+
+          {library.error ? (
+            <div className="library-alert" role="alert">
+              <Icon name="missing" />
+              <span>{library.error}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  void library.refresh();
+                }}
+              >
+                Retry
+              </button>
+            </div>
+          ) : null}
+
+          <div className="library-content">
+            <ModelGrid
+              models={presentation.visibleModels}
+              selectedHash={selectedHash}
+              onSelect={(model) => setSelectedHash(model.hash)}
+              onPreview={previewModel}
+              isFavorite={isFavorite}
+              onToggleFavorite={(model) => toggleFavorite(model.hash)}
+              emptyLabel={emptyState(
+                presentation.state,
+                query,
+                busy,
+                () => {
+                  void library.addFolder();
+                },
+                () => {
+                  setQuery('');
+                  setFilter('all');
+                },
+              )}
+            />
+          </div>
+        </main>
+
+        <PropertiesInspector
+          model={selectedModel}
+          favorite={selectedModel ? isFavorite(selectedModel.hash) : false}
+          mesh={inspectedMesh}
+          vendorMetadata={inspectedVendor}
+          tags={modelTags.tags}
+          collections={modelCollections.all}
+          collectionMembership={modelCollections.membership}
+          organizationError={organizationError}
+          onToggleFavorite={() => {
+            if (selectedModel) {
+              toggleFavorite(selectedModel.hash);
             }
-          >
-            {projection === 'perspective' ? 'Orthographic' : 'Perspective'}
-          </button>
-          <button
-            type="button"
-            onClick={() => setResetToken((value) => value + 1)}
-          >
-            Reset view
-          </button>
-          <span className="viewer-model-name">
-            {loadedName ?? 'Sample cube'}
+          }}
+          onPreview={() => {
+            if (selectedModel) {
+              previewModel(selectedModel);
+            }
+          }}
+          onAddTag={(name) => {
+            void modelTags.add(name);
+          }}
+          onRemoveTag={(tagId) => {
+            void modelTags.remove(tagId);
+          }}
+          onToggleCollection={(id) => {
+            void modelCollections.toggle(id);
+          }}
+          onCreateCollection={(name) => {
+            void modelCollections.createAndAdd(name);
+          }}
+        />
+      </div>
+
+      <footer className="app-statusbar" aria-label="Application status">
+        <span>
+          {library.status === 'loading'
+            ? 'Loading catalog'
+            : isScanning
+              ? 'Scanning source'
+              : 'Ready'}
+        </span>
+        {appError ? (
+          <span className="statusbar-error" role="alert">
+            {appError}
           </span>
-        </div>
-        <ModelViewer
-          mesh={mesh}
+        ) : null}
+        <span className="statusbar-spacer" />
+        <span>{DESIGN_CONCEPTS.find((item) => item.id === design)?.name}</span>
+        {info ? (
+          <span>
+            v{info.appVersion} / {info.platform}
+          </span>
+        ) : null}
+      </footer>
+
+      {previewOpen && previewTarget ? (
+        <PreviewWorkspace
+          name={previewTarget.name}
+          loading={loading}
+          error={previewError}
+          mesh={loadedMesh}
+          vendorMetadata={vendor.metadata}
           wireframe={wireframe}
           projection={projection}
-          hiddenParts={hiddenParts}
           resetToken={resetToken}
-          className="viewer-canvas"
+          hiddenParts={hiddenParts}
+          onClose={closePreview}
+          onRetry={retryPreview}
+          onToggleWireframe={() => setWireframe((value) => !value)}
+          onToggleProjection={() =>
+            setProjection((value) =>
+              value === 'perspective' ? 'orthographic' : 'perspective',
+            )
+          }
+          onReset={() => setResetToken((value) => value + 1)}
+          onTogglePart={togglePart}
+          onToggleAllParts={toggleAllParts}
         />
-        <ModelStats mesh={mesh} />
-        {vendor.metadata ? (
-          <div className="viewer-vendor">
-            <VendorPanel metadata={vendor.metadata} />
-          </div>
-        ) : null}
-        {(mesh.parts?.length ?? 0) > 1 ? (
-          <div className="viewer-parts">
-            <PartTree
-              parts={mesh.parts ?? []}
-              hidden={hiddenParts}
-              onToggle={togglePart}
-              onToggleAll={toggleAllParts}
-            />
-          </div>
-        ) : null}
-        {selectedHash ? (
-          <div className="viewer-tags">
-            <h2 className="viewer-tags-title">Tags</h2>
-            <TagEditor
-              tags={modelTags.tags}
-              onAdd={(name) => {
-                void modelTags.add(name);
-              }}
-              onRemove={(tagId) => {
-                void modelTags.remove(tagId);
-              }}
-            />
-            {modelTags.error ? (
-              <p role="alert" className="status-error">
-                {modelTags.error}
-              </p>
-            ) : null}
-            <h2 className="viewer-tags-title">Collections</h2>
-            <CollectionEditor
-              all={modelCollections.all}
-              membership={modelCollections.membership}
-              onToggle={(id) => {
-                void modelCollections.toggle(id);
-              }}
-              onCreate={(name) => {
-                void modelCollections.createAndAdd(name);
-              }}
-            />
-            {modelCollections.error ? (
-              <p role="alert" className="status-error">
-                {modelCollections.error}
-              </p>
-            ) : null}
-          </div>
-        ) : null}
-      </section>
-
-      <section
-        className="app-status"
-        aria-live="polite"
-        aria-label="App status"
-      >
-        {error ? (
-          <p role="alert" className="status-error">
-            {error}
-          </p>
-        ) : info ? (
-          <dl className="status-grid">
-            <dt>App version</dt>
-            <dd>{info.appVersion}</dd>
-            <dt>Platform</dt>
-            <dd>{info.platform}</dd>
-            <dt>Electron</dt>
-            <dd>{info.electronVersion}</dd>
-            <dt>IPC contract</dt>
-            <dd>v{info.contractVersion}</dd>
-          </dl>
-        ) : (
-          <p>Connecting to main process…</p>
-        )}
-      </section>
-    </main>
+      ) : null}
+    </div>
   );
+}
+
+function emptyState(
+  state:
+    'onboarding' | 'scanning' | 'empty-scan' | 'empty-filter' | 'populated',
+  query: string,
+  busy: boolean,
+  onAddFolder: () => void,
+  onClear: () => void,
+): React.ReactNode {
+  if (state === 'onboarding') {
+    return (
+      <div className="purposeful-empty-state">
+        <Icon name="folder" size={30} />
+        <h3>Build your model library</h3>
+        <p>
+          Add a folder containing STL, 3MF, or OBJ files. Your catalog stays
+          local to this computer.
+        </p>
+        <button type="button" onClick={onAddFolder} disabled={busy}>
+          Add your first folder
+        </button>
+      </div>
+    );
+  }
+  if (state === 'scanning') {
+    return (
+      <div className="purposeful-empty-state">
+        <span className="loading-indicator" aria-hidden="true" />
+        <h3>Scanning your source</h3>
+        <p>Models will appear here when indexing is complete.</p>
+      </div>
+    );
+  }
+  if (state === 'empty-filter') {
+    return (
+      <div className="purposeful-empty-state">
+        <Icon name="search" size={28} />
+        <h3>No matching models</h3>
+        <p>{query ? `Nothing matches "${query}".` : 'This view is empty.'}</p>
+        <button type="button" onClick={onClear}>
+          Clear filters
+        </button>
+      </div>
+    );
+  }
+  if (state === 'empty-scan') {
+    return (
+      <div className="purposeful-empty-state">
+        <Icon name="cube" size={30} />
+        <h3>No supported models found</h3>
+        <p>Choose another folder containing STL, 3MF, or OBJ files.</p>
+        <button type="button" onClick={onAddFolder} disabled={busy}>
+          Add another folder
+        </button>
+      </div>
+    );
+  }
+  return undefined;
 }

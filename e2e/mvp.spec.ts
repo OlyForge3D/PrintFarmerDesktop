@@ -27,6 +27,7 @@ const requiredArtifacts = [
   path.join(repoRoot, '.vite', 'build', 'preload.js'),
   path.join(repoRoot, '.vite', 'renderer', 'main_window', 'index.html'),
 ];
+const modelFixtureDir = path.join(repoRoot, 'e2e', 'fixtures', 'models');
 
 let app: ElectronApplication;
 let page: Page;
@@ -79,7 +80,9 @@ test('mounts the React app shell', async () => {
   await expect(
     page.getByRole('heading', { name: 'PrintFarmer Desktop' }),
   ).toBeVisible();
-  await expect(page.getByText('Local-first 3D model library')).toBeVisible();
+  await expect(page.getByLabel('UI design concepts')).toBeVisible();
+  await expect(page.getByLabel('Library navigation')).toBeVisible();
+  await expect(page.getByLabel('Model properties')).toBeVisible();
 });
 
 test('exposes the printFarmer preload bridge', async () => {
@@ -90,11 +93,11 @@ test('exposes the printFarmer preload bridge', async () => {
 });
 
 test('reports app info from the main process over IPC', async () => {
-  // App info is fetched via `window.printFarmer.getAppInfo()` on mount; the
-  // status grid only renders once that IPC round-trip resolves, proving the
-  // preload bridge and main-process handlers are wired end to end.
-  await expect(page.getByText('App version')).toBeVisible();
-  await expect(page.getByText('IPC contract')).toBeVisible();
+  const info = await page.evaluate(() => window.printFarmer.getAppInfo());
+  expect(info.contractVersion).toBe(1);
+  await expect(page.getByLabel('Application status')).toContainText(
+    `v${info.appVersion}`,
+  );
 });
 
 test('loads the catalog from the sidecar', async () => {
@@ -102,7 +105,7 @@ test('loads the catalog from the sidecar', async () => {
   // fresh, isolated catalog is empty, but the control must still render, which
   // proves the sidecar spawned and answered without error.
   await expect(page.getByLabel('Model library')).toBeVisible();
-  await expect(page.getByText(/^\d+ models?$/)).toBeVisible();
+  await expect(page.getByText('0 of 0')).toBeVisible();
   await expect(page.getByLabel('Search models')).toBeVisible();
 });
 
@@ -112,20 +115,105 @@ test('shows onboarding CTA for a fresh empty catalog', async () => {
   ).toBeVisible();
   await expect(
     page.getByRole('button', {
-      name: 'Add folder to start building your model library',
+      name: 'Add your first folder',
     }),
   ).toBeVisible();
 });
 
-test('the 3D viewer supports reset and keyboard controls', async () => {
-  // The viewer canvas is an accessible, focusable application widget.
+test('switches between all three working design concepts', async () => {
+  for (const [button, design] of [
+    ['Studio', 'studio'],
+    ['Archive', 'archive'],
+    ['Console', 'console'],
+  ] as const) {
+    await page.getByRole('button', { name: button }).click();
+    await expect(page.locator('.app-root')).toHaveAttribute(
+      'data-design',
+      design,
+    );
+  }
+});
+
+test('removes Electron native menu chrome', async () => {
+  const chrome = await app.evaluate(({ BrowserWindow, Menu }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    return {
+      applicationMenuRemoved: Menu.getApplicationMenu() === null,
+      menuBarVisible: window?.isMenuBarVisible() ?? true,
+    };
+  });
+
+  expect(chrome).toEqual({
+    applicationMenuRemoved: true,
+    menuBarVisible: false,
+  });
+  await expect(page.locator('.window-titlebar')).toBeVisible();
+});
+
+test('selects a model without mounting 3D, then previews explicitly', async () => {
+  // The normal library surface must not spend GPU resources or show a sample
+  // scene before the user requests a preview.
+  await expect(page.getByRole('application')).toHaveCount(0);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+
+  await page.evaluate(
+    async (fixturePath) =>
+      window.printFarmer.scanRoot({
+        rootId: 'e2e-model-fixtures',
+        path: fixturePath,
+      }),
+    modelFixtureDir,
+  );
+  await page.getByRole('button', { name: 'Refresh catalog' }).click();
+
+  const filename =
+    'precision-calibration-fixture-with-an-intentionally-long-name.obj';
+  const select = page.getByRole('button', { name: `Select ${filename}` });
+  await expect(select).toBeVisible();
+
+  const truncation = await page.locator('.model-name').evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      overflow: style.overflow,
+      textOverflow: style.textOverflow,
+      whiteSpace: style.whiteSpace,
+      clipped: element.scrollWidth > element.clientWidth,
+      title: element.closest('button')?.title,
+    };
+  });
+  expect(truncation).toEqual({
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    clipped: true,
+    title: filename,
+  });
+
+  await select.click();
+  await expect(
+    page.locator('.properties-inspector').getByRole('heading', {
+      name: filename,
+    }),
+  ).toBeVisible();
+  await expect(page.getByRole('application')).toHaveCount(0);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+
+  await page
+    .locator('.properties-inspector')
+    .getByRole('button', { name: 'Preview in 3D' })
+    .click();
+  await expect(
+    page.getByRole('dialog', { name: `3D preview of ${filename}` }),
+  ).toBeVisible();
+
+  // The viewer canvas is mounted only after explicit Preview.
   const viewer = page.getByRole('application', {
     name: /3D model preview/i,
   });
   await expect(viewer).toBeVisible();
 
   // The "Reset view" toolbar button reframes the model without error.
-  await page.getByRole('button', { name: 'Reset view' }).click();
+  await page.getByRole('button', { name: 'Reset' }).click();
 
   // Keyboard controls (orbit / zoom / reset) are handled on the focused viewer.
   await viewer.focus();
@@ -137,6 +225,10 @@ test('the 3D viewer supports reset and keyboard controls', async () => {
 
   // The viewer remains mounted and healthy after the interactions.
   await expect(viewer).toBeVisible();
+
+  await page.getByRole('button', { name: 'Back to library' }).click();
+  await expect(page.getByRole('application')).toHaveCount(0);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 
 test('renders without severe renderer console errors', () => {

@@ -1,0 +1,15 @@
+# A small cuboid used by the packaged Electron end-to-end suite.
+v -12 -8 0
+v 12 -8 0
+v 12 8 0
+v -12 8 0
+v -12 -8 20
+v 12 -8 20
+v 12 8 20
+v -12 8 20
+f 1 2 3 4
+f 5 8 7 6
+f 1 5 6 2
+f 2 6 7 3
+f 3 7 8 4
+f 5 1 4 8

@@ -2,7 +2,8 @@ import type { LogicalModel } from '@shared/ipc';
 import { isAvailable, modelDisplayName } from './model';
 
 export type SortKey = 'name' | 'size';
-export type FilterKey = 'all' | 'favorites' | 'duplicates' | 'missing';
+export type FilterKey =
+  'all' | 'favorites' | 'stl' | 'threeMf' | 'obj' | 'duplicates' | 'missing';
 
 export interface LibraryView {
   query: string;
@@ -31,6 +32,10 @@ function matchesFilter(
       return model.locations.length > 1;
     case 'missing':
       return !isAvailable(model);
+    case 'stl':
+    case 'threeMf':
+    case 'obj':
+      return model.format === filter;
     case 'all':
     default:
       return true;
@@ -54,7 +59,17 @@ export function selectLibraryView(
     if (needle.length === 0) {
       return true;
     }
-    return modelDisplayName(model).toLowerCase().includes(needle);
+    const searchable = [
+      modelDisplayName(model),
+      model.format,
+      ...model.locations.flatMap((location) => [
+        location.path,
+        location.rootRelative,
+      ]),
+    ]
+      .join(' ')
+      .toLowerCase();
+    return searchable.includes(needle);
   });
 
   const sorted = [...filtered];

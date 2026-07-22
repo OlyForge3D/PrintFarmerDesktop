@@ -49,7 +49,10 @@ export function isAvailable(model: LogicalModel): boolean {
 
 /** Uppercase short label for a model format. */
 export function formatLabel(format: ModelFormat): string {
-  return format === 'threeMf' ? '3MF' : 'STL';
+  if (format === 'threeMf') {
+    return '3MF';
+  }
+  return format.toUpperCase();
 }
 
 /** Compact human-readable byte size (e.g. `1.2 MB`). */

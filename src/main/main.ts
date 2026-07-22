@@ -1,4 +1,4 @@
-import { app, BrowserWindow, session } from 'electron';
+import { app, BrowserWindow, Menu, session } from 'electron';
 import path from 'node:path';
 import {
   applyContentSecurityPolicy,
@@ -9,12 +9,29 @@ import { registerIpcHandlers } from './ipc.js';
 
 const createMainWindow = (): void => {
   const mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    minWidth: 940,
-    minHeight: 600,
-    backgroundColor: '#14151a',
+    width: 1440,
+    height: 900,
+    minWidth: 1120,
+    minHeight: 700,
+    title: 'PrintFarmer Desktop',
+    backgroundColor: '#0e1116',
     show: false,
+    autoHideMenuBar: true,
+    ...(process.platform === 'darwin'
+      ? {
+          titleBarStyle: 'hiddenInset' as const,
+          trafficLightPosition: { x: 12, y: 12 },
+        }
+      : {
+          // Keep native caption buttons while replacing the menu/icon strip with
+          // renderer-owned chrome. The CSS titlebar reserves this overlay area.
+          titleBarStyle: 'hidden' as const,
+          titleBarOverlay: {
+            color: '#101318',
+            symbolColor: '#e6e9ed',
+            height: 40,
+          },
+        }),
     webPreferences: {
       // main.js and preload.js are emitted side by side in `.vite/build`
       // (dev) and packaged together, so resolve the preload from this dir.
@@ -28,6 +45,7 @@ const createMainWindow = (): void => {
   });
 
   hardenWindow(mainWindow);
+  mainWindow.setMenuBarVisibility(false);
 
   // Surface renderer-side failures in the main process log. Without this a
   // crashing renderer just shows a blank window with no diagnostics.
@@ -66,6 +84,9 @@ if (!enforceSingleInstance()) {
   app.quit();
 } else {
   void app.whenReady().then(() => {
+    // The application uses a custom in-window titlebar and command surfaces.
+    // Removing the application menu also removes Electron's default menu strip.
+    Menu.setApplicationMenu(null);
     applyContentSecurityPolicy(
       session.defaultSession,
       MAIN_WINDOW_VITE_DEV_SERVER_URL,

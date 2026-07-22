@@ -5,6 +5,7 @@ export interface ModelGridProps {
   models: LogicalModel[];
   selectedHash: string | null;
   onSelect: (model: LogicalModel) => void;
+  onPreview?: (model: LogicalModel) => void;
   emptyLabel?: React.ReactNode;
   isFavorite?: (hash: string) => boolean;
   onToggleFavorite?: (model: LogicalModel) => void;
@@ -15,6 +16,7 @@ export function ModelGrid({
   models,
   selectedHash,
   onSelect,
+  onPreview,
   emptyLabel,
   isFavorite,
   onToggleFavorite,
@@ -40,6 +42,7 @@ export function ModelGrid({
           model={model}
           selected={model.hash === selectedHash}
           onSelect={onSelect}
+          {...(onPreview ? { onPreview } : {})}
           favorite={isFavorite?.(model.hash) ?? false}
           {...(onToggleFavorite ? { onToggleFavorite } : {})}
         />
