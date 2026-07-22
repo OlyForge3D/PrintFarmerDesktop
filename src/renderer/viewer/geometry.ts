@@ -78,6 +78,67 @@ export function fitPerspectiveDistance(
   return (radius / Math.sin(limitingFov / 2)) * padding;
 }
 
+/** Angular step (radians) applied per arrow-key press when orbiting. */
+export const KEYBOARD_ORBIT_STEP = Math.PI / 18; // 10 degrees
+/** Multiplicative distance step applied per zoom-key press. */
+export const KEYBOARD_DOLLY_STEP = 0.9;
+
+/**
+ * The default camera position for framing a model: placed along the (1,1,1)
+ * diagonal from `center` at a distance that frames the bounding sphere. Shared
+ * by the initial framing and the "reset view" action so both agree exactly.
+ */
+export function defaultCameraPosition(
+  center: readonly [number, number, number],
+  radius: number,
+  aspect: number,
+  projection: 'perspective' | 'orthographic',
+  verticalFovDeg = 45,
+): [number, number, number] {
+  const distance =
+    projection === 'perspective'
+      ? fitPerspectiveDistance(verticalFovDeg, aspect, radius)
+      : Math.max(radius, 0.001) * 4;
+  return [center[0] + distance, center[1] + distance, center[2] + distance];
+}
+
+/**
+ * A viewer interaction decoded from a keyboard key, or `null` when the key is
+ * not a viewer control. Keeping this mapping pure lets the key bindings be
+ * unit-tested without a GPU, while `ModelViewer` applies the action to the live
+ * camera/controls.
+ */
+export type ViewerKeyAction =
+  | { readonly type: 'orbit'; readonly azimuth: number; readonly polar: number }
+  | { readonly type: 'dolly'; readonly factor: number }
+  | { readonly type: 'reset' };
+
+/** Map a keyboard key (KeyboardEvent.key) to a viewer action, if any. */
+export function viewerKeyAction(key: string): ViewerKeyAction | null {
+  switch (key) {
+    case 'ArrowLeft':
+      return { type: 'orbit', azimuth: -KEYBOARD_ORBIT_STEP, polar: 0 };
+    case 'ArrowRight':
+      return { type: 'orbit', azimuth: KEYBOARD_ORBIT_STEP, polar: 0 };
+    case 'ArrowUp':
+      return { type: 'orbit', azimuth: 0, polar: -KEYBOARD_ORBIT_STEP };
+    case 'ArrowDown':
+      return { type: 'orbit', azimuth: 0, polar: KEYBOARD_ORBIT_STEP };
+    case '+':
+    case '=':
+      return { type: 'dolly', factor: KEYBOARD_DOLLY_STEP };
+    case '-':
+    case '_':
+      return { type: 'dolly', factor: 1 / KEYBOARD_DOLLY_STEP };
+    case 'r':
+    case 'R':
+    case 'Home':
+      return { type: 'reset' };
+    default:
+      return null;
+  }
+}
+
 /**
  * Build a Three.js geometry from a normalized scene mesh. Vertex normals are
  * computed for shading, and per-facet colors (when present and consistent with

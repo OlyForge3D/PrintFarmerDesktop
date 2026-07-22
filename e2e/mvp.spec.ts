@@ -106,6 +106,28 @@ test('loads the catalog from the sidecar', async () => {
   await expect(page.getByLabel('Search models')).toBeVisible();
 });
 
+test('the 3D viewer supports reset and keyboard controls', async () => {
+  // The viewer canvas is an accessible, focusable application widget.
+  const viewer = page.getByRole('application', {
+    name: /3D model preview/i,
+  });
+  await expect(viewer).toBeVisible();
+
+  // The "Reset view" toolbar button reframes the model without error.
+  await page.getByRole('button', { name: 'Reset view' }).click();
+
+  // Keyboard controls (orbit / zoom / reset) are handled on the focused viewer.
+  await viewer.focus();
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowUp');
+  await page.keyboard.press('+');
+  await page.keyboard.press('-');
+  await page.keyboard.press('r');
+
+  // The viewer remains mounted and healthy after the interactions.
+  await expect(viewer).toBeVisible();
+});
+
 test('renders without severe renderer console errors', () => {
   // Guards against regressions of the CSP / preload / sidecar bugs that
   // previously left the window blank. Benign GPU/DevTools noise is ignored.

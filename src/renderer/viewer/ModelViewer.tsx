@@ -15,8 +15,9 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   boundsCenter,
   boundsRadius,
-  fitPerspectiveDistance,
+  defaultCameraPosition,
   toBufferGeometry,
+  viewerKeyAction,
   visibleIndices,
 } from './geometry';
 import type { SceneMesh } from './types';
@@ -30,6 +31,12 @@ export interface ModelViewerProps {
   background?: string;
   hiddenParts?: ReadonlySet<number>;
   className?: string;
+  /**
+   * Changing this value reframes the camera to its default fit. The App
+   * increments it when the user activates "Reset view"; the value itself is not
+   * interpreted, only its change is observed.
+   */
+  resetToken?: number;
 }
 
 const PERSPECTIVE_FOV = 45;
@@ -41,10 +48,19 @@ export function ModelViewer({
   background = '#14151a',
   hiddenParts,
   className,
+  resetToken = 0,
 }: ModelViewerProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const materialRef = useRef<THREE.MeshStandardMaterial | null>(null);
   const geometryRef = useRef<THREE.BufferGeometry | null>(null);
+  const cameraRef = useRef<
+    THREE.PerspectiveCamera | THREE.OrthographicCamera | null
+  >(null);
+  const controlsRef = useRef<OrbitControls | null>(null);
+  const frameRef = useRef<{
+    center: [number, number, number];
+    radius: number;
+  } | null>(null);
   const wireframeRef = useRef(wireframe);
   wireframeRef.current = wireframe;
   const hiddenPartsRef = useRef(hiddenParts);
@@ -95,12 +111,15 @@ export function ModelViewer({
 
     const center = boundsCenter(mesh.bounds);
     const radius = Math.max(boundsRadius(mesh.bounds), 0.001);
+    frameRef.current = { center, radius };
     const initialAspect = aspectOf(container);
 
     const camera = createCamera(projection, initialAspect, radius);
+    cameraRef.current = camera;
     frameCamera(camera, center, radius, initialAspect);
 
     const controls = new OrbitControls(camera, renderer.domElement);
+    controlsRef.current = controls;
     controls.enableDamping = true;
     controls.target.set(center[0], center[1], center[2]);
     controls.update();
@@ -144,10 +163,25 @@ export function ModelViewer({
       onContextRestored,
     );
 
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const action = viewerKeyAction(event.key);
+      if (!action) return;
+      event.preventDefault();
+      if (action.type === 'orbit') {
+        orbitCamera(camera, controls, action.azimuth, action.polar);
+      } else if (action.type === 'dolly') {
+        dollyCamera(camera, controls, action.factor);
+      } else {
+        resetView(camera, controls, center, radius, aspectOf(container));
+      }
+    };
+    container.addEventListener('keydown', onKeyDown);
+
     return () => {
       disposed = true;
       cancelAnimationFrame(frame);
       observer.disconnect();
+      container.removeEventListener('keydown', onKeyDown);
       renderer.domElement.removeEventListener(
         'webglcontextlost',
         onContextLost,
@@ -157,6 +191,8 @@ export function ModelViewer({
         onContextRestored,
       );
       controls.dispose();
+      controlsRef.current = null;
+      cameraRef.current = null;
       geometry.dispose();
       geometryRef.current = null;
       material.dispose();
@@ -178,12 +214,31 @@ export function ModelViewer({
     geometry.setIndex(visibleIndices(mesh, hiddenParts));
   }, [mesh, hiddenParts]);
 
+  // Reframe to the default fit whenever the reset token changes. The initial
+  // mount already frames the model, so the token===0 first run is a no-op fit.
+  useEffect(() => {
+    const camera = cameraRef.current;
+    const controls = controlsRef.current;
+    const container = containerRef.current;
+    const frame = frameRef.current;
+    if (!camera || !controls || !container || !frame) return;
+    resetView(
+      camera,
+      controls,
+      frame.center,
+      frame.radius,
+      aspectOf(container),
+    );
+  }, [resetToken]);
+
   return (
     <div
       ref={containerRef}
       className={className}
-      role="img"
-      aria-label="3D model preview"
+      role="application"
+      aria-roledescription="3D model viewer"
+      aria-label="3D model preview. Use arrow keys to orbit, plus and minus to zoom, and R to reset the view."
+      tabIndex={0}
       style={{ position: 'relative', width: '100%', height: '100%' }}
     >
       {error && (
@@ -229,19 +284,81 @@ function applyOrthoFrustum(
 }
 
 function frameCamera(
-  camera: THREE.Camera,
+  camera: THREE.PerspectiveCamera | THREE.OrthographicCamera,
   center: [number, number, number],
   radius: number,
   aspect: number,
 ): void {
-  const distance =
-    camera instanceof THREE.PerspectiveCamera
-      ? fitPerspectiveDistance(PERSPECTIVE_FOV, aspect, radius)
-      : radius * 4;
-  camera.position.set(
-    center[0] + distance,
-    center[1] + distance,
-    center[2] + distance,
+  const projection: Projection =
+    camera instanceof THREE.PerspectiveCamera ? 'perspective' : 'orthographic';
+  const [x, y, z] = defaultCameraPosition(
+    center,
+    radius,
+    aspect,
+    projection,
+    PERSPECTIVE_FOV,
   );
+  camera.position.set(x, y, z);
   camera.lookAt(center[0], center[1], center[2]);
+}
+
+const MIN_POLAR = 0.01;
+const MAX_POLAR = Math.PI - 0.01;
+
+/** Rotate the camera around the controls target by the given angular deltas. */
+function orbitCamera(
+  camera: THREE.PerspectiveCamera | THREE.OrthographicCamera,
+  controls: OrbitControls,
+  dAzimuth: number,
+  dPolar: number,
+): void {
+  const offset = camera.position.clone().sub(controls.target);
+  const spherical = new THREE.Spherical().setFromVector3(offset);
+  spherical.theta += dAzimuth;
+  spherical.phi = Math.min(
+    MAX_POLAR,
+    Math.max(MIN_POLAR, spherical.phi + dPolar),
+  );
+  spherical.makeSafe();
+  offset.setFromSpherical(spherical);
+  camera.position.copy(controls.target).add(offset);
+  camera.lookAt(controls.target);
+  controls.update();
+}
+
+/**
+ * Zoom by moving the perspective camera along its view ray (or scaling the
+ * orthographic zoom). `factor` < 1 zooms in, > 1 zooms out.
+ */
+function dollyCamera(
+  camera: THREE.PerspectiveCamera | THREE.OrthographicCamera,
+  controls: OrbitControls,
+  factor: number,
+): void {
+  if (camera instanceof THREE.OrthographicCamera) {
+    camera.zoom = Math.max(0.01, camera.zoom / factor);
+    camera.updateProjectionMatrix();
+  } else {
+    const offset = camera.position.clone().sub(controls.target);
+    offset.multiplyScalar(factor);
+    camera.position.copy(controls.target).add(offset);
+  }
+  controls.update();
+}
+
+/** Restore the default framing and clear any accumulated zoom/pan. */
+function resetView(
+  camera: THREE.PerspectiveCamera | THREE.OrthographicCamera,
+  controls: OrbitControls,
+  center: [number, number, number],
+  radius: number,
+  aspect: number,
+): void {
+  controls.target.set(center[0], center[1], center[2]);
+  if (camera instanceof THREE.OrthographicCamera) {
+    camera.zoom = 1;
+    camera.updateProjectionMatrix();
+  }
+  frameCamera(camera, center, radius, aspect);
+  controls.update();
 }

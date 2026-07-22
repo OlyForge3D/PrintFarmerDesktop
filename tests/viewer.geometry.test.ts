@@ -5,9 +5,13 @@ import {
   boundsRadius,
   boundsSize,
   computeBounds,
+  defaultCameraPosition,
   fitPerspectiveDistance,
+  KEYBOARD_DOLLY_STEP,
+  KEYBOARD_ORBIT_STEP,
   sampleCubeScene,
   toBufferGeometry,
+  viewerKeyAction,
 } from '../src/renderer/viewer/geometry';
 import type { SceneMesh } from '../src/renderer/viewer/types';
 
@@ -50,6 +54,70 @@ describe('fitPerspectiveDistance', () => {
 
   it('is robust to a zero radius', () => {
     expect(fitPerspectiveDistance(45, 1, 0)).toBeGreaterThan(0);
+  });
+});
+
+describe('defaultCameraPosition', () => {
+  it('offsets along the (1,1,1) diagonal from the center by the fit distance', () => {
+    const center: [number, number, number] = [2, -3, 4];
+    const distance = fitPerspectiveDistance(45, 1, 5);
+    const pos = defaultCameraPosition(center, 5, 1, 'perspective', 45);
+    expect(pos[0]).toBeCloseTo(center[0] + distance, 5);
+    expect(pos[1]).toBeCloseTo(center[1] + distance, 5);
+    expect(pos[2]).toBeCloseTo(center[2] + distance, 5);
+  });
+
+  it('places an orthographic camera at four radii from the center', () => {
+    const pos = defaultCameraPosition([0, 0, 0], 3, 1.5, 'orthographic');
+    expect(pos).toEqual([12, 12, 12]);
+  });
+
+  it('stays finite for a zero-radius model', () => {
+    const pos = defaultCameraPosition([0, 0, 0], 0, 1, 'perspective');
+    expect(pos.every((v) => Number.isFinite(v) && v > 0)).toBe(true);
+  });
+});
+
+describe('viewerKeyAction', () => {
+  it('maps arrow keys to opposite-sign orbit deltas', () => {
+    expect(viewerKeyAction('ArrowLeft')).toEqual({
+      type: 'orbit',
+      azimuth: -KEYBOARD_ORBIT_STEP,
+      polar: 0,
+    });
+    expect(viewerKeyAction('ArrowRight')).toEqual({
+      type: 'orbit',
+      azimuth: KEYBOARD_ORBIT_STEP,
+      polar: 0,
+    });
+    expect(viewerKeyAction('ArrowUp')).toEqual({
+      type: 'orbit',
+      azimuth: 0,
+      polar: -KEYBOARD_ORBIT_STEP,
+    });
+    expect(viewerKeyAction('ArrowDown')).toEqual({
+      type: 'orbit',
+      azimuth: 0,
+      polar: KEYBOARD_ORBIT_STEP,
+    });
+  });
+
+  it('maps +/- to inverse dolly factors so they cancel', () => {
+    const zoomIn = viewerKeyAction('+');
+    const zoomOut = viewerKeyAction('-');
+    expect(zoomIn).toEqual({ type: 'dolly', factor: KEYBOARD_DOLLY_STEP });
+    expect(zoomOut).toEqual({ type: 'dolly', factor: 1 / KEYBOARD_DOLLY_STEP });
+    if (zoomIn?.type === 'dolly' && zoomOut?.type === 'dolly') {
+      expect(zoomIn.factor * zoomOut.factor).toBeCloseTo(1, 10);
+    }
+  });
+
+  it('treats R and Home as reset and ignores unrelated keys', () => {
+    expect(viewerKeyAction('r')).toEqual({ type: 'reset' });
+    expect(viewerKeyAction('R')).toEqual({ type: 'reset' });
+    expect(viewerKeyAction('Home')).toEqual({ type: 'reset' });
+    expect(viewerKeyAction('a')).toBeNull();
+    expect(viewerKeyAction('Enter')).toBeNull();
   });
 });
 

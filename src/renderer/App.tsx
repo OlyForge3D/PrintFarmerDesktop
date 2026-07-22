@@ -31,6 +31,7 @@ export function App(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [wireframe, setWireframe] = useState(false);
   const [projection, setProjection] = useState<Projection>('perspective');
+  const [resetToken, setResetToken] = useState(0);
   const [loadedMesh, setLoadedMesh] = useState<LoadSceneResponse | null>(null);
   const [loadedName, setLoadedName] = useState<string | null>(null);
   const [loadedPath, setLoadedPath] = useState<string | null>(null);
@@ -263,6 +264,12 @@ export function App(): React.JSX.Element {
           >
             {projection === 'perspective' ? 'Orthographic' : 'Perspective'}
           </button>
+          <button
+            type="button"
+            onClick={() => setResetToken((value) => value + 1)}
+          >
+            Reset view
+          </button>
           <span className="viewer-model-name">
             {loadedName ?? 'Sample cube'}
           </span>
@@ -272,6 +279,7 @@ export function App(): React.JSX.Element {
           wireframe={wireframe}
           projection={projection}
           hiddenParts={hiddenParts}
+          resetToken={resetToken}
           className="viewer-canvas"
         />
         <ModelStats mesh={mesh} />
