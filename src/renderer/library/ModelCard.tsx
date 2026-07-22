@@ -1,0 +1,49 @@
+import type { LogicalModel } from '@shared/ipc';
+import {
+  formatBytes,
+  formatLabel,
+  isAvailable,
+  modelDisplayName,
+} from './model';
+
+export interface ModelCardProps {
+  model: LogicalModel;
+  selected: boolean;
+  onSelect: (model: LogicalModel) => void;
+}
+
+/** A single selectable model tile in the library grid. */
+export function ModelCard({
+  model,
+  selected,
+  onSelect,
+}: ModelCardProps): React.JSX.Element {
+  const name = modelDisplayName(model);
+  const available = isAvailable(model);
+  const format = formatLabel(model.format);
+
+  return (
+    <li className="model-card">
+      <button
+        type="button"
+        className={
+          selected ? 'model-card-button selected' : 'model-card-button'
+        }
+        aria-pressed={selected}
+        onClick={() => onSelect(model)}
+        disabled={!available}
+        title={available ? name : `${name} (file missing)`}
+      >
+        <span className="model-thumb" aria-hidden="true">
+          {format}
+        </span>
+        <span className="model-name">{name}</span>
+        <span className="model-meta">
+          <span className="model-format">{format}</span>
+          <span className="model-size">{formatBytes(model.size)}</span>
+          {!available && <span className="model-missing">Missing</span>}
+        </span>
+      </button>
+    </li>
+  );
+}

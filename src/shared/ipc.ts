@@ -21,6 +21,7 @@ export const IpcChannel = {
   RenderThumbnail: 'model:renderThumbnail',
   ScanRoot: 'catalog:scanRoot',
   ListModels: 'catalog:listModels',
+  OpenFolder: 'dialog:openFolder',
 } as const;
 
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel];
@@ -225,6 +226,17 @@ export type ListModelsRequest = z.infer<typeof ListModelsRequest>;
 export const ListModelsResponse = z.array(LogicalModel);
 export type ListModelsResponse = z.infer<typeof ListModelsResponse>;
 
+// --- dialog:openFolder ----------------------------------------------------
+
+export const OpenFolderRequest = z.void();
+export type OpenFolderRequest = z.infer<typeof OpenFolderRequest>;
+
+/** The folder the user picked, or `null` when they cancelled the dialog. */
+export const OpenFolderResponse = z
+  .object({ path: z.string().min(1) })
+  .nullable();
+export type OpenFolderResponse = z.infer<typeof OpenFolderResponse>;
+
 /**
  * Registry mapping each channel to its request/response schemas. Used by both
  * the main-process handler registration and the preload bridge.
@@ -262,6 +274,10 @@ export const ipcSchemas = {
     request: ListModelsRequest,
     response: ListModelsResponse,
   },
+  [IpcChannel.OpenFolder]: {
+    request: OpenFolderRequest,
+    response: OpenFolderResponse,
+  },
 } as const;
 
 export type IpcSchemas = typeof ipcSchemas;
@@ -280,4 +296,5 @@ export interface PrintFarmerApi {
   ): Promise<RenderThumbnailResponse>;
   scanRoot(request: ScanRootRequest): Promise<ScanRootResponse>;
   listModels(): Promise<ListModelsResponse>;
+  openFolder(): Promise<OpenFolderResponse>;
 }

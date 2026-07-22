@@ -7,6 +7,7 @@ import {
   type LoadSceneRequest,
   type LoadSceneResponse,
   type OpenModelFileResponse,
+  type OpenFolderResponse,
   type PrintFarmerApi,
   type RenderThumbnailRequest,
   type RenderThumbnailResponse,
@@ -60,6 +61,8 @@ const api: PrintFarmerApi = {
     ) as Promise<ScanRootResponse>,
   listModels: (): Promise<ListModelsResponse> =>
     ipcRenderer.invoke(IpcChannel.ListModels) as Promise<ListModelsResponse>,
+  openFolder: (): Promise<OpenFolderResponse> =>
+    ipcRenderer.invoke(IpcChannel.OpenFolder) as Promise<OpenFolderResponse>,
 };
 
 contextBridge.exposeInMainWorld('printFarmer', api);

@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { AppInfoResponse, LoadSceneResponse } from '@shared/ipc';
+import type {
+  AppInfoResponse,
+  LoadSceneResponse,
+  LogicalModel,
+} from '@shared/ipc';
 import { ModelViewer, type Projection } from './viewer/ModelViewer';
 import { sampleCubeScene } from './viewer/geometry';
 import type { SceneMesh } from './viewer/types';
+import { useLibrary } from './library/useLibrary';
+import { ModelGrid } from './library/ModelGrid';
+import { modelDisplayName, preferredPath } from './library/model';
 
 export function App(): React.JSX.Element {
   const [info, setInfo] = useState<AppInfoResponse | null>(null);
@@ -12,6 +19,9 @@ export function App(): React.JSX.Element {
   const [loadedMesh, setLoadedMesh] = useState<LoadSceneResponse | null>(null);
   const [loadedName, setLoadedName] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [selectedHash, setSelectedHash] = useState<string | null>(null);
+
+  const library = useLibrary();
 
   const sampleMesh = useMemo(() => sampleCubeScene(20), []);
   // The shared LoadSceneResponse is structurally the viewer's SceneMesh.
@@ -39,6 +49,26 @@ export function App(): React.JSX.Element {
       });
       setLoadedMesh(scene);
       setLoadedName(selection.path.replace(/^.*[\\/]/, ''));
+      setSelectedHash(null);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const openFromLibrary = useCallback(async (model: LogicalModel) => {
+    const path = preferredPath(model);
+    if (!path) {
+      return;
+    }
+    setError(null);
+    setSelectedHash(model.hash);
+    setLoading(true);
+    try {
+      const scene = await window.printFarmer.loadScene({ path });
+      setLoadedMesh(scene);
+      setLoadedName(modelDisplayName(model));
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -52,6 +82,55 @@ export function App(): React.JSX.Element {
         <h1>PrintFarmer Desktop</h1>
         <p className="tagline">Local-first 3D model library</p>
       </header>
+
+      <section className="app-library" aria-label="Model library">
+        <div className="library-toolbar">
+          <button
+            type="button"
+            onClick={() => {
+              void library.addFolder();
+            }}
+            disabled={library.status === 'scanning'}
+          >
+            {library.status === 'scanning' ? 'Scanning…' : 'Add folder…'}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              void library.refresh();
+            }}
+            disabled={library.status !== 'idle'}
+          >
+            Refresh
+          </button>
+          <span className="library-count">
+            {library.models.length}{' '}
+            {library.models.length === 1 ? 'model' : 'models'}
+          </span>
+        </div>
+
+        {library.error ? (
+          <p role="alert" className="status-error">
+            {library.error}
+          </p>
+        ) : null}
+
+        {library.lastReport ? (
+          <p className="library-report">
+            Last scan: {library.lastReport.added} added,{' '}
+            {library.lastReport.changed} changed, {library.lastReport.unchanged}{' '}
+            unchanged, {library.lastReport.missing} missing.
+          </p>
+        ) : null}
+
+        <ModelGrid
+          models={library.models}
+          selectedHash={selectedHash}
+          onSelect={(model) => {
+            void openFromLibrary(model);
+          }}
+        />
+      </section>
 
       <section className="app-viewer" aria-label="Model preview">
         <div className="viewer-toolbar">

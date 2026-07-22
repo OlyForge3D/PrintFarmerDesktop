@@ -24,6 +24,7 @@ describe('<App />', () => {
         platform: 'darwin',
         electronVersion: '33.0.0',
       }),
+      listModels: vi.fn().mockResolvedValue([]),
     });
 
     render(<App />);
@@ -35,6 +36,7 @@ describe('<App />', () => {
   it('shows an error when the main process call fails', async () => {
     installApi({
       getAppInfo: vi.fn().mockRejectedValue(new Error('bridge down')),
+      listModels: vi.fn().mockResolvedValue([]),
     });
 
     render(<App />);

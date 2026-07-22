@@ -5,6 +5,7 @@ import {
   IpcChannel,
   ipcSchemas,
   type OpenModelFileResponse,
+  type OpenFolderResponse,
   type SidecarPingResponse,
 } from '@shared/ipc';
 import {
@@ -98,6 +99,26 @@ export function registerIpcHandlers(channelFactory?: ChannelFactory): void {
   ipcMain.handle(IpcChannel.ListModels, async () => {
     const raw = await sidecar.listModels();
     return ipcSchemas[IpcChannel.ListModels].response.parse(raw);
+  });
+
+  ipcMain.handle(IpcChannel.OpenFolder, async (event) => {
+    // Same trust model as OpenModelFile: the renderer can only ask us to show
+    // the OS picker; we return only the directory the user explicitly chose.
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const options = {
+      title: 'Add model folder',
+      properties: ['openDirectory' as const],
+    };
+    const result = owner
+      ? await dialog.showOpenDialog(owner, options)
+      : await dialog.showOpenDialog(options);
+
+    const selected =
+      result.canceled || result.filePaths.length === 0
+        ? null
+        : { path: result.filePaths[0]! };
+    const response: OpenFolderResponse = selected;
+    return ipcSchemas[IpcChannel.OpenFolder].response.parse(response);
   });
 
   ipcMain.handle(IpcChannel.OpenModelFile, async (event) => {

@@ -267,4 +267,22 @@ describe('ipc contract', () => {
       ]),
     ).toThrow();
   });
+
+  it('accepts a selected open-folder response', () => {
+    const value = ipcSchemas[IpcChannel.OpenFolder].response.parse({
+      path: 'C:\\models',
+    });
+    expect(value).toEqual({ path: 'C:\\models' });
+  });
+
+  it('accepts a null open-folder response (cancelled)', () => {
+    const value = ipcSchemas[IpcChannel.OpenFolder].response.parse(null);
+    expect(value).toBeNull();
+  });
+
+  it('rejects an open-folder response with an empty path', () => {
+    expect(() =>
+      ipcSchemas[IpcChannel.OpenFolder].response.parse({ path: '' }),
+    ).toThrow();
+  });
 });
