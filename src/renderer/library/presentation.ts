@@ -46,5 +46,7 @@ export function folderBasename(path: string | null): string | null {
   }
   const trimmed = path.replace(/[\\/]+$/, '');
   const basename = trimmed.replace(/^.*[\\/]/, '');
-  return basename || trimmed || path;
+  // `basename` is empty only when `trimmed` is empty (an all-separator path
+  // like "/"), so fall back straight to the original path in that case.
+  return basename || path;
 }

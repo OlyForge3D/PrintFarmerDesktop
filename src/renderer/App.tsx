@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AppInfoResponse,
   LoadSceneResponse,
@@ -69,14 +69,26 @@ export function App(): React.JSX.Element {
   );
   const isScanning = library.status === 'scanning';
   const scanningFolder = folderBasename(library.scanningPath);
+
+  // When a scan starts, the onboarding CTA that likely held focus is unmounted.
+  // Move focus to the (always-mounted) scan status region so keyboard/screen
+  // reader users are not dropped back to <body> and hear the announcement.
+  const scanStatusRef = useRef<HTMLParagraphElement | null>(null);
+  const wasScanningRef = useRef(false);
+  useEffect(() => {
+    if (isScanning && !wasScanningRef.current) {
+      scanStatusRef.current?.focus();
+    }
+    wasScanningRef.current = isScanning;
+  }, [isScanning]);
   let libraryEmptyLabel: React.ReactNode | undefined;
   if (presentation.state === 'onboarding') {
     libraryEmptyLabel = (
       <>
         <h2>Build your model library</h2>
         <p>
-          Add a folder and PrintFarmer will scan it for <code>.stl</code> and{' '}
-          <code>.3mf</code> files.
+          Add a folder and PrintFarmer will scan it for <code>.stl</code>,{' '}
+          <code>.3mf</code>, and <code>.obj</code> files.
         </p>
         <p>
           Your catalog stays local so you can browse, tag, and organize models
@@ -98,8 +110,8 @@ export function App(): React.JSX.Element {
   } else if (presentation.state === 'empty-scan') {
     libraryEmptyLabel = (
       <>
-        Last scan finished, but no <code>.stl</code> or <code>.3mf</code> files
-        were found. Try adding another folder.
+        Last scan finished, but no <code>.stl</code>, <code>.3mf</code>, or{' '}
+        <code>.obj</code> files were found. Try adding another folder.
       </>
     );
   } else if (presentation.state === 'empty-filter') {
@@ -278,6 +290,8 @@ export function App(): React.JSX.Element {
 
         {isScanning ? (
           <p
+            ref={scanStatusRef}
+            tabIndex={-1}
             className="library-scan-status"
             role="status"
             aria-live="polite"
@@ -286,15 +300,22 @@ export function App(): React.JSX.Element {
             Scanning {scanningFolder ?? 'selected folder'}… This can take a
             moment for large libraries.
           </p>
-        ) : null}
+        ) : (
+          <p
+            ref={scanStatusRef}
+            tabIndex={-1}
+            className="library-scan-status"
+            role="status"
+            aria-live="polite"
+            aria-busy="false"
+          />
+        )}
 
-        {library.lastReport ? (
-          <p className="library-report" role="status" aria-live="polite">
-            Last scan: {library.lastReport.added} added,{' '}
-            {library.lastReport.changed} changed, {library.lastReport.unchanged}{' '}
-            unchanged, {library.lastReport.missing} missing.
-          </p>
-        ) : null}
+        <p className="library-report" role="status" aria-live="polite">
+          {library.lastReport
+            ? `Last scan: ${library.lastReport.added} added, ${library.lastReport.changed} changed, ${library.lastReport.unchanged} unchanged, ${library.lastReport.missing} missing.`
+            : ''}
+        </p>
 
         <ModelGrid
           models={presentation.visibleModels}

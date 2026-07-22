@@ -24,8 +24,8 @@ export function ModelGrid({
       <div className="library-empty">
         {emptyLabel ?? (
           <>
-            No models yet. Add a folder to scan for <code>.stl</code> and{' '}
-            <code>.3mf</code> files.
+            No models yet. Add a folder to scan for <code>.stl</code>,{' '}
+            <code>.3mf</code>, and <code>.obj</code> files.
           </>
         )}
       </div>

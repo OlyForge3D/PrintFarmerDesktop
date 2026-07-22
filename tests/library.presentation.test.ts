@@ -108,4 +108,12 @@ describe('folderBasename', () => {
   it('keeps null when no scan path is available', () => {
     expect(folderBasename(null)).toBeNull();
   });
+
+  it('falls back to the original path for all-separator roots', () => {
+    // "/" and "\\" strip to an empty basename; the original path is returned
+    // rather than an empty string (exercises the `basename || path` fallback).
+    expect(folderBasename('/')).toBe('/');
+    expect(folderBasename('\\')).toBe('\\');
+    expect(folderBasename('///')).toBe('///');
+  });
 });
