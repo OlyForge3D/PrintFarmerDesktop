@@ -14,6 +14,8 @@ pub mod scan;
 pub mod scene;
 pub mod schema;
 pub mod serve;
+#[cfg(feature = "sqlite")]
+pub mod sqlite_catalog;
 pub mod stl;
 pub mod threemf;
 pub mod watch;
