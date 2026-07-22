@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { App } from '../src/renderer/App.js';
 import type { PrintFarmerApi } from '@shared/ipc';
 
@@ -40,7 +40,11 @@ describe('<App />', () => {
     render(<App />);
 
     await waitFor(() =>
-      expect(screen.getByRole('alert')).toHaveTextContent('bridge down'),
+      expect(
+        within(screen.getByRole('region', { name: 'App status' })).getByRole(
+          'alert',
+        ),
+      ).toHaveTextContent('bridge down'),
     );
   });
 });
