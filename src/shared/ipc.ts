@@ -16,6 +16,7 @@ export const IpcChannel = {
   AppInfo: 'app:info',
   SidecarPing: 'sidecar:ping',
   LoadScene: 'model:loadScene',
+  OpenModelFile: 'dialog:openModelFile',
 } as const;
 
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel];
@@ -84,6 +85,21 @@ export type LoadSceneRequest = z.infer<typeof LoadSceneRequest>;
 export const LoadSceneResponse = SceneMesh;
 export type LoadSceneResponse = z.infer<typeof LoadSceneResponse>;
 
+// --- dialog:openModelFile -------------------------------------------------
+
+export const OpenModelFileRequest = z.void();
+export type OpenModelFileRequest = z.infer<typeof OpenModelFileRequest>;
+
+/**
+ * The file the user picked, or `null` when they cancelled the dialog. The main
+ * process only ever returns a path the user explicitly selected; the renderer
+ * never gets to name an arbitrary path itself.
+ */
+export const OpenModelFileResponse = z
+  .object({ path: z.string().min(1) })
+  .nullable();
+export type OpenModelFileResponse = z.infer<typeof OpenModelFileResponse>;
+
 /**
  * Registry mapping each channel to its request/response schemas. Used by both
  * the main-process handler registration and the preload bridge.
@@ -101,6 +117,10 @@ export const ipcSchemas = {
     request: LoadSceneRequest,
     response: LoadSceneResponse,
   },
+  [IpcChannel.OpenModelFile]: {
+    request: OpenModelFileRequest,
+    response: OpenModelFileResponse,
+  },
 } as const;
 
 export type IpcSchemas = typeof ipcSchemas;
@@ -110,4 +130,5 @@ export interface PrintFarmerApi {
   getAppInfo(): Promise<AppInfoResponse>;
   pingSidecar(request: SidecarPingRequest): Promise<SidecarPingResponse>;
   loadScene(request: LoadSceneRequest): Promise<LoadSceneResponse>;
+  openModelFile(): Promise<OpenModelFileResponse>;
 }

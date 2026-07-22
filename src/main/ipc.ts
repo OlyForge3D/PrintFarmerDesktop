@@ -1,9 +1,10 @@
-import { app, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import {
   AppInfoResponse,
   IPC_CONTRACT_VERSION,
   IpcChannel,
   ipcSchemas,
+  type OpenModelFileResponse,
   type SidecarPingResponse,
 } from '@shared/ipc';
 import {
@@ -66,5 +67,29 @@ export function registerIpcHandlers(channelFactory?: ChannelFactory): void {
     // Validate the sidecar's response against the contract before trusting it
     // in the renderer.
     return ipcSchemas[IpcChannel.LoadScene].response.parse(raw);
+  });
+
+  ipcMain.handle(IpcChannel.OpenModelFile, async (event) => {
+    // The renderer cannot name a path; it can only ask us to show the OS file
+    // picker, and we return only what the user explicitly selected.
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const options = {
+      title: 'Open 3D model',
+      properties: ['openFile' as const],
+      filters: [
+        { name: '3D models', extensions: ['stl', '3mf'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+    };
+    const result = owner
+      ? await dialog.showOpenDialog(owner, options)
+      : await dialog.showOpenDialog(options);
+
+    const selected =
+      result.canceled || result.filePaths.length === 0
+        ? null
+        : { path: result.filePaths[0]! };
+    const response: OpenModelFileResponse = selected;
+    return ipcSchemas[IpcChannel.OpenModelFile].response.parse(response);
   });
 }

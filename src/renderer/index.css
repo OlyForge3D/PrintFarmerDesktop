@@ -90,6 +90,22 @@ body {
   border-color: var(--accent);
 }
 
+.viewer-toolbar button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.viewer-model-name {
+  margin-left: auto;
+  align-self: center;
+  color: var(--muted, #9aa0ab);
+  font-size: 0.9rem;
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .viewer-canvas {
   height: 420px;
   border-radius: 12px;

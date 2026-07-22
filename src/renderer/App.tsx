@@ -1,15 +1,21 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { AppInfoResponse } from '@shared/ipc';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { AppInfoResponse, LoadSceneResponse } from '@shared/ipc';
 import { ModelViewer, type Projection } from './viewer/ModelViewer';
 import { sampleCubeScene } from './viewer/geometry';
+import type { SceneMesh } from './viewer/types';
 
 export function App(): React.JSX.Element {
   const [info, setInfo] = useState<AppInfoResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [wireframe, setWireframe] = useState(false);
   const [projection, setProjection] = useState<Projection>('perspective');
+  const [loadedMesh, setLoadedMesh] = useState<LoadSceneResponse | null>(null);
+  const [loadedName, setLoadedName] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  const mesh = useMemo(() => sampleCubeScene(20), []);
+  const sampleMesh = useMemo(() => sampleCubeScene(20), []);
+  // The shared LoadSceneResponse is structurally the viewer's SceneMesh.
+  const mesh: SceneMesh = loadedMesh ?? sampleMesh;
 
   useEffect(() => {
     window.printFarmer
@@ -18,6 +24,26 @@ export function App(): React.JSX.Element {
       .catch((err: unknown) =>
         setError(err instanceof Error ? err.message : String(err)),
       );
+  }, []);
+
+  const openModel = useCallback(async () => {
+    setError(null);
+    try {
+      const selection = await window.printFarmer.openModelFile();
+      if (!selection) {
+        return;
+      }
+      setLoading(true);
+      const scene = await window.printFarmer.loadScene({
+        path: selection.path,
+      });
+      setLoadedMesh(scene);
+      setLoadedName(selection.path.replace(/^.*[\\/]/, ''));
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   return (
@@ -29,6 +55,15 @@ export function App(): React.JSX.Element {
 
       <section className="app-viewer" aria-label="Model preview">
         <div className="viewer-toolbar">
+          <button
+            type="button"
+            onClick={() => {
+              void openModel();
+            }}
+            disabled={loading}
+          >
+            {loading ? 'Loading…' : 'Open model…'}
+          </button>
           <button
             type="button"
             aria-pressed={wireframe}
@@ -46,6 +81,9 @@ export function App(): React.JSX.Element {
           >
             {projection === 'perspective' ? 'Orthographic' : 'Perspective'}
           </button>
+          <span className="viewer-model-name">
+            {loadedName ?? 'Sample cube'}
+          </span>
         </div>
         <ModelViewer
           mesh={mesh}

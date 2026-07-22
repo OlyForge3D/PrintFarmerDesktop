@@ -4,6 +4,7 @@ import {
   type AppInfoResponse,
   type LoadSceneRequest,
   type LoadSceneResponse,
+  type OpenModelFileResponse,
   type PrintFarmerApi,
   type SidecarPingRequest,
   type SidecarPingResponse,
@@ -27,6 +28,10 @@ const api: PrintFarmerApi = {
       IpcChannel.LoadScene,
       request,
     ) as Promise<LoadSceneResponse>,
+  openModelFile: (): Promise<OpenModelFileResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.OpenModelFile,
+    ) as Promise<OpenModelFileResponse>,
 };
 
 contextBridge.exposeInMainWorld('printFarmer', api);

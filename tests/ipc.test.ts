@@ -90,4 +90,22 @@ describe('ipc contract', () => {
       }),
     ).toThrow();
   });
+
+  it('accepts a selected open-model-file response', () => {
+    const value = ipcSchemas[IpcChannel.OpenModelFile].response.parse({
+      path: 'C:\\models\\part.stl',
+    });
+    expect(value).toEqual({ path: 'C:\\models\\part.stl' });
+  });
+
+  it('accepts a null open-model-file response (cancelled)', () => {
+    const value = ipcSchemas[IpcChannel.OpenModelFile].response.parse(null);
+    expect(value).toBeNull();
+  });
+
+  it('rejects an open-model-file response with an empty path', () => {
+    expect(() =>
+      ipcSchemas[IpcChannel.OpenModelFile].response.parse({ path: '' }),
+    ).toThrow();
+  });
 });

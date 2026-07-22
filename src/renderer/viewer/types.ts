@@ -24,5 +24,5 @@ export interface SceneMesh {
   readonly bounds: Bounds;
   readonly sourceFormat: ModelFormat;
   /** One RGB (0–255) triple per triangle, or null/undefined when uncolored. */
-  readonly faceColors?: readonly number[] | null;
+  readonly faceColors?: readonly number[] | null | undefined;
 }
