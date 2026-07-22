@@ -236,7 +236,7 @@ export function registerIpcHandlers(channelFactory?: ChannelFactory): void {
       title: 'Open 3D model',
       properties: ['openFile' as const],
       filters: [
-        { name: '3D models', extensions: ['stl', '3mf'] },
+        { name: '3D models', extensions: ['stl', '3mf', 'obj'] },
         { name: 'All files', extensions: ['*'] },
       ],
     };

@@ -13,6 +13,7 @@ use thiserror::Error;
 
 use crate::geometry::Aabb;
 use crate::model::ModelFormat;
+use crate::obj::{self, ObjError, ObjMesh};
 use crate::stl::{self, StlError, StlMesh};
 use crate::threemf::{self, ThreeMfError, ThreeMfMesh};
 
@@ -24,6 +25,8 @@ pub enum SceneError {
     Stl(#[from] StlError),
     #[error("3mf parse error: {0}")]
     ThreeMf(#[from] ThreeMfError),
+    #[error("obj parse error: {0}")]
+    Obj(#[from] ObjError),
 }
 
 /// A named, selectable region of the flattened scene. `triangle_start` and
@@ -105,6 +108,32 @@ impl SceneMesh {
         }
     }
 
+    /// Build a scene from a parsed OBJ mesh, which is already indexed.
+    pub fn from_obj(mesh: &ObjMesh) -> Self {
+        let mut indices = Vec::with_capacity(mesh.triangles.len() * 3);
+        for triangle in &mesh.triangles {
+            indices.extend_from_slice(triangle);
+        }
+        let triangle_count = mesh.triangles.len();
+        let parts = if triangle_count == 0 {
+            Vec::new()
+        } else {
+            vec![ScenePart {
+                name: "Model".to_string(),
+                triangle_start: 0,
+                triangle_count,
+            }]
+        };
+        Self {
+            positions: mesh.vertices.clone(),
+            indices,
+            bounds: mesh.bounds,
+            source_format: ModelFormat::Obj,
+            face_colors: None,
+            parts,
+        }
+    }
+
     /// Build a scene from a flattened 3MF mesh, which is already indexed.
     pub fn from_threemf(mesh: &ThreeMfMesh) -> Self {
         let mut indices = Vec::with_capacity(mesh.triangles.len() * 3);
@@ -136,6 +165,7 @@ pub fn load_scene(path: &Path) -> Result<SceneMesh, SceneError> {
     match ModelFormat::from_path(path) {
         Some(ModelFormat::Stl) => Ok(SceneMesh::from_stl(&stl::parse_file(path)?)),
         Some(ModelFormat::ThreeMf) => Ok(SceneMesh::from_threemf(&threemf::parse_file(path)?)),
+        Some(ModelFormat::Obj) => Ok(SceneMesh::from_obj(&obj::parse_file(path)?)),
         None => Err(SceneError::UnsupportedFormat),
     }
 }
@@ -148,6 +178,11 @@ pub fn scene_from_stl_bytes(data: &[u8]) -> Result<SceneMesh, SceneError> {
 /// Normalize an already-parsed 3MF package into a scene (bytes path).
 pub fn scene_from_threemf_bytes(data: &[u8]) -> Result<SceneMesh, SceneError> {
     Ok(SceneMesh::from_threemf(&threemf::parse_bytes(data)?))
+}
+
+/// Normalize an already-parsed OBJ mesh into a scene (bytes path).
+pub fn scene_from_obj_bytes(data: &[u8]) -> Result<SceneMesh, SceneError> {
+    Ok(SceneMesh::from_obj(&obj::parse_bytes(data)?))
 }
 
 #[cfg(test)]
@@ -253,6 +288,51 @@ mod tests {
         assert!(matches!(
             load_scene(&path),
             Err(SceneError::UnsupportedFormat)
+        ));
+    }
+
+    #[test]
+    fn obj_mesh_keeps_indices_positions_and_model_part() {
+        let mut bounds = Aabb::empty();
+        for v in [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]] {
+            bounds.expand(v);
+        }
+        let mesh = ObjMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
+            triangles: vec![[0, 1, 2]],
+            bounds,
+        };
+        let scene = SceneMesh::from_obj(&mesh);
+        assert_eq!(scene.source_format, ModelFormat::Obj);
+        assert_eq!(scene.vertex_count(), 3);
+        assert_eq!(scene.indices, vec![0, 1, 2]);
+        assert!(scene.face_colors.is_none());
+        assert_eq!(scene.parts.len(), 1);
+        assert_eq!(scene.parts[0].name, "Model");
+        assert_eq!(scene.parts[0].triangle_count, 1);
+    }
+
+    #[test]
+    fn load_scene_reads_an_obj_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("model.obj");
+        let obj = "v 0 0 0\n\
+                   v 1 0 0\n\
+                   v 0 1 0\n\
+                   f 1 2 3\n";
+        fs::write(&path, obj).unwrap();
+
+        let scene = load_scene(&path).unwrap();
+        assert_eq!(scene.source_format, ModelFormat::Obj);
+        assert_eq!(scene.triangle_count(), 1);
+        assert_eq!(scene.bounds.max, [1.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn scene_from_obj_bytes_rejects_malformed_input() {
+        assert!(matches!(
+            scene_from_obj_bytes(b"v 0 0 0\nf 1 nope 1\n"),
+            Err(SceneError::Obj(_))
         ));
     }
 }

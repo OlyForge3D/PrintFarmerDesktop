@@ -66,7 +66,7 @@ export type SidecarPingResponse = z.infer<typeof SidecarPingResponse>;
 // --- model:loadScene ------------------------------------------------------
 
 /** Supported model formats, matching the sidecar's `ModelFormat` serde names. */
-export const ModelFormat = z.enum(['stl', 'threeMf']);
+export const ModelFormat = z.enum(['stl', 'threeMf', 'obj']);
 export type ModelFormat = z.infer<typeof ModelFormat>;
 
 const Vec3 = z.tuple([z.number(), z.number(), z.number()]);
@@ -91,7 +91,7 @@ export const ScenePart = z.object({
 export type ScenePart = z.infer<typeof ScenePart>;
 
 /**
- * The normalized, format-agnostic mesh the sidecar produces from an STL or 3MF
+ * The normalized, format-agnostic mesh the sidecar produces from an STL, 3MF, or OBJ
  * file. Positions and indices are flat arrays (`positions` is xyz-interleaved;
  * `indices` references vertices in triples). `faceColors`, when present, is one
  * RGB (0–255) triple per triangle. `parts` names selectable triangle ranges.

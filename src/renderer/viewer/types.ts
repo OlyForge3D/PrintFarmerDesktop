@@ -9,7 +9,7 @@
  * 0–255 bytes per triangle (currently only STL supplies per-facet colors).
  */
 
-export type ModelFormat = 'stl' | 'threeMf';
+export type ModelFormat = 'stl' | 'threeMf' | 'obj';
 
 export interface Bounds {
   readonly min: readonly [number, number, number];

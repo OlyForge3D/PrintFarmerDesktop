@@ -477,12 +477,14 @@ fn format_to_db(format: ModelFormat) -> &'static str {
     match format {
         ModelFormat::Stl => "stl",
         ModelFormat::ThreeMf => "threeMf",
+        ModelFormat::Obj => "obj",
     }
 }
 
 fn format_from_db(value: &str) -> ModelFormat {
     match value {
         "threeMf" => ModelFormat::ThreeMf,
+        "obj" => ModelFormat::Obj,
         _ => ModelFormat::Stl,
     }
 }

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 pub enum ModelFormat {
     Stl,
     ThreeMf,
+    Obj,
 }
 
 impl ModelFormat {
@@ -22,6 +23,7 @@ impl ModelFormat {
         match ext.as_str() {
             "stl" => Some(Self::Stl),
             "3mf" => Some(Self::ThreeMf),
+            "obj" => Some(Self::Obj),
             _ => None,
         }
     }
@@ -31,6 +33,7 @@ impl ModelFormat {
         match self {
             Self::Stl => "stl",
             Self::ThreeMf => "3mf",
+            Self::Obj => "obj",
         }
     }
 }

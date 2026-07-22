@@ -8,6 +8,7 @@ export interface ModelStatsProps {
 const FORMAT_LABELS: Record<SceneMesh['sourceFormat'], string> = {
   stl: 'STL',
   threeMf: '3MF',
+  obj: 'OBJ',
 };
 
 /** A compact read-only summary of the loaded scene's geometry. */
