@@ -6,11 +6,13 @@
 //! private transport. Only the version/handshake surface exists so far.
 
 pub mod catalog;
+pub mod geometry;
 pub mod hash;
 pub mod model;
 pub mod scan;
 pub mod schema;
 pub mod stl;
+pub mod threemf;
 pub mod watch;
 
 /// Version of the RPC protocol spoken by this sidecar. Bumped on any

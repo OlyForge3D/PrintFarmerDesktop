@@ -6,13 +6,14 @@
 //! convention when present. It is deliberately allocation-guarded so a
 //! malformed or hostile header cannot request an unbounded allocation.
 //!
-//! 3MF (and vendor multi-plate variants) are handled separately via lib3mf and
-//! are not part of this pure-Rust module.
+//! 3MF (an XML-in-ZIP format) is handled separately in [`crate::threemf`].
 
 use std::io;
 use std::path::Path;
 
 use thiserror::Error;
+
+use crate::geometry::Aabb;
 
 /// Hard ceiling on triangle count to bound memory for a single parse. A binary
 /// header that declares more than this is rejected before allocating.
@@ -34,41 +35,6 @@ pub enum StlError {
     LengthMismatch,
     #[error("malformed ASCII STL: {0}")]
     MalformedAscii(String),
-}
-
-/// Axis-aligned bounding box over all vertices.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Aabb {
-    pub min: [f32; 3],
-    pub max: [f32; 3],
-}
-
-impl Aabb {
-    fn empty() -> Self {
-        Self {
-            min: [f32::INFINITY; 3],
-            max: [f32::NEG_INFINITY; 3],
-        }
-    }
-
-    fn expand(&mut self, v: [f32; 3]) {
-        for ((min, max), &c) in self.min.iter_mut().zip(self.max.iter_mut()).zip(v.iter()) {
-            *min = min.min(c);
-            *max = max.max(c);
-        }
-    }
-
-    /// Size along each axis. Zero for an empty mesh.
-    pub fn size(&self) -> [f32; 3] {
-        if self.min[0] > self.max[0] {
-            return [0.0; 3];
-        }
-        [
-            self.max[0] - self.min[0],
-            self.max[1] - self.min[1],
-            self.max[2] - self.min[2],
-        ]
-    }
 }
 
 /// A single triangle: a facet normal and three vertices, plus an optional
