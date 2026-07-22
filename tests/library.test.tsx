@@ -11,6 +11,10 @@ import type { LogicalModel, PrintFarmerApi } from '@shared/ipc';
 import { useLibrary } from '../src/renderer/library/useLibrary.js';
 import { ModelGrid } from '../src/renderer/library/ModelGrid.js';
 import {
+  defaultLibraryView,
+  selectLibraryView,
+} from '../src/renderer/library/filter.js';
+import {
   clearThumbnailCache,
   useThumbnail,
 } from '../src/renderer/library/useThumbnail.js';
@@ -164,6 +168,88 @@ describe('useLibrary', () => {
     const { result } = renderHook(() => useLibrary());
 
     await waitFor(() => expect(result.current.error).toBe('sidecar offline'));
+  });
+});
+
+describe('selectLibraryView', () => {
+  const stl = (name: string, size: number, available = true): LogicalModel =>
+    model({
+      hash: `h-${name}`,
+      size,
+      locations: [
+        {
+          rootId: 'r',
+          path: `C:\\models\\${name}`,
+          rootRelative: name,
+          size,
+          available,
+        },
+      ],
+    });
+
+  const dup = model({
+    hash: 'h-dup',
+    size: 10,
+    locations: [
+      {
+        rootId: 'r',
+        path: 'C:\\a\\dup.stl',
+        rootRelative: 'dup.stl',
+        size: 10,
+        available: true,
+      },
+      {
+        rootId: 'r',
+        path: 'C:\\b\\dup.stl',
+        rootRelative: 'dup.stl',
+        size: 10,
+        available: true,
+      },
+    ],
+  });
+
+  const models = [
+    stl('beta.stl', 300),
+    stl('alpha.stl', 100),
+    stl('gone.stl', 200, false),
+    dup,
+  ];
+
+  it('passes everything through with the default view', () => {
+    expect(selectLibraryView(models, defaultLibraryView)).toHaveLength(4);
+  });
+
+  it('filters by case-insensitive name query', () => {
+    const result = selectLibraryView(models, {
+      ...defaultLibraryView,
+      query: 'ALPHA',
+    });
+    expect(result.map((m) => m.hash)).toEqual(['h-alpha.stl']);
+  });
+
+  it('sorts by name then by size', () => {
+    const byName = selectLibraryView(models, defaultLibraryView);
+    expect(byName.map((m) => modelDisplayName(m))[0]).toBe('alpha.stl');
+
+    const bySize = selectLibraryView(models, {
+      ...defaultLibraryView,
+      sort: 'size',
+    });
+    expect(bySize[0]?.size).toBe(300);
+  });
+
+  it('filters to missing files and to duplicates', () => {
+    const missing = selectLibraryView(models, {
+      ...defaultLibraryView,
+      filter: 'missing',
+    });
+    expect(missing.map((m) => m.hash)).toEqual(['h-gone.stl']);
+
+    const duplicates = selectLibraryView(models, {
+      ...defaultLibraryView,
+      filter: 'duplicates',
+    });
+    expect(duplicates.map((m) => m.hash)).toEqual(['h-dup']);
   });
 });
 

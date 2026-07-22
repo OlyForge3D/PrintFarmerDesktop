@@ -108,6 +108,47 @@ body {
   font-size: 0.9rem;
 }
 
+.library-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.library-search {
+  flex: 1 1 200px;
+  min-width: 160px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid #2c2f3a;
+  border-radius: 8px;
+  padding: 0.4rem 0.7rem;
+  font: inherit;
+}
+
+.library-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.library-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.library-select select {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid #2c2f3a;
+  border-radius: 8px;
+  padding: 0.35rem 0.5rem;
+  font: inherit;
+}
+
 .library-report {
   margin: 0 0 0.75rem;
   color: var(--muted);

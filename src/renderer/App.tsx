@@ -10,6 +10,12 @@ import type { SceneMesh } from './viewer/types';
 import { useLibrary } from './library/useLibrary';
 import { ModelGrid } from './library/ModelGrid';
 import { modelDisplayName, preferredPath } from './library/model';
+import {
+  defaultLibraryView,
+  selectLibraryView,
+  type FilterKey,
+  type SortKey,
+} from './library/filter';
 
 export function App(): React.JSX.Element {
   const [info, setInfo] = useState<AppInfoResponse | null>(null);
@@ -20,8 +26,16 @@ export function App(): React.JSX.Element {
   const [loadedName, setLoadedName] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [selectedHash, setSelectedHash] = useState<string | null>(null);
+  const [query, setQuery] = useState(defaultLibraryView.query);
+  const [filter, setFilter] = useState<FilterKey>(defaultLibraryView.filter);
+  const [sort, setSort] = useState<SortKey>(defaultLibraryView.sort);
 
   const library = useLibrary();
+
+  const visibleModels = useMemo(
+    () => selectLibraryView(library.models, { query, filter, sort }),
+    [library.models, query, filter, sort],
+  );
 
   const sampleMesh = useMemo(() => sampleCubeScene(20), []);
   // The shared LoadSceneResponse is structurally the viewer's SceneMesh.
@@ -109,6 +123,40 @@ export function App(): React.JSX.Element {
           </span>
         </div>
 
+        <div className="library-controls">
+          <input
+            type="search"
+            className="library-search"
+            placeholder="Search models…"
+            aria-label="Search models"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <label className="library-select">
+            Show
+            <select
+              aria-label="Filter models"
+              value={filter}
+              onChange={(event) => setFilter(event.target.value as FilterKey)}
+            >
+              <option value="all">All</option>
+              <option value="duplicates">Duplicates</option>
+              <option value="missing">Missing files</option>
+            </select>
+          </label>
+          <label className="library-select">
+            Sort
+            <select
+              aria-label="Sort models"
+              value={sort}
+              onChange={(event) => setSort(event.target.value as SortKey)}
+            >
+              <option value="name">Name</option>
+              <option value="size">Size</option>
+            </select>
+          </label>
+        </div>
+
         {library.error ? (
           <p role="alert" className="status-error">
             {library.error}
@@ -124,11 +172,16 @@ export function App(): React.JSX.Element {
         ) : null}
 
         <ModelGrid
-          models={library.models}
+          models={visibleModels}
           selectedHash={selectedHash}
           onSelect={(model) => {
             void openFromLibrary(model);
           }}
+          emptyLabel={
+            library.models.length > 0
+              ? 'No models match your search or filter.'
+              : undefined
+          }
         />
       </section>
 
