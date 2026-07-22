@@ -163,4 +163,49 @@ describe('ipc contract', () => {
       }),
     ).toThrow();
   });
+
+  it('accepts a valid render-thumbnail request with a size', () => {
+    const value = ipcSchemas[IpcChannel.RenderThumbnail].request.parse({
+      path: 'C:\\models\\part.stl',
+      size: 256,
+    });
+    expect(value.path).toContain('part.stl');
+    expect(value.size).toBe(256);
+  });
+
+  it('accepts a render-thumbnail request without a size', () => {
+    const value = ipcSchemas[IpcChannel.RenderThumbnail].request.parse({
+      path: 'C:\\models\\part.stl',
+    });
+    expect(value.size).toBeUndefined();
+  });
+
+  it('rejects a render-thumbnail request with an out-of-range size', () => {
+    expect(() =>
+      ipcSchemas[IpcChannel.RenderThumbnail].request.parse({
+        path: 'C:\\models\\part.stl',
+        size: 8,
+      }),
+    ).toThrow();
+  });
+
+  it('accepts a render-thumbnail response', () => {
+    const value = ipcSchemas[IpcChannel.RenderThumbnail].response.parse({
+      width: 512,
+      height: 512,
+      pngBase64: 'iVBORw0KGgo=',
+    });
+    expect(value.width).toBe(512);
+    expect(value.pngBase64.length).toBeGreaterThan(0);
+  });
+
+  it('rejects a render-thumbnail response with an empty png', () => {
+    expect(() =>
+      ipcSchemas[IpcChannel.RenderThumbnail].response.parse({
+        width: 512,
+        height: 512,
+        pngBase64: '',
+      }),
+    ).toThrow();
+  });
 });

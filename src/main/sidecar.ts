@@ -93,6 +93,15 @@ export class SidecarClient {
     return this.request('extractVendorMetadata', { path: filePath });
   }
 
+  /** Render a deterministic PNG thumbnail for a model (raw wire object). */
+  async renderThumbnail(filePath: string, size?: number): Promise<unknown> {
+    const params: { path: string; size?: number } = { path: filePath };
+    if (size !== undefined) {
+      params.size = size;
+    }
+    return this.request('renderThumbnail', params);
+  }
+
   /** Stop the sidecar and reject any in-flight requests. */
   dispose(): void {
     const channel = this.channel;

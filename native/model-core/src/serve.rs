@@ -17,6 +17,8 @@
 //! - `extractVendorMetadata` — params `{"path":<string>}`; returns a
 //!   [`crate::rpc::VendorMetadataDto`] (slicer identity, core metadata, per-plate
 //!   slice stats, embedded thumbnail part names).
+//! - `renderThumbnail` — params `{"path":<string>,"size":<u32?>}`; returns a
+//!   [`crate::rpc::ThumbnailDto`] (base64 PNG + pixel dimensions).
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -24,7 +26,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::rpc::{extract_vendor_metadata_dto, load_scene_dto};
+use crate::rpc::{extract_vendor_metadata_dto, load_scene_dto, render_thumbnail_dto};
 use crate::{sidecar_version, RPC_PROTOCOL_VERSION};
 
 /// A decoded request envelope.
@@ -72,6 +74,13 @@ struct PathParams {
     path: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ThumbnailParams {
+    path: String,
+    #[serde(default)]
+    size: Option<u32>,
+}
+
 /// Handle one decoded request, producing the response value or an error message.
 fn dispatch(method: &str, params: Value) -> Result<Value, String> {
     match method {
@@ -93,6 +102,13 @@ fn dispatch(method: &str, params: Value) -> Result<Value, String> {
                 .map_err(|e| format!("failed to extract vendor metadata: {e}"))?;
             serde_json::to_value(dto)
                 .map_err(|e| format!("failed to serialize vendor metadata: {e}"))
+        }
+        "renderThumbnail" => {
+            let params: ThumbnailParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid renderThumbnail params: {e}"))?;
+            let dto = render_thumbnail_dto(&PathBuf::from(&params.path), params.size)
+                .map_err(|e| format!("failed to render thumbnail: {e}"))?;
+            serde_json::to_value(dto).map_err(|e| format!("failed to serialize thumbnail: {e}"))
         }
         other => Err(format!("unknown method: {other}")),
     }
@@ -309,6 +325,38 @@ mod tests {
         assert_eq!(v["result"]["slicer"], "bambuStudio");
         assert_eq!(v["result"]["core"]["title"], "Wire Widget");
         assert_eq!(v["result"]["thumbnails"][0], "Metadata/plate_1.png");
+    }
+
+    #[test]
+    fn render_thumbnail_over_the_wire() {
+        // Minimal binary STL: header, count, one triangle.
+        let mut bytes = vec![0u8; 80];
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&0f32.to_le_bytes());
+        bytes.extend_from_slice(&0f32.to_le_bytes());
+        bytes.extend_from_slice(&1f32.to_le_bytes());
+        for v in [[0f32, 0f32, 0f32], [1f32, 0f32, 0f32], [0f32, 1f32, 0f32]] {
+            for c in v {
+                bytes.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tri.stl");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let request = serde_json::json!({
+            "id": 13,
+            "method": "renderThumbnail",
+            "params": { "path": path.to_string_lossy(), "size": 32 },
+        });
+        let out = handle_line(&request.to_string()).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["id"], 13);
+        assert_eq!(v["ok"], true, "response was {v}");
+        assert_eq!(v["result"]["width"], 32);
+        assert!(!v["result"]["pngBase64"].as_str().unwrap().is_empty());
     }
 
     #[test]

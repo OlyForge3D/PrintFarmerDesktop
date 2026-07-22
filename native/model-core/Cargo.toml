@@ -26,6 +26,11 @@ notify = "8"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 quick-xml = "0.36"
 serde_json = "1"
+# Pure-Rust PNG encoder (miniz_oxide/fdeflate backend) for GPU-free thumbnail
+# rendering; no C toolchain required.
+png = "0.17"
+# Pure-Rust base64 for shipping encoded thumbnails over the JSON-RPC transport.
+base64 = "0.22"
 # C-backed bundled SQLite, compiled only where a C toolchain is available.
 # Gated behind the `sqlite` feature so the default build stays pure-Rust.
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }

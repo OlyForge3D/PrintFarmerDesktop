@@ -10,11 +10,14 @@
 
 use std::path::Path;
 
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use crate::model::ModelFormat;
 use crate::scene::{self, SceneError, SceneMesh};
 use crate::threemf::ThreeMfError;
+use crate::thumbnail::{self, ThumbnailError, DEFAULT_THUMBNAIL_SIZE};
 use crate::vendor;
 
 /// Axis-aligned bounds in wire form.
@@ -158,6 +161,42 @@ pub fn extract_vendor_metadata_dto(path: &Path) -> Result<VendorMetadataDto, Thr
     Ok(VendorMetadataDto::from(&vendor::extract_file(path)?))
 }
 
+/// A rendered thumbnail in wire form: PNG bytes carried as base64 so they fit
+/// the JSON-RPC transport, plus the pixel dimensions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThumbnailDto {
+    pub width: u32,
+    pub height: u32,
+    /// Standard base64 (with padding) of the encoded PNG.
+    pub png_base64: String,
+}
+
+/// Errors from the load-then-render thumbnail pipeline.
+#[derive(Debug, thiserror::Error)]
+pub enum ThumbnailPipelineError {
+    #[error(transparent)]
+    Scene(#[from] SceneError),
+    #[error(transparent)]
+    Thumbnail(#[from] ThumbnailError),
+}
+
+/// Load a model file and render a square PNG thumbnail, returned as a base64
+/// wire DTO. `size` falls back to [`DEFAULT_THUMBNAIL_SIZE`] when `None`.
+pub fn render_thumbnail_dto(
+    path: &Path,
+    size: Option<u32>,
+) -> Result<ThumbnailDto, ThumbnailPipelineError> {
+    let mesh = scene::load_scene(path)?;
+    let edge = size.unwrap_or(DEFAULT_THUMBNAIL_SIZE);
+    let png = thumbnail::render_png(&mesh, edge)?;
+    Ok(ThumbnailDto {
+        width: edge,
+        height: edge,
+        png_base64: BASE64.encode(png),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +280,40 @@ mod tests {
         // Round-trips.
         let parsed: VendorMetadataDto = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, dto);
+    }
+
+    #[test]
+    fn renders_a_thumbnail_dto_from_a_scene() {
+        // Build a tiny binary STL on disk and run the load-then-render pipeline.
+        let mut bytes = vec![0u8; 80];
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&0f32.to_le_bytes());
+        bytes.extend_from_slice(&0f32.to_le_bytes());
+        bytes.extend_from_slice(&1f32.to_le_bytes());
+        for v in [[0f32, 0f32, 0f32], [1f32, 0f32, 0f32], [0f32, 1f32, 0f32]] {
+            for c in v {
+                bytes.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tri.stl");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let dto = render_thumbnail_dto(&path, Some(32)).unwrap();
+        assert_eq!(dto.width, 32);
+        assert_eq!(dto.height, 32);
+        // Decodes to a PNG (8-byte signature).
+        let png = BASE64.decode(dto.png_base64).unwrap();
+        assert_eq!(&png[..4], &[0x89, b'P', b'N', b'G']);
+    }
+
+    #[test]
+    fn thumbnail_pipeline_reports_unsupported_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("model.obj");
+        std::fs::write(&path, b"nope").unwrap();
+        assert!(render_thumbnail_dto(&path, None).is_err());
     }
 }

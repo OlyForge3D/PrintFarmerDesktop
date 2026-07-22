@@ -117,6 +117,47 @@ describe('SidecarClient', () => {
     expect(request.params.path).toBe('C:/models/project.3mf');
   });
 
+  it('sends a well-formed renderThumbnail request and resolves the result', async () => {
+    const { channel, sent } = makeFakeChannel((req, emit) => {
+      emit(
+        JSON.stringify({
+          id: req.id,
+          ok: true,
+          result: { width: 64, height: 64, pngBase64: 'iVBORw0KGgo=' },
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel);
+    const result = await client.renderThumbnail('C:/models/part.stl', 64);
+    expect(result).toMatchObject({ width: 64, height: 64 });
+    const request = JSON.parse(sent[0] ?? '{}') as {
+      method: string;
+      params: { path: string; size?: number };
+    };
+    expect(request.method).toBe('renderThumbnail');
+    expect(request.params.path).toBe('C:/models/part.stl');
+    expect(request.params.size).toBe(64);
+  });
+
+  it('omits the optional size when rendering a thumbnail without one', async () => {
+    const { channel, sent } = makeFakeChannel((req, emit) => {
+      emit(
+        JSON.stringify({
+          id: req.id,
+          ok: true,
+          result: { width: 512, height: 512, pngBase64: 'iVBORw0KGgo=' },
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel);
+    await client.renderThumbnail('C:/models/part.stl');
+    const request = JSON.parse(sent[0] ?? '{}') as {
+      method: string;
+      params: { path: string; size?: number };
+    };
+    expect(request.params.size).toBeUndefined();
+  });
+
   it('rejects when the sidecar returns an error envelope', async () => {
     const { channel } = makeFakeChannel((req, emit) => {
       emit(

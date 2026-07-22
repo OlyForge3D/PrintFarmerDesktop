@@ -18,6 +18,7 @@ export const IpcChannel = {
   LoadScene: 'model:loadScene',
   OpenModelFile: 'dialog:openModelFile',
   ExtractVendorMetadata: 'model:extractVendorMetadata',
+  RenderThumbnail: 'model:renderThumbnail',
 } as const;
 
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel];
@@ -160,6 +161,22 @@ export type ExtractVendorMetadataResponse = z.infer<
   typeof ExtractVendorMetadataResponse
 >;
 
+// --- model:renderThumbnail ------------------------------------------------
+
+export const RenderThumbnailRequest = z.object({
+  path: z.string().min(1).max(4096),
+  size: z.number().int().min(16).max(4096).optional(),
+});
+export type RenderThumbnailRequest = z.infer<typeof RenderThumbnailRequest>;
+
+/** A rendered thumbnail as a base64-encoded PNG plus its pixel dimensions. */
+export const RenderThumbnailResponse = z.object({
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  pngBase64: z.string().min(1),
+});
+export type RenderThumbnailResponse = z.infer<typeof RenderThumbnailResponse>;
+
 /**
  * Registry mapping each channel to its request/response schemas. Used by both
  * the main-process handler registration and the preload bridge.
@@ -185,6 +202,10 @@ export const ipcSchemas = {
     request: ExtractVendorMetadataRequest,
     response: ExtractVendorMetadataResponse,
   },
+  [IpcChannel.RenderThumbnail]: {
+    request: RenderThumbnailRequest,
+    response: RenderThumbnailResponse,
+  },
 } as const;
 
 export type IpcSchemas = typeof ipcSchemas;
@@ -198,4 +219,7 @@ export interface PrintFarmerApi {
   extractVendorMetadata(
     request: ExtractVendorMetadataRequest,
   ): Promise<ExtractVendorMetadataResponse>;
+  renderThumbnail(
+    request: RenderThumbnailRequest,
+  ): Promise<RenderThumbnailResponse>;
 }

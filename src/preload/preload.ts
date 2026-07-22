@@ -8,6 +8,8 @@ import {
   type LoadSceneResponse,
   type OpenModelFileResponse,
   type PrintFarmerApi,
+  type RenderThumbnailRequest,
+  type RenderThumbnailResponse,
   type SidecarPingRequest,
   type SidecarPingResponse,
 } from '@shared/ipc';
@@ -41,6 +43,13 @@ const api: PrintFarmerApi = {
       IpcChannel.ExtractVendorMetadata,
       request,
     ) as Promise<ExtractVendorMetadataResponse>,
+  renderThumbnail: (
+    request: RenderThumbnailRequest,
+  ): Promise<RenderThumbnailResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.RenderThumbnail,
+      request,
+    ) as Promise<RenderThumbnailResponse>,
 };
 
 contextBridge.exposeInMainWorld('printFarmer', api);

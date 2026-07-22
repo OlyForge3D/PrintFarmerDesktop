@@ -18,6 +18,7 @@ pub mod serve;
 pub mod sqlite_catalog;
 pub mod stl;
 pub mod threemf;
+pub mod thumbnail;
 pub mod vendor;
 pub mod watch;
 
