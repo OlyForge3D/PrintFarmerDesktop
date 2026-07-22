@@ -78,10 +78,23 @@ export const Bounds = z.object({
 export type Bounds = z.infer<typeof Bounds>;
 
 /**
+ * A named triangle range within a {@link SceneMesh}: `triangleStart` is the
+ * index of the first triangle and `triangleCount` how many follow, both in
+ * triangle units (multiply by three for `indices` offsets). Backs the viewer's
+ * part tree. STL yields one part; 3MF yields one per build item.
+ */
+export const ScenePart = z.object({
+  name: z.string(),
+  triangleStart: z.number().int().nonnegative(),
+  triangleCount: z.number().int().nonnegative(),
+});
+export type ScenePart = z.infer<typeof ScenePart>;
+
+/**
  * The normalized, format-agnostic mesh the sidecar produces from an STL or 3MF
  * file. Positions and indices are flat arrays (`positions` is xyz-interleaved;
  * `indices` references vertices in triples). `faceColors`, when present, is one
- * RGB (0–255) triple per triangle.
+ * RGB (0–255) triple per triangle. `parts` names selectable triangle ranges.
  */
 export const SceneMesh = z.object({
   positions: z.array(z.number()),
@@ -89,6 +102,7 @@ export const SceneMesh = z.object({
   bounds: Bounds,
   sourceFormat: ModelFormat,
   faceColors: z.array(z.number().int().min(0).max(255)).nullable().optional(),
+  parts: z.array(ScenePart).default([]),
 });
 export type SceneMesh = z.infer<typeof SceneMesh>;
 

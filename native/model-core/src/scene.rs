@@ -26,6 +26,17 @@ pub enum SceneError {
     ThreeMf(#[from] ThreeMfError),
 }
 
+/// A named, selectable region of the flattened scene. `triangle_start` and
+/// `triangle_count` index into the mesh's triangles (each triangle is three
+/// consecutive [`SceneMesh::indices`]), letting the viewer isolate or hide a
+/// part. STL yields a single part; 3MF yields one part per build item.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScenePart {
+    pub name: String,
+    pub triangle_start: usize,
+    pub triangle_count: usize,
+}
+
 /// A normalized, indexed triangle mesh ready for rendering.
 ///
 /// `positions` holds unique-per-source vertices and `indices` references them in
@@ -39,6 +50,9 @@ pub struct SceneMesh {
     pub bounds: Aabb,
     pub source_format: ModelFormat,
     pub face_colors: Option<Vec<[u8; 3]>>,
+    /// Named triangle ranges for the part tree; always at least one entry when
+    /// the mesh is non-empty.
+    pub parts: Vec<ScenePart>,
 }
 
 impl SceneMesh {
@@ -70,12 +84,24 @@ impl SceneMesh {
                 .collect()
         });
 
+        let triangle_count = mesh.triangles.len();
+        let parts = if triangle_count == 0 {
+            Vec::new()
+        } else {
+            vec![ScenePart {
+                name: "Model".to_string(),
+                triangle_start: 0,
+                triangle_count,
+            }]
+        };
+
         Self {
             positions,
             indices,
             bounds: mesh.bounds,
             source_format: ModelFormat::Stl,
             face_colors,
+            parts,
         }
     }
 
@@ -85,12 +111,22 @@ impl SceneMesh {
         for triangle in &mesh.triangles {
             indices.extend_from_slice(triangle);
         }
+        let parts = mesh
+            .parts
+            .iter()
+            .map(|p| ScenePart {
+                name: p.name.clone(),
+                triangle_start: p.triangle_start,
+                triangle_count: p.triangle_count,
+            })
+            .collect();
         Self {
             positions: mesh.vertices.clone(),
             indices,
             bounds: mesh.bounds,
             source_format: ModelFormat::ThreeMf,
             face_colors: None,
+            parts,
         }
     }
 }
@@ -145,6 +181,9 @@ mod tests {
         assert_eq!(scene.triangle_count(), 1);
         assert_eq!(scene.indices, vec![0, 1, 2]);
         assert_eq!(scene.face_colors, Some(vec![[255, 0, 0]]));
+        assert_eq!(scene.parts.len(), 1);
+        assert_eq!(scene.parts[0].name, "Model");
+        assert_eq!(scene.parts[0].triangle_count, 1);
     }
 
     #[test]
@@ -169,12 +208,20 @@ mod tests {
             unit: "millimeter".to_string(),
             object_count: 1,
             build_item_count: 1,
+            parts: vec![threemf::ThreeMfPart {
+                name: "Widget".to_string(),
+                triangle_start: 0,
+                triangle_count: 1,
+            }],
         };
         let scene = SceneMesh::from_threemf(&mesh);
         assert_eq!(scene.source_format, ModelFormat::ThreeMf);
         assert_eq!(scene.vertex_count(), 3);
         assert_eq!(scene.indices, vec![0, 1, 2]);
         assert!(scene.face_colors.is_none());
+        assert_eq!(scene.parts.len(), 1);
+        assert_eq!(scene.parts[0].name, "Widget");
+        assert_eq!(scene.parts[0].triangle_count, 1);
     }
 
     #[test]

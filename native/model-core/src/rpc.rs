@@ -27,6 +27,15 @@ pub struct BoundsDto {
     pub max: [f32; 3],
 }
 
+/// A named triangle range in wire form. Mirrors the `ScenePart` Zod schema.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScenePartDto {
+    pub name: String,
+    pub triangle_start: usize,
+    pub triangle_count: usize,
+}
+
 /// The renderer-facing scene mesh: a normalized, flattened, indexed triangle
 /// mesh. Mirrors the `SceneMesh` Zod schema field-for-field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -43,6 +52,8 @@ pub struct SceneMeshDto {
     /// per-facet colors. Omitted from JSON when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub face_colors: Option<Vec<u8>>,
+    /// Named triangle ranges backing the viewer's part tree.
+    pub parts: Vec<ScenePartDto>,
 }
 
 impl From<&SceneMesh> for SceneMeshDto {
@@ -53,6 +64,15 @@ impl From<&SceneMesh> for SceneMeshDto {
             .face_colors
             .as_ref()
             .map(|colors| colors.iter().flat_map(|rgb| *rgb).collect());
+        let parts = mesh
+            .parts
+            .iter()
+            .map(|p| ScenePartDto {
+                name: p.name.clone(),
+                triangle_start: p.triangle_start,
+                triangle_count: p.triangle_count,
+            })
+            .collect();
         Self {
             positions,
             indices,
@@ -62,6 +82,7 @@ impl From<&SceneMesh> for SceneMeshDto {
             },
             source_format: mesh.source_format,
             face_colors,
+            parts,
         }
     }
 }
@@ -328,6 +349,11 @@ mod tests {
             bounds,
             source_format: ModelFormat::ThreeMf,
             face_colors: None,
+            parts: vec![crate::scene::ScenePart {
+                name: "Object 1".to_string(),
+                triangle_start: 0,
+                triangle_count: 1,
+            }],
         }
     }
 
@@ -359,6 +385,7 @@ mod tests {
         assert!(json.contains("\"sourceFormat\":\"threeMf\""));
         assert!(json.contains("\"positions\""));
         assert!(json.contains("\"indices\""));
+        assert!(json.contains("\"parts\""));
         // Absent colors are omitted, not serialized as null.
         assert!(!json.contains("faceColors"));
     }

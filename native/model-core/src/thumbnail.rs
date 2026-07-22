@@ -320,6 +320,7 @@ mod tests {
             bounds,
             source_format: ModelFormat::Stl,
             face_colors: None,
+            parts: Vec::new(),
         }
     }
 

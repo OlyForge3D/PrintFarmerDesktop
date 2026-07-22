@@ -14,6 +14,7 @@ import { useModelCollections } from './library/useModelCollections';
 import { ModelGrid } from './library/ModelGrid';
 import { TagEditor } from './library/TagEditor';
 import { CollectionEditor } from './library/CollectionEditor';
+import { PartTree } from './library/PartTree';
 import { modelDisplayName, preferredPath } from './library/model';
 import {
   defaultLibraryView,
@@ -29,6 +30,9 @@ export function App(): React.JSX.Element {
   const [projection, setProjection] = useState<Projection>('perspective');
   const [loadedMesh, setLoadedMesh] = useState<LoadSceneResponse | null>(null);
   const [loadedName, setLoadedName] = useState<string | null>(null);
+  const [hiddenParts, setHiddenParts] = useState<ReadonlySet<number>>(
+    () => new Set(),
+  );
   const [loading, setLoading] = useState(false);
   const [selectedHash, setSelectedHash] = useState<string | null>(null);
   const [query, setQuery] = useState(defaultLibraryView.query);
@@ -72,6 +76,7 @@ export function App(): React.JSX.Element {
       setLoadedMesh(scene);
       setLoadedName(selection.path.replace(/^.*[\\/]/, ''));
       setSelectedHash(null);
+      setHiddenParts(new Set());
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -91,12 +96,36 @@ export function App(): React.JSX.Element {
       const scene = await window.printFarmer.loadScene({ path });
       setLoadedMesh(scene);
       setLoadedName(modelDisplayName(model));
+      setHiddenParts(new Set());
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const togglePart = useCallback((index: number) => {
+    setHiddenParts((current) => {
+      const next = new Set(current);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleAllParts = useCallback(
+    (visible: boolean) => {
+      setHiddenParts(
+        visible
+          ? new Set()
+          : new Set((mesh.parts ?? []).map((_, index) => index)),
+      );
+    },
+    [mesh],
+  );
 
   return (
     <main className="app-shell">
@@ -232,8 +261,19 @@ export function App(): React.JSX.Element {
           mesh={mesh}
           wireframe={wireframe}
           projection={projection}
+          hiddenParts={hiddenParts}
           className="viewer-canvas"
         />
+        {(mesh.parts?.length ?? 0) > 1 ? (
+          <div className="viewer-parts">
+            <PartTree
+              parts={mesh.parts ?? []}
+              hidden={hiddenParts}
+              onToggle={togglePart}
+              onToggleAll={toggleAllParts}
+            />
+          </div>
+        ) : null}
         {selectedHash ? (
           <div className="viewer-tags">
             <h2 className="viewer-tags-title">Tags</h2>

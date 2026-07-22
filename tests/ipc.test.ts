@@ -67,6 +67,29 @@ describe('ipc contract', () => {
     });
     expect(value.indices).toEqual([0, 1, 2]);
     expect(value.sourceFormat).toBe('threeMf');
+    // Absent parts default to an empty array.
+    expect(value.parts).toEqual([]);
+  });
+
+  it('parses scene parts and rejects a negative triangle start', () => {
+    const value = ipcSchemas[IpcChannel.LoadScene].response.parse({
+      positions: [0, 0, 0],
+      indices: [0, 0, 0],
+      bounds: { min: [0, 0, 0], max: [0, 0, 0] },
+      sourceFormat: 'threeMf',
+      parts: [{ name: 'Body', triangleStart: 0, triangleCount: 1 }],
+    });
+    expect(value.parts[0]?.name).toBe('Body');
+
+    expect(() =>
+      ipcSchemas[IpcChannel.LoadScene].response.parse({
+        positions: [],
+        indices: [],
+        bounds: { min: [0, 0, 0], max: [0, 0, 0] },
+        sourceFormat: 'stl',
+        parts: [{ name: 'x', triangleStart: -1, triangleCount: 1 }],
+      }),
+    ).toThrow();
   });
 
   it('rejects a scene response with a negative index', () => {

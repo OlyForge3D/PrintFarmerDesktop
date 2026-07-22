@@ -82,17 +82,49 @@ export function fitPerspectiveDistance(
  * Build a Three.js geometry from a normalized scene mesh. Vertex normals are
  * computed for shading, and per-facet colors (when present and consistent with
  * a triangle-soup layout) are baked into a vertex color attribute.
+ *
+ * When `hiddenParts` is supplied and the mesh declares parts, triangles
+ * belonging to hidden parts are omitted from the index (their vertices and
+ * colors stay in place, so toggling never requires a re-parse).
  */
-export function toBufferGeometry(mesh: SceneMesh): THREE.BufferGeometry {
+export function toBufferGeometry(
+  mesh: SceneMesh,
+  hiddenParts?: ReadonlySet<number>,
+): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry();
   const positions = Float32Array.from(mesh.positions);
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geometry.setIndex(Array.from(mesh.indices));
+  geometry.setIndex(visibleIndices(mesh, hiddenParts));
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
 
   applyFaceColors(geometry, mesh);
   return geometry;
+}
+
+/**
+ * The triangle indices to draw. With no hidden parts (or a mesh without a part
+ * table) this is the full index buffer; otherwise it is the concatenation of
+ * the index ranges of the parts that remain visible.
+ */
+export function visibleIndices(
+  mesh: SceneMesh,
+  hiddenParts?: ReadonlySet<number>,
+): number[] {
+  const parts = mesh.parts;
+  if (!hiddenParts || hiddenParts.size === 0 || !parts || parts.length === 0) {
+    return Array.from(mesh.indices);
+  }
+  const result: number[] = [];
+  parts.forEach((part, partIndex) => {
+    if (hiddenParts.has(partIndex)) return;
+    const start = part.triangleStart * 3;
+    const end = start + part.triangleCount * 3;
+    for (let i = start; i < end && i < mesh.indices.length; i += 1) {
+      result.push(mesh.indices[i] ?? 0);
+    }
+  });
+  return result;
 }
 
 /**

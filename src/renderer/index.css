@@ -283,6 +283,53 @@ body {
   border-color: var(--accent);
 }
 
+.part-tree-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.part-tree-toggle-all {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid #2c2f3a;
+  border-radius: 8px;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.part-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
+.part-item label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.part-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.part-count {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
 .library-report {
   margin: 0 0 0.75rem;
   color: var(--muted);

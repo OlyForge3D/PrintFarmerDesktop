@@ -12,6 +12,9 @@ import { useLibrary } from '../src/renderer/library/useLibrary.js';
 import { ModelGrid } from '../src/renderer/library/ModelGrid.js';
 import { TagEditor } from '../src/renderer/library/TagEditor.js';
 import { CollectionEditor } from '../src/renderer/library/CollectionEditor.js';
+import { PartTree } from '../src/renderer/library/PartTree.js';
+import { visibleIndices } from '../src/renderer/viewer/geometry.js';
+import type { SceneMesh } from '../src/renderer/viewer/types.js';
 import { useModelTags } from '../src/renderer/library/useModelTags.js';
 import { useModelCollections } from '../src/renderer/library/useModelCollections.js';
 import {
@@ -538,6 +541,86 @@ describe('<CollectionEditor />', () => {
       screen.getByLabelText(/New collection name/i).closest('form')!,
     );
     expect(onCreate).toHaveBeenCalledWith('Terrain');
+  });
+});
+
+function partedMesh(): SceneMesh {
+  return {
+    positions: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1],
+    indices: [0, 1, 2, 3, 4, 5],
+    bounds: { min: [0, 0, 0], max: [1, 1, 1] },
+    sourceFormat: 'threeMf',
+    parts: [
+      { name: 'A', triangleStart: 0, triangleCount: 1 },
+      { name: 'B', triangleStart: 1, triangleCount: 1 },
+    ],
+  };
+}
+
+describe('visibleIndices', () => {
+  it('returns the full index buffer when nothing is hidden', () => {
+    const mesh = partedMesh();
+    expect(visibleIndices(mesh)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(visibleIndices(mesh, new Set())).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+
+  it('omits the triangle ranges of hidden parts', () => {
+    const mesh = partedMesh();
+    expect(visibleIndices(mesh, new Set([0]))).toEqual([3, 4, 5]);
+    expect(visibleIndices(mesh, new Set([1]))).toEqual([0, 1, 2]);
+    expect(visibleIndices(mesh, new Set([0, 1]))).toEqual([]);
+  });
+
+  it('ignores hidden parts on a mesh without a part table', () => {
+    const mesh: SceneMesh = {
+      positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+      indices: [0, 1, 2],
+      bounds: { min: [0, 0, 0], max: [1, 1, 0] },
+      sourceFormat: 'stl',
+    };
+    expect(visibleIndices(mesh, new Set([0]))).toEqual([0, 1, 2]);
+  });
+});
+
+describe('<PartTree />', () => {
+  it('renders nothing when there are no parts', () => {
+    const { container } = render(
+      <PartTree
+        parts={[]}
+        hidden={new Set()}
+        onToggle={vi.fn()}
+        onToggleAll={vi.fn()}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('lists parts and reports visibility toggles', () => {
+    const onToggle = vi.fn();
+    const onToggleAll = vi.fn();
+    render(
+      <PartTree
+        parts={[
+          { name: 'Body', triangleStart: 0, triangleCount: 12 },
+          { name: 'Lid', triangleStart: 12, triangleCount: 6 },
+        ]}
+        hidden={new Set([1])}
+        onToggle={onToggle}
+        onToggleAll={onToggleAll}
+      />,
+    );
+
+    const body = screen.getByRole('checkbox', { name: /Body/i });
+    const lid = screen.getByRole('checkbox', { name: /Lid/i });
+    expect(body).toBeChecked();
+    expect(lid).not.toBeChecked();
+
+    fireEvent.click(lid);
+    expect(onToggle).toHaveBeenCalledWith(1);
+
+    // Some parts are hidden, so the control offers to show all.
+    fireEvent.click(screen.getByRole('button', { name: /Show all/i }));
+    expect(onToggleAll).toHaveBeenCalledWith(true);
   });
 });
 

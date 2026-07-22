@@ -16,6 +16,13 @@ export interface Bounds {
   readonly max: readonly [number, number, number];
 }
 
+/** A named, selectable triangle range within a {@link SceneMesh}. */
+export interface ScenePart {
+  readonly name: string;
+  readonly triangleStart: number;
+  readonly triangleCount: number;
+}
+
 export interface SceneMesh {
   /** Flattened vertex positions; length is a multiple of three. */
   readonly positions: readonly number[];
@@ -25,4 +32,6 @@ export interface SceneMesh {
   readonly sourceFormat: ModelFormat;
   /** One RGB (0–255) triple per triangle, or null/undefined when uncolored. */
   readonly faceColors?: readonly number[] | null | undefined;
+  /** Named triangle ranges for the part tree; may be empty. */
+  readonly parts?: readonly ScenePart[];
 }

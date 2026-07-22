@@ -155,6 +155,8 @@ enum ObjectGeometry {
 #[derive(Debug, Clone)]
 struct RawObject {
     geometry: ObjectGeometry,
+    /// The object's declared `name` attribute, when present.
+    name: Option<String>,
 }
 
 /// The model document: reusable objects plus the build's placed instances.
@@ -163,6 +165,16 @@ struct RawModel {
     objects: HashMap<u32, RawObject>,
     build: Vec<Component>,
     unit: String,
+}
+
+/// One placed build instance, retained as a selectable "part" of the flattened
+/// scene. `triangle_start`/`triangle_count` index into [`ThreeMfMesh::triangles`]
+/// so the viewer can isolate or hide an instance without a second parse.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThreeMfPart {
+    pub name: String,
+    pub triangle_start: usize,
+    pub triangle_count: usize,
 }
 
 /// A flattened 3MF model: one indexed triangle mesh with every build instance
@@ -178,6 +190,8 @@ pub struct ThreeMfMesh {
     pub object_count: usize,
     /// Instances placed by the build.
     pub build_item_count: usize,
+    /// One entry per build item, in build order, mapping to triangle ranges.
+    pub parts: Vec<ThreeMfPart>,
 }
 
 impl ThreeMfMesh {
@@ -283,6 +297,7 @@ fn parse_model_xml(xml: &str) -> Result<RawModel, ThreeMfError> {
 
     let mut current_id: Option<u32> = None;
     let mut current_geometry: Option<ObjectGeometry> = None;
+    let mut current_name: Option<String> = None;
     let mut in_build = false;
 
     loop {
@@ -296,6 +311,7 @@ fn parse_model_xml(xml: &str) -> Result<RawModel, ThreeMfError> {
                 b"object" => {
                     current_id = Some(attr_u32(&e, b"id")?);
                     current_geometry = None;
+                    current_name = get_attr(&e, b"name").filter(|n| !n.trim().is_empty());
                 }
                 b"mesh" => {
                     current_geometry = Some(ObjectGeometry::Mesh {
@@ -349,7 +365,13 @@ fn parse_model_xml(xml: &str) -> Result<RawModel, ThreeMfError> {
                             vertices: Vec::new(),
                             triangles: Vec::new(),
                         });
-                        objects.insert(id, RawObject { geometry });
+                        objects.insert(
+                            id,
+                            RawObject {
+                                geometry,
+                                name: current_name.take(),
+                            },
+                        );
                     }
                 }
                 b"build" => in_build = false,
@@ -367,12 +389,15 @@ fn parse_model_xml(xml: &str) -> Result<RawModel, ThreeMfError> {
     })
 }
 
-/// Expand the build into a single indexed mesh, baking every transform.
+/// Expand the build into a single indexed mesh, baking every transform. Each
+/// build item is recorded as a [`ThreeMfPart`] spanning the triangles it added.
 fn flatten(model: &RawModel) -> Result<ThreeMfMesh, ThreeMfError> {
     let mut vertices: Vec<[f32; 3]> = Vec::new();
     let mut triangles: Vec<[u32; 3]> = Vec::new();
+    let mut parts: Vec<ThreeMfPart> = Vec::with_capacity(model.build.len());
 
     for item in &model.build {
+        let triangle_start = triangles.len();
         expand(
             model,
             item.object_id,
@@ -381,6 +406,11 @@ fn flatten(model: &RawModel) -> Result<ThreeMfMesh, ThreeMfError> {
             &mut triangles,
             0,
         )?;
+        parts.push(ThreeMfPart {
+            name: part_name(model, item.object_id),
+            triangle_start,
+            triangle_count: triangles.len() - triangle_start,
+        });
     }
 
     let mut bounds = Aabb::empty();
@@ -395,7 +425,18 @@ fn flatten(model: &RawModel) -> Result<ThreeMfMesh, ThreeMfError> {
         unit: model.unit.clone(),
         object_count: model.objects.len(),
         build_item_count: model.build.len(),
+        parts,
     })
+}
+
+/// A human-readable label for a build item: the object's `name` when declared,
+/// otherwise a stable `Object {id}` fallback.
+fn part_name(model: &RawModel, object_id: u32) -> String {
+    model
+        .objects
+        .get(&object_id)
+        .and_then(|o| o.name.clone())
+        .unwrap_or_else(|| format!("Object {object_id}"))
 }
 
 /// Recursively bake `object_id` under `transform` into the output buffers.
@@ -575,6 +616,59 @@ mod tests {
         assert_eq!(mesh.unit, "millimeter");
         assert_eq!(mesh.object_count, 1);
         assert_eq!(mesh.build_item_count, 1);
+        assert_eq!(mesh.parts.len(), 1);
+        assert_eq!(mesh.parts[0].name, "Object 1");
+        assert_eq!(mesh.parts[0].triangle_start, 0);
+        assert_eq!(mesh.parts[0].triangle_count, 1);
+    }
+
+    #[test]
+    fn records_named_parts_per_build_item() {
+        let model = r#"<?xml version="1.0"?>
+<model unit="millimeter">
+  <resources>
+    <object id="1" type="model" name="Body">
+      <mesh>
+        <vertices>
+          <vertex x="0" y="0" z="0"/>
+          <vertex x="1" y="0" z="0"/>
+          <vertex x="0" y="1" z="0"/>
+        </vertices>
+        <triangles>
+          <triangle v1="0" v2="1" v3="2"/>
+        </triangles>
+      </mesh>
+    </object>
+    <object id="2" type="model">
+      <mesh>
+        <vertices>
+          <vertex x="0" y="0" z="0"/>
+          <vertex x="1" y="0" z="0"/>
+          <vertex x="0" y="1" z="0"/>
+        </vertices>
+        <triangles>
+          <triangle v1="0" v2="1" v3="2"/>
+          <triangle v1="0" v2="1" v3="2"/>
+        </triangles>
+      </mesh>
+    </object>
+  </resources>
+  <build>
+    <item objectid="1"/>
+    <item objectid="2"/>
+  </build>
+</model>"#;
+        let data = package(model, false, DEFAULT_MODEL_PART);
+        let mesh = parse_bytes(&data).unwrap();
+        assert_eq!(mesh.parts.len(), 2);
+        assert_eq!(mesh.parts[0].name, "Body");
+        assert_eq!(mesh.parts[0].triangle_start, 0);
+        assert_eq!(mesh.parts[0].triangle_count, 1);
+        // The unnamed object falls back to "Object {id}" and begins where the
+        // first part ended.
+        assert_eq!(mesh.parts[1].name, "Object 2");
+        assert_eq!(mesh.parts[1].triangle_start, 1);
+        assert_eq!(mesh.parts[1].triangle_count, 2);
     }
 
     #[test]

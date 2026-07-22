@@ -17,6 +17,7 @@ import {
   boundsRadius,
   fitPerspectiveDistance,
   toBufferGeometry,
+  visibleIndices,
 } from './geometry';
 import type { SceneMesh } from './types';
 
@@ -27,6 +28,7 @@ export interface ModelViewerProps {
   wireframe?: boolean;
   projection?: Projection;
   background?: string;
+  hiddenParts?: ReadonlySet<number>;
   className?: string;
 }
 
@@ -37,12 +39,16 @@ export function ModelViewer({
   wireframe = false,
   projection = 'perspective',
   background = '#14151a',
+  hiddenParts,
   className,
 }: ModelViewerProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const materialRef = useRef<THREE.MeshStandardMaterial | null>(null);
+  const geometryRef = useRef<THREE.BufferGeometry | null>(null);
   const wireframeRef = useRef(wireframe);
   wireframeRef.current = wireframe;
+  const hiddenPartsRef = useRef(hiddenParts);
+  hiddenPartsRef.current = hiddenParts;
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -64,7 +70,8 @@ export function ModelViewer({
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(background);
 
-    const geometry = toBufferGeometry(mesh);
+    const geometry = toBufferGeometry(mesh, hiddenPartsRef.current);
+    geometryRef.current = geometry;
     const hasVertexColors = geometry.getAttribute('color') !== undefined;
     const material = new THREE.MeshStandardMaterial({
       color: hasVertexColors ? 0xffffff : 0xb9c0cc,
@@ -151,6 +158,7 @@ export function ModelViewer({
       );
       controls.dispose();
       geometry.dispose();
+      geometryRef.current = null;
       material.dispose();
       materialRef.current = null;
       renderer.dispose();
@@ -163,6 +171,12 @@ export function ModelViewer({
       materialRef.current.wireframe = wireframe;
     }
   }, [wireframe]);
+
+  useEffect(() => {
+    const geometry = geometryRef.current;
+    if (!geometry) return;
+    geometry.setIndex(visibleIndices(mesh, hiddenParts));
+  }, [mesh, hiddenParts]);
 
   return (
     <div
