@@ -109,7 +109,7 @@ describe('ipc contract', () => {
         positions: [],
         indices: [],
         bounds: { min: [0, 0, 0], max: [0, 0, 0] },
-        sourceFormat: 'obj',
+        sourceFormat: 'gltf',
       }),
     ).toThrow();
   });
@@ -286,7 +286,7 @@ describe('ipc contract', () => {
   it('rejects a logical model with an unknown format', () => {
     expect(() =>
       ipcSchemas[IpcChannel.ListModels].response.parse([
-        { hash: 'x', format: 'obj', size: 1, locations: [] },
+        { hash: 'x', format: 'gltf', size: 1, locations: [] },
       ]),
     ).toThrow();
   });

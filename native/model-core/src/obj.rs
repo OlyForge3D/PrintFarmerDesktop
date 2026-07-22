@@ -64,6 +64,14 @@ pub fn parse_file(path: &Path) -> Result<ObjMesh, ObjError> {
 
 /// Parse a Wavefront OBJ from an in-memory byte buffer.
 pub fn parse_bytes(data: &[u8]) -> Result<ObjMesh, ObjError> {
+    parse_bytes_with_limits(data, MAX_VERTICES, MAX_FACES)
+}
+
+fn parse_bytes_with_limits(
+    data: &[u8],
+    max_vertices: usize,
+    max_faces: usize,
+) -> Result<ObjMesh, ObjError> {
     let text = std::str::from_utf8(data).map_err(|_| ObjError::MalformedVertex {
         line: 1,
         reason: "input is not valid UTF-8".into(),
@@ -86,7 +94,7 @@ pub fn parse_bytes(data: &[u8]) -> Result<ObjMesh, ObjError> {
         let mut tokens = line.split_whitespace();
         match tokens.next() {
             Some("v") => {
-                if vertices.len() >= MAX_VERTICES {
+                if vertices.len() >= max_vertices {
                     return Err(ObjError::TooManyVertices);
                 }
                 let vertex = parse_vertex(&mut tokens, line_number)?;
@@ -94,10 +102,13 @@ pub fn parse_bytes(data: &[u8]) -> Result<ObjMesh, ObjError> {
                 vertices.push(vertex);
             }
             Some("f") => {
-                let face = parse_face(&mut tokens, vertices.len(), line_number)?;
-                if triangles.len() + face.len() - 2 > MAX_FACES {
-                    return Err(ObjError::TooManyFaces);
-                }
+                let face = parse_face(
+                    &mut tokens,
+                    vertices.len(),
+                    triangles.len(),
+                    max_faces,
+                    line_number,
+                )?;
                 for i in 1..face.len() - 1 {
                     triangles.push([face[0], face[i], face[i + 1]]);
                 }
@@ -141,23 +152,28 @@ fn parse_vertex<'a, I: Iterator<Item = &'a str>>(
             });
         }
     }
-    if let Some(extra) = tokens.next() {
-        return Err(ObjError::MalformedVertex {
-            line,
-            reason: format!("unexpected coordinate '{extra}'"),
-        });
-    }
     Ok(out)
 }
 
 fn parse_face<'a, I: Iterator<Item = &'a str>>(
     tokens: &mut I,
     vertex_count: usize,
+    existing_triangles: usize,
+    max_faces: usize,
     line: usize,
 ) -> Result<Vec<u32>, ObjError> {
     let mut indices = Vec::new();
     for token in tokens {
         indices.push(parse_face_index(token, vertex_count, line)?);
+        if indices.len() >= 3 {
+            let produced_triangles = indices.len() - 2;
+            if existing_triangles
+                .checked_add(produced_triangles)
+                .is_none_or(|total| total > max_faces)
+            {
+                return Err(ObjError::TooManyFaces);
+            }
+        }
     }
     if indices.len() < 3 {
         return Err(ObjError::MalformedFace {
@@ -195,6 +211,8 @@ fn resolve_index(index: i64, vertex_count: usize, line: usize) -> Result<u32, Ob
     }
 
     let resolved = if index > 0 {
+        // Positive indices are resolved against vertices seen so far; forward
+        // references are intentionally rejected as out of range.
         index - 1
     } else {
         vertex_count as i64 + index
@@ -244,8 +262,41 @@ mod tests {
     }
 
     #[test]
+    fn accepts_vertex_weight_and_color_extensions() {
+        let weighted = b"v 0 0 0 1\nv 1 0 0 1\nv 0 1 0 1\nf 1 2 3\n";
+        let colored = b"v 0 0 0 0.8 0.2 0.1\nv 1 0 0 0.8 0.2 0.1\nv 0 1 0 0.8 0.2 0.1\nf 1 2 3\n";
+
+        let weighted_mesh = parse_bytes(weighted).unwrap();
+        let colored_mesh = parse_bytes(colored).unwrap();
+
+        assert_eq!(weighted_mesh.triangle_count(), 1);
+        assert_eq!(weighted_mesh.vertices[0], [0.0, 0.0, 0.0]);
+        assert_eq!(colored_mesh.triangle_count(), 1);
+        assert_eq!(colored_mesh.vertices[0], [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn parses_full_vertex_texture_normal_face_tokens() {
+        let obj = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvn 0 0 1\nf 1/1/1 2/1/1 3/1/1\n";
+
+        let mesh = parse_bytes(obj).unwrap();
+
+        assert_eq!(mesh.triangles, vec![[0, 1, 2]]);
+    }
+
+    #[test]
     fn rejects_malformed_face_without_panicking() {
         let bad = b"v 0 0 0\nv 1 0 0\nf 1 nope 2\n";
+        assert!(matches!(
+            parse_bytes(bad),
+            Err(ObjError::MalformedFace { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_face_index() {
+        let bad = b"v 0 0 0\nv 1 0 0\nf 1 0 2\n";
+
         assert!(matches!(
             parse_bytes(bad),
             Err(ObjError::MalformedFace { .. })
@@ -258,6 +309,51 @@ mod tests {
         assert!(matches!(
             parse_bytes(bad),
             Err(ObjError::IndexOutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_negative_out_of_range_indices() {
+        let bad = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf -5 -1 -2\n";
+
+        assert!(matches!(
+            parse_bytes(bad),
+            Err(ObjError::IndexOutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_malformed_vertices() {
+        for bad in [
+            &b"v 0 0\n"[..],
+            &b"v x 0 0\n"[..],
+            &b"v inf 0 0\n"[..],
+            &b"v nan 0 0\n"[..],
+        ] {
+            assert!(matches!(
+                parse_bytes(bad),
+                Err(ObjError::MalformedVertex { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_too_many_vertices_with_lowered_limit() {
+        let bad = b"v 0 0 0\nv 1 0 0\nv 0 1 0\n";
+
+        assert!(matches!(
+            parse_bytes_with_limits(bad, 2, MAX_FACES),
+            Err(ObjError::TooManyVertices)
+        ));
+    }
+
+    #[test]
+    fn rejects_too_many_faces_while_collecting_face() {
+        let bad = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nf 1 2 3 4 nope\n";
+
+        assert!(matches!(
+            parse_bytes_with_limits(bad, MAX_VERTICES, 1),
+            Err(ObjError::TooManyFaces)
         ));
     }
 
