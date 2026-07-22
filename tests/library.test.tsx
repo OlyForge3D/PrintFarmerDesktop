@@ -15,6 +15,11 @@ import { CollectionEditor } from '../src/renderer/library/CollectionEditor.js';
 import { PartTree } from '../src/renderer/library/PartTree.js';
 import { ModelStats } from '../src/renderer/library/ModelStats.js';
 import {
+  VendorPanel,
+  formatDuration,
+} from '../src/renderer/library/VendorPanel.js';
+import { useVendorMetadata } from '../src/renderer/library/useVendorMetadata.js';
+import {
   computeSceneStats,
   formatDimension,
 } from '../src/renderer/library/sceneStats.js';
@@ -654,6 +659,85 @@ describe('<ModelStats />', () => {
     expect(screen.getByText('Triangles')).toBeInTheDocument();
     // Two parts, so the Parts row appears.
     expect(screen.getByText('Parts')).toBeInTheDocument();
+  });
+});
+
+describe('useVendorMetadata', () => {
+  const vendorResult = {
+    slicer: 'orcaSlicer' as const,
+    core: { title: 'Widget' },
+    plates: [] as never[],
+    thumbnails: [] as string[],
+  };
+
+  it('fetches vendor metadata for a 3MF path', async () => {
+    const extractVendorMetadata = vi.fn().mockResolvedValue(vendorResult);
+    installApi({ extractVendorMetadata });
+    const { result } = renderHook(() =>
+      useVendorMetadata('C:/m/widget.3mf', 'threeMf'),
+    );
+    await waitFor(() => expect(result.current.metadata).not.toBeNull());
+    expect(extractVendorMetadata).toHaveBeenCalledWith({
+      path: 'C:/m/widget.3mf',
+    });
+  });
+
+  it('does not call the sidecar for STL or when no path is set', () => {
+    const extractVendorMetadata = vi.fn();
+    installApi({ extractVendorMetadata });
+
+    const stl = renderHook(() => useVendorMetadata('C:/m/a.stl', 'stl'));
+    expect(stl.result.current.metadata).toBeNull();
+
+    const none = renderHook(() => useVendorMetadata(null, null));
+    expect(none.result.current.metadata).toBeNull();
+    expect(extractVendorMetadata).not.toHaveBeenCalled();
+  });
+});
+
+describe('<VendorPanel />', () => {
+  it('formats print-time durations', () => {
+    expect(formatDuration(90)).toBe('2m');
+    expect(formatDuration(3720)).toBe('1h 2m');
+    expect(formatDuration(0)).toBe('0m');
+  });
+
+  it('renders slicer, core metadata, and per-plate stats', () => {
+    render(
+      <VendorPanel
+        metadata={{
+          slicer: 'bambuStudio',
+          core: { title: 'Dragon', designer: 'Ann' },
+          plates: [
+            {
+              index: 1,
+              predictionSeconds: 3720,
+              weightGrams: 12.5,
+              filamentTypes: ['PLA'],
+            },
+          ],
+          thumbnails: [],
+        }}
+      />,
+    );
+    expect(screen.getByText('Bambu Studio')).toBeInTheDocument();
+    expect(screen.getByText('Dragon')).toBeInTheDocument();
+    expect(screen.getByText('Plate 1')).toBeInTheDocument();
+    expect(screen.getByText(/1h 2m · 12\.5g · PLA/)).toBeInTheDocument();
+  });
+
+  it('shows an empty note when there is no vendor data', () => {
+    render(
+      <VendorPanel
+        metadata={{
+          slicer: 'unknown',
+          core: {},
+          plates: [],
+          thumbnails: [],
+        }}
+      />,
+    );
+    expect(screen.getByText(/No slicer\/vendor metadata/i)).toBeInTheDocument();
   });
 });
 

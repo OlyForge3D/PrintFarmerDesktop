@@ -16,6 +16,8 @@ import { TagEditor } from './library/TagEditor';
 import { CollectionEditor } from './library/CollectionEditor';
 import { PartTree } from './library/PartTree';
 import { ModelStats } from './library/ModelStats';
+import { VendorPanel } from './library/VendorPanel';
+import { useVendorMetadata } from './library/useVendorMetadata';
 import { modelDisplayName, preferredPath } from './library/model';
 import {
   defaultLibraryView,
@@ -31,6 +33,7 @@ export function App(): React.JSX.Element {
   const [projection, setProjection] = useState<Projection>('perspective');
   const [loadedMesh, setLoadedMesh] = useState<LoadSceneResponse | null>(null);
   const [loadedName, setLoadedName] = useState<string | null>(null);
+  const [loadedPath, setLoadedPath] = useState<string | null>(null);
   const [hiddenParts, setHiddenParts] = useState<ReadonlySet<number>>(
     () => new Set(),
   );
@@ -44,6 +47,10 @@ export function App(): React.JSX.Element {
   const { favorites, isFavorite, toggle: toggleFavorite } = useFavorites();
   const modelTags = useModelTags(selectedHash);
   const modelCollections = useModelCollections(selectedHash);
+  const vendor = useVendorMetadata(
+    loadedPath,
+    loadedMesh ? loadedMesh.sourceFormat : null,
+  );
 
   const visibleModels = useMemo(
     () => selectLibraryView(library.models, { query, filter, sort, favorites }),
@@ -76,6 +83,7 @@ export function App(): React.JSX.Element {
       });
       setLoadedMesh(scene);
       setLoadedName(selection.path.replace(/^.*[\\/]/, ''));
+      setLoadedPath(selection.path);
       setSelectedHash(null);
       setHiddenParts(new Set());
     } catch (err: unknown) {
@@ -97,6 +105,7 @@ export function App(): React.JSX.Element {
       const scene = await window.printFarmer.loadScene({ path });
       setLoadedMesh(scene);
       setLoadedName(modelDisplayName(model));
+      setLoadedPath(path);
       setHiddenParts(new Set());
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -266,6 +275,11 @@ export function App(): React.JSX.Element {
           className="viewer-canvas"
         />
         <ModelStats mesh={mesh} />
+        {vendor.metadata ? (
+          <div className="viewer-vendor">
+            <VendorPanel metadata={vendor.metadata} />
+          </div>
+        ) : null}
         {(mesh.parts?.length ?? 0) > 1 ? (
           <div className="viewer-parts">
             <PartTree
