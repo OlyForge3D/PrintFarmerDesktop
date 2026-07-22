@@ -38,8 +38,8 @@ use serde_json::Value;
 
 use crate::catalog::{reconcile_root, CatalogStore, InMemoryCatalog};
 use crate::rpc::{
-    extract_vendor_metadata_dto, load_scene_dto, render_thumbnail_dto, LogicalModelDto,
-    ReconcileReportDto, TagDto,
+    extract_vendor_metadata_dto, load_scene_dto, render_thumbnail_dto, CollectionDto,
+    LogicalModelDto, ReconcileReportDto, TagDto,
 };
 use crate::{sidecar_version, RPC_PROTOCOL_VERSION};
 
@@ -115,6 +115,22 @@ struct ModelTagParams {
     name: Option<String>,
     #[serde(default)]
     tag_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CollectionParams {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CollectionMembershipParams {
+    collection_id: String,
+    hash: String,
 }
 
 /// Handle one decoded request, producing the response value or an error message.
@@ -202,6 +218,77 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
                 .map(TagDto::from)
                 .collect();
             serde_json::to_value(tags).map_err(|e| format!("failed to serialize tags: {e}"))
+        }
+        "listCollections" => {
+            let collections: Vec<CollectionDto> = store
+                .all_collections()
+                .iter()
+                .map(CollectionDto::from)
+                .collect();
+            serde_json::to_value(collections)
+                .map_err(|e| format!("failed to serialize collections: {e}"))
+        }
+        "collectionsForModel" => {
+            let params: HashParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid collectionsForModel params: {e}"))?;
+            let collections: Vec<CollectionDto> = store
+                .collections_for_model(&params.hash)
+                .iter()
+                .map(CollectionDto::from)
+                .collect();
+            serde_json::to_value(collections)
+                .map_err(|e| format!("failed to serialize collections: {e}"))
+        }
+        "createCollection" => {
+            let params: CollectionParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid createCollection params: {e}"))?;
+            let name = params
+                .name
+                .ok_or_else(|| "createCollection requires a name".to_string())?;
+            let created = store
+                .create_collection(&name)
+                .ok_or_else(|| "collection name must not be blank".to_string())?;
+            serde_json::to_value(CollectionDto::from(&created))
+                .map_err(|e| format!("failed to serialize collection: {e}"))
+        }
+        "deleteCollection" => {
+            let params: CollectionParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid deleteCollection params: {e}"))?;
+            let id = params
+                .id
+                .ok_or_else(|| "deleteCollection requires an id".to_string())?;
+            store.delete_collection(&id);
+            let collections: Vec<CollectionDto> = store
+                .all_collections()
+                .iter()
+                .map(CollectionDto::from)
+                .collect();
+            serde_json::to_value(collections)
+                .map_err(|e| format!("failed to serialize collections: {e}"))
+        }
+        "addModelToCollection" => {
+            let params: CollectionMembershipParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid addModelToCollection params: {e}"))?;
+            store.add_model_to_collection(&params.collection_id, &params.hash);
+            let collections: Vec<CollectionDto> = store
+                .collections_for_model(&params.hash)
+                .iter()
+                .map(CollectionDto::from)
+                .collect();
+            serde_json::to_value(collections)
+                .map_err(|e| format!("failed to serialize collections: {e}"))
+        }
+        "removeModelFromCollection" => {
+            let params: CollectionMembershipParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid removeModelFromCollection params: {e}"))?;
+            store.remove_model_from_collection(&params.collection_id, &params.hash);
+            let collections: Vec<CollectionDto> = store
+                .collections_for_model(&params.hash)
+                .iter()
+                .map(CollectionDto::from)
+                .collect();
+            serde_json::to_value(collections)
+                .map_err(|e| format!("failed to serialize collections: {e}"))
         }
         other => Err(format!("unknown method: {other}")),
     }

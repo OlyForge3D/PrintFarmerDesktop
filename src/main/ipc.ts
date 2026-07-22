@@ -136,6 +136,71 @@ export function registerIpcHandlers(channelFactory?: ChannelFactory): void {
     },
   );
 
+  ipcMain.handle(IpcChannel.ListCollections, async () => {
+    const raw = await sidecar.listCollections();
+    return ipcSchemas[IpcChannel.ListCollections].response.parse(raw);
+  });
+
+  ipcMain.handle(
+    IpcChannel.CollectionsForModel,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CollectionsForModel].request.parse(rawRequest);
+      const raw = await sidecar.collectionsForModel(request.hash);
+      return ipcSchemas[IpcChannel.CollectionsForModel].response.parse(raw);
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CreateCollection,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CreateCollection].request.parse(rawRequest);
+      const raw = await sidecar.createCollection(request.name);
+      return ipcSchemas[IpcChannel.CreateCollection].response.parse(raw);
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.DeleteCollection,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.DeleteCollection].request.parse(rawRequest);
+      const raw = await sidecar.deleteCollection(request.id);
+      return ipcSchemas[IpcChannel.DeleteCollection].response.parse(raw);
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.AddModelToCollection,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.AddModelToCollection].request.parse(rawRequest);
+      const raw = await sidecar.addModelToCollection(
+        request.collectionId,
+        request.hash,
+      );
+      return ipcSchemas[IpcChannel.AddModelToCollection].response.parse(raw);
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.RemoveModelFromCollection,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.RemoveModelFromCollection].request.parse(
+          rawRequest,
+        );
+      const raw = await sidecar.removeModelFromCollection(
+        request.collectionId,
+        request.hash,
+      );
+      return ipcSchemas[IpcChannel.RemoveModelFromCollection].response.parse(
+        raw,
+      );
+    },
+  );
+
   ipcMain.handle(IpcChannel.OpenFolder, async (event) => {
     // Same trust model as OpenModelFile: the renderer can only ask us to show
     // the OS picker; we return only the directory the user explicitly chose.

@@ -132,6 +132,42 @@ export class SidecarClient {
     return this.request('removeModelTag', { hash, tagId });
   }
 
+  /** List every collection known to the catalog (raw wire array). */
+  async listCollections(): Promise<unknown> {
+    return this.request('listCollections', {});
+  }
+
+  /** List the collections a model belongs to (raw wire array). */
+  async collectionsForModel(hash: string): Promise<unknown> {
+    return this.request('collectionsForModel', { hash });
+  }
+
+  /** Create a collection; returns the created collection (raw wire object). */
+  async createCollection(name: string): Promise<unknown> {
+    return this.request('createCollection', { name });
+  }
+
+  /** Delete a collection; returns all collections (raw wire array). */
+  async deleteCollection(id: string): Promise<unknown> {
+    return this.request('deleteCollection', { id });
+  }
+
+  /** Add a model to a collection; returns the model's collections. */
+  async addModelToCollection(
+    collectionId: string,
+    hash: string,
+  ): Promise<unknown> {
+    return this.request('addModelToCollection', { collectionId, hash });
+  }
+
+  /** Remove a model from a collection; returns the model's collections. */
+  async removeModelFromCollection(
+    collectionId: string,
+    hash: string,
+  ): Promise<unknown> {
+    return this.request('removeModelFromCollection', { collectionId, hash });
+  }
+
   /** Stop the sidecar and reject any in-flight requests. */
   dispose(): void {
     const channel = this.channel;

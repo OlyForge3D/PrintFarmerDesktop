@@ -17,9 +17,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::catalog::normalize_tag;
+use crate::catalog::{new_collection_id, normalize_tag};
 use crate::catalog::{
-    CatalogStore, LocationUpsert, LogicalModel, ModelLocation, StoredLocation, Tag,
+    CatalogStore, Collection, LocationUpsert, LogicalModel, ModelLocation, StoredLocation, Tag,
 };
 use crate::model::{FileFingerprint, ModelFormat};
 use crate::schema::{SCHEMA_V1, SCHEMA_VERSION};
@@ -340,6 +340,123 @@ impl CatalogStore for SqliteCatalog {
             )
             .expect("catalog write failed: prune tag");
     }
+
+    fn all_collections(&self) -> Vec<Collection> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT c.id, c.name, c.shared_to_farm, \
+                 (SELECT COUNT(*) FROM collection_models cm WHERE cm.collection_id = c.id) \
+                 FROM collections c ORDER BY LOWER(c.name)",
+            )
+            .expect("catalog read failed: collections prepare");
+        stmt.query_map([], |row| {
+            Ok(Collection {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                shared_to_farm: row.get::<_, i64>(2)? != 0,
+                member_count: row.get::<_, i64>(3)? as usize,
+            })
+        })
+        .expect("catalog read failed: collections query")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("catalog read failed: collections collect")
+    }
+
+    fn collections_for_model(&self, hash: &str) -> Vec<Collection> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT c.id, c.name, c.shared_to_farm, \
+                 (SELECT COUNT(*) FROM collection_models cm2 WHERE cm2.collection_id = c.id) \
+                 FROM collections c \
+                 JOIN collection_models cm ON cm.collection_id = c.id \
+                 WHERE cm.model_hash = ?1 ORDER BY LOWER(c.name)",
+            )
+            .expect("catalog read failed: model collections prepare");
+        stmt.query_map(params![hash], |row| {
+            Ok(Collection {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                shared_to_farm: row.get::<_, i64>(2)? != 0,
+                member_count: row.get::<_, i64>(3)? as usize,
+            })
+        })
+        .expect("catalog read failed: model collections query")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("catalog read failed: model collections collect")
+    }
+
+    fn create_collection(&mut self, name: &str) -> Option<Collection> {
+        let display = name.trim();
+        if display.is_empty() {
+            return None;
+        }
+        let id = new_collection_id();
+        let ts = now_ts();
+        self.conn
+            .execute(
+                "INSERT INTO collections(id, name, shared_to_farm, created_at, updated_at) \
+                 VALUES(?1, ?2, 0, ?3, ?3)",
+                params![id, display, ts],
+            )
+            .expect("catalog write failed: create collection");
+        Some(Collection {
+            id,
+            name: display.to_string(),
+            shared_to_farm: false,
+            member_count: 0,
+        })
+    }
+
+    fn delete_collection(&mut self, id: &str) {
+        // collection_models cascades via its FK, but delete explicitly in case
+        // foreign keys are not enforced on this connection.
+        self.conn
+            .execute(
+                "DELETE FROM collection_models WHERE collection_id = ?1",
+                params![id],
+            )
+            .expect("catalog write failed: delete memberships");
+        self.conn
+            .execute("DELETE FROM collections WHERE id = ?1", params![id])
+            .expect("catalog write failed: delete collection");
+    }
+
+    fn add_model_to_collection(&mut self, id: &str, hash: &str) -> bool {
+        let both_exist: bool = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM collections c, models m \
+                 WHERE c.id = ?1 AND m.hash = ?2",
+                params![id, hash],
+                |_| Ok(()),
+            )
+            .optional()
+            .expect("catalog read failed: collection/model exists")
+            .is_some();
+        if !both_exist {
+            return false;
+        }
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO collection_models(collection_id, model_hash) \
+                 VALUES(?1, ?2)",
+                params![id, hash],
+            )
+            .expect("catalog write failed: add to collection");
+        true
+    }
+
+    fn remove_model_from_collection(&mut self, id: &str, hash: &str) {
+        self.conn
+            .execute(
+                "DELETE FROM collection_models \
+                 WHERE collection_id = ?1 AND model_hash = ?2",
+                params![id, hash],
+            )
+            .expect("catalog write failed: remove from collection");
+    }
 }
 
 /// Whole seconds since the Unix epoch, as text, for `*_at` columns.
@@ -535,5 +652,35 @@ mod tests {
         store.remove_model_tag(&hash, &tag.id);
         assert!(store.tags_for_model(&hash).is_empty());
         assert!(store.all_tags().is_empty());
+    }
+
+    #[test]
+    fn collections_persist_membership_and_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("m.stl"), b"bytes");
+
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        reconcile_root(&mut store, "r", &scan(root));
+        let hash = store.models()[0].hash.clone();
+
+        assert!(store.create_collection("   ").is_none());
+        let coll = store.create_collection("Warhammer").unwrap();
+        assert_eq!(coll.name, "Warhammer");
+
+        assert!(store.add_model_to_collection(&coll.id, &hash));
+        assert!(!store.add_model_to_collection(&coll.id, "missing"));
+        assert!(!store.add_model_to_collection("missing", &hash));
+
+        let for_model = store.collections_for_model(&hash);
+        assert_eq!(for_model.len(), 1);
+        assert_eq!(for_model[0].member_count, 1);
+
+        store.remove_model_from_collection(&coll.id, &hash);
+        assert!(store.collections_for_model(&hash).is_empty());
+        assert_eq!(store.all_collections().len(), 1);
+
+        store.delete_collection(&coll.id);
+        assert!(store.all_collections().is_empty());
     }
 }

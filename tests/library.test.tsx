@@ -11,7 +11,9 @@ import type { LogicalModel, PrintFarmerApi } from '@shared/ipc';
 import { useLibrary } from '../src/renderer/library/useLibrary.js';
 import { ModelGrid } from '../src/renderer/library/ModelGrid.js';
 import { TagEditor } from '../src/renderer/library/TagEditor.js';
+import { CollectionEditor } from '../src/renderer/library/CollectionEditor.js';
 import { useModelTags } from '../src/renderer/library/useModelTags.js';
+import { useModelCollections } from '../src/renderer/library/useModelCollections.js';
 import {
   defaultLibraryView,
   selectLibraryView,
@@ -401,6 +403,141 @@ describe('useModelTags', () => {
     const { result } = renderHook(() => useModelTags(null));
     expect(result.current.tags).toEqual([]);
     expect(tagsForModel).not.toHaveBeenCalled();
+  });
+});
+
+describe('useModelCollections', () => {
+  const dragons = {
+    id: 'col-1',
+    name: 'Dragons',
+    sharedToFarm: false,
+    memberCount: 1,
+  };
+  const terrain = {
+    id: 'col-2',
+    name: 'Terrain',
+    sharedToFarm: false,
+    memberCount: 0,
+  };
+
+  it('loads collections and membership, then toggles a model in', async () => {
+    const listCollections = vi.fn().mockResolvedValue([dragons, terrain]);
+    const collectionsForModel = vi.fn().mockResolvedValue([dragons]);
+    const addModelToCollection = vi.fn().mockResolvedValue([dragons, terrain]);
+    installApi({ listCollections, collectionsForModel, addModelToCollection });
+
+    const { result } = renderHook(() => useModelCollections('h1'));
+    await waitFor(() => expect(result.current.all).toHaveLength(2));
+    expect(collectionsForModel).toHaveBeenCalledWith({ hash: 'h1' });
+    expect(result.current.membership.has('col-1')).toBe(true);
+    expect(result.current.membership.has('col-2')).toBe(false);
+
+    listCollections.mockResolvedValue([dragons, terrain]);
+    await act(async () => {
+      await result.current.toggle('col-2');
+    });
+    expect(addModelToCollection).toHaveBeenCalledWith({
+      collectionId: 'col-2',
+      hash: 'h1',
+    });
+    expect(result.current.membership.has('col-2')).toBe(true);
+  });
+
+  it('removes a model from a collection it belongs to', async () => {
+    const listCollections = vi.fn().mockResolvedValue([dragons]);
+    const collectionsForModel = vi.fn().mockResolvedValue([dragons]);
+    const removeModelFromCollection = vi.fn().mockResolvedValue([]);
+    installApi({
+      listCollections,
+      collectionsForModel,
+      removeModelFromCollection,
+    });
+
+    const { result } = renderHook(() => useModelCollections('h1'));
+    await waitFor(() =>
+      expect(result.current.membership.has('col-1')).toBe(true),
+    );
+
+    await act(async () => {
+      await result.current.toggle('col-1');
+    });
+    expect(removeModelFromCollection).toHaveBeenCalledWith({
+      collectionId: 'col-1',
+      hash: 'h1',
+    });
+    expect(result.current.membership.has('col-1')).toBe(false);
+  });
+
+  it('creates a collection and adds the model to it', async () => {
+    const listCollections = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([dragons]);
+    const collectionsForModel = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([dragons]);
+    const createCollection = vi.fn().mockResolvedValue(dragons);
+    const addModelToCollection = vi.fn().mockResolvedValue([dragons]);
+    installApi({
+      listCollections,
+      collectionsForModel,
+      createCollection,
+      addModelToCollection,
+    });
+
+    const { result } = renderHook(() => useModelCollections('h1'));
+    await waitFor(() => expect(result.current.all).toEqual([]));
+
+    await act(async () => {
+      await result.current.createAndAdd('Dragons');
+    });
+    expect(createCollection).toHaveBeenCalledWith({ name: 'Dragons' });
+    expect(addModelToCollection).toHaveBeenCalledWith({
+      collectionId: 'col-1',
+      hash: 'h1',
+    });
+    await waitFor(() =>
+      expect(result.current.membership.has('col-1')).toBe(true),
+    );
+  });
+
+  it('makes no calls when nothing is selected', () => {
+    const listCollections = vi.fn();
+    installApi({ listCollections });
+    const { result } = renderHook(() => useModelCollections(null));
+    expect(result.current.all).toEqual([]);
+    expect(listCollections).not.toHaveBeenCalled();
+  });
+});
+
+describe('<CollectionEditor />', () => {
+  it('renders membership checkboxes and reports toggles', () => {
+    const onToggle = vi.fn();
+    const onCreate = vi.fn();
+    render(
+      <CollectionEditor
+        all={[
+          { id: 'col-1', name: 'Dragons', sharedToFarm: false, memberCount: 2 },
+        ]}
+        membership={new Set(['col-1'])}
+        onToggle={onToggle}
+        onCreate={onCreate}
+      />,
+    );
+
+    const checkbox = screen.getByRole('checkbox', { name: /Dragons/i });
+    expect(checkbox).toBeChecked();
+    fireEvent.click(checkbox);
+    expect(onToggle).toHaveBeenCalledWith('col-1');
+
+    fireEvent.change(screen.getByLabelText(/New collection name/i), {
+      target: { value: '  Terrain ' },
+    });
+    fireEvent.submit(
+      screen.getByLabelText(/New collection name/i).closest('form')!,
+    );
+    expect(onCreate).toHaveBeenCalledWith('Terrain');
   });
 });
 

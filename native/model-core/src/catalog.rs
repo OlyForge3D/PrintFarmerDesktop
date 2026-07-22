@@ -93,6 +93,31 @@ pub fn normalize_tag(name: &str) -> Option<Tag> {
     })
 }
 
+/// A user-owned, many-to-many grouping of models. Unlike tags, collections
+/// have opaque ids so two collections may share a display name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Collection {
+    pub id: String,
+    pub name: String,
+    pub shared_to_farm: bool,
+    pub member_count: usize,
+}
+
+/// Generates a process-unique, sortable-ish collection id from the wall clock
+/// plus a monotonic counter (so ids stay unique even within the same tick).
+pub fn new_collection_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("col-{nanos:x}-{seq:x}")
+}
+
 pub trait CatalogStore {
     /// Look up what is currently recorded for a path under a root.
     fn get_location(&self, root_id: &str, path: &Path) -> Option<StoredLocation>;
@@ -140,6 +165,35 @@ pub trait CatalogStore {
 
     /// Remove a tag assignment from a model. Default: no-op.
     fn remove_model_tag(&mut self, _hash: &str, _tag_id: &str) {}
+
+    /// Every collection known to the catalog, sorted by display name. Default:
+    /// none.
+    fn all_collections(&self) -> Vec<Collection> {
+        Vec::new()
+    }
+
+    /// Collections a model belongs to, sorted by display name. Default: none.
+    fn collections_for_model(&self, _hash: &str) -> Vec<Collection> {
+        Vec::new()
+    }
+
+    /// Create a new collection with the given display name, returning it. `None`
+    /// if the name is blank. Default: no-op returning `None`.
+    fn create_collection(&mut self, _name: &str) -> Option<Collection> {
+        None
+    }
+
+    /// Delete a collection and all of its memberships. Default: no-op.
+    fn delete_collection(&mut self, _id: &str) {}
+
+    /// Add a model to a collection. Returns `true` if both exist and the
+    /// membership now holds. Default: `false`.
+    fn add_model_to_collection(&mut self, _id: &str, _hash: &str) -> bool {
+        false
+    }
+
+    /// Remove a model from a collection. Default: no-op.
+    fn remove_model_from_collection(&mut self, _id: &str, _hash: &str) {}
 }
 
 /// Summary of a reconciliation pass over one root.
@@ -247,6 +301,10 @@ pub struct InMemoryCatalog {
     tags: HashMap<String, String>,
     /// Content hash -> assigned tag ids.
     model_tags: HashMap<ContentHash, std::collections::BTreeSet<String>>,
+    /// Collection id -> (display name, shared_to_farm).
+    collections: HashMap<String, (String, bool)>,
+    /// Collection id -> member content hashes.
+    collection_members: HashMap<String, std::collections::BTreeSet<ContentHash>>,
 }
 
 impl InMemoryCatalog {
@@ -411,6 +469,88 @@ impl CatalogStore for InMemoryCatalog {
         let still_used = self.model_tags.values().any(|ids| ids.contains(tag_id));
         if !still_used {
             self.tags.remove(tag_id);
+        }
+    }
+
+    fn all_collections(&self) -> Vec<Collection> {
+        let mut out: Vec<Collection> = self
+            .collections
+            .iter()
+            .map(|(id, (name, shared))| Collection {
+                id: id.clone(),
+                name: name.clone(),
+                shared_to_farm: *shared,
+                member_count: self
+                    .collection_members
+                    .get(id)
+                    .map_or(0, std::collections::BTreeSet::len),
+            })
+            .collect();
+        out.sort_by_key(|c| c.name.to_lowercase());
+        out
+    }
+
+    fn collections_for_model(&self, hash: &str) -> Vec<Collection> {
+        let mut out: Vec<Collection> = self
+            .collections
+            .iter()
+            .filter(|(id, _)| {
+                self.collection_members
+                    .get(*id)
+                    .is_some_and(|members| members.contains(hash))
+            })
+            .map(|(id, (name, shared))| Collection {
+                id: id.clone(),
+                name: name.clone(),
+                shared_to_farm: *shared,
+                member_count: self
+                    .collection_members
+                    .get(id)
+                    .map_or(0, std::collections::BTreeSet::len),
+            })
+            .collect();
+        out.sort_by_key(|c| c.name.to_lowercase());
+        out
+    }
+
+    fn create_collection(&mut self, name: &str) -> Option<Collection> {
+        let display = name.trim();
+        if display.is_empty() {
+            return None;
+        }
+        let id = new_collection_id();
+        self.collections
+            .insert(id.clone(), (display.to_string(), false));
+        Some(Collection {
+            id,
+            name: display.to_string(),
+            shared_to_farm: false,
+            member_count: 0,
+        })
+    }
+
+    fn delete_collection(&mut self, id: &str) {
+        self.collections.remove(id);
+        self.collection_members.remove(id);
+    }
+
+    fn add_model_to_collection(&mut self, id: &str, hash: &str) -> bool {
+        if !self.collections.contains_key(id) || !self.models.contains_key(hash) {
+            return false;
+        }
+        self.collection_members
+            .entry(id.to_string())
+            .or_default()
+            .insert(hash.to_string());
+        true
+    }
+
+    fn remove_model_from_collection(&mut self, id: &str, hash: &str) {
+        if let Some(members) = self.collection_members.get_mut(id) {
+            members.remove(hash);
+            if members.is_empty() {
+                self.collection_members.remove(id);
+            }
         }
     }
 }
@@ -583,5 +723,32 @@ mod tests {
         store.remove_model_tag(&hash, &tag.id);
         assert!(store.tags_for_model(&hash).is_empty());
         assert!(store.all_tags().is_empty());
+    }
+
+    #[test]
+    fn collections_track_membership_and_counts() {
+        let (mut store, hash) = one_model_store();
+
+        assert!(store.create_collection("  ").is_none());
+        let coll = store.create_collection(" Dragons ").unwrap();
+        assert_eq!(coll.name, "Dragons");
+        assert_eq!(coll.member_count, 0);
+
+        assert!(store.add_model_to_collection(&coll.id, &hash));
+        // Unknown collection or model cannot form a membership.
+        assert!(!store.add_model_to_collection("nope", &hash));
+        assert!(!store.add_model_to_collection(&coll.id, "nope"));
+
+        let for_model = store.collections_for_model(&hash);
+        assert_eq!(for_model.len(), 1);
+        assert_eq!(for_model[0].member_count, 1);
+
+        store.remove_model_from_collection(&coll.id, &hash);
+        assert!(store.collections_for_model(&hash).is_empty());
+        // The collection itself survives losing its last member.
+        assert_eq!(store.all_collections().len(), 1);
+
+        store.delete_collection(&coll.id);
+        assert!(store.all_collections().is_empty());
     }
 }

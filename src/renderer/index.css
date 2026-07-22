@@ -224,6 +224,65 @@ body {
   border-color: var(--accent);
 }
 
+.collection-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.collection-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.collection-empty {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.collection-item label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.collection-name {
+  flex: 1 1 auto;
+}
+
+.collection-count {
+  color: var(--muted);
+  font-size: 0.8rem;
+  min-width: 1.5rem;
+  text-align: right;
+}
+
+.collection-add {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.collection-add input {
+  flex: 1 1 auto;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid #2c2f3a;
+  border-radius: 8px;
+  padding: 0.35rem 0.6rem;
+  font: inherit;
+}
+
+.collection-add input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .library-report {
   margin: 0 0 0.75rem;
   color: var(--muted);

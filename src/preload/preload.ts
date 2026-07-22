@@ -21,6 +21,15 @@ import {
   type AddModelTagResponse,
   type RemoveModelTagRequest,
   type RemoveModelTagResponse,
+  type ListCollectionsResponse,
+  type CollectionsForModelRequest,
+  type CollectionsForModelResponse,
+  type CreateCollectionRequest,
+  type CreateCollectionResponse,
+  type DeleteCollectionRequest,
+  type DeleteCollectionResponse,
+  type CollectionMembershipRequest,
+  type CollectionMembershipResponse,
   type SidecarPingRequest,
   type SidecarPingResponse,
 } from '@shared/ipc';
@@ -87,6 +96,45 @@ const api: PrintFarmerApi = {
       IpcChannel.RemoveModelTag,
       request,
     ) as Promise<RemoveModelTagResponse>,
+  listCollections: (): Promise<ListCollectionsResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ListCollections,
+    ) as Promise<ListCollectionsResponse>,
+  collectionsForModel: (
+    request: CollectionsForModelRequest,
+  ): Promise<CollectionsForModelResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.CollectionsForModel,
+      request,
+    ) as Promise<CollectionsForModelResponse>,
+  createCollection: (
+    request: CreateCollectionRequest,
+  ): Promise<CreateCollectionResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.CreateCollection,
+      request,
+    ) as Promise<CreateCollectionResponse>,
+  deleteCollection: (
+    request: DeleteCollectionRequest,
+  ): Promise<DeleteCollectionResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.DeleteCollection,
+      request,
+    ) as Promise<DeleteCollectionResponse>,
+  addModelToCollection: (
+    request: CollectionMembershipRequest,
+  ): Promise<CollectionMembershipResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.AddModelToCollection,
+      request,
+    ) as Promise<CollectionMembershipResponse>,
+  removeModelFromCollection: (
+    request: CollectionMembershipRequest,
+  ): Promise<CollectionMembershipResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.RemoveModelFromCollection,
+      request,
+    ) as Promise<CollectionMembershipResponse>,
   openFolder: (): Promise<OpenFolderResponse> =>
     ipcRenderer.invoke(IpcChannel.OpenFolder) as Promise<OpenFolderResponse>,
 };

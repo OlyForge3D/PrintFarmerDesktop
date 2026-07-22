@@ -265,6 +265,28 @@ impl From<&crate::catalog::Tag> for TagDto {
     }
 }
 
+/// A user-owned grouping of models, in wire form. Mirrors the `Collection` Zod
+/// schema in `src/shared/ipc.ts`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionDto {
+    pub id: String,
+    pub name: String,
+    pub shared_to_farm: bool,
+    pub member_count: u64,
+}
+
+impl From<&crate::catalog::Collection> for CollectionDto {
+    fn from(c: &crate::catalog::Collection) -> Self {
+        Self {
+            id: c.id.clone(),
+            name: c.name.clone(),
+            shared_to_farm: c.shared_to_farm,
+            member_count: c.member_count as u64,
+        }
+    }
+}
+
 /// Summary of one reconciliation pass over a source root, in wire form. Mirrors
 /// the `ReconcileReport` Zod schema in `src/shared/ipc.ts`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

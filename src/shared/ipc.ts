@@ -25,6 +25,12 @@ export const IpcChannel = {
   TagsForModel: 'catalog:tagsForModel',
   AddModelTag: 'catalog:addModelTag',
   RemoveModelTag: 'catalog:removeModelTag',
+  ListCollections: 'catalog:listCollections',
+  CollectionsForModel: 'catalog:collectionsForModel',
+  CreateCollection: 'catalog:createCollection',
+  DeleteCollection: 'catalog:deleteCollection',
+  AddModelToCollection: 'catalog:addModelToCollection',
+  RemoveModelFromCollection: 'catalog:removeModelFromCollection',
   OpenFolder: 'dialog:openFolder',
 } as const;
 
@@ -270,6 +276,64 @@ export type RemoveModelTagRequest = z.infer<typeof RemoveModelTagRequest>;
 export const RemoveModelTagResponse = z.array(Tag);
 export type RemoveModelTagResponse = z.infer<typeof RemoveModelTagResponse>;
 
+// --- catalog collections --------------------------------------------------
+
+/** A user-owned, many-to-many grouping of models. */
+export const Collection = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  sharedToFarm: z.boolean(),
+  memberCount: z.number().int().nonnegative(),
+});
+export type Collection = z.infer<typeof Collection>;
+
+export const ListCollectionsRequest = z.void();
+export type ListCollectionsRequest = z.infer<typeof ListCollectionsRequest>;
+
+export const ListCollectionsResponse = z.array(Collection);
+export type ListCollectionsResponse = z.infer<typeof ListCollectionsResponse>;
+
+export const CollectionsForModelRequest = z.object({
+  hash: z.string().min(1),
+});
+export type CollectionsForModelRequest = z.infer<
+  typeof CollectionsForModelRequest
+>;
+
+export const CollectionsForModelResponse = z.array(Collection);
+export type CollectionsForModelResponse = z.infer<
+  typeof CollectionsForModelResponse
+>;
+
+export const CreateCollectionRequest = z.object({
+  name: z.string().min(1).max(128),
+});
+export type CreateCollectionRequest = z.infer<typeof CreateCollectionRequest>;
+
+export const CreateCollectionResponse = Collection;
+export type CreateCollectionResponse = z.infer<typeof CreateCollectionResponse>;
+
+export const DeleteCollectionRequest = z.object({ id: z.string().min(1) });
+export type DeleteCollectionRequest = z.infer<typeof DeleteCollectionRequest>;
+
+/** All collections after the delete. */
+export const DeleteCollectionResponse = z.array(Collection);
+export type DeleteCollectionResponse = z.infer<typeof DeleteCollectionResponse>;
+
+export const CollectionMembershipRequest = z.object({
+  collectionId: z.string().min(1),
+  hash: z.string().min(1),
+});
+export type CollectionMembershipRequest = z.infer<
+  typeof CollectionMembershipRequest
+>;
+
+/** The model's collections after the membership change. */
+export const CollectionMembershipResponse = z.array(Collection);
+export type CollectionMembershipResponse = z.infer<
+  typeof CollectionMembershipResponse
+>;
+
 // --- dialog:openFolder ----------------------------------------------------
 
 export const OpenFolderRequest = z.void();
@@ -334,6 +398,30 @@ export const ipcSchemas = {
     request: RemoveModelTagRequest,
     response: RemoveModelTagResponse,
   },
+  [IpcChannel.ListCollections]: {
+    request: ListCollectionsRequest,
+    response: ListCollectionsResponse,
+  },
+  [IpcChannel.CollectionsForModel]: {
+    request: CollectionsForModelRequest,
+    response: CollectionsForModelResponse,
+  },
+  [IpcChannel.CreateCollection]: {
+    request: CreateCollectionRequest,
+    response: CreateCollectionResponse,
+  },
+  [IpcChannel.DeleteCollection]: {
+    request: DeleteCollectionRequest,
+    response: DeleteCollectionResponse,
+  },
+  [IpcChannel.AddModelToCollection]: {
+    request: CollectionMembershipRequest,
+    response: CollectionMembershipResponse,
+  },
+  [IpcChannel.RemoveModelFromCollection]: {
+    request: CollectionMembershipRequest,
+    response: CollectionMembershipResponse,
+  },
   [IpcChannel.OpenFolder]: {
     request: OpenFolderRequest,
     response: OpenFolderResponse,
@@ -362,5 +450,21 @@ export interface PrintFarmerApi {
   removeModelTag(
     request: RemoveModelTagRequest,
   ): Promise<RemoveModelTagResponse>;
+  listCollections(): Promise<ListCollectionsResponse>;
+  collectionsForModel(
+    request: CollectionsForModelRequest,
+  ): Promise<CollectionsForModelResponse>;
+  createCollection(
+    request: CreateCollectionRequest,
+  ): Promise<CreateCollectionResponse>;
+  deleteCollection(
+    request: DeleteCollectionRequest,
+  ): Promise<DeleteCollectionResponse>;
+  addModelToCollection(
+    request: CollectionMembershipRequest,
+  ): Promise<CollectionMembershipResponse>;
+  removeModelFromCollection(
+    request: CollectionMembershipRequest,
+  ): Promise<CollectionMembershipResponse>;
   openFolder(): Promise<OpenFolderResponse>;
 }

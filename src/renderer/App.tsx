@@ -10,8 +10,10 @@ import type { SceneMesh } from './viewer/types';
 import { useLibrary } from './library/useLibrary';
 import { useFavorites } from './library/useFavorites';
 import { useModelTags } from './library/useModelTags';
+import { useModelCollections } from './library/useModelCollections';
 import { ModelGrid } from './library/ModelGrid';
 import { TagEditor } from './library/TagEditor';
+import { CollectionEditor } from './library/CollectionEditor';
 import { modelDisplayName, preferredPath } from './library/model';
 import {
   defaultLibraryView,
@@ -36,6 +38,7 @@ export function App(): React.JSX.Element {
   const library = useLibrary();
   const { favorites, isFavorite, toggle: toggleFavorite } = useFavorites();
   const modelTags = useModelTags(selectedHash);
+  const modelCollections = useModelCollections(selectedHash);
 
   const visibleModels = useMemo(
     () => selectLibraryView(library.models, { query, filter, sort, favorites }),
@@ -246,6 +249,22 @@ export function App(): React.JSX.Element {
             {modelTags.error ? (
               <p role="alert" className="status-error">
                 {modelTags.error}
+              </p>
+            ) : null}
+            <h2 className="viewer-tags-title">Collections</h2>
+            <CollectionEditor
+              all={modelCollections.all}
+              membership={modelCollections.membership}
+              onToggle={(id) => {
+                void modelCollections.toggle(id);
+              }}
+              onCreate={(name) => {
+                void modelCollections.createAndAdd(name);
+              }}
+            />
+            {modelCollections.error ? (
+              <p role="alert" className="status-error">
+                {modelCollections.error}
               </p>
             ) : null}
           </div>

@@ -315,4 +315,35 @@ describe('ipc contract', () => {
     });
     expect(request.tagId).toBe('minis');
   });
+
+  it('accepts a create-collection request and collection response', () => {
+    const request = ipcSchemas[IpcChannel.CreateCollection].request.parse({
+      name: 'Dragons',
+    });
+    expect(request.name).toBe('Dragons');
+
+    const response = ipcSchemas[IpcChannel.CreateCollection].response.parse({
+      id: 'col-1',
+      name: 'Dragons',
+      sharedToFarm: false,
+      memberCount: 0,
+    });
+    expect(response.id).toBe('col-1');
+  });
+
+  it('accepts a collection-membership request', () => {
+    const request = ipcSchemas[IpcChannel.AddModelToCollection].request.parse({
+      collectionId: 'col-1',
+      hash: 'abc',
+    });
+    expect(request.collectionId).toBe('col-1');
+  });
+
+  it('rejects a collection with a negative member count', () => {
+    expect(() =>
+      ipcSchemas[IpcChannel.ListCollections].response.parse([
+        { id: 'c', name: 'C', sharedToFarm: false, memberCount: -1 },
+      ]),
+    ).toThrow();
+  });
 });
