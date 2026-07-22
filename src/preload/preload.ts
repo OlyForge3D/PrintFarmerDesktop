@@ -10,6 +10,9 @@ import {
   type PrintFarmerApi,
   type RenderThumbnailRequest,
   type RenderThumbnailResponse,
+  type ScanRootRequest,
+  type ScanRootResponse,
+  type ListModelsResponse,
   type SidecarPingRequest,
   type SidecarPingResponse,
 } from '@shared/ipc';
@@ -50,6 +53,13 @@ const api: PrintFarmerApi = {
       IpcChannel.RenderThumbnail,
       request,
     ) as Promise<RenderThumbnailResponse>,
+  scanRoot: (request: ScanRootRequest): Promise<ScanRootResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ScanRoot,
+      request,
+    ) as Promise<ScanRootResponse>,
+  listModels: (): Promise<ListModelsResponse> =>
+    ipcRenderer.invoke(IpcChannel.ListModels) as Promise<ListModelsResponse>,
 };
 
 contextBridge.exposeInMainWorld('printFarmer', api);

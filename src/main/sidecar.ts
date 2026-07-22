@@ -102,6 +102,16 @@ export class SidecarClient {
     return this.request('renderThumbnail', params);
   }
 
+  /** Scan a folder and reconcile it into the catalog (raw wire object). */
+  async scanRoot(rootId: string, path: string): Promise<unknown> {
+    return this.request('scanRoot', { rootId, path });
+  }
+
+  /** List every logical model known to the catalog (raw wire array). */
+  async listModels(): Promise<unknown> {
+    return this.request('listModels', {});
+  }
+
   /** Stop the sidecar and reject any in-flight requests. */
   dispose(): void {
     const channel = this.channel;
@@ -248,13 +258,26 @@ export function resolveSidecarPath(): string {
 }
 
 /**
+ * Resolve the on-disk catalog database path, or `undefined` for an ephemeral
+ * in-memory catalog. Sourced from `PRINTFARMER_CATALOG_DB`, which the main
+ * process sets to a file under Electron's `userData` directory. When unset
+ * (e.g. in tests or a bare dev run) the sidecar keeps the catalog in memory.
+ */
+export function resolveCatalogDbPath(): string | undefined {
+  const dbPath = process.env.PRINTFARMER_CATALOG_DB;
+  return dbPath && dbPath.length > 0 ? dbPath : undefined;
+}
+
+/**
  * Spawn the real sidecar process and adapt its stdio into a
  * {@link SidecarChannel}. stdout is decoded as UTF-8 and split on newlines;
  * stderr is forwarded to the main-process console for diagnostics.
  */
 export function spawnSidecarChannel(binaryPath?: string): SidecarChannel {
   const executable = binaryPath ?? resolveSidecarPath();
-  const child = spawn(executable, [], {
+  const dbPath = resolveCatalogDbPath();
+  const args = dbPath ? ['--catalog-db', dbPath] : [];
+  const child = spawn(executable, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
   });

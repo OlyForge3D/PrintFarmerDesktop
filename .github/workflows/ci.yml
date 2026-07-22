@@ -92,7 +92,7 @@ jobs:
 
       - name: Build sidecar (release)
         working-directory: native
-        run: cargo build --release -p model-core
+        run: cargo build --release -p model-core --features sqlite
 
       - name: Package app (bundles the prebuilt sidecar)
         env:

@@ -197,6 +197,80 @@ pub fn render_thumbnail_dto(
     })
 }
 
+/// A physical file backing a logical model, in wire form.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelLocationDto {
+    pub root_id: String,
+    /// Absolute path on disk.
+    pub path: String,
+    /// Path relative to its source root.
+    pub root_relative: String,
+    pub size: u64,
+    /// Whether the file was present at the last reconciliation.
+    pub available: bool,
+}
+
+impl From<&crate::catalog::ModelLocation> for ModelLocationDto {
+    fn from(loc: &crate::catalog::ModelLocation) -> Self {
+        Self {
+            root_id: loc.root_id.clone(),
+            path: loc.path.to_string_lossy().into_owned(),
+            root_relative: loc.root_relative.to_string_lossy().into_owned(),
+            size: loc.fingerprint.size,
+            available: loc.available,
+        }
+    }
+}
+
+/// A logical model (content-hash identity) plus its physical locations, in wire
+/// form. Mirrors the `LogicalModel` Zod schema in `src/shared/ipc.ts`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogicalModelDto {
+    /// Lowercase hex SHA-256 of the file bytes; the model's stable identity.
+    pub hash: String,
+    /// `"stl"` or `"threeMf"` (from `ModelFormat`'s camelCase serde names).
+    pub format: ModelFormat,
+    pub size: u64,
+    pub locations: Vec<ModelLocationDto>,
+}
+
+impl From<&crate::catalog::LogicalModel> for LogicalModelDto {
+    fn from(model: &crate::catalog::LogicalModel) -> Self {
+        Self {
+            hash: model.hash.clone(),
+            format: model.format,
+            size: model.size,
+            locations: model.locations.iter().map(ModelLocationDto::from).collect(),
+        }
+    }
+}
+
+/// Summary of one reconciliation pass over a source root, in wire form. Mirrors
+/// the `ReconcileReport` Zod schema in `src/shared/ipc.ts`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconcileReportDto {
+    pub added: usize,
+    pub changed: usize,
+    pub unchanged: usize,
+    pub missing: usize,
+    pub hash_errors: usize,
+}
+
+impl From<&crate::catalog::ReconcileReport> for ReconcileReportDto {
+    fn from(r: &crate::catalog::ReconcileReport) -> Self {
+        Self {
+            added: r.added,
+            changed: r.changed,
+            unchanged: r.unchanged,
+            missing: r.missing,
+            hash_errors: r.hash_errors,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,5 +389,49 @@ mod tests {
         let path = dir.path().join("model.obj");
         std::fs::write(&path, b"nope").unwrap();
         assert!(render_thumbnail_dto(&path, None).is_err());
+    }
+
+    #[test]
+    fn logical_model_dto_serializes_camel_case() {
+        use crate::catalog::{LogicalModel, ModelLocation};
+        use crate::model::FileFingerprint;
+        use std::path::PathBuf;
+
+        let model = LogicalModel {
+            hash: "abc123".to_string(),
+            format: ModelFormat::Stl,
+            size: 2048,
+            locations: vec![ModelLocation {
+                root_id: "root1".to_string(),
+                path: PathBuf::from("/models/part.stl"),
+                root_relative: PathBuf::from("part.stl"),
+                fingerprint: FileFingerprint::new(2048, None),
+                available: true,
+            }],
+        };
+        let dto = LogicalModelDto::from(&model);
+        let json = serde_json::to_string(&dto).unwrap();
+        assert!(json.contains("\"hash\":\"abc123\""));
+        assert!(json.contains("\"format\":\"stl\""));
+        assert!(json.contains("\"rootRelative\":\"part.stl\""));
+        assert!(json.contains("\"available\":true"));
+        let parsed: LogicalModelDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, dto);
+    }
+
+    #[test]
+    fn reconcile_report_dto_round_trips() {
+        let report = crate::catalog::ReconcileReport {
+            added: 3,
+            changed: 1,
+            unchanged: 5,
+            missing: 2,
+            hash_errors: 0,
+        };
+        let dto = ReconcileReportDto::from(&report);
+        let json = serde_json::to_string(&dto).unwrap();
+        assert!(json.contains("\"hashErrors\":0"));
+        let parsed: ReconcileReportDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, dto);
     }
 }

@@ -208,4 +208,63 @@ describe('ipc contract', () => {
       }),
     ).toThrow();
   });
+
+  it('accepts a valid scan-root request', () => {
+    const value = ipcSchemas[IpcChannel.ScanRoot].request.parse({
+      rootId: 'root1',
+      path: 'C:\\models',
+    });
+    expect(value.rootId).toBe('root1');
+    expect(value.path).toContain('models');
+  });
+
+  it('rejects a scan-root request with an empty rootId', () => {
+    expect(() =>
+      ipcSchemas[IpcChannel.ScanRoot].request.parse({
+        rootId: '',
+        path: 'C:\\models',
+      }),
+    ).toThrow();
+  });
+
+  it('accepts a scan-root (reconcile report) response', () => {
+    const value = ipcSchemas[IpcChannel.ScanRoot].response.parse({
+      added: 3,
+      changed: 1,
+      unchanged: 5,
+      missing: 2,
+      hashErrors: 0,
+    });
+    expect(value.added).toBe(3);
+    expect(value.hashErrors).toBe(0);
+  });
+
+  it('accepts a list-models response with a logical model', () => {
+    const value = ipcSchemas[IpcChannel.ListModels].response.parse([
+      {
+        hash: 'deadbeef',
+        format: 'threeMf',
+        size: 4096,
+        locations: [
+          {
+            rootId: 'root1',
+            path: 'C:\\models\\part.3mf',
+            rootRelative: 'part.3mf',
+            size: 4096,
+            available: true,
+          },
+        ],
+      },
+    ]);
+    expect(value[0]?.format).toBe('threeMf');
+    expect(value[0]?.locations[0]?.available).toBe(true);
+  });
+
+  it('rejects a logical model with an unknown format', () => {
+    expect(() =>
+      ipcSchemas[IpcChannel.ListModels].response.parse([
+        { hash: 'x', format: 'obj', size: 1, locations: [] },
+      ]),
+    ).toThrow();
+  });
 });

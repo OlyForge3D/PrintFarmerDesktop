@@ -118,7 +118,7 @@ pub struct ReconcileReport {
 /// Reconcile a root's scan against the store, hashing only new or changed
 /// files. Locations that disappeared are marked unavailable rather than
 /// deleted, so a reconnecting drive restores them without a re-hash.
-pub fn reconcile_root<S: CatalogStore>(
+pub fn reconcile_root<S: CatalogStore + ?Sized>(
     store: &mut S,
     root_id: &str,
     scan: &ScanResult,

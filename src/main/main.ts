@@ -48,6 +48,14 @@ if (!enforceSingleInstance()) {
 } else {
   void app.whenReady().then(() => {
     applyContentSecurityPolicy(session.defaultSession);
+    // Persist the model catalog under the per-user data directory so it
+    // survives restarts. The sidecar reads this via PRINTFARMER_CATALOG_DB.
+    if (!process.env.PRINTFARMER_CATALOG_DB) {
+      process.env.PRINTFARMER_CATALOG_DB = path.join(
+        app.getPath('userData'),
+        'catalog.sqlite3',
+      );
+    }
     registerIpcHandlers();
     createMainWindow();
 

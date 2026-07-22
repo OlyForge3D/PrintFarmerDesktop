@@ -10,9 +10,9 @@
 // Set PRINTFARMER_SKIP_SIDECAR_BUILD=1 to skip the cargo build (equivalent to
 // --no-build); CI builds the sidecar in a dedicated step and only stages here.
 //
-// The build uses only the sidecar's default (pure-Rust) features, so no C
-// toolchain is required beyond the platform linker already present on CI
-// runners and developer machines.
+// The build enables the `sqlite` feature so the shipped sidecar can persist the
+// model catalog on disk (the bundled SQLite driver needs a C toolchain, which CI
+// runners and developer machines with a platform C compiler already have).
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, copyFileSync, rmSync } from 'node:fs';
@@ -33,7 +33,7 @@ function buildSidecar() {
   console.log('[stage-sidecar] building model-core (release)…');
   const result = spawnSync(
     'cargo',
-    ['build', '--release', '-p', 'model-core'],
+    ['build', '--release', '-p', 'model-core', '--features', 'sqlite'],
     {
       cwd: nativeDir,
       stdio: 'inherit',

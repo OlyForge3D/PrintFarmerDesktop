@@ -19,14 +19,28 @@
 //!   slice stats, embedded thumbnail part names).
 //! - `renderThumbnail` — params `{"path":<string>,"size":<u32?>}`; returns a
 //!   [`crate::rpc::ThumbnailDto`] (base64 PNG + pixel dimensions).
+//! - `scanRoot` — params `{"rootId":<string>,"path":<string>}`; scans the folder,
+//!   reconciles it into the catalog, and returns a [`crate::rpc::ReconcileReportDto`].
+//! - `listModels` — params ignored; returns all catalogued logical models as
+//!   [`crate::rpc::LogicalModelDto`]s.
+//!
+//! Stateful methods (`scanRoot`, `listModels`) read and write a persistent
+//! [`crate::catalog::CatalogStore`] threaded through the serve loop. The shipped
+//! binary uses the SQLite store when given `--catalog-db <path>`; otherwise (and
+//! in tests) an ephemeral in-memory store is used.
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::rpc::{extract_vendor_metadata_dto, load_scene_dto, render_thumbnail_dto};
+use crate::catalog::{reconcile_root, CatalogStore, InMemoryCatalog};
+use crate::rpc::{
+    extract_vendor_metadata_dto, load_scene_dto, render_thumbnail_dto, LogicalModelDto,
+    ReconcileReportDto,
+};
 use crate::{sidecar_version, RPC_PROTOCOL_VERSION};
 
 /// A decoded request envelope.
@@ -81,8 +95,16 @@ struct ThumbnailParams {
     size: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScanRootParams {
+    root_id: String,
+    path: String,
+}
+
 /// Handle one decoded request, producing the response value or an error message.
-fn dispatch(method: &str, params: Value) -> Result<Value, String> {
+/// `store` backs the stateful catalog methods; stateless methods ignore it.
+fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result<Value, String> {
     match method {
         "handshake" => Ok(serde_json::json!({
             "protocolVersion": RPC_PROTOCOL_VERSION,
@@ -110,6 +132,20 @@ fn dispatch(method: &str, params: Value) -> Result<Value, String> {
                 .map_err(|e| format!("failed to render thumbnail: {e}"))?;
             serde_json::to_value(dto).map_err(|e| format!("failed to serialize thumbnail: {e}"))
         }
+        "scanRoot" => {
+            let params: ScanRootParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid scanRoot params: {e}"))?;
+            let scan =
+                crate::scan::scan_root(&PathBuf::from(&params.path), &AtomicBool::new(false));
+            let report = reconcile_root(store, &params.root_id, &scan);
+            serde_json::to_value(ReconcileReportDto::from(&report))
+                .map_err(|e| format!("failed to serialize reconcile report: {e}"))
+        }
+        "listModels" => {
+            let models: Vec<LogicalModelDto> =
+                store.models().iter().map(LogicalModelDto::from).collect();
+            serde_json::to_value(models).map_err(|e| format!("failed to serialize models: {e}"))
+        }
         other => Err(format!("unknown method: {other}")),
     }
 }
@@ -117,14 +153,14 @@ fn dispatch(method: &str, params: Value) -> Result<Value, String> {
 /// Turn one raw request line into a serialized response line. Returns `None` for
 /// blank lines (which are ignored). Malformed envelopes yield a best-effort error
 /// response with `id` 0 so the client can surface a protocol fault.
-fn handle_line(line: &str) -> Option<String> {
+fn handle_line(store: &mut dyn CatalogStore, line: &str) -> Option<String> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return None;
     }
 
     let response = match serde_json::from_str::<Request>(trimmed) {
-        Ok(request) => match dispatch(&request.method, request.params) {
+        Ok(request) => match dispatch(store, &request.method, request.params) {
             Ok(result) => Response::ok(request.id, result),
             Err(message) => Response::err(request.id, message),
         },
@@ -143,12 +179,17 @@ fn handle_line(line: &str) -> Option<String> {
 
 /// Run the blocking request/response loop until the input stream closes.
 ///
-/// Each line read from `input` is dispatched and its response written to
-/// `output`, flushed immediately so the client never waits on buffering.
-pub fn run<R: BufRead, W: Write>(input: R, mut output: W) -> std::io::Result<()> {
+/// Each line read from `input` is dispatched against `store` and its response
+/// written to `output`, flushed immediately so the client never waits on
+/// buffering.
+pub fn run<R: BufRead, W: Write>(
+    store: &mut dyn CatalogStore,
+    input: R,
+    mut output: W,
+) -> std::io::Result<()> {
     for line in input.lines() {
         let line = line?;
-        if let Some(response) = handle_line(&line) {
+        if let Some(response) = handle_line(store, &line) {
             output.write_all(response.as_bytes())?;
             output.write_all(b"\n")?;
             output.flush()?;
@@ -157,20 +198,58 @@ pub fn run<R: BufRead, W: Write>(input: R, mut output: W) -> std::io::Result<()>
     Ok(())
 }
 
+/// Build the catalog store the serve loop threads through dispatch. With the
+/// `sqlite` feature and a `db_path`, this is the persistent on-disk store;
+/// otherwise it falls back to the ephemeral in-memory store.
+#[cfg(feature = "sqlite")]
+fn build_store(db_path: Option<PathBuf>) -> Box<dyn CatalogStore> {
+    match db_path {
+        Some(path) => match crate::sqlite_catalog::SqliteCatalog::open(&path) {
+            Ok(store) => Box::new(store),
+            Err(e) => {
+                eprintln!(
+                    "model-core: failed to open catalog db at {}: {e}; using in-memory catalog",
+                    path.display()
+                );
+                Box::new(InMemoryCatalog::new())
+            }
+        },
+        None => Box::new(InMemoryCatalog::new()),
+    }
+}
+
+/// In-memory-only fallback for builds without the `sqlite` feature.
+#[cfg(not(feature = "sqlite"))]
+fn build_store(_db_path: Option<PathBuf>) -> Box<dyn CatalogStore> {
+    Box::new(InMemoryCatalog::new())
+}
+
 /// Serve on the process's own stdin/stdout. This is the sidecar's default mode.
-pub fn run_stdio() -> std::io::Result<()> {
+///
+/// `db_path` selects the persistent SQLite catalog (when the `sqlite` feature is
+/// compiled in); `None` uses an ephemeral in-memory catalog.
+pub fn run_stdio(db_path: Option<PathBuf>) -> std::io::Result<()> {
+    let mut store = build_store(db_path);
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    run(stdin.lock(), stdout.lock())
+    run(store.as_mut(), stdin.lock(), stdout.lock())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Convenience wrapper: dispatch a single line against a throwaway in-memory
+    /// catalog. Stateful methods that need a shared store across calls construct
+    /// their own store and call `handle_line` directly.
+    fn hl(line: &str) -> Option<String> {
+        let mut store = InMemoryCatalog::new();
+        handle_line(&mut store, line)
+    }
+
     #[test]
     fn handshake_returns_versions() {
-        let out = handle_line(r#"{"id":7,"method":"handshake","params":{}}"#).unwrap();
+        let out = hl(r#"{"id":7,"method":"handshake","params":{}}"#).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["id"], 7);
         assert_eq!(v["ok"], true);
@@ -180,14 +259,14 @@ mod tests {
 
     #[test]
     fn handshake_tolerates_missing_params() {
-        let out = handle_line(r#"{"id":1,"method":"handshake"}"#).unwrap();
+        let out = hl(r#"{"id":1,"method":"handshake"}"#).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["ok"], true);
     }
 
     #[test]
     fn unknown_method_is_an_error_response() {
-        let out = handle_line(r#"{"id":2,"method":"nope","params":{}}"#).unwrap();
+        let out = hl(r#"{"id":2,"method":"nope","params":{}}"#).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["id"], 2);
         assert_eq!(v["ok"], false);
@@ -196,7 +275,7 @@ mod tests {
 
     #[test]
     fn malformed_request_reports_id_zero() {
-        let out = handle_line("not json").unwrap();
+        let out = hl("not json").unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["id"], 0);
         assert_eq!(v["ok"], false);
@@ -205,15 +284,14 @@ mod tests {
 
     #[test]
     fn blank_lines_are_ignored() {
-        assert!(handle_line("   ").is_none());
-        assert!(handle_line("").is_none());
+        assert!(hl("   ").is_none());
+        assert!(hl("").is_none());
     }
 
     #[test]
     fn load_scene_reports_missing_file_as_error() {
         let out =
-            handle_line(r#"{"id":3,"method":"loadScene","params":{"path":"does-not-exist.stl"}}"#)
-                .unwrap();
+            hl(r#"{"id":3,"method":"loadScene","params":{"path":"does-not-exist.stl"}}"#).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["id"], 3);
         assert_eq!(v["ok"], false);
@@ -249,7 +327,7 @@ mod tests {
             "method": "loadScene",
             "params": { "path": path.to_string_lossy() },
         });
-        let out = handle_line(&request.to_string()).unwrap();
+        let out = hl(&request.to_string()).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["id"], 9);
         assert_eq!(v["ok"], true, "response was {v}");
@@ -260,10 +338,8 @@ mod tests {
 
     #[test]
     fn extract_vendor_metadata_reports_missing_file_as_error() {
-        let out = handle_line(
-            r#"{"id":4,"method":"extractVendorMetadata","params":{"path":"nope.3mf"}}"#,
-        )
-        .unwrap();
+        let out = hl(r#"{"id":4,"method":"extractVendorMetadata","params":{"path":"nope.3mf"}}"#)
+            .unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["id"], 4);
         assert_eq!(v["ok"], false);
@@ -318,7 +394,7 @@ mod tests {
             "method": "extractVendorMetadata",
             "params": { "path": path.to_string_lossy() },
         });
-        let out = handle_line(&request.to_string()).unwrap();
+        let out = hl(&request.to_string()).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["id"], 11);
         assert_eq!(v["ok"], true, "response was {v}");
@@ -351,7 +427,7 @@ mod tests {
             "method": "renderThumbnail",
             "params": { "path": path.to_string_lossy(), "size": 32 },
         });
-        let out = handle_line(&request.to_string()).unwrap();
+        let out = hl(&request.to_string()).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["id"], 13);
         assert_eq!(v["ok"], true, "response was {v}");
@@ -367,7 +443,8 @@ mod tests {
             "{\"id\":2,\"method\":\"handshake\"}\n",
         );
         let mut output = Vec::new();
-        run(input.as_bytes(), &mut output).unwrap();
+        let mut store = InMemoryCatalog::new();
+        run(&mut store, input.as_bytes(), &mut output).unwrap();
         let text = String::from_utf8(output).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         // Two responses; the blank line produced none.
@@ -376,5 +453,63 @@ mod tests {
         let second: Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(first["id"], 1);
         assert_eq!(second["id"], 2);
+    }
+
+    #[test]
+    fn scan_root_then_list_models_over_the_wire() {
+        // A folder with one binary STL should reconcile into one logical model
+        // that a subsequent listModels call returns — proving shared state.
+        let mut bytes = vec![0u8; 80];
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&0f32.to_le_bytes());
+        bytes.extend_from_slice(&0f32.to_le_bytes());
+        bytes.extend_from_slice(&1f32.to_le_bytes());
+        for v in [[0f32, 0f32, 0f32], [1f32, 0f32, 0f32], [0f32, 1f32, 0f32]] {
+            for c in v {
+                bytes.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("part.stl"), &bytes).unwrap();
+
+        let mut store = InMemoryCatalog::new();
+
+        let scan_req = serde_json::json!({
+            "id": 1,
+            "method": "scanRoot",
+            "params": { "rootId": "root1", "path": dir.path().to_string_lossy() },
+        });
+        let out = handle_line(&mut store, &scan_req.to_string()).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], true, "scan response was {v}");
+        assert_eq!(v["result"]["added"], 1);
+
+        let list_req = serde_json::json!({ "id": 2, "method": "listModels" });
+        let out = handle_line(&mut store, &list_req.to_string()).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], true, "list response was {v}");
+        let models = v["result"].as_array().unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["format"], "stl");
+        assert_eq!(models[0]["locations"].as_array().unwrap().len(), 1);
+        assert_eq!(models[0]["locations"][0]["available"], true);
+    }
+
+    #[test]
+    fn scan_root_rejects_malformed_params() {
+        let mut store = InMemoryCatalog::new();
+        let out = handle_line(
+            &mut store,
+            r#"{"id":5,"method":"scanRoot","params":{"path":"/tmp"}}"#,
+        )
+        .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], false);
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("invalid scanRoot params"));
     }
 }

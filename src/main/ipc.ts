@@ -89,6 +89,17 @@ export function registerIpcHandlers(channelFactory?: ChannelFactory): void {
     },
   );
 
+  ipcMain.handle(IpcChannel.ScanRoot, async (_event, rawRequest: unknown) => {
+    const request = ipcSchemas[IpcChannel.ScanRoot].request.parse(rawRequest);
+    const raw = await sidecar.scanRoot(request.rootId, request.path);
+    return ipcSchemas[IpcChannel.ScanRoot].response.parse(raw);
+  });
+
+  ipcMain.handle(IpcChannel.ListModels, async () => {
+    const raw = await sidecar.listModels();
+    return ipcSchemas[IpcChannel.ListModels].response.parse(raw);
+  });
+
   ipcMain.handle(IpcChannel.OpenModelFile, async (event) => {
     // The renderer cannot name a path; it can only ask us to show the OS file
     // picker, and we return only what the user explicitly selected.

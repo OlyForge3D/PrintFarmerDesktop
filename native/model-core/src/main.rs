@@ -6,9 +6,25 @@
 //! versions on one line and exits, for a cheap liveness/compatibility probe.
 
 use std::env;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use model_core::Handshake;
+
+/// Parse `--catalog-db <path>` (or `--catalog-db=<path>`) from the argument
+/// list, if present. Selects the persistent SQLite catalog for the serve loop.
+fn parse_catalog_db(args: &[String]) -> Option<PathBuf> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if let Some(rest) = arg.strip_prefix("--catalog-db=") {
+            return Some(PathBuf::from(rest));
+        }
+        if arg == "--catalog-db" {
+            return iter.next().map(PathBuf::from);
+        }
+    }
+    None
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -28,15 +44,17 @@ fn main() -> ExitCode {
             model_core::sidecar_version(),
             model_core::RPC_PROTOCOL_VERSION
         );
-        eprintln!("usage: model-core [--serve | --handshake | --help]");
+        eprintln!("usage: model-core [--serve | --handshake | --help] [--catalog-db <path>]");
         eprintln!("  with no arguments, serves JSON-RPC over stdin/stdout");
+        eprintln!("  --catalog-db <path>  persist the model catalog at <path> (requires sqlite)");
         return ExitCode::SUCCESS;
     }
 
     // Default (and explicit `--serve`): run the framed RPC loop until stdin
     // closes. A transport I/O error is reported and exits non-zero so the main
     // process supervisor can restart the sidecar.
-    match model_core::serve::run_stdio() {
+    let db_path = parse_catalog_db(&args);
+    match model_core::serve::run_stdio(db_path) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("model-core: sidecar transport error: {e}");

@@ -19,6 +19,8 @@ export const IpcChannel = {
   OpenModelFile: 'dialog:openModelFile',
   ExtractVendorMetadata: 'model:extractVendorMetadata',
   RenderThumbnail: 'model:renderThumbnail',
+  ScanRoot: 'catalog:scanRoot',
+  ListModels: 'catalog:listModels',
 } as const;
 
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel];
@@ -177,6 +179,52 @@ export const RenderThumbnailResponse = z.object({
 });
 export type RenderThumbnailResponse = z.infer<typeof RenderThumbnailResponse>;
 
+// --- catalog:scanRoot / catalog:listModels --------------------------------
+
+/** A physical file backing a logical model, mirroring the sidecar's DTO. */
+export const ModelLocation = z.object({
+  rootId: z.string(),
+  path: z.string(),
+  rootRelative: z.string(),
+  size: z.number().int().nonnegative(),
+  available: z.boolean(),
+});
+export type ModelLocation = z.infer<typeof ModelLocation>;
+
+/** A logical model (content-hash identity) plus its physical locations. */
+export const LogicalModel = z.object({
+  hash: z.string().min(1),
+  format: ModelFormat,
+  size: z.number().int().nonnegative(),
+  locations: z.array(ModelLocation),
+});
+export type LogicalModel = z.infer<typeof LogicalModel>;
+
+/** Summary of one reconciliation pass over a source root. */
+export const ReconcileReport = z.object({
+  added: z.number().int().nonnegative(),
+  changed: z.number().int().nonnegative(),
+  unchanged: z.number().int().nonnegative(),
+  missing: z.number().int().nonnegative(),
+  hashErrors: z.number().int().nonnegative(),
+});
+export type ReconcileReport = z.infer<typeof ReconcileReport>;
+
+export const ScanRootRequest = z.object({
+  rootId: z.string().min(1).max(256),
+  path: z.string().min(1).max(4096),
+});
+export type ScanRootRequest = z.infer<typeof ScanRootRequest>;
+
+export const ScanRootResponse = ReconcileReport;
+export type ScanRootResponse = z.infer<typeof ScanRootResponse>;
+
+export const ListModelsRequest = z.void();
+export type ListModelsRequest = z.infer<typeof ListModelsRequest>;
+
+export const ListModelsResponse = z.array(LogicalModel);
+export type ListModelsResponse = z.infer<typeof ListModelsResponse>;
+
 /**
  * Registry mapping each channel to its request/response schemas. Used by both
  * the main-process handler registration and the preload bridge.
@@ -206,6 +254,14 @@ export const ipcSchemas = {
     request: RenderThumbnailRequest,
     response: RenderThumbnailResponse,
   },
+  [IpcChannel.ScanRoot]: {
+    request: ScanRootRequest,
+    response: ScanRootResponse,
+  },
+  [IpcChannel.ListModels]: {
+    request: ListModelsRequest,
+    response: ListModelsResponse,
+  },
 } as const;
 
 export type IpcSchemas = typeof ipcSchemas;
@@ -222,4 +278,6 @@ export interface PrintFarmerApi {
   renderThumbnail(
     request: RenderThumbnailRequest,
   ): Promise<RenderThumbnailResponse>;
+  scanRoot(request: ScanRootRequest): Promise<ScanRootResponse>;
+  listModels(): Promise<ListModelsResponse>;
 }

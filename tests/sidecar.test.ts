@@ -158,6 +158,58 @@ describe('SidecarClient', () => {
     expect(request.params.size).toBeUndefined();
   });
 
+  it('sends a well-formed scanRoot request and resolves the report', async () => {
+    const { channel, sent } = makeFakeChannel((req, emit) => {
+      emit(
+        JSON.stringify({
+          id: req.id,
+          ok: true,
+          result: {
+            added: 2,
+            changed: 0,
+            unchanged: 1,
+            missing: 0,
+            hashErrors: 0,
+          },
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel);
+    const result = await client.scanRoot('root1', 'C:/models');
+    expect(result).toMatchObject({ added: 2, unchanged: 1 });
+    const request = JSON.parse(sent[0] ?? '{}') as {
+      method: string;
+      params: { rootId: string; path: string };
+    };
+    expect(request.method).toBe('scanRoot');
+    expect(request.params.rootId).toBe('root1');
+    expect(request.params.path).toBe('C:/models');
+  });
+
+  it('sends a listModels request and resolves the model array', async () => {
+    const { channel, sent } = makeFakeChannel((req, emit) => {
+      emit(
+        JSON.stringify({
+          id: req.id,
+          ok: true,
+          result: [
+            {
+              hash: 'abc',
+              format: 'stl',
+              size: 1024,
+              locations: [],
+            },
+          ],
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel);
+    const result = await client.listModels();
+    expect(Array.isArray(result)).toBe(true);
+    const request = JSON.parse(sent[0] ?? '{}') as { method: string };
+    expect(request.method).toBe('listModels');
+  });
+
   it('rejects when the sidecar returns an error envelope', async () => {
     const { channel } = makeFakeChannel((req, emit) => {
       emit(
