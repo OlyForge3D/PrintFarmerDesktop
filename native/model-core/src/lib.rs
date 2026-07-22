@@ -13,6 +13,7 @@ pub mod rpc;
 pub mod scan;
 pub mod scene;
 pub mod schema;
+pub mod serve;
 pub mod stl;
 pub mod threemf;
 pub mod watch;

@@ -6,14 +6,24 @@ import {
   ipcSchemas,
   type SidecarPingResponse,
 } from '@shared/ipc';
+import {
+  SidecarClient,
+  spawnSidecarChannel,
+  type ChannelFactory,
+} from './sidecar.js';
 
 /**
  * Register all IPC handlers. Every incoming payload is validated against its
  * Zod request schema before the handler runs, and every result is validated
  * against the response schema before being returned to the renderer. Invalid
  * input from a compromised renderer is rejected rather than trusted.
+ *
+ * @param channelFactory - Optional sidecar transport override, primarily for
+ *   tests. Defaults to spawning the real `model-core` process.
  */
-export function registerIpcHandlers(): void {
+export function registerIpcHandlers(channelFactory?: ChannelFactory): void {
+  const sidecar = new SidecarClient(channelFactory ?? spawnSidecarChannel);
+
   ipcMain.handle(IpcChannel.AppInfo, () => {
     const response: AppInfoResponse = {
       contractVersion: IPC_CONTRACT_VERSION,
@@ -24,26 +34,37 @@ export function registerIpcHandlers(): void {
     return ipcSchemas[IpcChannel.AppInfo].response.parse(response);
   });
 
-  ipcMain.handle(IpcChannel.SidecarPing, (_event, rawRequest: unknown) => {
-    const request =
-      ipcSchemas[IpcChannel.SidecarPing].request.parse(rawRequest);
-    // The Rust sidecar RPC is not wired yet; echo the nonce so the transport
-    // and validation path can be exercised end to end.
-    const response: SidecarPingResponse = {
-      ok: true,
-      nonce: request.nonce,
-      sidecarVersion: null,
-    };
-    return ipcSchemas[IpcChannel.SidecarPing].response.parse(response);
-  });
+  ipcMain.handle(
+    IpcChannel.SidecarPing,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.SidecarPing].request.parse(rawRequest);
+      // Probe the live sidecar. A failed handshake is reported as not-ok with a
+      // null version rather than throwing, so the renderer can show a degraded
+      // state instead of an error dialog.
+      let sidecarVersion: string | null = null;
+      let ok = false;
+      try {
+        const handshake = await sidecar.handshake();
+        sidecarVersion = handshake.sidecarVersion;
+        ok = true;
+      } catch {
+        ok = false;
+      }
+      const response: SidecarPingResponse = {
+        ok,
+        nonce: request.nonce,
+        sidecarVersion,
+      };
+      return ipcSchemas[IpcChannel.SidecarPing].response.parse(response);
+    },
+  );
 
-  ipcMain.handle(IpcChannel.LoadScene, (_event, rawRequest: unknown) => {
-    // Validate the untrusted request now so the contract is enforced at the
-    // boundary. The Rust sidecar that parses the file into a scene is not wired
-    // yet, so fail explicitly rather than fabricate geometry.
-    ipcSchemas[IpcChannel.LoadScene].request.parse(rawRequest);
-    throw new Error(
-      'scene loading is not available until the sidecar is wired',
-    );
+  ipcMain.handle(IpcChannel.LoadScene, async (_event, rawRequest: unknown) => {
+    const request = ipcSchemas[IpcChannel.LoadScene].request.parse(rawRequest);
+    const raw = await sidecar.loadScene(request.path);
+    // Validate the sidecar's response against the contract before trusting it
+    // in the renderer.
+    return ipcSchemas[IpcChannel.LoadScene].response.parse(raw);
   });
 }
