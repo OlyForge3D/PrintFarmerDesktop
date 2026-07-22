@@ -1,0 +1,6 @@
+.vite
+dist
+out
+node_modules
+native
+package-lock.json

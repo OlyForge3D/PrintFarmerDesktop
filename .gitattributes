@@ -1,0 +1,11 @@
+# Normalize line endings to LF for all text files so formatting checks are
+# stable across Windows and macOS CI.
+* text=auto eol=lf
+
+# Binary assets: never normalize.
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
+*.stl binary
+*.3mf binary
