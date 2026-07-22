@@ -10,6 +10,7 @@ pub mod geometry;
 pub mod hash;
 pub mod model;
 pub mod scan;
+pub mod scene;
 pub mod schema;
 pub mod stl;
 pub mod threemf;
