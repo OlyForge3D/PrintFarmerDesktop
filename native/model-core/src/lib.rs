@@ -5,6 +5,12 @@
 //! with the Electron main process over a framed, versioned RPC protocol on a
 //! private transport. Only the version/handshake surface exists so far.
 
+pub mod catalog;
+pub mod hash;
+pub mod model;
+pub mod scan;
+pub mod schema;
+
 /// Version of the RPC protocol spoken by this sidecar. Bumped on any
 /// breaking change to the framing or message envelope.
 pub const RPC_PROTOCOL_VERSION: u32 = 1;
