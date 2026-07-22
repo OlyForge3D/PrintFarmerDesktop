@@ -11,6 +11,8 @@ export interface ModelCardProps {
   model: LogicalModel;
   selected: boolean;
   onSelect: (model: LogicalModel) => void;
+  favorite?: boolean;
+  onToggleFavorite?: (model: LogicalModel) => void;
 }
 
 /** A single selectable model tile in the library grid. */
@@ -18,6 +20,8 @@ export function ModelCard({
   model,
   selected,
   onSelect,
+  favorite = false,
+  onToggleFavorite,
 }: ModelCardProps): React.JSX.Element {
   const name = modelDisplayName(model);
   const available = isAvailable(model);
@@ -26,6 +30,18 @@ export function ModelCard({
 
   return (
     <li className="model-card">
+      {onToggleFavorite ? (
+        <button
+          type="button"
+          className={favorite ? 'model-fav-button active' : 'model-fav-button'}
+          aria-pressed={favorite}
+          aria-label={favorite ? `Unfavorite ${name}` : `Favorite ${name}`}
+          title={favorite ? 'Remove from favorites' : 'Add to favorites'}
+          onClick={() => onToggleFavorite(model)}
+        >
+          {favorite ? '★' : '☆'}
+        </button>
+      ) : null}
       <button
         type="button"
         className={

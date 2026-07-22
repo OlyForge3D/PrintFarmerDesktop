@@ -6,6 +6,8 @@ export interface ModelGridProps {
   selectedHash: string | null;
   onSelect: (model: LogicalModel) => void;
   emptyLabel?: React.ReactNode;
+  isFavorite?: (hash: string) => boolean;
+  onToggleFavorite?: (model: LogicalModel) => void;
 }
 
 /** Renders the catalog as a grid of selectable model cards. */
@@ -14,6 +16,8 @@ export function ModelGrid({
   selectedHash,
   onSelect,
   emptyLabel,
+  isFavorite,
+  onToggleFavorite,
 }: ModelGridProps): React.JSX.Element {
   if (models.length === 0) {
     return (
@@ -36,6 +40,8 @@ export function ModelGrid({
           model={model}
           selected={model.hash === selectedHash}
           onSelect={onSelect}
+          favorite={isFavorite?.(model.hash) ?? false}
+          {...(onToggleFavorite ? { onToggleFavorite } : {})}
         />
       ))}
     </ul>

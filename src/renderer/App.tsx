@@ -8,6 +8,7 @@ import { ModelViewer, type Projection } from './viewer/ModelViewer';
 import { sampleCubeScene } from './viewer/geometry';
 import type { SceneMesh } from './viewer/types';
 import { useLibrary } from './library/useLibrary';
+import { useFavorites } from './library/useFavorites';
 import { ModelGrid } from './library/ModelGrid';
 import { modelDisplayName, preferredPath } from './library/model';
 import {
@@ -31,10 +32,11 @@ export function App(): React.JSX.Element {
   const [sort, setSort] = useState<SortKey>(defaultLibraryView.sort);
 
   const library = useLibrary();
+  const { favorites, isFavorite, toggle: toggleFavorite } = useFavorites();
 
   const visibleModels = useMemo(
-    () => selectLibraryView(library.models, { query, filter, sort }),
-    [library.models, query, filter, sort],
+    () => selectLibraryView(library.models, { query, filter, sort, favorites }),
+    [library.models, query, filter, sort, favorites],
   );
 
   const sampleMesh = useMemo(() => sampleCubeScene(20), []);
@@ -140,6 +142,7 @@ export function App(): React.JSX.Element {
               onChange={(event) => setFilter(event.target.value as FilterKey)}
             >
               <option value="all">All</option>
+              <option value="favorites">Favorites</option>
               <option value="duplicates">Duplicates</option>
               <option value="missing">Missing files</option>
             </select>
@@ -177,6 +180,8 @@ export function App(): React.JSX.Element {
           onSelect={(model) => {
             void openFromLibrary(model);
           }}
+          isFavorite={isFavorite}
+          onToggleFavorite={(model) => toggleFavorite(model.hash)}
           emptyLabel={
             library.models.length > 0
               ? 'No models match your search or filter.'

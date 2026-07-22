@@ -14,6 +14,7 @@ import {
   defaultLibraryView,
   selectLibraryView,
 } from '../src/renderer/library/filter.js';
+import { useFavorites } from '../src/renderer/library/useFavorites.js';
 import {
   clearThumbnailCache,
   useThumbnail,
@@ -238,18 +239,53 @@ describe('selectLibraryView', () => {
     expect(bySize[0]?.size).toBe(300);
   });
 
-  it('filters to missing files and to duplicates', () => {
-    const missing = selectLibraryView(models, {
+  it('filters to favorites using the provided hash set', () => {
+    const favorites = new Set(['h-alpha.stl', 'h-dup']);
+    const result = selectLibraryView(models, {
       ...defaultLibraryView,
-      filter: 'missing',
+      filter: 'favorites',
+      favorites,
     });
-    expect(missing.map((m) => m.hash)).toEqual(['h-gone.stl']);
+    expect(result.map((m) => m.hash).sort()).toEqual(['h-alpha.stl', 'h-dup']);
+  });
 
-    const duplicates = selectLibraryView(models, {
-      ...defaultLibraryView,
-      filter: 'duplicates',
+  it('returns nothing for the favorites filter without a set', () => {
+    expect(
+      selectLibraryView(models, { ...defaultLibraryView, filter: 'favorites' }),
+    ).toHaveLength(0);
+  });
+});
+
+describe('useFavorites', () => {
+  beforeEach(() => {
+    globalThis.localStorage?.clear();
+  });
+
+  it('toggles favorites and persists them to localStorage', () => {
+    const { result } = renderHook(() => useFavorites());
+    expect(result.current.isFavorite('abc')).toBe(false);
+
+    act(() => {
+      result.current.toggle('abc');
     });
-    expect(duplicates.map((m) => m.hash)).toEqual(['h-dup']);
+    expect(result.current.isFavorite('abc')).toBe(true);
+    expect(
+      globalThis.localStorage.getItem('printfarmer.favorites.v1'),
+    ).toContain('abc');
+
+    act(() => {
+      result.current.toggle('abc');
+    });
+    expect(result.current.isFavorite('abc')).toBe(false);
+  });
+
+  it('rehydrates favorites from localStorage', () => {
+    globalThis.localStorage.setItem(
+      'printfarmer.favorites.v1',
+      JSON.stringify(['seeded']),
+    );
+    const { result } = renderHook(() => useFavorites());
+    expect(result.current.isFavorite('seeded')).toBe(true);
   });
 });
 
@@ -307,6 +343,26 @@ describe('<ModelGrid />', () => {
       />,
     );
     expect(screen.getByRole('button', { name: /gone.stl/i })).toBeDisabled();
+  });
+
+  it('renders a favorite toggle and reports the model', () => {
+    const onToggleFavorite = vi.fn();
+    render(
+      <ModelGrid
+        models={[model({ hash: 'a' })]}
+        selectedHash={null}
+        onSelect={vi.fn()}
+        isFavorite={(hash) => hash === 'a'}
+        onToggleFavorite={onToggleFavorite}
+      />,
+    );
+
+    const fav = screen.getByRole('button', { name: /Unfavorite/i });
+    expect(fav).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(fav);
+    expect(onToggleFavorite).toHaveBeenCalledWith(
+      expect.objectContaining({ hash: 'a' }),
+    );
   });
 });
 

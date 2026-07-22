@@ -179,6 +179,35 @@ body {
 
 .model-card {
   margin: 0;
+  position: relative;
+}
+
+.model-fav-button {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 1;
+  width: 1.9rem;
+  height: 1.9rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(15, 17, 23, 0.72);
+  color: var(--muted);
+  font-size: 1.05rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.model-fav-button:hover {
+  color: #f4c542;
+}
+
+.model-fav-button.active {
+  color: #f4c542;
 }
 
 .model-card-button {

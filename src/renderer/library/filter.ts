@@ -2,12 +2,14 @@ import type { LogicalModel } from '@shared/ipc';
 import { isAvailable, modelDisplayName } from './model';
 
 export type SortKey = 'name' | 'size';
-export type FilterKey = 'all' | 'duplicates' | 'missing';
+export type FilterKey = 'all' | 'favorites' | 'duplicates' | 'missing';
 
 export interface LibraryView {
   query: string;
   filter: FilterKey;
   sort: SortKey;
+  /** Content hashes the user has favorited; only used by the favorites filter. */
+  favorites?: ReadonlySet<string>;
 }
 
 export const defaultLibraryView: LibraryView = {
@@ -16,8 +18,14 @@ export const defaultLibraryView: LibraryView = {
   sort: 'name',
 };
 
-function matchesFilter(model: LogicalModel, filter: FilterKey): boolean {
+function matchesFilter(
+  model: LogicalModel,
+  filter: FilterKey,
+  favorites: ReadonlySet<string> | undefined,
+): boolean {
   switch (filter) {
+    case 'favorites':
+      return favorites?.has(model.hash) ?? false;
     case 'duplicates':
       // Same content present at more than one path.
       return model.locations.length > 1;
@@ -40,7 +48,7 @@ export function selectLibraryView(
   const needle = view.query.trim().toLowerCase();
 
   const filtered = models.filter((model) => {
-    if (!matchesFilter(model, view.filter)) {
+    if (!matchesFilter(model, view.filter, view.favorites)) {
       return false;
     }
     if (needle.length === 0) {
