@@ -182,7 +182,9 @@ describe('<ModelGrid />', () => {
     const button = screen.getByRole('button', { name: /widget.stl/i });
     fireEvent.click(button);
     expect(onSelect).toHaveBeenCalledTimes(1);
-    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ hash: 'a' }));
+    expect(onSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ hash: 'a' }),
+    );
   });
 
   it('disables cards whose files are missing', () => {
