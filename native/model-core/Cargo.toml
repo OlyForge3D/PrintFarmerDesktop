@@ -19,6 +19,7 @@ sha2 = "0.10"
 walkdir = "2"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+notify = "8"
 
 [dev-dependencies]
 tempfile = "3"

@@ -11,6 +11,7 @@ pub mod model;
 pub mod scan;
 pub mod schema;
 pub mod stl;
+pub mod watch;
 
 /// Version of the RPC protocol spoken by this sidecar. Bumped on any
 /// breaking change to the framing or message envelope.
