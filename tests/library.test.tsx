@@ -13,6 +13,11 @@ import { ModelGrid } from '../src/renderer/library/ModelGrid.js';
 import { TagEditor } from '../src/renderer/library/TagEditor.js';
 import { CollectionEditor } from '../src/renderer/library/CollectionEditor.js';
 import { PartTree } from '../src/renderer/library/PartTree.js';
+import { ModelStats } from '../src/renderer/library/ModelStats.js';
+import {
+  computeSceneStats,
+  formatDimension,
+} from '../src/renderer/library/sceneStats.js';
 import { visibleIndices } from '../src/renderer/viewer/geometry.js';
 import type { SceneMesh } from '../src/renderer/viewer/types.js';
 import { useModelTags } from '../src/renderer/library/useModelTags.js';
@@ -621,6 +626,34 @@ describe('<PartTree />', () => {
     // Some parts are hidden, so the control offers to show all.
     fireEvent.click(screen.getByRole('button', { name: /Show all/i }));
     expect(onToggleAll).toHaveBeenCalledWith(true);
+  });
+});
+
+describe('computeSceneStats', () => {
+  it('derives counts and dimensions from a mesh', () => {
+    const stats = computeSceneStats(partedMesh());
+    expect(stats.triangles).toBe(2);
+    expect(stats.vertices).toBe(6);
+    expect(stats.dimensions).toEqual([1, 1, 1]);
+    expect(stats.parts).toBe(2);
+    expect(stats.format).toBe('threeMf');
+  });
+
+  it('formats dimensions without trailing zeros', () => {
+    expect(formatDimension(12.5)).toBe('12.5');
+    expect(formatDimension(3)).toBe('3');
+    expect(formatDimension(1.005)).toBe('1');
+  });
+});
+
+describe('<ModelStats />', () => {
+  it('renders format, dimensions, and counts', () => {
+    render(<ModelStats mesh={partedMesh()} />);
+    expect(screen.getByText('3MF')).toBeInTheDocument();
+    expect(screen.getByText('1 × 1 × 1')).toBeInTheDocument();
+    expect(screen.getByText('Triangles')).toBeInTheDocument();
+    // Two parts, so the Parts row appears.
+    expect(screen.getByText('Parts')).toBeInTheDocument();
   });
 });
 

@@ -15,6 +15,7 @@ import { ModelGrid } from './library/ModelGrid';
 import { TagEditor } from './library/TagEditor';
 import { CollectionEditor } from './library/CollectionEditor';
 import { PartTree } from './library/PartTree';
+import { ModelStats } from './library/ModelStats';
 import { modelDisplayName, preferredPath } from './library/model';
 import {
   defaultLibraryView,
@@ -264,6 +265,7 @@ export function App(): React.JSX.Element {
           hiddenParts={hiddenParts}
           className="viewer-canvas"
         />
+        <ModelStats mesh={mesh} />
         {(mesh.parts?.length ?? 0) > 1 ? (
           <div className="viewer-parts">
             <PartTree
