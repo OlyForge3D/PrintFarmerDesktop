@@ -1,0 +1,51 @@
+# Node / Electron / Vite
+node_modules/
+dist/
+out/
+.vite/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Electron Forge / packaging
+.webpack/
+release/
+*.asar
+
+# Rust sidecar
+native/**/target/
+**/*.rs.bk
+Cargo.lock.orig
+
+# TypeScript build artifacts
+*.tsbuildinfo
+
+# Test / coverage
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+
+# Secrets, signing material, local config (NEVER commit)
+*.pem
+*.pfx
+*.p12
+*.mobileprovision
+*.cer
+*.key
+.env
+.env.*
+!.env.example
+signing/
+notarization/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.shared.json
+*.swp
