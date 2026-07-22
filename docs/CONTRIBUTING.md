@@ -22,23 +22,23 @@ npm install
 
 Renderer/main/preload (run from the repo root):
 
-| Command                | Purpose                              |
-| ---------------------- | ------------------------------------ |
-| `npm run dev`          | Launch the app with hot reload       |
-| `npm run typecheck`    | Strict TypeScript check (no emit)    |
-| `npm run lint`         | ESLint (type-aware)                  |
-| `npm run format`       | Prettier check (`format:write` fixes)|
-| `npm run test`         | Vitest unit/component tests          |
-| `npm run make`         | Build platform installers            |
+| Command             | Purpose                               |
+| ------------------- | ------------------------------------- |
+| `npm run dev`       | Launch the app with hot reload        |
+| `npm run typecheck` | Strict TypeScript check (no emit)     |
+| `npm run lint`      | ESLint (type-aware)                   |
+| `npm run format`    | Prettier check (`format:write` fixes) |
+| `npm run test`      | Vitest unit/component tests           |
+| `npm run make`      | Build platform installers             |
 
 Rust sidecar (run from `native/`):
 
-| Command                          | Purpose                    |
-| -------------------------------- | -------------------------- |
-| `cargo build`                    | Build the sidecar          |
-| `cargo test`                     | Run sidecar tests          |
-| `cargo clippy -- -D warnings`    | Lint with warnings denied  |
-| `cargo fmt --check`              | Formatting check           |
+| Command                       | Purpose                   |
+| ----------------------------- | ------------------------- |
+| `cargo build`                 | Build the sidecar         |
+| `cargo test`                  | Run sidecar tests         |
+| `cargo clippy -- -D warnings` | Lint with warnings denied |
+| `cargo fmt --check`           | Formatting check          |
 
 ## Conventions
 
