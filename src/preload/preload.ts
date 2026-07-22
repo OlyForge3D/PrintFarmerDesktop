@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron';
 import {
   IpcChannel,
   type AppInfoResponse,
+  type LoadSceneRequest,
+  type LoadSceneResponse,
   type PrintFarmerApi,
   type SidecarPingRequest,
   type SidecarPingResponse,
@@ -20,6 +22,11 @@ const api: PrintFarmerApi = {
       IpcChannel.SidecarPing,
       request,
     ) as Promise<SidecarPingResponse>,
+  loadScene: (request: LoadSceneRequest): Promise<LoadSceneResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.LoadScene,
+      request,
+    ) as Promise<LoadSceneResponse>,
 };
 
 contextBridge.exposeInMainWorld('printFarmer', api);

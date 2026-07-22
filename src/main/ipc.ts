@@ -36,4 +36,14 @@ export function registerIpcHandlers(): void {
     };
     return ipcSchemas[IpcChannel.SidecarPing].response.parse(response);
   });
+
+  ipcMain.handle(IpcChannel.LoadScene, (_event, rawRequest: unknown) => {
+    // Validate the untrusted request now so the contract is enforced at the
+    // boundary. The Rust sidecar that parses the file into a scene is not wired
+    // yet, so fail explicitly rather than fabricate geometry.
+    ipcSchemas[IpcChannel.LoadScene].request.parse(rawRequest);
+    throw new Error(
+      'scene loading is not available until the sidecar is wired',
+    );
+  });
 }

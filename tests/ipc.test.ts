@@ -43,4 +43,51 @@ describe('ipc contract', () => {
       }),
     ).toThrow();
   });
+
+  it('accepts a valid load-scene request', () => {
+    const value = ipcSchemas[IpcChannel.LoadScene].request.parse({
+      path: 'C:\\models\\part.stl',
+    });
+    expect(value.path).toContain('part.stl');
+  });
+
+  it('rejects a load-scene request with an empty path', () => {
+    expect(() =>
+      ipcSchemas[IpcChannel.LoadScene].request.parse({ path: '' }),
+    ).toThrow();
+  });
+
+  it('accepts a valid scene response', () => {
+    const value = ipcSchemas[IpcChannel.LoadScene].response.parse({
+      positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+      indices: [0, 1, 2],
+      bounds: { min: [0, 0, 0], max: [1, 1, 0] },
+      sourceFormat: 'threeMf',
+      faceColors: null,
+    });
+    expect(value.indices).toEqual([0, 1, 2]);
+    expect(value.sourceFormat).toBe('threeMf');
+  });
+
+  it('rejects a scene response with a negative index', () => {
+    expect(() =>
+      ipcSchemas[IpcChannel.LoadScene].response.parse({
+        positions: [0, 0, 0],
+        indices: [-1],
+        bounds: { min: [0, 0, 0], max: [0, 0, 0] },
+        sourceFormat: 'stl',
+      }),
+    ).toThrow();
+  });
+
+  it('rejects a scene response with an unknown source format', () => {
+    expect(() =>
+      ipcSchemas[IpcChannel.LoadScene].response.parse({
+        positions: [],
+        indices: [],
+        bounds: { min: [0, 0, 0], max: [0, 0, 0] },
+        sourceFormat: 'obj',
+      }),
+    ).toThrow();
+  });
 });

@@ -15,6 +15,7 @@ export const IPC_CONTRACT_VERSION = 1 as const;
 export const IpcChannel = {
   AppInfo: 'app:info',
   SidecarPing: 'sidecar:ping',
+  LoadScene: 'model:loadScene',
 } as const;
 
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel];
@@ -46,6 +47,43 @@ export const SidecarPingResponse = z.object({
 });
 export type SidecarPingResponse = z.infer<typeof SidecarPingResponse>;
 
+// --- model:loadScene ------------------------------------------------------
+
+/** Supported model formats, matching the sidecar's `ModelFormat` serde names. */
+export const ModelFormat = z.enum(['stl', 'threeMf']);
+export type ModelFormat = z.infer<typeof ModelFormat>;
+
+const Vec3 = z.tuple([z.number(), z.number(), z.number()]);
+
+export const Bounds = z.object({
+  min: Vec3,
+  max: Vec3,
+});
+export type Bounds = z.infer<typeof Bounds>;
+
+/**
+ * The normalized, format-agnostic mesh the sidecar produces from an STL or 3MF
+ * file. Positions and indices are flat arrays (`positions` is xyz-interleaved;
+ * `indices` references vertices in triples). `faceColors`, when present, is one
+ * RGB (0–255) triple per triangle.
+ */
+export const SceneMesh = z.object({
+  positions: z.array(z.number()),
+  indices: z.array(z.number().int().nonnegative()),
+  bounds: Bounds,
+  sourceFormat: ModelFormat,
+  faceColors: z.array(z.number().int().min(0).max(255)).nullable().optional(),
+});
+export type SceneMesh = z.infer<typeof SceneMesh>;
+
+export const LoadSceneRequest = z.object({
+  path: z.string().min(1).max(4096),
+});
+export type LoadSceneRequest = z.infer<typeof LoadSceneRequest>;
+
+export const LoadSceneResponse = SceneMesh;
+export type LoadSceneResponse = z.infer<typeof LoadSceneResponse>;
+
 /**
  * Registry mapping each channel to its request/response schemas. Used by both
  * the main-process handler registration and the preload bridge.
@@ -59,6 +97,10 @@ export const ipcSchemas = {
     request: SidecarPingRequest,
     response: SidecarPingResponse,
   },
+  [IpcChannel.LoadScene]: {
+    request: LoadSceneRequest,
+    response: LoadSceneResponse,
+  },
 } as const;
 
 export type IpcSchemas = typeof ipcSchemas;
@@ -67,4 +109,5 @@ export type IpcSchemas = typeof ipcSchemas;
 export interface PrintFarmerApi {
   getAppInfo(): Promise<AppInfoResponse>;
   pingSidecar(request: SidecarPingRequest): Promise<SidecarPingResponse>;
+  loadScene(request: LoadSceneRequest): Promise<LoadSceneResponse>;
 }
