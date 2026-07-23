@@ -56,8 +56,10 @@ returning tokens; a renewed token is returned only after the profile revision is
 revalidated. Probes retain their starting generation across all network awaits;
 superseded probes are cancellation outcomes and cannot mark a profile as
 failed. The atomic profile write is the final guarded commit before its validated
-token candidate is installed. Draft probes use isolated ephemeral authentication
-identities.
+token candidate is conditionally installed; token purges during the write prevent
+installation without turning a successful persistence commit into an error.
+Vault failures advance the same generation before persisting error state. Draft
+probes use isolated ephemeral authentication identities.
 
 The App owns ordered profile-list reconciliation, including mutations that
 finish after the profile dialog closes. A synchronous modal owner coordinates

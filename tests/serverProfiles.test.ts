@@ -891,6 +891,37 @@ describe('server profiles', () => {
     expect(exchanges).toBe(3);
   });
 
+  it('does not reinsert a token cleared while the profile write is pending', async () => {
+    const fs = new MemoryFileSystem();
+    let exchanges = 0;
+    const profiles = service(
+      fs,
+      successfulFetch((url) => {
+        if (url.pathname === '/api/auth/api-key/exchange') exchanges += 1;
+      }),
+    );
+    const saved = await profiles.save(apiKeyDraft());
+    const writeGate = fs.gateNextWrite();
+
+    const update = profiles.save(
+      apiKeyDraft({ id: saved.id, displayName: 'Persist without token' }),
+    );
+    await writeGate.reached;
+    profiles.clearTokens();
+    writeGate.release();
+
+    await expect(update).resolves.toMatchObject({
+      id: saved.id,
+      displayName: 'Persist without token',
+      status: 'connected',
+    });
+    expect(persistedStore(fs)).toContain(
+      '"displayName":"Persist without token"',
+    );
+    await expect(profiles.getToken(saved.id)).resolves.toBe('short-lived-jwt');
+    expect(exchanges).toBe(3);
+  });
+
   it('rebinds cached authentication when URL and credentials are replaced', async () => {
     const fs = new MemoryFileSystem();
     const authentications: Array<{
@@ -1206,6 +1237,69 @@ describe('server profiles', () => {
     ).resolves.toMatchObject({ status: 'legacy' });
   });
 
+  it('does not let an older legacy save invalidate a newer retest generation', async () => {
+    const fs = new MemoryFileSystem();
+    const olderCapabilitiesGate = deferred<Response>();
+    const olderSaveReached = deferred<void>();
+    const baseline = successfulFetch();
+    let capabilityCalls = 0;
+    let versionCalls = 0;
+    const fetchImpl: typeof globalThis.fetch = vi.fn(
+      (input: string | URL | Request, init?: RequestInit) => {
+        const endpoint = requestUrl(input).pathname;
+        if (endpoint === '/api/system/capabilities') {
+          capabilityCalls += 1;
+          if (capabilityCalls === 2) {
+            olderSaveReached.resolve();
+            return olderCapabilitiesGate.promise;
+          }
+        }
+        if (endpoint === '/api/system/version') {
+          versionCalls += 1;
+          if (versionCalls === 3) {
+            return Promise.resolve(
+              json({ ...VERSION, version: 'newer-retest-version' }),
+            );
+          }
+        }
+        return baseline(input, init);
+      },
+    );
+    const profiles = service(fs, fetchImpl);
+    const saved = await profiles.save(apiKeyDraft());
+
+    const olderSave = profiles.save(
+      apiKeyDraft({
+        id: saved.id,
+        displayName: 'Older legacy save',
+        allowLegacy: false,
+      }),
+    );
+    const olderSaveResult = expect(olderSave).rejects.toMatchObject({
+      code: 'AUTHENTICATION_SUPERSEDED',
+    });
+    await olderSaveReached.promise;
+    await expect(
+      profiles.test({ source: 'saved', id: saved.id }),
+    ).resolves.toMatchObject({
+      status: 'connected',
+      version: { version: 'newer-retest-version' },
+    });
+    olderCapabilitiesGate.resolve(json({}, 404));
+
+    await olderSaveResult;
+    await expect(profiles.list()).resolves.toMatchObject({
+      profiles: [
+        {
+          id: saved.id,
+          displayName: 'Farm',
+          status: 'connected',
+          version: { version: 'newer-retest-version' },
+        },
+      ],
+    });
+  });
+
   it('persists error status when a saved-profile retest rejects', async () => {
     const fs = new MemoryFileSystem();
     let failRetest = false;
@@ -1365,6 +1459,109 @@ describe('server profiles', () => {
       );
     },
   );
+
+  it('vault failure supersedes an older stalled retest', async () => {
+    const fs = new MemoryFileSystem();
+    let vaultFails = false;
+    const storage: SecretStorage = {
+      ...secureStorage,
+      decryptString: (value) => {
+        if (vaultFails) throw new Error('vault unavailable');
+        return secureStorage.decryptString(value);
+      },
+    };
+    const olderVersionGate = deferred<Response>();
+    const olderRetestReached = deferred<void>();
+    const baseline = successfulFetch();
+    let versionCalls = 0;
+    const fetchImpl: typeof globalThis.fetch = vi.fn(
+      (input: string | URL | Request, init?: RequestInit) => {
+        if (requestUrl(input).pathname === '/api/system/version') {
+          versionCalls += 1;
+          if (versionCalls === 2) {
+            olderRetestReached.resolve();
+            return olderVersionGate.promise;
+          }
+        }
+        return baseline(input, init);
+      },
+    );
+    const profiles = service(fs, fetchImpl, () => NOW, storage);
+    const saved = await profiles.save(apiKeyDraft());
+
+    const olderRetest = profiles.test({ source: 'saved', id: saved.id });
+    const olderResult = expect(olderRetest).rejects.toMatchObject({
+      code: 'AUTHENTICATION_SUPERSEDED',
+    });
+    await olderRetestReached.promise;
+    vaultFails = true;
+    await expect(
+      profiles.test({ source: 'saved', id: saved.id }),
+    ).rejects.toMatchObject({ code: 'CORRUPT_STORE' });
+    vaultFails = false;
+    olderVersionGate.resolve(json({ ...VERSION, version: 'must-not-commit' }));
+
+    await olderResult;
+    await expect(profiles.list()).resolves.toMatchObject({
+      profiles: [{ id: saved.id, status: 'error' }],
+    });
+    expect(persistedStore(fs)).not.toContain('must-not-commit');
+  });
+
+  it('vault failure supersedes an older token renewal', async () => {
+    const fs = new MemoryFileSystem();
+    let currentTime = NOW;
+    let vaultFails = false;
+    const storage: SecretStorage = {
+      ...secureStorage,
+      decryptString: (value) => {
+        if (vaultFails) throw new Error('vault unavailable');
+        return secureStorage.decryptString(value);
+      },
+    };
+    const renewalGate = deferred<Response>();
+    const renewalReached = deferred<void>();
+    const baseline = successfulFetch();
+    let exchanges = 0;
+    const fetchImpl: typeof globalThis.fetch = vi.fn(
+      (input: string | URL | Request, init?: RequestInit) => {
+        if (requestUrl(input).pathname === '/api/auth/api-key/exchange') {
+          exchanges += 1;
+          if (exchanges === 2) {
+            renewalReached.resolve();
+            return renewalGate.promise;
+          }
+        }
+        return baseline(input, init);
+      },
+    );
+    const profiles = service(fs, fetchImpl, () => currentTime, storage);
+    const saved = await profiles.save(apiKeyDraft());
+    currentTime += 14 * 60_000 + 1;
+
+    const renewal = profiles.getToken(saved.id);
+    const renewalResult = expect(renewal).rejects.toMatchObject({
+      code: 'AUTHENTICATION_SUPERSEDED',
+    });
+    await renewalReached.promise;
+    vaultFails = true;
+    await expect(
+      profiles.test({ source: 'saved', id: saved.id }),
+    ).rejects.toMatchObject({ code: 'CORRUPT_STORE' });
+    vaultFails = false;
+    renewalGate.resolve(
+      json({
+        token: 'must-not-return',
+        expiresAt: new Date(currentTime + 15 * 60_000).toISOString(),
+        scopes: ['ModelRead', 'ModelWrite', 'LibrarySync'],
+      }),
+    );
+
+    await renewalResult;
+    await expect(profiles.list()).resolves.toMatchObject({
+      profiles: [{ id: saved.id, status: 'error' }],
+    });
+  });
 
   it('rejects malformed capabilities and corrupt stores explicitly', async () => {
     const malformed = successfulFetch();

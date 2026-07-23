@@ -385,6 +385,7 @@ export class ServerProfileService {
           secret: this.decryptSecret(stored),
         };
       } catch (error) {
+        this.invalidateToken(stored.id);
         store.profiles[index] = errorProfile(stored, this.now());
         try {
           await this.writeStore(store);
@@ -455,7 +456,7 @@ export class ServerProfileService {
         store.profiles[index] = mergeProbeResult(current, tested);
         await this.writeStore(store);
         if (authentication) {
-          this.installAuthenticatedToken(authentication);
+          this.installAuthenticatedTokenIfCurrent(authentication);
         }
         return tested;
       }
@@ -487,7 +488,9 @@ export class ServerProfileService {
     const tested = probed.profile;
     if (tested.status === 'legacy' && !draft.allowLegacy) {
       await this.withMutationLock(() => {
-        this.invalidateToken(id);
+        if (!this.invalidateAuthenticationIfCurrent(probed.authentication)) {
+          throw authenticationSupersededError();
+        }
         return Promise.resolve();
       });
       throw new ServerProfileError(
@@ -518,7 +521,7 @@ export class ServerProfileService {
       store.selectedProfileId ??= id;
       try {
         await this.writeStore(store);
-        this.installAuthenticatedToken(probed.authentication);
+        this.installAuthenticatedTokenIfCurrent(probed.authentication);
       } catch (error) {
         this.invalidateToken(id);
         throw error;
@@ -1025,13 +1028,29 @@ export class ServerProfileService {
     );
   }
 
-  private installAuthenticatedToken(authentication: AuthenticatedToken): void {
+  private invalidateAuthenticationIfCurrent(
+    authentication: AuthenticatedToken,
+  ): boolean {
+    if (!this.authenticationIsCurrent(authentication)) {
+      return false;
+    }
+    this.invalidateToken(authentication.cacheId);
+    return true;
+  }
+
+  private installAuthenticatedTokenIfCurrent(
+    authentication: AuthenticatedToken,
+  ): boolean {
+    if (!this.authenticationIsCurrent(authentication)) {
+      return false;
+    }
     this.tokens.set(authentication.cacheId, {
       token: authentication.token,
       expiresAt: authentication.expiresAt,
       binding: authentication.binding,
       generation: authentication.generation,
     });
+    return true;
   }
 
   private invalidateToken(id: string): number {
