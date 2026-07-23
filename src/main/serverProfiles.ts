@@ -135,9 +135,14 @@ interface CachedToken {
   binding: string;
 }
 
+interface IssuedToken {
+  token: string;
+  expiresAt: number;
+}
+
 interface TokenRenewal {
   binding: string;
-  promise: Promise<string>;
+  promise: Promise<IssuedToken>;
 }
 
 interface PendingResponse {
@@ -392,18 +397,59 @@ export class ServerProfileService {
   }
 
   async getToken(id: string): Promise<string> {
-    const { profile, secret } = await this.withMutationLock(async () => {
+    const snapshot = await this.withMutationLock(async () => {
       const store = await this.readStore();
       const profile = store.profiles.find((candidate) => candidate.id === id);
       if (!profile) {
         throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
       }
+      const secret = this.decryptSecret(profile.encryptedSecret);
+      const binding = credentialBinding(profile.baseUrl, secret);
+      const cached = this.tokens.get(id);
+      if (
+        cached?.binding === binding &&
+        cached.expiresAt - TOKEN_SKEW_MS > this.now()
+      ) {
+        return { cachedToken: cached.token };
+      }
       return {
         profile,
-        secret: this.decryptSecret(profile.encryptedSecret),
+        secret,
+        binding,
+        revision: profileRevision(profile),
       };
     });
-    return this.authenticate(profile.baseUrl, secret, id, false);
+    if ('cachedToken' in snapshot) {
+      return snapshot.cachedToken;
+    }
+
+    this.tokenBindings.set(id, snapshot.binding);
+    const issued = await this.renewToken(
+      snapshot.profile.baseUrl,
+      snapshot.secret,
+      id,
+      snapshot.binding,
+    );
+    return this.withMutationLock(async () => {
+      const store = await this.readStore();
+      const current = store.profiles.find((profile) => profile.id === id);
+      if (!current) {
+        this.discardTokenBinding(id, snapshot.binding);
+        throw new ServerProfileError(
+          'NOT_FOUND',
+          'The server profile was removed while authentication was running.',
+        );
+      }
+      if (profileRevision(current) !== snapshot.revision) {
+        this.discardTokenBinding(id, snapshot.binding);
+        throw profileChangedError();
+      }
+      if (this.tokenBindings.get(id) !== snapshot.binding) {
+        throw profileChangedError();
+      }
+      this.tokens.set(id, { ...issued, binding: snapshot.binding });
+      return issued.token;
+    });
   }
 
   private async probe(
@@ -514,18 +560,24 @@ export class ServerProfileService {
     }
     this.tokens.delete(cacheId);
 
+    const issued = await this.renewToken(baseUrl, secret, cacheId, binding);
+    if (this.tokenBindings.get(cacheId) === binding) {
+      this.tokens.set(cacheId, { ...issued, binding });
+    }
+    return issued.token;
+  }
+
+  private renewToken(
+    baseUrl: string,
+    secret: StoredSecret,
+    cacheId: string,
+    binding: string,
+  ): Promise<IssuedToken> {
     const renewal = this.tokenRenewals.get(cacheId);
     if (renewal?.binding === binding) {
       return renewal.promise;
     }
-
-    let promise: Promise<string>;
-    promise = this.issueToken(baseUrl, secret).then((issued) => {
-      if (this.tokenBindings.get(cacheId) === binding) {
-        this.tokens.set(cacheId, { ...issued, binding });
-      }
-      return issued.token;
-    });
+    let promise = this.issueToken(baseUrl, secret);
     promise = promise.finally(() => {
       if (this.tokenRenewals.get(cacheId)?.promise === promise) {
         this.tokenRenewals.delete(cacheId);
@@ -538,7 +590,7 @@ export class ServerProfileService {
   private async issueToken(
     baseUrl: string,
     secret: StoredSecret,
-  ): Promise<{ token: string; expiresAt: number }> {
+  ): Promise<IssuedToken> {
     let token: string;
     let expiresAt: string;
     if (secret.authMode === 'apiKey') {
@@ -756,6 +808,18 @@ export class ServerProfileService {
     this.tokens.delete(id);
     this.tokenBindings.delete(id);
     this.tokenRenewals.delete(id);
+  }
+
+  private discardTokenBinding(id: string, binding: string): void {
+    if (this.tokens.get(id)?.binding === binding) {
+      this.tokens.delete(id);
+    }
+    if (this.tokenBindings.get(id) === binding) {
+      this.tokenBindings.delete(id);
+    }
+    if (this.tokenRenewals.get(id)?.binding === binding) {
+      this.tokenRenewals.delete(id);
+    }
   }
 
   private async withMutationLock<T>(action: () => Promise<T>): Promise<T> {

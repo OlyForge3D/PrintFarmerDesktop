@@ -79,7 +79,7 @@ describe('<ServerProfilesDialog />', () => {
         profiles: [connected],
         selectedProfileId: connected.id,
       });
-    const onChange = vi.fn();
+    const onMutationSettled = vi.fn();
     installApi({
       testServerProfile,
       saveServerProfile,
@@ -89,7 +89,7 @@ describe('<ServerProfilesDialog />', () => {
     render(
       <ServerProfilesDialog
         profiles={{ profiles: [], selectedProfileId: null }}
-        onChange={onChange}
+        onMutationSettled={onMutationSettled}
         onClose={vi.fn()}
       />,
     );
@@ -115,7 +115,7 @@ describe('<ServerProfilesDialog />', () => {
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'Save profile' }));
-    await waitFor(() => expect(onChange).toHaveBeenCalled());
+    await waitFor(() => expect(onMutationSettled).toHaveBeenCalled());
     expect(saveServerProfile).toHaveBeenCalledWith(
       expect.objectContaining({ displayName: 'Production farm' }),
     );
@@ -146,7 +146,7 @@ describe('<ServerProfilesDialog />', () => {
     render(
       <ServerProfilesDialog
         profiles={{ profiles: [], selectedProfileId: null }}
-        onChange={vi.fn()}
+        onMutationSettled={vi.fn()}
         onClose={vi.fn()}
       />,
     );
@@ -183,7 +183,7 @@ describe('<ServerProfilesDialog />', () => {
         <button type="button">Outside</button>
         <ServerProfilesDialog
           profiles={{ profiles: [], selectedProfileId: null }}
-          onChange={vi.fn()}
+          onMutationSettled={vi.fn()}
           onClose={onClose}
         />
       </>,
@@ -214,39 +214,27 @@ describe('<ServerProfilesDialog />', () => {
     expect(close).toHaveFocus();
   });
 
-  it('refreshes persisted error state after a saved retest rejects', async () => {
-    const failed = { ...connected, status: 'error' as const };
+  it('notifies the parent after a saved retest rejects', async () => {
     const testServerProfile = vi
       .fn<PrintFarmerApi['testServerProfile']>()
       .mockRejectedValue(new Error('Server unavailable'));
-    const listServerProfiles = vi
-      .fn<PrintFarmerApi['listServerProfiles']>()
-      .mockResolvedValue({
-        profiles: [failed],
-        selectedProfileId: failed.id,
-      });
-    const onChange = vi.fn();
-    installApi({ testServerProfile, listServerProfiles });
+    const onMutationSettled = vi.fn();
+    installApi({ testServerProfile });
     render(
       <ServerProfilesDialog
         profiles={{ profiles: [connected], selectedProfileId: connected.id }}
-        onChange={onChange}
+        onMutationSettled={onMutationSettled}
         onClose={vi.fn()}
       />,
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Test' }));
 
-    await waitFor(() =>
-      expect(onChange).toHaveBeenCalledWith({
-        profiles: [failed],
-        selectedProfileId: failed.id,
-      }),
-    );
+    await waitFor(() => expect(onMutationSettled).toHaveBeenCalledOnce());
     expect(screen.getByRole('alert')).toHaveTextContent('Server unavailable');
   });
 
-  it('ignores a mutation callback that resolves after close', async () => {
+  it('reconciles a mutation after close without applying dialog-local state', async () => {
     const pending = deferred<{
       profiles: ServerProfile[];
       selectedProfileId: string | null;
@@ -254,12 +242,12 @@ describe('<ServerProfilesDialog />', () => {
     const deleteServerProfile = vi.fn<PrintFarmerApi['deleteServerProfile']>(
       () => pending.promise,
     );
-    const onChange = vi.fn();
+    const onMutationSettled = vi.fn();
     installApi({ deleteServerProfile });
     render(
       <ServerProfilesDialog
         profiles={{ profiles: [connected], selectedProfileId: connected.id }}
-        onChange={onChange}
+        onMutationSettled={onMutationSettled}
         onClose={vi.fn()}
       />,
     );
@@ -273,6 +261,6 @@ describe('<ServerProfilesDialog />', () => {
       await pending.promise;
     });
 
-    expect(onChange).not.toHaveBeenCalled();
+    expect(onMutationSettled).toHaveBeenCalledOnce();
   });
 });

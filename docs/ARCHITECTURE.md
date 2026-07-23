@@ -48,7 +48,13 @@ rename. Profile mutations are serialized and network retests use configuration
 revisions so a stale result cannot overwrite an update or resurrect a deleted
 credential. API keys and passwords are encrypted with Electron `safeStorage`;
 the main process refuses to save them when OS-backed encryption is unavailable.
-JWTs exist only in main-process memory and are reissued before expiration.
+JWTs exist only in main-process memory and are reissued before expiration. A
+renewed token is returned only after the profile revision is revalidated.
+
+The App owns ordered profile-list reconciliation, including mutations that
+finish after the profile dialog closes. A synchronous modal owner coordinates
+profile, import, file-picker, and preview entry so asynchronous preparation
+cannot overlap or later remount another modal.
 
 The main process probes the anonymous version and capability endpoints and
 publishes only redacted profile metadata plus explicit feature availability.

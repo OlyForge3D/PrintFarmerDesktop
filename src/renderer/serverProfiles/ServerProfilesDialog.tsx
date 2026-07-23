@@ -8,13 +8,13 @@ import type {
 
 interface ServerProfilesDialogProps {
   profiles: ListServerProfilesResponse;
-  onChange: (profiles: ListServerProfilesResponse) => void;
+  onMutationSettled: () => void;
   onClose: () => void;
 }
 
 export function ServerProfilesDialog({
   profiles,
-  onChange,
+  onMutationSettled,
   onClose,
 }: ServerProfilesDialogProps): React.JSX.Element {
   const [displayName, setDisplayName] = useState('');
@@ -128,9 +128,6 @@ export function ServerProfilesDialog({
     try {
       await window.printFarmer.saveServerProfile(draft());
       if (!operationIsCurrent(epoch)) return;
-      const latest = await window.printFarmer.listServerProfiles();
-      if (!operationIsCurrent(epoch)) return;
-      onChange(latest);
       setTested(null);
       setDisplayName('');
       setApiKey('');
@@ -139,6 +136,7 @@ export function ServerProfilesDialog({
       if (!operationIsCurrent(epoch)) return;
       setError(errorMessage(cause));
     } finally {
+      onMutationSettled();
       if (operationIsCurrent(epoch)) setBusy(false);
     }
   };
@@ -150,11 +148,11 @@ export function ServerProfilesDialog({
     try {
       await window.printFarmer.selectServerProfile({ id });
       if (!operationIsCurrent(epoch)) return;
-      onChange({ ...profiles, selectedProfileId: id });
     } catch (cause) {
       if (!operationIsCurrent(epoch)) return;
       setError(errorMessage(cause));
     } finally {
+      onMutationSettled();
       if (operationIsCurrent(epoch)) setBusy(false);
     }
   };
@@ -164,32 +162,16 @@ export function ServerProfilesDialog({
     setBusy(true);
     setError(null);
     try {
-      const updated = await window.printFarmer.testServerProfile({
+      await window.printFarmer.testServerProfile({
         source: 'saved',
         id,
       });
       if (!operationIsCurrent(epoch)) return;
-      onChange({
-        ...profiles,
-        profiles: profiles.profiles.map((profile) =>
-          profile.id === id ? updated : profile,
-        ),
-      });
     } catch (cause) {
       if (!operationIsCurrent(epoch)) return;
-      const testError = errorMessage(cause);
-      try {
-        const latest = await window.printFarmer.listServerProfiles();
-        if (!operationIsCurrent(epoch)) return;
-        onChange(latest);
-        setError(testError);
-      } catch (refreshCause) {
-        if (!operationIsCurrent(epoch)) return;
-        setError(
-          `${testError} The saved error status could not be refreshed: ${errorMessage(refreshCause)}`,
-        );
-      }
+      setError(errorMessage(cause));
     } finally {
+      onMutationSettled();
       if (operationIsCurrent(epoch)) setBusy(false);
     }
   };
@@ -199,13 +181,13 @@ export function ServerProfilesDialog({
     setBusy(true);
     setError(null);
     try {
-      const latest = await window.printFarmer.deleteServerProfile({ id });
+      await window.printFarmer.deleteServerProfile({ id });
       if (!operationIsCurrent(epoch)) return;
-      onChange(latest);
     } catch (cause) {
       if (!operationIsCurrent(epoch)) return;
       setError(errorMessage(cause));
     } finally {
+      onMutationSettled();
       if (operationIsCurrent(epoch)) setBusy(false);
     }
   };

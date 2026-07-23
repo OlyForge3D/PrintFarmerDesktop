@@ -44,6 +44,9 @@ interface PreviewTarget {
   hash: string | null;
 }
 
+type ModalOwner =
+  'none' | 'profiles' | 'import' | 'previewPreparation' | 'preview';
+
 export function App(): React.JSX.Element {
   const [info, setInfo] = useState<AppInfoResponse | null>(null);
   const [appError, setAppError] = useState<string | null>(null);
@@ -54,6 +57,7 @@ export function App(): React.JSX.Element {
     });
   const [profilesOpen, setProfilesOpen] = useState(false);
   const [importPreparing, setImportPreparing] = useState(false);
+  const [modalOwner, setModalOwnerState] = useState<ModalOwner>('none');
   const [query, setQuery] = useState(defaultLibraryView.query);
   const [filter, setFilter] = useState<FilterKey>(defaultLibraryView.filter);
   const [sort, setSort] = useState<SortKey>(defaultLibraryView.sort);
@@ -85,13 +89,37 @@ export function App(): React.JSX.Element {
   const profileReturnFocusRef = useRef<HTMLElement | null>(null);
   const restoreProfileFocusRef = useRef(false);
   const importPreparationRef = useRef(false);
-  const profileExclusionRef = useRef(false);
+  const modalOwnerRef = useRef<ModalOwner>('none');
+  const modalOwnerEpochRef = useRef(0);
   const previewRequestRef = useRef(0);
+  const profilesListRequestRef = useRef(0);
   const titlebarRef = useRef<HTMLElement | null>(null);
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const statusbarRef = useRef<HTMLElement | null>(null);
 
   const library = useLibrary();
+  const setModalOwner = useCallback((owner: ModalOwner): void => {
+    modalOwnerRef.current = owner;
+    setModalOwnerState(owner);
+  }, []);
+  const reserveModal = useCallback(
+    (owner: Exclude<ModalOwner, 'none'>): number | null => {
+      if (modalOwnerRef.current !== 'none') return null;
+      const epoch = ++modalOwnerEpochRef.current;
+      setModalOwner(owner);
+      return epoch;
+    },
+    [setModalOwner],
+  );
+  const releaseModal = useCallback(
+    (owner: Exclude<ModalOwner, 'none'>): void => {
+      if (modalOwnerRef.current === owner) {
+        modalOwnerEpochRef.current += 1;
+        setModalOwner('none');
+      }
+    },
+    [setModalOwner],
+  );
   const modalOpen = previewOpen || library.importDraft !== null || profilesOpen;
   const prepareFolderImport = library.addFolder;
   const dismissFolderImport = library.cancelImport;
@@ -187,6 +215,22 @@ export function App(): React.JSX.Element {
   const scanningFolder = folderBasename(library.scanningPath);
   const scanStatusRef = useRef<HTMLParagraphElement | null>(null);
   const wasScanningRef = useRef(false);
+  const refreshServerProfiles = useCallback((): void => {
+    if (!window.printFarmer.listServerProfiles) return;
+    const requestId = ++profilesListRequestRef.current;
+    void window.printFarmer
+      .listServerProfiles()
+      .then((latest) => {
+        if (profilesListRequestRef.current === requestId) {
+          setServerProfiles(latest);
+        }
+      })
+      .catch((err: unknown) => {
+        if (profilesListRequestRef.current === requestId) {
+          setAppError(err instanceof Error ? err.message : String(err));
+        }
+      });
+  }, []);
 
   useEffect(() => {
     if (isScanning && !wasScanningRef.current) {
@@ -205,14 +249,8 @@ export function App(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
-    if (!window.printFarmer.listServerProfiles) return;
-    window.printFarmer
-      .listServerProfiles()
-      .then(setServerProfiles)
-      .catch((err: unknown) =>
-        setAppError(err instanceof Error ? err.message : String(err)),
-      );
-  }, []);
+    refreshServerProfiles();
+  }, [refreshServerProfiles]);
 
   useEffect(() => {
     const focusSearch = (event: KeyboardEvent): void => {
@@ -254,26 +292,38 @@ export function App(): React.JSX.Element {
   }, [profilesOpen]);
 
   useEffect(() => {
-    profileExclusionRef.current =
-      busy ||
-      importPreparing ||
-      previewOpen ||
-      library.importDraft !== null ||
-      profilesOpen;
-  }, [busy, importPreparing, library.importDraft, previewOpen, profilesOpen]);
+    if (modalOwnerRef.current === 'profiles' && !profilesOpen) {
+      releaseModal('profiles');
+    } else if (
+      modalOwnerRef.current === 'import' &&
+      !importPreparing &&
+      !library.importDraft &&
+      !busy
+    ) {
+      releaseModal('import');
+    } else if (modalOwnerRef.current === 'preview' && !previewOpen) {
+      releaseModal('preview');
+    }
+  }, [
+    busy,
+    importPreparing,
+    library.importDraft,
+    previewOpen,
+    profilesOpen,
+    releaseModal,
+  ]);
 
   const beginImport = useCallback(() => {
     if (
       importPreparationRef.current ||
-      profileExclusionRef.current ||
       busy ||
       previewOpen ||
       library.importDraft
     ) {
       return;
     }
+    if (reserveModal('import') === null) return;
     importPreparationRef.current = true;
-    profileExclusionRef.current = true;
     setImportPreparing(true);
     importReturnFocusRef.current =
       document.activeElement instanceof HTMLElement
@@ -283,18 +333,25 @@ export function App(): React.JSX.Element {
       importPreparationRef.current = false;
       setImportPreparing(false);
     });
-  }, [busy, library.importDraft, prepareFolderImport, previewOpen]);
+  }, [
+    busy,
+    library.importDraft,
+    prepareFolderImport,
+    previewOpen,
+    reserveModal,
+  ]);
 
   const cancelImport = useCallback(() => {
     dismissFolderImport();
-    queueMicrotask(() => {
+    releaseModal('import');
+    setTimeout(() => {
       const previous = importReturnFocusRef.current;
       const fallback = document.querySelector<HTMLElement>(
         '.sidebar-primary-action',
       );
       (previous?.isConnected ? previous : fallback)?.focus();
     });
-  }, [dismissFolderImport]);
+  }, [dismissFolderImport, releaseModal]);
 
   const confirmImport = useCallback(
     async (plan: ImportPlan, remember: boolean): Promise<boolean> => {
@@ -304,12 +361,13 @@ export function App(): React.JSX.Element {
         commonTags: plan.commonTags,
       });
       if (result && rootId) {
+        releaseModal('import');
         if (remember) {
           rememberImportPlan(rootId, plan, result.resolvedCollections);
         } else {
           forgetImportPlan(rootId);
         }
-        queueMicrotask(() => {
+        setTimeout(() => {
           const previous = importReturnFocusRef.current;
           const fallback = document.querySelector<HTMLElement>(
             '.sidebar-primary-action',
@@ -320,7 +378,13 @@ export function App(): React.JSX.Element {
       }
       return result !== null;
     },
-    [commitFolderImport, importRootId, modelCollections, modelTags],
+    [
+      commitFolderImport,
+      importRootId,
+      modelCollections,
+      modelTags,
+      releaseModal,
+    ],
   );
 
   const rememberPreviewTrigger = useCallback(() => {
@@ -330,36 +394,49 @@ export function App(): React.JSX.Element {
         : null;
   }, []);
 
-  const loadPreview = useCallback(async (target: PreviewTarget) => {
-    const requestId = ++previewRequestRef.current;
-    profileExclusionRef.current = true;
-    setPreviewTarget(target);
-    setPreviewOpen(true);
-    setPreviewError(null);
-    setLoadedMesh(null);
-    setHiddenParts(new Set());
-    setLoading(true);
-    try {
-      const scene = await window.printFarmer.loadScene({ path: target.path });
-      if (previewRequestRef.current === requestId) {
-        setLoadedMesh(scene);
-        if (target.hash) {
-          setCachedStats({
-            hash: target.hash,
-            stats: computeSceneStats(scene),
-          });
+  const loadPreview = useCallback(
+    async (target: PreviewTarget, entryEpoch?: number) => {
+      if (entryEpoch !== undefined) {
+        if (
+          modalOwnerRef.current !== 'previewPreparation' ||
+          modalOwnerEpochRef.current !== entryEpoch
+        ) {
+          return;
+        }
+        setModalOwner('preview');
+      } else if (modalOwnerRef.current !== 'preview') {
+        return;
+      }
+      const requestId = ++previewRequestRef.current;
+      setPreviewTarget(target);
+      setPreviewOpen(true);
+      setPreviewError(null);
+      setLoadedMesh(null);
+      setHiddenParts(new Set());
+      setLoading(true);
+      try {
+        const scene = await window.printFarmer.loadScene({ path: target.path });
+        if (previewRequestRef.current === requestId) {
+          setLoadedMesh(scene);
+          if (target.hash) {
+            setCachedStats({
+              hash: target.hash,
+              stats: computeSceneStats(scene),
+            });
+          }
+        }
+      } catch (err: unknown) {
+        if (previewRequestRef.current === requestId) {
+          setPreviewError(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        if (previewRequestRef.current === requestId) {
+          setLoading(false);
         }
       }
-    } catch (err: unknown) {
-      if (previewRequestRef.current === requestId) {
-        setPreviewError(err instanceof Error ? err.message : String(err));
-      }
-    } finally {
-      if (previewRequestRef.current === requestId) {
-        setLoading(false);
-      }
-    }
-  }, []);
+    },
+    [setModalOwner],
+  );
 
   const previewModel = useCallback(
     (model: LogicalModel) => {
@@ -376,13 +453,18 @@ export function App(): React.JSX.Element {
       if (!path) {
         return;
       }
+      const entryEpoch = reserveModal('previewPreparation');
+      if (entryEpoch === null) return;
       setSelectedHash(model.hash);
       rememberPreviewTrigger();
-      void loadPreview({
-        path,
-        name: modelDisplayName(model),
-        hash: model.hash,
-      });
+      void loadPreview(
+        {
+          path,
+          name: modelDisplayName(model),
+          hash: model.hash,
+        },
+        entryEpoch,
+      );
     },
     [
       busy,
@@ -390,6 +472,7 @@ export function App(): React.JSX.Element {
       loadPreview,
       previewOpen,
       rememberPreviewTrigger,
+      reserveModal,
     ],
   );
 
@@ -402,24 +485,41 @@ export function App(): React.JSX.Element {
     ) {
       return;
     }
+    const entryEpoch = reserveModal('previewPreparation');
+    if (entryEpoch === null) return;
     setAppError(null);
+    rememberPreviewTrigger();
     try {
       const selection = await window.printFarmer.openModelFile();
-      if (!selection) {
+      if (
+        modalOwnerRef.current !== 'previewPreparation' ||
+        modalOwnerEpochRef.current !== entryEpoch
+      ) {
         return;
       }
-      rememberPreviewTrigger();
+      if (!selection) {
+        releaseModal('previewPreparation');
+        return;
+      }
       const name = selection.path.replace(/^.*[\\/]/, '');
-      void loadPreview({ path: selection.path, name, hash: null });
+      void loadPreview({ path: selection.path, name, hash: null }, entryEpoch);
     } catch (err: unknown) {
-      setAppError(err instanceof Error ? err.message : String(err));
+      if (
+        modalOwnerRef.current === 'previewPreparation' &&
+        modalOwnerEpochRef.current === entryEpoch
+      ) {
+        releaseModal('previewPreparation');
+        setAppError(err instanceof Error ? err.message : String(err));
+      }
     }
   }, [
     busy,
     library.importDraft,
     loadPreview,
     previewOpen,
+    releaseModal,
     rememberPreviewTrigger,
+    reserveModal,
   ]);
 
   const closePreview = useCallback(() => {
@@ -429,14 +529,15 @@ export function App(): React.JSX.Element {
     setLoadedMesh(null);
     setPreviewError(null);
     setLoading(false);
-    queueMicrotask(() => {
+    releaseModal('preview');
+    setTimeout(() => {
       const previous = previewReturnFocusRef.current;
       const fallback = document.querySelector<HTMLElement>(
         '.model-card-button.selected, .sidebar-search input',
       );
       (previous?.isConnected ? previous : fallback)?.focus();
     });
-  }, []);
+  }, [releaseModal]);
 
   const retryPreview = useCallback(() => {
     if (previewTarget) {
@@ -481,15 +582,17 @@ export function App(): React.JSX.Element {
     serverProfiles.profiles.find(
       (profile) => profile.id === serverProfiles.selectedProfileId,
     ) ?? null;
+  const workspaceActionsDisabled = busy || modalOwner !== 'none';
   const serverProfilesDisabled =
-    busy ||
+    workspaceActionsDisabled ||
     importPreparing ||
     previewOpen ||
     library.importDraft !== null ||
     profilesOpen;
   const openProfiles = (): void => {
-    if (profileExclusionRef.current || serverProfilesDisabled) return;
-    profileExclusionRef.current = true;
+    if (serverProfilesDisabled) return;
+    if (reserveModal('profiles') === null) return;
+    refreshServerProfiles();
     profileReturnFocusRef.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
@@ -499,6 +602,7 @@ export function App(): React.JSX.Element {
   const closeProfiles = (): void => {
     restoreProfileFocusRef.current = true;
     setProfilesOpen(false);
+    releaseModal('profiles');
   };
 
   return (
@@ -534,7 +638,7 @@ export function App(): React.JSX.Element {
           scanningFolder={scanningFolder}
           lastReport={library.lastReport}
           lastImport={library.lastImport}
-          busy={busy}
+          busy={workspaceActionsDisabled}
           onQueryChange={setQuery}
           onFilterChange={setFilter}
           onAddFolder={beginImport}
@@ -570,7 +674,7 @@ export function App(): React.JSX.Element {
               <button
                 type="button"
                 className="command-button"
-                disabled={busy}
+                disabled={workspaceActionsDisabled}
                 onClick={() => {
                   void openModelFile();
                 }}
@@ -615,13 +719,13 @@ export function App(): React.JSX.Element {
               selectedHash={selectedHash}
               onSelect={(model) => setSelectedHash(model.hash)}
               onPreview={previewModel}
-              previewDisabled={busy}
+              previewDisabled={workspaceActionsDisabled}
               isFavorite={isFavorite}
               onToggleFavorite={(model) => toggleFavorite(model.hash)}
               emptyLabel={emptyState(
                 presentation.state,
                 query,
-                busy,
+                workspaceActionsDisabled,
                 () => {
                   beginImport();
                 },
@@ -643,7 +747,7 @@ export function App(): React.JSX.Element {
           collections={modelCollections.all}
           collectionMembership={modelCollections.membership}
           organizationError={organizationError}
-          previewDisabled={busy}
+          previewDisabled={workspaceActionsDisabled}
           onToggleFavorite={() => {
             if (selectedModel) {
               toggleFavorite(selectedModel.hash);
@@ -733,10 +837,10 @@ export function App(): React.JSX.Element {
         />
       ) : null}
 
-      {profilesOpen && !library.importDraft && !previewOpen ? (
+      {profilesOpen ? (
         <ServerProfilesDialog
           profiles={serverProfiles}
-          onChange={setServerProfiles}
+          onMutationSettled={refreshServerProfiles}
           onClose={closeProfiles}
         />
       ) : null}

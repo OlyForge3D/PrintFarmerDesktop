@@ -348,6 +348,113 @@ describe('server profiles', () => {
     expect(exchanges).toBe(2);
   });
 
+  it('rejects a gated token renewal when the profile is deleted', async () => {
+    const fs = new MemoryFileSystem();
+    let currentTime = NOW;
+    let exchanges = 0;
+    const renewalReached = deferred<void>();
+    const renewalGate = deferred<Response>();
+    const baseline = successfulFetch();
+    const fetchImpl: typeof globalThis.fetch = vi.fn(
+      (input: string | URL | Request, init?: RequestInit) => {
+        if (requestUrl(input).pathname === '/api/auth/api-key/exchange') {
+          exchanges += 1;
+          if (exchanges === 2) {
+            renewalReached.resolve();
+            return renewalGate.promise;
+          }
+          return Promise.resolve(
+            json({
+              token: 'initial-jwt',
+              expiresAt: new Date(currentTime + 15 * 60_000).toISOString(),
+              scopes: ['ModelRead', 'ModelWrite', 'LibrarySync'],
+            }),
+          );
+        }
+        return baseline(input, init);
+      },
+    );
+    const profiles = service(fs, fetchImpl, () => currentTime);
+    const saved = await profiles.save(apiKeyDraft());
+    currentTime += 14 * 60_000 + 1;
+
+    const renewal = profiles.getToken(saved.id);
+    const renewalResult = expect(renewal).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+    await renewalReached.promise;
+    await profiles.delete(saved.id);
+    renewalGate.resolve(
+      json({
+        token: 'removed-credential-jwt',
+        expiresAt: new Date(currentTime + 15 * 60_000).toISOString(),
+        scopes: ['ModelRead', 'ModelWrite', 'LibrarySync'],
+      }),
+    );
+
+    await renewalResult;
+  });
+
+  it('rejects a gated renewal after profile replacement and keeps the new token', async () => {
+    const fs = new MemoryFileSystem();
+    let currentTime = NOW;
+    let oldHostExchanges = 0;
+    const renewalReached = deferred<void>();
+    const renewalGate = deferred<Response>();
+    const baseline = successfulFetch();
+    const fetchImpl: typeof globalThis.fetch = vi.fn(
+      (input: string | URL | Request, init?: RequestInit) => {
+        const url = requestUrl(input);
+        if (url.pathname === '/api/auth/api-key/exchange') {
+          if (url.host === '10.0.0.20') {
+            oldHostExchanges += 1;
+            if (oldHostExchanges === 2) {
+              renewalReached.resolve();
+              return renewalGate.promise;
+            }
+          }
+          return Promise.resolve(
+            json({
+              token:
+                url.host === 'replacement.example'
+                  ? 'replacement-jwt'
+                  : 'initial-jwt',
+              expiresAt: new Date(currentTime + 15 * 60_000).toISOString(),
+              scopes: ['ModelRead', 'ModelWrite', 'LibrarySync'],
+            }),
+          );
+        }
+        return baseline(input, init);
+      },
+    );
+    const profiles = service(fs, fetchImpl, () => currentTime);
+    const saved = await profiles.save(apiKeyDraft());
+    currentTime += 14 * 60_000 + 1;
+
+    const renewal = profiles.getToken(saved.id);
+    const renewalResult = expect(renewal).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+    });
+    await renewalReached.promise;
+    await profiles.save(
+      apiKeyDraft({
+        id: saved.id,
+        baseUrl: 'https://replacement.example',
+        credentials: { authMode: 'apiKey', apiKey: 'replacement-key' },
+      }),
+    );
+    renewalGate.resolve(
+      json({
+        token: 'removed-credential-jwt',
+        expiresAt: new Date(currentTime + 15 * 60_000).toISOString(),
+        scopes: ['ModelRead', 'ModelWrite', 'LibrarySync'],
+      }),
+    );
+
+    await renewalResult;
+    await expect(profiles.getToken(saved.id)).resolves.toBe('replacement-jwt');
+  });
+
   it('forces fresh authentication and current-user validation for a saved test', async () => {
     const fs = new MemoryFileSystem();
     let exchanges = 0;

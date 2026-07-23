@@ -60,6 +60,33 @@ function deferred<T>(): {
   return { promise, resolve };
 }
 
+function serverProfile(id: string, displayName: string): ServerProfile {
+  return {
+    id,
+    displayName,
+    baseUrl: `https://${displayName.toLowerCase().replaceAll(' ', '-')}.example`,
+    authMode: 'apiKey',
+    version: null,
+    capabilities: null,
+    availability: {
+      modelUpload: {
+        available: true,
+        mode: 'legacyModelOnly',
+        reason: 'Legacy fallback',
+      },
+      librarySync: { available: false, reason: 'Unavailable' },
+      clientThumbnailUpload: { available: false, reason: 'Unavailable' },
+      serverThumbnailFallback: {
+        available: true,
+        reason: 'Server thumbnails',
+      },
+    },
+    status: 'legacy',
+    lastCheckedAt: '2026-07-23T12:00:00.000Z',
+    warnings: ['legacy'],
+  };
+}
+
 describe('<App />', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -198,6 +225,133 @@ describe('<App />', () => {
     ).toBeVisible();
   });
 
+  it('reconciles a delete that commits after the profile dialog closes', async () => {
+    const profile = serverProfile(
+      '11111111-1111-4111-8111-111111111111',
+      'Delete me',
+    );
+    const deletion = deferred<{
+      profiles: ServerProfile[];
+      selectedProfileId: string | null;
+    }>();
+    let deleted = false;
+    const listServerProfiles = vi.fn(() =>
+      Promise.resolve({
+        profiles: deleted ? [] : [profile],
+        selectedProfileId: deleted ? null : profile.id,
+      }),
+    );
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 1,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([]),
+      listServerProfiles,
+      deleteServerProfile: vi.fn(() => deletion.promise),
+    });
+    render(<App />);
+    const manage = await screen.findByRole('button', {
+      name: /Delete me Legacy server Status: Legacy fallback/,
+    });
+
+    fireEvent.click(manage);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Remove Delete me' }),
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Close server profiles' }),
+    );
+    deleted = true;
+    deletion.resolve({ profiles: [], selectedProfileId: null });
+
+    const disconnected = await screen.findByRole('button', {
+      name: /Not connected Manage profiles Status: Disconnected/,
+    });
+    fireEvent.click(disconnected);
+    expect(
+      await screen.findByText('No server profiles saved yet.'),
+    ).toBeVisible();
+    expect(listServerProfiles.mock.calls.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('orders select reconciliation across close, stale lists, and reopen', async () => {
+    const first = serverProfile(
+      '11111111-1111-4111-8111-111111111111',
+      'First farm',
+    );
+    const second = serverProfile(
+      '22222222-2222-4222-8222-222222222222',
+      'Second farm',
+    );
+    const staleOpenList = deferred<{
+      profiles: ServerProfile[];
+      selectedProfileId: string | null;
+    }>();
+    const selection = deferred<ServerProfile>();
+    let selectedId = first.id;
+    let listCalls = 0;
+    const listServerProfiles = vi.fn(() => {
+      listCalls += 1;
+      if (listCalls === 2) return staleOpenList.promise;
+      return Promise.resolve({
+        profiles: [first, second],
+        selectedProfileId: selectedId,
+      });
+    });
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 1,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([]),
+      listServerProfiles,
+      selectServerProfile: vi.fn(() => selection.promise),
+    });
+    render(<App />);
+    const manage = await screen.findByRole('button', {
+      name: /First farm Legacy server Status: Legacy fallback/,
+    });
+
+    fireEvent.click(manage);
+    fireEvent.click(await screen.findByRole('button', { name: 'Select' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Close server profiles' }),
+    );
+    selectedId = second.id;
+    selection.resolve(second);
+
+    const selectedSecond = await screen.findByRole('button', {
+      name: /Second farm Legacy server Status: Legacy fallback/,
+    });
+    staleOpenList.resolve({
+      profiles: [first, second],
+      selectedProfileId: first.id,
+    });
+    await act(async () => {
+      await staleOpenList.promise;
+    });
+    expect(selectedSecond).toBeVisible();
+
+    fireEvent.click(selectedSecond);
+    const profilesDialog = await screen.findByRole('dialog', {
+      name: 'Server profiles',
+    });
+    const secondCard = within(profilesDialog)
+      .getByText('Second farm')
+      .closest('li');
+    expect(secondCard).not.toBeNull();
+    expect(
+      within(secondCard as HTMLElement).getByRole('button', {
+        name: 'Selected',
+      }),
+    ).toBeDisabled();
+  });
+
   it('excludes server profiles throughout import preparation and its modal', async () => {
     const preview = deferred<{
       modelCount: number;
@@ -262,6 +416,121 @@ describe('<App />', () => {
     await waitFor(() => expect(cancel).toHaveFocus());
     screen.getByLabelText('Search models').focus();
     expect(cancel).toHaveFocus();
+  });
+
+  it('gives same-tick profile and card-preview entries exclusive ownership', async () => {
+    const model: LogicalModel = {
+      hash: 'part',
+      format: 'stl',
+      size: 100,
+      locations: [
+        {
+          rootId: 'root',
+          path: 'C:\\models\\part.stl',
+          rootRelative: 'part.stl',
+          size: 100,
+          available: true,
+        },
+      ],
+    };
+    const loadScene = vi.fn().mockResolvedValue({
+      positions: [0, 0, 0],
+      indices: [0, 0, 0],
+      bounds: { min: [0, 0, 0], max: [0, 0, 0] },
+      sourceFormat: 'stl',
+      parts: [],
+    });
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 1,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([model]),
+      listServerProfiles: vi.fn().mockResolvedValue({
+        profiles: [],
+        selectedProfileId: null,
+      }),
+      renderThumbnail: vi.fn().mockResolvedValue({
+        width: 256,
+        height: 256,
+        pngBase64: 'AAAA',
+      }),
+      loadScene,
+    });
+    render(<App />);
+    const manage = await screen.findByRole('button', {
+      name: /Not connected Manage profiles Status: Disconnected/,
+    });
+    const preview = await screen.findByRole('button', {
+      name: 'Preview part.stl in 3D',
+    });
+    await waitFor(() => expect(manage).toBeEnabled());
+
+    fireEvent.click(manage);
+    fireEvent.click(preview);
+    expect(
+      screen.getByRole('dialog', { name: 'Server profiles' }),
+    ).toBeVisible();
+    expect(loadScene).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Close server profiles' }),
+    );
+    await waitFor(() => expect(preview).toBeEnabled());
+
+    fireEvent.click(preview);
+    fireEvent.click(manage);
+    expect(
+      await screen.findByRole('dialog', { name: '3D preview of part.stl' }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole('dialog', { name: 'Server profiles' }),
+    ).not.toBeInTheDocument();
+    expect(loadScene).toHaveBeenCalledOnce();
+  });
+
+  it('blocks profiles and imports while the open-file picker is deferred', async () => {
+    const picker = deferred<null>();
+    const openFolder = vi.fn();
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 1,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([]),
+      listServerProfiles: vi.fn().mockResolvedValue({
+        profiles: [],
+        selectedProfileId: null,
+      }),
+      openModelFile: vi.fn(() => picker.promise),
+      openFolder,
+    });
+    render(<App />);
+    const manage = await screen.findByRole('button', {
+      name: /Not connected Manage profiles Status: Disconnected/,
+    });
+    const addFolder = screen.getByRole('button', { name: 'Add folder' });
+    const openFile = screen.getByRole('button', { name: 'Open file' });
+    await waitFor(() => expect(openFile).toBeEnabled());
+
+    fireEvent.click(openFile);
+    expect(openFile).toBeDisabled();
+    expect(manage).toBeDisabled();
+    expect(addFolder).toBeDisabled();
+    fireEvent.click(manage);
+    fireEvent.click(addFolder);
+    expect(
+      screen.queryByRole('dialog', { name: 'Server profiles' }),
+    ).not.toBeInTheDocument();
+    expect(openFolder).not.toHaveBeenCalled();
+
+    picker.resolve(null);
+    await waitFor(() => expect(openFile).toBeEnabled());
+    expect(manage).toBeEnabled();
+    expect(addFolder).toBeEnabled();
   });
 
   it('shows an error when the main process call fails', async () => {
