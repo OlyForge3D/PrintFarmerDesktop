@@ -100,6 +100,38 @@ describe('<App />', () => {
     );
   });
 
+  it('opens server profiles from the sidebar and excludes the workspace', async () => {
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 1,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([]),
+      listServerProfiles: vi.fn().mockResolvedValue({
+        profiles: [],
+        selectedProfileId: null,
+      }),
+    });
+    const { container } = render(<App />);
+
+    const manage = await screen.findByRole('button', {
+      name: /Not connected Manage profiles/,
+    });
+    manage.focus();
+    fireEvent.click(manage);
+    expect(
+      screen.getByRole('dialog', { name: 'Server profiles' }),
+    ).toBeVisible();
+    expect(container.querySelector('.workspace')).toHaveAttribute('inert');
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Close server profiles' }),
+    );
+    await waitFor(() => expect(manage).toHaveFocus());
+  });
+
   it('shows an error when the main process call fails', async () => {
     installApi({
       getAppInfo: vi.fn().mockRejectedValue(new Error('bridge down')),

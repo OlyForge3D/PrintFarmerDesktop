@@ -34,6 +34,11 @@ export const IpcChannel = {
   AddModelToCollection: 'catalog:addModelToCollection',
   RemoveModelFromCollection: 'catalog:removeModelFromCollection',
   OpenFolder: 'dialog:openFolder',
+  ListServerProfiles: 'serverProfiles:list',
+  TestServerProfile: 'serverProfiles:test',
+  SaveServerProfile: 'serverProfiles:save',
+  SelectServerProfile: 'serverProfiles:select',
+  DeleteServerProfile: 'serverProfiles:delete',
 } as const;
 
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel];
@@ -429,6 +434,152 @@ export const OpenFolderResponse = z
   .nullable();
 export type OpenFolderResponse = z.infer<typeof OpenFolderResponse>;
 
+// --- PrintFarmer server profiles ------------------------------------------
+
+export const ServerAuthMode = z.enum(['apiKey', 'password']);
+export type ServerAuthMode = z.infer<typeof ServerAuthMode>;
+
+export const ServerVersion = z
+  .object({
+    service: z.string().min(1).max(128),
+    version: z.string().min(1).max(64),
+    commit: z.string().max(128).nullable(),
+    environment: z.string().min(1).max(64),
+    runtime: z.string().min(1).max(128),
+    timestamp: z.string().datetime(),
+  })
+  .strict();
+export type ServerVersion = z.infer<typeof ServerVersion>;
+
+export const ServerCapabilities = z
+  .object({
+    architecture: z.string().min(1).max(128),
+    slicingEnabled: z.boolean(),
+    modelFilesEnabled: z.boolean(),
+    thumbnailGenerationEnabled: z.boolean(),
+    gcodeUploadEnabled: z.boolean(),
+    clientThumbnailUploadEnabled: z.boolean(),
+    idempotentModelUploadEnabled: z.boolean(),
+    modelThumbnailReplacementEnabled: z.boolean(),
+    platformNote: z.string().max(1024).nullable(),
+    operatorFeatures: z.record(z.boolean()).optional(),
+  })
+  .strict();
+export type ServerCapabilities = z.infer<typeof ServerCapabilities>;
+
+export const FeatureAvailability = z
+  .object({
+    modelUpload: z.object({
+      available: z.boolean(),
+      reason: z.string().max(256).nullable(),
+    }),
+    librarySync: z.object({
+      available: z.boolean(),
+      reason: z.string().max(256).nullable(),
+    }),
+    clientThumbnailUpload: z.object({
+      available: z.boolean(),
+      reason: z.string().max(256).nullable(),
+    }),
+  })
+  .strict();
+export type FeatureAvailability = z.infer<typeof FeatureAvailability>;
+
+export const ServerProfile = z
+  .object({
+    id: z.string().uuid(),
+    displayName: z.string().min(1).max(80),
+    baseUrl: z.string().url().max(2048),
+    authMode: ServerAuthMode,
+    username: z.string().min(1).max(256).optional(),
+    version: ServerVersion.nullable(),
+    capabilities: ServerCapabilities.nullable(),
+    availability: FeatureAvailability,
+    status: z.enum(['connected', 'error', 'legacy']),
+    lastCheckedAt: z.string().datetime(),
+    warnings: z.array(z.enum(['insecureHttp', 'legacy'])).max(2),
+  })
+  .strict();
+export type ServerProfile = z.infer<typeof ServerProfile>;
+
+const ApiKeyCredentials = z
+  .object({
+    authMode: z.literal('apiKey'),
+    apiKey: z.string().min(1).max(4096),
+  })
+  .strict();
+
+const PasswordCredentials = z
+  .object({
+    authMode: z.literal('password'),
+    username: z.string().trim().min(1).max(256),
+    password: z.string().min(1).max(4096),
+    rememberMe: z.boolean().default(true),
+  })
+  .strict();
+
+export const ServerProfileDraft = z
+  .object({
+    id: z.string().uuid().optional(),
+    displayName: z.string().trim().min(1).max(80),
+    baseUrl: z.string().trim().min(1).max(2048),
+    credentials: z.discriminatedUnion('authMode', [
+      ApiKeyCredentials,
+      PasswordCredentials,
+    ]),
+    allowLegacy: z.boolean(),
+  })
+  .strict();
+export type ServerProfileDraft = z.infer<typeof ServerProfileDraft>;
+
+export const ListServerProfilesRequest = z.void();
+export const ListServerProfilesResponse = z
+  .object({
+    profiles: z.array(ServerProfile).max(100),
+    selectedProfileId: z.string().uuid().nullable(),
+  })
+  .strict();
+export type ListServerProfilesResponse = z.infer<
+  typeof ListServerProfilesResponse
+>;
+
+export const TestServerProfileRequest = z.discriminatedUnion('source', [
+  z.object({ source: z.literal('saved'), id: z.string().uuid() }).strict(),
+  z.object({ source: z.literal('draft'), draft: ServerProfileDraft }).strict(),
+]);
+export type TestServerProfileRequest = z.infer<typeof TestServerProfileRequest>;
+export const TestServerProfileResponse = ServerProfile;
+export type TestServerProfileResponse = z.infer<
+  typeof TestServerProfileResponse
+>;
+
+export const SaveServerProfileRequest = ServerProfileDraft;
+export type SaveServerProfileRequest = z.infer<typeof SaveServerProfileRequest>;
+export const SaveServerProfileResponse = ServerProfile;
+export type SaveServerProfileResponse = z.infer<
+  typeof SaveServerProfileResponse
+>;
+
+export const SelectServerProfileRequest = z
+  .object({ id: z.string().uuid() })
+  .strict();
+export type SelectServerProfileRequest = z.infer<
+  typeof SelectServerProfileRequest
+>;
+export const SelectServerProfileResponse = ServerProfile;
+export type SelectServerProfileResponse = z.infer<
+  typeof SelectServerProfileResponse
+>;
+
+export const DeleteServerProfileRequest = SelectServerProfileRequest;
+export type DeleteServerProfileRequest = z.infer<
+  typeof DeleteServerProfileRequest
+>;
+export const DeleteServerProfileResponse = ListServerProfilesResponse;
+export type DeleteServerProfileResponse = z.infer<
+  typeof DeleteServerProfileResponse
+>;
+
 /**
  * Registry mapping each channel to its request/response schemas. Used by both
  * the main-process handler registration and the preload bridge.
@@ -518,6 +669,26 @@ export const ipcSchemas = {
     request: OpenFolderRequest,
     response: OpenFolderResponse,
   },
+  [IpcChannel.ListServerProfiles]: {
+    request: ListServerProfilesRequest,
+    response: ListServerProfilesResponse,
+  },
+  [IpcChannel.TestServerProfile]: {
+    request: TestServerProfileRequest,
+    response: TestServerProfileResponse,
+  },
+  [IpcChannel.SaveServerProfile]: {
+    request: SaveServerProfileRequest,
+    response: SaveServerProfileResponse,
+  },
+  [IpcChannel.SelectServerProfile]: {
+    request: SelectServerProfileRequest,
+    response: SelectServerProfileResponse,
+  },
+  [IpcChannel.DeleteServerProfile]: {
+    request: DeleteServerProfileRequest,
+    response: DeleteServerProfileResponse,
+  },
 } as const;
 
 export type IpcSchemas = typeof ipcSchemas;
@@ -561,4 +732,17 @@ export interface PrintFarmerApi {
     request: CollectionMembershipRequest,
   ): Promise<CollectionMembershipResponse>;
   openFolder(): Promise<OpenFolderResponse>;
+  listServerProfiles(): Promise<ListServerProfilesResponse>;
+  testServerProfile(
+    request: TestServerProfileRequest,
+  ): Promise<TestServerProfileResponse>;
+  saveServerProfile(
+    request: SaveServerProfileRequest,
+  ): Promise<SaveServerProfileResponse>;
+  selectServerProfile(
+    request: SelectServerProfileRequest,
+  ): Promise<SelectServerProfileResponse>;
+  deleteServerProfile(
+    request: DeleteServerProfileRequest,
+  ): Promise<DeleteServerProfileResponse>;
 }

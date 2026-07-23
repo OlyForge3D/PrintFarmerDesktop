@@ -36,6 +36,15 @@ import {
   type CollectionMembershipResponse,
   type SidecarPingRequest,
   type SidecarPingResponse,
+  type DeleteServerProfileRequest,
+  type DeleteServerProfileResponse,
+  type ListServerProfilesResponse,
+  type SaveServerProfileRequest,
+  type SaveServerProfileResponse,
+  type SelectServerProfileRequest,
+  type SelectServerProfileResponse,
+  type TestServerProfileRequest,
+  type TestServerProfileResponse,
 } from '@shared/ipc';
 
 /**
@@ -153,6 +162,38 @@ const api: PrintFarmerApi = {
     ) as Promise<CollectionMembershipResponse>,
   openFolder: (): Promise<OpenFolderResponse> =>
     ipcRenderer.invoke(IpcChannel.OpenFolder) as Promise<OpenFolderResponse>,
+  listServerProfiles: (): Promise<ListServerProfilesResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ListServerProfiles,
+    ) as Promise<ListServerProfilesResponse>,
+  testServerProfile: (
+    request: TestServerProfileRequest,
+  ): Promise<TestServerProfileResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.TestServerProfile,
+      request,
+    ) as Promise<TestServerProfileResponse>,
+  saveServerProfile: (
+    request: SaveServerProfileRequest,
+  ): Promise<SaveServerProfileResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.SaveServerProfile,
+      request,
+    ) as Promise<SaveServerProfileResponse>,
+  selectServerProfile: (
+    request: SelectServerProfileRequest,
+  ): Promise<SelectServerProfileResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.SelectServerProfile,
+      request,
+    ) as Promise<SelectServerProfileResponse>,
+  deleteServerProfile: (
+    request: DeleteServerProfileRequest,
+  ): Promise<DeleteServerProfileResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.DeleteServerProfile,
+      request,
+    ) as Promise<DeleteServerProfileResponse>,
 };
 
 contextBridge.exposeInMainWorld('printFarmer', api);

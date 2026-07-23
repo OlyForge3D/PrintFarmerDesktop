@@ -41,3 +41,15 @@ Backward-compatible changes to the .NET 10 PrintFarmer server cover: personal
 API-key → short-lived JWT exchange, streamed model + client-thumbnail upload
 with idempotency, a first-class collection domain, and revisioned two-way sync
 of tags and collections.
+
+Server profiles are stored as a strictly validated, versioned file below
+Electron's per-user data directory. Writes use a temporary file and atomic
+rename. API keys and passwords are encrypted with Electron `safeStorage`; the
+main process refuses to save them when OS-backed encryption is unavailable.
+JWTs exist only in main-process memory and are reissued before expiration.
+
+The main process probes the anonymous version and capability endpoints and
+publishes only redacted profile metadata plus explicit feature availability.
+HTTP LAN profiles remain supported with a persistent warning. A missing
+capability/version endpoint is treated as legacy and requires explicit user
+confirmation; HTTPS certificate verification is never bypassed.

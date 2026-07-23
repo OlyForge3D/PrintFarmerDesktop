@@ -23,6 +23,31 @@ describe('ipc contract', () => {
     ).toThrow();
   });
 
+  it('validates redacted server profile IPC without changing the contract version', () => {
+    expect(IPC_CONTRACT_VERSION).toBe(1);
+    const request = ipcSchemas[IpcChannel.SaveServerProfile].request.parse({
+      displayName: 'Production farm',
+      baseUrl: 'http://10.0.0.20',
+      credentials: { authMode: 'apiKey', apiKey: 'secret' },
+      allowLegacy: false,
+    });
+    expect(request.credentials.authMode).toBe('apiKey');
+
+    const response = ipcSchemas[IpcChannel.ListServerProfiles].response.parse({
+      selectedProfileId: null,
+      profiles: [],
+    });
+    expect(response.profiles).toEqual([]);
+    expect(() =>
+      ipcSchemas[IpcChannel.SaveServerProfile].request.parse({
+        displayName: 'Farm',
+        baseUrl: 'https://farm.example',
+        credentials: { authMode: 'apiKey', apiKey: 'x'.repeat(4097) },
+        allowLegacy: false,
+      }),
+    ).toThrow();
+  });
+
   it('accepts a valid sidecar ping request', () => {
     const value = ipcSchemas[IpcChannel.SidecarPing].request.parse({
       nonce: 'abc123',

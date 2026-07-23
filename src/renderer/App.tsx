@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AppInfoResponse,
   LoadSceneResponse,
+  ListServerProfilesResponse,
   LogicalModel,
   VendorMetadata,
 } from '@shared/ipc';
@@ -35,6 +36,7 @@ import { PreviewWorkspace } from './viewer/PreviewWorkspace';
 import type { Projection } from './viewer/ModelViewer';
 import { Icon } from './ui/Icon';
 import appIconUrl from '../../assets/icon.png';
+import { ServerProfilesDialog } from './serverProfiles/ServerProfilesDialog';
 
 interface PreviewTarget {
   path: string;
@@ -45,6 +47,12 @@ interface PreviewTarget {
 export function App(): React.JSX.Element {
   const [info, setInfo] = useState<AppInfoResponse | null>(null);
   const [appError, setAppError] = useState<string | null>(null);
+  const [serverProfiles, setServerProfiles] =
+    useState<ListServerProfilesResponse>({
+      profiles: [],
+      selectedProfileId: null,
+    });
+  const [profilesOpen, setProfilesOpen] = useState(false);
   const [query, setQuery] = useState(defaultLibraryView.query);
   const [filter, setFilter] = useState<FilterKey>(defaultLibraryView.filter);
   const [sort, setSort] = useState<SortKey>(defaultLibraryView.sort);
@@ -73,6 +81,8 @@ export function App(): React.JSX.Element {
   );
   const previewReturnFocusRef = useRef<HTMLElement | null>(null);
   const importReturnFocusRef = useRef<HTMLElement | null>(null);
+  const profileReturnFocusRef = useRef<HTMLElement | null>(null);
+  const restoreProfileFocusRef = useRef(false);
   const importPreparationRef = useRef(false);
   const previewRequestRef = useRef(0);
   const titlebarRef = useRef<HTMLElement | null>(null);
@@ -80,7 +90,7 @@ export function App(): React.JSX.Element {
   const statusbarRef = useRef<HTMLElement | null>(null);
 
   const library = useLibrary();
-  const modalOpen = previewOpen || library.importDraft !== null;
+  const modalOpen = previewOpen || library.importDraft !== null || profilesOpen;
   const prepareFolderImport = library.addFolder;
   const dismissFolderImport = library.cancelImport;
   const commitFolderImport = library.confirmImport;
@@ -193,6 +203,16 @@ export function App(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
+    if (!window.printFarmer.listServerProfiles) return;
+    window.printFarmer
+      .listServerProfiles()
+      .then(setServerProfiles)
+      .catch((err: unknown) =>
+        setAppError(err instanceof Error ? err.message : String(err)),
+      );
+  }, []);
+
+  useEffect(() => {
     const focusSearch = (event: KeyboardEvent): void => {
       if (modalOpen) {
         return;
@@ -207,6 +227,13 @@ export function App(): React.JSX.Element {
     document.addEventListener('keydown', focusSearch);
     return () => document.removeEventListener('keydown', focusSearch);
   }, [modalOpen]);
+
+  useEffect(() => {
+    if (!profilesOpen && restoreProfileFocusRef.current) {
+      restoreProfileFocusRef.current = false;
+      profileReturnFocusRef.current?.focus();
+    }
+  }, [profilesOpen]);
 
   useEffect(() => {
     for (const element of [
@@ -432,6 +459,21 @@ export function App(): React.JSX.Element {
       ? cachedVendor.metadata
       : null);
   const organizationError = modelTags.error ?? modelCollections.error;
+  const activeServer =
+    serverProfiles.profiles.find(
+      (profile) => profile.id === serverProfiles.selectedProfileId,
+    ) ?? null;
+  const openProfiles = (): void => {
+    profileReturnFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setProfilesOpen(true);
+  };
+  const closeProfiles = (): void => {
+    restoreProfileFocusRef.current = true;
+    setProfilesOpen(false);
+  };
 
   return (
     <div className={`app-root${info ? ` platform-${info.platform}` : ''}`}>
@@ -473,6 +515,8 @@ export function App(): React.JSX.Element {
           onRefresh={() => {
             void library.refresh();
           }}
+          serverProfile={activeServer}
+          onManageServerProfiles={openProfiles}
         />
 
         <main className="library-pane" aria-label="Model library">
@@ -659,6 +703,14 @@ export function App(): React.JSX.Element {
           onReset={() => setResetToken((value) => value + 1)}
           onTogglePart={togglePart}
           onToggleAllParts={toggleAllParts}
+        />
+      ) : null}
+
+      {profilesOpen ? (
+        <ServerProfilesDialog
+          profiles={serverProfiles}
+          onChange={setServerProfiles}
+          onClose={closeProfiles}
         />
       ) : null}
     </div>

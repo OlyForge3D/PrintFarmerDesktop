@@ -352,6 +352,78 @@ select:disabled {
   font-weight: 600;
 }
 
+.sidebar-server {
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.sidebar-server .sidebar-section-label {
+  margin: 0 0 7px;
+}
+
+.server-profile-entry {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 9px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.server-profile-entry:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.server-profile-entry > span:nth-child(2) {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.server-profile-entry strong,
+.server-profile-entry small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-profile-entry small {
+  color: var(--quiet);
+  font-size: 10.5px;
+}
+
+.server-status-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--quiet);
+}
+
+.server-status-dot.connected {
+  background: var(--success);
+}
+
+.server-status-dot.legacy {
+  background: var(--warning);
+}
+
+.server-status-dot.error {
+  background: var(--danger);
+}
+
+.sidebar-transport-warning {
+  margin: 6px 2px 0;
+  color: var(--warning);
+  font-size: 10.5px;
+}
+
 /* Library pane */
 
 .library-pane {
@@ -740,6 +812,267 @@ select:disabled {
   background: var(--sidebar);
   color: var(--text);
   transform: translateX(-50%);
+}
+
+/* PrintFarmer server profiles */
+
+.profile-backdrop {
+  position: fixed;
+  z-index: 39;
+  inset: 40px 0 24px;
+  background: rgb(3 5 7 / 78%);
+}
+
+.server-profiles-dialog {
+  position: fixed;
+  z-index: 40;
+  top: 64px;
+  bottom: 48px;
+  left: 50%;
+  display: flex;
+  width: min(980px, calc(100% - 72px));
+  min-height: 500px;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  box-shadow: 0 22px 70px rgb(0 0 0 / 55%);
+  background: var(--sidebar);
+  color: var(--text);
+  transform: translateX(-50%);
+}
+
+.profile-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 16px 18px 13px;
+  border-bottom: 1px solid var(--border);
+  background: var(--titlebar);
+}
+
+.profile-dialog-header h2,
+.profile-dialog-header p {
+  margin: 0;
+}
+
+.profile-dialog-header h2 {
+  font-size: 17px;
+}
+
+.profile-dialog-header p:last-child {
+  margin-top: 3px;
+  color: var(--quiet);
+  font-size: 11px;
+}
+
+.profile-dialog-header .icon-button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 20px;
+}
+
+.profile-dialog-content {
+  display: grid;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr);
+  flex: 1;
+  overflow: hidden;
+}
+
+.profile-dialog-content > section,
+.profile-form {
+  min-width: 0;
+  overflow-y: auto;
+  padding: 18px;
+}
+
+.profile-dialog-content > section {
+  border-right: 1px solid var(--border);
+}
+
+.profile-dialog-content h3 {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
+.profile-empty,
+.profile-security-note {
+  color: var(--quiet);
+  font-size: 11px;
+}
+
+.profile-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 10px;
+  list-style: none;
+}
+
+.profile-card {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  background: var(--surface);
+}
+
+.profile-card.selected {
+  border-color: var(--accent);
+}
+
+.profile-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.profile-card-heading > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.profile-card-heading span {
+  overflow: hidden;
+  color: var(--quiet);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-status {
+  padding: 2px 6px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent) !important;
+  font-family: inherit !important;
+  text-transform: capitalize;
+}
+
+.profile-status.legacy {
+  color: var(--warning) !important;
+}
+
+.profile-status.error {
+  color: var(--danger) !important;
+}
+
+.profile-details {
+  display: grid;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  gap: 2px;
+}
+
+.profile-warning {
+  color: var(--warning);
+}
+
+.profile-card-actions,
+.profile-form-actions {
+  display: flex;
+  margin-top: 10px;
+  gap: 7px;
+}
+
+.profile-card-actions button,
+.profile-form-actions button {
+  padding: 5px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius);
+  background: var(--surface-hover);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.profile-card-actions .danger-button {
+  margin-left: auto;
+  color: var(--danger);
+}
+
+.profile-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.profile-form > label {
+  display: grid;
+  color: var(--muted);
+  font-size: 11px;
+  gap: 4px;
+}
+
+.profile-form input,
+.profile-form select {
+  width: 100%;
+  height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: #11151a;
+  color: var(--text);
+}
+
+.profile-alert {
+  padding: 9px 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--danger) 50%, transparent);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: #f1b7bb;
+}
+
+.profile-test-result {
+  padding: 10px;
+  border: 1px solid var(--success);
+  border-radius: var(--control-radius);
+  background: color-mix(in srgb, var(--success) 8%, transparent);
+}
+
+.profile-test-result.legacy {
+  border-color: var(--warning);
+}
+
+.legacy-confirmation {
+  display: flex;
+  align-items: flex-start;
+  margin-top: 10px;
+  color: var(--text);
+  font-size: 11px;
+  gap: 8px;
+}
+
+.legacy-confirmation input {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+@media (max-width: 800px) {
+  .profile-dialog-content {
+    display: block;
+    overflow-y: auto;
+  }
+
+  .profile-dialog-content > section,
+  .profile-form {
+    overflow: visible;
+  }
+
+  .profile-dialog-content > section {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
 }
 
 .import-header {

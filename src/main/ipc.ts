@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, safeStorage } from 'electron';
 import {
   AppInfoResponse,
   IPC_CONTRACT_VERSION,
@@ -13,6 +13,7 @@ import {
   spawnSidecarChannel,
   type ChannelFactory,
 } from './sidecar.js';
+import { ServerProfileService } from './serverProfiles.js';
 
 /**
  * Register all IPC handlers. Every incoming payload is validated against its
@@ -23,14 +24,24 @@ import {
  * @param channelFactory - Optional sidecar transport override, primarily for
  *   tests. Defaults to spawning the real `model-core` process.
  */
-export function registerIpcHandlers(channelFactory?: ChannelFactory): void {
+export function registerIpcHandlers(
+  channelFactory?: ChannelFactory,
+  profileService?: ServerProfileService,
+): void {
   const sidecar = new SidecarClient(channelFactory ?? spawnSidecarChannel);
+  const profiles =
+    profileService ??
+    new ServerProfileService({
+      userDataPath: app.getPath('userData'),
+      secretStorage: safeStorage,
+    });
 
   // Terminate the sidecar child process when the app exits. Windows does not
   // reap child processes on parent exit, so without this the `model-core`
   // process would linger as an orphan after every quit.
   app.on('will-quit', () => {
     sidecar.dispose();
+    profiles.clearTokens();
   });
 
   ipcMain.handle(IpcChannel.AppInfo, () => {
@@ -272,4 +283,53 @@ export function registerIpcHandlers(channelFactory?: ChannelFactory): void {
     const response: OpenModelFileResponse = selected;
     return ipcSchemas[IpcChannel.OpenModelFile].response.parse(response);
   });
+
+  ipcMain.handle(IpcChannel.ListServerProfiles, async () => {
+    const response = await profiles.list();
+    return ipcSchemas[IpcChannel.ListServerProfiles].response.parse(response);
+  });
+
+  ipcMain.handle(
+    IpcChannel.TestServerProfile,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.TestServerProfile].request.parse(rawRequest);
+      const response = await profiles.test(request);
+      return ipcSchemas[IpcChannel.TestServerProfile].response.parse(response);
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.SaveServerProfile,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.SaveServerProfile].request.parse(rawRequest);
+      const response = await profiles.save(request);
+      return ipcSchemas[IpcChannel.SaveServerProfile].response.parse(response);
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.SelectServerProfile,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.SelectServerProfile].request.parse(rawRequest);
+      const response = await profiles.select(request.id);
+      return ipcSchemas[IpcChannel.SelectServerProfile].response.parse(
+        response,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.DeleteServerProfile,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.DeleteServerProfile].request.parse(rawRequest);
+      const response = await profiles.delete(request.id);
+      return ipcSchemas[IpcChannel.DeleteServerProfile].response.parse(
+        response,
+      );
+    },
+  );
 }

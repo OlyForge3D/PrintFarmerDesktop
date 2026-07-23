@@ -1,4 +1,8 @@
-import type { ImportRootResponse, ReconcileReport } from '@shared/ipc';
+import type {
+  ImportRootResponse,
+  ReconcileReport,
+  ServerProfile,
+} from '@shared/ipc';
 import type { FilterKey } from './filter';
 import { Icon, type IconName } from '../ui/Icon';
 
@@ -26,6 +30,8 @@ export interface LibrarySidebarProps {
   onFilterChange: (filter: FilterKey) => void;
   onAddFolder: () => void;
   onRefresh: () => void;
+  serverProfile: ServerProfile | null;
+  onManageServerProfiles: () => void;
 }
 
 interface NavigationItem {
@@ -61,6 +67,8 @@ export function LibrarySidebar({
   onFilterChange,
   onAddFolder,
   onRefresh,
+  serverProfile,
+  onManageServerProfiles,
 }: LibrarySidebarProps): React.JSX.Element {
   return (
     <aside className="library-sidebar" aria-label="Library navigation">
@@ -134,6 +142,32 @@ export function LibrarySidebar({
           lastReport={lastReport}
           lastImport={lastImport}
         />
+      </div>
+      <div className="sidebar-server">
+        <p className="sidebar-section-label">PrintFarmer server</p>
+        <button
+          type="button"
+          className="server-profile-entry"
+          onClick={onManageServerProfiles}
+        >
+          <span
+            className={`server-status-dot ${serverProfile?.status ?? 'none'}`}
+            aria-hidden="true"
+          />
+          <span>
+            <strong>{serverProfile?.displayName ?? 'Not connected'}</strong>
+            <small>
+              {serverProfile
+                ? (serverProfile.version?.version ?? 'Legacy server')
+                : 'Manage profiles'}
+            </small>
+          </span>
+        </button>
+        {serverProfile?.warnings.includes('insecureHttp') ? (
+          <p className="sidebar-transport-warning">
+            HTTP connection is not encrypted
+          </p>
+        ) : null}
       </div>
     </aside>
   );
