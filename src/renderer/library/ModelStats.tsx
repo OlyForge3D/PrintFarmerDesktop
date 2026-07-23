@@ -1,11 +1,15 @@
 import type { SceneMesh } from '../viewer/types';
-import { computeSceneStats, formatDimension } from './sceneStats';
+import {
+  computeSceneStats,
+  formatDimension,
+  type SceneStats,
+} from './sceneStats';
 
 export interface ModelStatsProps {
   mesh: SceneMesh;
 }
 
-const FORMAT_LABELS: Record<SceneMesh['sourceFormat'], string> = {
+const FORMAT_LABELS: Record<SceneStats['format'], string> = {
   stl: 'STL',
   threeMf: '3MF',
   obj: 'OBJ',
@@ -13,7 +17,14 @@ const FORMAT_LABELS: Record<SceneMesh['sourceFormat'], string> = {
 
 /** A compact read-only summary of the loaded scene's geometry. */
 export function ModelStats({ mesh }: ModelStatsProps): React.JSX.Element {
-  const stats = computeSceneStats(mesh);
+  return <SceneStatsDisplay stats={computeSceneStats(mesh)} />;
+}
+
+export function SceneStatsDisplay({
+  stats,
+}: {
+  stats: SceneStats;
+}): React.JSX.Element {
   const [dx, dy, dz] = stats.dimensions;
 
   return (

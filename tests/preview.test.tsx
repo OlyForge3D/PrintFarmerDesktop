@@ -1,31 +1,35 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { PreviewWorkspace } from '../src/renderer/viewer/PreviewWorkspace';
+import {
+  PreviewWorkspace,
+  type PreviewWorkspaceProps,
+} from '../src/renderer/viewer/PreviewWorkspace';
 
 describe('<PreviewWorkspace />', () => {
   it('contains focus, cycles Tab, and closes on Escape', () => {
     const onClose = vi.fn();
-    render(
+    const props: PreviewWorkspaceProps = {
+      name: 'widget.stl',
+      loading: false,
+      error: 'Could not parse model',
+      mesh: null,
+      vendorMetadata: null,
+      wireframe: false,
+      projection: 'perspective',
+      resetToken: 0,
+      hiddenParts: new Set(),
+      onClose,
+      onRetry: vi.fn(),
+      onToggleWireframe: vi.fn(),
+      onToggleProjection: vi.fn(),
+      onReset: vi.fn(),
+      onTogglePart: vi.fn(),
+      onToggleAllParts: vi.fn(),
+    };
+    const { rerender } = render(
       <>
         <button type="button">Background action</button>
-        <PreviewWorkspace
-          name="widget.stl"
-          loading={false}
-          error="Could not parse model"
-          mesh={null}
-          vendorMetadata={null}
-          wireframe={false}
-          projection="perspective"
-          resetToken={0}
-          hiddenParts={new Set()}
-          onClose={onClose}
-          onRetry={vi.fn()}
-          onToggleWireframe={vi.fn()}
-          onToggleProjection={vi.fn()}
-          onReset={vi.fn()}
-          onTogglePart={vi.fn()}
-          onToggleAllParts={vi.fn()}
-        />
+        <PreviewWorkspace {...props} />
       </>,
     );
 
@@ -43,6 +47,17 @@ describe('<PreviewWorkspace />', () => {
     expect(close).toHaveFocus();
     fireEvent.keyDown(document, { key: 'Tab' });
     expect(back).toHaveFocus();
+
+    screen.getByRole('button', { name: 'Retry' }).focus();
+    rerender(
+      <>
+        <button type="button">Background action</button>
+        <PreviewWorkspace {...props} loading error={null} />
+      </>,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Back to library' }),
+    ).toHaveFocus();
 
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);

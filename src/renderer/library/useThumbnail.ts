@@ -52,9 +52,11 @@ function scheduleThumbnail<T>(task: () => Promise<T>): Promise<T> {
 
 function requestThumbnail(
   hash: string,
+  path: string,
   render: () => Promise<{ pngBase64: string }>,
 ): Promise<string> {
-  const pending = inFlight.get(hash);
+  const requestKey = `${hash}\0${path}`;
+  const pending = inFlight.get(requestKey);
   if (pending) {
     return pending;
   }
@@ -69,11 +71,11 @@ function requestThumbnail(
       return src;
     })
     .finally(() => {
-      if (inFlight.get(hash) === request) {
-        inFlight.delete(hash);
+      if (inFlight.get(requestKey) === request) {
+        inFlight.delete(requestKey);
       }
     });
-  inFlight.set(hash, request);
+  inFlight.set(requestKey, request);
   return request;
 }
 
@@ -107,7 +109,7 @@ export function useThumbnail(model: LogicalModel): ThumbnailState {
 
     let cancelled = false;
     setState({ src: null, status: 'loading' });
-    requestThumbnail(hash, () =>
+    requestThumbnail(hash, path, () =>
       api.renderThumbnail({ path, size: THUMBNAIL_SIZE }),
     )
       .then((src) => {

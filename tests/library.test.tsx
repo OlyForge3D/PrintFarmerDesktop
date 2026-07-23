@@ -505,7 +505,7 @@ describe('<PropertiesInspector />', () => {
       <PropertiesInspector
         model={model({ locations })}
         favorite={false}
-        mesh={null}
+        stats={null}
         vendorMetadata={null}
         tags={[]}
         collections={[]}
@@ -824,6 +824,7 @@ describe('useVendorMetadata', () => {
     expect(extractVendorMetadata).toHaveBeenCalledWith({
       path: 'C:/m/widget.3mf',
     });
+    expect(result.current.sourcePath).toBe('C:/m/widget.3mf');
   });
 
   it('does not call the sidecar for STL or when no path is set', () => {
@@ -974,6 +975,58 @@ describe('useThumbnail', () => {
     });
     await waitFor(() => expect(first.result.current.status).toBe('ready'));
     expect(second.result.current.status).toBe('ready');
+  });
+
+  it('does not share an obsolete path for the same content hash', async () => {
+    const result = {
+      width: 256,
+      height: 256,
+      pngBase64: 'MOVED',
+    };
+    const finishes: Array<(value: typeof result) => void> = [];
+    const renderThumbnail = vi.fn(
+      () =>
+        new Promise<typeof result>((resolve) => {
+          finishes.push(resolve);
+        }),
+    );
+    installApi({ renderThumbnail });
+    const atPath = (path: string): LogicalModel =>
+      model({
+        hash: 'moved-model',
+        locations: [
+          {
+            rootId: path,
+            path,
+            rootRelative: path,
+            size: 2048,
+            available: true,
+          },
+        ],
+      });
+
+    const oldPath = renderHook(() =>
+      useThumbnail(atPath('C:\\old\\widget.stl')),
+    );
+    const newPath = renderHook(() =>
+      useThumbnail(atPath('D:\\new\\widget.stl')),
+    );
+
+    await waitFor(() => expect(renderThumbnail).toHaveBeenCalledTimes(2));
+    expect(renderThumbnail).toHaveBeenNthCalledWith(1, {
+      path: 'C:\\old\\widget.stl',
+      size: 256,
+    });
+    expect(renderThumbnail).toHaveBeenNthCalledWith(2, {
+      path: 'D:\\new\\widget.stl',
+      size: 256,
+    });
+    await act(async () => {
+      finishes.forEach((finish) => finish(result));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(oldPath.result.current.status).toBe('ready'));
+    expect(newPath.result.current.status).toBe('ready');
   });
 
   it('bounds concurrent thumbnail work', async () => {

@@ -3,6 +3,7 @@ import type {
   AppInfoResponse,
   LoadSceneResponse,
   LogicalModel,
+  VendorMetadata,
 } from '@shared/ipc';
 import { useLibrary } from './library/useLibrary';
 import { useFavorites } from './library/useFavorites';
@@ -23,6 +24,7 @@ import {
 } from './library/filter';
 import { folderBasename, libraryPresentation } from './library/presentation';
 import { useVendorMetadata } from './library/useVendorMetadata';
+import { computeSceneStats, type SceneStats } from './library/sceneStats';
 import { PreviewWorkspace } from './viewer/PreviewWorkspace';
 import type { Projection } from './viewer/ModelViewer';
 import { Icon } from './ui/Icon';
@@ -55,6 +57,14 @@ export function App(): React.JSX.Element {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadedMesh, setLoadedMesh] = useState<LoadSceneResponse | null>(null);
+  const [cachedStats, setCachedStats] = useState<{
+    hash: string;
+    stats: SceneStats;
+  } | null>(null);
+  const [cachedVendor, setCachedVendor] = useState<{
+    hash: string;
+    metadata: VendorMetadata;
+  } | null>(null);
   const [wireframe, setWireframe] = useState(false);
   const [projection, setProjection] = useState<Projection>('perspective');
   const [resetToken, setResetToken] = useState(0);
@@ -75,6 +85,19 @@ export function App(): React.JSX.Element {
     previewTarget?.path ?? null,
     loadedMesh?.sourceFormat ?? null,
   );
+  const previewVendor =
+    previewTarget && vendor.sourcePath === previewTarget.path
+      ? vendor.metadata
+      : null;
+
+  useEffect(() => {
+    if (previewTarget?.hash && previewVendor) {
+      setCachedVendor({
+        hash: previewTarget.hash,
+        metadata: previewVendor,
+      });
+    }
+  }, [previewTarget, previewVendor]);
 
   const selectedModel = useMemo(
     () =>
@@ -190,6 +213,12 @@ export function App(): React.JSX.Element {
       const scene = await window.printFarmer.loadScene({ path: target.path });
       if (previewRequestRef.current === requestId) {
         setLoadedMesh(scene);
+        if (target.hash) {
+          setCachedStats({
+            hash: target.hash,
+            stats: computeSceneStats(scene),
+          });
+        }
       }
     } catch (err: unknown) {
       if (previewRequestRef.current === requestId) {
@@ -282,11 +311,13 @@ export function App(): React.JSX.Element {
     [loadedMesh],
   );
 
-  const inspectedMesh =
-    selectedHash && previewTarget?.hash === selectedHash ? loadedMesh : null;
+  const inspectedStats =
+    selectedHash && cachedStats?.hash === selectedHash
+      ? cachedStats.stats
+      : null;
   const inspectedVendor =
-    selectedHash && previewTarget?.hash === selectedHash
-      ? vendor.metadata
+    selectedHash && cachedVendor?.hash === selectedHash
+      ? cachedVendor.metadata
       : null;
   const organizationError = modelTags.error ?? modelCollections.error;
 
@@ -432,7 +463,7 @@ export function App(): React.JSX.Element {
         <PropertiesInspector
           model={selectedModel}
           favorite={selectedModel ? isFavorite(selectedModel.hash) : false}
-          mesh={inspectedMesh}
+          stats={inspectedStats}
           vendorMetadata={inspectedVendor}
           tags={modelTags.tags}
           collections={modelCollections.all}
@@ -496,7 +527,7 @@ export function App(): React.JSX.Element {
           loading={loading}
           error={previewError}
           mesh={loadedMesh}
-          vendorMetadata={vendor.metadata}
+          vendorMetadata={previewVendor}
           wireframe={wireframe}
           projection={projection}
           resetToken={resetToken}

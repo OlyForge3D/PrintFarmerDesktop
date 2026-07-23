@@ -91,6 +91,12 @@ export function PreviewWorkspace({
     };
   }, [onClose]);
 
+  useEffect(() => {
+    if (!dialogRef.current?.contains(document.activeElement)) {
+      closeRef.current?.focus();
+    }
+  }, [loading, error, mesh]);
+
   return (
     <>
       <div className="preview-backdrop" aria-hidden="true" />

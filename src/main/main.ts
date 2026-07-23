@@ -137,6 +137,10 @@ function installApplicationMenu(): void {
       ],
     },
     {
+      label: 'File',
+      submenu: [{ role: 'close' }],
+    },
+    {
       label: 'Window',
       submenu: [
         { role: 'minimize' },

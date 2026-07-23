@@ -146,17 +146,25 @@ test('switches between all three working design concepts', async () => {
 test('uses reliable custom window chrome', async () => {
   const chrome = await app.evaluate(({ BrowserWindow, Menu }) => {
     const window = BrowserWindow.getAllWindows()[0];
+    const applicationMenu = Menu.getApplicationMenu();
     return {
       platform: process.platform,
-      applicationMenuRemoved: Menu.getApplicationMenu() === null,
+      applicationMenuRemoved: applicationMenu === null,
+      menuLabels: applicationMenu?.items.map((item) => item.label) ?? [],
       menuBarVisible: window?.isMenuBarVisible() ?? true,
       windowVisible: window?.isVisible() ?? false,
     };
   });
 
   expect(chrome.windowVisible).toBe(true);
-  expect(chrome.menuBarVisible).toBe(false);
   expect(chrome.applicationMenuRemoved).toBe(chrome.platform !== 'darwin');
+  if (chrome.platform === 'darwin') {
+    expect(chrome.menuLabels).toEqual(
+      expect.arrayContaining(['Edit', 'File', 'Window']),
+    );
+  } else {
+    expect(chrome.menuBarVisible).toBe(false);
+  }
   await expect(page.locator('.window-titlebar')).toBeVisible();
 });
 
@@ -208,10 +216,10 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
   await expect(page.getByRole('application')).toHaveCount(0);
   await expect(page.getByRole('dialog')).toHaveCount(0);
 
-  for (const [button, design] of [
-    ['Studio', 'studio'],
-    ['Archive', 'archive'],
-    ['Console', 'console'],
+  for (const [button, design, accent, layout] of [
+    ['Studio', 'studio', '#62b0e8', 'grid'],
+    ['Archive', 'archive', '#7a4034', 'grid'],
+    ['Console', 'console', '#4ea7a2', 'list'],
   ] as const) {
     await page.getByRole('button', { name: button }).click();
     await expect(page.locator('.app-root')).toHaveAttribute(
@@ -232,6 +240,28 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
         })),
       )
       .toEqual({ clipped: true, textOverflow: 'ellipsis' });
+    const conceptMetrics = await page.evaluate(() => {
+      const root = document.querySelector('.app-root');
+      const grid = document.querySelector('.model-grid');
+      const card = document.querySelector('.model-card');
+      if (!root || !grid || !card) {
+        throw new Error('Concept layout did not render');
+      }
+      return {
+        accent: getComputedStyle(root).getPropertyValue('--accent').trim(),
+        columnCount:
+          getComputedStyle(grid).gridTemplateColumns.split(' ').length,
+        cardHeight: card.getBoundingClientRect().height,
+      };
+    });
+    expect(conceptMetrics.accent).toBe(accent);
+    if (layout === 'list') {
+      expect(conceptMetrics.columnCount).toBe(1);
+      expect(conceptMetrics.cardHeight).toBeLessThan(70);
+    } else {
+      expect(conceptMetrics.columnCount).toBeGreaterThan(1);
+      expect(conceptMetrics.cardHeight).toBeGreaterThan(120);
+    }
   }
 
   const inspectorPreview = page
@@ -263,8 +293,34 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
   });
   await expect(viewer).toBeVisible();
 
-  // The "Reset view" toolbar button reframes the model without error.
+  const canvas = viewer.locator('canvas');
+  await page.waitForTimeout(200);
+  const baselineView = await canvas.screenshot();
+
+  // Keyboard orbit must change the rendered camera view.
+  await viewer.focus();
+  await page.keyboard.press('ArrowRight');
+  await page.waitForTimeout(250);
+  const orbitedView = await canvas.screenshot();
+  expect(orbitedView.equals(baselineView)).toBe(false);
+
+  // The toolbar reset must return to the deterministic fitted view.
   await page.getByRole('button', { name: 'Reset' }).click();
+  await page.waitForTimeout(250);
+  const toolbarResetView = await canvas.screenshot();
+  expect(toolbarResetView.equals(baselineView)).toBe(true);
+
+  // Keyboard zoom and keyboard reset are observable as well.
+  await viewer.focus();
+  await page.keyboard.press('+');
+  await page.waitForTimeout(250);
+  const zoomedView = await canvas.screenshot();
+  expect(zoomedView.equals(baselineView)).toBe(false);
+  await page.keyboard.press('r');
+  await page.waitForTimeout(250);
+  const keyboardResetView = await canvas.screenshot();
+  expect(keyboardResetView.equals(baselineView)).toBe(true);
+
   const wireframe = page.getByRole('button', { name: 'Wireframe' });
   await wireframe.click();
   await expect(page.getByRole('button', { name: 'Solid' })).toHaveAttribute(
@@ -274,14 +330,6 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
   await page.getByRole('button', { name: 'Orthographic' }).click();
   await expect(page.getByRole('button', { name: 'Perspective' })).toBeVisible();
 
-  // Keyboard controls (orbit / zoom / reset) are handled on the focused viewer.
-  await viewer.focus();
-  await page.keyboard.press('ArrowRight');
-  await page.keyboard.press('ArrowUp');
-  await page.keyboard.press('+');
-  await page.keyboard.press('-');
-  await page.keyboard.press('r');
-
   // The viewer remains mounted and healthy after the interactions.
   await expect(viewer).toBeVisible();
 
@@ -289,6 +337,9 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
   await expect(page.getByRole('application')).toHaveCount(0);
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(inspectorPreview).toBeFocused();
+  await expect(
+    page.locator('.properties-inspector').getByLabel('Model statistics'),
+  ).toContainText('OBJ');
 });
 
 test('renders without severe renderer console errors', () => {

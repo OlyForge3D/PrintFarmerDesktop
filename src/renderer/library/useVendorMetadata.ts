@@ -4,6 +4,7 @@ import type { ModelFormat, VendorMetadata } from '@shared/ipc';
 export interface VendorMetadataState {
   metadata: VendorMetadata | null;
   error: string | null;
+  sourcePath: string | null;
 }
 
 /**
@@ -18,26 +19,32 @@ export function useVendorMetadata(
 ): VendorMetadataState {
   const [metadata, setMetadata] = useState<VendorMetadata | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sourcePath, setSourcePath] = useState<string | null>(null);
 
   useEffect(() => {
     if (!path || format !== 'threeMf') {
       setMetadata(null);
       setError(null);
+      setSourcePath(null);
       return;
     }
     let cancelled = false;
+    setMetadata(null);
     setError(null);
+    setSourcePath(null);
     window.printFarmer
       .extractVendorMetadata({ path })
       .then((result) => {
         if (!cancelled) {
           setMetadata(result);
+          setSourcePath(path);
         }
       })
       .catch((err: unknown) => {
         if (!cancelled) {
           setMetadata(null);
           setError(err instanceof Error ? err.message : String(err));
+          setSourcePath(null);
         }
       });
     return () => {
@@ -45,5 +52,5 @@ export function useVendorMetadata(
     };
   }, [path, format]);
 
-  return { metadata, error };
+  return { metadata, error, sourcePath };
 }

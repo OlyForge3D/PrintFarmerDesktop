@@ -4,11 +4,11 @@ import type {
   Tag,
   VendorMetadata,
 } from '@shared/ipc';
-import type { SceneMesh } from '../viewer/types';
 import { Icon } from '../ui/Icon';
 import { CollectionEditor } from './CollectionEditor';
 import { TagEditor } from './TagEditor';
-import { ModelStats } from './ModelStats';
+import { SceneStatsDisplay } from './ModelStats';
+import type { SceneStats } from './sceneStats';
 import { VendorPanel } from './VendorPanel';
 import {
   formatBytes,
@@ -23,7 +23,7 @@ const MAX_VISIBLE_LOCATIONS = 25;
 export interface PropertiesInspectorProps {
   model: LogicalModel | null;
   favorite: boolean;
-  mesh: SceneMesh | null;
+  stats: SceneStats | null;
   vendorMetadata: VendorMetadata | null;
   tags: Tag[];
   collections: Collection[];
@@ -62,7 +62,7 @@ export function PropertiesInspector(
 function SelectedModelInspector({
   model,
   favorite,
-  mesh,
+  stats,
   vendorMetadata,
   tags,
   collections,
@@ -169,8 +169,8 @@ function SelectedModelInspector({
       </InspectorSection>
 
       <InspectorSection title="Geometry">
-        {mesh ? (
-          <ModelStats mesh={mesh} />
+        {stats ? (
+          <SceneStatsDisplay stats={stats} />
         ) : (
           <p className="inspector-hint">Preview to inspect model geometry.</p>
         )}
