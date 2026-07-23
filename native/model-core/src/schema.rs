@@ -290,6 +290,11 @@ CREATE UNIQUE INDEX idx_tags_sync_remote
 
 /// v8 backfills provenance for rows materialized before explicit provenance.
 pub const SCHEMA_V8: &str = r#"
+ALTER TABLE sync_profiles ADD COLUMN binding_cas_revision INTEGER NOT NULL DEFAULT 0;
+UPDATE sync_profiles
+SET profile_binding = profile_binding || ':1'
+WHERE profile_binding IS NOT NULL AND length(profile_binding) = 64;
+
 UPDATE collections
 SET sync_profile_id = (
         SELECT e.profile_id FROM sync_entities e

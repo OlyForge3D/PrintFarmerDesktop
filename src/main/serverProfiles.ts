@@ -30,6 +30,7 @@ const StoredProfile = ServerProfile.extend({
   bindingIdentity: z.string().length(64).optional(),
   bindingIncarnation: z.string().length(64).optional(),
   bindingRevision: z.number().int().positive().optional(),
+  principalId: z.string().min(1).max(256).optional(),
 }).strict();
 
 const ProfileStore = z
@@ -37,6 +38,17 @@ const ProfileStore = z
     version: z.literal(STORE_VERSION),
     selectedProfileId: z.string().uuid().nullable(),
     profiles: z.array(StoredProfile).max(100),
+    pendingBindingTransitions: z
+      .array(
+        z.object({
+          id: z.string().min(1).max(256),
+          profileId: z.string().uuid(),
+          expectedBinding: z.string().min(1).max(256),
+          newBinding: z.string().min(1).max(256),
+        }),
+      )
+      .max(100)
+      .default([]),
   })
   .strict();
 
@@ -213,6 +225,13 @@ export interface PersistedSyncBinding {
   incarnation: string;
 }
 
+export interface ProfileBindingTransition {
+  id: string;
+  profileId: string;
+  expectedBinding: string;
+  newBinding: string;
+}
+
 export type ProfileErrorCode =
   | 'AUTHENTICATION_FAILED'
   | 'AUTHORIZATION_FAILED'
@@ -259,6 +278,7 @@ interface CachedToken {
 interface IssuedToken {
   token: string;
   expiresAt: number;
+  principalId: string;
 }
 
 interface AuthenticatedToken extends IssuedToken {
@@ -341,7 +361,7 @@ export class ServerProfileService {
   private readonly tokenRenewals = new Map<string, TokenRenewal>();
   private readonly authGenerations = new Map<string, number>();
   private readonly invalidationListeners = new Set<
-    (profileId: string) => Promise<void> | void
+    (transition: ProfileBindingTransition) => Promise<void> | void
   >();
   private mutationTail: Promise<void> = Promise.resolve();
 
@@ -369,7 +389,7 @@ export class ServerProfileService {
   }
 
   subscribeInvalidation(
-    listener: (profileId: string) => Promise<void> | void,
+    listener: (transition: ProfileBindingTransition) => Promise<void> | void,
   ): () => void {
     this.invalidationListeners.add(listener);
     return () => this.invalidationListeners.delete(listener);
@@ -543,7 +563,7 @@ export class ServerProfileService {
     }
 
     const encryptedSecret = this.encryptSecret(id, tested.baseUrl, secret);
-    await this.withMutationLock(async () => {
+    const transition = await this.withMutationLock(async () => {
       const store = await this.readStore();
       const index = store.profiles.findIndex((profile) => profile.id === id);
       const current = index < 0 ? null : store.profiles[index]!;
@@ -555,10 +575,15 @@ export class ServerProfileService {
       if (!this.authenticationIsCurrent(probed.authentication)) {
         throw authenticationSupersededError();
       }
-      const identity = serverIdentity(tested.baseUrl, secret);
+      const identity = serverIdentity(
+        tested.baseUrl,
+        probed.authentication.principalId,
+      );
       const previousIdentity = current
         ? (current.bindingIdentity ??
-          serverIdentity(current.baseUrl, this.decryptSecret(current)))
+          (current.principalId
+            ? serverIdentity(current.baseUrl, current.principalId)
+            : identity))
         : null;
       const identityChanged =
         previousIdentity !== null && previousIdentity !== identity;
@@ -574,6 +599,7 @@ export class ServerProfileService {
           !identityChanged && current?.bindingRevision
             ? current.bindingRevision
             : (current?.bindingRevision ?? 0) + 1,
+        principalId: probed.authentication.principalId,
       };
       if (index < 0) {
         store.profiles.push(stored);
@@ -582,16 +608,31 @@ export class ServerProfileService {
       }
       store.selectedProfileId ??= id;
       try {
-        await this.writeStore(store);
-        if (identityChanged) {
-          await this.emitInvalidation(id);
+        const bindingTransition: ProfileBindingTransition | null =
+          identityChanged && current
+            ? {
+                id: this.createId(),
+                profileId: id,
+                expectedBinding: persistedBinding(current).binding,
+                newBinding: persistedBinding(stored).binding,
+              }
+            : null;
+        if (bindingTransition) {
+          store.pendingBindingTransitions.push(bindingTransition);
         }
+        await this.writeStore(store);
         this.installAuthenticatedTokenIfCurrent(probed.authentication);
+        return bindingTransition;
       } catch (error) {
         this.invalidateToken(id);
         throw error;
       }
     });
+    if (transition) {
+      await this.emitInvalidation(transition).catch(() => {
+        console.error('[profiles] binding transition deferred');
+      });
+    }
     return tested;
   }
 
@@ -609,21 +650,36 @@ export class ServerProfileService {
   }
 
   async delete(id: string): Promise<ListServerProfilesResponse> {
-    return this.withMutationLock(async () => {
+    const result = await this.withMutationLock(async () => {
       const store = await this.readStore();
       const index = store.profiles.findIndex((profile) => profile.id === id);
       if (index < 0) {
         throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
       }
+      const removed = store.profiles[index]!;
+      const oldBinding = persistedBinding(removed);
+      const transition: ProfileBindingTransition = {
+        id: this.createId(),
+        profileId: id,
+        expectedBinding: oldBinding.binding,
+        newBinding: `${createHash('sha256')
+          .update('removed')
+          .update(oldBinding.incarnation)
+          .digest('hex')}:${oldBinding.revision + 1}`,
+      };
       store.profiles.splice(index, 1);
       this.invalidateToken(id);
       if (store.selectedProfileId === id) {
         store.selectedProfileId = store.profiles[0]?.id ?? null;
       }
+      store.pendingBindingTransitions.push(transition);
       await this.writeStore(store);
-      await this.emitInvalidation(id);
-      return this.redactStore(store);
+      return { response: this.redactStore(store), transition };
     });
+    await this.emitInvalidation(result.transition).catch(() => {
+      console.error('[profiles] binding transition deferred');
+    });
+    return result.response;
   }
 
   async getToken(id: string): Promise<string> {
@@ -748,7 +804,7 @@ export class ServerProfileService {
         baseUrl: profile.baseUrl,
         capabilities: profile.capabilities,
         token,
-        binding: persistedBinding(profile, secret).binding,
+        binding: persistedBinding(profile).binding,
       };
     });
   }
@@ -760,11 +816,31 @@ export class ServerProfileService {
       if (!profile) {
         throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
       }
+
       return {
         profileId: id,
         baseUrl: profile.baseUrl,
-        ...persistedBinding(profile, this.decryptSecret(profile)),
+        ...persistedBinding(profile),
       };
+    });
+  }
+
+  async pendingBindingTransitions(): Promise<ProfileBindingTransition[]> {
+    return this.withMutationLock(async () => {
+      const store = await this.readStore();
+      return store.pendingBindingTransitions.map((transition) => ({
+        ...transition,
+      }));
+    });
+  }
+
+  async acknowledgeBindingTransition(id: string): Promise<void> {
+    await this.withMutationLock(async () => {
+      const store = await this.readStore();
+      store.pendingBindingTransitions = store.pendingBindingTransitions.filter(
+        (transition) => transition.id !== id,
+      );
+      await this.writeStore(store);
     });
   }
 
@@ -1001,8 +1077,11 @@ export class ServerProfileService {
         'This server does not provide the current-user endpoint.',
       );
     }
-    await this.parseJson(me, z.record(z.unknown()));
-    return { token, expiresAt: expiration };
+    const currentUser = await this.parseJson(
+      me,
+      z.object({ id: z.string().min(1).max(256) }).passthrough(),
+    );
+    return { token, expiresAt: expiration, principalId: currentUser.id };
   }
 
   private async request(
@@ -1237,10 +1316,12 @@ export class ServerProfileService {
     }
   }
 
-  private async emitInvalidation(profileId: string): Promise<void> {
+  private async emitInvalidation(
+    transition: ProfileBindingTransition,
+  ): Promise<void> {
     await Promise.all(
       [...this.invalidationListeners].map((listener) =>
-        Promise.resolve(listener(profileId)),
+        Promise.resolve(listener(transition)),
       ),
     );
   }
@@ -1351,6 +1432,7 @@ export class ServerProfileService {
           version: STORE_VERSION,
           selectedProfileId: null,
           profiles: [],
+          pendingBindingTransitions: [],
         };
       }
       throw new ServerProfileError(
@@ -1415,6 +1497,7 @@ export class ServerProfileService {
     delete redacted.bindingIdentity;
     delete redacted.bindingIncarnation;
     delete redacted.bindingRevision;
+    delete redacted.principalId;
     return ServerProfile.parse(redacted);
   }
 
@@ -1520,26 +1603,30 @@ function profileRevision(profile: StoredProfile): string {
     .digest('hex');
 }
 
-function serverIdentity(baseUrl: string, secret: StoredSecret): string {
+function serverIdentity(baseUrl: string, principalId: string): string {
   return createHash('sha256')
     .update(baseUrl)
     .update('\0')
-    .update(secret.authMode)
-    .update('\0')
-    .update(secret.authMode === 'password' ? secret.username : secret.apiKey)
+    .update(principalId)
     .digest('hex');
 }
 
-function persistedBinding(
-  profile: StoredProfile,
-  secret: StoredSecret,
-): {
+function persistedBinding(profile: StoredProfile): {
   binding: string;
   revision: number;
   incarnation: string;
 } {
-  const identity =
-    profile.bindingIdentity ?? serverIdentity(profile.baseUrl, secret);
+  if (
+    !profile.bindingIdentity ||
+    !profile.bindingRevision ||
+    !profile.bindingIncarnation
+  ) {
+    throw new ServerProfileError(
+      'AUTHENTICATION_FAILED',
+      'This legacy profile must authenticate once before synchronization.',
+    );
+  }
+  const identity = profile.bindingIdentity;
   const revision = profile.bindingRevision ?? 1;
   const incarnation = profile.bindingIncarnation ?? identity;
   return {

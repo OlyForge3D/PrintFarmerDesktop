@@ -257,7 +257,11 @@ describe('server profiles', () => {
     profiles.subscribeInvalidation(invalidated);
 
     await profiles.save(
-      apiKeyDraft({ id: saved.id, displayName: 'Renamed farm' }),
+      apiKeyDraft({
+        id: saved.id,
+        displayName: 'Renamed farm',
+        credentials: { authMode: 'apiKey', apiKey: 'rotated-key' },
+      }),
     );
     await profiles.refreshToken(saved.id);
     const unchanged = await profiles.getPersistedSyncBinding(saved.id);

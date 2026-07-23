@@ -48,8 +48,22 @@ export interface SyncProfileService {
     expectedBaseUrl?: string,
   ): Promise<{ baseUrl: string; binding: string }>;
   subscribeInvalidation?(
-    listener: (profileId: string) => Promise<void> | void,
+    listener: (transition: {
+      id: string;
+      profileId: string;
+      expectedBinding: string;
+      newBinding: string;
+    }) => Promise<void> | void,
   ): () => void;
+  pendingBindingTransitions?(): Promise<
+    Array<{
+      id: string;
+      profileId: string;
+      expectedBinding: string;
+      newBinding: string;
+    }>
+  >;
+  acknowledgeBindingTransition?(id: string): Promise<void>;
 }
 
 export interface SyncSidecar {
@@ -249,7 +263,6 @@ export class PrintFarmerSyncEngine {
   private readonly permits: Semaphore;
   private readonly active = new Map<string, ActiveSync>();
   private readonly generations = new Map<string, number>();
-  private readonly boundBindings = new Map<string, string>();
   private readonly statuses = new Map<string, ProfileSyncStatus>();
   private readonly listeners = new Set<(status: ProfileSyncStatus) => void>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -270,29 +283,15 @@ export class PrintFarmerSyncEngine {
     this.clearIntervalImpl = options.clearInterval ?? globalThis.clearInterval;
     this.permits = new Semaphore(options.maxConcurrentProfiles ?? 2);
     this.unsubscribeInvalidation =
-      this.profiles.subscribeInvalidation?.(async (profileId) => {
-        this.cancelProfile(profileId);
-        const expected = this.boundBindings.get(profileId);
-        if (!expected) return;
-        let replacement: string;
-        try {
-          replacement =
-            (await this.profiles.getAuthenticatedContext?.(profileId))
-              ?.binding ??
-            `${createHash('sha256').update(profileId).digest('hex')}:1`;
-        } catch {
-          replacement = `${createHash('sha256')
-            .update('removed')
-            .update(profileId)
-            .digest('hex')}:1`;
-        }
+      this.profiles.subscribeInvalidation?.(async (transition) => {
+        this.cancelProfile(transition.profileId);
         await this.sidecar.replaceSyncProfileBinding(
-          profileId,
-          expected,
-          replacement,
+          transition.profileId,
+          transition.expectedBinding,
+          transition.newBinding,
           toUnixSeconds(this.now()),
         );
-        this.boundBindings.set(profileId, replacement);
+        await this.profiles.acknowledgeBindingTransition?.(transition.id);
       }) ?? null;
   }
 
@@ -383,7 +382,6 @@ export class PrintFarmerSyncEngine {
       context.binding,
       toUnixSeconds(this.now()),
     );
-    this.boundBindings.set(profile.id, context.binding);
     const operations = await this.sidecar.getOutboundBatch(profileId, batchId);
     if (
       operations.length === 0 ||
@@ -431,6 +429,19 @@ export class PrintFarmerSyncEngine {
       const store = await this.profiles.list();
       const eligible = store.profiles.filter(isSyncCapable);
       if (recover) {
+        const transitions =
+          (await this.profiles.pendingBindingTransitions?.()) ?? [];
+        const transitionRecovery = await Promise.allSettled(
+          transitions.map(async (transition) => {
+            await this.sidecar.replaceSyncProfileBinding(
+              transition.profileId,
+              transition.expectedBinding,
+              transition.newBinding,
+              toUnixSeconds(this.now()),
+            );
+            await this.profiles.acknowledgeBindingTransition?.(transition.id);
+          }),
+        );
         const recovery = await Promise.allSettled(
           eligible.map(async (profile) => {
             this.update(profile.id, { phase: 'recovering' });
@@ -440,7 +451,6 @@ export class PrintFarmerSyncEngine {
               context.binding,
               toUnixSeconds(this.now()),
             );
-            this.boundBindings.set(profile.id, context.binding);
             await this.sidecar.recoverOutboundOperations(
               profile.id,
               context.binding,
@@ -448,7 +458,10 @@ export class PrintFarmerSyncEngine {
             );
           }),
         );
-        if (recovery.some((result) => result.status === 'rejected')) {
+        if (
+          transitionRecovery.some((result) => result.status === 'rejected') ||
+          recovery.some((result) => result.status === 'rejected')
+        ) {
           console.error('[sync] one or more profile recoveries failed');
         }
       }
@@ -477,7 +490,6 @@ export class PrintFarmerSyncEngine {
         context.binding,
         toUnixSeconds(this.now()),
       );
-      this.boundBindings.set(profile.id, context.binding);
       this.update(profileId, {
         phase: 'pulling',
         running: true,

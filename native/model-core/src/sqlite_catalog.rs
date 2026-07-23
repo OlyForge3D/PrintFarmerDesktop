@@ -1146,23 +1146,32 @@ impl CatalogStore for SqliteCatalog {
             self.begin_batch()?;
         }
         let result = (|| {
-            let current: Option<String> = self
+            let current: Option<(Option<String>, i64)> = self
                 .conn
                 .query_row(
-                    "SELECT profile_binding FROM sync_profiles WHERE profile_id = ?1",
+                    "SELECT profile_binding, binding_cas_revision
+                     FROM sync_profiles WHERE profile_id = ?1",
                     params![profile_id],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
-                .map_err(sql_error)?
-                .flatten();
-            if current.as_deref().is_some_and(|value| value != binding) {
+                .map_err(sql_error)?;
+            if current.as_ref().is_some_and(|(value, cas_revision)| {
+                value.as_deref().is_some_and(|value| {
+                    value != binding
+                        && !(*cas_revision == 0
+                            && value.len() == 66
+                            && value.ends_with(":1")
+                            && binding.ends_with(":1"))
+                })
+            }) {
                 return Err("sync profile binding replacement requires CAS".to_string());
             }
             self.ensure_sync_profile(profile_id)?;
             self.conn
                 .execute(
-                    "UPDATE sync_profiles SET profile_binding = ?2, updated_at = ?3
+                    "UPDATE sync_profiles SET profile_binding = ?2, updated_at = ?3,
+                        binding_cas_revision = MAX(binding_cas_revision, 1)
                      WHERE profile_id = ?1",
                     params![profile_id, binding, now],
                 )
@@ -1208,7 +1217,8 @@ impl CatalogStore for SqliteCatalog {
             self.ensure_sync_profile(profile_id)?;
             self.conn
                 .execute(
-                    "UPDATE sync_profiles SET profile_binding = ?2, updated_at = ?3
+                    "UPDATE sync_profiles SET profile_binding = ?2, updated_at = ?3,
+                        binding_cas_revision = 1
                      WHERE profile_id = ?1",
                     params![profile_id, new_binding, now],
                 )
@@ -1259,6 +1269,7 @@ impl CatalogStore for SqliteCatalog {
                 return Err("serverRevision must not move backwards".to_string());
             }
             let mut previous_entities = Vec::with_capacity(batch.entities.len());
+            let mut accepted_entities = Vec::new();
             for entity in &batch.entities {
                 let previous_journal: Option<i64> = self
                     .conn
@@ -1358,8 +1369,11 @@ impl CatalogStore for SqliteCatalog {
                 let mapping = sync::merge_entity_revision(merge_base, incoming)?;
                 self.upsert_entity_revision(&mapping, entity.journal_revision)?;
                 previous_entities.push(existing);
+                accepted_entities.push(entity.clone());
             }
-            self.materialize_pull(&batch, &previous_entities)?;
+            let mut effective_batch = batch.clone();
+            effective_batch.entities = accepted_entities;
+            self.materialize_pull(&effective_batch, &previous_entities)?;
             for conflict in &batch.conflicts {
                 self.insert_conflict(&batch.profile_id, conflict)?;
             }
@@ -1586,6 +1600,32 @@ impl CatalogStore for SqliteCatalog {
     fn provision_entity_mapping(&mut self, mapping: EntityRevisionDto) -> Result<(), String> {
         self.ensure_sync_profile(&mapping.profile_id)?;
         self.upsert_entity_revision(&mapping, 0)
+    }
+
+    fn pending_membership_create(
+        &self,
+        profile_id: &str,
+        collection_local_id: &str,
+        model_hash: &str,
+    ) -> Result<Option<OutboundOperationDto>, String> {
+        self.conn
+            .query_row(
+                "SELECT profile_id, operation_id, entity_type, operation_kind, entity_id,
+                        payload_json, base_revision, concurrency_token, state, attempt_count,
+                        retry_eligible, retry_at, lease_until, last_error, created_at,
+                        updated_at, acked_at, sequence, batch_id, batch_ordinal, lease_token,
+                        batch_incarnation, attempt_token
+                 FROM sync_outbox
+                 WHERE profile_id = ?1 AND entity_type = 'ModelCollectionMembership'
+                   AND operation_kind = 'Create' AND state <> 'acked'
+                   AND json_extract(payload_json, '$.collectionId') = ?2
+                   AND json_extract(payload_json, '$.modelHash') = ?3
+                 ORDER BY sequence LIMIT 1",
+                params![profile_id, collection_local_id, model_hash],
+                outbound_from_row,
+            )
+            .optional()
+            .map_err(sql_error)
     }
 
     fn enqueue_outbound_operations(

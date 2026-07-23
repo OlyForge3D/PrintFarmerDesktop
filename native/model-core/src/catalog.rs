@@ -236,7 +236,7 @@ pub trait CatalogStore {
     ) -> Result<Collection, String> {
         self.validate_sync_profile_binding(profile_id, profile_binding)?;
         self.begin_batch()?;
-        let result: Result<Collection, String> = {
+        let result = (|| -> Result<Collection, String> {
             let collection = self
                 .create_collection(name)
                 .ok_or_else(|| "collection name must not be blank".to_string())?;
@@ -273,7 +273,7 @@ pub trait CatalogStore {
                 updated_at: now,
             })?;
             Ok(collection)
-        };
+        })();
         finish_catalog_batch(self, result)
     }
 
@@ -463,15 +463,7 @@ pub trait CatalogStore {
                 }
                 _ => None,
             };
-            let pending_membership = self
-                .outbound_operations(profile_id, &[], sync::MAX_SYNC_BATCH)?
-                .into_iter()
-                .find(|operation| {
-                    operation.entity_type == SyncEntityType::ModelCollectionMembership
-                        && operation.operation == sync::SyncOperationKind::Create
-                        && operation.payload["collectionId"].as_str() == Some(id)
-                        && operation.payload["modelHash"].as_str() == Some(hash)
-                });
+            let pending_membership = self.pending_membership_create(profile_id, id, hash)?;
             self.remove_model_from_collection(id, hash);
             if existed && (membership.is_some() || pending_membership.is_some()) {
                 let entity_id = membership
@@ -561,6 +553,13 @@ pub trait CatalogStore {
     ) -> Result<Option<EntityRevisionDto>, String>;
 
     fn provision_entity_mapping(&mut self, mapping: EntityRevisionDto) -> Result<(), String>;
+
+    fn pending_membership_create(
+        &self,
+        profile_id: &str,
+        collection_local_id: &str,
+        model_hash: &str,
+    ) -> Result<Option<OutboundOperationDto>, String>;
 
     fn entity_revision_by_local(
         &self,
@@ -1189,7 +1188,10 @@ impl CatalogStore for InMemoryCatalog {
         if self
             .sync_profile_bindings
             .get(profile_id)
-            .is_some_and(|current| current != binding)
+            .is_some_and(|current| {
+                current != binding
+                    && !(current.len() == 66 && current.ends_with(":1") && binding.ends_with(":1"))
+            })
         {
             return Err("sync profile binding replacement requires CAS".to_string());
         }
@@ -1317,7 +1319,20 @@ impl CatalogStore for InMemoryCatalog {
 
         self.begin_batch()?;
         let result = (|| {
+            let mut accepted_entities = Vec::new();
             for entity in &batch.entities {
+                let journal_key = (
+                    batch.profile_id.clone(),
+                    entity.entity_type,
+                    entity.remote_id.clone(),
+                );
+                if self
+                    .sync_journal_revisions
+                    .get(&journal_key)
+                    .is_some_and(|revision| *revision >= entity.journal_revision)
+                {
+                    continue;
+                }
                 if let Some(local_id) = entity.local_id.as_deref() {
                     let pending = self
                         .sync_outbox
@@ -1379,8 +1394,11 @@ impl CatalogStore for InMemoryCatalog {
                     entity.journal_revision,
                 );
                 previous_entities.push(previous);
+                accepted_entities.push(entity.clone());
             }
-            materialize_memory_pull(self, &batch, &previous_entities)?;
+            let mut effective_batch = batch.clone();
+            effective_batch.entities = accepted_entities;
+            materialize_memory_pull(self, &effective_batch, &previous_entities)?;
             for conflict in &batch.conflicts {
                 insert_memory_conflict(self, &batch.profile_id, conflict)?;
             }
@@ -1570,6 +1588,26 @@ impl CatalogStore for InMemoryCatalog {
             mapping,
         );
         Ok(())
+    }
+
+    fn pending_membership_create(
+        &self,
+        profile_id: &str,
+        collection_local_id: &str,
+        model_hash: &str,
+    ) -> Result<Option<OutboundOperationDto>, String> {
+        Ok(self
+            .sync_outbox
+            .values()
+            .find(|operation| {
+                operation.profile_id == profile_id
+                    && operation.entity_type == SyncEntityType::ModelCollectionMembership
+                    && operation.operation == sync::SyncOperationKind::Create
+                    && operation.state != OutboundState::Acked
+                    && operation.payload["collectionId"].as_str() == Some(collection_local_id)
+                    && operation.payload["modelHash"].as_str() == Some(model_hash)
+            })
+            .cloned())
     }
 
     fn enqueue_outbound_operations(
