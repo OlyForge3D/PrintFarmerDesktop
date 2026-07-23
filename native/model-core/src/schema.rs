@@ -8,7 +8,7 @@
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -288,6 +288,49 @@ CREATE UNIQUE INDEX idx_tags_sync_remote
     WHERE sync_profile_id IS NOT NULL;
 "#;
 
+/// v8 backfills provenance for rows materialized before explicit provenance.
+pub const SCHEMA_V8: &str = r#"
+UPDATE collections
+SET sync_profile_id = (
+        SELECT e.profile_id FROM sync_entities e
+        WHERE e.entity_type = 'ModelCollection' AND e.local_id = collections.id
+        LIMIT 1),
+    sync_remote_id = (
+        SELECT e.remote_id FROM sync_entities e
+        WHERE e.entity_type = 'ModelCollection' AND e.local_id = collections.id
+        LIMIT 1),
+    sync_visibility = (
+        SELECT e.visibility FROM sync_entities e
+        WHERE e.entity_type = 'ModelCollection' AND e.local_id = collections.id
+        LIMIT 1),
+    sync_read_only = COALESCE((
+        SELECT CASE WHEN e.visibility = 'Shared' THEN 1 ELSE 0 END
+        FROM sync_entities e
+        WHERE e.entity_type = 'ModelCollection' AND e.local_id = collections.id
+        LIMIT 1), 0)
+WHERE EXISTS (
+    SELECT 1 FROM sync_entities e
+    WHERE e.entity_type = 'ModelCollection' AND e.local_id = collections.id);
+
+UPDATE tags
+SET sync_profile_id = (
+        SELECT e.profile_id FROM sync_entities e
+        WHERE e.entity_type = 'Tag' AND e.local_id = tags.id LIMIT 1),
+    sync_remote_id = (
+        SELECT e.remote_id FROM sync_entities e
+        WHERE e.entity_type = 'Tag' AND e.local_id = tags.id LIMIT 1),
+    sync_visibility = (
+        SELECT e.visibility FROM sync_entities e
+        WHERE e.entity_type = 'Tag' AND e.local_id = tags.id LIMIT 1),
+    sync_read_only = COALESCE((
+        SELECT CASE WHEN e.visibility = 'Shared' THEN 1 ELSE 0 END
+        FROM sync_entities e
+        WHERE e.entity_type = 'Tag' AND e.local_id = tags.id LIMIT 1), 0)
+WHERE EXISTS (
+    SELECT 1 FROM sync_entities e
+    WHERE e.entity_type = 'Tag' AND e.local_id = tags.id);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,7 +357,7 @@ mod tests {
     #[test]
     fn sync_schema_contains_no_transport_or_secret_fields() {
         let sync_schema =
-            format!("{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}\n{SCHEMA_V6}\n{SCHEMA_V7}")
+            format!(            "{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}\n{SCHEMA_V6}\n{SCHEMA_V7}\n{SCHEMA_V8}")
                 .to_lowercase();
         for forbidden in ["server_url", "auth_token", "api_key", "password", "jwt"] {
             assert!(!sync_schema.contains(forbidden));

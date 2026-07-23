@@ -213,6 +213,15 @@ struct BindProfileParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ReplaceProfileBindingParams {
+    profile_id: String,
+    expected_binding: String,
+    new_binding: String,
+    now: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RemoteModelParams {
     profile_id: String,
     local_model_hash: String,
@@ -387,6 +396,17 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
                 params.now,
             )?)
             .map_err(|e| format!("failed to serialize bound sync profile: {e}"))
+        }
+        "replaceSyncProfileBinding" => {
+            let params: ReplaceProfileBindingParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid replaceSyncProfileBinding params: {e}"))?;
+            serde_json::to_value(store.replace_sync_profile_binding(
+                &params.profile_id,
+                &params.expected_binding,
+                &params.new_binding,
+                params.now,
+            )?)
+            .map_err(|e| format!("failed to serialize replaced sync profile: {e}"))
         }
         "applySyncPullBatch" => {
             validate_profile_binding_param(store, &params)?;

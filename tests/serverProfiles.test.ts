@@ -249,6 +249,23 @@ function service(
 }
 
 describe('server profiles', () => {
+  it('keeps persisted server binding stable across rename and token renewal', async () => {
+    const profiles = service(new MemoryFileSystem());
+    const saved = await profiles.save(apiKeyDraft());
+    const initial = await profiles.getPersistedSyncBinding(saved.id);
+    const invalidated = vi.fn();
+    profiles.subscribeInvalidation(invalidated);
+
+    await profiles.save(
+      apiKeyDraft({ id: saved.id, displayName: 'Renamed farm' }),
+    );
+    await profiles.refreshToken(saved.id);
+    const unchanged = await profiles.getPersistedSyncBinding(saved.id);
+
+    expect(unchanged).toEqual(initial);
+    expect(invalidated).not.toHaveBeenCalled();
+  });
+
   it('normalizes deterministic server URLs and rejects unsafe components', () => {
     expect(normalizeServerUrl(' HTTP://Example.COM:80/farm/// ')).toBe(
       'http://example.com/farm',

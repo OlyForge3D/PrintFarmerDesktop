@@ -63,10 +63,7 @@ export function registerIpcHandlers(
     ) {
       return null;
     }
-    const context = await profiles.getAuthenticatedContext(
-      profile.id,
-      profile.baseUrl,
-    );
+    const context = await profiles.getPersistedSyncBinding(profile.id);
     await sidecar.bindSyncProfile(
       profile.id,
       context.binding,

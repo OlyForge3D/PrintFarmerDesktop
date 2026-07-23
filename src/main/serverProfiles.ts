@@ -27,6 +27,9 @@ const MODERN_UPLOAD_CAPABILITY_FIELDS = [
 
 const StoredProfile = ServerProfile.extend({
   encryptedSecret: z.string().min(1).max(32_768),
+  bindingIdentity: z.string().length(64).optional(),
+  bindingIncarnation: z.string().length(64).optional(),
+  bindingRevision: z.number().int().positive().optional(),
 }).strict();
 
 const ProfileStore = z
@@ -200,6 +203,14 @@ export interface AuthenticatedServerContext {
   capabilities: RedactedProfile['capabilities'];
   token: string;
   binding: string;
+}
+
+export interface PersistedSyncBinding {
+  profileId: string;
+  baseUrl: string;
+  binding: string;
+  revision: number;
+  incarnation: string;
 }
 
 export type ProfileErrorCode =
@@ -544,7 +555,26 @@ export class ServerProfileService {
       if (!this.authenticationIsCurrent(probed.authentication)) {
         throw authenticationSupersededError();
       }
-      const stored: StoredProfile = { ...tested, encryptedSecret };
+      const identity = serverIdentity(tested.baseUrl, secret);
+      const previousIdentity = current
+        ? (current.bindingIdentity ??
+          serverIdentity(current.baseUrl, this.decryptSecret(current)))
+        : null;
+      const identityChanged =
+        previousIdentity !== null && previousIdentity !== identity;
+      const stored: StoredProfile = {
+        ...tested,
+        encryptedSecret,
+        bindingIdentity: identity,
+        bindingIncarnation:
+          !identityChanged && current?.bindingIncarnation
+            ? current.bindingIncarnation
+            : identity,
+        bindingRevision:
+          !identityChanged && current?.bindingRevision
+            ? current.bindingRevision
+            : (current?.bindingRevision ?? 0) + 1,
+      };
       if (index < 0) {
         store.profiles.push(stored);
       } else {
@@ -552,10 +582,10 @@ export class ServerProfileService {
       }
       store.selectedProfileId ??= id;
       try {
-        if (current) {
+        await this.writeStore(store);
+        if (identityChanged) {
           await this.emitInvalidation(id);
         }
-        await this.writeStore(store);
         this.installAuthenticatedTokenIfCurrent(probed.authentication);
       } catch (error) {
         this.invalidateToken(id);
@@ -590,8 +620,8 @@ export class ServerProfileService {
       if (store.selectedProfileId === id) {
         store.selectedProfileId = store.profiles[0]?.id ?? null;
       }
-      await this.emitInvalidation(id);
       await this.writeStore(store);
+      await this.emitInvalidation(id);
       return this.redactStore(store);
     });
   }
@@ -718,13 +748,22 @@ export class ServerProfileService {
         baseUrl: profile.baseUrl,
         capabilities: profile.capabilities,
         token,
-        binding: createHash('sha256')
-          .update(revision)
-          .update('\0')
-          .update(String(generation))
-          .update('\0')
-          .update(binding)
-          .digest('hex'),
+        binding: persistedBinding(profile, secret).binding,
+      };
+    });
+  }
+
+  async getPersistedSyncBinding(id: string): Promise<PersistedSyncBinding> {
+    return this.withMutationLock(async () => {
+      const store = await this.readStore();
+      const profile = store.profiles.find((candidate) => candidate.id === id);
+      if (!profile) {
+        throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
+      }
+      return {
+        profileId: id,
+        baseUrl: profile.baseUrl,
+        ...persistedBinding(profile, this.decryptSecret(profile)),
       };
     });
   }
@@ -1373,6 +1412,9 @@ export class ServerProfileService {
   private redact(profile: StoredProfile): RedactedProfile {
     const redacted: Partial<StoredProfile> = { ...profile };
     delete redacted.encryptedSecret;
+    delete redacted.bindingIdentity;
+    delete redacted.bindingIncarnation;
+    delete redacted.bindingRevision;
     return ServerProfile.parse(redacted);
   }
 
@@ -1476,6 +1518,35 @@ function profileRevision(profile: StoredProfile): string {
       }),
     )
     .digest('hex');
+}
+
+function serverIdentity(baseUrl: string, secret: StoredSecret): string {
+  return createHash('sha256')
+    .update(baseUrl)
+    .update('\0')
+    .update(secret.authMode)
+    .update('\0')
+    .update(secret.authMode === 'password' ? secret.username : secret.apiKey)
+    .digest('hex');
+}
+
+function persistedBinding(
+  profile: StoredProfile,
+  secret: StoredSecret,
+): {
+  binding: string;
+  revision: number;
+  incarnation: string;
+} {
+  const identity =
+    profile.bindingIdentity ?? serverIdentity(profile.baseUrl, secret);
+  const revision = profile.bindingRevision ?? 1;
+  const incarnation = profile.bindingIncarnation ?? identity;
+  return {
+    binding: `${incarnation}:${revision}`,
+    revision,
+    incarnation,
+  };
 }
 
 function mergeProbeResult(

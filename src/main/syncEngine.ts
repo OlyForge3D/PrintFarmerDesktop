@@ -59,6 +59,12 @@ export interface SyncSidecar {
     profileBinding: string,
     now: number,
   ): Promise<SidecarSyncStatus>;
+  replaceSyncProfileBinding(
+    profileId: string,
+    expectedBinding: string,
+    newBinding: string,
+    now: number,
+  ): Promise<SidecarSyncStatus>;
   applySyncPullBatch(batch: SidecarApplyPullBatch): Promise<SidecarSyncStatus>;
   getSyncEntityRevision(
     profileId: string,
@@ -243,6 +249,7 @@ export class PrintFarmerSyncEngine {
   private readonly permits: Semaphore;
   private readonly active = new Map<string, ActiveSync>();
   private readonly generations = new Map<string, number>();
+  private readonly boundBindings = new Map<string, string>();
   private readonly statuses = new Map<string, ProfileSyncStatus>();
   private readonly listeners = new Set<(status: ProfileSyncStatus) => void>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -265,18 +272,27 @@ export class PrintFarmerSyncEngine {
     this.unsubscribeInvalidation =
       this.profiles.subscribeInvalidation?.(async (profileId) => {
         this.cancelProfile(profileId);
-        const invalidatedBinding = createHash('sha256')
-          .update('invalidated')
-          .update('\0')
-          .update(profileId)
-          .update('\0')
-          .update(String(this.now()))
-          .digest('hex');
-        await this.sidecar.bindSyncProfile(
+        const expected = this.boundBindings.get(profileId);
+        if (!expected) return;
+        let replacement: string;
+        try {
+          replacement =
+            (await this.profiles.getAuthenticatedContext?.(profileId))
+              ?.binding ??
+            `${createHash('sha256').update(profileId).digest('hex')}:1`;
+        } catch {
+          replacement = `${createHash('sha256')
+            .update('removed')
+            .update(profileId)
+            .digest('hex')}:1`;
+        }
+        await this.sidecar.replaceSyncProfileBinding(
           profileId,
-          invalidatedBinding,
+          expected,
+          replacement,
           toUnixSeconds(this.now()),
         );
+        this.boundBindings.set(profileId, replacement);
       }) ?? null;
   }
 
@@ -367,6 +383,7 @@ export class PrintFarmerSyncEngine {
       context.binding,
       toUnixSeconds(this.now()),
     );
+    this.boundBindings.set(profile.id, context.binding);
     const operations = await this.sidecar.getOutboundBatch(profileId, batchId);
     if (
       operations.length === 0 ||
@@ -414,7 +431,7 @@ export class PrintFarmerSyncEngine {
       const store = await this.profiles.list();
       const eligible = store.profiles.filter(isSyncCapable);
       if (recover) {
-        await Promise.all(
+        const recovery = await Promise.allSettled(
           eligible.map(async (profile) => {
             this.update(profile.id, { phase: 'recovering' });
             const context = await this.authenticatedContext(profile);
@@ -423,6 +440,7 @@ export class PrintFarmerSyncEngine {
               context.binding,
               toUnixSeconds(this.now()),
             );
+            this.boundBindings.set(profile.id, context.binding);
             await this.sidecar.recoverOutboundOperations(
               profile.id,
               context.binding,
@@ -430,6 +448,9 @@ export class PrintFarmerSyncEngine {
             );
           }),
         );
+        if (recovery.some((result) => result.status === 'rejected')) {
+          console.error('[sync] one or more profile recoveries failed');
+        }
       }
       await Promise.allSettled(
         eligible.map((profile) => this.syncNow(profile.id)),
@@ -456,6 +477,7 @@ export class PrintFarmerSyncEngine {
         context.binding,
         toUnixSeconds(this.now()),
       );
+      this.boundBindings.set(profile.id, context.binding);
       this.update(profileId, {
         phase: 'pulling',
         running: true,
@@ -585,9 +607,7 @@ export class PrintFarmerSyncEngine {
         );
         this.assertCurrent(profile.id, generation, signal);
         if (!value) {
-          throw new Error(
-            `Collection ${change.entityId} could not be materialized.`,
-          );
+          continue;
         } else {
           const timestamp = value.updatedAt ?? change.timestamp;
           result.push({
@@ -620,7 +640,7 @@ export class PrintFarmerSyncEngine {
         );
         this.assertCurrent(profile.id, generation, signal);
         if (!value) {
-          throw new Error(`Tag ${change.entityId} could not be materialized.`);
+          continue;
         }
         result.push({
           entityType: change.entityType,
@@ -638,9 +658,7 @@ export class PrintFarmerSyncEngine {
       }
       const value = memberships.get(change.entityId);
       if (!value) {
-        throw new Error(
-          `Membership ${change.entityId} could not be materialized.`,
-        );
+        continue;
       }
       result.push({
         entityType: change.entityType,
@@ -666,22 +684,11 @@ export class PrintFarmerSyncEngine {
   ): Promise<Map<string, MembershipSnapshot>> {
     const unresolved = new Set(changes.map((change) => change.entityId));
     const found = new Map<string, MembershipSnapshot>();
-    let collections: CollectionSnapshot[];
-    try {
-      collections = await this.remote.getCollections(
-        profile.id,
-        profile.baseUrl,
-        signal,
-      );
-    } catch (error) {
-      if (
-        error instanceof SyncHttpError &&
-        (error.code === 'authorization' || error.code === 'notFound')
-      ) {
-        return found;
-      }
-      throw error;
-    }
+    const collections = await this.remote.getCollections(
+      profile.id,
+      profile.baseUrl,
+      signal,
+    );
     for (let offset = 0; offset < collections.length; offset += 6) {
       if (unresolved.size === 0) break;
       const page = collections.slice(offset, offset + 6);
@@ -760,10 +767,28 @@ export class PrintFarmerSyncEngine {
         OUTBOX_LEASE_SECONDS,
       );
       if (!claimed) return;
-      const translated = await this.translateOperations(
-        profile.id,
-        claimed.operations,
-      );
+      let translated: TranslatedOperation[];
+      try {
+        translated = await this.translateOperations(
+          profile.id,
+          claimed.operations,
+        );
+      } catch {
+        const failedAt = toUnixSeconds(this.now());
+        await this.sidecar.failOutboundBatch({
+          profileId: profile.id,
+          profileBinding,
+          batchId: claimed.batchId,
+          batchIncarnation: claimed.batchIncarnation,
+          leaseToken: claimed.leaseToken,
+          outcome: 'definiteTransient',
+          error: 'Outbound prerequisites are not available.',
+          failedAt,
+          retryAt: failedAt + 30,
+        });
+        this.update(profile.id, { nextRetryAt: this.now() + 30_000 });
+        return;
+      }
       let response: ApplyResult;
       try {
         response = await this.remote.apply(
@@ -784,6 +809,30 @@ export class PrintFarmerSyncEngine {
       }
       if (response.kind === 'success') {
         const associated = associateApplied(translated, response.value.applied);
+        const authoritative = new Map<string, CollectionSnapshot>();
+        for (const { operation, applied } of associated) {
+          if (
+            applied.entityType === 'ModelCollection' &&
+            applied.operation !== 'Delete'
+          ) {
+            const current = await this.remote.getCollection(
+              profile.id,
+              profile.baseUrl,
+              applied.entityId,
+              signal,
+            );
+            if (!current) {
+              throw new SyncHttpError(
+                'transport',
+                'Applied collection could not be authoritatively refreshed.',
+                null,
+                null,
+                true,
+              );
+            }
+            authoritative.set(operation.operationId, current);
+          }
+        }
         await this.sidecar.settleOutboundBatch({
           profileId: profile.id,
           profileBinding,
@@ -792,11 +841,18 @@ export class PrintFarmerSyncEngine {
           leaseToken: claimed.leaseToken,
           settledAt: toUnixSeconds(this.now()),
           serverRevision: response.value.serverRevision,
-          applied: associated.map(({ operation, applied }) => ({
+          applied: associated.map(({ operation, applied, submitted }) => ({
             operationId: operation.operationId,
-            remoteId: applied.entityId,
-            revision: applied.revision,
-            concurrencyToken: operation.concurrencyToken,
+            remoteId:
+              applied.entityId === '00000000-0000-0000-0000-000000000000'
+                ? submitted.entityId
+                : applied.entityId,
+            revision:
+              authoritative.get(operation.operationId)?.revision ??
+              applied.revision,
+            concurrencyToken:
+              authoritative.get(operation.operationId)?.concurrencyToken ??
+              operation.concurrencyToken,
           })),
           conflicts: [],
         });
@@ -895,11 +951,14 @@ export class PrintFarmerSyncEngine {
             'collectionId',
           );
         const modelHash = readString(payload, 'modelHash');
-        modelId = requireGuid(
-          (await this.sidecar.getRemoteModelLink(profileId, modelHash))
-            ?.remoteModelId ?? '',
-          'modelId',
+        const link = await this.sidecar.getRemoteModelLink(
+          profileId,
+          modelHash,
         );
+        if (link?.uploadStatus !== 'uploaded') {
+          throw new Error('Membership model upload is not complete.');
+        }
+        modelId = requireGuid(link.remoteModelId, 'modelId');
       }
       translated.push({
         operation,
@@ -1237,25 +1296,31 @@ function retryBackoff(operations: SidecarOutboundOperation[]): number {
 function associateApplied(
   translated: TranslatedOperation[],
   applied: AppliedOperation[],
-): Array<{ operation: SidecarOutboundOperation; applied: AppliedOperation }> {
+): Array<{
+  operation: SidecarOutboundOperation;
+  applied: AppliedOperation;
+  submitted: ApplyOperationRequest;
+}> {
   if (translated.length !== applied.length) {
     throw new Error('Apply success did not cover the complete logical batch.');
   }
-  const remaining = [...translated];
-  return applied.map((result) => {
-    const index = remaining.findIndex(
-      ({ wire }) =>
-        wire.entityType === result.entityType &&
-        wire.operation === result.operation &&
-        wire.entityId === result.entityId,
-    );
-    if (index < 0) {
+  return applied.map((result, index) => {
+    const entry = translated[index]!;
+    if (
+      entry.wire.entityType !== result.entityType ||
+      entry.wire.operation !== result.operation ||
+      (result.entityType !== 'ModelCollectionMembership' &&
+        entry.wire.entityId !== result.entityId)
+    ) {
       throw new Error(
-        'Apply success referenced an operation outside the batch.',
+        'Apply success order/type did not match the submitted batch.',
       );
     }
-    const [entry] = remaining.splice(index, 1);
-    return { operation: entry!.operation, applied: result };
+    return {
+      operation: entry.operation,
+      applied: result,
+      submitted: entry.wire,
+    };
   });
 }
 

@@ -23,6 +23,7 @@ let syncEngine: PrintFarmerSyncEngine | null = null;
 let sharedSidecar: SidecarClient | null = null;
 let sharedProfiles: ServerProfileService | null = null;
 let shutdownStarted = false;
+let cleanupComplete = false;
 
 const createMainWindow = (): void => {
   const iconPath = resolveAppIconPath(
@@ -222,18 +223,29 @@ if (!enforceSingleInstance()) {
   });
 
   app.on('before-quit', (event) => {
-    if (shutdownStarted || !syncEngine) return;
+    if (cleanupComplete || !syncEngine) return;
     event.preventDefault();
+    if (shutdownStarted) return;
     shutdownStarted = true;
     const engine = syncEngine;
     syncEngine = null;
-    void engine.dispose().finally(() => {
+    void (async () => {
+      const disposal = engine.dispose();
+      await Promise.race([
+        disposal,
+        new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+      ]);
       sharedSidecar?.dispose();
       sharedSidecar = null;
+      await Promise.race([
+        disposal,
+        new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
+      ]);
       sharedProfiles?.clearTokens();
       sharedProfiles = null;
+      cleanupComplete = true;
       app.quit();
-    });
+    })();
   });
 
   // Refuse to attach webviews or open arbitrary windows from any web contents.

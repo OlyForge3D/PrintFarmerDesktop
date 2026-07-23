@@ -191,7 +191,8 @@ pub struct CollectionSnapshotDto {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
-    pub owner_user_id: String,
+    #[serde(default)]
+    pub owner_user_id: Option<String>,
     pub is_shared: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -299,6 +300,8 @@ pub struct PullEntityDto {
     pub local_id: Option<String>,
     pub remote_id: String,
     pub revision: u64,
+    #[serde(default)]
+    pub journal_revision: u64,
     #[serde(default)]
     pub concurrency_token: Option<String>,
     pub tombstone: bool,
@@ -709,7 +712,7 @@ fn validate_snapshot(entity: &PullEntityDto) -> Result<(), String> {
             let value: CollectionSnapshotDto = serde_json::from_value(snapshot.clone())
                 .map_err(|error| format!("invalid collection snapshot: {error}"))?;
             validate_identifier("snapshot.id", &value.id)?;
-            validate_identifier("snapshot.ownerUserId", &value.owner_user_id)?;
+            validate_optional_identifier("snapshot.ownerUserId", value.owner_user_id.as_deref())?;
             validate_identifier("snapshot.concurrencyToken", &value.concurrency_token)?;
             validate_wire_timestamp("snapshot.createdAt", &value.created_at)?;
             validate_wire_timestamp("snapshot.updatedAt", &value.updated_at)?;
@@ -783,6 +786,7 @@ pub(crate) fn validate_pull_batch(batch: &ApplyPullBatchDto) -> Result<(), Strin
         validate_optional_identifier("localId", entity.local_id.as_deref())?;
         validate_optional_identifier("concurrencyToken", entity.concurrency_token.as_deref())?;
         validate_revision("entity.revision", entity.revision)?;
+        validate_revision("entity.journalRevision", entity.journal_revision)?;
         if !remote_keys.insert((entity.entity_type, entity.remote_id.as_str())) {
             return Err("pull batch contains a duplicate entity".to_string());
         }
@@ -1164,6 +1168,7 @@ mod tests {
             local_id: local_id.map(str::to_string),
             remote_id: remote_id.to_string(),
             revision,
+            journal_revision: revision,
             concurrency_token: Some(format!("token-{revision}")),
             tombstone: false,
             visibility: SyncVisibility::Private,
@@ -1221,6 +1226,7 @@ mod tests {
             local_id: Some(local_id.to_string()),
             remote_id: remote_id.to_string(),
             revision,
+            journal_revision: revision,
             concurrency_token: None,
             tombstone: true,
             visibility: SyncVisibility::Private,
@@ -1272,6 +1278,7 @@ mod tests {
                     local_id: Some(local_collection.id.clone()),
                     remote_id: "remote-c".to_string(),
                     revision: 8,
+                    journal_revision: 8,
                     concurrency_token: None,
                     tombstone: true,
                     visibility: SyncVisibility::Private,
@@ -1493,6 +1500,7 @@ mod tests {
                     local_id: Some(local.id.clone()),
                     remote_id: "deleted-remote".to_string(),
                     revision: 11,
+                    journal_revision: 11,
                     concurrency_token: None,
                     tombstone: true,
                     visibility: SyncVisibility::Private,
@@ -1654,6 +1662,7 @@ mod tests {
             local_id: Some("local-c".to_string()),
             remote_id: "remote-c".to_string(),
             revision: 1,
+            journal_revision: 1,
             concurrency_token: Some("ct".to_string()),
             tombstone: false,
             visibility: SyncVisibility::Private,
@@ -1676,6 +1685,7 @@ mod tests {
             local_id: Some("local-tag".to_string()),
             remote_id: "remote-tag".to_string(),
             revision: 1,
+            journal_revision: 1,
             concurrency_token: Some("tt".to_string()),
             tombstone: false,
             visibility: SyncVisibility::Private,

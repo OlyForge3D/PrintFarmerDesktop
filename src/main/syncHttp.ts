@@ -215,12 +215,26 @@ export class SyncHttpClient {
         };
       }
       if (!pending.response.ok) {
-        throw await this.statusError(pending.response);
+        throw await this.statusError(pending.response, true);
       }
       return {
         kind: 'success',
         value: await this.parse(pending, ApplySuccess),
       };
+    } catch (error) {
+      if (
+        error instanceof SyncHttpError &&
+        ['invalidResponse', 'bodyTooLarge', 'transport'].includes(error.code)
+      ) {
+        throw new SyncHttpError(
+          error.code,
+          error.message,
+          error.status,
+          error.retryAfterMs,
+          true,
+        );
+      }
+      throw error;
     } finally {
       pending.dispose();
     }
@@ -246,7 +260,7 @@ export class SyncHttpClient {
         );
         try {
           if (!pending.response.ok) {
-            throw await this.statusError(pending.response);
+            throw await this.statusError(pending.response, false);
           }
           return await this.parse(pending, schema);
         } finally {
@@ -277,10 +291,7 @@ export class SyncHttpClient {
     try {
       return await this.get(profileId, baseUrl, resource, schema, signal);
     } catch (error) {
-      if (
-        error instanceof SyncHttpError &&
-        (error.code === 'notFound' || error.code === 'authorization')
-      ) {
+      if (error instanceof SyncHttpError && error.code === 'notFound') {
         return null;
       }
       throw error;
@@ -448,7 +459,10 @@ export class SyncHttpClient {
     return parsed.data;
   }
 
-  private async statusError(response: Response): Promise<SyncHttpError> {
+  private async statusError(
+    response: Response,
+    mutating: boolean,
+  ): Promise<SyncHttpError> {
     await discard(response);
     const retryAfterMs = parseRetryAfter(
       response.headers.get('retry-after'),
@@ -488,7 +502,7 @@ export class SyncHttpClient {
       `Library synchronization failed with HTTP ${response.status}.`,
       response.status,
       retryAfterMs,
-      false,
+      mutating && TRANSIENT_STATUSES.has(response.status),
     );
   }
 

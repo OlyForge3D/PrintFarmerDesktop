@@ -17,6 +17,43 @@ function json(value: unknown, status = 200, headers?: HeadersInit): Response {
 }
 
 describe('SyncHttpClient', () => {
+  it('defaults omitted deployed nullable properties to null', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        json({ changes: [], hasMore: false, serverRevision: 0 }),
+      )
+      .mockResolvedValueOnce(
+        json({
+          id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          name: 'Remote',
+          isShared: false,
+          modelIds: [],
+          revision: 1,
+          concurrencyToken: 'token',
+        }),
+      );
+    const client = new SyncHttpClient(tokens(), { fetch });
+
+    await expect(
+      client.getChanges(
+        'profile',
+        'https://farm.example',
+        null,
+        500,
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({ nextCursor: null });
+    await expect(
+      client.getCollection(
+        'profile',
+        'https://farm.example',
+        'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({ ownerUserId: null, description: null });
+  });
+
   it('sends and parses the deployed flat apply contract', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(() =>
       Promise.resolve(

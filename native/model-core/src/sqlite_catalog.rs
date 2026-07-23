@@ -23,7 +23,8 @@ use crate::catalog::{
 };
 use crate::model::{FileFingerprint, ModelFormat};
 use crate::schema::{
-    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_VERSION,
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
+    SCHEMA_VERSION,
 };
 use crate::sync::{
     self, ApplyPullBatchDto, ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution,
@@ -89,6 +90,9 @@ impl SqliteCatalog {
                 }
                 if version < 7 {
                     conn.execute_batch(SCHEMA_V7)?;
+                }
+                if version < 8 {
+                    conn.execute_batch(SCHEMA_V8)?;
                 }
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 conn.execute_batch("COMMIT")
@@ -1153,24 +1157,7 @@ impl CatalogStore for SqliteCatalog {
                 .map_err(sql_error)?
                 .flatten();
             if current.as_deref().is_some_and(|value| value != binding) {
-                self.conn
-                    .execute(
-                        "DELETE FROM collections WHERE sync_profile_id = ?1",
-                        params![profile_id],
-                    )
-                    .map_err(sql_error)?;
-                self.conn
-                    .execute(
-                        "DELETE FROM tags WHERE sync_profile_id = ?1",
-                        params![profile_id],
-                    )
-                    .map_err(sql_error)?;
-                self.conn
-                    .execute(
-                        "DELETE FROM sync_profiles WHERE profile_id = ?1",
-                        params![profile_id],
-                    )
-                    .map_err(sql_error)?;
+                return Err("sync profile binding replacement requires CAS".to_string());
             }
             self.ensure_sync_profile(profile_id)?;
             self.conn
@@ -1187,6 +1174,48 @@ impl CatalogStore for SqliteCatalog {
         } else {
             result
         }
+    }
+
+    fn replace_sync_profile_binding(
+        &mut self,
+        profile_id: &str,
+        expected_binding: &str,
+        new_binding: &str,
+        now: i64,
+    ) -> Result<SyncStatusDto, String> {
+        self.validate_sync_profile_binding(profile_id, expected_binding)?;
+        sync::validate_identifier("newProfileBinding", new_binding)?;
+        self.begin_batch()?;
+        let result = (|| {
+            self.conn
+                .execute(
+                    "DELETE FROM collections WHERE sync_profile_id = ?1",
+                    params![profile_id],
+                )
+                .map_err(sql_error)?;
+            self.conn
+                .execute(
+                    "DELETE FROM tags WHERE sync_profile_id = ?1",
+                    params![profile_id],
+                )
+                .map_err(sql_error)?;
+            self.conn
+                .execute(
+                    "DELETE FROM sync_profiles WHERE profile_id = ?1 AND profile_binding = ?2",
+                    params![profile_id, expected_binding],
+                )
+                .map_err(sql_error)?;
+            self.ensure_sync_profile(profile_id)?;
+            self.conn
+                .execute(
+                    "UPDATE sync_profiles SET profile_binding = ?2, updated_at = ?3
+                     WHERE profile_id = ?1",
+                    params![profile_id, new_binding, now],
+                )
+                .map_err(sql_error)?;
+            self.sync_status(profile_id)
+        })();
+        self.finish_batch(result)
     }
 
     fn validate_sync_profile_binding(&self, profile_id: &str, binding: &str) -> Result<(), String> {
@@ -1231,6 +1260,25 @@ impl CatalogStore for SqliteCatalog {
             }
             let mut previous_entities = Vec::with_capacity(batch.entities.len());
             for entity in &batch.entities {
+                let previous_journal: Option<i64> = self
+                    .conn
+                    .query_row(
+                        "SELECT journal_revision FROM sync_entities
+                         WHERE profile_id = ?1 AND entity_type = ?2 AND remote_id = ?3",
+                        params![
+                            batch.profile_id,
+                            entity.entity_type.as_db(),
+                            entity.remote_id
+                        ],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(sql_error)?;
+                if previous_journal
+                    .is_some_and(|revision| revision as u64 >= entity.journal_revision)
+                {
+                    continue;
+                }
                 if let Some(local_id) = entity.local_id.as_deref() {
                     let operation_id: Option<String> = self
                         .conn
@@ -1304,8 +1352,11 @@ impl CatalogStore for SqliteCatalog {
                     entity.entity_type,
                     &entity.remote_id,
                 )?;
-                let mapping = sync::merge_entity_revision(existing.as_ref(), incoming)?;
-                self.upsert_entity_revision(&mapping, batch.server_revision)?;
+                let merge_base = existing
+                    .as_ref()
+                    .filter(|mapping| !(mapping.tombstone && !entity.tombstone));
+                let mapping = sync::merge_entity_revision(merge_base, incoming)?;
+                self.upsert_entity_revision(&mapping, entity.journal_revision)?;
                 previous_entities.push(existing);
             }
             self.materialize_pull(&batch, &previous_entities)?;
@@ -1530,6 +1581,11 @@ impl CatalogStore for SqliteCatalog {
             )
             .optional()
             .map_err(sql_error)
+    }
+
+    fn provision_entity_mapping(&mut self, mapping: EntityRevisionDto) -> Result<(), String> {
+        self.ensure_sync_profile(&mapping.profile_id)?;
+        self.upsert_entity_revision(&mapping, 0)
     }
 
     fn enqueue_outbound_operations(
@@ -2061,6 +2117,41 @@ impl CatalogStore for SqliteCatalog {
                 )? {
                     current_mappings.push(mapping);
                 }
+                let settled_snapshot =
+                    if operation.entity_type == SyncEntityType::ModelCollectionMembership {
+                        let collection_id =
+                            operation.payload["collectionId"]
+                                .as_str()
+                                .and_then(|local_id| {
+                                    self.entity_revision_by_local(
+                                        &settlement.profile_id,
+                                        SyncEntityType::ModelCollection,
+                                        local_id,
+                                    )
+                                    .ok()
+                                    .flatten()
+                                    .map(|mapping| mapping.remote_id)
+                                });
+                        let model_id = operation.payload["modelHash"].as_str().and_then(|hash| {
+                            self.remote_model_link(&settlement.profile_id, hash)
+                                .ok()
+                                .flatten()
+                                .map(|link| link.remote_model_id)
+                        });
+                        match (collection_id, model_id) {
+                            (Some(collection_id), Some(model_id)) => Some(serde_json::json!({
+                                "id": applied.remote_id,
+                                "collectionId": collection_id,
+                                "modelId": model_id,
+                                "createdAt": "1970-01-01T00:00:00Z",
+                                "updatedAt": "1970-01-01T00:00:00Z",
+                                "revision": applied.revision
+                            })),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
                 incoming.push(EntityRevisionDto {
                     profile_id: settlement.profile_id.clone(),
                     entity_type: operation.entity_type,
@@ -2070,7 +2161,7 @@ impl CatalogStore for SqliteCatalog {
                     concurrency_token: applied.concurrency_token.clone(),
                     tombstone: operation.operation == sync::SyncOperationKind::Delete,
                     visibility: SyncVisibility::Private,
-                    snapshot: None,
+                    snapshot: settled_snapshot,
                     updated_at: settlement.settled_at,
                 });
             }
@@ -2109,6 +2200,23 @@ impl CatalogStore for SqliteCatalog {
                 }
                 for mapping in &mapping_plan {
                     self.upsert_entity_revision(mapping, settlement.server_revision)?;
+                    if let Some(local_id) = mapping.local_id.as_deref() {
+                        self.conn
+                            .execute(
+                                "UPDATE sync_outbox SET base_revision = ?4,
+                                    concurrency_token = ?5
+                                 WHERE profile_id = ?1 AND entity_type = ?2
+                                   AND entity_id = ?3 AND state = 'pending'",
+                                params![
+                                    mapping.profile_id,
+                                    mapping.entity_type.as_db(),
+                                    local_id,
+                                    mapping.revision as i64,
+                                    mapping.concurrency_token
+                                ],
+                            )
+                            .map_err(sql_error)?;
+                    }
                     if mapping.entity_type == SyncEntityType::ModelCollection && !mapping.tombstone
                     {
                         if let Some(local_id) = mapping.local_id.as_deref() {

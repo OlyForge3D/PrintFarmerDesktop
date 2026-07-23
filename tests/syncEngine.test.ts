@@ -22,6 +22,7 @@ const OTHER_PROFILE_ID = '22222222-2222-4222-8222-222222222222';
 const REMOTE_COLLECTION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const REMOTE_MEMBERSHIP_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const REMOTE_MODEL_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const RETURNED_MEMBERSHIP_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 
 describe('PrintFarmerSyncEngine pull', () => {
   it('commits multipage opaque cursors with materialized membership snapshots', async () => {
@@ -173,7 +174,7 @@ describe('PrintFarmerSyncEngine pull', () => {
     });
   });
 
-  it('leaves an unresolved update uncheckpointed for retry', async () => {
+  it('advances past an authoritative 404 without inventing a tombstone', async () => {
     const sidecar = fakeSidecar();
     const remote = fakeRemote();
     remote.getChanges.mockResolvedValue(
@@ -190,8 +191,11 @@ describe('PrintFarmerSyncEngine pull', () => {
       PROFILE_ID,
     );
 
-    expect(status.phase).toBe('error');
-    expect(sidecar.pullBatches).toHaveLength(0);
+    expect(status.phase).toBe('succeeded');
+    expect(sidecar.pullBatches[0]).toMatchObject({
+      cursor: 'cursor-2',
+      entities: [],
+    });
   });
 
   it('isolates checkpoints for concurrent profiles', async () => {
@@ -340,7 +344,7 @@ describe('PrintFarmerSyncEngine push and recovery', () => {
           {
             entityType: 'ModelCollectionMembership',
             operation: 'Create',
-            entityId: REMOTE_MEMBERSHIP_ID,
+            entityId: RETURNED_MEMBERSHIP_ID,
             revision: 2,
             merged: false,
           },
@@ -355,6 +359,13 @@ describe('PrintFarmerSyncEngine push and recovery', () => {
       collectionId: REMOTE_COLLECTION_ID,
       modelId: REMOTE_MODEL_ID,
     });
+    expect(sidecar.api.settleOutboundBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        applied: expect.arrayContaining([
+          expect.objectContaining({ remoteId: RETURNED_MEMBERSHIP_ID }),
+        ]),
+      }),
+    );
   });
 
   it('claims and settles one ordered logical batch exactly once', async () => {
@@ -757,7 +768,9 @@ function fakeRemote(): {
   apply: ReturnType<typeof vi.fn>;
 } {
   const getChanges = vi.fn(() => Promise.resolve(page([], null, false, 0)));
-  const getCollection = vi.fn();
+  const getCollection = vi.fn(() =>
+    Promise.resolve(collection(REMOTE_COLLECTION_ID, 10)),
+  );
   const getCollections = vi.fn(() => Promise.resolve([]));
   const getCollectionMembers = vi.fn(() => Promise.resolve([]));
   const getTag = vi.fn();

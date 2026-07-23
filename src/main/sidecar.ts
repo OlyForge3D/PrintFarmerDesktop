@@ -426,6 +426,20 @@ export class SidecarClient {
     })) as SidecarSyncStatus;
   }
 
+  async replaceSyncProfileBinding(
+    profileId: string,
+    expectedBinding: string,
+    newBinding: string,
+    now: number,
+  ): Promise<SidecarSyncStatus> {
+    return (await this.mutationRequest('replaceSyncProfileBinding', {
+      profileId,
+      expectedBinding,
+      newBinding,
+      now,
+    })) as SidecarSyncStatus;
+  }
+
   async applySyncPullBatch(
     batch: SidecarApplyPullBatch,
   ): Promise<SidecarSyncStatus> {
