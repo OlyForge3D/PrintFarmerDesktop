@@ -48,7 +48,7 @@ use crate::rpc::{
     extract_vendor_metadata_dto, load_scene_dto, render_thumbnail_dto, ApplyPullBatchDto,
     CollectionDto, ConflictInputDto, ConflictResolution, EnqueueOutboundOperationDto,
     ImportPreviewDto, ImportResultDto, LogicalModelDto, OutboundState, ReconcileReportDto,
-    RemoteModelLinkDto, SyncEntityType, TagDto,
+    ReconcileUncertainBatchDto, RemoteModelLinkDto, SettleOutboundBatchDto, SyncEntityType, TagDto,
 };
 use crate::smart_import::{ImportPlan, ImportRuleKind};
 use crate::{sidecar_version, RPC_PROTOCOL_VERSION};
@@ -215,7 +215,19 @@ struct ListEntityRevisionsParams {
 #[serde(rename_all = "camelCase")]
 struct EnqueueOutboundParams {
     profile_id: String,
+    batch_id: String,
     operations: Vec<EnqueueOutboundOperationDto>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EntityRevisionLookupParams {
+    profile_id: String,
+    entity_type: SyncEntityType,
+    #[serde(default)]
+    remote_id: Option<String>,
+    #[serde(default)]
+    local_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -250,6 +262,7 @@ struct RecoverOutboundParams {
 struct CompleteOutboundParams {
     profile_id: String,
     operation_id: String,
+    lease_token: String,
     completed_at: i64,
 }
 
@@ -258,10 +271,20 @@ struct CompleteOutboundParams {
 struct FailOutboundParams {
     profile_id: String,
     operation_id: String,
+    lease_token: String,
     error: String,
     failed_at: i64,
     #[serde(default)]
     retry_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PruneOutboundParams {
+    profile_id: String,
+    acked_before: i64,
+    #[serde(default = "default_sync_limit")]
+    limit: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -344,12 +367,37 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             )?)
             .map_err(|e| format!("failed to serialize entity revisions: {e}"))
         }
+        "getEntityRevision" => {
+            let params: EntityRevisionLookupParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid getEntityRevision params: {e}"))?;
+            let revision = match (params.remote_id, params.local_id) {
+                (Some(remote_id), None) => store.entity_revision_by_remote(
+                    &params.profile_id,
+                    params.entity_type,
+                    &remote_id,
+                )?,
+                (None, Some(local_id)) => store.entity_revision_by_local(
+                    &params.profile_id,
+                    params.entity_type,
+                    &local_id,
+                )?,
+                _ => {
+                    return Err(
+                        "getEntityRevision requires exactly one of remoteId/localId".to_string()
+                    )
+                }
+            };
+            serde_json::to_value(revision)
+                .map_err(|e| format!("failed to serialize entity revision: {e}"))
+        }
         "enqueueOutboundOperations" => {
             let params: EnqueueOutboundParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid enqueueOutboundOperations params: {e}"))?;
-            serde_json::to_value(
-                store.enqueue_outbound_operations(&params.profile_id, params.operations)?,
-            )
+            serde_json::to_value(store.enqueue_outbound_operations(
+                &params.profile_id,
+                &params.batch_id,
+                params.operations,
+            )?)
             .map_err(|e| format!("failed to serialize outbound operations: {e}"))
         }
         "listOutboundOperations" => {
@@ -377,7 +425,7 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             let params: RecoverOutboundParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid recoverOutboundOperations params: {e}"))?;
             Ok(serde_json::json!({
-                "recovered": store.recover_outbound_operations(&params.profile_id, params.now)?
+                "markedUncertain": store.recover_outbound_operations(&params.profile_id, params.now)?
             }))
         }
         "completeOutboundOperation" => {
@@ -386,6 +434,7 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             serde_json::to_value(store.complete_outbound_operation(
                 &params.profile_id,
                 &params.operation_id,
+                &params.lease_token,
                 params.completed_at,
             )?)
             .map_err(|e| format!("failed to serialize outbound operation: {e}"))
@@ -396,11 +445,35 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             serde_json::to_value(store.fail_outbound_operation(
                 &params.profile_id,
                 &params.operation_id,
+                &params.lease_token,
                 &params.error,
                 params.failed_at,
                 params.retry_at,
             )?)
             .map_err(|e| format!("failed to serialize outbound operation: {e}"))
+        }
+        "settleOutboundBatch" => {
+            let settlement: SettleOutboundBatchDto = serde_json::from_value(params)
+                .map_err(|e| format!("invalid settleOutboundBatch params: {e}"))?;
+            serde_json::to_value(store.settle_outbound_batch(settlement)?)
+                .map_err(|e| format!("failed to serialize outbound settlement: {e}"))
+        }
+        "reconcileUncertainBatch" => {
+            let reconciliation: ReconcileUncertainBatchDto = serde_json::from_value(params)
+                .map_err(|e| format!("invalid reconcileUncertainBatch params: {e}"))?;
+            serde_json::to_value(store.reconcile_uncertain_batch(reconciliation)?)
+                .map_err(|e| format!("failed to serialize reconciled batch: {e}"))
+        }
+        "pruneAckedOutboundOperations" => {
+            let params: PruneOutboundParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid pruneAckedOutboundOperations params: {e}"))?;
+            Ok(serde_json::json!({
+                "pruned": store.prune_acked_outbound_operations(
+                    &params.profile_id,
+                    params.acked_before,
+                    params.limit,
+                )?
+            }))
         }
         "recordSyncConflicts" => {
             let params: RecordConflictsParams = serde_json::from_value(params)
@@ -1101,6 +1174,19 @@ mod tests {
         assert_eq!(value["ok"], true, "{value}");
         assert_eq!(value["result"]["cursor"], "opaque");
 
+        let lookup = serde_json::json!({
+            "id": 34,
+            "method": "getEntityRevision",
+            "params": {
+                "profileId": "profile-a",
+                "entityType": "Tag",
+                "remoteId": "tag-1"
+            }
+        });
+        let value: Value =
+            serde_json::from_str(&handle_line(&mut store, &lookup.to_string()).unwrap()).unwrap();
+        assert_eq!(value["result"]["remoteId"], "tag-1");
+
         let other = serde_json::json!({
             "id": 31,
             "method": "getSyncStatus",
@@ -1115,6 +1201,7 @@ mod tests {
             "method": "enqueueOutboundOperations",
             "params": {
                 "profileId": "profile-a",
+                "batchId": "batch-1",
                 "operations": [{
                     "operationId": "op-1",
                     "entityType": "ModelCollection",
@@ -1139,6 +1226,7 @@ mod tests {
             "method": "enqueueOutboundOperations",
             "params": {
                 "profileId": "profile-a",
+                "batchId": "tag-batch",
                 "operations": [{
                     "operationId": "tag-op",
                     "entityType": "Tag",

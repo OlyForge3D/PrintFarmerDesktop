@@ -22,11 +22,13 @@ use crate::catalog::{
     CatalogStore, Collection, LocationUpsert, LogicalModel, ModelLocation, StoredLocation, Tag,
 };
 use crate::model::{FileFingerprint, ModelFormat};
-use crate::schema::{SCHEMA_V1, SCHEMA_V2, SCHEMA_VERSION};
+use crate::schema::{SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_VERSION};
 use crate::sync::{
-    self, ApplyPullBatchDto, ConflictInputDto, ConflictResolution, EnqueueOutboundOperationDto,
-    EntityRevisionDto, OutboundOperationDto, OutboundState, RemoteModelLinkDto, RemoteUploadStatus,
-    SyncConflictDto, SyncEntityType, SyncStatusDto, SyncVisibility,
+    self, ApplyPullBatchDto, ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution,
+    EnqueueOutboundOperationDto, EntityRevisionDto, OutboundOperationDto, OutboundState,
+    ReconcileUncertainBatchDto, RemoteModelLinkDto, RemoteUploadStatus, SettleOutboundBatchDto,
+    SettledOutboundBatchDto, SyncConflictDto, SyncEntityType, SyncStatusDto, SyncVisibility,
+    UnknownOutcomeResolution,
 };
 
 /// A SQLite-backed catalog. Wraps one connection; use single-threaded per the
@@ -69,6 +71,9 @@ impl SqliteCatalog {
                 }
                 if version < 2 {
                     conn.execute_batch(SCHEMA_V2)?;
+                }
+                if version < 3 {
+                    conn.execute_batch(SCHEMA_V3)?;
                 }
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 conn.execute_batch("COMMIT")
@@ -154,6 +159,22 @@ impl SqliteCatalog {
             .map_err(sql_error)
     }
 
+    fn finish_batch<T>(&mut self, result: Result<T, String>) -> Result<T, String> {
+        match result {
+            Err(error) => {
+                self.rollback_batch();
+                Err(error)
+            }
+            Ok(value) => match self.commit_batch() {
+                Ok(()) => Ok(value),
+                Err(error) => {
+                    self.rollback_batch();
+                    Err(error)
+                }
+            },
+        }
+    }
+
     fn outbound_by_id(
         &self,
         profile_id: &str,
@@ -164,13 +185,37 @@ impl SqliteCatalog {
                 "SELECT profile_id, operation_id, entity_type, operation_kind, entity_id,
                         payload_json, base_revision, concurrency_token, state, attempt_count,
                         retry_eligible, retry_at, lease_until, last_error, created_at,
-                        updated_at, acked_at
+                        updated_at, acked_at, sequence, batch_id, batch_ordinal, lease_token
                  FROM sync_outbox WHERE profile_id = ?1 AND operation_id = ?2",
                 params![profile_id, operation_id],
                 outbound_from_row,
             )
             .optional()
             .map_err(sql_error)
+    }
+
+    fn load_outbound_batch(
+        &self,
+        profile_id: &str,
+        batch_id: &str,
+    ) -> Result<Vec<OutboundOperationDto>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT profile_id, operation_id, entity_type, operation_kind, entity_id,
+                        payload_json, base_revision, concurrency_token, state, attempt_count,
+                        retry_eligible, retry_at, lease_until, last_error, created_at,
+                        updated_at, acked_at, sequence, batch_id, batch_ordinal, lease_token
+                 FROM sync_outbox WHERE profile_id = ?1 AND batch_id = ?2
+                 ORDER BY batch_ordinal LIMIT 500",
+            )
+            .map_err(sql_error)?;
+        let operations = stmt
+            .query_map(params![profile_id, batch_id], outbound_from_row)
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?;
+        Ok(operations)
     }
 
     fn insert_conflict(
@@ -628,13 +673,16 @@ impl CatalogStore for SqliteCatalog {
 
     fn apply_pull_batch(&mut self, batch: ApplyPullBatchDto) -> Result<SyncStatusDto, String> {
         sync::validate_pull_batch(&batch)?;
-        let current = self.sync_status(&batch.profile_id)?;
-        if batch.server_revision < current.server_revision {
-            return Err("serverRevision must not move backwards".to_string());
-        }
         self.begin_batch()?;
         let result = (|| {
             self.ensure_sync_profile(&batch.profile_id)?;
+            let current = self.sync_status(&batch.profile_id)?;
+            if current.cursor != batch.expected_previous_cursor {
+                return Err("stale pull cursor: expectedPreviousCursor does not match".to_string());
+            }
+            if batch.server_revision < current.server_revision {
+                return Err("serverRevision must not move backwards".to_string());
+            }
             for entity in &batch.entities {
                 if let Some(local_id) = &entity.local_id {
                     let rebound: Option<String> = self
@@ -722,16 +770,7 @@ impl CatalogStore for SqliteCatalog {
                 .map_err(sql_error)?;
             self.sync_status(&batch.profile_id)
         })();
-        match result {
-            Ok(status) => {
-                self.commit_batch()?;
-                Ok(status)
-            }
-            Err(error) => {
-                self.rollback_batch();
-                Err(error)
-            }
-        }
+        self.finish_batch(result)
     }
 
     fn link_remote_model(
@@ -740,13 +779,14 @@ impl CatalogStore for SqliteCatalog {
     ) -> Result<RemoteModelLinkDto, String> {
         sync::validate_remote_link(&link)?;
         self.ensure_sync_profile(&link.profile_id)?;
-        if let Some(existing) = self.remote_model_link(&link.profile_id, &link.local_model_hash)? {
-            if existing.remote_model_id != link.remote_model_id
-                || existing.client_upload_id != link.client_upload_id
-                || existing.created_at != link.created_at
-            {
-                return Err("remote model link content does not match existing link".to_string());
-            }
+        let link = self
+            .remote_model_link(&link.profile_id, &link.local_model_hash)?
+            .map_or_else(
+                || Ok(link.clone()),
+                |existing| sync::merge_remote_link(&existing, &link),
+            )?;
+        if link.upload_status == RemoteUploadStatus::Uploaded && link.uploaded_at.is_none() {
+            return Err("uploaded status requires uploadedAt".to_string());
         }
         self.conn
             .execute(
@@ -869,19 +909,75 @@ impl CatalogStore for SqliteCatalog {
         Ok(entities)
     }
 
+    fn entity_revision_by_remote(
+        &self,
+        profile_id: &str,
+        entity_type: SyncEntityType,
+        remote_id: &str,
+    ) -> Result<Option<EntityRevisionDto>, String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_identifier("remoteId", remote_id)?;
+        self.conn
+            .query_row(
+                "SELECT profile_id, entity_type, local_id, remote_id, revision,
+                        concurrency_token, tombstone, visibility, snapshot_json, updated_at
+                 FROM sync_entities
+                 WHERE profile_id = ?1 AND entity_type = ?2 AND remote_id = ?3",
+                params![profile_id, entity_type.as_db(), remote_id],
+                entity_from_row,
+            )
+            .optional()
+            .map_err(sql_error)
+    }
+
+    fn entity_revision_by_local(
+        &self,
+        profile_id: &str,
+        entity_type: SyncEntityType,
+        local_id: &str,
+    ) -> Result<Option<EntityRevisionDto>, String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_identifier("localId", local_id)?;
+        self.conn
+            .query_row(
+                "SELECT profile_id, entity_type, local_id, remote_id, revision,
+                        concurrency_token, tombstone, visibility, snapshot_json, updated_at
+                 FROM sync_entities
+                 WHERE profile_id = ?1 AND entity_type = ?2 AND local_id = ?3",
+                params![profile_id, entity_type.as_db(), local_id],
+                entity_from_row,
+            )
+            .optional()
+            .map_err(sql_error)
+    }
+
     fn enqueue_outbound_operations(
         &mut self,
         profile_id: &str,
+        batch_id: &str,
         operations: Vec<EnqueueOutboundOperationDto>,
     ) -> Result<Vec<OutboundOperationDto>, String> {
         sync::validate_enqueue_batch(profile_id, &operations)?;
+        sync::validate_identifier("batchId", batch_id)?;
         self.begin_batch()?;
         let result = (|| {
             self.ensure_sync_profile(profile_id)?;
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO sync_profile_sequences(profile_id, next_sequence)
+                     VALUES(?1, 1)",
+                    params![profile_id],
+                )
+                .map_err(sql_error)?;
             let mut queued = Vec::with_capacity(operations.len());
-            for operation in operations {
+            for (ordinal, operation) in operations.into_iter().enumerate() {
                 if let Some(existing) = self.outbound_by_id(profile_id, &operation.operation_id)? {
-                    if !sqlite_outbound_matches_input(&existing, &operation) {
+                    if !sqlite_outbound_matches_input(
+                        &existing,
+                        batch_id,
+                        ordinal as u32,
+                        &operation,
+                    ) {
                         return Err(format!(
                             "operationId {} has different persisted content",
                             operation.operation_id
@@ -890,15 +986,30 @@ impl CatalogStore for SqliteCatalog {
                     queued.push(existing);
                     continue;
                 }
+                let sequence: i64 = self
+                    .conn
+                    .query_row(
+                        "SELECT next_sequence FROM sync_profile_sequences WHERE profile_id = ?1",
+                        params![profile_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(sql_error)?;
+                self.conn
+                    .execute(
+                        "UPDATE sync_profile_sequences SET next_sequence = next_sequence + 1
+                         WHERE profile_id = ?1",
+                        params![profile_id],
+                    )
+                    .map_err(sql_error)?;
                 self.conn
                     .execute(
                         "INSERT INTO sync_outbox(
                             profile_id, operation_id, entity_type, operation_kind, entity_id,
                             payload_json, base_revision, concurrency_token, state, attempt_count,
                             retry_eligible, retry_at, lease_until, last_error, created_at,
-                            updated_at, acked_at)
+                            updated_at, acked_at, sequence, batch_id, batch_ordinal, lease_token)
                          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', 0,
-                                1, NULL, NULL, NULL, ?9, ?9, NULL)",
+                                1, NULL, NULL, NULL, ?9, ?9, NULL, ?10, ?11, ?12, NULL)",
                         params![
                             profile_id,
                             operation.operation_id,
@@ -909,6 +1020,9 @@ impl CatalogStore for SqliteCatalog {
                             operation.base_revision.map(|revision| revision as i64),
                             operation.concurrency_token,
                             operation.created_at,
+                            sequence,
+                            batch_id,
+                            ordinal as i64,
                         ],
                     )
                     .map_err(sql_error)?;
@@ -917,18 +1031,21 @@ impl CatalogStore for SqliteCatalog {
                         .expect("inserted outbox row exists"),
                 );
             }
+            let persisted_count: i64 = self
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_outbox
+                     WHERE profile_id = ?1 AND batch_id = ?2",
+                    params![profile_id, batch_id],
+                    |row| row.get(0),
+                )
+                .map_err(sql_error)?;
+            if persisted_count as usize != queued.len() {
+                return Err("batchId has different persisted operation count".to_string());
+            }
             Ok(queued)
         })();
-        match result {
-            Ok(queued) => {
-                self.commit_batch()?;
-                Ok(queued)
-            }
-            Err(error) => {
-                self.rollback_batch();
-                Err(error)
-            }
-        }
+        self.finish_batch(result)
     }
 
     fn outbound_operations(
@@ -939,23 +1056,34 @@ impl CatalogStore for SqliteCatalog {
     ) -> Result<Vec<OutboundOperationDto>, String> {
         sync::validate_profile(profile_id)?;
         sync::validate_limit(limit)?;
+        let state_filter = if states.is_empty() {
+            "state IN ('pending','inFlight','uncertain','failed')".to_string()
+        } else {
+            format!(
+                "state IN ({})",
+                states
+                    .iter()
+                    .map(|state| format!("'{}'", state.as_db()))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        };
         let mut stmt = self
             .conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT profile_id, operation_id, entity_type, operation_kind, entity_id,
                         payload_json, base_revision, concurrency_token, state, attempt_count,
                         retry_eligible, retry_at, lease_until, last_error, created_at,
-                        updated_at, acked_at
-                 FROM sync_outbox WHERE profile_id = ?1 ORDER BY created_at, operation_id",
-            )
+                        updated_at, acked_at, sequence, batch_id, batch_ordinal, lease_token
+                 FROM sync_outbox WHERE profile_id = ?1 AND {state_filter}
+                 ORDER BY sequence LIMIT ?2"
+            ))
             .map_err(sql_error)?;
-        let mut operations: Vec<_> = stmt
-            .query_map(params![profile_id], outbound_from_row)
+        let operations: Vec<_> = stmt
+            .query_map(params![profile_id, limit as i64], outbound_from_row)
             .map_err(sql_error)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(sql_error)?;
-        operations.retain(|operation| states.is_empty() || states.contains(&operation.state));
-        operations.truncate(limit);
         Ok(operations)
     }
 
@@ -965,7 +1093,7 @@ impl CatalogStore for SqliteCatalog {
         limit: usize,
         now: i64,
         lease_seconds: i64,
-    ) -> Result<Vec<OutboundOperationDto>, String> {
+    ) -> Result<Option<ClaimedOutboundBatchDto>, String> {
         sync::validate_profile(profile_id)?;
         sync::validate_limit(limit)?;
         let lease_until = sync::validate_lease(now, lease_seconds)?;
@@ -973,59 +1101,68 @@ impl CatalogStore for SqliteCatalog {
         let result = (|| {
             self.conn
                 .execute(
-                    "UPDATE sync_outbox SET state = 'pending', lease_until = NULL,
-                        retry_at = NULL, updated_at = ?2
-                     WHERE profile_id = ?1 AND state = 'inFlight' AND retry_eligible = 1
+                    "UPDATE sync_outbox SET state = 'uncertain', retry_eligible = 0,
+                        lease_until = NULL, lease_token = NULL, retry_at = NULL, updated_at = ?2
+                     WHERE profile_id = ?1 AND state = 'inFlight'
                        AND lease_until <= ?2",
                     params![profile_id, now],
                 )
                 .map_err(sql_error)?;
-            let ids: Vec<String> = {
-                let mut stmt = self
-                    .conn
-                    .prepare(
-                        "SELECT operation_id FROM sync_outbox
-                         WHERE profile_id = ?1 AND retry_eligible = 1
-                           AND (state = 'pending'
-                                OR (state = 'failed' AND retry_at IS NOT NULL AND retry_at <= ?2))
-                         ORDER BY created_at, operation_id LIMIT ?3",
-                    )
-                    .map_err(sql_error)?;
-                let result = stmt
-                    .query_map(params![profile_id, now, limit as i64], |row| row.get(0))
-                    .map_err(sql_error)?
-                    .collect::<rusqlite::Result<Vec<_>>>()
-                    .map_err(sql_error)?;
-                result
+            let batch_id: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT batch_id FROM sync_outbox
+                     WHERE profile_id = ?1
+                       AND state IN ('pending','inFlight','uncertain','failed')
+                     ORDER BY sequence LIMIT 1",
+                    params![profile_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(sql_error)?;
+            let Some(batch_id) = batch_id else {
+                return Ok(None);
             };
-            let mut claimed = Vec::with_capacity(ids.len());
-            for operation_id in ids {
-                self.conn
-                    .execute(
-                        "UPDATE sync_outbox SET state = 'inFlight',
-                            attempt_count = attempt_count + 1, retry_at = NULL,
-                            lease_until = ?3, updated_at = ?4
-                         WHERE profile_id = ?1 AND operation_id = ?2",
-                        params![profile_id, operation_id, lease_until, now],
-                    )
-                    .map_err(sql_error)?;
-                claimed.push(
-                    self.outbound_by_id(profile_id, &operation_id)?
-                        .expect("claimed outbox row exists"),
-                );
+            let (total, claimable): (i64, i64) = self
+                .conn
+                .query_row(
+                    "SELECT COUNT(*),
+                            SUM(CASE WHEN retry_eligible = 1
+                                      AND (state = 'pending'
+                                           OR (state = 'failed' AND retry_at IS NOT NULL
+                                               AND retry_at <= ?3))
+                                     THEN 1 ELSE 0 END)
+                     FROM sync_outbox WHERE profile_id = ?1 AND batch_id = ?2",
+                    params![profile_id, batch_id, now],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(sql_error)?;
+            if claimable != total {
+                return Ok(None);
             }
-            Ok(claimed)
+            if total as usize > limit || total as usize > sync::MAX_SYNC_BATCH {
+                return Err("claim limit would split the next logical batch".to_string());
+            }
+            let lease_token = sync::new_lease_token();
+            self.conn
+                .execute(
+                    "UPDATE sync_outbox SET state = 'inFlight',
+                        attempt_count = attempt_count + 1, retry_at = NULL,
+                        lease_until = ?3, lease_token = ?4, updated_at = ?5
+                     WHERE profile_id = ?1 AND batch_id = ?2",
+                    params![profile_id, batch_id, lease_until, lease_token, now],
+                )
+                .map_err(sql_error)?;
+            let operations = self.load_outbound_batch(profile_id, &batch_id)?;
+            Ok(Some(ClaimedOutboundBatchDto {
+                profile_id: profile_id.to_string(),
+                batch_id,
+                lease_token,
+                lease_until,
+                operations,
+            }))
         })();
-        match result {
-            Ok(claimed) => {
-                self.commit_batch()?;
-                Ok(claimed)
-            }
-            Err(error) => {
-                self.rollback_batch();
-                Err(error)
-            }
-        }
+        self.finish_batch(result)
     }
 
     fn recover_outbound_operations(&mut self, profile_id: &str, now: i64) -> Result<usize, String> {
@@ -1033,9 +1170,9 @@ impl CatalogStore for SqliteCatalog {
         sync::validate_timestamp("now", now)?;
         self.conn
             .execute(
-                "UPDATE sync_outbox SET state = 'pending', lease_until = NULL,
-                    retry_at = NULL, updated_at = ?2
-                 WHERE profile_id = ?1 AND state = 'inFlight' AND retry_eligible = 1
+                "UPDATE sync_outbox SET state = 'uncertain', retry_eligible = 0,
+                    lease_until = NULL, lease_token = NULL, retry_at = NULL, updated_at = ?2
+                 WHERE profile_id = ?1 AND state = 'inFlight'
                    AND lease_until <= ?2",
                 params![profile_id, now],
             )
@@ -1046,16 +1183,27 @@ impl CatalogStore for SqliteCatalog {
         &mut self,
         profile_id: &str,
         operation_id: &str,
+        lease_token: &str,
         completed_at: i64,
     ) -> Result<OutboundOperationDto, String> {
         sync::validate_profile(profile_id)?;
         sync::validate_identifier("operationId", operation_id)?;
+        sync::validate_identifier("leaseToken", lease_token)?;
         sync::validate_timestamp("completedAt", completed_at)?;
         let existing = self
             .outbound_by_id(profile_id, operation_id)?
             .ok_or_else(|| "outbound operation not found".to_string())?;
-        if existing.state != OutboundState::InFlight {
-            return Err("only in-flight operations can be completed".to_string());
+        if self
+            .load_outbound_batch(profile_id, &existing.batch_id)?
+            .len()
+            != 1
+        {
+            return Err("multi-operation batches require transactional settlement".to_string());
+        }
+        if existing.state != OutboundState::InFlight
+            || existing.lease_token.as_deref() != Some(lease_token)
+        {
+            return Err("operation is not owned by the active lease".to_string());
         }
         if completed_at < existing.updated_at {
             return Err("completedAt must not precede the claim timestamp".to_string());
@@ -1065,10 +1213,11 @@ impl CatalogStore for SqliteCatalog {
             self.conn
                 .execute(
                     "UPDATE sync_outbox SET state = 'acked', retry_eligible = 0,
-                        retry_at = NULL, lease_until = NULL, last_error = NULL,
+                        retry_at = NULL, lease_until = NULL, lease_token = NULL, last_error = NULL,
                         updated_at = ?3, acked_at = ?3
-                     WHERE profile_id = ?1 AND operation_id = ?2 AND state = 'inFlight'",
-                    params![profile_id, operation_id, completed_at],
+                     WHERE profile_id = ?1 AND operation_id = ?2 AND state = 'inFlight'
+                       AND lease_token = ?4",
+                    params![profile_id, operation_id, completed_at, lease_token],
                 )
                 .map_err(sql_error)?;
             self.ensure_sync_profile(profile_id)?;
@@ -1082,28 +1231,21 @@ impl CatalogStore for SqliteCatalog {
             self.outbound_by_id(profile_id, operation_id)?
                 .ok_or_else(|| "outbound operation not found".to_string())
         })();
-        match result {
-            Ok(operation) => {
-                self.commit_batch()?;
-                Ok(operation)
-            }
-            Err(error) => {
-                self.rollback_batch();
-                Err(error)
-            }
-        }
+        self.finish_batch(result)
     }
 
     fn fail_outbound_operation(
         &mut self,
         profile_id: &str,
         operation_id: &str,
+        lease_token: &str,
         error: &str,
         failed_at: i64,
         retry_at: Option<i64>,
     ) -> Result<OutboundOperationDto, String> {
         sync::validate_profile(profile_id)?;
         sync::validate_identifier("operationId", operation_id)?;
+        sync::validate_identifier("leaseToken", lease_token)?;
         sync::validate_timestamp("failedAt", failed_at)?;
         if error.is_empty() || error.len() > sync::MAX_ERROR_BYTES {
             return Err(format!("error must be 1..={} bytes", sync::MAX_ERROR_BYTES));
@@ -1117,8 +1259,17 @@ impl CatalogStore for SqliteCatalog {
         let existing = self
             .outbound_by_id(profile_id, operation_id)?
             .ok_or_else(|| "outbound operation not found".to_string())?;
-        if existing.state != OutboundState::InFlight {
-            return Err("only in-flight operations can be failed".to_string());
+        if self
+            .load_outbound_batch(profile_id, &existing.batch_id)?
+            .len()
+            != 1
+        {
+            return Err("multi-operation batches require transactional settlement".to_string());
+        }
+        if existing.state != OutboundState::InFlight
+            || existing.lease_token.as_deref() != Some(lease_token)
+        {
+            return Err("operation is not owned by the active lease".to_string());
         }
         if failed_at < existing.updated_at {
             return Err("failedAt must not precede the claim timestamp".to_string());
@@ -1126,20 +1277,212 @@ impl CatalogStore for SqliteCatalog {
         self.conn
             .execute(
                 "UPDATE sync_outbox SET state = 'failed', retry_eligible = ?3,
-                    retry_at = ?4, lease_until = NULL, last_error = ?5, updated_at = ?6
-                 WHERE profile_id = ?1 AND operation_id = ?2 AND state = 'inFlight'",
+                    retry_at = ?4, lease_until = NULL, lease_token = NULL,
+                    last_error = ?5, updated_at = ?6
+                 WHERE profile_id = ?1 AND operation_id = ?2 AND state = 'inFlight'
+                   AND lease_token = ?7",
                 params![
                     profile_id,
                     operation_id,
                     i64::from(retry_at.is_some()),
                     retry_at,
                     error,
-                    failed_at
+                    failed_at,
+                    lease_token
                 ],
             )
             .map_err(sql_error)?;
         self.outbound_by_id(profile_id, operation_id)?
             .ok_or_else(|| "outbound operation not found".to_string())
+    }
+
+    fn settle_outbound_batch(
+        &mut self,
+        settlement: SettleOutboundBatchDto,
+    ) -> Result<SettledOutboundBatchDto, String> {
+        sync::validate_settlement(&settlement)?;
+        let existing = self.load_outbound_batch(&settlement.profile_id, &settlement.batch_id)?;
+        if existing.is_empty() {
+            return Err("outbound batch not found".to_string());
+        }
+        if existing.iter().any(|operation| {
+            operation.state != OutboundState::InFlight
+                || operation.lease_token.as_deref() != Some(&settlement.lease_token)
+        }) {
+            return Err("outbound batch is not owned by the active lease".to_string());
+        }
+        let operation_ids: std::collections::HashSet<_> = existing
+            .iter()
+            .map(|operation| operation.operation_id.as_str())
+            .collect();
+        if !settlement.applied.is_empty()
+            && (settlement.applied.len() != existing.len()
+                || settlement
+                    .applied
+                    .iter()
+                    .any(|result| !operation_ids.contains(result.operation_id.as_str())))
+        {
+            return Err("applied settlement must cover the complete logical batch".to_string());
+        }
+        if settlement.applied.is_empty() && settlement.conflicts.is_empty() {
+            return Err("settlement must contain applied results or conflicts".to_string());
+        }
+        if settlement
+            .conflicts
+            .iter()
+            .any(|conflict| !operation_ids.contains(conflict.operation_id.as_str()))
+        {
+            return Err("settlement references an operation outside the batch".to_string());
+        }
+
+        self.begin_batch()?;
+        let result = (|| {
+            let mut conflict_records = Vec::new();
+            if settlement.conflicts.is_empty() {
+                for applied in &settlement.applied {
+                    let operation = existing
+                        .iter()
+                        .find(|operation| operation.operation_id == applied.operation_id)
+                        .expect("settlement operation was preflighted");
+                    self.conn
+                        .execute(
+                            "UPDATE sync_outbox SET state = 'acked', retry_eligible = 0,
+                                retry_at = NULL, lease_until = NULL, lease_token = NULL,
+                                last_error = NULL, updated_at = ?5, acked_at = ?5
+                             WHERE profile_id = ?1 AND batch_id = ?2 AND operation_id = ?3
+                               AND state = 'inFlight' AND lease_token = ?4",
+                            params![
+                                settlement.profile_id,
+                                settlement.batch_id,
+                                operation.operation_id,
+                                settlement.lease_token,
+                                settlement.settled_at
+                            ],
+                        )
+                        .map_err(sql_error)?;
+                    self.conn
+                        .execute(
+                            "INSERT INTO sync_entities(
+                                profile_id, entity_type, local_id, remote_id, revision,
+                                concurrency_token, tombstone, visibility, snapshot_json, updated_at)
+                             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 'Private', NULL, ?8)
+                             ON CONFLICT(profile_id, entity_type, remote_id) DO UPDATE SET
+                                local_id = excluded.local_id, revision = excluded.revision,
+                                concurrency_token = excluded.concurrency_token,
+                                tombstone = excluded.tombstone, updated_at = excluded.updated_at",
+                            params![
+                                settlement.profile_id,
+                                operation.entity_type.as_db(),
+                                operation.entity_id,
+                                applied.remote_id,
+                                applied.revision as i64,
+                                applied.concurrency_token,
+                                i64::from(operation.operation == sync::SyncOperationKind::Delete),
+                                settlement.settled_at,
+                            ],
+                        )
+                        .map_err(sql_error)?;
+                }
+            } else {
+                self.conn
+                    .execute(
+                        "UPDATE sync_outbox SET state = 'failed', retry_eligible = 0,
+                            retry_at = NULL, lease_until = NULL, lease_token = NULL,
+                            last_error = 'server conflict', updated_at = ?4
+                         WHERE profile_id = ?1 AND batch_id = ?2 AND lease_token = ?3
+                           AND state = 'inFlight'",
+                        params![
+                            settlement.profile_id,
+                            settlement.batch_id,
+                            settlement.lease_token,
+                            settlement.settled_at
+                        ],
+                    )
+                    .map_err(sql_error)?;
+                for conflict in &settlement.conflicts {
+                    conflict_records
+                        .push(self.insert_conflict(&settlement.profile_id, &conflict.conflict)?);
+                }
+            }
+            self.ensure_sync_profile(&settlement.profile_id)?;
+            self.conn
+                .execute(
+                    "UPDATE sync_profiles SET server_revision = MAX(server_revision, ?2),
+                        last_pushed_at = ?3, updated_at = ?3 WHERE profile_id = ?1",
+                    params![
+                        settlement.profile_id,
+                        settlement.server_revision as i64,
+                        settlement.settled_at
+                    ],
+                )
+                .map_err(sql_error)?;
+            Ok(SettledOutboundBatchDto {
+                operations: self
+                    .load_outbound_batch(&settlement.profile_id, &settlement.batch_id)?,
+                conflicts: conflict_records,
+            })
+        })();
+        self.finish_batch(result)
+    }
+
+    fn reconcile_uncertain_batch(
+        &mut self,
+        reconciliation: ReconcileUncertainBatchDto,
+    ) -> Result<Vec<OutboundOperationDto>, String> {
+        sync::validate_reconciliation(&reconciliation)?;
+        let existing =
+            self.load_outbound_batch(&reconciliation.profile_id, &reconciliation.batch_id)?;
+        if existing.is_empty()
+            || existing
+                .iter()
+                .any(|operation| operation.state != OutboundState::Uncertain)
+        {
+            return Err("only a wholly uncertain batch can be reconciled".to_string());
+        }
+        let (state, retry_eligible, acked_at) = match reconciliation.resolution {
+            UnknownOutcomeResolution::Acked => ("acked", 0_i64, Some(reconciliation.reconciled_at)),
+            UnknownOutcomeResolution::Requeue => ("pending", 1_i64, None),
+        };
+        self.conn
+            .execute(
+                "UPDATE sync_outbox SET state = ?3, retry_eligible = ?4,
+                    base_revision = ?5, concurrency_token = ?6, retry_at = NULL,
+                    lease_until = NULL, lease_token = NULL, updated_at = ?7, acked_at = ?8
+                 WHERE profile_id = ?1 AND batch_id = ?2 AND state = 'uncertain'",
+                params![
+                    reconciliation.profile_id,
+                    reconciliation.batch_id,
+                    state,
+                    retry_eligible,
+                    reconciliation.base_revision.map(|revision| revision as i64),
+                    reconciliation.concurrency_token,
+                    reconciliation.reconciled_at,
+                    acked_at,
+                ],
+            )
+            .map_err(sql_error)?;
+        self.load_outbound_batch(&reconciliation.profile_id, &reconciliation.batch_id)
+    }
+
+    fn prune_acked_outbound_operations(
+        &mut self,
+        profile_id: &str,
+        acked_before: i64,
+        limit: usize,
+    ) -> Result<usize, String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_timestamp("ackedBefore", acked_before)?;
+        sync::validate_limit(limit)?;
+        self.conn
+            .execute(
+                "DELETE FROM sync_outbox WHERE rowid IN (
+                    SELECT rowid FROM sync_outbox
+                    WHERE profile_id = ?1 AND state = 'acked' AND acked_at < ?2
+                    ORDER BY sequence LIMIT ?3
+                 )",
+                params![profile_id, acked_before, limit as i64],
+            )
+            .map_err(sql_error)
     }
 
     fn record_sync_conflicts(
@@ -1165,16 +1508,7 @@ impl CatalogStore for SqliteCatalog {
                 .map(|conflict| self.insert_conflict(profile_id, conflict))
                 .collect()
         })();
-        match result {
-            Ok(records) => {
-                self.commit_batch()?;
-                Ok(records)
-            }
-            Err(error) => {
-                self.rollback_batch();
-                Err(error)
-            }
-        }
+        self.finish_batch(result)
     }
 
     fn sync_conflicts(
@@ -1352,6 +1686,9 @@ fn outbound_from_row(row: &Row<'_>) -> rusqlite::Result<OutboundOperationDto> {
     Ok(OutboundOperationDto {
         profile_id: row.get(0)?,
         operation_id: row.get(1)?,
+        sequence: row.get::<_, i64>(17)? as u64,
+        batch_id: row.get(18)?,
+        batch_ordinal: row.get::<_, i64>(19)? as u32,
         entity_type: SyncEntityType::from_db(&entity_type).map_err(|_| invalid_db_value())?,
         operation: crate::sync::SyncOperationKind::from_db(&operation)
             .map_err(|_| invalid_db_value())?,
@@ -1366,6 +1703,7 @@ fn outbound_from_row(row: &Row<'_>) -> rusqlite::Result<OutboundOperationDto> {
         retry_eligible: row.get::<_, i64>(10)? != 0,
         retry_at: row.get(11)?,
         lease_until: row.get(12)?,
+        lease_token: row.get(20)?,
         last_error: row.get(13)?,
         created_at: row.get(14)?,
         updated_at: row.get(15)?,
@@ -1399,9 +1737,13 @@ fn conflict_from_row(row: &Row<'_>) -> rusqlite::Result<SyncConflictDto> {
 
 fn sqlite_outbound_matches_input(
     existing: &OutboundOperationDto,
+    batch_id: &str,
+    batch_ordinal: u32,
     input: &EnqueueOutboundOperationDto,
 ) -> bool {
     existing.operation_id == input.operation_id
+        && existing.batch_id == batch_id
+        && existing.batch_ordinal == batch_ordinal
         && existing.entity_type == input.entity_type
         && existing.operation == input.operation
         && existing.entity_id == input.entity_id
@@ -1464,6 +1806,40 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn upgrades_v2_outbox_rows_with_stable_legacy_ordering() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("v2.sqlite3");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.execute_batch(SCHEMA_V2).unwrap();
+            conn.execute("INSERT INTO sync_profiles(profile_id) VALUES('p')", [])
+                .unwrap();
+            for operation_id in ["first", "second"] {
+                conn.execute(
+                    "INSERT INTO sync_outbox(
+                        profile_id, operation_id, entity_type, operation_kind, entity_id,
+                        payload_json, state, attempt_count, retry_eligible, created_at, updated_at)
+                     VALUES('p', ?1, 'ModelCollection', 'Create', ?1, '{}',
+                            'pending', 0, 1, 1, 1)",
+                    params![operation_id],
+                )
+                .unwrap();
+            }
+            conn.pragma_update(None, "user_version", 2).unwrap();
+        }
+
+        let store = SqliteCatalog::open(&db).unwrap();
+        let operations = store
+            .outbound_operations("p", &[OutboundState::Pending], 10)
+            .unwrap();
+        assert_eq!(operations.len(), 2);
+        assert!(operations[0].sequence < operations[1].sequence);
+        assert_eq!(operations[0].batch_id, "legacy-first");
+        assert_eq!(operations[1].batch_id, "legacy-second");
     }
 
     #[test]
@@ -1725,5 +2101,82 @@ mod tests {
 
         let store = SqliteCatalog::open(&database).unwrap();
         assert!(store.remote_model_link("p", &hash).unwrap().is_none());
+    }
+
+    #[test]
+    fn commit_failure_is_rolled_back_and_connection_remains_usable() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        store.begin_batch().unwrap();
+        store
+            .conn
+            .execute_batch("PRAGMA defer_foreign_keys = ON")
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO remote_model_links(
+                    profile_id, local_model_hash, remote_model_id, client_upload_id,
+                    upload_status, created_at, updated_at)
+                 VALUES('missing-profile', ?1, 'remote', 'upload', 'pending', 1, 1)",
+                params!["a".repeat(64)],
+            )
+            .unwrap();
+
+        assert!(store.finish_batch(Ok(())).is_err());
+        store.ensure_sync_profile("usable").unwrap();
+        assert_eq!(store.sync_status("usable").unwrap().server_revision, 0);
+        store.begin_batch().unwrap();
+        store.rollback_batch();
+    }
+
+    #[test]
+    fn state_filtered_history_queries_are_bounded_and_acked_rows_can_be_pruned() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        store.ensure_sync_profile("history").unwrap();
+        store
+            .conn
+            .execute_batch(
+                "WITH RECURSIVE n(x) AS (
+                    VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 1000
+                 )
+                 INSERT INTO sync_outbox(
+                    profile_id, operation_id, entity_type, operation_kind, entity_id,
+                    payload_json, state, attempt_count, retry_eligible, created_at, updated_at,
+                    acked_at, sequence, batch_id, batch_ordinal)
+                 SELECT 'history', 'acked-' || x, 'ModelCollection', 'Create', 'entity-' || x,
+                        'not-json', 'acked', 1, 0, 1, 1, 1, x, 'batch-' || x, 0
+                 FROM n;
+                 INSERT INTO sync_outbox(
+                    profile_id, operation_id, entity_type, operation_kind, entity_id,
+                    payload_json, state, attempt_count, retry_eligible, created_at, updated_at,
+                    sequence, batch_id, batch_ordinal)
+                 VALUES('history', 'pending', 'ModelCollection', 'Create', 'pending',
+                        '{}', 'pending', 0, 1, 2, 2, 1001, 'pending-batch', 0);",
+            )
+            .unwrap();
+
+        let pending = store
+            .outbound_operations("history", &[OutboundState::Pending], 1)
+            .unwrap();
+        assert_eq!(pending[0].operation_id, "pending");
+        assert_eq!(
+            store
+                .prune_acked_outbound_operations("history", 2, 500)
+                .unwrap(),
+            500
+        );
+        assert_eq!(
+            store
+                .prune_acked_outbound_operations("history", 2, 500)
+                .unwrap(),
+            500
+        );
+        assert_eq!(
+            store
+                .outbound_operations("history", &[OutboundState::Pending], 1)
+                .unwrap()[0]
+                .operation_id,
+            "pending"
+        );
     }
 }

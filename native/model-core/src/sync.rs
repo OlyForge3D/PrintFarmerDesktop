@@ -124,16 +124,28 @@ impl RemoteUploadStatus {
 pub enum OutboundState {
     Pending,
     InFlight,
+    Uncertain,
     Failed,
     Acked,
 }
 
 #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
 impl OutboundState {
+    pub(crate) fn as_db(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::InFlight => "inFlight",
+            Self::Uncertain => "uncertain",
+            Self::Failed => "failed",
+            Self::Acked => "acked",
+        }
+    }
+
     pub(crate) fn from_db(value: &str) -> Result<Self, String> {
         match value {
             "pending" => Ok(Self::Pending),
             "inFlight" => Ok(Self::InFlight),
+            "uncertain" => Ok(Self::Uncertain),
             "failed" => Ok(Self::Failed),
             "acked" => Ok(Self::Acked),
             _ => Err(format!("invalid persisted outbound state: {value}")),
@@ -177,7 +189,8 @@ impl ConflictResolution {
 pub struct CollectionSnapshotDto {
     pub id: String,
     pub name: String,
-    pub description: String,
+    #[serde(default)]
+    pub description: Option<String>,
     pub owner_user_id: String,
     pub is_shared: bool,
     pub created_at: String,
@@ -204,7 +217,8 @@ pub struct MembershipSnapshotDto {
 pub struct TagSnapshotDto {
     pub id: String,
     pub name: String,
-    pub category: String,
+    #[serde(default)]
+    pub category: Option<String>,
     pub is_auto_generated: bool,
     #[serde(default)]
     pub color: Option<String>,
@@ -313,6 +327,8 @@ pub struct ConflictInputDto {
 pub struct ApplyPullBatchDto {
     pub profile_id: String,
     #[serde(default)]
+    pub expected_previous_cursor: Option<String>,
+    #[serde(default)]
     pub cursor: Option<String>,
     pub server_revision: u64,
     pub applied_at: i64,
@@ -342,6 +358,9 @@ pub struct EnqueueOutboundOperationDto {
 pub struct OutboundOperationDto {
     pub profile_id: String,
     pub operation_id: String,
+    pub sequence: u64,
+    pub batch_id: String,
+    pub batch_ordinal: u32,
     pub entity_type: SyncEntityType,
     pub operation: SyncOperationKind,
     pub entity_id: String,
@@ -358,11 +377,81 @@ pub struct OutboundOperationDto {
     #[serde(default)]
     pub lease_until: Option<i64>,
     #[serde(default)]
+    pub lease_token: Option<String>,
+    #[serde(default)]
     pub last_error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
     #[serde(default)]
     pub acked_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimedOutboundBatchDto {
+    pub profile_id: String,
+    pub batch_id: String,
+    pub lease_token: String,
+    pub lease_until: i64,
+    pub operations: Vec<OutboundOperationDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppliedOutboundResultDto {
+    pub operation_id: String,
+    pub remote_id: String,
+    pub revision: u64,
+    #[serde(default)]
+    pub concurrency_token: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettlementConflictDto {
+    pub operation_id: String,
+    pub conflict: ConflictInputDto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettleOutboundBatchDto {
+    pub profile_id: String,
+    pub batch_id: String,
+    pub lease_token: String,
+    pub settled_at: i64,
+    pub server_revision: u64,
+    #[serde(default)]
+    pub applied: Vec<AppliedOutboundResultDto>,
+    #[serde(default)]
+    pub conflicts: Vec<SettlementConflictDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettledOutboundBatchDto {
+    pub operations: Vec<OutboundOperationDto>,
+    pub conflicts: Vec<SyncConflictDto>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UnknownOutcomeResolution {
+    Acked,
+    Requeue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconcileUncertainBatchDto {
+    pub profile_id: String,
+    pub batch_id: String,
+    pub resolution: UnknownOutcomeResolution,
+    pub reconciled_at: i64,
+    #[serde(default)]
+    pub base_revision: Option<u64>,
+    #[serde(default)]
+    pub concurrency_token: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -471,8 +560,64 @@ pub(crate) fn validate_remote_link(link: &RemoteModelLinkDto) -> Result<(), Stri
             return Err("uploadedAt must not precede createdAt".to_string());
         }
     }
-    if link.upload_status == RemoteUploadStatus::Uploaded && link.uploaded_at.is_none() {
-        return Err("uploaded status requires uploadedAt".to_string());
+    Ok(())
+}
+
+pub(crate) fn merge_remote_link(
+    existing: &RemoteModelLinkDto,
+    incoming: &RemoteModelLinkDto,
+) -> Result<RemoteModelLinkDto, String> {
+    if existing.profile_id != incoming.profile_id
+        || existing.local_model_hash != incoming.local_model_hash
+        || existing.remote_model_id != incoming.remote_model_id
+        || existing.client_upload_id != incoming.client_upload_id
+        || existing.created_at != incoming.created_at
+    {
+        return Err("remote model link content does not match existing link".to_string());
+    }
+    if incoming.updated_at < existing.updated_at {
+        return Ok(existing.clone());
+    }
+    if incoming.updated_at == existing.updated_at {
+        return if incoming == existing {
+            Ok(existing.clone())
+        } else {
+            Err("equal updatedAt requires identical remote model link content".to_string())
+        };
+    }
+    let legal = match existing.upload_status {
+        RemoteUploadStatus::Pending => true,
+        RemoteUploadStatus::Uploading => incoming.upload_status != RemoteUploadStatus::Pending,
+        RemoteUploadStatus::Failed => true,
+        RemoteUploadStatus::Uploaded => incoming.upload_status == RemoteUploadStatus::Uploaded,
+    };
+    if !legal {
+        return Err("remote model upload status cannot move backwards".to_string());
+    }
+    if existing.upload_status == RemoteUploadStatus::Uploaded
+        && incoming.uploaded_at.is_some()
+        && incoming.uploaded_at != existing.uploaded_at
+    {
+        return Err("uploadedAt is immutable after upload".to_string());
+    }
+    let mut merged = incoming.clone();
+    if merged.etag.is_none() {
+        merged.etag.clone_from(&existing.etag);
+    }
+    if merged.uploaded_at.is_none() {
+        merged.uploaded_at = existing.uploaded_at;
+    }
+    Ok(merged)
+}
+
+fn validate_cursor(name: &str, cursor: Option<&str>) -> Result<(), String> {
+    if let Some(cursor) = cursor {
+        if cursor.len() > MAX_CURSOR_BYTES {
+            return Err(format!("{name} exceeds {MAX_CURSOR_BYTES} bytes"));
+        }
+        if cursor.chars().any(char::is_control) {
+            return Err(format!("{name} must not contain control characters"));
+        }
     }
     Ok(())
 }
@@ -552,22 +697,25 @@ pub(crate) fn validate_pull_batch(batch: &ApplyPullBatchDto) -> Result<(), Strin
             "pull batches are limited to {MAX_SYNC_BATCH} items"
         ));
     }
-    if let Some(cursor) = &batch.cursor {
-        if cursor.len() > MAX_CURSOR_BYTES {
-            return Err(format!("cursor exceeds {MAX_CURSOR_BYTES} bytes"));
-        }
-        if cursor.chars().any(char::is_control) {
-            return Err("cursor must not contain control characters".to_string());
-        }
-    }
-    let mut keys = std::collections::HashSet::new();
+    validate_cursor(
+        "expectedPreviousCursor",
+        batch.expected_previous_cursor.as_deref(),
+    )?;
+    validate_cursor("cursor", batch.cursor.as_deref())?;
+    let mut remote_keys = std::collections::HashSet::new();
+    let mut local_keys = std::collections::HashSet::new();
     for entity in &batch.entities {
         validate_identifier("remoteId", &entity.remote_id)?;
         validate_optional_identifier("localId", entity.local_id.as_deref())?;
         validate_optional_identifier("concurrencyToken", entity.concurrency_token.as_deref())?;
         validate_revision("entity.revision", entity.revision)?;
-        if !keys.insert((entity.entity_type, entity.remote_id.as_str())) {
+        if !remote_keys.insert((entity.entity_type, entity.remote_id.as_str())) {
             return Err("pull batch contains a duplicate entity".to_string());
+        }
+        if let Some(local_id) = entity.local_id.as_deref() {
+            if !local_keys.insert((entity.entity_type, local_id)) {
+                return Err("pull batch contains duplicate local entity mappings".to_string());
+            }
         }
         validate_snapshot(entity)?;
     }
@@ -629,6 +777,73 @@ pub(crate) fn validate_lease(now: i64, lease_seconds: i64) -> Result<i64, String
     }
     now.checked_add(lease_seconds)
         .ok_or_else(|| "lease expiration overflows timestamp".to_string())
+}
+
+pub(crate) fn validate_settlement(settlement: &SettleOutboundBatchDto) -> Result<(), String> {
+    validate_profile(&settlement.profile_id)?;
+    validate_identifier("batchId", &settlement.batch_id)?;
+    validate_identifier("leaseToken", &settlement.lease_token)?;
+    validate_timestamp("settledAt", settlement.settled_at)?;
+    validate_revision("serverRevision", settlement.server_revision)?;
+    if settlement
+        .applied
+        .len()
+        .saturating_add(settlement.conflicts.len())
+        > MAX_SYNC_BATCH
+    {
+        return Err(format!(
+            "settlement batches are limited to {MAX_SYNC_BATCH} items"
+        ));
+    }
+    if !settlement.applied.is_empty() && !settlement.conflicts.is_empty() {
+        return Err("a server batch cannot be both applied and conflicted".to_string());
+    }
+    let mut ids = std::collections::HashSet::new();
+    for applied in &settlement.applied {
+        validate_identifier("operationId", &applied.operation_id)?;
+        validate_identifier("remoteId", &applied.remote_id)?;
+        validate_optional_identifier("concurrencyToken", applied.concurrency_token.as_deref())?;
+        validate_revision("revision", applied.revision)?;
+        if !ids.insert(applied.operation_id.as_str()) {
+            return Err("settlement contains duplicate operationId".to_string());
+        }
+    }
+    for conflict in &settlement.conflicts {
+        validate_identifier("operationId", &conflict.operation_id)?;
+        validate_conflict_input(&conflict.conflict)?;
+        if !ids.insert(conflict.operation_id.as_str()) {
+            return Err("settlement contains duplicate operationId".to_string());
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_reconciliation(
+    reconciliation: &ReconcileUncertainBatchDto,
+) -> Result<(), String> {
+    validate_profile(&reconciliation.profile_id)?;
+    validate_identifier("batchId", &reconciliation.batch_id)?;
+    validate_timestamp("reconciledAt", reconciliation.reconciled_at)?;
+    if let Some(revision) = reconciliation.base_revision {
+        validate_revision("baseRevision", revision)?;
+    }
+    validate_optional_identifier(
+        "concurrencyToken",
+        reconciliation.concurrency_token.as_deref(),
+    )
+}
+
+pub(crate) fn new_lease_token() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("lease-{nanos:x}-{sequence:x}")
 }
 
 #[cfg(test)]
@@ -707,6 +922,24 @@ mod tests {
         }
     }
 
+    fn tombstone(
+        entity_type: SyncEntityType,
+        remote_id: &str,
+        local_id: &str,
+        revision: u64,
+    ) -> PullEntityDto {
+        PullEntityDto {
+            entity_type,
+            local_id: Some(local_id.to_string()),
+            remote_id: remote_id.to_string(),
+            revision,
+            concurrency_token: None,
+            tombstone: true,
+            visibility: SyncVisibility::Private,
+            snapshot: None,
+        }
+    }
+
     fn exercise_store(store: &mut dyn CatalogStore) {
         assert_eq!(store.sync_status("p1").unwrap().server_revision, 0);
         let local_collection = store.create_collection("Local Dragons").unwrap();
@@ -726,6 +959,7 @@ mod tests {
         let status = store
             .apply_pull_batch(ApplyPullBatchDto {
                 profile_id: "p1".to_string(),
+                expected_previous_cursor: None,
                 cursor: Some("opaque:cursor".to_string()),
                 server_revision: 7,
                 applied_at: 20,
@@ -739,6 +973,7 @@ mod tests {
         store
             .apply_pull_batch(ApplyPullBatchDto {
                 profile_id: "p1".to_string(),
+                expected_previous_cursor: Some("opaque:cursor".to_string()),
                 cursor: None,
                 server_revision: 8,
                 applied_at: 21,
@@ -759,35 +994,66 @@ mod tests {
         assert_eq!(store.all_collections()[0].id, local_collection.id);
 
         let queued = store
-            .enqueue_outbound_operations("p1", vec![operation("op-1")])
+            .enqueue_outbound_operations("p1", "batch-1", vec![operation("op-1")])
             .unwrap();
         assert_eq!(queued[0].state, OutboundState::Pending);
-        assert_eq!(
-            store.claim_outbound_operations("p1", 10, 30, 10).unwrap()[0].attempt_count,
-            1
-        );
+        let first_claim = store
+            .claim_outbound_operations("p1", 10, 30, 10)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first_claim.operations[0].attempt_count, 1);
         assert!(store
             .claim_outbound_operations("p1", 10, 39, 10)
             .unwrap()
-            .is_empty());
+            .is_none());
         assert_eq!(store.recover_outbound_operations("p1", 40).unwrap(), 1);
         assert_eq!(
-            store.claim_outbound_operations("p1", 10, 40, 10).unwrap()[0].attempt_count,
-            2
+            store.outbound_operations("p1", &[], 10).unwrap()[0].state,
+            OutboundState::Uncertain
         );
-        let failed = store
-            .fail_outbound_operation("p1", "op-1", "offline", 41, Some(50))
-            .unwrap();
-        assert!(failed.retry_eligible);
         assert!(store
-            .claim_outbound_operations("p1", 10, 49, 10)
+            .claim_outbound_operations("p1", 10, 40, 10)
             .unwrap()
-            .is_empty());
-        store.claim_outbound_operations("p1", 10, 50, 10).unwrap();
-        let acked = store.complete_outbound_operation("p1", "op-1", 51).unwrap();
-        assert_eq!(acked.state, OutboundState::Acked);
-        assert!(!acked.retry_eligible);
-        assert_eq!(store.sync_status("p1").unwrap().last_pushed_at, Some(51));
+            .is_none());
+        store
+            .reconcile_uncertain_batch(ReconcileUncertainBatchDto {
+                profile_id: "p1".to_string(),
+                batch_id: "batch-1".to_string(),
+                resolution: UnknownOutcomeResolution::Requeue,
+                reconciled_at: 41,
+                base_revision: Some(8),
+                concurrency_token: Some("fresh".to_string()),
+            })
+            .unwrap();
+        let second_claim = store
+            .claim_outbound_operations("p1", 10, 42, 10)
+            .unwrap()
+            .unwrap();
+        assert_ne!(first_claim.lease_token, second_claim.lease_token);
+        assert!(store
+            .complete_outbound_operation("p1", "op-1", &first_claim.lease_token, 43)
+            .is_err());
+        assert!(store
+            .fail_outbound_operation("p1", "op-1", &first_claim.lease_token, "stale", 43, None,)
+            .is_err());
+        let settled = store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "p1".to_string(),
+                batch_id: "batch-1".to_string(),
+                lease_token: second_claim.lease_token,
+                settled_at: 43,
+                server_revision: 9,
+                applied: vec![AppliedOutboundResultDto {
+                    operation_id: "op-1".to_string(),
+                    remote_id: "server-c".to_string(),
+                    revision: 9,
+                    concurrency_token: Some("server-token".to_string()),
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+        assert_eq!(settled.operations[0].state, OutboundState::Acked);
+        assert_eq!(store.sync_status("p1").unwrap().last_pushed_at, Some(43));
 
         store
             .record_sync_conflicts("p1", vec![conflict("conflict-1", "stale")])
@@ -830,6 +1096,7 @@ mod tests {
             .unwrap();
         let failed = store.apply_pull_batch(ApplyPullBatchDto {
             profile_id: "p".to_string(),
+            expected_previous_cursor: None,
             cursor: Some("must-not-stick".to_string()),
             server_revision: 10,
             applied_at: 20,
@@ -861,6 +1128,7 @@ mod tests {
         store
             .apply_pull_batch(ApplyPullBatchDto {
                 profile_id: "p".to_string(),
+                expected_previous_cursor: None,
                 cursor: None,
                 server_revision: 11,
                 applied_at: 20,
@@ -886,18 +1154,28 @@ mod tests {
         let mut store = InMemoryCatalog::new();
         let mut tag = operation("tag-op");
         tag.entity_type = SyncEntityType::Tag;
-        assert!(store.enqueue_outbound_operations("p", vec![tag]).is_err());
         assert!(store
-            .enqueue_outbound_operations("p", vec![operation("op")])
+            .enqueue_outbound_operations("p", "tag-batch", vec![tag])
+            .is_err());
+        assert!(store
+            .enqueue_outbound_operations("p", "batch", vec![operation("op")])
             .is_ok());
-        assert!(store.complete_outbound_operation("p", "op", 20).is_err());
+        assert!(store
+            .complete_outbound_operation("p", "op", "not-a-lease", 20)
+            .is_err());
         assert!(store.claim_outbound_operations("p", 0, 20, 10).is_err());
         assert!(store.claim_outbound_operations("p", 1, 20, 0).is_err());
 
         let mut oversized = operation("big");
         oversized.payload = Value::String("x".repeat(MAX_PAYLOAD_BYTES + 1));
         assert!(store
-            .enqueue_outbound_operations("p", vec![oversized])
+            .enqueue_outbound_operations("p", "big-batch", vec![oversized])
+            .is_err());
+        let too_many: Vec<_> = (0..=MAX_SYNC_BATCH)
+            .map(|index| operation(&format!("op-{index}")))
+            .collect();
+        assert!(store
+            .enqueue_outbound_operations("p", "too-many", too_many)
             .is_err());
     }
 
@@ -914,5 +1192,417 @@ mod tests {
             "visibility": "Private"
         }))
         .is_err());
+    }
+
+    fn assert_cursor_fencing(store: &mut dyn CatalogStore) {
+        store
+            .apply_pull_batch(ApplyPullBatchDto {
+                profile_id: "cursor-profile".to_string(),
+                expected_previous_cursor: None,
+                cursor: Some("page-1".to_string()),
+                server_revision: 20,
+                applied_at: 1,
+                entities: vec![tombstone(SyncEntityType::Tag, "tag-1", "local-tag-1", 1)],
+                conflicts: vec![],
+            })
+            .unwrap();
+        store
+            .apply_pull_batch(ApplyPullBatchDto {
+                profile_id: "cursor-profile".to_string(),
+                expected_previous_cursor: Some("page-1".to_string()),
+                cursor: Some("page-2".to_string()),
+                server_revision: 20,
+                applied_at: 2,
+                entities: vec![tombstone(SyncEntityType::Tag, "tag-2", "local-tag-2", 2)],
+                conflicts: vec![],
+            })
+            .unwrap();
+        let replay = store.apply_pull_batch(ApplyPullBatchDto {
+            profile_id: "cursor-profile".to_string(),
+            expected_previous_cursor: None,
+            cursor: Some("page-1".to_string()),
+            server_revision: 20,
+            applied_at: 3,
+            entities: vec![],
+            conflicts: vec![],
+        });
+        assert!(replay.is_err());
+        assert_eq!(
+            store
+                .sync_status("cursor-profile")
+                .unwrap()
+                .cursor
+                .as_deref(),
+            Some("page-2")
+        );
+        assert!(store
+            .entity_revision_by_remote("cursor-profile", SyncEntityType::Tag, "tag-2")
+            .unwrap()
+            .is_some());
+
+        store
+            .apply_pull_batch(ApplyPullBatchDto {
+                profile_id: "empty-cursor".to_string(),
+                expected_previous_cursor: None,
+                cursor: Some(String::new()),
+                server_revision: 0,
+                applied_at: 1,
+                entities: vec![],
+                conflicts: vec![],
+            })
+            .unwrap();
+        assert!(store
+            .apply_pull_batch(ApplyPullBatchDto {
+                profile_id: "empty-cursor".to_string(),
+                expected_previous_cursor: None,
+                cursor: None,
+                server_revision: 0,
+                applied_at: 2,
+                entities: vec![],
+                conflicts: vec![],
+            })
+            .is_err());
+        store
+            .apply_pull_batch(ApplyPullBatchDto {
+                profile_id: "empty-cursor".to_string(),
+                expected_previous_cursor: Some(String::new()),
+                cursor: None,
+                server_revision: 0,
+                applied_at: 2,
+                entities: vec![],
+                conflicts: vec![],
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn in_memory_cursor_compare_and_set_fences_replays() {
+        assert_cursor_fencing(&mut InMemoryCatalog::new());
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_cursor_compare_and_set_fences_replays() {
+        assert_cursor_fencing(&mut crate::sqlite_catalog::SqliteCatalog::open_in_memory().unwrap());
+    }
+
+    fn assert_nullable_snapshots_and_duplicate_preflight(store: &mut dyn CatalogStore) {
+        let collection = PullEntityDto {
+            entity_type: SyncEntityType::ModelCollection,
+            local_id: Some("local-c".to_string()),
+            remote_id: "remote-c".to_string(),
+            revision: 1,
+            concurrency_token: Some("ct".to_string()),
+            tombstone: false,
+            visibility: SyncVisibility::Private,
+            snapshot: Some(json!({
+                "id": "remote-c",
+                "name": "No description",
+                "description": null,
+                "ownerUserId": "owner",
+                "isShared": false,
+                "createdAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:00Z",
+                "memberCount": 0,
+                "modelIds": [],
+                "revision": 1,
+                "concurrencyToken": "ct"
+            })),
+        };
+        let tag = PullEntityDto {
+            entity_type: SyncEntityType::Tag,
+            local_id: Some("local-tag".to_string()),
+            remote_id: "remote-tag".to_string(),
+            revision: 1,
+            concurrency_token: Some("tt".to_string()),
+            tombstone: false,
+            visibility: SyncVisibility::Private,
+            snapshot: Some(json!({
+                "id": "remote-tag",
+                "name": "Tag",
+                "isAutoGenerated": false,
+                "revision": 1,
+                "concurrencyToken": "tt"
+            })),
+        };
+        store
+            .apply_pull_batch(ApplyPullBatchDto {
+                profile_id: "nullable".to_string(),
+                expected_previous_cursor: None,
+                cursor: Some("done".to_string()),
+                server_revision: 1,
+                applied_at: 1,
+                entities: vec![collection, tag],
+                conflicts: vec![],
+            })
+            .unwrap();
+        assert_eq!(
+            store.entity_revisions("nullable", None, 10).unwrap().len(),
+            2
+        );
+
+        let duplicate = store.apply_pull_batch(ApplyPullBatchDto {
+            profile_id: "duplicates".to_string(),
+            expected_previous_cursor: None,
+            cursor: Some("bad".to_string()),
+            server_revision: 1,
+            applied_at: 1,
+            entities: vec![
+                tombstone(SyncEntityType::ModelCollection, "remote-1", "same-local", 1),
+                tombstone(SyncEntityType::ModelCollection, "remote-2", "same-local", 1),
+            ],
+            conflicts: vec![],
+        });
+        assert!(duplicate.is_err());
+        assert_eq!(store.sync_status("duplicates").unwrap().cursor, None);
+    }
+
+    #[test]
+    fn in_memory_accepts_nullable_snapshots_and_preflights_duplicate_mappings() {
+        assert_nullable_snapshots_and_duplicate_preflight(&mut InMemoryCatalog::new());
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_accepts_nullable_snapshots_and_preflights_duplicate_mappings() {
+        assert_nullable_snapshots_and_duplicate_preflight(
+            &mut crate::sqlite_catalog::SqliteCatalog::open_in_memory().unwrap(),
+        );
+    }
+
+    fn assert_remote_link_monotonicity(store: &mut dyn CatalogStore) {
+        let pending = link("upload-profile", 'b');
+        store.link_remote_model(pending.clone()).unwrap();
+        let mut uploading = pending.clone();
+        uploading.upload_status = RemoteUploadStatus::Uploading;
+        uploading.updated_at = 20;
+        uploading.etag = Some("etag".to_string());
+        store.link_remote_model(uploading.clone()).unwrap();
+        let mut uploaded = uploading.clone();
+        uploaded.upload_status = RemoteUploadStatus::Uploaded;
+        uploaded.updated_at = 30;
+        uploaded.uploaded_at = Some(30);
+        store.link_remote_model(uploaded.clone()).unwrap();
+
+        let mut stale = pending;
+        stale.updated_at = 15;
+        assert_eq!(store.link_remote_model(stale).unwrap(), uploaded);
+
+        let mut replay = uploaded.clone();
+        replay.updated_at = 40;
+        replay.etag = None;
+        replay.uploaded_at = None;
+        let merged = store.link_remote_model(replay).unwrap();
+        assert_eq!(merged.etag.as_deref(), Some("etag"));
+        assert_eq!(merged.uploaded_at, Some(30));
+
+        let mut equal_mismatch = merged.clone();
+        equal_mismatch.etag = Some("changed".to_string());
+        assert!(store.link_remote_model(equal_mismatch).is_err());
+        let mut regression = merged;
+        regression.updated_at = 50;
+        regression.upload_status = RemoteUploadStatus::Pending;
+        assert!(store.link_remote_model(regression).is_err());
+    }
+
+    #[test]
+    fn in_memory_remote_links_are_monotonic() {
+        assert_remote_link_monotonicity(&mut InMemoryCatalog::new());
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_remote_links_are_monotonic() {
+        assert_remote_link_monotonicity(
+            &mut crate::sqlite_catalog::SqliteCatalog::open_in_memory().unwrap(),
+        );
+    }
+
+    fn assert_ordered_batches_and_point_lookup(store: &mut dyn CatalogStore) {
+        let create = operation("create");
+        let mut membership = operation("membership");
+        membership.entity_type = SyncEntityType::ModelCollectionMembership;
+        membership.entity_id = "membership-local".to_string();
+        store
+            .enqueue_outbound_operations("ordered", "logical", vec![create, membership])
+            .unwrap();
+        store
+            .enqueue_outbound_operations("ordered", "later", vec![operation("later")])
+            .unwrap();
+        assert!(store
+            .claim_outbound_operations("ordered", 1, 10, 10)
+            .is_err());
+        let claimed = store
+            .claim_outbound_operations("ordered", 2, 10, 10)
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.batch_id, "logical");
+        assert_eq!(claimed.operations[0].operation_id, "create");
+        assert_eq!(claimed.operations[1].operation_id, "membership");
+        assert!(claimed.operations[0].sequence < claimed.operations[1].sequence);
+        assert!(store
+            .claim_outbound_operations("ordered", 1, 11, 10)
+            .unwrap()
+            .is_none());
+
+        let first_page: Vec<_> = (0..500)
+            .map(|index| {
+                tombstone(
+                    SyncEntityType::Tag,
+                    &format!("remote-{index:03}"),
+                    &format!("local-{index:03}"),
+                    1,
+                )
+            })
+            .collect();
+        store
+            .apply_pull_batch(ApplyPullBatchDto {
+                profile_id: "mappings".to_string(),
+                expected_previous_cursor: None,
+                cursor: Some("first".to_string()),
+                server_revision: 7,
+                applied_at: 1,
+                entities: first_page,
+                conflicts: vec![],
+            })
+            .unwrap();
+        store
+            .apply_pull_batch(ApplyPullBatchDto {
+                profile_id: "mappings".to_string(),
+                expected_previous_cursor: Some("first".to_string()),
+                cursor: Some("second".to_string()),
+                server_revision: 7,
+                applied_at: 2,
+                entities: vec![tombstone(SyncEntityType::Tag, "remote-500", "local-500", 2)],
+                conflicts: vec![],
+            })
+            .unwrap();
+        assert!(store
+            .entity_revision_by_remote("mappings", SyncEntityType::Tag, "remote-500")
+            .unwrap()
+            .is_some());
+        assert!(store
+            .entity_revision_by_local("mappings", SyncEntityType::Tag, "local-500")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn in_memory_preserves_logical_batch_order_and_supports_mapping_lookup() {
+        assert_ordered_batches_and_point_lookup(&mut InMemoryCatalog::new());
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_preserves_logical_batch_order_and_supports_mapping_lookup() {
+        assert_ordered_batches_and_point_lookup(
+            &mut crate::sqlite_catalog::SqliteCatalog::open_in_memory().unwrap(),
+        );
+    }
+
+    fn assert_failed_settlement_is_atomic(store: &mut dyn CatalogStore) {
+        store
+            .record_sync_conflicts("atomic", vec![conflict("existing", "original")])
+            .unwrap();
+        store
+            .enqueue_outbound_operations(
+                "atomic",
+                "batch",
+                vec![operation("atomic-1"), operation("atomic-2")],
+            )
+            .unwrap();
+        let claim = store
+            .claim_outbound_operations("atomic", 2, 10, 10)
+            .unwrap()
+            .unwrap();
+        let failed = store.settle_outbound_batch(SettleOutboundBatchDto {
+            profile_id: "atomic".to_string(),
+            batch_id: "batch".to_string(),
+            lease_token: claim.lease_token.clone(),
+            settled_at: 11,
+            server_revision: 1,
+            applied: vec![],
+            conflicts: vec![SettlementConflictDto {
+                operation_id: "atomic-1".to_string(),
+                conflict: conflict("existing", "different"),
+            }],
+        });
+        assert!(failed.is_err());
+        let operations = store
+            .outbound_operations("atomic", &[OutboundState::InFlight], 10)
+            .unwrap();
+        assert_eq!(operations.len(), 2);
+        assert!(operations
+            .iter()
+            .all(|operation| operation.lease_token.as_deref() == Some(&claim.lease_token)));
+        assert_eq!(store.sync_conflicts("atomic", true, 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn in_memory_failed_batch_settlement_rolls_back_every_operation() {
+        assert_failed_settlement_is_atomic(&mut InMemoryCatalog::new());
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_failed_batch_settlement_rolls_back_every_operation() {
+        assert_failed_settlement_is_atomic(
+            &mut crate::sqlite_catalog::SqliteCatalog::open_in_memory().unwrap(),
+        );
+    }
+
+    fn assert_committed_unknown_outcome_can_be_reconciled(store: &mut dyn CatalogStore) {
+        store
+            .enqueue_outbound_operations(
+                "unknown",
+                "create-batch",
+                vec![operation("unknown-create")],
+            )
+            .unwrap();
+        store
+            .enqueue_outbound_operations("unknown", "later", vec![operation("must-wait")])
+            .unwrap();
+        store
+            .claim_outbound_operations("unknown", 1, 10, 5)
+            .unwrap()
+            .unwrap();
+        assert_eq!(store.recover_outbound_operations("unknown", 15).unwrap(), 1);
+        assert!(store
+            .claim_outbound_operations("unknown", 1, 16, 5)
+            .unwrap()
+            .is_none());
+        let reconciled = store
+            .reconcile_uncertain_batch(ReconcileUncertainBatchDto {
+                profile_id: "unknown".to_string(),
+                batch_id: "create-batch".to_string(),
+                resolution: UnknownOutcomeResolution::Acked,
+                reconciled_at: 17,
+                base_revision: Some(12),
+                concurrency_token: Some("proved-by-pull".to_string()),
+            })
+            .unwrap();
+        assert_eq!(reconciled[0].state, OutboundState::Acked);
+        assert!(!reconciled[0].retry_eligible);
+        assert_eq!(
+            store
+                .claim_outbound_operations("unknown", 1, 18, 5)
+                .unwrap()
+                .unwrap()
+                .batch_id,
+            "later"
+        );
+    }
+
+    #[test]
+    fn in_memory_unknown_committed_create_requires_pull_reconciliation() {
+        assert_committed_unknown_outcome_can_be_reconciled(&mut InMemoryCatalog::new());
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_unknown_committed_create_requires_pull_reconciliation() {
+        assert_committed_unknown_outcome_can_be_reconciled(
+            &mut crate::sqlite_catalog::SqliteCatalog::open_in_memory().unwrap(),
+        );
     }
 }

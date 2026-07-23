@@ -21,10 +21,12 @@ use crate::thumbnail::{self, ThumbnailError, DEFAULT_THUMBNAIL_SIZE};
 use crate::vendor;
 
 pub use crate::sync::{
-    ApplyPullBatchDto, CollectionSnapshotDto, ConflictInputDto, ConflictResolution,
-    EnqueueOutboundOperationDto, EntityRevisionDto, MembershipSnapshotDto, OutboundOperationDto,
-    OutboundState, PullEntityDto, RemoteModelLinkDto, RemoteUploadStatus, SyncConflictDto,
-    SyncEntityType, SyncOperationKind, SyncStatusDto, SyncVisibility, TagSnapshotDto,
+    AppliedOutboundResultDto, ApplyPullBatchDto, ClaimedOutboundBatchDto, CollectionSnapshotDto,
+    ConflictInputDto, ConflictResolution, EnqueueOutboundOperationDto, EntityRevisionDto,
+    MembershipSnapshotDto, OutboundOperationDto, OutboundState, PullEntityDto,
+    ReconcileUncertainBatchDto, RemoteModelLinkDto, RemoteUploadStatus, SettleOutboundBatchDto,
+    SettledOutboundBatchDto, SettlementConflictDto, SyncConflictDto, SyncEntityType,
+    SyncOperationKind, SyncStatusDto, SyncVisibility, TagSnapshotDto, UnknownOutcomeResolution,
 };
 
 /// Axis-aligned bounds in wire form.

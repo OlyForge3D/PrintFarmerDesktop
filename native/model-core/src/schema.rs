@@ -8,7 +8,7 @@
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -178,6 +178,43 @@ CREATE INDEX IF NOT EXISTS idx_sync_conflicts_unresolved
     ON sync_conflicts(profile_id, resolved_at, created_at);
 "#;
 
+/// Additive v3 fencing and ordering metadata for durable outbound batches.
+pub const SCHEMA_V3: &str = r#"
+ALTER TABLE sync_outbox ADD COLUMN sequence INTEGER;
+ALTER TABLE sync_outbox ADD COLUMN batch_id TEXT;
+ALTER TABLE sync_outbox ADD COLUMN batch_ordinal INTEGER;
+ALTER TABLE sync_outbox ADD COLUMN lease_token TEXT;
+
+UPDATE sync_outbox
+SET sequence = rowid,
+    batch_id = 'legacy-' || operation_id,
+    batch_ordinal = 0
+WHERE sequence IS NULL;
+
+CREATE TABLE sync_profile_sequences (
+    profile_id    TEXT PRIMARY KEY REFERENCES sync_profiles(profile_id) ON DELETE CASCADE,
+    next_sequence INTEGER NOT NULL
+);
+
+INSERT INTO sync_profile_sequences(profile_id, next_sequence)
+SELECT profile_id, COALESCE(MAX(sequence), 0) + 1
+FROM sync_outbox
+GROUP BY profile_id;
+
+CREATE UNIQUE INDEX idx_sync_outbox_sequence
+    ON sync_outbox(profile_id, sequence);
+CREATE UNIQUE INDEX idx_sync_outbox_batch_ordinal
+    ON sync_outbox(profile_id, batch_id, batch_ordinal);
+CREATE INDEX idx_sync_outbox_state_sequence
+    ON sync_outbox(profile_id, state, retry_eligible, retry_at, sequence);
+CREATE INDEX idx_sync_outbox_active_sequence
+    ON sync_outbox(profile_id, state, sequence);
+CREATE INDEX idx_sync_outbox_retention
+    ON sync_outbox(profile_id, state, acked_at, sequence);
+CREATE INDEX idx_sync_outbox_batch_state
+    ON sync_outbox(profile_id, batch_id, state, sequence);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,8 +240,9 @@ mod tests {
 
     #[test]
     fn sync_schema_contains_no_transport_or_secret_fields() {
+        let sync_schema = format!("{SCHEMA_V2}\n{SCHEMA_V3}").to_lowercase();
         for forbidden in ["server_url", "auth_token", "api_key", "password", "jwt"] {
-            assert!(!SCHEMA_V2.to_lowercase().contains(forbidden));
+            assert!(!sync_schema.contains(forbidden));
         }
         for table in [
             "sync_profiles",
