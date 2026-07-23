@@ -167,6 +167,29 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
   const select = page.getByRole('button', { name: `Select ${filename}` });
   await expect(select).toBeVisible();
 
+  const cardActions = await select.locator('..').evaluate((card) => {
+    const favorite = card.querySelector('.model-fav-button');
+    const preview = card.querySelector('.model-preview-button');
+    if (
+      !(favorite instanceof HTMLElement) ||
+      !(preview instanceof HTMLElement)
+    ) {
+      throw new Error('Model card actions did not render');
+    }
+    const favoriteBounds = favorite.getBoundingClientRect();
+    const previewBounds = preview.getBoundingClientRect();
+    return {
+      sameWidth: previewBounds.width === favoriteBounds.width,
+      sameHeight: previewBounds.height === favoriteBounds.height,
+      stackedBelow: previewBounds.top > favoriteBounds.bottom,
+    };
+  });
+  expect(cardActions).toEqual({
+    sameWidth: true,
+    sameHeight: true,
+    stackedBelow: true,
+  });
+
   const truncation = await page.locator('.model-name').evaluate((element) => {
     const style = getComputedStyle(element);
     return {

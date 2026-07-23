@@ -611,16 +611,20 @@ select:disabled {
   cursor: pointer;
 }
 
-.model-fav-button {
+.model-fav-button,
+.model-preview-button {
   position: absolute;
   z-index: 2;
-  top: calc(var(--card-pad) + 7px);
   right: calc(var(--card-pad) + 7px);
   display: grid;
   width: 28px;
   height: 28px;
   padding: 0;
   place-items: center;
+}
+
+.model-fav-button {
+  top: calc(var(--card-pad) + 7px);
 }
 
 .model-fav-button:hover,
@@ -634,15 +638,7 @@ select:disabled {
 }
 
 .model-preview-button {
-  position: absolute;
-  z-index: 2;
-  top: calc(var(--card-pad) + var(--thumb-height) - 34px);
-  right: calc(var(--card-pad) + 7px);
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  height: 27px;
-  padding: 0 8px;
+  top: calc(var(--card-pad) + 41px);
   border-color: color-mix(in srgb, var(--accent), transparent 35%);
   background: color-mix(in srgb, var(--viewer), transparent 8%);
   color: #eef4f7;

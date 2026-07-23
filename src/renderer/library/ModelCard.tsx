@@ -89,7 +89,6 @@ export function ModelCard({
           title={available ? 'Preview in 3D' : 'File unavailable'}
         >
           <Icon name="preview" />
-          <span>Preview</span>
         </button>
       ) : null}
     </li>
