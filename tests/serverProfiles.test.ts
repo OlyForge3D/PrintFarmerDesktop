@@ -229,6 +229,7 @@ function service(
   fetchImpl = successfulFetch(),
   now: () => number = () => NOW,
   storage: SecretStorage = secureStorage,
+  beforeLegacyConfirmationCas?: () => Promise<void>,
 ): ServerProfileService {
   let id = 0;
   return new ServerProfileService({
@@ -237,6 +238,7 @@ function service(
     secretStorage: storage,
     fetch: fetchImpl,
     now,
+    ...(beforeLegacyConfirmationCas ? { beforeLegacyConfirmationCas } : {}),
     createId: () =>
       id++ === 0
         ? '11111111-1111-4111-8111-111111111111'
@@ -1239,9 +1241,12 @@ describe('server profiles', () => {
 
   it('does not let an older legacy save invalidate a newer retest generation', async () => {
     const fs = new MemoryFileSystem();
-    const olderCapabilitiesGate = deferred<Response>();
-    const olderSaveReached = deferred<void>();
-    const baseline = successfulFetch();
+    const olderSaveReachedLegacyCas = deferred<void>();
+    const resumeOlderLegacyCas = deferred<void>();
+    let exchanges = 0;
+    const baseline = successfulFetch((url) => {
+      if (url.pathname === '/api/auth/api-key/exchange') exchanges += 1;
+    });
     let capabilityCalls = 0;
     let versionCalls = 0;
     const fetchImpl: typeof globalThis.fetch = vi.fn(
@@ -1250,8 +1255,7 @@ describe('server profiles', () => {
         if (endpoint === '/api/system/capabilities') {
           capabilityCalls += 1;
           if (capabilityCalls === 2) {
-            olderSaveReached.resolve();
-            return olderCapabilitiesGate.promise;
+            return Promise.resolve(json({}, 404));
           }
         }
         if (endpoint === '/api/system/version') {
@@ -1265,7 +1269,16 @@ describe('server profiles', () => {
         return baseline(input, init);
       },
     );
-    const profiles = service(fs, fetchImpl);
+    const profiles = service(
+      fs,
+      fetchImpl,
+      () => NOW,
+      secureStorage,
+      () => {
+        olderSaveReachedLegacyCas.resolve();
+        return resumeOlderLegacyCas.promise;
+      },
+    );
     const saved = await profiles.save(apiKeyDraft());
 
     const olderSave = profiles.save(
@@ -1278,14 +1291,14 @@ describe('server profiles', () => {
     const olderSaveResult = expect(olderSave).rejects.toMatchObject({
       code: 'AUTHENTICATION_SUPERSEDED',
     });
-    await olderSaveReached.promise;
+    await olderSaveReachedLegacyCas.promise;
     await expect(
       profiles.test({ source: 'saved', id: saved.id }),
     ).resolves.toMatchObject({
       status: 'connected',
       version: { version: 'newer-retest-version' },
     });
-    olderCapabilitiesGate.resolve(json({}, 404));
+    resumeOlderLegacyCas.resolve();
 
     await olderSaveResult;
     await expect(profiles.list()).resolves.toMatchObject({
@@ -1298,6 +1311,8 @@ describe('server profiles', () => {
         },
       ],
     });
+    await expect(profiles.getToken(saved.id)).resolves.toBe('short-lived-jwt');
+    expect(exchanges).toBe(3);
   });
 
   it('persists error status when a saved-profile retest rejects', async () => {

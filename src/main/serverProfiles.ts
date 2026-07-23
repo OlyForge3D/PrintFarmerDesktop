@@ -186,6 +186,8 @@ export interface ServerProfileDependencies {
   fetch?: typeof globalThis.fetch;
   now?: () => number;
   createId?: () => string;
+  /** Test seam immediately before the legacy-confirmation generation CAS. */
+  beforeLegacyConfirmationCas?: () => Promise<void>;
 }
 
 export type ProfileErrorCode =
@@ -487,6 +489,7 @@ export class ServerProfileService {
     }
     const tested = probed.profile;
     if (tested.status === 'legacy' && !draft.allowLegacy) {
+      await this.dependencies.beforeLegacyConfirmationCas?.();
       await this.withMutationLock(() => {
         if (!this.invalidateAuthenticationIfCurrent(probed.authentication)) {
           throw authenticationSupersededError();
