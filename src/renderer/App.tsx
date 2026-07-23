@@ -25,6 +25,12 @@ import {
 import { folderBasename, libraryPresentation } from './library/presentation';
 import { useVendorMetadata } from './library/useVendorMetadata';
 import { computeSceneStats, type SceneStats } from './library/sceneStats';
+import { ImportWizard } from './library/ImportWizard';
+import {
+  forgetImportPlan,
+  rememberImportPlan,
+  type ImportPlan,
+} from './library/importPlan';
 import { PreviewWorkspace } from './viewer/PreviewWorkspace';
 import type { Projection } from './viewer/ModelViewer';
 import { Icon } from './ui/Icon';
@@ -65,12 +71,18 @@ export function App(): React.JSX.Element {
     () => new Set(),
   );
   const previewReturnFocusRef = useRef<HTMLElement | null>(null);
+  const importReturnFocusRef = useRef<HTMLElement | null>(null);
   const previewRequestRef = useRef(0);
   const titlebarRef = useRef<HTMLElement | null>(null);
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const statusbarRef = useRef<HTMLElement | null>(null);
 
   const library = useLibrary();
+  const modalOpen = previewOpen || library.importDraft !== null;
+  const prepareFolderImport = library.addFolder;
+  const dismissFolderImport = library.cancelImport;
+  const commitFolderImport = library.confirmImport;
+  const importRootId = library.importDraft?.rootId;
   const { favorites, isFavorite, toggle: toggleFavorite } = useFavorites();
   const selectedModel = useMemo(
     () =>
@@ -180,7 +192,7 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     const focusSearch = (event: KeyboardEvent): void => {
-      if (previewOpen) {
+      if (modalOpen) {
         return;
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
@@ -192,7 +204,7 @@ export function App(): React.JSX.Element {
     };
     document.addEventListener('keydown', focusSearch);
     return () => document.removeEventListener('keydown', focusSearch);
-  }, [previewOpen]);
+  }, [modalOpen]);
 
   useEffect(() => {
     for (const element of [
@@ -200,13 +212,55 @@ export function App(): React.JSX.Element {
       workspaceRef.current,
       statusbarRef.current,
     ]) {
-      if (previewOpen) {
+      if (modalOpen) {
         element?.setAttribute('inert', '');
       } else {
         element?.removeAttribute('inert');
       }
     }
-  }, [previewOpen]);
+  }, [modalOpen]);
+
+  const beginImport = useCallback(() => {
+    importReturnFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    void prepareFolderImport();
+  }, [prepareFolderImport]);
+
+  const cancelImport = useCallback(() => {
+    dismissFolderImport();
+    queueMicrotask(() => {
+      const previous = importReturnFocusRef.current;
+      const fallback = document.querySelector<HTMLElement>(
+        '.sidebar-primary-action',
+      );
+      (previous?.isConnected ? previous : fallback)?.focus();
+    });
+  }, [dismissFolderImport]);
+
+  const confirmImport = useCallback(
+    async (plan: ImportPlan, remember: boolean): Promise<boolean> => {
+      const rootId = importRootId;
+      const succeeded = await commitFolderImport(plan);
+      if (succeeded && rootId) {
+        if (remember) {
+          rememberImportPlan(rootId, plan);
+        } else {
+          forgetImportPlan(rootId);
+        }
+        queueMicrotask(() => {
+          const previous = importReturnFocusRef.current;
+          const fallback = document.querySelector<HTMLElement>(
+            '.sidebar-primary-action',
+          );
+          (previous?.isConnected ? previous : fallback)?.focus();
+        });
+      }
+      return succeeded;
+    },
+    [commitFolderImport, importRootId],
+  );
 
   const rememberPreviewTrigger = useCallback(() => {
     previewReturnFocusRef.current =
@@ -341,7 +395,7 @@ export function App(): React.JSX.Element {
       <header
         ref={titlebarRef}
         className="window-titlebar"
-        aria-hidden={previewOpen ? 'true' : undefined}
+        aria-hidden={modalOpen ? 'true' : undefined}
       >
         <div className="product-identity">
           <Icon name="app" size={18} />
@@ -353,7 +407,7 @@ export function App(): React.JSX.Element {
       <div
         ref={workspaceRef}
         className="workspace"
-        aria-hidden={previewOpen ? 'true' : undefined}
+        aria-hidden={modalOpen ? 'true' : undefined}
       >
         <LibrarySidebar
           query={query}
@@ -361,12 +415,11 @@ export function App(): React.JSX.Element {
           counts={counts}
           scanningFolder={scanningFolder}
           lastReport={library.lastReport}
+          lastImport={library.lastImport}
           busy={busy}
           onQueryChange={setQuery}
           onFilterChange={setFilter}
-          onAddFolder={() => {
-            void library.addFolder();
-          }}
+          onAddFolder={beginImport}
           onRefresh={() => {
             void library.refresh();
           }}
@@ -447,7 +500,7 @@ export function App(): React.JSX.Element {
                 query,
                 busy,
                 () => {
-                  void library.addFolder();
+                  beginImport();
                 },
                 () => {
                   setQuery('');
@@ -496,14 +549,16 @@ export function App(): React.JSX.Element {
         ref={statusbarRef}
         className="app-statusbar"
         aria-label="Application status"
-        aria-hidden={previewOpen ? 'true' : undefined}
+        aria-hidden={modalOpen ? 'true' : undefined}
       >
         <span>
           {library.status === 'loading'
             ? 'Loading catalog'
-            : isScanning
-              ? 'Scanning source'
-              : 'Ready'}
+            : library.status === 'preparing'
+              ? 'Analyzing source'
+              : isScanning
+                ? 'Scanning source'
+                : 'Ready'}
         </span>
         {appError ? (
           <span className="statusbar-error" role="alert">
@@ -517,6 +572,17 @@ export function App(): React.JSX.Element {
           </span>
         ) : null}
       </footer>
+
+      {library.importDraft ? (
+        <ImportWizard
+          key={library.importDraft.rootId}
+          draft={library.importDraft}
+          busy={library.status === 'scanning'}
+          error={library.error}
+          onCancel={cancelImport}
+          onConfirm={confirmImport}
+        />
+      ) : null}
 
       {previewOpen && previewTarget ? (
         <PreviewWorkspace

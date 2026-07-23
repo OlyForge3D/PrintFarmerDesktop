@@ -15,6 +15,7 @@ pub mod scan;
 pub mod scene;
 pub mod schema;
 pub mod serve;
+pub mod smart_import;
 #[cfg(feature = "sqlite")]
 pub mod sqlite_catalog;
 pub mod stl;

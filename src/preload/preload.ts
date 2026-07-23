@@ -13,6 +13,10 @@ import {
   type RenderThumbnailResponse,
   type ScanRootRequest,
   type ScanRootResponse,
+  type ImportPreviewRequest,
+  type ImportPreviewResponse,
+  type ImportRootRequest,
+  type ImportRootResponse,
   type ListModelsResponse,
   type ListTagsResponse,
   type TagsForModelRequest,
@@ -75,6 +79,18 @@ const api: PrintFarmerApi = {
       IpcChannel.ScanRoot,
       request,
     ) as Promise<ScanRootResponse>,
+  previewImport: (
+    request: ImportPreviewRequest,
+  ): Promise<ImportPreviewResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.PreviewImport,
+      request,
+    ) as Promise<ImportPreviewResponse>,
+  importRoot: (request: ImportRootRequest): Promise<ImportRootResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ImportRoot,
+      request,
+    ) as Promise<ImportRootResponse>,
   listModels: (): Promise<ListModelsResponse> =>
     ipcRenderer.invoke(IpcChannel.ListModels) as Promise<ListModelsResponse>,
   listTags: (): Promise<ListTagsResponse> =>

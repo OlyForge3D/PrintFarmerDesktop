@@ -28,6 +28,14 @@ import { visibleIndices } from '../src/renderer/viewer/geometry.js';
 import type { SceneMesh } from '../src/renderer/viewer/types.js';
 import { useModelTags } from '../src/renderer/library/useModelTags.js';
 import { useModelCollections } from '../src/renderer/library/useModelCollections.js';
+import { ImportWizard } from '../src/renderer/library/ImportWizard.js';
+import type { ImportDraft } from '../src/renderer/library/useLibrary.js';
+import {
+  buildImportPlan,
+  forgetImportPlan,
+  initialImportChoices,
+  rememberImportPlan,
+} from '../src/renderer/library/importPlan.js';
 import {
   defaultLibraryView,
   selectLibraryView,
@@ -134,20 +142,41 @@ describe('useLibrary', () => {
     expect(result.current.error).toBeNull();
   });
 
-  it('scans a chosen folder then refreshes the model list', async () => {
+  it('previews a chosen folder, then imports its confirmed rules', async () => {
     const openFolder = vi.fn().mockResolvedValue({ path: 'C:\\models' });
-    const scanRoot = vi.fn().mockResolvedValue({
-      added: 1,
-      changed: 0,
-      unchanged: 0,
-      missing: 0,
-      hashErrors: 0,
+    const previewImport = vi.fn().mockResolvedValue({
+      modelCount: 1,
+      totalBytes: 2048,
+      skippedErrors: 0,
+      formats: { stl: 1, threeMf: 0, obj: 0 },
+      folders: [],
+      foldersTruncated: false,
+    });
+    const importRoot = vi.fn().mockResolvedValue({
+      report: {
+        added: 1,
+        changed: 0,
+        unchanged: 0,
+        missing: 0,
+        hashErrors: 0,
+      },
+      modelsOrganized: 1,
+      collectionsCreated: 1,
+      collectionAssignments: 1,
+      tagAssignments: 1,
     });
     const listModels = vi
       .fn()
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([model()]);
-    installApi({ openFolder, scanRoot, listModels });
+    installApi({
+      openFolder,
+      previewImport,
+      importRoot,
+      listModels,
+      listCollections: vi.fn().mockResolvedValue([]),
+      listTags: vi.fn().mockResolvedValue([]),
+    });
 
     const { result } = renderHook(() => useLibrary());
     await waitFor(() => expect(listModels).toHaveBeenCalledTimes(1));
@@ -156,37 +185,81 @@ describe('useLibrary', () => {
       await result.current.addFolder();
     });
 
-    expect(scanRoot).toHaveBeenCalledWith({
+    expect(previewImport).toHaveBeenCalledWith({ path: 'C:\\models' });
+    expect(importRoot).not.toHaveBeenCalled();
+    expect(result.current.importDraft?.rootId).toBe(
+      rootIdForPath('C:\\models'),
+    );
+
+    await act(async () => {
+      await result.current.confirmImport({
+        rules: [{ relativePath: '', kind: 'collection', name: 'Models' }],
+        commonTags: ['printable'],
+      });
+    });
+
+    expect(importRoot).toHaveBeenCalledWith({
       rootId: rootIdForPath('C:\\models'),
       path: 'C:\\models',
+      rules: [{ relativePath: '', kind: 'collection', name: 'Models' }],
+      commonTags: ['printable'],
     });
     expect(result.current.models).toHaveLength(1);
     expect(result.current.lastReport?.added).toBe(1);
+    expect(result.current.lastImport?.modelsOrganized).toBe(1);
+    expect(result.current.importDraft).toBeNull();
   });
 
-  it('exposes the selected folder path while a scan is running', async () => {
-    const report = {
-      added: 0,
-      changed: 0,
-      unchanged: 0,
-      missing: 0,
-      hashErrors: 0,
+  it('exposes the selected folder path while an import is running', async () => {
+    const importResult = {
+      report: {
+        added: 0,
+        changed: 0,
+        unchanged: 0,
+        missing: 0,
+        hashErrors: 0,
+      },
+      modelsOrganized: 0,
+      collectionsCreated: 0,
+      collectionAssignments: 0,
+      tagAssignments: 0,
     };
-    let finishScan!: (value: typeof report) => void;
-    const scanPromise = new Promise<typeof report>((resolve) => {
-      finishScan = resolve;
+    let finishImport!: (value: typeof importResult) => void;
+    const importPromise = new Promise<typeof importResult>((resolve) => {
+      finishImport = resolve;
     });
     const openFolder = vi.fn().mockResolvedValue({ path: 'C:\\models' });
-    const scanRoot = vi.fn().mockReturnValue(scanPromise);
+    const previewImport = vi.fn().mockResolvedValue({
+      modelCount: 1,
+      totalBytes: 1,
+      skippedErrors: 0,
+      formats: { stl: 1, threeMf: 0, obj: 0 },
+      folders: [],
+      foldersTruncated: false,
+    });
+    const importRoot = vi.fn().mockReturnValue(importPromise);
     const listModels = vi.fn().mockResolvedValue([]);
-    installApi({ openFolder, scanRoot, listModels });
+    installApi({
+      openFolder,
+      previewImport,
+      importRoot,
+      listModels,
+      listCollections: vi.fn().mockResolvedValue([]),
+      listTags: vi.fn().mockResolvedValue([]),
+    });
 
     const { result } = renderHook(() => useLibrary());
     await waitFor(() => expect(listModels).toHaveBeenCalledTimes(1));
 
-    let addFolderPromise: Promise<void> | undefined;
     await act(async () => {
-      addFolderPromise = result.current.addFolder();
+      await result.current.addFolder();
+    });
+    let confirmPromise: Promise<boolean> | undefined;
+    await act(async () => {
+      confirmPromise = result.current.confirmImport({
+        rules: [],
+        commonTags: [],
+      });
       await Promise.resolve();
     });
 
@@ -194,8 +267,8 @@ describe('useLibrary', () => {
     expect(result.current.scanningPath).toBe('C:\\models');
 
     await act(async () => {
-      finishScan(report);
-      await addFolderPromise;
+      finishImport(importResult);
+      await confirmPromise;
     });
 
     expect(result.current.status).toBe('idle');
@@ -204,9 +277,10 @@ describe('useLibrary', () => {
 
   it('does not scan when the folder dialog is cancelled', async () => {
     const openFolder = vi.fn().mockResolvedValue(null);
-    const scanRoot = vi.fn();
+    const previewImport = vi.fn();
+    const importRoot = vi.fn();
     const listModels = vi.fn().mockResolvedValue([]);
-    installApi({ openFolder, scanRoot, listModels });
+    installApi({ openFolder, previewImport, importRoot, listModels });
 
     const { result } = renderHook(() => useLibrary());
     await waitFor(() => expect(listModels).toHaveBeenCalledTimes(1));
@@ -215,7 +289,8 @@ describe('useLibrary', () => {
       await result.current.addFolder();
     });
 
-    expect(scanRoot).not.toHaveBeenCalled();
+    expect(previewImport).not.toHaveBeenCalled();
+    expect(importRoot).not.toHaveBeenCalled();
   });
 
   it('surfaces an error when the catalog cannot be read', async () => {
@@ -226,6 +301,155 @@ describe('useLibrary', () => {
     const { result } = renderHook(() => useLibrary());
 
     await waitFor(() => expect(result.current.error).toBe('sidecar offline'));
+  });
+});
+
+describe('smart import', () => {
+  const draft: ImportDraft = {
+    rootId: 'root-smart',
+    path: 'C:\\Models',
+    preview: {
+      modelCount: 3,
+      totalBytes: 4096,
+      skippedErrors: 0,
+      formats: { stl: 1, threeMf: 1, obj: 1 },
+      folders: [
+        {
+          relativePath: 'Animals',
+          name: 'Animals',
+          depth: 1,
+          modelCount: 2,
+        },
+        {
+          relativePath: 'Animals/Cats',
+          name: 'Cats',
+          depth: 2,
+          modelCount: 1,
+        },
+      ],
+      foldersTruncated: false,
+    },
+    collections: [],
+    tags: [],
+  };
+
+  beforeEach(() => {
+    forgetImportPlan(draft.rootId);
+  });
+
+  it('defaults top-level folders to collections and nested folders to tags', () => {
+    const choices = initialImportChoices(draft.rootId, 'Models', draft.preview);
+    const plan = buildImportPlan(choices);
+
+    expect(plan.rules).toEqual([
+      { relativePath: '', kind: 'collection', name: 'Models' },
+      {
+        relativePath: 'Animals',
+        kind: 'collection',
+        name: 'Animals',
+      },
+      { relativePath: 'Animals/Cats', kind: 'tag', name: 'Cats' },
+    ]);
+  });
+
+  it('restores remembered choices for the same source', () => {
+    rememberImportPlan(draft.rootId, {
+      rules: [
+        {
+          relativePath: 'Animals',
+          kind: 'tag',
+          name: 'creatures',
+        },
+      ],
+      commonTags: ['printable'],
+    });
+
+    const choices = initialImportChoices(draft.rootId, 'Models', draft.preview);
+
+    expect(choices.rootCollection).toBe(false);
+    expect(choices.folders[0]).toMatchObject({
+      mode: 'tag',
+      name: 'creatures',
+    });
+    expect(choices.commonTagsText).toBe('printable');
+  });
+
+  it('shows the hierarchy and submits reviewed organization rules', async () => {
+    const onConfirm = vi.fn().mockResolvedValue(true);
+    render(
+      <ImportWizard
+        draft={draft}
+        busy={false}
+        error={null}
+        onCancel={vi.fn()}
+        onConfirm={onConfirm}
+      />,
+    );
+
+    expect(
+      screen.getByRole('dialog', {
+        name: 'Organize models before importing',
+      }),
+    ).toBeVisible();
+    expect(screen.getByLabelText('Import collection name')).toHaveValue(
+      'Models',
+    );
+    expect(screen.getByLabelText('Organization for Animals')).toHaveValue(
+      'collection',
+    );
+    expect(screen.getByLabelText('Organization for Animals/Cats')).toHaveValue(
+      'tag',
+    );
+
+    fireEvent.change(screen.getByLabelText('Tags for all imported models'), {
+      target: { value: 'printable, terrain' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Import 3 files' }));
+
+    await waitFor(() =>
+      expect(onConfirm).toHaveBeenCalledWith(
+        {
+          rules: [
+            { relativePath: '', kind: 'collection', name: 'Models' },
+            {
+              relativePath: 'Animals',
+              kind: 'collection',
+              name: 'Animals',
+            },
+            {
+              relativePath: 'Animals/Cats',
+              kind: 'tag',
+              name: 'Cats',
+            },
+          ],
+          commonTags: ['printable', 'terrain'],
+        },
+        true,
+      ),
+    );
+  });
+
+  it('blocks invalid bulk tags instead of silently dropping them', () => {
+    render(
+      <ImportWizard
+        draft={draft}
+        busy={false}
+        error={null}
+        onCancel={vi.fn()}
+        onConfirm={vi.fn().mockResolvedValue(true)}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText('Tags for all imported models'), {
+      target: { value: 'x'.repeat(129) },
+    });
+
+    expect(
+      screen.getByText('Each tag must be 128 characters or fewer.'),
+    ).toHaveAttribute('role', 'alert');
+    expect(
+      screen.getByRole('button', { name: 'Import 3 files' }),
+    ).toBeDisabled();
   });
 });
 

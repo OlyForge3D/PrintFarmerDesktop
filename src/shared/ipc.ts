@@ -20,6 +20,8 @@ export const IpcChannel = {
   ExtractVendorMetadata: 'model:extractVendorMetadata',
   RenderThumbnail: 'model:renderThumbnail',
   ScanRoot: 'catalog:scanRoot',
+  PreviewImport: 'catalog:previewImport',
+  ImportRoot: 'catalog:importRoot',
   ListModels: 'catalog:listModels',
   ListTags: 'catalog:listTags',
   TagsForModel: 'catalog:tagsForModel',
@@ -244,6 +246,55 @@ export type ScanRootRequest = z.infer<typeof ScanRootRequest>;
 export const ScanRootResponse = ReconcileReport;
 export type ScanRootResponse = z.infer<typeof ScanRootResponse>;
 
+export const ImportFolder = z.object({
+  relativePath: z.string().max(4096),
+  name: z.string().min(1).max(255),
+  depth: z.number().int().positive(),
+  modelCount: z.number().int().nonnegative(),
+});
+export type ImportFolder = z.infer<typeof ImportFolder>;
+
+export const ImportPreviewRequest = z.object({
+  path: z.string().min(1).max(4096),
+});
+export type ImportPreviewRequest = z.infer<typeof ImportPreviewRequest>;
+
+export const ImportPreviewResponse = z.object({
+  modelCount: z.number().int().nonnegative(),
+  totalBytes: z.number().int().nonnegative(),
+  skippedErrors: z.number().int().nonnegative(),
+  formats: z.object({
+    stl: z.number().int().nonnegative(),
+    threeMf: z.number().int().nonnegative(),
+    obj: z.number().int().nonnegative(),
+  }),
+  folders: z.array(ImportFolder).max(500),
+  foldersTruncated: z.boolean(),
+});
+export type ImportPreviewResponse = z.infer<typeof ImportPreviewResponse>;
+
+export const ImportRule = z.object({
+  relativePath: z.string().max(4096),
+  kind: z.enum(['collection', 'tag']),
+  name: z.string().trim().min(1).max(128),
+});
+export type ImportRule = z.infer<typeof ImportRule>;
+
+export const ImportRootRequest = ScanRootRequest.extend({
+  rules: z.array(ImportRule).max(1000),
+  commonTags: z.array(z.string().trim().min(1).max(128)).max(100),
+});
+export type ImportRootRequest = z.infer<typeof ImportRootRequest>;
+
+export const ImportRootResponse = z.object({
+  report: ReconcileReport,
+  modelsOrganized: z.number().int().nonnegative(),
+  collectionsCreated: z.number().int().nonnegative(),
+  collectionAssignments: z.number().int().nonnegative(),
+  tagAssignments: z.number().int().nonnegative(),
+});
+export type ImportRootResponse = z.infer<typeof ImportRootResponse>;
+
 export const ListModelsRequest = z.void();
 export type ListModelsRequest = z.infer<typeof ListModelsRequest>;
 
@@ -392,6 +443,14 @@ export const ipcSchemas = {
     request: ScanRootRequest,
     response: ScanRootResponse,
   },
+  [IpcChannel.PreviewImport]: {
+    request: ImportPreviewRequest,
+    response: ImportPreviewResponse,
+  },
+  [IpcChannel.ImportRoot]: {
+    request: ImportRootRequest,
+    response: ImportRootResponse,
+  },
   [IpcChannel.ListModels]: {
     request: ListModelsRequest,
     response: ListModelsResponse,
@@ -457,6 +516,8 @@ export interface PrintFarmerApi {
     request: RenderThumbnailRequest,
   ): Promise<RenderThumbnailResponse>;
   scanRoot(request: ScanRootRequest): Promise<ScanRootResponse>;
+  previewImport(request: ImportPreviewRequest): Promise<ImportPreviewResponse>;
+  importRoot(request: ImportRootRequest): Promise<ImportRootResponse>;
   listModels(): Promise<ListModelsResponse>;
   listTags(): Promise<ListTagsResponse>;
   tagsForModel(request: TagsForModelRequest): Promise<TagsForModelResponse>;

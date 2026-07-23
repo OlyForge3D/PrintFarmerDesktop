@@ -103,6 +103,27 @@ export function registerIpcHandlers(channelFactory?: ChannelFactory): void {
     return ipcSchemas[IpcChannel.ScanRoot].response.parse(raw);
   });
 
+  ipcMain.handle(
+    IpcChannel.PreviewImport,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.PreviewImport].request.parse(rawRequest);
+      const raw = await sidecar.previewImport(request.path);
+      return ipcSchemas[IpcChannel.PreviewImport].response.parse(raw);
+    },
+  );
+
+  ipcMain.handle(IpcChannel.ImportRoot, async (_event, rawRequest: unknown) => {
+    const request = ipcSchemas[IpcChannel.ImportRoot].request.parse(rawRequest);
+    const raw = await sidecar.importRoot(
+      request.rootId,
+      request.path,
+      request.rules,
+      request.commonTags,
+    );
+    return ipcSchemas[IpcChannel.ImportRoot].response.parse(raw);
+  });
+
   ipcMain.handle(IpcChannel.ListModels, async () => {
     const raw = await sidecar.listModels();
     return ipcSchemas[IpcChannel.ListModels].response.parse(raw);

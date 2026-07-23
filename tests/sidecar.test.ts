@@ -187,6 +187,81 @@ describe('SidecarClient', () => {
     expect(request.params.path).toBe('C:/models');
   });
 
+  it('previews a folder without importing it', async () => {
+    const { channel, sent } = makeFakeChannel((req, emit) => {
+      emit(
+        JSON.stringify({
+          id: req.id,
+          ok: true,
+          result: {
+            modelCount: 2,
+            totalBytes: 2048,
+            skippedErrors: 0,
+            formats: { stl: 1, threeMf: 1, obj: 0 },
+            folders: [],
+            foldersTruncated: false,
+          },
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel);
+
+    await client.previewImport('C:/models');
+
+    const request = JSON.parse(sent[0] ?? '{}') as {
+      method: string;
+      params: { path: string };
+    };
+    expect(request.method).toBe('previewImport');
+    expect(request.params).toEqual({ path: 'C:/models' });
+  });
+
+  it('sends confirmed organization rules with an import', async () => {
+    const { channel, sent } = makeFakeChannel((req, emit) => {
+      emit(
+        JSON.stringify({
+          id: req.id,
+          ok: true,
+          result: {
+            report: {
+              added: 2,
+              changed: 0,
+              unchanged: 0,
+              missing: 0,
+              hashErrors: 0,
+            },
+            modelsOrganized: 2,
+            collectionsCreated: 1,
+            collectionAssignments: 2,
+            tagAssignments: 2,
+          },
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel);
+    const rules = [
+      {
+        relativePath: 'Animals',
+        kind: 'collection' as const,
+        name: 'Animals',
+      },
+    ];
+
+    await client.importRoot('root1', 'C:/models', rules, ['printable']);
+
+    const request = JSON.parse(sent[0] ?? '{}') as {
+      method: string;
+      params: unknown;
+    };
+    expect(request.method).toBe('importRoot');
+    expect(request.params).toEqual({
+      rootId: 'root1',
+      path: 'C:/models',
+      rules,
+      commonTags: ['printable'],
+    });
+  });
+
   it('sends a listModels request and resolves the model array', async () => {
     const { channel, sent } = makeFakeChannel((req, emit) => {
       emit(

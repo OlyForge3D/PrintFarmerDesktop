@@ -1,8 +1,24 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { LogicalModel, ReconcileReport } from '@shared/ipc';
+import type {
+  Collection,
+  ImportPreviewResponse,
+  ImportRootRequest,
+  ImportRootResponse,
+  LogicalModel,
+  ReconcileReport,
+  Tag,
+} from '@shared/ipc';
 import { rootIdForPath } from './model';
 
-export type LibraryStatus = 'idle' | 'loading' | 'scanning';
+export type LibraryStatus = 'idle' | 'loading' | 'preparing' | 'scanning';
+
+export interface ImportDraft {
+  rootId: string;
+  path: string;
+  preview: ImportPreviewResponse;
+  collections: Collection[];
+  tags: Tag[];
+}
 
 export interface Library {
   /** Every logical model currently known to the on-disk catalog. */
@@ -13,8 +29,18 @@ export interface Library {
   lastReport: ReconcileReport | null;
   /** Absolute path for the folder currently being scanned, if any. */
   scanningPath: string | null;
-  /** Prompt for a folder, scan it in place, then refresh the model list. */
+  /** Folder preview waiting for organization choices, if any. */
+  importDraft: ImportDraft | null;
+  /** Organization summary from the most recently completed import. */
+  lastImport: ImportRootResponse | null;
+  /** Prompt for a folder and prepare a read-only hierarchy preview. */
   addFolder: () => Promise<void>;
+  /** Reconcile and organize the prepared folder using the confirmed rules. */
+  confirmImport: (
+    plan: Pick<ImportRootRequest, 'rules' | 'commonTags'>,
+  ) => Promise<boolean>;
+  /** Close the import preview without changing the catalog. */
+  cancelImport: () => void;
   /** Re-read the catalog without scanning. */
   refresh: () => Promise<void>;
 }
@@ -25,8 +51,8 @@ function messageOf(err: unknown): string {
 
 /**
  * Owns the renderer-side model library: loads the persisted catalog on mount,
- * and lets the user add a source folder (which scans it in place via the Rust
- * sidecar and refreshes the list).
+ * prepares read-only folder previews, then imports confirmed organization rules
+ * through the Rust sidecar and refreshes the list.
  */
 export function useLibrary(): Library {
   const [models, setModels] = useState<LogicalModel[]>([]);
@@ -34,6 +60,8 @@ export function useLibrary(): Library {
   const [error, setError] = useState<string | null>(null);
   const [lastReport, setLastReport] = useState<ReconcileReport | null>(null);
   const [scanningPath, setScanningPath] = useState<string | null>(null);
+  const [importDraft, setImportDraft] = useState<ImportDraft | null>(null);
+  const [lastImport, setLastImport] = useState<ImportRootResponse | null>(null);
 
   const refresh = useCallback(async () => {
     setStatus('loading');
@@ -60,21 +88,62 @@ export function useLibrary(): Library {
       return;
     }
 
-    setStatus('scanning');
-    setScanningPath(selection.path);
+    setStatus('preparing');
     try {
-      const report = await window.printFarmer.scanRoot({
+      const [preview, collections, tags] = await Promise.all([
+        window.printFarmer.previewImport({ path: selection.path }),
+        window.printFarmer.listCollections(),
+        window.printFarmer.listTags(),
+      ]);
+      setImportDraft({
         rootId: rootIdForPath(selection.path),
         path: selection.path,
+        preview,
+        collections,
+        tags,
       });
-      setLastReport(report);
-      setModels(await window.printFarmer.listModels());
     } catch (err: unknown) {
       setError(messageOf(err));
     } finally {
-      setScanningPath(null);
       setStatus('idle');
     }
+  }, []);
+
+  const confirmImport = useCallback(
+    async (
+      plan: Pick<ImportRootRequest, 'rules' | 'commonTags'>,
+    ): Promise<boolean> => {
+      if (!importDraft) {
+        setError('No folder is ready to import.');
+        return false;
+      }
+      setError(null);
+      setStatus('scanning');
+      setScanningPath(importDraft.path);
+      try {
+        const result = await window.printFarmer.importRoot({
+          rootId: importDraft.rootId,
+          path: importDraft.path,
+          ...plan,
+        });
+        setLastImport(result);
+        setLastReport(result.report);
+        setModels(await window.printFarmer.listModels());
+        setImportDraft(null);
+        return true;
+      } catch (err: unknown) {
+        setError(messageOf(err));
+        return false;
+      } finally {
+        setScanningPath(null);
+        setStatus('idle');
+      }
+    },
+    [importDraft],
+  );
+
+  const cancelImport = useCallback(() => {
+    setImportDraft(null);
   }, []);
 
   useEffect(() => {
@@ -87,7 +156,11 @@ export function useLibrary(): Library {
     error,
     lastReport,
     scanningPath,
+    importDraft,
+    lastImport,
     addFolder,
+    confirmImport,
+    cancelImport,
     refresh,
   };
 }

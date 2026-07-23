@@ -1,4 +1,4 @@
-import type { ReconcileReport } from '@shared/ipc';
+import type { ImportRootResponse, ReconcileReport } from '@shared/ipc';
 import type { FilterKey } from './filter';
 import { Icon, type IconName } from '../ui/Icon';
 
@@ -20,6 +20,7 @@ export interface LibrarySidebarProps {
   counts: LibraryCounts;
   scanningFolder: string | null;
   lastReport: ReconcileReport | null;
+  lastImport: ImportRootResponse | null;
   busy: boolean;
   onQueryChange: (query: string) => void;
   onFilterChange: (filter: FilterKey) => void;
@@ -54,6 +55,7 @@ export function LibrarySidebar({
   counts,
   scanningFolder,
   lastReport,
+  lastImport,
   busy,
   onQueryChange,
   onFilterChange,
@@ -130,6 +132,7 @@ export function LibrarySidebar({
         <SidebarStatus
           scanningFolder={scanningFolder}
           lastReport={lastReport}
+          lastImport={lastImport}
         />
       </div>
     </aside>
@@ -181,14 +184,23 @@ function NavigationSection({
 function SidebarStatus({
   scanningFolder,
   lastReport,
+  lastImport,
 }: Pick<
   LibrarySidebarProps,
-  'scanningFolder' | 'lastReport'
+  'scanningFolder' | 'lastReport' | 'lastImport'
 >): React.JSX.Element {
   if (scanningFolder) {
     return (
       <p className="sidebar-status" role="status" aria-live="polite">
         Scanning <strong>{scanningFolder}</strong>
+      </p>
+    );
+  }
+  if (lastImport) {
+    return (
+      <p className="sidebar-status" role="status" aria-live="polite">
+        Last import: {lastImport.modelsOrganized} organized,{' '}
+        {lastImport.report.added} added
       </p>
     );
   }

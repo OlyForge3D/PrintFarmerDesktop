@@ -332,6 +332,87 @@ impl From<&crate::catalog::ReconcileReport> for ReconcileReportDto {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportFormatCountsDto {
+    pub stl: usize,
+    pub three_mf: usize,
+    pub obj: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportFolderDto {
+    pub relative_path: String,
+    pub name: String,
+    pub depth: usize,
+    pub model_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportPreviewDto {
+    pub model_count: usize,
+    pub total_bytes: u64,
+    pub skipped_errors: usize,
+    pub formats: ImportFormatCountsDto,
+    pub folders: Vec<ImportFolderDto>,
+    pub folders_truncated: bool,
+}
+
+impl From<&crate::smart_import::ImportPreview> for ImportPreviewDto {
+    fn from(preview: &crate::smart_import::ImportPreview) -> Self {
+        Self {
+            model_count: preview.model_count,
+            total_bytes: preview.total_bytes,
+            skipped_errors: preview.skipped_errors,
+            formats: ImportFormatCountsDto {
+                stl: preview.formats.stl,
+                three_mf: preview.formats.three_mf,
+                obj: preview.formats.obj,
+            },
+            folders: preview
+                .folders
+                .iter()
+                .map(|folder| ImportFolderDto {
+                    relative_path: folder
+                        .relative_path
+                        .components()
+                        .map(|component| component.as_os_str().to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                    name: folder.name.clone(),
+                    depth: folder.depth,
+                    model_count: folder.model_count,
+                })
+                .collect(),
+            folders_truncated: preview.folders_truncated,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportResultDto {
+    pub report: ReconcileReportDto,
+    pub models_organized: usize,
+    pub collections_created: usize,
+    pub collection_assignments: usize,
+    pub tag_assignments: usize,
+}
+
+impl From<&crate::smart_import::ImportResult> for ImportResultDto {
+    fn from(result: &crate::smart_import::ImportResult) -> Self {
+        Self {
+            report: ReconcileReportDto::from(&result.report),
+            models_organized: result.models_organized,
+            collections_created: result.collections_created,
+            collection_assignments: result.collection_assignments,
+            tag_assignments: result.tag_assignments,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

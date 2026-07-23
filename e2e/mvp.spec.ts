@@ -152,14 +152,31 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
   await expect(page.getByRole('application')).toHaveCount(0);
   await expect(page.getByRole('dialog')).toHaveCount(0);
 
-  await page.evaluate(
+  const importPreview = await page.evaluate(
     async (fixturePath) =>
-      window.printFarmer.scanRoot({
+      window.printFarmer.previewImport({ path: fixturePath }),
+    modelFixtureDir,
+  );
+  expect(importPreview.modelCount).toBe(1);
+  expect(importPreview.formats.obj).toBe(1);
+  const importResult = await page.evaluate(
+    async (fixturePath) =>
+      window.printFarmer.importRoot({
         rootId: 'e2e-model-fixtures',
         path: fixturePath,
+        rules: [
+          {
+            relativePath: '',
+            kind: 'collection',
+            name: 'E2E fixtures',
+          },
+        ],
+        commonTags: ['e2e'],
       }),
     modelFixtureDir,
   );
+  expect(importResult.report.added).toBe(1);
+  expect(importResult.modelsOrganized).toBe(1);
   await page.getByRole('button', { name: 'Refresh catalog' }).click();
 
   const filename =
@@ -234,6 +251,15 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
   ).toBeVisible();
   await expect(page.getByRole('application')).toHaveCount(0);
   await expect(page.getByRole('dialog')).toHaveCount(0);
+  const inspector = page.getByLabel('Model properties');
+  await expect(
+    inspector.getByLabel('Model tags').getByText('e2e'),
+  ).toBeVisible();
+  await expect(
+    inspector
+      .getByLabel('Collections')
+      .getByRole('checkbox', { name: /E2E fixtures/ }),
+  ).toBeChecked();
 
   await expect
     .poll(() =>

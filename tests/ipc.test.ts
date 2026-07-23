@@ -57,6 +57,58 @@ describe('ipc contract', () => {
     ).toThrow();
   });
 
+  it('accepts a folder-aware import preview', () => {
+    const value = ipcSchemas[IpcChannel.PreviewImport].response.parse({
+      modelCount: 3,
+      totalBytes: 4096,
+      skippedErrors: 0,
+      formats: { stl: 1, threeMf: 1, obj: 1 },
+      folders: [
+        {
+          relativePath: 'Animals/Cats',
+          name: 'Cats',
+          depth: 2,
+          modelCount: 1,
+        },
+      ],
+      foldersTruncated: false,
+    });
+
+    expect(value.formats.threeMf).toBe(1);
+    expect(value.folders[0]?.relativePath).toBe('Animals/Cats');
+  });
+
+  it('validates confirmed import rules', () => {
+    const value = ipcSchemas[IpcChannel.ImportRoot].request.parse({
+      rootId: 'root-1',
+      path: 'C:\\models',
+      rules: [
+        {
+          relativePath: 'Animals',
+          kind: 'collection',
+          name: 'Animals',
+        },
+      ],
+      commonTags: ['printable'],
+    });
+
+    expect(value.rules).toHaveLength(1);
+    expect(() =>
+      ipcSchemas[IpcChannel.ImportRoot].request.parse({
+        rootId: 'root-1',
+        path: 'C:\\models',
+        rules: [
+          {
+            relativePath: 'Animals',
+            kind: 'tag',
+            name: '   ',
+          },
+        ],
+        commonTags: [],
+      }),
+    ).toThrow();
+  });
+
   it('accepts a valid scene response', () => {
     const value = ipcSchemas[IpcChannel.LoadScene].response.parse({
       positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],

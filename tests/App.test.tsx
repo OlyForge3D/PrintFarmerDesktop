@@ -13,6 +13,7 @@ import type {
   LogicalModel,
   PrintFarmerApi,
 } from '@shared/ipc';
+import { rootIdForPath } from '../src/renderer/library/model.js';
 
 vi.mock('../src/renderer/viewer/PreviewWorkspace.js', () => ({
   PreviewWorkspace: ({
@@ -140,6 +141,116 @@ describe('<App />', () => {
       path: 'C:\\models\\project.3mf',
     });
     expect(loadScene).not.toHaveBeenCalled();
+  });
+
+  it('previews folder rules before confirming a smart import', async () => {
+    const selectedPath = 'C:\\SmartImportRoot';
+    const previewImport = vi.fn().mockResolvedValue({
+      modelCount: 2,
+      totalBytes: 3072,
+      skippedErrors: 0,
+      formats: { stl: 1, threeMf: 1, obj: 0 },
+      folders: [
+        {
+          relativePath: 'Cats',
+          name: 'Cats',
+          depth: 1,
+          modelCount: 2,
+        },
+        {
+          relativePath: 'Cats/Articulated',
+          name: 'Articulated',
+          depth: 2,
+          modelCount: 1,
+        },
+      ],
+      foldersTruncated: false,
+    });
+    const importRoot = vi.fn().mockResolvedValue({
+      report: {
+        added: 2,
+        changed: 0,
+        unchanged: 0,
+        missing: 0,
+        hashErrors: 0,
+      },
+      modelsOrganized: 2,
+      collectionsCreated: 2,
+      collectionAssignments: 4,
+      tagAssignments: 3,
+    });
+    const scanRoot = vi.fn();
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 1,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([]),
+      openFolder: vi.fn().mockResolvedValue({ path: selectedPath }),
+      previewImport,
+      importRoot,
+      scanRoot,
+      listCollections: vi.fn().mockResolvedValue([]),
+      listTags: vi.fn().mockResolvedValue([]),
+    });
+
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Add your first folder' }),
+    );
+
+    expect(
+      await screen.findByRole('dialog', {
+        name: 'Organize models before importing',
+      }),
+    ).toBeVisible();
+    expect(previewImport).toHaveBeenCalledWith({ path: selectedPath });
+    expect(scanRoot).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Organization for Cats')).toHaveValue(
+      'collection',
+    );
+    expect(
+      screen.getByLabelText('Organization for Cats/Articulated'),
+    ).toHaveValue('tag');
+
+    fireEvent.change(screen.getByLabelText('Tags for all imported models'), {
+      target: { value: 'printable' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Import 2 files' }));
+
+    await waitFor(() =>
+      expect(importRoot).toHaveBeenCalledWith({
+        rootId: rootIdForPath(selectedPath),
+        path: selectedPath,
+        rules: [
+          {
+            relativePath: '',
+            kind: 'collection',
+            name: 'SmartImportRoot',
+          },
+          {
+            relativePath: 'Cats',
+            kind: 'collection',
+            name: 'Cats',
+          },
+          {
+            relativePath: 'Cats/Articulated',
+            kind: 'tag',
+            name: 'Articulated',
+          },
+        ],
+        commonTags: ['printable'],
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('dialog', {
+          name: 'Organize models before importing',
+        }),
+      ).not.toBeInTheDocument(),
+    );
   });
 
   it('ignores a stale preview failure after another model is opened', async () => {

@@ -1,7 +1,7 @@
 //! Recursive, cancellable folder scanning.
 //!
 //! A scan walks a source root in place and yields the model files it finds
-//! (STL/3MF) together with a cheap fingerprint. It never opens or hashes file
+//! (STL/3MF/OBJ) together with a cheap fingerprint. It never opens or hashes file
 //! contents; hashing is a separate, more expensive step driven by
 //! reconciliation. Unreadable entries are skipped rather than aborting the
 //! whole scan, because network and removable roots routinely surface transient

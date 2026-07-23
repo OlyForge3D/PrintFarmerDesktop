@@ -21,10 +21,14 @@
 //!   [`crate::rpc::ThumbnailDto`] (base64 PNG + pixel dimensions).
 //! - `scanRoot` — params `{"rootId":<string>,"path":<string>}`; scans the folder,
 //!   reconciles it into the catalog, and returns a [`crate::rpc::ReconcileReportDto`].
+//! - `previewImport` — params `{"path":<string>}`; scans cheap file metadata and
+//!   returns folder/count suggestions without mutating the catalog.
+//! - `importRoot` — scans, reconciles, and applies explicit folder organization
+//!   rules in one sidecar request.
 //! - `listModels` — params ignored; returns all catalogued logical models as
 //!   [`crate::rpc::LogicalModelDto`]s.
 //!
-//! Stateful methods (`scanRoot`, `listModels`) read and write a persistent
+//! Stateful catalog methods read and write a persistent
 //! [`crate::catalog::CatalogStore`] threaded through the serve loop. The shipped
 //! binary uses the SQLite store when given `--catalog-db <path>`; otherwise (and
 //! in tests) an ephemeral in-memory store is used.
@@ -39,8 +43,9 @@ use serde_json::Value;
 use crate::catalog::{reconcile_root, CatalogStore, InMemoryCatalog};
 use crate::rpc::{
     extract_vendor_metadata_dto, load_scene_dto, render_thumbnail_dto, CollectionDto,
-    LogicalModelDto, ReconcileReportDto, TagDto,
+    ImportPreviewDto, ImportResultDto, LogicalModelDto, ReconcileReportDto, TagDto,
 };
+use crate::smart_import::{ImportPlan, ImportRuleKind};
 use crate::{sidecar_version, RPC_PROTOCOL_VERSION};
 
 /// A decoded request envelope.
@@ -100,6 +105,41 @@ struct ThumbnailParams {
 struct ScanRootParams {
     root_id: String,
     path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum ImportRuleKindParam {
+    Collection,
+    Tag,
+}
+
+impl From<ImportRuleKindParam> for ImportRuleKind {
+    fn from(value: ImportRuleKindParam) -> Self {
+        match value {
+            ImportRuleKindParam::Collection => Self::Collection,
+            ImportRuleKindParam::Tag => Self::Tag,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportRuleParam {
+    relative_path: String,
+    kind: ImportRuleKindParam,
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportRootParams {
+    root_id: String,
+    path: String,
+    #[serde(default)]
+    rules: Vec<ImportRuleParam>,
+    #[serde(default)]
+    common_tags: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -171,6 +211,36 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             let report = reconcile_root(store, &params.root_id, &scan);
             serde_json::to_value(ReconcileReportDto::from(&report))
                 .map_err(|e| format!("failed to serialize reconcile report: {e}"))
+        }
+        "previewImport" => {
+            let params: PathParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid previewImport params: {e}"))?;
+            let scan =
+                crate::scan::scan_root(&PathBuf::from(&params.path), &AtomicBool::new(false));
+            let preview = crate::smart_import::preview_scan(&scan);
+            serde_json::to_value(ImportPreviewDto::from(&preview))
+                .map_err(|e| format!("failed to serialize import preview: {e}"))
+        }
+        "importRoot" => {
+            let params: ImportRootParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid importRoot params: {e}"))?;
+            let plan = ImportPlan::new(
+                params.rules.into_iter().map(|rule| {
+                    (
+                        rule.relative_path,
+                        ImportRuleKind::from(rule.kind),
+                        rule.name,
+                    )
+                }),
+                params.common_tags,
+            )
+            .map_err(|e| format!("invalid import plan: {e}"))?;
+            let scan =
+                crate::scan::scan_root(&PathBuf::from(&params.path), &AtomicBool::new(false));
+            let result = crate::smart_import::import_root(store, &params.root_id, &scan, &plan)
+                .map_err(|e| format!("failed to import root: {e}"))?;
+            serde_json::to_value(ImportResultDto::from(&result))
+                .map_err(|e| format!("failed to serialize import result: {e}"))
         }
         "listModels" => {
             let models: Vec<LogicalModelDto> =
@@ -655,5 +725,91 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("invalid scanRoot params"));
+    }
+
+    #[test]
+    fn previews_import_without_mutating_the_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Animals/Cats")).unwrap();
+        std::fs::write(dir.path().join("Animals/Cats/cat.stl"), b"cat").unwrap();
+        std::fs::write(dir.path().join("Animals/dog.3mf"), b"dog").unwrap();
+        let mut store = InMemoryCatalog::new();
+
+        let request = serde_json::json!({
+            "id": 20,
+            "method": "previewImport",
+            "params": { "path": dir.path().to_string_lossy() },
+        });
+        let out = handle_line(&mut store, &request.to_string()).unwrap();
+        let value: Value = serde_json::from_str(&out).unwrap();
+
+        assert_eq!(value["ok"], true, "preview response was {value}");
+        assert_eq!(value["result"]["modelCount"], 2);
+        assert_eq!(value["result"]["formats"]["stl"], 1);
+        assert_eq!(value["result"]["formats"]["threeMf"], 1);
+        assert_eq!(value["result"]["folders"][0]["relativePath"], "Animals");
+        assert!(store.models().is_empty());
+    }
+
+    #[test]
+    fn imports_and_organizes_folder_rules_over_the_wire() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Animals/Cats")).unwrap();
+        std::fs::write(dir.path().join("Animals/Cats/cat.stl"), b"cat").unwrap();
+        let mut store = InMemoryCatalog::new();
+
+        let request = serde_json::json!({
+            "id": 21,
+            "method": "importRoot",
+            "params": {
+                "rootId": "pets",
+                "path": dir.path().to_string_lossy(),
+                "rules": [
+                    { "relativePath": "", "kind": "collection", "name": "My Models" },
+                    { "relativePath": "Animals/Cats", "kind": "tag", "name": "cat" }
+                ],
+                "commonTags": ["printable"]
+            },
+        });
+        let out = handle_line(&mut store, &request.to_string()).unwrap();
+        let value: Value = serde_json::from_str(&out).unwrap();
+
+        assert_eq!(value["ok"], true, "import response was {value}");
+        assert_eq!(value["result"]["report"]["added"], 1);
+        assert_eq!(value["result"]["modelsOrganized"], 1);
+        assert_eq!(value["result"]["collectionsCreated"], 1);
+        assert_eq!(value["result"]["collectionAssignments"], 1);
+        assert_eq!(value["result"]["tagAssignments"], 2);
+        let imported = store.models().pop().unwrap();
+        assert_eq!(store.collections_for_model(&imported.hash).len(), 1);
+        assert_eq!(store.tags_for_model(&imported.hash).len(), 2);
+    }
+
+    #[test]
+    fn rejects_unsafe_import_rules_before_scanning() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("part.stl"), b"part").unwrap();
+        let mut store = InMemoryCatalog::new();
+        let request = serde_json::json!({
+            "id": 22,
+            "method": "importRoot",
+            "params": {
+                "rootId": "root",
+                "path": dir.path().to_string_lossy(),
+                "rules": [
+                    { "relativePath": "../outside", "kind": "tag", "name": "bad" }
+                ]
+            },
+        });
+
+        let out = handle_line(&mut store, &request.to_string()).unwrap();
+        let value: Value = serde_json::from_str(&out).unwrap();
+
+        assert_eq!(value["ok"], false);
+        assert!(value["error"]
+            .as_str()
+            .unwrap()
+            .contains("invalid import plan"));
+        assert!(store.models().is_empty());
     }
 }

@@ -107,6 +107,30 @@ export class SidecarClient {
     return this.request('scanRoot', { rootId, path });
   }
 
+  /** Inspect a folder's model hierarchy without mutating the catalog. */
+  async previewImport(path: string): Promise<unknown> {
+    return this.request('previewImport', { path });
+  }
+
+  /** Reconcile a folder and apply its confirmed organization rules. */
+  async importRoot(
+    rootId: string,
+    path: string,
+    rules: Array<{
+      relativePath: string;
+      kind: 'collection' | 'tag';
+      name: string;
+    }>,
+    commonTags: string[],
+  ): Promise<unknown> {
+    return this.request('importRoot', {
+      rootId,
+      path,
+      rules,
+      commonTags,
+    });
+  }
+
   /** List every logical model known to the catalog (raw wire array). */
   async listModels(): Promise<unknown> {
     return this.request('listModels', {});
