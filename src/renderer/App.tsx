@@ -254,17 +254,16 @@ export function App(): React.JSX.Element {
   const confirmImport = useCallback(
     async (plan: ImportPlan, remember: boolean): Promise<boolean> => {
       const rootId = importRootId;
-      const succeeded = await commitFolderImport({
+      const result = await commitFolderImport({
         rules: plan.rules,
         commonTags: plan.commonTags,
       });
-      if (succeeded && rootId) {
+      if (result && rootId) {
         if (remember) {
-          rememberImportPlan(rootId, plan);
+          rememberImportPlan(rootId, plan, result.resolvedCollections);
         } else {
           forgetImportPlan(rootId);
         }
-        await Promise.all([modelTags.refresh(), modelCollections.refresh()]);
         queueMicrotask(() => {
           const previous = importReturnFocusRef.current;
           const fallback = document.querySelector<HTMLElement>(
@@ -272,8 +271,9 @@ export function App(): React.JSX.Element {
           );
           (previous?.isConnected ? previous : fallback)?.focus();
         });
+        await Promise.all([modelTags.refresh(), modelCollections.refresh()]);
       }
-      return succeeded;
+      return result !== null;
     },
     [commitFolderImport, importRootId, modelCollections, modelTags],
   );

@@ -7,7 +7,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 
-use crate::catalog::{normalize_tag, reconcile_root, CatalogStore, ReconcileReport};
+use crate::catalog::{
+    hash_changed_files, normalize_tag, reconcile_root_with_hashes, CatalogStore, ReconcileReport,
+};
 use crate::model::ModelFormat;
 use crate::scan::ScanResult;
 
@@ -113,6 +115,14 @@ pub struct ImportResult {
     pub collections_created: usize,
     pub collection_assignments: usize,
     pub tag_assignments: usize,
+    pub resolved_collections: Vec<ResolvedImportCollection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedImportCollection {
+    pub relative_path: PathBuf,
+    pub name: String,
+    pub collection_id: String,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -138,6 +148,10 @@ pub enum ImportError {
     UnknownCollection { id: String },
     #[error("collection name '{name}' matches {matches} collections; select one by id")]
     AmbiguousCollectionName { name: String, matches: usize },
+    #[error("failed to hash {errors} model files; the catalog was not changed")]
+    HashFailures { errors: usize },
+    #[error("catalog transaction failed: {0}")]
+    CatalogTransaction(String),
     #[error("failed to assign model '{hash}' to collection '{collection}'")]
     CollectionAssignment { hash: String, collection: String },
     #[error("failed to assign tag '{tag}' to model '{hash}'")]
@@ -231,119 +245,167 @@ pub fn import_root(
             cancelled: scan.cancelled,
         });
     }
-    let rules_by_path = resolved_rules_by_path(store, &plan.rules)?;
-    let report = reconcile_root(store, root_id, scan);
-    let models = store.models();
-    let mut created_collection_ids = HashMap::<String, String>::new();
+    let resolved_rules = resolved_rules(store, &plan.rules)?;
+    let (hashes, hash_errors) = hash_changed_files(store, root_id, scan);
+    if hash_errors > 0 {
+        return Err(ImportError::HashFailures {
+            errors: hash_errors,
+        });
+    }
+    store
+        .begin_batch()
+        .map_err(ImportError::CatalogTransaction)?;
 
-    let mut result = ImportResult {
-        report,
-        models_organized: 0,
-        collections_created: 0,
-        collection_assignments: 0,
-        tag_assignments: 0,
-    };
-
-    for model in models {
-        let relevant_locations: Vec<_> = model
-            .locations
-            .iter()
-            .filter(|location| location.root_id == root_id && location.available)
-            .collect();
-        if relevant_locations.is_empty() {
-            continue;
+    let outcome = (|| {
+        let report = reconcile_root_with_hashes(store, root_id, scan, &hashes);
+        if report.hash_errors > 0 {
+            return Err(ImportError::HashFailures {
+                errors: report.hash_errors,
+            });
         }
+        let models = store.models();
+        let mut created_collection_ids = HashMap::<String, String>::new();
 
-        let mut collection_targets = BTreeMap::<String, ResolvedCollectionTarget>::new();
-        let mut tag_names = BTreeMap::<String, String>::new();
-        for tag in &plan.common_tags {
-            tag_names
-                .entry(tag.to_lowercase())
-                .or_insert_with(|| tag.clone());
-        }
+        let mut result = ImportResult {
+            report,
+            models_organized: 0,
+            collections_created: 0,
+            collection_assignments: 0,
+            tag_assignments: 0,
+            resolved_collections: Vec::new(),
+        };
 
-        for location in relevant_locations {
-            let mut folder = location.root_relative.parent();
-            loop {
-                let current = folder.unwrap_or_else(|| Path::new(""));
-                if let Some(rules) = rules_by_path.get(current) {
-                    for rule in rules {
-                        match rule {
-                            ResolvedRule::Collection(target) => {
-                                collection_targets
-                                    .entry(target.key.clone())
-                                    .or_insert_with(|| target.clone());
-                            }
-                            ResolvedRule::Tag(name) => {
-                                tag_names
-                                    .entry(name.to_lowercase())
-                                    .or_insert_with(|| name.clone());
+        for model in models {
+            let relevant_locations: Vec<_> = model
+                .locations
+                .iter()
+                .filter(|location| location.root_id == root_id && location.available)
+                .collect();
+            if relevant_locations.is_empty() {
+                continue;
+            }
+
+            let mut collection_targets = BTreeMap::<String, ResolvedCollectionTarget>::new();
+            let mut tag_names = BTreeMap::<String, String>::new();
+            for tag in &plan.common_tags {
+                tag_names
+                    .entry(tag.to_lowercase())
+                    .or_insert_with(|| tag.clone());
+            }
+
+            for location in relevant_locations {
+                let mut folder = location.root_relative.parent();
+                loop {
+                    let current = folder.unwrap_or_else(|| Path::new(""));
+                    if let Some(rules) = resolved_rules.by_path.get(current) {
+                        for rule in rules {
+                            match rule {
+                                ResolvedRule::Collection(target) => {
+                                    collection_targets
+                                        .entry(target.key.clone())
+                                        .or_insert_with(|| target.clone());
+                                }
+                                ResolvedRule::Tag(name) => {
+                                    tag_names
+                                        .entry(name.to_lowercase())
+                                        .or_insert_with(|| name.clone());
+                                }
                             }
                         }
                     }
-                }
-                if current.as_os_str().is_empty() {
-                    break;
-                }
-                folder = current.parent();
-            }
-        }
-
-        if collection_targets.is_empty() && tag_names.is_empty() {
-            continue;
-        }
-        result.models_organized += 1;
-
-        let existing_collection_ids: BTreeSet<String> = store
-            .collections_for_model(&model.hash)
-            .into_iter()
-            .map(|collection| collection.id)
-            .collect();
-        for (key, target) in collection_targets {
-            let collection_id = if let Some(id) = &target.id {
-                id.clone()
-            } else if let Some(id) = created_collection_ids.get(&key) {
-                id.clone()
-            } else {
-                let created = store
-                    .create_collection(&target.name)
-                    .ok_or(ImportError::InvalidName)?;
-                result.collections_created += 1;
-                created_collection_ids.insert(key, created.id.clone());
-                created.id
-            };
-            if !existing_collection_ids.contains(&collection_id) {
-                if !store.add_model_to_collection(&collection_id, &model.hash) {
-                    return Err(ImportError::CollectionAssignment {
-                        hash: model.hash,
-                        collection: target.name,
-                    });
-                }
-                result.collection_assignments += 1;
-            }
-        }
-
-        let existing_tag_ids: BTreeSet<String> = store
-            .tags_for_model(&model.hash)
-            .into_iter()
-            .map(|tag| tag.id)
-            .collect();
-        for (key, name) in tag_names {
-            let tag_id = normalize_tag(&name).ok_or(ImportError::InvalidName)?.id;
-            if !existing_tag_ids.contains(&tag_id) {
-                store.add_model_tag(&model.hash, &name).ok_or_else(|| {
-                    ImportError::TagAssignment {
-                        hash: model.hash.clone(),
-                        tag: name.clone(),
+                    if current.as_os_str().is_empty() {
+                        break;
                     }
-                })?;
-                result.tag_assignments += 1;
+                    folder = current.parent();
+                }
             }
-            debug_assert_eq!(key, tag_id);
+
+            if collection_targets.is_empty() && tag_names.is_empty() {
+                continue;
+            }
+            result.models_organized += 1;
+
+            let existing_collection_ids: BTreeSet<String> = store
+                .collections_for_model(&model.hash)
+                .into_iter()
+                .map(|collection| collection.id)
+                .collect();
+            for (key, target) in collection_targets {
+                let collection_id = if let Some(id) = &target.id {
+                    id.clone()
+                } else if let Some(id) = created_collection_ids.get(&key) {
+                    id.clone()
+                } else {
+                    let created = store
+                        .create_collection(&target.name)
+                        .ok_or(ImportError::InvalidName)?;
+                    result.collections_created += 1;
+                    created_collection_ids.insert(key, created.id.clone());
+                    created.id
+                };
+                if !existing_collection_ids.contains(&collection_id) {
+                    if !store.add_model_to_collection(&collection_id, &model.hash) {
+                        return Err(ImportError::CollectionAssignment {
+                            hash: model.hash,
+                            collection: target.name,
+                        });
+                    }
+                    result.collection_assignments += 1;
+                }
+            }
+
+            let existing_tag_ids: BTreeSet<String> = store
+                .tags_for_model(&model.hash)
+                .into_iter()
+                .map(|tag| tag.id)
+                .collect();
+            for (key, name) in tag_names {
+                let tag_id = normalize_tag(&name).ok_or(ImportError::InvalidName)?.id;
+                if !existing_tag_ids.contains(&tag_id) {
+                    store.add_model_tag(&model.hash, &name).ok_or_else(|| {
+                        ImportError::TagAssignment {
+                            hash: model.hash.clone(),
+                            tag: name.clone(),
+                        }
+                    })?;
+                    result.tag_assignments += 1;
+                }
+                debug_assert_eq!(key, tag_id);
+            }
+        }
+
+        result.resolved_collections = resolved_rules
+            .collection_rules
+            .iter()
+            .filter_map(|(relative_path, target)| {
+                let collection_id = target
+                    .id
+                    .clone()
+                    .or_else(|| created_collection_ids.get(&target.key).cloned())?;
+                Some(ResolvedImportCollection {
+                    relative_path: relative_path.clone(),
+                    name: target.name.clone(),
+                    collection_id,
+                })
+            })
+            .collect();
+        Ok(result)
+    })();
+
+    match outcome {
+        Ok(result) => {
+            if let Err(error) = store.commit_batch() {
+                store.rollback_batch();
+                Err(ImportError::CatalogTransaction(error))
+            } else {
+                Ok(result)
+            }
+        }
+        Err(error) => {
+            store.rollback_batch();
+            Err(error)
         }
     }
-
-    Ok(result)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -359,12 +421,18 @@ enum ResolvedRule {
     Tag(String),
 }
 
-fn resolved_rules_by_path(
+struct ResolvedRules {
+    by_path: HashMap<PathBuf, Vec<ResolvedRule>>,
+    collection_rules: Vec<(PathBuf, ResolvedCollectionTarget)>,
+}
+
+fn resolved_rules(
     store: &dyn CatalogStore,
     rules: &[ImportRule],
-) -> Result<HashMap<PathBuf, Vec<ResolvedRule>>, ImportError> {
+) -> Result<ResolvedRules, ImportError> {
     let collections = store.all_collections();
-    let mut result: HashMap<PathBuf, Vec<ResolvedRule>> = HashMap::new();
+    let mut by_path: HashMap<PathBuf, Vec<ResolvedRule>> = HashMap::new();
+    let mut collection_rules = Vec::new();
     for rule in rules {
         let resolved = match rule.kind {
             ImportRuleKind::Tag => ResolvedRule::Tag(rule.name.clone()),
@@ -405,15 +473,19 @@ fn resolved_rules_by_path(
                         }
                     }
                 };
+                collection_rules.push((rule.relative_path.clone(), target.clone()));
                 ResolvedRule::Collection(target)
             }
         };
-        result
+        by_path
             .entry(rule.relative_path.clone())
             .or_default()
             .push(resolved);
     }
-    Ok(result)
+    Ok(ResolvedRules {
+        by_path,
+        collection_rules,
+    })
 }
 
 #[cfg(test)]
@@ -516,6 +588,11 @@ mod tests {
         assert_eq!(result.collections_created, 2);
         assert_eq!(result.collection_assignments, 4);
         assert_eq!(result.tag_assignments, 3);
+        assert_eq!(result.resolved_collections.len(), 2);
+        assert!(result
+            .resolved_collections
+            .iter()
+            .all(|collection| collection.collection_id.starts_with("col-")));
         let models = store.models();
         let cat = models
             .iter()
@@ -605,6 +682,30 @@ mod tests {
     }
 
     #[test]
+    fn hash_failure_aborts_before_any_catalog_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("existing.stl"), b"existing");
+        let initial_scan = scan_root(dir.path(), &AtomicBool::new(false));
+        let mut store = InMemoryCatalog::new();
+        let empty_plan = ImportPlan::new([], []).unwrap();
+        import_root(&mut store, "root", &initial_scan, &empty_plan).unwrap();
+
+        let disappearing = dir.path().join("new.stl");
+        write(&disappearing, b"new");
+        let next_scan = scan_root(dir.path(), &AtomicBool::new(false));
+        fs::remove_file(disappearing).unwrap();
+        let tagged_plan = ImportPlan::new([], ["should-not-apply".to_string()]).unwrap();
+
+        assert_eq!(
+            import_root(&mut store, "root", &next_scan, &tagged_plan),
+            Err(ImportError::HashFailures { errors: 1 })
+        );
+        assert_eq!(store.models().len(), 1);
+        assert!(store.models()[0].locations[0].available);
+        assert!(store.all_tags().is_empty());
+    }
+
+    #[test]
     fn duplicate_collection_names_require_an_explicit_id() {
         let dir = tempfile::tempdir().unwrap();
         write(&dir.path().join("Parts/a.stl"), b"a");
@@ -642,9 +743,10 @@ mod tests {
             [],
         )
         .unwrap();
-        import_root(&mut store, "root", &scan, &explicit).unwrap();
+        let result = import_root(&mut store, "root", &scan, &explicit).unwrap();
         let model = store.models().pop().unwrap();
         assert_eq!(store.collections_for_model(&model.hash)[0].id, selected.id);
+        assert_eq!(result.resolved_collections[0].collection_id, selected.id);
     }
 
     #[cfg(feature = "sqlite")]

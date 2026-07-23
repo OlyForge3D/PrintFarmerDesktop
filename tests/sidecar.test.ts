@@ -235,6 +235,7 @@ describe('SidecarClient', () => {
             collectionsCreated: 1,
             collectionAssignments: 2,
             tagAssignments: 2,
+            resolvedCollections: [],
           },
         }),
       );
@@ -264,17 +265,14 @@ describe('SidecarClient', () => {
     });
   });
 
-  it('does not report a mutating import as failed while it is still running', async () => {
+  it('uses a longer mutation watchdog and terminates a stuck import', async () => {
     vi.useFakeTimers();
     try {
-      let requestId = 0;
-      let emitResponse: ((line: string) => void) | undefined;
-      const { channel } = makeFakeChannel((req, emit) => {
-        requestId = req.id;
-        emitResponse = emit;
-      });
+      const { channel } = makeFakeChannel(() => undefined);
+      const close = vi.spyOn(channel, 'close');
       const client = new SidecarClient(() => channel, {
         requestTimeoutMs: 10,
+        mutationTimeoutMs: 100,
       });
       let settled = false;
       const pending = client.importRoot('root1', 'C:/models', [], []);
@@ -288,29 +286,15 @@ describe('SidecarClient', () => {
       );
       vi.runAllTicks();
 
-      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(50);
       expect(settled).toBe(false);
 
-      emitResponse?.(
-        JSON.stringify({
-          id: requestId,
-          ok: true,
-          result: {
-            report: {
-              added: 0,
-              changed: 0,
-              unchanged: 0,
-              missing: 0,
-              hashErrors: 0,
-            },
-            modelsOrganized: 0,
-            collectionsCreated: 0,
-            collectionAssignments: 0,
-            tagAssignments: 0,
-          },
-        }),
+      const rejection = expect(pending).rejects.toThrow(
+        "sidecar request 'importRoot' timed out; the sidecar was terminated",
       );
-      await expect(pending).resolves.toMatchObject({ modelsOrganized: 0 });
+      await vi.advanceTimersByTimeAsync(50);
+      await rejection;
+      expect(close).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

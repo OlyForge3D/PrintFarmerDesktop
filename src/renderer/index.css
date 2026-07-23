@@ -881,18 +881,27 @@ select:disabled {
 
 .import-root-rule {
   display: grid;
-  grid-template-columns: auto minmax(170px, auto) minmax(200px, 1fr);
+  grid-template-columns: minmax(190px, auto) minmax(160px, 210px) minmax(
+      240px,
+      1fr
+    );
   align-items: center;
   gap: 9px;
   padding: 12px 13px 7px;
   color: var(--muted);
 }
 
+.import-root-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
 .import-root-rule > input[type='text'],
 .import-common-tags input,
 .import-rule-row input,
 .import-rule-row select,
-.import-collection-choice select {
+.import-collection-target {
   height: 30px;
   min-width: 0;
   border: 1px solid var(--border);
@@ -933,7 +942,9 @@ select:disabled {
 
 .import-rule-row {
   display: grid;
-  grid-template-columns: minmax(240px, 1fr) 120px minmax(150px, 210px);
+  grid-template-columns:
+    minmax(210px, 1fr) 105px minmax(135px, 180px)
+    minmax(210px, 250px);
   align-items: center;
   gap: 9px;
   min-height: 42px;
@@ -945,20 +956,7 @@ select:disabled {
   border-bottom: 0;
 }
 
-.import-collection-choice {
-  display: grid;
-  gap: 4px;
-  padding: 0 13px 8px 35px;
-  color: var(--danger);
-  font-size: 10px;
-}
-
-.import-rule-row .import-collection-choice {
-  grid-column: 3;
-  padding: 0 0 4px;
-}
-
-.import-collection-choice select {
+.import-collection-target {
   padding: 0 22px 0 7px;
 }
 

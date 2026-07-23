@@ -38,7 +38,7 @@ export interface Library {
   /** Reconcile and organize the prepared folder using the confirmed rules. */
   confirmImport: (
     plan: Pick<ImportRootRequest, 'rules' | 'commonTags'>,
-  ) => Promise<boolean>;
+  ) => Promise<ImportRootResponse | null>;
   /** Close the import preview without changing the catalog. */
   cancelImport: () => void;
   /** Re-read the catalog without scanning. */
@@ -118,14 +118,14 @@ export function useLibrary(): Library {
   const confirmImport = useCallback(
     async (
       plan: Pick<ImportRootRequest, 'rules' | 'commonTags'>,
-    ): Promise<boolean> => {
+    ): Promise<ImportRootResponse | null> => {
       if (!importDraft) {
         setError('No folder is ready to import.');
-        return false;
+        return null;
       }
       if (importInFlightRef.current) {
         setError('An import operation is already in progress.');
-        return false;
+        return null;
       }
       importInFlightRef.current = true;
       setError(null);
@@ -139,7 +139,6 @@ export function useLibrary(): Library {
         });
         setLastImport(result);
         setLastReport(result.report);
-        setImportDraft(null);
         try {
           setModels(await window.printFarmer.listModels());
         } catch (refreshError: unknown) {
@@ -147,10 +146,19 @@ export function useLibrary(): Library {
             `Import completed, but the catalog could not be refreshed: ${messageOf(refreshError)}`,
           );
         }
-        return true;
+        setImportDraft(null);
+        return result;
       } catch (err: unknown) {
-        setError(messageOf(err));
-        return false;
+        const importError = messageOf(err);
+        try {
+          setModels(await window.printFarmer.listModels());
+          setError(importError);
+        } catch (refreshError: unknown) {
+          setError(
+            `${importError} Catalog refresh also failed: ${messageOf(refreshError)}`,
+          );
+        }
+        return null;
       } finally {
         importInFlightRef.current = false;
         setScanningPath(null);

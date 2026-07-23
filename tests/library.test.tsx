@@ -7,7 +7,11 @@ import {
   screen,
   waitFor,
 } from '@testing-library/react';
-import type { LogicalModel, PrintFarmerApi } from '@shared/ipc';
+import type {
+  ImportRootResponse,
+  LogicalModel,
+  PrintFarmerApi,
+} from '@shared/ipc';
 import { useLibrary } from '../src/renderer/library/useLibrary.js';
 import { ModelGrid } from '../src/renderer/library/ModelGrid.js';
 import { PropertiesInspector } from '../src/renderer/library/PropertiesInspector.js';
@@ -166,6 +170,7 @@ describe('useLibrary', () => {
       collectionsCreated: 1,
       collectionAssignments: 1,
       tagAssignments: 1,
+      resolvedCollections: [],
     });
     const listModels = vi
       .fn()
@@ -240,6 +245,7 @@ describe('useLibrary', () => {
         collectionsCreated: 0,
         collectionAssignments: 0,
         tagAssignments: 0,
+        resolvedCollections: [],
       }),
       listModels,
       listCollections: vi.fn().mockResolvedValue([]),
@@ -249,20 +255,63 @@ describe('useLibrary', () => {
     await waitFor(() => expect(listModels).toHaveBeenCalledTimes(1));
     await act(async () => result.current.addFolder());
 
-    let succeeded = false;
+    let completed: ImportRootResponse | null = null;
     await act(async () => {
-      succeeded = await result.current.confirmImport({
+      completed = await result.current.confirmImport({
         rules: [],
         commonTags: [],
       });
     });
 
-    expect(succeeded).toBe(true);
+    expect(completed).not.toBeNull();
     expect(result.current.importDraft).toBeNull();
     expect(result.current.lastImport?.report.added).toBe(1);
     expect(result.current.error).toContain(
       'Import completed, but the catalog could not be refreshed: refresh offline',
     );
+  });
+
+  it('refreshes the catalog after an interrupted import outcome', async () => {
+    const listModels = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([model()]);
+    installApi({
+      openFolder: vi.fn().mockResolvedValue({ path: 'C:\\models' }),
+      previewImport: vi.fn().mockResolvedValue({
+        modelCount: 1,
+        totalBytes: 1,
+        skippedErrors: 0,
+        complete: true,
+        formats: { stl: 1, threeMf: 0, obj: 0 },
+        folders: [],
+        foldersTruncated: false,
+      }),
+      importRoot: vi
+        .fn()
+        .mockRejectedValue(
+          new Error('sidecar was terminated; refresh the catalog'),
+        ),
+      listModels,
+      listCollections: vi.fn().mockResolvedValue([]),
+      listTags: vi.fn().mockResolvedValue([]),
+    });
+    const { result } = renderHook(() => useLibrary());
+    await waitFor(() => expect(listModels).toHaveBeenCalledTimes(1));
+    await act(async () => result.current.addFolder());
+
+    let completed: ImportRootResponse | null = null;
+    await act(async () => {
+      completed = await result.current.confirmImport({
+        rules: [],
+        commonTags: [],
+      });
+    });
+
+    expect(completed).toBeNull();
+    expect(result.current.models).toHaveLength(1);
+    expect(result.current.importDraft).not.toBeNull();
+    expect(result.current.error).toContain('sidecar was terminated');
   });
 
   it('allows an empty completed source to reconcile missing locations', async () => {
@@ -278,6 +327,7 @@ describe('useLibrary', () => {
       collectionsCreated: 0,
       collectionAssignments: 0,
       tagAssignments: 0,
+      resolvedCollections: [],
     });
     installApi({
       openFolder: vi.fn().mockResolvedValue({ path: 'C:\\empty' }),
@@ -346,6 +396,7 @@ describe('useLibrary', () => {
       collectionsCreated: 0,
       collectionAssignments: 0,
       tagAssignments: 0,
+      resolvedCollections: [],
     };
     let finishImport!: (value: typeof importResult) => void;
     const importPromise = new Promise<typeof importResult>((resolve) => {
@@ -378,7 +429,7 @@ describe('useLibrary', () => {
     await act(async () => {
       await result.current.addFolder();
     });
-    let confirmPromise: Promise<boolean> | undefined;
+    let confirmPromise: Promise<ImportRootResponse | null> | undefined;
     await act(async () => {
       confirmPromise = result.current.confirmImport({
         rules: [],
@@ -488,6 +539,7 @@ describe('smart import', () => {
       ],
       ignoredPaths: [],
       commonTags: ['printable'],
+      visibleFolderPaths: ['Animals', 'Animals/Cats'],
     });
 
     const choices = initialImportChoices(draft.rootId, 'Models', draft.preview);
@@ -505,12 +557,65 @@ describe('smart import', () => {
       rules: [],
       ignoredPaths: ['Animals'],
       commonTags: [],
+      visibleFolderPaths: ['Animals', 'Animals/Cats'],
     });
 
     const choices = initialImportChoices(draft.rootId, 'Models', draft.preview);
 
     expect(choices.folders[0]?.mode).toBe('ignore');
     expect(buildImportPlan(choices).ignoredPaths).toContain('Animals');
+  });
+
+  it('preserves remembered rules for folders absent from an empty preview', () => {
+    rememberImportPlan(draft.rootId, {
+      rules: [
+        {
+          relativePath: 'Animals/Cats',
+          kind: 'tag',
+          name: 'feline',
+        },
+      ],
+      ignoredPaths: ['Animals'],
+      commonTags: ['printable'],
+      visibleFolderPaths: ['Animals', 'Animals/Cats'],
+    });
+    rememberImportPlan(draft.rootId, {
+      rules: [
+        {
+          relativePath: '',
+          kind: 'collection',
+          name: 'Models',
+        },
+      ],
+      ignoredPaths: [],
+      commonTags: ['printable'],
+      visibleFolderPaths: [],
+    });
+
+    const choices = initialImportChoices(draft.rootId, 'Models', draft.preview);
+
+    expect(choices.folders[0]?.mode).toBe('ignore');
+    expect(choices.folders[1]).toMatchObject({
+      mode: 'tag',
+      name: 'feline',
+    });
+  });
+
+  it('remembers collection identities resolved by the import', () => {
+    const plan = buildImportPlan(
+      initialImportChoices(draft.rootId, 'Models', draft.preview),
+    );
+    rememberImportPlan(draft.rootId, plan, [
+      {
+        relativePath: 'Animals',
+        name: 'Animals',
+        collectionId: 'collection-animals',
+      },
+    ]);
+
+    const choices = initialImportChoices(draft.rootId, 'Models', draft.preview);
+
+    expect(choices.folders[0]?.collectionId).toBe('collection-animals');
   });
 
   it('shows the hierarchy and submits reviewed organization rules', async () => {
@@ -563,6 +668,7 @@ describe('smart import', () => {
           ],
           ignoredPaths: [],
           commonTags: ['printable', 'terrain'],
+          visibleFolderPaths: ['Animals', 'Animals/Cats'],
         },
         true,
       ),
@@ -625,9 +731,15 @@ describe('smart import', () => {
     expect(
       screen.getByRole('button', { name: 'Import 3 files' }),
     ).toBeDisabled();
-    fireEvent.change(screen.getByLabelText('Choose collection for Animals'), {
+    const picker = screen.getByLabelText('Choose collection for Animals');
+    picker.focus();
+    fireEvent.change(picker, {
       target: { value: 'collection-two' },
     });
+    expect(screen.getByLabelText('Choose collection for Animals')).toHaveValue(
+      'collection-two',
+    );
+    expect(document.activeElement).toBe(picker);
     fireEvent.click(screen.getByRole('button', { name: 'Import 3 files' }));
 
     await waitFor(() => expect(onConfirm).toHaveBeenCalled());
@@ -638,6 +750,55 @@ describe('smart import', () => {
       collectionId: 'collection-two',
     });
     expect(onConfirm.mock.calls[0]?.[1]).toBe(true);
+  });
+
+  it('requires confirmation when a remembered collection id is gone', () => {
+    rememberImportPlan(draft.rootId, {
+      rules: [
+        {
+          relativePath: 'Animals',
+          kind: 'collection',
+          name: 'Animals',
+          collectionId: 'deleted-collection',
+        },
+      ],
+      ignoredPaths: [],
+      commonTags: [],
+      visibleFolderPaths: ['Animals', 'Animals/Cats'],
+    });
+    render(
+      <ImportWizard
+        draft={{
+          ...draft,
+          collections: [
+            {
+              id: 'replacement-collection',
+              name: 'Animals',
+              sharedToFarm: false,
+              memberCount: 3,
+            },
+          ],
+        }}
+        busy={false}
+        error={null}
+        onCancel={vi.fn()}
+        onConfirm={vi.fn().mockResolvedValue(true)}
+      />,
+    );
+
+    const picker = screen.getByLabelText('Choose collection for Animals');
+    expect(picker).toHaveValue('__unresolved__');
+    expect(picker).toHaveAttribute('aria-invalid', 'true');
+    expect(
+      screen.getByRole('button', { name: 'Import 3 files' }),
+    ).toBeDisabled();
+
+    fireEvent.change(picker, {
+      target: { value: 'replacement-collection' },
+    });
+    expect(
+      screen.getByRole('button', { name: 'Import 3 files' }),
+    ).toBeEnabled();
   });
 
   it('lets the user confirm reconciliation for an empty source', () => {

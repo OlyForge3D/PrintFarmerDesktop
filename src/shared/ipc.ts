@@ -302,6 +302,15 @@ export const ImportRootResponse = z.object({
   collectionsCreated: z.number().int().nonnegative(),
   collectionAssignments: z.number().int().nonnegative(),
   tagAssignments: z.number().int().nonnegative(),
+  resolvedCollections: z
+    .array(
+      z.object({
+        relativePath: z.string().max(4096),
+        name: z.string().min(1).max(128),
+        collectionId: z.string().min(1).max(256),
+      }),
+    )
+    .max(1000),
 });
 export type ImportRootResponse = z.infer<typeof ImportRootResponse>;
 

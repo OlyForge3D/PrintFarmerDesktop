@@ -119,6 +119,21 @@ pub fn new_collection_id() -> String {
 }
 
 pub trait CatalogStore {
+    /// Begin an atomic batch of catalog mutations. Persistent stores should keep
+    /// the batch uncommitted until `commit_batch`; dropping the store must roll it
+    /// back. The default is a no-op for read-only/test implementations.
+    fn begin_batch(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Commit the active mutation batch.
+    fn commit_batch(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Roll back the active mutation batch.
+    fn rollback_batch(&mut self) {}
+
     /// Look up what is currently recorded for a path under a root.
     fn get_location(&self, root_id: &str, path: &Path) -> Option<StoredLocation>;
 
@@ -219,6 +234,45 @@ pub fn reconcile_root<S: CatalogStore + ?Sized>(
     root_id: &str,
     scan: &ScanResult,
 ) -> ReconcileReport {
+    let (hashes, _) = hash_changed_files(store, root_id, scan);
+    reconcile_root_with_hashes(store, root_id, scan, &hashes)
+}
+
+/// Hash every new, changed, or previously unavailable file without mutating the
+/// catalog. Callers that require all-or-nothing behavior can reject any error
+/// before opening a mutation batch.
+pub(crate) fn hash_changed_files<S: CatalogStore + ?Sized>(
+    store: &S,
+    root_id: &str,
+    scan: &ScanResult,
+) -> (HashMap<PathBuf, ContentHash>, usize) {
+    let mut hashes = HashMap::new();
+    let mut errors = 0;
+    for file in &scan.files {
+        let unchanged = store
+            .get_location(root_id, &file.path)
+            .is_some_and(|existing| existing.fingerprint == file.fingerprint && existing.available);
+        if unchanged {
+            continue;
+        }
+        match hash_file(&file.path) {
+            Ok(hash) => {
+                hashes.insert(file.path.clone(), hash);
+            }
+            Err(_) => errors += 1,
+        }
+    }
+    (hashes, errors)
+}
+
+/// Reconcile using hashes staged before mutation. A missing staged hash is
+/// reported as a hash error and leaves that location untouched.
+pub(crate) fn reconcile_root_with_hashes<S: CatalogStore + ?Sized>(
+    store: &mut S,
+    root_id: &str,
+    scan: &ScanResult,
+    hashes: &HashMap<PathBuf, ContentHash>,
+) -> ReconcileReport {
     let mut report = ReconcileReport::default();
     let mut seen: Vec<PathBuf> = Vec::with_capacity(scan.files.len());
 
@@ -234,9 +288,9 @@ pub fn reconcile_root<S: CatalogStore + ?Sized>(
             continue;
         }
 
-        let hash = match hash_file(&file.path) {
-            Ok(h) => h,
-            Err(_) => {
+        let hash = match hashes.get(&file.path) {
+            Some(hash) => hash.clone(),
+            None => {
                 report.hash_errors += 1;
                 continue;
             }
@@ -306,6 +360,7 @@ pub struct InMemoryCatalog {
     collections: HashMap<String, (String, bool)>,
     /// Collection id -> member content hashes.
     collection_members: HashMap<String, std::collections::BTreeSet<ContentHash>>,
+    transaction_snapshot: Option<Box<InMemoryCatalog>>,
 }
 
 impl InMemoryCatalog {
@@ -336,6 +391,34 @@ impl InMemoryCatalog {
 }
 
 impl CatalogStore for InMemoryCatalog {
+    fn begin_batch(&mut self) -> Result<(), String> {
+        if self.transaction_snapshot.is_some() {
+            return Err("catalog batch already active".to_string());
+        }
+        let snapshot = Self {
+            models: self.models.clone(),
+            index: self.index.clone(),
+            tags: self.tags.clone(),
+            model_tags: self.model_tags.clone(),
+            collections: self.collections.clone(),
+            collection_members: self.collection_members.clone(),
+            transaction_snapshot: None,
+        };
+        self.transaction_snapshot = Some(Box::new(snapshot));
+        Ok(())
+    }
+
+    fn commit_batch(&mut self) -> Result<(), String> {
+        self.transaction_snapshot = None;
+        Ok(())
+    }
+
+    fn rollback_batch(&mut self) {
+        if let Some(snapshot) = self.transaction_snapshot.take() {
+            *self = *snapshot;
+        }
+    }
+
     fn get_location(&self, root_id: &str, path: &Path) -> Option<StoredLocation> {
         let key = (root_id.to_string(), path.to_path_buf());
         let hash = self.index.get(&key)?;
@@ -702,6 +785,17 @@ mod tests {
         let report = reconcile_root(&mut store, "r", &incomplete);
         assert_eq!(report.missing, 0);
         assert!(store.models()[0].locations[0].available);
+    }
+
+    #[test]
+    fn in_memory_batch_can_roll_back_catalog_mutations() {
+        let mut store = InMemoryCatalog::new();
+        store.begin_batch().unwrap();
+        store.create_collection("Temporary").unwrap();
+
+        store.rollback_batch();
+
+        assert!(store.all_collections().is_empty());
     }
 
     fn one_model_store() -> (InMemoryCatalog, String) {

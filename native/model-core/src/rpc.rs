@@ -401,6 +401,15 @@ pub struct ImportResultDto {
     pub collections_created: usize,
     pub collection_assignments: usize,
     pub tag_assignments: usize,
+    pub resolved_collections: Vec<ResolvedImportCollectionDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedImportCollectionDto {
+    pub relative_path: String,
+    pub name: String,
+    pub collection_id: String,
 }
 
 impl From<&crate::smart_import::ImportResult> for ImportResultDto {
@@ -411,6 +420,20 @@ impl From<&crate::smart_import::ImportResult> for ImportResultDto {
             collections_created: result.collections_created,
             collection_assignments: result.collection_assignments,
             tag_assignments: result.tag_assignments,
+            resolved_collections: result
+                .resolved_collections
+                .iter()
+                .map(|collection| ResolvedImportCollectionDto {
+                    relative_path: collection
+                        .relative_path
+                        .components()
+                        .map(|component| component.as_os_str().to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                    name: collection.name.clone(),
+                    collection_id: collection.collection_id.clone(),
+                })
+                .collect(),
         }
     }
 }

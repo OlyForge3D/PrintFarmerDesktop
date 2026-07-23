@@ -127,6 +127,33 @@ describe('ipc contract', () => {
     ).toThrow();
   });
 
+  it('returns collection identities resolved during import', () => {
+    const value = ipcSchemas[IpcChannel.ImportRoot].response.parse({
+      report: {
+        added: 1,
+        changed: 0,
+        unchanged: 0,
+        missing: 0,
+        hashErrors: 0,
+      },
+      modelsOrganized: 1,
+      collectionsCreated: 1,
+      collectionAssignments: 1,
+      tagAssignments: 0,
+      resolvedCollections: [
+        {
+          relativePath: 'Animals',
+          name: 'Animals',
+          collectionId: 'collection-animals',
+        },
+      ],
+    });
+
+    expect(value.resolvedCollections[0]?.collectionId).toBe(
+      'collection-animals',
+    );
+  });
+
   it('accepts a valid scene response', () => {
     const value = ipcSchemas[IpcChannel.LoadScene].response.parse({
       positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],

@@ -39,18 +39,26 @@ interface ResponseEnvelope {
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
-  timer?: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 /** Default per-request timeout. Parsing a very large model can be slow. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+/** Imports get a longer watchdog; expiry terminates the mutating sidecar. */
+export const DEFAULT_MUTATION_TIMEOUT_MS = 15 * 60_000;
 
 /** How many times the sidecar may fail to produce a response before we give up. */
 export const MAX_CONSECUTIVE_FAILURES = 5;
 
 export interface SidecarClientOptions {
   requestTimeoutMs?: number;
+  mutationTimeoutMs?: number;
   maxConsecutiveFailures?: number;
+}
+
+interface RequestPolicy {
+  timeoutMs: number;
+  terminateOnTimeout: boolean;
 }
 
 export class SidecarClient {
@@ -59,6 +67,7 @@ export class SidecarClient {
   private readonly pending = new Map<number, PendingRequest>();
   private consecutiveFailures = 0;
   private readonly requestTimeoutMs: number;
+  private readonly mutationTimeoutMs: number;
   private readonly maxConsecutiveFailures: number;
 
   constructor(
@@ -67,6 +76,8 @@ export class SidecarClient {
   ) {
     this.requestTimeoutMs =
       options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.mutationTimeoutMs =
+      options.mutationTimeoutMs ?? DEFAULT_MUTATION_TIMEOUT_MS;
     this.maxConsecutiveFailures =
       options.maxConsecutiveFailures ?? MAX_CONSECUTIVE_FAILURES;
   }
@@ -132,7 +143,10 @@ export class SidecarClient {
         rules,
         commonTags,
       },
-      false,
+      {
+        timeoutMs: this.mutationTimeoutMs,
+        terminateOnTimeout: true,
+      },
     );
   }
 
@@ -208,7 +222,10 @@ export class SidecarClient {
   private request(
     method: string,
     params: unknown,
-    useTimeout = true,
+    policy: RequestPolicy = {
+      timeoutMs: this.requestTimeoutMs,
+      terminateOnTimeout: false,
+    },
   ): Promise<unknown> {
     let channel: SidecarChannel;
     try {
@@ -223,26 +240,37 @@ export class SidecarClient {
     const line = JSON.stringify({ id, method, params });
 
     return new Promise<unknown>((resolve, reject) => {
-      const timer = useTimeout
-        ? setTimeout(() => {
-            this.pending.delete(id);
-            this.recordFailure();
-            reject(new Error(`sidecar request '${method}' timed out`));
-          }, this.requestTimeoutMs)
-        : undefined;
+      const timer = setTimeout(() => {
+        if (policy.terminateOnTimeout) {
+          const error = new Error(
+            `sidecar request '${method}' timed out; the sidecar was terminated, so refresh the catalog before retrying`,
+          );
+          const isActiveChannel = this.channel === channel;
+          if (isActiveChannel) {
+            this.channel = null;
+          }
+          this.recordFailure();
+          this.rejectAllPending(error);
+          if (isActiveChannel) {
+            channel.close();
+          }
+        } else {
+          this.pending.delete(id);
+          this.recordFailure();
+          reject(new Error(`sidecar request '${method}' timed out`));
+        }
+      }, policy.timeoutMs);
 
       this.pending.set(id, {
         resolve,
         reject,
-        ...(timer ? { timer } : {}),
+        timer,
       });
 
       try {
         channel.send(line);
       } catch (error) {
-        if (timer) {
-          clearTimeout(timer);
-        }
+        clearTimeout(timer);
         this.pending.delete(id);
         this.recordFailure();
         reject(error instanceof Error ? error : new Error(String(error)));
@@ -286,9 +314,7 @@ export class SidecarClient {
       return;
     }
     this.pending.delete(envelope.id);
-    if (pending.timer) {
-      clearTimeout(pending.timer);
-    }
+    clearTimeout(pending.timer);
 
     if (envelope.ok) {
       this.consecutiveFailures = 0;
@@ -324,9 +350,7 @@ export class SidecarClient {
 
   private rejectAllPending(reason: Error): void {
     for (const [, pending] of this.pending) {
-      if (pending.timer) {
-        clearTimeout(pending.timer);
-      }
+      clearTimeout(pending.timer);
       pending.reject(reason);
     }
     this.pending.clear();

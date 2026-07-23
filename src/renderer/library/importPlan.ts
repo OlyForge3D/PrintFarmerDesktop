@@ -2,6 +2,7 @@ import {
   ImportRule as ImportRuleSchema,
   type ImportPreviewResponse,
   type ImportRule,
+  type ImportRootResponse,
 } from '@shared/ipc';
 import { z } from 'zod';
 
@@ -11,6 +12,7 @@ const SavedRecipe = z.object({
   ignoredPaths: z.array(z.string().max(4096)).max(500).default([]),
   commonTags: z.array(z.string().trim().min(1).max(128)).max(100),
 });
+type StoredImportRecipe = z.infer<typeof SavedRecipe>;
 
 type RuleMode = ImportRule['kind'] | 'ignore';
 
@@ -21,12 +23,14 @@ export interface ImportFolderChoice {
   mode: RuleMode;
   name: string;
   collectionId?: string;
+  collectionTargetUnresolved?: boolean;
 }
 
 export interface ImportChoices {
   rootCollection: boolean;
   rootCollectionName: string;
   rootCollectionId?: string;
+  rootCollectionTargetUnresolved?: boolean;
   folders: ImportFolderChoice[];
   commonTagsText: string;
 }
@@ -35,6 +39,7 @@ export interface ImportPlan {
   rules: ImportRule[];
   ignoredPaths: string[];
   commonTags: string[];
+  visibleFolderPaths: string[];
 }
 
 export function initialImportChoices(
@@ -113,6 +118,7 @@ export function buildImportPlan(choices: ImportChoices): ImportPlan {
       .filter((folder) => folder.mode === 'ignore')
       .map((folder) => folder.relativePath),
     commonTags: parseTags(choices.commonTagsText),
+    visibleFolderPaths: choices.folders.map((folder) => folder.relativePath),
   };
 }
 
@@ -127,11 +133,48 @@ export function parseTags(value: string): string[] {
   return [...unique.values()];
 }
 
-export function rememberImportPlan(rootId: string, plan: ImportPlan): void {
+export function rememberImportPlan(
+  rootId: string,
+  plan: ImportPlan,
+  resolvedCollections: ImportRootResponse['resolvedCollections'] = [],
+): void {
   try {
+    const previous = readRecipe(rootId);
+    const visiblePaths = new Set(plan.visibleFolderPaths);
+    const resolvedByPath = new Map(
+      resolvedCollections.map((collection) => [
+        collection.relativePath,
+        collection,
+      ]),
+    );
+    const currentRules = plan.rules.map((rule): ImportRule => {
+      if (rule.kind !== 'collection') {
+        return rule;
+      }
+      const resolved = resolvedByPath.get(rule.relativePath);
+      return resolved
+        ? {
+            ...rule,
+            name: resolved.name,
+            collectionId: resolved.collectionId,
+          }
+        : rule;
+    });
+    const preservedRules =
+      previous?.rules.filter(
+        (rule) =>
+          rule.relativePath !== '' && !visiblePaths.has(rule.relativePath),
+      ) ?? [];
+    const preservedIgnores =
+      previous?.ignoredPaths.filter((path) => !visiblePaths.has(path)) ?? [];
+    const recipe = {
+      rules: [...currentRules, ...preservedRules].slice(0, 1000),
+      ignoredPaths: [...plan.ignoredPaths, ...preservedIgnores].slice(0, 500),
+      commonTags: plan.commonTags,
+    };
     globalThis.localStorage?.setItem(
       `${STORAGE_PREFIX}${rootId}`,
-      JSON.stringify(plan),
+      JSON.stringify(recipe),
     );
   } catch {
     // Match favorites persistence: an unavailable renderer store must not block import.
@@ -146,7 +189,7 @@ export function forgetImportPlan(rootId: string): void {
   }
 }
 
-function readRecipe(rootId: string): ImportPlan | null {
+function readRecipe(rootId: string): StoredImportRecipe | null {
   try {
     const raw = globalThis.localStorage?.getItem(`${STORAGE_PREFIX}${rootId}`);
     if (!raw) {

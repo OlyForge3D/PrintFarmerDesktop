@@ -120,6 +120,22 @@ impl SqliteCatalog {
 }
 
 impl CatalogStore for SqliteCatalog {
+    fn begin_batch(&mut self) -> Result<(), String> {
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|error| format!("failed to begin catalog batch: {error}"))
+    }
+
+    fn commit_batch(&mut self) -> Result<(), String> {
+        self.conn
+            .execute_batch("COMMIT")
+            .map_err(|error| format!("failed to commit catalog batch: {error}"))
+    }
+
+    fn rollback_batch(&mut self) {
+        let _ = self.conn.execute_batch("ROLLBACK");
+    }
+
     fn get_location(&self, root_id: &str, path: &Path) -> Option<StoredLocation> {
         self.conn
             .query_row(
@@ -683,6 +699,31 @@ mod tests {
         assert_eq!(store.all_collections().len(), 1);
 
         store.delete_collection(&coll.id);
+        assert!(store.all_collections().is_empty());
+    }
+
+    #[test]
+    fn catalog_batch_rolls_back_sqlite_mutations() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        store.begin_batch().unwrap();
+        store.create_collection("Temporary").unwrap();
+
+        store.rollback_batch();
+
+        assert!(store.all_collections().is_empty());
+    }
+
+    #[test]
+    fn dropping_an_uncommitted_catalog_batch_rolls_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("catalog.sqlite3");
+        {
+            let mut store = SqliteCatalog::open(&database).unwrap();
+            store.begin_batch().unwrap();
+            store.create_collection("Temporary").unwrap();
+        }
+
+        let store = SqliteCatalog::open(&database).unwrap();
         assert!(store.all_collections().is_empty());
     }
 }

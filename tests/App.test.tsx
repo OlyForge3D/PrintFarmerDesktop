@@ -179,6 +179,18 @@ describe('<App />', () => {
       collectionsCreated: 2,
       collectionAssignments: 4,
       tagAssignments: 3,
+      resolvedCollections: [
+        {
+          relativePath: '',
+          name: 'SmartImportRoot',
+          collectionId: 'collection-root',
+        },
+        {
+          relativePath: 'Cats',
+          name: 'Cats',
+          collectionId: 'collection-cats',
+        },
+      ],
     });
     const scanRoot = vi.fn();
     installApi({
@@ -327,14 +339,24 @@ describe('<App />', () => {
       sharedToFarm: false,
       memberCount: 1,
     };
+    let finishTagRefresh!: (value: Array<{ id: string; name: string }>) => void;
+    const tagRefresh = new Promise<Array<{ id: string; name: string }>>(
+      (resolve) => {
+        finishTagRefresh = resolve;
+      },
+    );
+    let finishCollectionRefresh!: (value: (typeof collection)[]) => void;
+    const collectionRefresh = new Promise<(typeof collection)[]>((resolve) => {
+      finishCollectionRefresh = resolve;
+    });
     const tagsForModel = vi
       .fn()
       .mockResolvedValueOnce([{ id: 'before', name: 'Before import' }])
-      .mockResolvedValueOnce([{ id: 'after', name: 'After import' }]);
+      .mockReturnValueOnce(tagRefresh);
     const collectionsForModel = vi
       .fn()
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([collection]);
+      .mockReturnValueOnce(collectionRefresh);
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
         contractVersion: 1,
@@ -374,6 +396,13 @@ describe('<App />', () => {
         collectionsCreated: 0,
         collectionAssignments: 1,
         tagAssignments: 1,
+        resolvedCollections: [
+          {
+            relativePath: '',
+            name: 'ImportRoot',
+            collectionId: 'collection-1',
+          },
+        ],
       }),
     });
     render(<App />);
@@ -382,13 +411,28 @@ describe('<App />', () => {
     );
     await waitFor(() => expect(tagsForModel).toHaveBeenCalledTimes(1));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }));
+    const addFolder = screen.getByRole('button', { name: 'Add folder' });
+    addFolder.focus();
+    fireEvent.click(addFolder);
     fireEvent.click(
       await screen.findByRole('button', { name: 'Import 1 files' }),
     );
 
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('dialog', {
+          name: 'Organize models before importing',
+        }),
+      ).not.toBeInTheDocument(),
+    );
+    await waitFor(() => expect(addFolder).toHaveFocus());
     await waitFor(() => expect(tagsForModel).toHaveBeenCalledTimes(2));
     expect(collectionsForModel).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      finishTagRefresh([{ id: 'after', name: 'After import' }]);
+      finishCollectionRefresh([collection]);
+      await Promise.all([tagRefresh, collectionRefresh]);
+    });
     expect(
       within(screen.getByLabelText('Model properties')).getByText(
         'After import',

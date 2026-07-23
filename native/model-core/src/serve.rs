@@ -784,6 +784,14 @@ mod tests {
         assert_eq!(value["result"]["collectionsCreated"], 1);
         assert_eq!(value["result"]["collectionAssignments"], 1);
         assert_eq!(value["result"]["tagAssignments"], 2);
+        assert_eq!(
+            value["result"]["resolvedCollections"][0]["relativePath"],
+            ""
+        );
+        assert!(value["result"]["resolvedCollections"][0]["collectionId"]
+            .as_str()
+            .unwrap()
+            .starts_with("col-"));
         let imported = store.models().pop().unwrap();
         assert_eq!(store.collections_for_model(&imported.hash).len(), 1);
         assert_eq!(store.tags_for_model(&imported.hash).len(), 2);

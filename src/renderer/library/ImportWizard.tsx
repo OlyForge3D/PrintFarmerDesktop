@@ -48,22 +48,17 @@ export function ImportWizard({
       : plan.commonTags.some((tag) => tag.length > 128)
         ? 'Each tag must be 128 characters or fewer.'
         : null;
-  const ambiguousRoot =
-    choices.rootCollection &&
-    !choices.rootCollectionId &&
-    matchingCollections(choices.rootCollectionName, draft.collections).length >
-      1;
-  const ambiguousFolders = choices.folders.filter(
+  const unresolvedRoot =
+    choices.rootCollection && Boolean(choices.rootCollectionTargetUnresolved);
+  const unresolvedFolders = choices.folders.filter(
     (folder) =>
-      folder.mode === 'collection' &&
-      !folder.collectionId &&
-      matchingCollections(folder.name, draft.collections).length > 1,
+      folder.mode === 'collection' && folder.collectionTargetUnresolved,
   );
   const canImport =
     namedRulesAreValid &&
     commonTagsError === null &&
-    !ambiguousRoot &&
-    ambiguousFolders.length === 0 &&
+    !unresolvedRoot &&
+    unresolvedFolders.length === 0 &&
     !busy;
 
   useEffect(() => {
@@ -197,19 +192,21 @@ export function ImportWizard({
                 <p>Apply a collection and optional tags to every model.</p>
               </div>
             </div>
-            <label className="import-root-rule">
-              <input
-                type="checkbox"
-                checked={choices.rootCollection}
-                disabled={busy}
-                onChange={(event) =>
-                  setChoices((current) => ({
-                    ...current,
-                    rootCollection: event.target.checked,
-                  }))
-                }
-              />
-              <span>Add all models to collection</span>
+            <div className="import-root-rule">
+              <label className="import-root-toggle">
+                <input
+                  type="checkbox"
+                  checked={choices.rootCollection}
+                  disabled={busy}
+                  onChange={(event) =>
+                    setChoices((current) => ({
+                      ...current,
+                      rootCollection: event.target.checked,
+                    }))
+                  }
+                />
+                <span>Add all models to collection</span>
+              </label>
               <input
                 type="text"
                 aria-label="Import collection name"
@@ -224,29 +221,35 @@ export function ImportWizard({
                 onChange={(event) =>
                   setChoices((current) => {
                     const name = event.target.value;
-                    return withRootCollectionId(
+                    return withRootCollectionTarget(
                       { ...current, rootCollectionName: name },
-                      uniqueCollectionId(name, draft.collections),
+                      inferredCollectionTarget(name, draft.collections),
                     );
                   })
                 }
               />
-            </label>
-            {ambiguousRoot ? (
-              <CollectionDisambiguator
+              <CollectionTargetPicker
                 label="Choose import collection"
                 name={choices.rootCollectionName}
+                collectionId={choices.rootCollectionId}
+                unresolved={Boolean(choices.rootCollectionTargetUnresolved)}
                 collections={draft.collections}
-                disabled={busy}
+                disabled={busy || !choices.rootCollection}
                 onSelect={(collection) =>
-                  setChoices((current) => ({
-                    ...current,
-                    rootCollectionName: collection.name,
-                    rootCollectionId: collection.id,
-                  }))
+                  setChoices((current) =>
+                    collection
+                      ? withRootCollectionTarget(
+                          {
+                            ...current,
+                            rootCollectionName: collection.name,
+                          },
+                          { collectionId: collection.id },
+                        )
+                      : withRootCollectionTarget(current, {}),
+                  )
                 }
               />
-            ) : null}
+            </div>
             <label className="import-common-tags">
               <span>Tags for all models</span>
               <input
@@ -309,14 +312,14 @@ export function ImportWizard({
                         updateFolder(folder.relativePath, (current) => {
                           const mode = event.target.value as
                             'collection' | 'tag' | 'ignore';
-                          return withFolderCollectionId(
+                          return withFolderCollectionTarget(
                             { ...current, mode },
                             mode === 'collection'
-                              ? uniqueCollectionId(
+                              ? inferredCollectionTarget(
                                   current.name,
                                   draft.collections,
                                 )
-                              : undefined,
+                              : {},
                           );
                         })
                       }
@@ -345,30 +348,35 @@ export function ImportWizard({
                       onChange={(event) =>
                         updateFolder(folder.relativePath, (current) => {
                           const name = event.target.value;
-                          return withFolderCollectionId(
+                          return withFolderCollectionTarget(
                             { ...current, name },
                             current.mode === 'collection'
-                              ? uniqueCollectionId(name, draft.collections)
-                              : undefined,
+                              ? inferredCollectionTarget(
+                                  name,
+                                  draft.collections,
+                                )
+                              : {},
                           );
                         })
                       }
                     />
-                    {folder.mode === 'collection' &&
-                    !folder.collectionId &&
-                    matchingCollections(folder.name, draft.collections).length >
-                      1 ? (
-                      <CollectionDisambiguator
+                    {folder.mode === 'collection' ? (
+                      <CollectionTargetPicker
                         label={`Choose collection for ${folder.relativePath}`}
                         name={folder.name}
+                        collectionId={folder.collectionId}
+                        unresolved={Boolean(folder.collectionTargetUnresolved)}
                         collections={draft.collections}
                         disabled={busy}
                         onSelect={(collection) =>
-                          updateFolder(folder.relativePath, (current) => ({
-                            ...current,
-                            name: collection.name,
-                            collectionId: collection.id,
-                          }))
+                          updateFolder(folder.relativePath, (current) =>
+                            collection
+                              ? withFolderCollectionTarget(
+                                  { ...current, name: collection.name },
+                                  { collectionId: collection.id },
+                                )
+                              : withFolderCollectionTarget(current, {}),
+                          )
                         }
                       />
                     ) : null}
@@ -443,26 +451,31 @@ function bindKnownCollections(
   choices: ImportChoices,
   collections: readonly Collection[],
 ): ImportChoices {
-  const rootId =
-    choices.rootCollectionId &&
-    collections.some((collection) => collection.id === choices.rootCollectionId)
-      ? choices.rootCollectionId
-      : uniqueCollectionId(choices.rootCollectionName, collections);
+  const rootTarget = rememberedCollectionTarget(
+    choices.rootCollectionName,
+    choices.rootCollectionId,
+    collections,
+  );
+  const rootChoices = withRootCollectionTarget(choices, rootTarget);
   return {
-    ...withRootCollectionId(choices, rootId),
-    folders: choices.folders.map((folder) =>
-      withFolderCollectionId(
-        folder,
-        folder.mode === 'collection'
-          ? folder.collectionId &&
-            collections.some(
-              (collection) => collection.id === folder.collectionId,
-            )
-            ? folder.collectionId
-            : uniqueCollectionId(folder.name, collections)
-          : undefined,
-      ),
-    ),
+    ...rootChoices,
+    ...(rootTarget.resolvedName
+      ? { rootCollectionName: rootTarget.resolvedName }
+      : {}),
+    folders: choices.folders.map((folder) => {
+      if (folder.mode !== 'collection') {
+        return withFolderCollectionTarget(folder, {});
+      }
+      const target = rememberedCollectionTarget(
+        folder.name,
+        folder.collectionId,
+        collections,
+      );
+      return withFolderCollectionTarget(
+        target.resolvedName ? { ...folder, name: target.resolvedName } : folder,
+        target,
+      );
+    }),
   };
 }
 
@@ -476,72 +489,128 @@ function matchingCollections(
   );
 }
 
-function uniqueCollectionId(
-  name: string,
-  collections: readonly Collection[],
-): string | undefined {
-  const matches = matchingCollections(name, collections);
-  return matches.length === 1 ? matches[0]?.id : undefined;
+interface CollectionTarget {
+  collectionId?: string;
+  unresolved?: boolean;
+  resolvedName?: string;
 }
 
-function withRootCollectionId(
+function inferredCollectionTarget(
+  name: string,
+  collections: readonly Collection[],
+): CollectionTarget {
+  const matches = matchingCollections(name, collections);
+  const match = matches[0];
+  if (matches.length === 1 && match) {
+    return { collectionId: match.id, resolvedName: match.name };
+  }
+  return matches.length > 1 ? { unresolved: true } : {};
+}
+
+function rememberedCollectionTarget(
+  name: string,
+  rememberedId: string | undefined,
+  collections: readonly Collection[],
+): CollectionTarget {
+  if (!rememberedId) {
+    return inferredCollectionTarget(name, collections);
+  }
+  const remembered = collections.find(
+    (collection) => collection.id === rememberedId,
+  );
+  return remembered
+    ? { collectionId: remembered.id, resolvedName: remembered.name }
+    : { unresolved: true };
+}
+
+function withRootCollectionTarget(
   choices: ImportChoices,
-  collectionId: string | undefined,
+  target: CollectionTarget,
 ): ImportChoices {
   const next = { ...choices };
   delete next.rootCollectionId;
-  return collectionId ? { ...next, rootCollectionId: collectionId } : next;
+  delete next.rootCollectionTargetUnresolved;
+  return {
+    ...next,
+    ...(target.collectionId ? { rootCollectionId: target.collectionId } : {}),
+    ...(target.unresolved ? { rootCollectionTargetUnresolved: true } : {}),
+  };
 }
 
-function withFolderCollectionId(
+function withFolderCollectionTarget(
   folder: ImportFolderChoice,
-  collectionId: string | undefined,
+  target: CollectionTarget,
 ): ImportFolderChoice {
   const next = { ...folder };
   delete next.collectionId;
-  return collectionId ? { ...next, collectionId } : next;
+  delete next.collectionTargetUnresolved;
+  return {
+    ...next,
+    ...(target.collectionId ? { collectionId: target.collectionId } : {}),
+    ...(target.unresolved ? { collectionTargetUnresolved: true } : {}),
+  };
 }
 
-function CollectionDisambiguator({
+function CollectionTargetPicker({
   label,
   name,
+  collectionId,
+  unresolved,
   collections,
   disabled,
   onSelect,
 }: {
   label: string;
   name: string;
+  collectionId: string | undefined;
+  unresolved: boolean;
   collections: readonly Collection[];
   disabled: boolean;
-  onSelect: (collection: Collection) => void;
+  onSelect: (collection: Collection | null) => void;
 }): React.JSX.Element {
   const matches = matchingCollections(name, collections);
+  const nameTargetDisabled = matches.length > 1;
+  const value = collectionId ?? (unresolved ? '__unresolved__' : '__name__');
   return (
-    <label className="import-collection-choice">
-      <span>Multiple collections have this name</span>
-      <select
-        aria-label={label}
-        value=""
-        disabled={disabled}
-        onChange={(event) => {
-          const collection = matches.find(
-            (candidate) => candidate.id === event.target.value,
-          );
-          if (collection) {
-            onSelect(collection);
-          }
-        }}
-      >
-        <option value="" disabled>
-          Choose a collection
+    <select
+      className="import-collection-target"
+      aria-label={label}
+      aria-invalid={unresolved}
+      value={value}
+      disabled={disabled}
+      onChange={(event) => {
+        if (event.target.value === '__name__') {
+          onSelect(null);
+          return;
+        }
+        const collection = collections.find(
+          (candidate) => candidate.id === event.target.value,
+        );
+        if (collection) {
+          onSelect(collection);
+        }
+      }}
+    >
+      {unresolved ? (
+        <option value="__unresolved__" disabled>
+          Choose a collection target
         </option>
-        {matches.map((collection) => (
-          <option value={collection.id} key={collection.id}>
-            {collection.name} ({collection.id.slice(0, 8)})
-          </option>
-        ))}
-      </select>
-    </label>
+      ) : null}
+      <option value="__name__" disabled={nameTargetDisabled}>
+        {nameTargetDisabled
+          ? 'Choose one of the duplicate collections'
+          : matches.length === 1
+            ? `Use "${name}" by name`
+            : `Create "${name}"`}
+      </option>
+      {collections.map((collection) => (
+        <option value={collection.id} key={collection.id}>
+          {collection.name} · {collection.memberCount}{' '}
+          {collection.memberCount === 1 ? 'model' : 'models'} · …
+          {collection.id.slice(-10)}
+        </option>
+      ))}
+    </select>
   );
 }
 
