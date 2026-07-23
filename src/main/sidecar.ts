@@ -63,6 +63,7 @@ interface RequestPolicy {
 
 export class SidecarClient {
   private channel: SidecarChannel | null = null;
+  private terminatingChannel: SidecarChannel | null = null;
   private nextId = 1;
   private readonly pending = new Map<number, PendingRequest>();
   private consecutiveFailures = 0;
@@ -215,6 +216,7 @@ export class SidecarClient {
   dispose(): void {
     const channel = this.channel;
     this.channel = null;
+    this.terminatingChannel = null;
     this.rejectAllPending(new Error('sidecar client disposed'));
     channel?.close();
   }
@@ -227,6 +229,13 @@ export class SidecarClient {
       terminateOnTimeout: false,
     },
   ): Promise<unknown> {
+    if (this.terminatingChannel) {
+      return Promise.reject(
+        new Error(
+          'sidecar termination is still in progress; the catalog is temporarily unavailable',
+        ),
+      );
+    }
     let channel: SidecarChannel;
     try {
       channel = this.ensureChannel();
@@ -247,7 +256,7 @@ export class SidecarClient {
           );
           const isActiveChannel = this.channel === channel;
           if (isActiveChannel) {
-            this.channel = null;
+            this.terminatingChannel = channel;
           }
           this.recordFailure();
           this.rejectAllPending(error);
@@ -329,6 +338,13 @@ export class SidecarClient {
     closedChannel: SidecarChannel,
     info: { code: number | null },
   ): void {
+    if (this.terminatingChannel === closedChannel) {
+      this.terminatingChannel = null;
+      if (this.channel === closedChannel) {
+        this.channel = null;
+      }
+      return;
+    }
     // Ignore closes from a channel we already replaced.
     if (this.channel !== closedChannel) {
       return;

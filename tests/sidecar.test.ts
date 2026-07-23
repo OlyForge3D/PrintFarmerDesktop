@@ -17,7 +17,11 @@ function makeFakeChannel(
     emit: (line: string) => void,
     close: (code: number | null) => void,
   ) => void,
-): { channel: SidecarChannel; sent: string[] } {
+): {
+  channel: SidecarChannel;
+  sent: string[];
+  closeFromSidecar: (code: number | null) => void;
+} {
   let messageHandler: ((line: string) => void) | null = null;
   let closeHandler: ((info: { code: number | null }) => void) | null = null;
   const sent: string[] = [];
@@ -50,7 +54,11 @@ function makeFakeChannel(
     },
   };
 
-  return { channel, sent };
+  return {
+    channel,
+    sent,
+    closeFromSidecar: (code) => closeHandler?.({ code }),
+  };
 }
 
 describe('SidecarClient', () => {
@@ -295,6 +303,54 @@ describe('SidecarClient', () => {
       await vi.advanceTimersByTimeAsync(50);
       await rejection;
       expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('blocks replacement channels until timed-out sidecar shutdown is confirmed', async () => {
+    vi.useFakeTimers();
+    try {
+      const first = makeFakeChannel(() => undefined);
+      const close = vi
+        .spyOn(first.channel, 'close')
+        .mockImplementation(() => undefined);
+      const second = makeFakeChannel((request, emit) => {
+        emit(
+          JSON.stringify({
+            id: request.id,
+            ok: true,
+            result: [],
+          }),
+        );
+      });
+      let starts = 0;
+      const client = new SidecarClient(
+        () => {
+          starts += 1;
+          return starts === 1 ? first.channel : second.channel;
+        },
+        { mutationTimeoutMs: 100 },
+      );
+      const importRequest = client.importRoot('root1', 'C:/models', [], []);
+      const rejection = expect(importRequest).rejects.toThrow(
+        'the sidecar was terminated',
+      );
+      vi.runAllTicks();
+      await vi.advanceTimersByTimeAsync(100);
+      await rejection;
+
+      await expect(client.listModels()).rejects.toThrow(
+        'sidecar termination is still in progress',
+      );
+      expect(starts).toBe(1);
+      expect(close).toHaveBeenCalledTimes(1);
+
+      first.closeFromSidecar(null);
+      const catalog = client.listModels();
+      vi.runAllTicks();
+      await expect(catalog).resolves.toEqual([]);
+      expect(starts).toBe(2);
     } finally {
       vi.useRealTimers();
     }
