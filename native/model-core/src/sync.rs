@@ -1,0 +1,918 @@
+//! Durable, profile-isolated library synchronization domain types.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+pub const MAX_SYNC_BATCH: usize = 500;
+pub const MAX_PAYLOAD_BYTES: usize = 256 * 1024;
+pub const MAX_CURSOR_BYTES: usize = 4096;
+pub const MAX_IDENTIFIER_BYTES: usize = 256;
+pub const MAX_ERROR_BYTES: usize = 4096;
+pub const MAX_LEASE_SECONDS: i64 = 24 * 60 * 60;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SyncEntityType {
+    ModelCollection,
+    ModelCollectionMembership,
+    Tag,
+}
+
+#[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
+impl SyncEntityType {
+    pub(crate) fn as_db(self) -> &'static str {
+        match self {
+            Self::ModelCollection => "ModelCollection",
+            Self::ModelCollectionMembership => "ModelCollectionMembership",
+            Self::Tag => "Tag",
+        }
+    }
+
+    pub(crate) fn from_db(value: &str) -> Result<Self, String> {
+        match value {
+            "ModelCollection" => Ok(Self::ModelCollection),
+            "ModelCollectionMembership" => Ok(Self::ModelCollectionMembership),
+            "Tag" => Ok(Self::Tag),
+            _ => Err(format!("invalid persisted sync entity type: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SyncOperationKind {
+    Create,
+    Update,
+    Delete,
+}
+
+#[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
+impl SyncOperationKind {
+    pub(crate) fn as_db(self) -> &'static str {
+        match self {
+            Self::Create => "Create",
+            Self::Update => "Update",
+            Self::Delete => "Delete",
+        }
+    }
+
+    pub(crate) fn from_db(value: &str) -> Result<Self, String> {
+        match value {
+            "Create" => Ok(Self::Create),
+            "Update" => Ok(Self::Update),
+            "Delete" => Ok(Self::Delete),
+            _ => Err(format!("invalid persisted sync operation: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SyncVisibility {
+    Private,
+    Shared,
+}
+
+#[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
+impl SyncVisibility {
+    pub(crate) fn as_db(self) -> &'static str {
+        match self {
+            Self::Private => "Private",
+            Self::Shared => "Shared",
+        }
+    }
+
+    pub(crate) fn from_db(value: &str) -> Result<Self, String> {
+        match value {
+            "Private" => Ok(Self::Private),
+            "Shared" => Ok(Self::Shared),
+            _ => Err(format!("invalid persisted sync visibility: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RemoteUploadStatus {
+    Pending,
+    Uploading,
+    Uploaded,
+    Failed,
+}
+
+#[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
+impl RemoteUploadStatus {
+    pub(crate) fn as_db(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Uploading => "uploading",
+            Self::Uploaded => "uploaded",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub(crate) fn from_db(value: &str) -> Result<Self, String> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "uploading" => Ok(Self::Uploading),
+            "uploaded" => Ok(Self::Uploaded),
+            "failed" => Ok(Self::Failed),
+            _ => Err(format!("invalid persisted upload status: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OutboundState {
+    Pending,
+    InFlight,
+    Failed,
+    Acked,
+}
+
+#[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
+impl OutboundState {
+    pub(crate) fn from_db(value: &str) -> Result<Self, String> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "inFlight" => Ok(Self::InFlight),
+            "failed" => Ok(Self::Failed),
+            "acked" => Ok(Self::Acked),
+            _ => Err(format!("invalid persisted outbound state: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConflictResolution {
+    KeepLocal,
+    AcceptServer,
+    Merge,
+    Discard,
+}
+
+#[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
+impl ConflictResolution {
+    pub(crate) fn as_db(self) -> &'static str {
+        match self {
+            Self::KeepLocal => "keepLocal",
+            Self::AcceptServer => "acceptServer",
+            Self::Merge => "merge",
+            Self::Discard => "discard",
+        }
+    }
+
+    pub(crate) fn from_db(value: &str) -> Result<Self, String> {
+        match value {
+            "keepLocal" => Ok(Self::KeepLocal),
+            "acceptServer" => Ok(Self::AcceptServer),
+            "merge" => Ok(Self::Merge),
+            "discard" => Ok(Self::Discard),
+            _ => Err(format!("invalid persisted conflict resolution: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionSnapshotDto {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub owner_user_id: String,
+    pub is_shared: bool,
+    pub created_at: String,
+    pub updated_at: String,
+    pub member_count: u64,
+    pub model_ids: Vec<String>,
+    pub revision: u64,
+    pub concurrency_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MembershipSnapshotDto {
+    pub id: String,
+    pub collection_id: String,
+    pub model_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagSnapshotDto {
+    pub id: String,
+    pub name: String,
+    pub category: String,
+    pub is_auto_generated: bool,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub revision: u64,
+    pub concurrency_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatusDto {
+    pub profile_id: String,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    pub server_revision: u64,
+    #[serde(default)]
+    pub last_pulled_at: Option<i64>,
+    #[serde(default)]
+    pub last_pushed_at: Option<i64>,
+    pub updated_at: i64,
+}
+
+impl SyncStatusDto {
+    pub(crate) fn empty(profile_id: &str) -> Self {
+        Self {
+            profile_id: profile_id.to_string(),
+            cursor: None,
+            server_revision: 0,
+            last_pulled_at: None,
+            last_pushed_at: None,
+            updated_at: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteModelLinkDto {
+    pub profile_id: String,
+    pub local_model_hash: String,
+    pub remote_model_id: String,
+    pub client_upload_id: String,
+    #[serde(default)]
+    pub etag: Option<String>,
+    pub upload_status: RemoteUploadStatus,
+    pub created_at: i64,
+    pub updated_at: i64,
+    #[serde(default)]
+    pub uploaded_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityRevisionDto {
+    pub profile_id: String,
+    pub entity_type: SyncEntityType,
+    #[serde(default)]
+    pub local_id: Option<String>,
+    pub remote_id: String,
+    pub revision: u64,
+    #[serde(default)]
+    pub concurrency_token: Option<String>,
+    pub tombstone: bool,
+    pub visibility: SyncVisibility,
+    #[serde(default)]
+    pub snapshot: Option<Value>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullEntityDto {
+    pub entity_type: SyncEntityType,
+    #[serde(default)]
+    pub local_id: Option<String>,
+    pub remote_id: String,
+    pub revision: u64,
+    #[serde(default)]
+    pub concurrency_token: Option<String>,
+    pub tombstone: bool,
+    pub visibility: SyncVisibility,
+    #[serde(default)]
+    pub snapshot: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictInputDto {
+    pub conflict_id: String,
+    pub entity_type: SyncEntityType,
+    pub entity_id: String,
+    #[serde(default)]
+    pub local_payload: Option<Value>,
+    #[serde(default)]
+    pub server_payload: Option<Value>,
+    #[serde(default)]
+    pub submitted_payload: Option<Value>,
+    pub reason: String,
+    pub server_revision: u64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyPullBatchDto {
+    pub profile_id: String,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    pub server_revision: u64,
+    pub applied_at: i64,
+    #[serde(default)]
+    pub entities: Vec<PullEntityDto>,
+    #[serde(default)]
+    pub conflicts: Vec<ConflictInputDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnqueueOutboundOperationDto {
+    pub operation_id: String,
+    pub entity_type: SyncEntityType,
+    pub operation: SyncOperationKind,
+    pub entity_id: String,
+    pub payload: Value,
+    #[serde(default)]
+    pub base_revision: Option<u64>,
+    #[serde(default)]
+    pub concurrency_token: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutboundOperationDto {
+    pub profile_id: String,
+    pub operation_id: String,
+    pub entity_type: SyncEntityType,
+    pub operation: SyncOperationKind,
+    pub entity_id: String,
+    pub payload: Value,
+    #[serde(default)]
+    pub base_revision: Option<u64>,
+    #[serde(default)]
+    pub concurrency_token: Option<String>,
+    pub state: OutboundState,
+    pub attempt_count: u32,
+    pub retry_eligible: bool,
+    #[serde(default)]
+    pub retry_at: Option<i64>,
+    #[serde(default)]
+    pub lease_until: Option<i64>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    #[serde(default)]
+    pub acked_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncConflictDto {
+    pub profile_id: String,
+    pub conflict_id: String,
+    pub entity_type: SyncEntityType,
+    pub entity_id: String,
+    #[serde(default)]
+    pub local_payload: Option<Value>,
+    #[serde(default)]
+    pub server_payload: Option<Value>,
+    #[serde(default)]
+    pub submitted_payload: Option<Value>,
+    pub reason: String,
+    pub server_revision: u64,
+    pub created_at: i64,
+    #[serde(default)]
+    pub resolved_at: Option<i64>,
+    #[serde(default)]
+    pub resolution: Option<ConflictResolution>,
+}
+
+pub(crate) fn validate_profile(profile_id: &str) -> Result<(), String> {
+    validate_identifier("profileId", profile_id)
+}
+
+pub(crate) fn validate_identifier(name: &str, value: &str) -> Result<(), String> {
+    if value.is_empty() || value.len() > MAX_IDENTIFIER_BYTES {
+        return Err(format!("{name} must be 1..={MAX_IDENTIFIER_BYTES} bytes"));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(format!("{name} must not contain control characters"));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_optional_identifier(name: &str, value: Option<&str>) -> Result<(), String> {
+    if let Some(value) = value {
+        validate_identifier(name, value)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_timestamp(name: &str, value: i64) -> Result<(), String> {
+    if value < 0 {
+        return Err(format!("{name} must be a non-negative Unix timestamp"));
+    }
+    Ok(())
+}
+
+fn validate_revision(name: &str, value: u64) -> Result<(), String> {
+    if value > i64::MAX as u64 {
+        return Err(format!("{name} exceeds the supported range"));
+    }
+    Ok(())
+}
+
+fn validate_wire_timestamp(name: &str, value: &str) -> Result<(), String> {
+    let has_zone = value.ends_with('Z')
+        || value.get(10..).is_some_and(|time| {
+            time.contains('+') || time.get(1..).is_some_and(|v| v.contains('-'))
+        });
+    if !(20..=64).contains(&value.len()) || !value.contains('T') || !has_zone {
+        return Err(format!("{name} must be an RFC 3339 timestamp"));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_payload(name: &str, value: &Value) -> Result<(), String> {
+    let size = serde_json::to_vec(value)
+        .map_err(|error| format!("{name} is not serializable: {error}"))?
+        .len();
+    if size > MAX_PAYLOAD_BYTES {
+        return Err(format!("{name} exceeds {MAX_PAYLOAD_BYTES} bytes"));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_local_hash(hash: &str) -> Result<(), String> {
+    if hash.len() != 64
+        || !hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("localModelHash must be a lowercase hexadecimal SHA-256".to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_remote_link(link: &RemoteModelLinkDto) -> Result<(), String> {
+    validate_profile(&link.profile_id)?;
+    validate_local_hash(&link.local_model_hash)?;
+    validate_identifier("remoteModelId", &link.remote_model_id)?;
+    validate_identifier("clientUploadId", &link.client_upload_id)?;
+    validate_optional_identifier("etag", link.etag.as_deref())?;
+    validate_timestamp("createdAt", link.created_at)?;
+    validate_timestamp("updatedAt", link.updated_at)?;
+    if link.updated_at < link.created_at {
+        return Err("updatedAt must not precede createdAt".to_string());
+    }
+    if let Some(uploaded_at) = link.uploaded_at {
+        validate_timestamp("uploadedAt", uploaded_at)?;
+        if uploaded_at < link.created_at {
+            return Err("uploadedAt must not precede createdAt".to_string());
+        }
+    }
+    if link.upload_status == RemoteUploadStatus::Uploaded && link.uploaded_at.is_none() {
+        return Err("uploaded status requires uploadedAt".to_string());
+    }
+    Ok(())
+}
+
+fn validate_snapshot(entity: &PullEntityDto) -> Result<(), String> {
+    if entity.tombstone {
+        if entity.snapshot.is_some() {
+            return Err("tombstones must not contain a snapshot".to_string());
+        }
+        return Ok(());
+    }
+    let snapshot = entity
+        .snapshot
+        .as_ref()
+        .ok_or_else(|| "non-tombstone entities require a snapshot".to_string())?;
+    validate_payload("snapshot", snapshot)?;
+    match entity.entity_type {
+        SyncEntityType::ModelCollection => {
+            let value: CollectionSnapshotDto = serde_json::from_value(snapshot.clone())
+                .map_err(|error| format!("invalid collection snapshot: {error}"))?;
+            validate_identifier("snapshot.id", &value.id)?;
+            validate_identifier("snapshot.ownerUserId", &value.owner_user_id)?;
+            validate_identifier("snapshot.concurrencyToken", &value.concurrency_token)?;
+            validate_wire_timestamp("snapshot.createdAt", &value.created_at)?;
+            validate_wire_timestamp("snapshot.updatedAt", &value.updated_at)?;
+            if value.id != entity.remote_id || value.revision != entity.revision {
+                return Err("collection snapshot identity/revision mismatch".to_string());
+            }
+        }
+        SyncEntityType::ModelCollectionMembership => {
+            let value: MembershipSnapshotDto = serde_json::from_value(snapshot.clone())
+                .map_err(|error| format!("invalid membership snapshot: {error}"))?;
+            validate_identifier("snapshot.collectionId", &value.collection_id)?;
+            validate_identifier("snapshot.modelId", &value.model_id)?;
+            validate_wire_timestamp("snapshot.createdAt", &value.created_at)?;
+            validate_wire_timestamp("snapshot.updatedAt", &value.updated_at)?;
+            if value.id != entity.remote_id || value.revision != entity.revision {
+                return Err("membership snapshot identity/revision mismatch".to_string());
+            }
+        }
+        SyncEntityType::Tag => {
+            let value: TagSnapshotDto = serde_json::from_value(snapshot.clone())
+                .map_err(|error| format!("invalid tag snapshot: {error}"))?;
+            validate_identifier("snapshot.concurrencyToken", &value.concurrency_token)?;
+            if value.id != entity.remote_id || value.revision != entity.revision {
+                return Err("tag snapshot identity/revision mismatch".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_conflict_input(conflict: &ConflictInputDto) -> Result<(), String> {
+    validate_identifier("conflictId", &conflict.conflict_id)?;
+    validate_identifier("entityId", &conflict.entity_id)?;
+    validate_identifier("reason", &conflict.reason)?;
+    validate_timestamp("createdAt", conflict.created_at)?;
+    validate_revision("serverRevision", conflict.server_revision)?;
+    for (name, payload) in [
+        ("localPayload", conflict.local_payload.as_ref()),
+        ("serverPayload", conflict.server_payload.as_ref()),
+        ("submittedPayload", conflict.submitted_payload.as_ref()),
+    ] {
+        if let Some(payload) = payload {
+            validate_payload(name, payload)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_pull_batch(batch: &ApplyPullBatchDto) -> Result<(), String> {
+    validate_profile(&batch.profile_id)?;
+    validate_timestamp("appliedAt", batch.applied_at)?;
+    validate_revision("serverRevision", batch.server_revision)?;
+    if batch.entities.len().saturating_add(batch.conflicts.len()) > MAX_SYNC_BATCH {
+        return Err(format!(
+            "pull batches are limited to {MAX_SYNC_BATCH} items"
+        ));
+    }
+    if let Some(cursor) = &batch.cursor {
+        if cursor.len() > MAX_CURSOR_BYTES {
+            return Err(format!("cursor exceeds {MAX_CURSOR_BYTES} bytes"));
+        }
+        if cursor.chars().any(char::is_control) {
+            return Err("cursor must not contain control characters".to_string());
+        }
+    }
+    let mut keys = std::collections::HashSet::new();
+    for entity in &batch.entities {
+        validate_identifier("remoteId", &entity.remote_id)?;
+        validate_optional_identifier("localId", entity.local_id.as_deref())?;
+        validate_optional_identifier("concurrencyToken", entity.concurrency_token.as_deref())?;
+        validate_revision("entity.revision", entity.revision)?;
+        if !keys.insert((entity.entity_type, entity.remote_id.as_str())) {
+            return Err("pull batch contains a duplicate entity".to_string());
+        }
+        validate_snapshot(entity)?;
+    }
+    for conflict in &batch.conflicts {
+        validate_conflict_input(conflict)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_enqueue(operation: &EnqueueOutboundOperationDto) -> Result<(), String> {
+    validate_identifier("operationId", &operation.operation_id)?;
+    validate_identifier("entityId", &operation.entity_id)?;
+    validate_optional_identifier("concurrencyToken", operation.concurrency_token.as_deref())?;
+    validate_timestamp("createdAt", operation.created_at)?;
+    if let Some(revision) = operation.base_revision {
+        validate_revision("baseRevision", revision)?;
+    }
+    validate_payload("payload", &operation.payload)?;
+    match (operation.entity_type, operation.operation) {
+        (SyncEntityType::Tag, _) => Err("tags are pull-only and cannot be enqueued".to_string()),
+        (SyncEntityType::ModelCollectionMembership, SyncOperationKind::Update) => {
+            Err("membership updates are not supported by the server".to_string())
+        }
+        _ => Ok(()),
+    }
+}
+
+pub(crate) fn validate_enqueue_batch(
+    profile_id: &str,
+    operations: &[EnqueueOutboundOperationDto],
+) -> Result<(), String> {
+    validate_profile(profile_id)?;
+    if operations.is_empty() || operations.len() > MAX_SYNC_BATCH {
+        return Err(format!(
+            "outbound batches must contain 1..={MAX_SYNC_BATCH} operations"
+        ));
+    }
+    let mut ids = std::collections::HashSet::new();
+    for operation in operations {
+        validate_enqueue(operation)?;
+        if !ids.insert(operation.operation_id.as_str()) {
+            return Err("outbound batch contains a duplicate operationId".to_string());
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_limit(limit: usize) -> Result<(), String> {
+    if !(1..=MAX_SYNC_BATCH).contains(&limit) {
+        return Err(format!("limit must be 1..={MAX_SYNC_BATCH}"));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_lease(now: i64, lease_seconds: i64) -> Result<i64, String> {
+    validate_timestamp("now", now)?;
+    if !(1..=MAX_LEASE_SECONDS).contains(&lease_seconds) {
+        return Err(format!("leaseSeconds must be 1..={MAX_LEASE_SECONDS}"));
+    }
+    now.checked_add(lease_seconds)
+        .ok_or_else(|| "lease expiration overflows timestamp".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::{CatalogStore, InMemoryCatalog};
+    use serde_json::json;
+
+    fn hash(letter: char) -> String {
+        std::iter::repeat_n(letter, 64).collect()
+    }
+
+    fn link(profile: &str, letter: char) -> RemoteModelLinkDto {
+        RemoteModelLinkDto {
+            profile_id: profile.to_string(),
+            local_model_hash: hash(letter),
+            remote_model_id: format!("remote-{letter}"),
+            client_upload_id: format!("upload-{letter}"),
+            etag: None,
+            upload_status: RemoteUploadStatus::Pending,
+            created_at: 10,
+            updated_at: 10,
+            uploaded_at: None,
+        }
+    }
+
+    fn collection_entity(remote_id: &str, local_id: Option<&str>, revision: u64) -> PullEntityDto {
+        PullEntityDto {
+            entity_type: SyncEntityType::ModelCollection,
+            local_id: local_id.map(str::to_string),
+            remote_id: remote_id.to_string(),
+            revision,
+            concurrency_token: Some(format!("token-{revision}")),
+            tombstone: false,
+            visibility: SyncVisibility::Private,
+            snapshot: Some(json!({
+                "id": remote_id,
+                "name": "Dragons",
+                "description": "",
+                "ownerUserId": "owner-1",
+                "isShared": false,
+                "createdAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:00Z",
+                "memberCount": 0,
+                "modelIds": [],
+                "revision": revision,
+                "concurrencyToken": format!("token-{revision}")
+            })),
+        }
+    }
+
+    fn conflict(id: &str, reason: &str) -> ConflictInputDto {
+        ConflictInputDto {
+            conflict_id: id.to_string(),
+            entity_type: SyncEntityType::ModelCollection,
+            entity_id: "remote-c".to_string(),
+            local_payload: Some(json!({"name": "Local"})),
+            server_payload: Some(json!({"name": "Server"})),
+            submitted_payload: Some(json!({"name": "Submitted"})),
+            reason: reason.to_string(),
+            server_revision: 8,
+            created_at: 10,
+        }
+    }
+
+    fn operation(id: &str) -> EnqueueOutboundOperationDto {
+        EnqueueOutboundOperationDto {
+            operation_id: id.to_string(),
+            entity_type: SyncEntityType::ModelCollection,
+            operation: SyncOperationKind::Create,
+            entity_id: "local-c".to_string(),
+            payload: json!({"name": "Dragons"}),
+            base_revision: None,
+            concurrency_token: None,
+            created_at: 10,
+        }
+    }
+
+    fn exercise_store(store: &mut dyn CatalogStore) {
+        assert_eq!(store.sync_status("p1").unwrap().server_revision, 0);
+        let local_collection = store.create_collection("Local Dragons").unwrap();
+        assert_eq!(
+            store.link_remote_model(link("p1", 'a')).unwrap(),
+            link("p1", 'a')
+        );
+        assert_eq!(
+            store.link_remote_model(link("p1", 'a')).unwrap(),
+            link("p1", 'a')
+        );
+        let mut mismatch = link("p1", 'a');
+        mismatch.remote_model_id = "different".to_string();
+        assert!(store.link_remote_model(mismatch).is_err());
+        assert!(store.remote_model_link("p2", &hash('a')).unwrap().is_none());
+
+        let status = store
+            .apply_pull_batch(ApplyPullBatchDto {
+                profile_id: "p1".to_string(),
+                cursor: Some("opaque:cursor".to_string()),
+                server_revision: 7,
+                applied_at: 20,
+                entities: vec![collection_entity("remote-c", Some(&local_collection.id), 7)],
+                conflicts: vec![],
+            })
+            .unwrap();
+        assert_eq!(status.cursor.as_deref(), Some("opaque:cursor"));
+        assert_eq!(store.entity_revisions("p1", None, 500).unwrap().len(), 1);
+        assert!(store.entity_revisions("p2", None, 500).unwrap().is_empty());
+        store
+            .apply_pull_batch(ApplyPullBatchDto {
+                profile_id: "p1".to_string(),
+                cursor: None,
+                server_revision: 8,
+                applied_at: 21,
+                entities: vec![PullEntityDto {
+                    entity_type: SyncEntityType::ModelCollection,
+                    local_id: Some(local_collection.id.clone()),
+                    remote_id: "remote-c".to_string(),
+                    revision: 8,
+                    concurrency_token: None,
+                    tombstone: true,
+                    visibility: SyncVisibility::Private,
+                    snapshot: None,
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+        assert!(store.entity_revisions("p1", None, 500).unwrap()[0].tombstone);
+        assert_eq!(store.all_collections()[0].id, local_collection.id);
+
+        let queued = store
+            .enqueue_outbound_operations("p1", vec![operation("op-1")])
+            .unwrap();
+        assert_eq!(queued[0].state, OutboundState::Pending);
+        assert_eq!(
+            store.claim_outbound_operations("p1", 10, 30, 10).unwrap()[0].attempt_count,
+            1
+        );
+        assert!(store
+            .claim_outbound_operations("p1", 10, 39, 10)
+            .unwrap()
+            .is_empty());
+        assert_eq!(store.recover_outbound_operations("p1", 40).unwrap(), 1);
+        assert_eq!(
+            store.claim_outbound_operations("p1", 10, 40, 10).unwrap()[0].attempt_count,
+            2
+        );
+        let failed = store
+            .fail_outbound_operation("p1", "op-1", "offline", 41, Some(50))
+            .unwrap();
+        assert!(failed.retry_eligible);
+        assert!(store
+            .claim_outbound_operations("p1", 10, 49, 10)
+            .unwrap()
+            .is_empty());
+        store.claim_outbound_operations("p1", 10, 50, 10).unwrap();
+        let acked = store.complete_outbound_operation("p1", "op-1", 51).unwrap();
+        assert_eq!(acked.state, OutboundState::Acked);
+        assert!(!acked.retry_eligible);
+        assert_eq!(store.sync_status("p1").unwrap().last_pushed_at, Some(51));
+
+        store
+            .record_sync_conflicts("p1", vec![conflict("conflict-1", "stale")])
+            .unwrap();
+        let resolved = store
+            .resolve_sync_conflict("p1", "conflict-1", ConflictResolution::AcceptServer, 60)
+            .unwrap();
+        assert_eq!(resolved.resolution, Some(ConflictResolution::AcceptServer));
+        assert!(store.sync_conflicts("p1", false, 500).unwrap().is_empty());
+        assert_eq!(store.sync_conflicts("p1", true, 500).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn in_memory_store_covers_profile_isolated_sync_lifecycle() {
+        exercise_store(&mut InMemoryCatalog::new());
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_store_has_sync_lifecycle_parity() {
+        exercise_store(&mut crate::sqlite_catalog::SqliteCatalog::open_in_memory().unwrap());
+    }
+
+    #[test]
+    fn remote_link_is_idempotent_but_rejects_content_mismatch() {
+        let mut store = InMemoryCatalog::new();
+        store.link_remote_model(link("p", 'a')).unwrap();
+        let mut mismatch = link("p", 'a');
+        mismatch.remote_model_id = "different".to_string();
+        assert!(store.link_remote_model(mismatch).is_err());
+        assert_eq!(
+            store.remote_model_link("p", &hash('a')).unwrap().unwrap(),
+            link("p", 'a')
+        );
+    }
+
+    fn assert_pull_failure_rolls_back(store: &mut dyn CatalogStore) {
+        store
+            .record_sync_conflicts("p", vec![conflict("same", "first")])
+            .unwrap();
+        let failed = store.apply_pull_batch(ApplyPullBatchDto {
+            profile_id: "p".to_string(),
+            cursor: Some("must-not-stick".to_string()),
+            server_revision: 10,
+            applied_at: 20,
+            entities: vec![collection_entity("new-remote", Some("new-local"), 10)],
+            conflicts: vec![conflict("same", "different")],
+        });
+        assert!(failed.is_err());
+        assert!(store.entity_revisions("p", None, 500).unwrap().is_empty());
+        assert_eq!(store.sync_status("p").unwrap().cursor, None);
+    }
+
+    #[test]
+    fn in_memory_pull_failure_rolls_back_entities_and_cursor() {
+        assert_pull_failure_rolls_back(&mut InMemoryCatalog::new());
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_pull_failure_rolls_back_entities_and_cursor() {
+        assert_pull_failure_rolls_back(
+            &mut crate::sqlite_catalog::SqliteCatalog::open_in_memory().unwrap(),
+        );
+    }
+
+    #[test]
+    fn pull_persists_tombstones_without_deleting_local_catalog_data() {
+        let mut store = InMemoryCatalog::new();
+        let local = store.create_collection("Local Dragons").unwrap();
+        store
+            .apply_pull_batch(ApplyPullBatchDto {
+                profile_id: "p".to_string(),
+                cursor: None,
+                server_revision: 11,
+                applied_at: 20,
+                entities: vec![PullEntityDto {
+                    entity_type: SyncEntityType::ModelCollection,
+                    local_id: Some(local.id.clone()),
+                    remote_id: "deleted-remote".to_string(),
+                    revision: 11,
+                    concurrency_token: None,
+                    tombstone: true,
+                    visibility: SyncVisibility::Private,
+                    snapshot: None,
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+        assert!(store.entity_revisions("p", None, 500).unwrap()[0].tombstone);
+        assert_eq!(store.all_collections()[0].id, local.id);
+    }
+
+    #[test]
+    fn rejects_unsupported_pushes_bounds_and_invalid_transitions() {
+        let mut store = InMemoryCatalog::new();
+        let mut tag = operation("tag-op");
+        tag.entity_type = SyncEntityType::Tag;
+        assert!(store.enqueue_outbound_operations("p", vec![tag]).is_err());
+        assert!(store
+            .enqueue_outbound_operations("p", vec![operation("op")])
+            .is_ok());
+        assert!(store.complete_outbound_operation("p", "op", 20).is_err());
+        assert!(store.claim_outbound_operations("p", 0, 20, 10).is_err());
+        assert!(store.claim_outbound_operations("p", 1, 20, 0).is_err());
+
+        let mut oversized = operation("big");
+        oversized.payload = Value::String("x".repeat(MAX_PAYLOAD_BYTES + 1));
+        assert!(store
+            .enqueue_outbound_operations("p", vec![oversized])
+            .is_err());
+    }
+
+    #[test]
+    fn sync_dtos_use_contract_enums_and_camel_case_fields() {
+        let value = serde_json::to_value(collection_entity("remote", None, 1)).unwrap();
+        assert_eq!(value["entityType"], "ModelCollection");
+        assert_eq!(value["concurrencyToken"], "token-1");
+        assert!(serde_json::from_value::<PullEntityDto>(json!({
+            "entityType": "Unknown",
+            "remoteId": "r",
+            "revision": 1,
+            "tombstone": true,
+            "visibility": "Private"
+        }))
+        .is_err());
+    }
+}

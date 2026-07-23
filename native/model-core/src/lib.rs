@@ -19,6 +19,7 @@ pub mod smart_import;
 #[cfg(feature = "sqlite")]
 pub mod sqlite_catalog;
 pub mod stl;
+pub mod sync;
 pub mod threemf;
 pub mod thumbnail;
 pub mod vendor;

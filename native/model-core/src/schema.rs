@@ -3,12 +3,12 @@
 //! The authoritative on-disk store is SQLite in WAL mode. The C-backed SQLite
 //! driver is only compiled where a C toolchain is available (CI runners), so
 //! the schema lives here as versioned DDL that the SQLite-backed
-//! [`crate::catalog::CatalogStore`] applies as migration v1. The pure-Rust
+//! [`crate::catalog::CatalogStore`] applies as versioned migrations. The pure-Rust
 //! [`crate::catalog::InMemoryCatalog`] mirrors the same semantics for local
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -88,6 +88,96 @@ CREATE TABLE IF NOT EXISTS collection_models (
 );
 "#;
 
+/// Additive v2 synchronization state. Profiles are opaque Electron-owned
+/// identifiers; this schema deliberately contains no server location or secret
+/// material.
+pub const SCHEMA_V2: &str = r#"
+CREATE TABLE IF NOT EXISTS sync_profiles (
+    profile_id       TEXT PRIMARY KEY,
+    cursor           TEXT,
+    server_revision  INTEGER NOT NULL DEFAULT 0,
+    last_pulled_at   INTEGER,
+    last_pushed_at   INTEGER,
+    updated_at       INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS remote_model_links (
+    profile_id       TEXT NOT NULL REFERENCES sync_profiles(profile_id) ON DELETE CASCADE,
+    local_model_hash TEXT NOT NULL,
+    remote_model_id  TEXT NOT NULL,
+    client_upload_id TEXT NOT NULL,
+    etag             TEXT,
+    upload_status    TEXT NOT NULL,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL,
+    uploaded_at      INTEGER,
+    PRIMARY KEY (profile_id, local_model_hash),
+    UNIQUE (profile_id, remote_model_id),
+    UNIQUE (profile_id, client_upload_id)
+);
+
+CREATE TABLE IF NOT EXISTS sync_entities (
+    profile_id       TEXT NOT NULL REFERENCES sync_profiles(profile_id) ON DELETE CASCADE,
+    entity_type      TEXT NOT NULL,
+    local_id         TEXT,
+    remote_id        TEXT NOT NULL,
+    revision         INTEGER NOT NULL,
+    concurrency_token TEXT,
+    tombstone        INTEGER NOT NULL DEFAULT 0,
+    visibility       TEXT NOT NULL,
+    snapshot_json    TEXT,
+    updated_at       INTEGER NOT NULL,
+    PRIMARY KEY (profile_id, entity_type, remote_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_entities_local
+    ON sync_entities(profile_id, entity_type, local_id)
+    WHERE local_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS sync_outbox (
+    profile_id       TEXT NOT NULL REFERENCES sync_profiles(profile_id) ON DELETE CASCADE,
+    operation_id     TEXT NOT NULL,
+    entity_type      TEXT NOT NULL,
+    operation_kind   TEXT NOT NULL,
+    entity_id        TEXT NOT NULL,
+    payload_json     TEXT NOT NULL,
+    base_revision    INTEGER,
+    concurrency_token TEXT,
+    state            TEXT NOT NULL,
+    attempt_count    INTEGER NOT NULL DEFAULT 0,
+    retry_eligible   INTEGER NOT NULL DEFAULT 1,
+    retry_at         INTEGER,
+    lease_until      INTEGER,
+    last_error       TEXT,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL,
+    acked_at         INTEGER,
+    PRIMARY KEY (profile_id, operation_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_outbox_claim
+    ON sync_outbox(profile_id, state, retry_at, lease_until, created_at);
+
+CREATE TABLE IF NOT EXISTS sync_conflicts (
+    profile_id       TEXT NOT NULL REFERENCES sync_profiles(profile_id) ON DELETE CASCADE,
+    conflict_id      TEXT NOT NULL,
+    entity_type      TEXT NOT NULL,
+    entity_id        TEXT NOT NULL,
+    local_payload_json TEXT,
+    server_payload_json TEXT,
+    submitted_payload_json TEXT,
+    reason           TEXT NOT NULL,
+    server_revision  INTEGER NOT NULL,
+    created_at       INTEGER NOT NULL,
+    resolved_at      INTEGER,
+    resolution       TEXT,
+    PRIMARY KEY (profile_id, conflict_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_unresolved
+    ON sync_conflicts(profile_id, resolved_at, created_at);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +199,21 @@ mod tests {
     #[test]
     fn schema_enables_wal() {
         assert!(SCHEMA_V1.contains("journal_mode = WAL"));
+    }
+
+    #[test]
+    fn sync_schema_contains_no_transport_or_secret_fields() {
+        for forbidden in ["server_url", "auth_token", "api_key", "password", "jwt"] {
+            assert!(!SCHEMA_V2.to_lowercase().contains(forbidden));
+        }
+        for table in [
+            "sync_profiles",
+            "remote_model_links",
+            "sync_entities",
+            "sync_outbox",
+            "sync_conflicts",
+        ] {
+            assert!(SCHEMA_V2.contains(table), "schema missing table {table}");
+        }
     }
 }

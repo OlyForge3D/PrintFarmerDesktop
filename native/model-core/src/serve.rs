@@ -27,6 +27,9 @@
 //!   rules in one sidecar request.
 //! - `listModels` — params ignored; returns all catalogued logical models as
 //!   [`crate::rpc::LogicalModelDto`]s.
+//! - Sync methods persist profile-scoped checkpoints, materialized revisions,
+//!   remote model links, leased outbound operations, and conflict records. They
+//!   never receive or store server locations or credentials.
 //!
 //! Stateful catalog methods read and write a persistent
 //! [`crate::catalog::CatalogStore`] threaded through the serve loop. The shipped
@@ -42,8 +45,10 @@ use serde_json::Value;
 
 use crate::catalog::{reconcile_root, CatalogStore, InMemoryCatalog};
 use crate::rpc::{
-    extract_vendor_metadata_dto, load_scene_dto, render_thumbnail_dto, CollectionDto,
-    ImportPreviewDto, ImportResultDto, LogicalModelDto, ReconcileReportDto, TagDto,
+    extract_vendor_metadata_dto, load_scene_dto, render_thumbnail_dto, ApplyPullBatchDto,
+    CollectionDto, ConflictInputDto, ConflictResolution, EnqueueOutboundOperationDto,
+    ImportPreviewDto, ImportResultDto, LogicalModelDto, OutboundState, ReconcileReportDto,
+    RemoteModelLinkDto, SyncEntityType, TagDto,
 };
 use crate::smart_import::{ImportPlan, ImportRuleKind};
 use crate::{sidecar_version, RPC_PROTOCOL_VERSION};
@@ -175,6 +180,120 @@ struct CollectionMembershipParams {
     hash: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileParams {
+    profile_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteModelParams {
+    profile_id: String,
+    local_model_hash: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListRemoteModelsParams {
+    profile_id: String,
+    #[serde(default = "default_sync_limit")]
+    limit: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListEntityRevisionsParams {
+    profile_id: String,
+    #[serde(default)]
+    entity_type: Option<SyncEntityType>,
+    #[serde(default = "default_sync_limit")]
+    limit: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EnqueueOutboundParams {
+    profile_id: String,
+    operations: Vec<EnqueueOutboundOperationDto>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListOutboundParams {
+    profile_id: String,
+    #[serde(default)]
+    states: Vec<OutboundState>,
+    #[serde(default = "default_sync_limit")]
+    limit: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaimOutboundParams {
+    profile_id: String,
+    #[serde(default = "default_sync_limit")]
+    limit: usize,
+    now: i64,
+    lease_seconds: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoverOutboundParams {
+    profile_id: String,
+    now: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompleteOutboundParams {
+    profile_id: String,
+    operation_id: String,
+    completed_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FailOutboundParams {
+    profile_id: String,
+    operation_id: String,
+    error: String,
+    failed_at: i64,
+    #[serde(default)]
+    retry_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecordConflictsParams {
+    profile_id: String,
+    conflicts: Vec<ConflictInputDto>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListConflictsParams {
+    profile_id: String,
+    #[serde(default)]
+    include_resolved: bool,
+    #[serde(default = "default_sync_limit")]
+    limit: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResolveConflictParams {
+    profile_id: String,
+    conflict_id: String,
+    resolution: ConflictResolution,
+    resolved_at: i64,
+}
+
+const fn default_sync_limit() -> usize {
+    500
+}
+
 /// Handle one decoded request, producing the response value or an error message.
 /// `store` backs the stateful catalog methods; stateless methods ignore it.
 fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result<Value, String> {
@@ -183,6 +302,133 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             "protocolVersion": RPC_PROTOCOL_VERSION,
             "sidecarVersion": sidecar_version(),
         })),
+        "getSyncStatus" => {
+            let params: ProfileParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid getSyncStatus params: {e}"))?;
+            serde_json::to_value(store.sync_status(&params.profile_id)?)
+                .map_err(|e| format!("failed to serialize sync status: {e}"))
+        }
+        "applySyncPullBatch" => {
+            let batch: ApplyPullBatchDto = serde_json::from_value(params)
+                .map_err(|e| format!("invalid applySyncPullBatch params: {e}"))?;
+            serde_json::to_value(store.apply_pull_batch(batch)?)
+                .map_err(|e| format!("failed to serialize sync status: {e}"))
+        }
+        "linkRemoteModel" => {
+            let link: RemoteModelLinkDto = serde_json::from_value(params)
+                .map_err(|e| format!("invalid linkRemoteModel params: {e}"))?;
+            serde_json::to_value(store.link_remote_model(link)?)
+                .map_err(|e| format!("failed to serialize remote model link: {e}"))
+        }
+        "getRemoteModelLink" => {
+            let params: RemoteModelParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid getRemoteModelLink params: {e}"))?;
+            serde_json::to_value(
+                store.remote_model_link(&params.profile_id, &params.local_model_hash)?,
+            )
+            .map_err(|e| format!("failed to serialize remote model link: {e}"))
+        }
+        "listRemoteModelLinks" => {
+            let params: ListRemoteModelsParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid listRemoteModelLinks params: {e}"))?;
+            serde_json::to_value(store.remote_model_links(&params.profile_id, params.limit)?)
+                .map_err(|e| format!("failed to serialize remote model links: {e}"))
+        }
+        "listEntityRevisions" => {
+            let params: ListEntityRevisionsParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid listEntityRevisions params: {e}"))?;
+            serde_json::to_value(store.entity_revisions(
+                &params.profile_id,
+                params.entity_type,
+                params.limit,
+            )?)
+            .map_err(|e| format!("failed to serialize entity revisions: {e}"))
+        }
+        "enqueueOutboundOperations" => {
+            let params: EnqueueOutboundParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid enqueueOutboundOperations params: {e}"))?;
+            serde_json::to_value(
+                store.enqueue_outbound_operations(&params.profile_id, params.operations)?,
+            )
+            .map_err(|e| format!("failed to serialize outbound operations: {e}"))
+        }
+        "listOutboundOperations" => {
+            let params: ListOutboundParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid listOutboundOperations params: {e}"))?;
+            serde_json::to_value(store.outbound_operations(
+                &params.profile_id,
+                &params.states,
+                params.limit,
+            )?)
+            .map_err(|e| format!("failed to serialize outbound operations: {e}"))
+        }
+        "claimOutboundOperations" => {
+            let params: ClaimOutboundParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid claimOutboundOperations params: {e}"))?;
+            serde_json::to_value(store.claim_outbound_operations(
+                &params.profile_id,
+                params.limit,
+                params.now,
+                params.lease_seconds,
+            )?)
+            .map_err(|e| format!("failed to serialize outbound operations: {e}"))
+        }
+        "recoverOutboundOperations" => {
+            let params: RecoverOutboundParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid recoverOutboundOperations params: {e}"))?;
+            Ok(serde_json::json!({
+                "recovered": store.recover_outbound_operations(&params.profile_id, params.now)?
+            }))
+        }
+        "completeOutboundOperation" => {
+            let params: CompleteOutboundParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid completeOutboundOperation params: {e}"))?;
+            serde_json::to_value(store.complete_outbound_operation(
+                &params.profile_id,
+                &params.operation_id,
+                params.completed_at,
+            )?)
+            .map_err(|e| format!("failed to serialize outbound operation: {e}"))
+        }
+        "failOutboundOperation" => {
+            let params: FailOutboundParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid failOutboundOperation params: {e}"))?;
+            serde_json::to_value(store.fail_outbound_operation(
+                &params.profile_id,
+                &params.operation_id,
+                &params.error,
+                params.failed_at,
+                params.retry_at,
+            )?)
+            .map_err(|e| format!("failed to serialize outbound operation: {e}"))
+        }
+        "recordSyncConflicts" => {
+            let params: RecordConflictsParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid recordSyncConflicts params: {e}"))?;
+            serde_json::to_value(store.record_sync_conflicts(&params.profile_id, params.conflicts)?)
+                .map_err(|e| format!("failed to serialize sync conflicts: {e}"))
+        }
+        "listSyncConflicts" => {
+            let params: ListConflictsParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid listSyncConflicts params: {e}"))?;
+            serde_json::to_value(store.sync_conflicts(
+                &params.profile_id,
+                params.include_resolved,
+                params.limit,
+            )?)
+            .map_err(|e| format!("failed to serialize sync conflicts: {e}"))
+        }
+        "resolveSyncConflict" => {
+            let params: ResolveConflictParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid resolveSyncConflict params: {e}"))?;
+            serde_json::to_value(store.resolve_sync_conflict(
+                &params.profile_id,
+                &params.conflict_id,
+                params.resolution,
+                params.resolved_at,
+            )?)
+            .map_err(|e| format!("failed to serialize sync conflict: {e}"))
+        }
         "loadScene" => {
             let params: PathParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid loadScene params: {e}"))?;
@@ -417,28 +663,33 @@ pub fn run<R: BufRead, W: Write>(
 
 /// Build the catalog store the serve loop threads through dispatch. With the
 /// `sqlite` feature and a `db_path`, this is the persistent on-disk store;
-/// otherwise it falls back to the ephemeral in-memory store.
+/// otherwise it uses the ephemeral in-memory store. A requested persistent
+/// catalog is never silently replaced when opening or migrating it fails.
 #[cfg(feature = "sqlite")]
-fn build_store(db_path: Option<PathBuf>) -> Box<dyn CatalogStore> {
+fn build_store(db_path: Option<PathBuf>) -> std::io::Result<Box<dyn CatalogStore>> {
     match db_path {
-        Some(path) => match crate::sqlite_catalog::SqliteCatalog::open(&path) {
-            Ok(store) => Box::new(store),
-            Err(e) => {
-                eprintln!(
-                    "model-core: failed to open catalog db at {}: {e}; using in-memory catalog",
+        Some(path) => crate::sqlite_catalog::SqliteCatalog::open(&path)
+            .map(|store| Box::new(store) as Box<dyn CatalogStore>)
+            .map_err(|error| {
+                std::io::Error::other(format!(
+                    "failed to open catalog db at {}: {error}",
                     path.display()
-                );
-                Box::new(InMemoryCatalog::new())
-            }
-        },
-        None => Box::new(InMemoryCatalog::new()),
+                ))
+            }),
+        None => Ok(Box::new(InMemoryCatalog::new())),
     }
 }
 
 /// In-memory-only fallback for builds without the `sqlite` feature.
 #[cfg(not(feature = "sqlite"))]
-fn build_store(_db_path: Option<PathBuf>) -> Box<dyn CatalogStore> {
-    Box::new(InMemoryCatalog::new())
+fn build_store(db_path: Option<PathBuf>) -> std::io::Result<Box<dyn CatalogStore>> {
+    if db_path.is_some() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "persistent catalog requested but SQLite support is not compiled in",
+        ));
+    }
+    Ok(Box::new(InMemoryCatalog::new()))
 }
 
 /// Serve on the process's own stdin/stdout. This is the sidecar's default mode.
@@ -446,7 +697,7 @@ fn build_store(_db_path: Option<PathBuf>) -> Box<dyn CatalogStore> {
 /// `db_path` selects the persistent SQLite catalog (when the `sqlite` feature is
 /// compiled in); `None` uses an ephemeral in-memory catalog.
 pub fn run_stdio(db_path: Option<PathBuf>) -> std::io::Result<()> {
-    let mut store = build_store(db_path);
+    let mut store = build_store(db_path)?;
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     run(store.as_mut(), stdin.lock(), stdout.lock())
@@ -823,5 +1074,96 @@ mod tests {
             .unwrap()
             .contains("invalid import plan"));
         assert!(store.models().is_empty());
+    }
+
+    #[test]
+    fn sync_rpc_applies_profile_scoped_pull_and_outbox_operations() {
+        let mut store = InMemoryCatalog::new();
+        let pull = serde_json::json!({
+            "id": 30,
+            "method": "applySyncPullBatch",
+            "params": {
+                "profileId": "profile-a",
+                "cursor": "opaque",
+                "serverRevision": 4,
+                "appliedAt": 10,
+                "entities": [{
+                    "entityType": "Tag",
+                    "remoteId": "tag-1",
+                    "revision": 4,
+                    "tombstone": true,
+                    "visibility": "Shared"
+                }]
+            }
+        });
+        let value: Value =
+            serde_json::from_str(&handle_line(&mut store, &pull.to_string()).unwrap()).unwrap();
+        assert_eq!(value["ok"], true, "{value}");
+        assert_eq!(value["result"]["cursor"], "opaque");
+
+        let other = serde_json::json!({
+            "id": 31,
+            "method": "getSyncStatus",
+            "params": { "profileId": "profile-b" }
+        });
+        let value: Value =
+            serde_json::from_str(&handle_line(&mut store, &other.to_string()).unwrap()).unwrap();
+        assert_eq!(value["result"]["serverRevision"], 0);
+
+        let enqueue = serde_json::json!({
+            "id": 32,
+            "method": "enqueueOutboundOperations",
+            "params": {
+                "profileId": "profile-a",
+                "operations": [{
+                    "operationId": "op-1",
+                    "entityType": "ModelCollection",
+                    "operation": "Create",
+                    "entityId": "local-1",
+                    "payload": {"name": "Dragons"},
+                    "createdAt": 10
+                }]
+            }
+        });
+        let value: Value =
+            serde_json::from_str(&handle_line(&mut store, &enqueue.to_string()).unwrap()).unwrap();
+        assert_eq!(value["result"][0]["state"], "pending");
+        assert_eq!(value["result"][0]["operationId"], "op-1");
+    }
+
+    #[test]
+    fn sync_rpc_rejects_pull_only_tag_pushes() {
+        let mut store = InMemoryCatalog::new();
+        let request = serde_json::json!({
+            "id": 33,
+            "method": "enqueueOutboundOperations",
+            "params": {
+                "profileId": "profile-a",
+                "operations": [{
+                    "operationId": "tag-op",
+                    "entityType": "Tag",
+                    "operation": "Update",
+                    "entityId": "tag-1",
+                    "payload": {},
+                    "createdAt": 10
+                }]
+            }
+        });
+        let value: Value =
+            serde_json::from_str(&handle_line(&mut store, &request.to_string()).unwrap()).unwrap();
+        assert_eq!(value["ok"], false);
+        assert!(value["error"].as_str().unwrap().contains("pull-only"));
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn persistent_store_open_failures_are_not_silently_downgraded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("future.sqlite3");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.pragma_update(None, "user_version", crate::schema::SCHEMA_VERSION + 1)
+            .unwrap();
+        drop(conn);
+        assert!(build_store(Some(path)).is_err());
     }
 }

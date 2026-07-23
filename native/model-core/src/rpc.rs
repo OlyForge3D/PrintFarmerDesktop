@@ -20,6 +20,13 @@ use crate::threemf::ThreeMfError;
 use crate::thumbnail::{self, ThumbnailError, DEFAULT_THUMBNAIL_SIZE};
 use crate::vendor;
 
+pub use crate::sync::{
+    ApplyPullBatchDto, CollectionSnapshotDto, ConflictInputDto, ConflictResolution,
+    EnqueueOutboundOperationDto, EntityRevisionDto, MembershipSnapshotDto, OutboundOperationDto,
+    OutboundState, PullEntityDto, RemoteModelLinkDto, RemoteUploadStatus, SyncConflictDto,
+    SyncEntityType, SyncOperationKind, SyncStatusDto, SyncVisibility, TagSnapshotDto,
+};
+
 /// Axis-aligned bounds in wire form.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BoundsDto {

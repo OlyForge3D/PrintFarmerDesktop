@@ -16,6 +16,11 @@ use std::path::{Path, PathBuf};
 use crate::hash::{hash_file, ContentHash};
 use crate::model::{FileFingerprint, ModelFormat};
 use crate::scan::ScanResult;
+use crate::sync::{
+    self, ApplyPullBatchDto, ConflictInputDto, ConflictResolution, EnqueueOutboundOperationDto,
+    EntityRevisionDto, OutboundOperationDto, OutboundState, RemoteModelLinkDto, SyncConflictDto,
+    SyncEntityType, SyncStatusDto,
+};
 
 /// Stable identifier for a source root (a user-selected folder).
 pub type RootId = String;
@@ -209,6 +214,97 @@ pub trait CatalogStore {
 
     /// Remove a model from a collection. Default: no-op.
     fn remove_model_from_collection(&mut self, _id: &str, _hash: &str) {}
+
+    /// Read the opaque, profile-scoped synchronization checkpoint.
+    fn sync_status(&self, profile_id: &str) -> Result<SyncStatusDto, String>;
+
+    /// Atomically materialize a pull and advance its checkpoint.
+    fn apply_pull_batch(&mut self, batch: ApplyPullBatchDto) -> Result<SyncStatusDto, String>;
+
+    /// Create or refresh an idempotent local-hash to remote-model link.
+    fn link_remote_model(&mut self, link: RemoteModelLinkDto)
+        -> Result<RemoteModelLinkDto, String>;
+
+    fn remote_model_link(
+        &self,
+        profile_id: &str,
+        local_model_hash: &str,
+    ) -> Result<Option<RemoteModelLinkDto>, String>;
+
+    fn remote_model_links(
+        &self,
+        profile_id: &str,
+        limit: usize,
+    ) -> Result<Vec<RemoteModelLinkDto>, String>;
+
+    fn entity_revisions(
+        &self,
+        profile_id: &str,
+        entity_type: Option<SyncEntityType>,
+        limit: usize,
+    ) -> Result<Vec<EntityRevisionDto>, String>;
+
+    /// Transactionally enqueue an outbound batch, preserving caller-supplied ids.
+    fn enqueue_outbound_operations(
+        &mut self,
+        profile_id: &str,
+        operations: Vec<EnqueueOutboundOperationDto>,
+    ) -> Result<Vec<OutboundOperationDto>, String>;
+
+    fn outbound_operations(
+        &self,
+        profile_id: &str,
+        states: &[OutboundState],
+        limit: usize,
+    ) -> Result<Vec<OutboundOperationDto>, String>;
+
+    /// Recover expired leases and claim eligible operations in one transaction.
+    fn claim_outbound_operations(
+        &mut self,
+        profile_id: &str,
+        limit: usize,
+        now: i64,
+        lease_seconds: i64,
+    ) -> Result<Vec<OutboundOperationDto>, String>;
+
+    fn recover_outbound_operations(&mut self, profile_id: &str, now: i64) -> Result<usize, String>;
+
+    fn complete_outbound_operation(
+        &mut self,
+        profile_id: &str,
+        operation_id: &str,
+        completed_at: i64,
+    ) -> Result<OutboundOperationDto, String>;
+
+    fn fail_outbound_operation(
+        &mut self,
+        profile_id: &str,
+        operation_id: &str,
+        error: &str,
+        failed_at: i64,
+        retry_at: Option<i64>,
+    ) -> Result<OutboundOperationDto, String>;
+
+    fn record_sync_conflicts(
+        &mut self,
+        profile_id: &str,
+        conflicts: Vec<ConflictInputDto>,
+    ) -> Result<Vec<SyncConflictDto>, String>;
+
+    fn sync_conflicts(
+        &self,
+        profile_id: &str,
+        include_resolved: bool,
+        limit: usize,
+    ) -> Result<Vec<SyncConflictDto>, String>;
+
+    fn resolve_sync_conflict(
+        &mut self,
+        profile_id: &str,
+        conflict_id: &str,
+        resolution: ConflictResolution,
+        resolved_at: i64,
+    ) -> Result<SyncConflictDto, String>;
 }
 
 /// Summary of a reconciliation pass over one root.
@@ -360,6 +456,11 @@ pub struct InMemoryCatalog {
     collections: HashMap<String, (String, bool)>,
     /// Collection id -> member content hashes.
     collection_members: HashMap<String, std::collections::BTreeSet<ContentHash>>,
+    sync_statuses: HashMap<String, SyncStatusDto>,
+    remote_model_links: HashMap<(String, ContentHash), RemoteModelLinkDto>,
+    sync_entities: HashMap<(String, SyncEntityType, String), EntityRevisionDto>,
+    sync_outbox: HashMap<(String, String), OutboundOperationDto>,
+    sync_conflicts: HashMap<(String, String), SyncConflictDto>,
     transaction_snapshot: Option<Box<InMemoryCatalog>>,
 }
 
@@ -402,6 +503,11 @@ impl CatalogStore for InMemoryCatalog {
             model_tags: self.model_tags.clone(),
             collections: self.collections.clone(),
             collection_members: self.collection_members.clone(),
+            sync_statuses: self.sync_statuses.clone(),
+            remote_model_links: self.remote_model_links.clone(),
+            sync_entities: self.sync_entities.clone(),
+            sync_outbox: self.sync_outbox.clone(),
+            sync_conflicts: self.sync_conflicts.clone(),
             transaction_snapshot: None,
         };
         self.transaction_snapshot = Some(Box::new(snapshot));
@@ -637,6 +743,576 @@ impl CatalogStore for InMemoryCatalog {
             }
         }
     }
+
+    fn sync_status(&self, profile_id: &str) -> Result<SyncStatusDto, String> {
+        sync::validate_profile(profile_id)?;
+        Ok(self
+            .sync_statuses
+            .get(profile_id)
+            .cloned()
+            .unwrap_or_else(|| SyncStatusDto::empty(profile_id)))
+    }
+
+    fn apply_pull_batch(&mut self, batch: ApplyPullBatchDto) -> Result<SyncStatusDto, String> {
+        sync::validate_pull_batch(&batch)?;
+        let current = self.sync_status(&batch.profile_id)?;
+        if batch.server_revision < current.server_revision {
+            return Err("serverRevision must not move backwards".to_string());
+        }
+        for entity in &batch.entities {
+            if let Some(local_id) = &entity.local_id {
+                if self.sync_entities.values().any(|existing| {
+                    existing.profile_id == batch.profile_id
+                        && existing.entity_type == entity.entity_type
+                        && existing.local_id.as_ref() == Some(local_id)
+                        && existing.remote_id != entity.remote_id
+                }) {
+                    return Err(format!(
+                        "localId {local_id} is already mapped to another remote entity"
+                    ));
+                }
+            }
+            if let Some(existing) = self.sync_entities.get(&(
+                batch.profile_id.clone(),
+                entity.entity_type,
+                entity.remote_id.clone(),
+            )) {
+                if entity.revision < existing.revision {
+                    return Err("entity revision must not move backwards".to_string());
+                }
+            }
+        }
+
+        self.begin_batch()?;
+        let result = (|| {
+            for entity in &batch.entities {
+                let revision = EntityRevisionDto {
+                    profile_id: batch.profile_id.clone(),
+                    entity_type: entity.entity_type,
+                    local_id: entity.local_id.clone(),
+                    remote_id: entity.remote_id.clone(),
+                    revision: entity.revision,
+                    concurrency_token: entity.concurrency_token.clone(),
+                    tombstone: entity.tombstone,
+                    visibility: entity.visibility,
+                    snapshot: entity.snapshot.clone(),
+                    updated_at: batch.applied_at,
+                };
+                self.sync_entities.insert(
+                    (
+                        batch.profile_id.clone(),
+                        entity.entity_type,
+                        entity.remote_id.clone(),
+                    ),
+                    revision,
+                );
+            }
+            for conflict in &batch.conflicts {
+                insert_memory_conflict(self, &batch.profile_id, conflict)?;
+            }
+            let status = SyncStatusDto {
+                profile_id: batch.profile_id.clone(),
+                cursor: batch.cursor.clone(),
+                server_revision: batch.server_revision,
+                last_pulled_at: Some(batch.applied_at),
+                last_pushed_at: current.last_pushed_at,
+                updated_at: batch.applied_at,
+            };
+            self.sync_statuses
+                .insert(batch.profile_id.clone(), status.clone());
+            Ok(status)
+        })();
+        match result {
+            Ok(status) => {
+                self.commit_batch()?;
+                Ok(status)
+            }
+            Err(error) => {
+                self.rollback_batch();
+                Err(error)
+            }
+        }
+    }
+
+    fn link_remote_model(
+        &mut self,
+        link: RemoteModelLinkDto,
+    ) -> Result<RemoteModelLinkDto, String> {
+        sync::validate_remote_link(&link)?;
+        let key = (link.profile_id.clone(), link.local_model_hash.clone());
+        if let Some(existing) = self.remote_model_links.get(&key) {
+            if existing.remote_model_id != link.remote_model_id
+                || existing.client_upload_id != link.client_upload_id
+                || existing.created_at != link.created_at
+            {
+                return Err("remote model link content does not match existing link".to_string());
+            }
+        }
+        if self.remote_model_links.values().any(|existing| {
+            existing.profile_id == link.profile_id
+                && existing.local_model_hash != link.local_model_hash
+                && (existing.remote_model_id == link.remote_model_id
+                    || existing.client_upload_id == link.client_upload_id)
+        }) {
+            return Err(
+                "remoteModelId/clientUploadId is already linked in this profile".to_string(),
+            );
+        }
+        self.remote_model_links.insert(key, link.clone());
+        self.sync_statuses
+            .entry(link.profile_id.clone())
+            .or_insert_with(|| SyncStatusDto::empty(&link.profile_id));
+        Ok(link)
+    }
+
+    fn remote_model_link(
+        &self,
+        profile_id: &str,
+        local_model_hash: &str,
+    ) -> Result<Option<RemoteModelLinkDto>, String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_local_hash(local_model_hash)?;
+        Ok(self
+            .remote_model_links
+            .get(&(profile_id.to_string(), local_model_hash.to_string()))
+            .cloned())
+    }
+
+    fn remote_model_links(
+        &self,
+        profile_id: &str,
+        limit: usize,
+    ) -> Result<Vec<RemoteModelLinkDto>, String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_limit(limit)?;
+        let mut links: Vec<_> = self
+            .remote_model_links
+            .values()
+            .filter(|link| link.profile_id == profile_id)
+            .cloned()
+            .collect();
+        links.sort_by(|a, b| a.local_model_hash.cmp(&b.local_model_hash));
+        links.truncate(limit);
+        Ok(links)
+    }
+
+    fn entity_revisions(
+        &self,
+        profile_id: &str,
+        entity_type: Option<SyncEntityType>,
+        limit: usize,
+    ) -> Result<Vec<EntityRevisionDto>, String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_limit(limit)?;
+        let mut entities: Vec<_> = self
+            .sync_entities
+            .values()
+            .filter(|entity| {
+                entity.profile_id == profile_id
+                    && entity_type.is_none_or(|kind| entity.entity_type == kind)
+            })
+            .cloned()
+            .collect();
+        entities.sort_by(|a, b| {
+            a.entity_type
+                .as_db()
+                .cmp(b.entity_type.as_db())
+                .then(a.remote_id.cmp(&b.remote_id))
+        });
+        entities.truncate(limit);
+        Ok(entities)
+    }
+
+    fn enqueue_outbound_operations(
+        &mut self,
+        profile_id: &str,
+        operations: Vec<EnqueueOutboundOperationDto>,
+    ) -> Result<Vec<OutboundOperationDto>, String> {
+        sync::validate_enqueue_batch(profile_id, &operations)?;
+        self.begin_batch()?;
+        let result = (|| {
+            let mut queued = Vec::with_capacity(operations.len());
+            for operation in operations {
+                let key = (profile_id.to_string(), operation.operation_id.clone());
+                if let Some(existing) = self.sync_outbox.get(&key) {
+                    if !outbound_matches_input(existing, &operation) {
+                        return Err(format!(
+                            "operationId {} has different persisted content",
+                            operation.operation_id
+                        ));
+                    }
+                    queued.push(existing.clone());
+                    continue;
+                }
+                let record = OutboundOperationDto {
+                    profile_id: profile_id.to_string(),
+                    operation_id: operation.operation_id,
+                    entity_type: operation.entity_type,
+                    operation: operation.operation,
+                    entity_id: operation.entity_id,
+                    payload: operation.payload,
+                    base_revision: operation.base_revision,
+                    concurrency_token: operation.concurrency_token,
+                    state: OutboundState::Pending,
+                    attempt_count: 0,
+                    retry_eligible: true,
+                    retry_at: None,
+                    lease_until: None,
+                    last_error: None,
+                    created_at: operation.created_at,
+                    updated_at: operation.created_at,
+                    acked_at: None,
+                };
+                self.sync_outbox.insert(key, record.clone());
+                queued.push(record);
+            }
+            self.sync_statuses
+                .entry(profile_id.to_string())
+                .or_insert_with(|| SyncStatusDto::empty(profile_id));
+            Ok(queued)
+        })();
+        match result {
+            Ok(queued) => {
+                self.commit_batch()?;
+                Ok(queued)
+            }
+            Err(error) => {
+                self.rollback_batch();
+                Err(error)
+            }
+        }
+    }
+
+    fn outbound_operations(
+        &self,
+        profile_id: &str,
+        states: &[OutboundState],
+        limit: usize,
+    ) -> Result<Vec<OutboundOperationDto>, String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_limit(limit)?;
+        let mut operations: Vec<_> = self
+            .sync_outbox
+            .values()
+            .filter(|operation| {
+                operation.profile_id == profile_id
+                    && (states.is_empty() || states.contains(&operation.state))
+            })
+            .cloned()
+            .collect();
+        operations.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then(a.operation_id.cmp(&b.operation_id))
+        });
+        operations.truncate(limit);
+        Ok(operations)
+    }
+
+    fn claim_outbound_operations(
+        &mut self,
+        profile_id: &str,
+        limit: usize,
+        now: i64,
+        lease_seconds: i64,
+    ) -> Result<Vec<OutboundOperationDto>, String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_limit(limit)?;
+        let lease_until = sync::validate_lease(now, lease_seconds)?;
+        self.begin_batch()?;
+        let result = (|| {
+            recover_memory_outbox(self, profile_id, now);
+            let mut keys: Vec<_> = self
+                .sync_outbox
+                .iter()
+                .filter(|(_, operation)| {
+                    operation.profile_id == profile_id
+                        && operation.retry_eligible
+                        && (operation.state == OutboundState::Pending
+                            || (operation.state == OutboundState::Failed
+                                && operation.retry_at.is_some_and(|retry_at| retry_at <= now)))
+                })
+                .map(|(key, operation)| {
+                    (
+                        operation.created_at,
+                        operation.operation_id.clone(),
+                        key.clone(),
+                    )
+                })
+                .collect();
+            keys.sort();
+            keys.truncate(limit);
+            let mut claimed = Vec::with_capacity(keys.len());
+            for (_, _, key) in keys {
+                let operation = self.sync_outbox.get_mut(&key).expect("outbox key exists");
+                operation.state = OutboundState::InFlight;
+                operation.attempt_count = operation
+                    .attempt_count
+                    .checked_add(1)
+                    .ok_or_else(|| "attempt count overflow".to_string())?;
+                operation.retry_at = None;
+                operation.lease_until = Some(lease_until);
+                operation.updated_at = now;
+                claimed.push(operation.clone());
+            }
+            Ok(claimed)
+        })();
+        match result {
+            Ok(claimed) => {
+                self.commit_batch()?;
+                Ok(claimed)
+            }
+            Err(error) => {
+                self.rollback_batch();
+                Err(error)
+            }
+        }
+    }
+
+    fn recover_outbound_operations(&mut self, profile_id: &str, now: i64) -> Result<usize, String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_timestamp("now", now)?;
+        Ok(recover_memory_outbox(self, profile_id, now))
+    }
+
+    fn complete_outbound_operation(
+        &mut self,
+        profile_id: &str,
+        operation_id: &str,
+        completed_at: i64,
+    ) -> Result<OutboundOperationDto, String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_identifier("operationId", operation_id)?;
+        sync::validate_timestamp("completedAt", completed_at)?;
+        let operation = self
+            .sync_outbox
+            .get_mut(&(profile_id.to_string(), operation_id.to_string()))
+            .ok_or_else(|| "outbound operation not found".to_string())?;
+        if operation.state != OutboundState::InFlight {
+            return Err("only in-flight operations can be completed".to_string());
+        }
+        if completed_at < operation.updated_at {
+            return Err("completedAt must not precede the claim timestamp".to_string());
+        }
+        operation.state = OutboundState::Acked;
+        operation.retry_eligible = false;
+        operation.lease_until = None;
+        operation.retry_at = None;
+        operation.last_error = None;
+        operation.updated_at = completed_at;
+        operation.acked_at = Some(completed_at);
+        let result = operation.clone();
+        let status = self
+            .sync_statuses
+            .entry(profile_id.to_string())
+            .or_insert_with(|| SyncStatusDto::empty(profile_id));
+        status.last_pushed_at = Some(completed_at);
+        status.updated_at = completed_at;
+        Ok(result)
+    }
+
+    fn fail_outbound_operation(
+        &mut self,
+        profile_id: &str,
+        operation_id: &str,
+        error: &str,
+        failed_at: i64,
+        retry_at: Option<i64>,
+    ) -> Result<OutboundOperationDto, String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_identifier("operationId", operation_id)?;
+        sync::validate_timestamp("failedAt", failed_at)?;
+        if error.is_empty() || error.len() > sync::MAX_ERROR_BYTES {
+            return Err(format!("error must be 1..={} bytes", sync::MAX_ERROR_BYTES));
+        }
+        if let Some(retry_at) = retry_at {
+            sync::validate_timestamp("retryAt", retry_at)?;
+            if retry_at < failed_at {
+                return Err("retryAt must not precede failedAt".to_string());
+            }
+        }
+        let operation = self
+            .sync_outbox
+            .get_mut(&(profile_id.to_string(), operation_id.to_string()))
+            .ok_or_else(|| "outbound operation not found".to_string())?;
+        if operation.state != OutboundState::InFlight {
+            return Err("only in-flight operations can be failed".to_string());
+        }
+        if failed_at < operation.updated_at {
+            return Err("failedAt must not precede the claim timestamp".to_string());
+        }
+        operation.state = OutboundState::Failed;
+        operation.retry_eligible = retry_at.is_some();
+        operation.retry_at = retry_at;
+        operation.lease_until = None;
+        operation.last_error = Some(error.to_string());
+        operation.updated_at = failed_at;
+        Ok(operation.clone())
+    }
+
+    fn record_sync_conflicts(
+        &mut self,
+        profile_id: &str,
+        conflicts: Vec<ConflictInputDto>,
+    ) -> Result<Vec<SyncConflictDto>, String> {
+        sync::validate_profile(profile_id)?;
+        if conflicts.is_empty() || conflicts.len() > sync::MAX_SYNC_BATCH {
+            return Err(format!(
+                "conflict batches must contain 1..={} conflicts",
+                sync::MAX_SYNC_BATCH
+            ));
+        }
+        for conflict in &conflicts {
+            sync::validate_conflict_input(conflict)?;
+        }
+        self.begin_batch()?;
+        let result = (|| {
+            let mut records = Vec::with_capacity(conflicts.len());
+            for conflict in &conflicts {
+                records.push(insert_memory_conflict(self, profile_id, conflict)?);
+            }
+            self.sync_statuses
+                .entry(profile_id.to_string())
+                .or_insert_with(|| SyncStatusDto::empty(profile_id));
+            Ok(records)
+        })();
+        match result {
+            Ok(records) => {
+                self.commit_batch()?;
+                Ok(records)
+            }
+            Err(error) => {
+                self.rollback_batch();
+                Err(error)
+            }
+        }
+    }
+
+    fn sync_conflicts(
+        &self,
+        profile_id: &str,
+        include_resolved: bool,
+        limit: usize,
+    ) -> Result<Vec<SyncConflictDto>, String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_limit(limit)?;
+        let mut conflicts: Vec<_> = self
+            .sync_conflicts
+            .values()
+            .filter(|conflict| {
+                conflict.profile_id == profile_id
+                    && (include_resolved || conflict.resolved_at.is_none())
+            })
+            .cloned()
+            .collect();
+        conflicts.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then(a.conflict_id.cmp(&b.conflict_id))
+        });
+        conflicts.truncate(limit);
+        Ok(conflicts)
+    }
+
+    fn resolve_sync_conflict(
+        &mut self,
+        profile_id: &str,
+        conflict_id: &str,
+        resolution: ConflictResolution,
+        resolved_at: i64,
+    ) -> Result<SyncConflictDto, String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_identifier("conflictId", conflict_id)?;
+        sync::validate_timestamp("resolvedAt", resolved_at)?;
+        let conflict = self
+            .sync_conflicts
+            .get_mut(&(profile_id.to_string(), conflict_id.to_string()))
+            .ok_or_else(|| "sync conflict not found".to_string())?;
+        if conflict.resolved_at.is_some() {
+            return Err("sync conflict is already resolved".to_string());
+        }
+        if resolved_at < conflict.created_at {
+            return Err("resolvedAt must not precede createdAt".to_string());
+        }
+        conflict.resolved_at = Some(resolved_at);
+        conflict.resolution = Some(resolution);
+        Ok(conflict.clone())
+    }
+}
+
+fn outbound_matches_input(
+    existing: &OutboundOperationDto,
+    input: &EnqueueOutboundOperationDto,
+) -> bool {
+    existing.operation_id == input.operation_id
+        && existing.entity_type == input.entity_type
+        && existing.operation == input.operation
+        && existing.entity_id == input.entity_id
+        && existing.payload == input.payload
+        && existing.base_revision == input.base_revision
+        && existing.concurrency_token == input.concurrency_token
+        && existing.created_at == input.created_at
+}
+
+fn insert_memory_conflict(
+    store: &mut InMemoryCatalog,
+    profile_id: &str,
+    input: &ConflictInputDto,
+) -> Result<SyncConflictDto, String> {
+    let key = (profile_id.to_string(), input.conflict_id.clone());
+    if let Some(existing) = store.sync_conflicts.get(&key) {
+        let matches = existing.entity_type == input.entity_type
+            && existing.entity_id == input.entity_id
+            && existing.local_payload == input.local_payload
+            && existing.server_payload == input.server_payload
+            && existing.submitted_payload == input.submitted_payload
+            && existing.reason == input.reason
+            && existing.server_revision == input.server_revision
+            && existing.created_at == input.created_at;
+        return if matches {
+            Ok(existing.clone())
+        } else {
+            Err(format!(
+                "conflictId {} has different persisted content",
+                input.conflict_id
+            ))
+        };
+    }
+    let record = SyncConflictDto {
+        profile_id: profile_id.to_string(),
+        conflict_id: input.conflict_id.clone(),
+        entity_type: input.entity_type,
+        entity_id: input.entity_id.clone(),
+        local_payload: input.local_payload.clone(),
+        server_payload: input.server_payload.clone(),
+        submitted_payload: input.submitted_payload.clone(),
+        reason: input.reason.clone(),
+        server_revision: input.server_revision,
+        created_at: input.created_at,
+        resolved_at: None,
+        resolution: None,
+    };
+    store.sync_conflicts.insert(key, record.clone());
+    Ok(record)
+}
+
+fn recover_memory_outbox(store: &mut InMemoryCatalog, profile_id: &str, now: i64) -> usize {
+    let mut recovered = 0;
+    for operation in store.sync_outbox.values_mut().filter(|operation| {
+        operation.profile_id == profile_id
+            && operation.state == OutboundState::InFlight
+            && operation.retry_eligible
+            && operation
+                .lease_until
+                .is_some_and(|lease_until| lease_until <= now)
+    }) {
+        operation.state = OutboundState::Pending;
+        operation.lease_until = None;
+        operation.retry_at = None;
+        operation.updated_at = now;
+        recovered += 1;
+    }
+    recovered
 }
 
 #[cfg(test)]
