@@ -18,9 +18,9 @@ or uploads source models without an explicit user action.
    directly. Hosts one Three.js scene at a time.
 4. **Rust sidecar** (`native/model-core`) — a separately signed executable that
    owns SQLite (WAL), folder scanning/watching, streaming SHA-256 hashing,
-   STL/3MF parsing via lib3mf, vendor (Bambu/Orca/Prusa) metadata, and the
-   normalized scene cache. It talks to the main process over a framed, versioned
-   RPC protocol on a private transport.
+   pure-Rust STL, OBJ, standard 3MF and Production Extension 3MF parsing, vendor
+   (Bambu/Orca/Prusa) metadata, and the normalized scene cache. It talks to the
+   main process over a framed, versioned RPC protocol on a private transport.
 
 ## IPC contract
 

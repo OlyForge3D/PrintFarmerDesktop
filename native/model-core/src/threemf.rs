@@ -13,7 +13,7 @@
 //! multi-plate metadata, painted seams, beam lattices) are intentionally out of
 //! scope and handled elsewhere.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read, Seek};
 use std::path::Path;
 
@@ -28,6 +28,7 @@ use crate::geometry::Aabb;
 /// Upper bounds so a malformed or hostile package cannot exhaust memory.
 pub const MAX_VERTICES: usize = 20_000_000;
 pub const MAX_TRIANGLES: usize = 40_000_000;
+pub const MAX_MODEL_PARTS: usize = 10_000;
 /// Maximum component nesting depth; also breaks any reference cycle.
 pub const MAX_COMPONENT_DEPTH: usize = 50;
 
@@ -138,6 +139,7 @@ impl Transform {
 #[derive(Debug, Clone)]
 struct Component {
     object_id: u32,
+    model_part: Option<String>,
     transform: Transform,
 }
 
@@ -165,6 +167,14 @@ struct RawModel {
     objects: HashMap<u32, RawObject>,
     build: Vec<Component>,
     unit: String,
+}
+
+/// All model documents needed to resolve the root model's local and Production
+/// Extension object references. Object IDs are scoped to each model part.
+#[derive(Debug)]
+struct RawPackage {
+    models: HashMap<String, RawModel>,
+    root_part: String,
 }
 
 /// One placed build instance, retained as a selectable "part" of the flattened
@@ -213,10 +223,29 @@ pub fn parse_file(path: &Path) -> Result<ThreeMfMesh, ThreeMfError> {
 /// Parse a 3MF package from an in-memory byte buffer.
 pub fn parse_bytes(data: &[u8]) -> Result<ThreeMfMesh, ThreeMfError> {
     let mut archive = ZipArchive::new(Cursor::new(data))?;
-    let model_part = locate_model_part(&mut archive)?;
-    let xml = read_entry(&mut archive, &model_part)?.ok_or(ThreeMfError::MissingModelPart)?;
-    let model = parse_model_xml(&xml)?;
-    flatten(&model)
+    let root_part = locate_model_part(&mut archive)?;
+    let root_xml = read_entry(&mut archive, &root_part)?.ok_or(ThreeMfError::MissingModelPart)?;
+    let root_model = parse_model_xml(&root_xml, true)?;
+
+    let mut referenced_parts = referenced_model_parts(&root_model);
+    referenced_parts.remove(&root_part);
+    if referenced_parts.len() > MAX_MODEL_PARTS {
+        return Err(ThreeMfError::TooLarge);
+    }
+    let mut external_parts: Vec<String> = referenced_parts.into_iter().collect();
+    external_parts.sort();
+
+    let mut models = HashMap::with_capacity(external_parts.len() + 1);
+    for model_part in external_parts {
+        let xml = read_entry(&mut archive, &model_part)?.ok_or_else(|| {
+            ThreeMfError::Malformed(format!("referenced model part '/{model_part}' is missing"))
+        })?;
+        let model = parse_model_xml(&xml, false)?;
+        models.insert(model_part, model);
+    }
+    models.insert(root_part.clone(), root_model);
+
+    flatten(&RawPackage { models, root_part })
 }
 
 /// Resolve the model part path, preferring the package relationships and
@@ -288,7 +317,7 @@ fn model_target_from_rels(xml: &str) -> Result<Option<String>, ThreeMfError> {
 }
 
 /// Stream the model XML into reusable objects and the build's instance list.
-fn parse_model_xml(xml: &str) -> Result<RawModel, ThreeMfError> {
+fn parse_model_xml(xml: &str, is_root_model: bool) -> Result<RawModel, ThreeMfError> {
     let mut reader = Reader::from_str(xml);
 
     let mut objects: HashMap<u32, RawObject> = HashMap::new();
@@ -345,14 +374,16 @@ fn parse_model_xml(xml: &str) -> Result<RawModel, ThreeMfError> {
                     if let Some(ObjectGeometry::Components(list)) = current_geometry.as_mut() {
                         list.push(Component {
                             object_id: attr_u32(&e, b"objectid")?,
+                            model_part: optional_model_part(&e, is_root_model)?,
                             transform: optional_transform(&e)?,
                         });
                     }
                 }
-                b"build" => in_build = true,
+                b"build" => in_build = is_root_model,
                 b"item" if in_build => {
                     build.push(Component {
                         object_id: attr_u32(&e, b"objectid")?,
+                        model_part: optional_model_part(&e, is_root_model)?,
                         transform: optional_transform(&e)?,
                     });
                 }
@@ -389,17 +420,41 @@ fn parse_model_xml(xml: &str) -> Result<RawModel, ThreeMfError> {
     })
 }
 
+fn referenced_model_parts(model: &RawModel) -> HashSet<String> {
+    let mut parts = HashSet::new();
+    for item in &model.build {
+        if let Some(model_part) = &item.model_part {
+            parts.insert(model_part.clone());
+        }
+    }
+    for object in model.objects.values() {
+        if let ObjectGeometry::Components(components) = &object.geometry {
+            for component in components {
+                if let Some(model_part) = &component.model_part {
+                    parts.insert(model_part.clone());
+                }
+            }
+        }
+    }
+    parts
+}
+
 /// Expand the build into a single indexed mesh, baking every transform. Each
 /// build item is recorded as a [`ThreeMfPart`] spanning the triangles it added.
-fn flatten(model: &RawModel) -> Result<ThreeMfMesh, ThreeMfError> {
+fn flatten(package: &RawPackage) -> Result<ThreeMfMesh, ThreeMfError> {
+    let root_model = package.models.get(&package.root_part).ok_or_else(|| {
+        ThreeMfError::Malformed("resolved root model part is missing".to_string())
+    })?;
     let mut vertices: Vec<[f32; 3]> = Vec::new();
     let mut triangles: Vec<[u32; 3]> = Vec::new();
-    let mut parts: Vec<ThreeMfPart> = Vec::with_capacity(model.build.len());
+    let mut parts: Vec<ThreeMfPart> = Vec::with_capacity(root_model.build.len());
 
-    for item in &model.build {
+    for item in &root_model.build {
+        let model_part = item.model_part.as_deref().unwrap_or(&package.root_part);
         let triangle_start = triangles.len();
         expand(
-            model,
+            package,
+            model_part,
             item.object_id,
             item.transform,
             &mut vertices,
@@ -407,7 +462,7 @@ fn flatten(model: &RawModel) -> Result<ThreeMfMesh, ThreeMfError> {
             0,
         )?;
         parts.push(ThreeMfPart {
-            name: part_name(model, item.object_id),
+            name: part_name(package, model_part, item.object_id),
             triangle_start,
             triangle_count: triangles.len() - triangle_start,
         });
@@ -422,26 +477,32 @@ fn flatten(model: &RawModel) -> Result<ThreeMfMesh, ThreeMfError> {
         vertices,
         triangles,
         bounds,
-        unit: model.unit.clone(),
-        object_count: model.objects.len(),
-        build_item_count: model.build.len(),
+        unit: root_model.unit.clone(),
+        object_count: package
+            .models
+            .values()
+            .map(|model| model.objects.len())
+            .sum(),
+        build_item_count: root_model.build.len(),
         parts,
     })
 }
 
 /// A human-readable label for a build item: the object's `name` when declared,
 /// otherwise a stable `Object {id}` fallback.
-fn part_name(model: &RawModel, object_id: u32) -> String {
-    model
-        .objects
-        .get(&object_id)
-        .and_then(|o| o.name.clone())
+fn part_name(package: &RawPackage, model_part: &str, object_id: u32) -> String {
+    package
+        .models
+        .get(model_part)
+        .and_then(|model| model.objects.get(&object_id))
+        .and_then(|object| object.name.clone())
         .unwrap_or_else(|| format!("Object {object_id}"))
 }
 
-/// Recursively bake `object_id` under `transform` into the output buffers.
+/// Recursively bake an object under `transform` into the output buffers.
 fn expand(
-    model: &RawModel,
+    package: &RawPackage,
+    model_part: &str,
     object_id: u32,
     transform: Transform,
     out_vertices: &mut Vec<[f32; 3]>,
@@ -454,8 +515,13 @@ fn expand(
         ));
     }
 
+    let model = package.models.get(model_part).ok_or_else(|| {
+        ThreeMfError::Malformed(format!("referenced model part '/{model_part}' is missing"))
+    })?;
     let object = model.objects.get(&object_id).ok_or_else(|| {
-        ThreeMfError::Malformed(format!("reference to unknown object {object_id}"))
+        ThreeMfError::Malformed(format!(
+            "reference to unknown object {object_id} in model part '/{model_part}'"
+        ))
     })?;
 
     match &object.geometry {
@@ -489,8 +555,10 @@ fn expand(
             for component in components {
                 // Apply the component's local transform, then the accumulated one.
                 let composed = component.transform.compose(&transform);
+                let component_part = component.model_part.as_deref().unwrap_or(model_part);
                 expand(
-                    model,
+                    package,
+                    component_part,
                     component.object_id,
                     composed,
                     out_vertices,
@@ -509,6 +577,49 @@ pub(crate) fn get_attr(e: &BytesStart, name: &[u8]) -> Option<String> {
         .flatten()
         .find(|a| a.key.as_ref() == name)
         .map(|a| String::from_utf8_lossy(&a.value).into_owned())
+}
+
+fn get_attr_by_local_name(e: &BytesStart, name: &[u8]) -> Option<String> {
+    e.attributes()
+        .flatten()
+        .find(|attribute| attribute.key.as_ref().rsplit(|byte| *byte == b':').next() == Some(name))
+        .map(|attribute| String::from_utf8_lossy(&attribute.value).into_owned())
+}
+
+fn optional_model_part(
+    e: &BytesStart,
+    is_root_model: bool,
+) -> Result<Option<String>, ThreeMfError> {
+    let Some(path) = get_attr_by_local_name(e, b"path") else {
+        return Ok(None);
+    };
+    if !is_root_model {
+        return Err(ThreeMfError::Malformed(
+            "Production Extension paths are only valid in the root model part".to_string(),
+        ));
+    }
+    normalize_model_part_path(&path).map(Some)
+}
+
+fn normalize_model_part_path(path: &str) -> Result<String, ThreeMfError> {
+    let path = path.trim();
+    if path.is_empty() || path.contains('\\') {
+        return Err(ThreeMfError::Malformed(format!(
+            "invalid Production Extension model path '{path}'"
+        )));
+    }
+
+    let path = path.trim_start_matches('/');
+    if path.is_empty()
+        || path
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        return Err(ThreeMfError::Malformed(format!(
+            "invalid Production Extension model path '{path}'"
+        )));
+    }
+    Ok(path.to_string())
 }
 
 fn attr_u32(e: &BytesStart, name: &[u8]) -> Result<u32, ThreeMfError> {
@@ -574,6 +685,44 @@ mod tests {
             }
             writer.start_file(model_part, options).unwrap();
             writer.write_all(model_xml.as_bytes()).unwrap();
+            writer.finish().unwrap();
+        }
+        buf
+    }
+
+    fn production_package(root_xml: &str, model_parts: &[(&str, &str)]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut buf));
+            let options =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            writer.start_file(RELATIONSHIPS_PART, options).unwrap();
+            writer.write_all(RELS_XML.as_bytes()).unwrap();
+            writer.start_file(DEFAULT_MODEL_PART, options).unwrap();
+            writer.write_all(root_xml.as_bytes()).unwrap();
+
+            let mut model_rels = String::from(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+            );
+            for (index, (path, _)) in model_parts.iter().enumerate() {
+                model_rels.push_str(&format!(
+                    r#"<Relationship Id="rel{index}" Target="/{}" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>"#,
+                    path.trim_start_matches('/')
+                ));
+            }
+            model_rels.push_str("</Relationships>");
+            writer
+                .start_file("3D/_rels/3dmodel.model.rels", options)
+                .unwrap();
+            writer.write_all(model_rels.as_bytes()).unwrap();
+
+            for (path, xml) in model_parts {
+                writer
+                    .start_file(path.trim_start_matches('/'), options)
+                    .unwrap();
+                writer.write_all(xml.as_bytes()).unwrap();
+            }
             writer.finish().unwrap();
         }
         buf
@@ -762,6 +911,127 @@ mod tests {
         // Vertex (0,0,0) -> component +x5 -> build +y7 = (5,7,0).
         assert_eq!(mesh.bounds.min, [5.0, 7.0, 0.0]);
         assert_eq!(mesh.bounds.max, [6.0, 8.0, 0.0]);
+    }
+
+    #[test]
+    fn resolves_production_extension_component_paths() {
+        let root = r#"<?xml version="1.0"?>
+<model unit="millimeter" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06">
+  <resources>
+    <object id="2" type="model" name="Assembly">
+      <components>
+        <component p:path="/3D/Objects/body.model" objectid="1"
+          transform="1 0 0 0 1 0 0 0 1 5 0 0"/>
+      </components>
+    </object>
+  </resources>
+  <build>
+    <item objectid="2" transform="1 0 0 0 1 0 0 0 1 0 7 0"/>
+  </build>
+</model>"#;
+        let body = r#"<?xml version="1.0"?>
+<model unit="millimeter">
+  <resources>
+    <object id="1" type="model" name="Body">
+      <mesh>
+        <vertices>
+          <vertex x="0" y="0" z="0"/>
+          <vertex x="1" y="0" z="0"/>
+          <vertex x="0" y="1" z="0"/>
+        </vertices>
+        <triangles><triangle v1="0" v2="1" v3="2"/></triangles>
+      </mesh>
+    </object>
+  </resources>
+  <build><item objectid="999"/></build>
+</model>"#;
+        let data = production_package(root, &[("3D/Objects/body.model", body)]);
+        let mesh = parse_bytes(&data).unwrap();
+
+        assert_eq!(mesh.object_count, 2);
+        assert_eq!(mesh.build_item_count, 1);
+        assert_eq!(mesh.triangle_count(), 1);
+        assert_eq!(mesh.bounds.min, [5.0, 7.0, 0.0]);
+        assert_eq!(mesh.bounds.max, [6.0, 8.0, 0.0]);
+        assert_eq!(mesh.parts[0].name, "Assembly");
+    }
+
+    #[test]
+    fn resolves_production_extension_build_item_paths() {
+        let root = r#"<?xml version="1.0"?>
+<model unit="millimeter" xmlns:prod="http://schemas.microsoft.com/3dmanufacturing/production/2015/06">
+  <resources/>
+  <build>
+    <item prod:path="/3D/Objects/body.model" objectid="1"
+      transform="1 0 0 0 1 0 0 0 1 2 3 4"/>
+  </build>
+</model>"#;
+        let body = r#"<?xml version="1.0"?>
+<model unit="millimeter">
+  <resources>
+    <object id="1" type="model" name="External body">
+      <mesh>
+        <vertices>
+          <vertex x="0" y="0" z="0"/>
+          <vertex x="1" y="0" z="0"/>
+          <vertex x="0" y="1" z="0"/>
+        </vertices>
+        <triangles><triangle v1="0" v2="1" v3="2"/></triangles>
+      </mesh>
+    </object>
+  </resources>
+</model>"#;
+        let data = production_package(root, &[("3D/Objects/body.model", body)]);
+        let mesh = parse_bytes(&data).unwrap();
+
+        assert_eq!(mesh.bounds.min, [2.0, 3.0, 4.0]);
+        assert_eq!(mesh.bounds.max, [3.0, 4.0, 4.0]);
+        assert_eq!(mesh.parts[0].name, "External body");
+    }
+
+    #[test]
+    fn rejects_production_paths_in_non_root_components() {
+        let root = r#"<model xmlns:p="urn:production"><resources/><build>
+  <item p:path="/3D/Objects/body.model" objectid="1"/>
+</build></model>"#;
+        let body = r#"<model xmlns:p="urn:production"><resources>
+  <object id="1"><components>
+    <component p:path="/3D/Objects/nested.model" objectid="2"/>
+  </components></object>
+</resources></model>"#;
+        let nested = single_triangle_model();
+        let data = production_package(
+            root,
+            &[
+                ("3D/Objects/body.model", body),
+                ("3D/Objects/nested.model", &nested),
+            ],
+        );
+
+        let error = parse_bytes(&data).unwrap_err().to_string();
+        assert!(error.contains("only valid in the root model part"));
+    }
+
+    #[test]
+    fn reports_missing_production_model_parts() {
+        let root = r#"<model xmlns:p="urn:production"><resources/><build>
+  <item p:path="/3D/Objects/missing.model" objectid="1"/>
+</build></model>"#;
+        let data = package(root, true, DEFAULT_MODEL_PART);
+
+        let error = parse_bytes(&data).unwrap_err().to_string();
+        assert!(error.contains("referenced model part '/3D/Objects/missing.model' is missing"));
+    }
+
+    #[test]
+    fn rejects_unsafe_production_model_paths() {
+        let root = r#"<model xmlns:p="urn:production"><resources/><build>
+  <item p:path="/3D/../outside.model" objectid="1"/>
+</build></model>"#;
+        let data = package(root, true, DEFAULT_MODEL_PART);
+
+        let error = parse_bytes(&data).unwrap_err().to_string();
+        assert!(error.contains("invalid Production Extension model path"));
     }
 
     #[test]

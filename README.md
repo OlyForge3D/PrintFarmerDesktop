@@ -19,8 +19,8 @@ Early development. See the implementation plan and the tracked work items.
 - **React + strict TypeScript + Vite** renderer with a virtualized library grid.
 - **Three.js (WebGL2)** for interactive viewing and deterministic thumbnails.
 - **Rust sidecar** (`native/model-core`) that owns SQLite (WAL), folder
-  scanning/watching, streaming SHA-256 hashing, STL/3MF parsing via lib3mf, and
-  a normalized scene cache.
+  scanning/watching, streaming SHA-256 hashing, pure-Rust STL, OBJ, standard 3MF
+  and Production Extension 3MF parsing, and a normalized scene cache.
 - Backward-compatible integration with the .NET 10 PrintFarmer server for
   authentication, model/thumbnail upload, collections, and metadata sync.
 
