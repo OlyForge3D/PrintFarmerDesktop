@@ -46,6 +46,8 @@ interface PendingRequest {
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 /** Imports get a longer watchdog; expiry terminates the mutating sidecar. */
 export const DEFAULT_MUTATION_TIMEOUT_MS = 15 * 60_000;
+/** Maximum wait for a killed sidecar to confirm process closure. */
+export const DEFAULT_TERMINATION_TIMEOUT_MS = 10_000;
 
 /** How many times the sidecar may fail to produce a response before we give up. */
 export const MAX_CONSECUTIVE_FAILURES = 5;
@@ -53,6 +55,7 @@ export const MAX_CONSECUTIVE_FAILURES = 5;
 export interface SidecarClientOptions {
   requestTimeoutMs?: number;
   mutationTimeoutMs?: number;
+  terminationTimeoutMs?: number;
   maxConsecutiveFailures?: number;
 }
 
@@ -62,13 +65,17 @@ interface RequestPolicy {
 }
 
 export class SidecarClient {
+  private disposed = false;
   private channel: SidecarChannel | null = null;
   private terminatingChannel: SidecarChannel | null = null;
+  private terminationError: Error | null = null;
+  private terminationTimer: ReturnType<typeof setTimeout> | null = null;
   private nextId = 1;
   private readonly pending = new Map<number, PendingRequest>();
   private consecutiveFailures = 0;
   private readonly requestTimeoutMs: number;
   private readonly mutationTimeoutMs: number;
+  private readonly terminationTimeoutMs: number;
   private readonly maxConsecutiveFailures: number;
 
   constructor(
@@ -79,6 +86,8 @@ export class SidecarClient {
       options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.mutationTimeoutMs =
       options.mutationTimeoutMs ?? DEFAULT_MUTATION_TIMEOUT_MS;
+    this.terminationTimeoutMs =
+      options.terminationTimeoutMs ?? DEFAULT_TERMINATION_TIMEOUT_MS;
     this.maxConsecutiveFailures =
       options.maxConsecutiveFailures ?? MAX_CONSECUTIVE_FAILURES;
   }
@@ -214,9 +223,18 @@ export class SidecarClient {
 
   /** Stop the sidecar and reject any in-flight requests. */
   dispose(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.disposed = true;
     const channel = this.channel;
     this.channel = null;
     this.terminatingChannel = null;
+    this.terminationError = null;
+    if (this.terminationTimer) {
+      clearTimeout(this.terminationTimer);
+      this.terminationTimer = null;
+    }
     this.rejectAllPending(new Error('sidecar client disposed'));
     channel?.close();
   }
@@ -229,6 +247,9 @@ export class SidecarClient {
       terminateOnTimeout: false,
     },
   ): Promise<unknown> {
+    if (this.disposed) {
+      return Promise.reject(new Error('sidecar client disposed'));
+    }
     if (this.terminatingChannel) {
       return Promise.reject(
         new Error(
@@ -257,11 +278,24 @@ export class SidecarClient {
           const isActiveChannel = this.channel === channel;
           if (isActiveChannel) {
             this.terminatingChannel = channel;
+            this.terminationError = error;
+            for (const pending of this.pending.values()) {
+              clearTimeout(pending.timer);
+            }
+            this.terminationTimer = setTimeout(() => {
+              this.terminationTimer = null;
+              this.rejectAllPending(
+                new Error(
+                  `${error.message}; sidecar shutdown could not be confirmed`,
+                ),
+              );
+            }, this.terminationTimeoutMs);
           }
           this.recordFailure();
-          this.rejectAllPending(error);
           if (isActiveChannel) {
             channel.close();
+          } else {
+            this.rejectAllPending(error);
           }
         } else {
           this.pending.delete(id);
@@ -298,13 +332,19 @@ export class SidecarClient {
     }
 
     const channel = this.createChannel();
-    channel.onMessage((rawLine) => this.handleMessage(rawLine));
+    channel.onMessage((rawLine) => this.handleMessage(channel, rawLine));
     channel.onClose((info) => this.handleClose(channel, info));
     this.channel = channel;
     return channel;
   }
 
-  private handleMessage(rawLine: string): void {
+  private handleMessage(sourceChannel: SidecarChannel, rawLine: string): void {
+    if (
+      sourceChannel !== this.channel ||
+      sourceChannel === this.terminatingChannel
+    ) {
+      return;
+    }
     const trimmed = rawLine.trim();
     if (trimmed.length === 0) {
       return;
@@ -339,10 +379,19 @@ export class SidecarClient {
     info: { code: number | null },
   ): void {
     if (this.terminatingChannel === closedChannel) {
+      const terminationError =
+        this.terminationError ??
+        new Error('sidecar was terminated before the request completed');
       this.terminatingChannel = null;
+      this.terminationError = null;
+      if (this.terminationTimer) {
+        clearTimeout(this.terminationTimer);
+        this.terminationTimer = null;
+      }
       if (this.channel === closedChannel) {
         this.channel = null;
       }
+      this.rejectAllPending(terminationError);
       return;
     }
     // Ignore closes from a channel we already replaced.
@@ -465,8 +514,7 @@ export function spawnSidecarChannel(binaryPath?: string): SidecarChannel {
   };
   child.on('close', (code) => emitClose(code));
   child.on('error', (error) => {
-    console.error(`[model-core] failed to start: ${error.message}`);
-    emitClose(null);
+    console.error(`[model-core] process error: ${error.message}`);
   });
 
   return {

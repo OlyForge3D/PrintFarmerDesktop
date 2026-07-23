@@ -330,15 +330,24 @@ describe('SidecarClient', () => {
           starts += 1;
           return starts === 1 ? first.channel : second.channel;
         },
-        { mutationTimeoutMs: 100 },
+        { mutationTimeoutMs: 100, terminationTimeoutMs: 1_000 },
       );
+      let importSettled = false;
       const importRequest = client.importRoot('root1', 'C:/models', [], []);
+      void importRequest.then(
+        () => {
+          importSettled = true;
+        },
+        () => {
+          importSettled = true;
+        },
+      );
       const rejection = expect(importRequest).rejects.toThrow(
         'the sidecar was terminated',
       );
       vi.runAllTicks();
       await vi.advanceTimersByTimeAsync(100);
-      await rejection;
+      expect(importSettled).toBe(false);
 
       await expect(client.listModels()).rejects.toThrow(
         'sidecar termination is still in progress',
@@ -347,6 +356,7 @@ describe('SidecarClient', () => {
       expect(close).toHaveBeenCalledTimes(1);
 
       first.closeFromSidecar(null);
+      await rejection;
       const catalog = client.listModels();
       vi.runAllTicks();
       await expect(catalog).resolves.toEqual([]);
@@ -354,6 +364,57 @@ describe('SidecarClient', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('bounds the wait when sidecar shutdown cannot be confirmed', async () => {
+    vi.useFakeTimers();
+    try {
+      const { channel } = makeFakeChannel(() => undefined);
+      vi.spyOn(channel, 'close').mockImplementation(() => undefined);
+      const client = new SidecarClient(() => channel, {
+        mutationTimeoutMs: 100,
+        terminationTimeoutMs: 50,
+      });
+      const importRequest = client.importRoot('root1', 'C:/models', [], []);
+      const rejection = expect(importRequest).rejects.toThrow(
+        'sidecar shutdown could not be confirmed',
+      );
+      vi.runAllTicks();
+
+      await vi.advanceTimersByTimeAsync(150);
+      await rejection;
+      await expect(client.listModels()).rejects.toThrow(
+        'sidecar termination is still in progress',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never restarts a disposed client while its process is exiting', async () => {
+    const first = makeFakeChannel((request, emit) => {
+      emit(
+        JSON.stringify({
+          id: request.id,
+          ok: true,
+          result: { protocolVersion: 1, sidecarVersion: '0.1.0' },
+        }),
+      );
+    });
+    vi.spyOn(first.channel, 'close').mockImplementation(() => undefined);
+    let starts = 0;
+    const client = new SidecarClient(() => {
+      starts += 1;
+      return first.channel;
+    });
+    await client.handshake();
+
+    client.dispose();
+
+    await expect(client.listModels()).rejects.toThrow(
+      'sidecar client disposed',
+    );
+    expect(starts).toBe(1);
   });
 
   it('sends a listModels request and resolves the model array', async () => {
