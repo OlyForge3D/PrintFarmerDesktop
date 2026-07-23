@@ -646,6 +646,15 @@ export class ServerProfileService {
     });
   }
 
+  /** Invalidate a rejected cached JWT and issue a fresh profile-bound token. */
+  async refreshToken(id: string): Promise<string> {
+    await this.withMutationLock(() => {
+      this.invalidateToken(id);
+      return Promise.resolve();
+    });
+    return this.getToken(id);
+  }
+
   private async probe(
     id: string,
     displayName: string,

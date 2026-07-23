@@ -22,13 +22,15 @@ use crate::catalog::{
     CatalogStore, Collection, LocationUpsert, LogicalModel, ModelLocation, StoredLocation, Tag,
 };
 use crate::model::{FileFingerprint, ModelFormat};
-use crate::schema::{SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_VERSION};
+use crate::schema::{
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_VERSION,
+};
 use crate::sync::{
     self, ApplyPullBatchDto, ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution,
-    DisposeFailedBatchDto, EnqueueOutboundOperationDto, EntityRevisionDto, OutboundOperationDto,
-    OutboundState, ReconcileUncertainBatchDto, RemoteModelLinkDto, RemoteUploadStatus,
-    SettleOutboundBatchDto, SettledOutboundBatchDto, SyncConflictDto, SyncEntityType,
-    SyncStatusDto, SyncVisibility, UnknownOutcomeResolution,
+    DisposeFailedBatchDto, EnqueueOutboundOperationDto, EntityRevisionDto, FailOutboundBatchDto,
+    OutboundFailureOutcome, OutboundOperationDto, OutboundState, ReconcileUncertainBatchDto,
+    RemoteModelLinkDto, RemoteUploadStatus, SettleOutboundBatchDto, SettledOutboundBatchDto,
+    SyncConflictDto, SyncEntityType, SyncStatusDto, SyncVisibility, UnknownOutcomeResolution,
 };
 
 /// A SQLite-backed catalog. Wraps one connection; use single-threaded per the
@@ -81,6 +83,9 @@ impl SqliteCatalog {
                 if version < 5 {
                     conn.execute_batch(SCHEMA_V5)?;
                     migrate_v5_fencing(&conn)?;
+                }
+                if version < 6 {
+                    conn.execute_batch(SCHEMA_V6)?;
                 }
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 conn.execute_batch("COMMIT")
@@ -273,6 +278,173 @@ impl SqliteCatalog {
             )
             .map(|_| ())
             .map_err(sql_error)
+    }
+
+    fn remove_materialized_membership(
+        &self,
+        profile_id: &str,
+        mapping: &EntityRevisionDto,
+    ) -> Result<(), String> {
+        let Some(snapshot) = mapping.snapshot.clone() else {
+            return Ok(());
+        };
+        let snapshot: sync::MembershipSnapshotDto = serde_json::from_value(snapshot)
+            .map_err(|error| format!("invalid membership snapshot: {error}"))?;
+        let collection_id: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT local_id FROM sync_entities
+                 WHERE profile_id = ?1 AND entity_type = 'ModelCollection' AND remote_id = ?2",
+                params![profile_id, snapshot.collection_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?
+            .flatten();
+        let model_hash: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT local_model_hash FROM remote_model_links
+                 WHERE profile_id = ?1 AND remote_model_id = ?2",
+                params![profile_id, snapshot.model_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        if let (Some(collection_id), Some(model_hash)) = (collection_id, model_hash) {
+            self.conn
+                .execute(
+                    "DELETE FROM collection_models WHERE collection_id = ?1 AND model_hash = ?2",
+                    params![collection_id, model_hash],
+                )
+                .map_err(sql_error)?;
+        }
+        Ok(())
+    }
+
+    fn materialize_memberships(&self, profile_id: &str) -> Result<(), String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT snapshot_json FROM sync_entities
+                 WHERE profile_id = ?1 AND entity_type = 'ModelCollectionMembership'
+                   AND tombstone = 0 AND snapshot_json IS NOT NULL",
+            )
+            .map_err(sql_error)?;
+        let snapshots = stmt
+            .query_map(params![profile_id], |row| row.get::<_, String>(0))
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?;
+        drop(stmt);
+        for value in snapshots {
+            let snapshot: sync::MembershipSnapshotDto = serde_json::from_str(&value)
+                .map_err(|error| format!("invalid persisted membership snapshot: {error}"))?;
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO collection_models(collection_id, model_hash)
+                     SELECT collection.local_id, link.local_model_hash
+                     FROM sync_entities collection
+                     JOIN remote_model_links link
+                       ON link.profile_id = collection.profile_id
+                      AND link.remote_model_id = ?3
+                     JOIN models model ON model.hash = link.local_model_hash
+                     JOIN collections local_collection ON local_collection.id = collection.local_id
+                     WHERE collection.profile_id = ?1
+                       AND collection.entity_type = 'ModelCollection'
+                       AND collection.remote_id = ?2 AND collection.tombstone = 0
+                       AND collection.local_id IS NOT NULL",
+                    params![profile_id, snapshot.collection_id, snapshot.model_id],
+                )
+                .map_err(sql_error)?;
+        }
+        Ok(())
+    }
+
+    fn materialize_pull(
+        &self,
+        batch: &ApplyPullBatchDto,
+        previous: &[Option<EntityRevisionDto>],
+    ) -> Result<(), String> {
+        for entity in &batch.entities {
+            let mapping = self
+                .entity_by_remote(&batch.profile_id, entity.entity_type, &entity.remote_id)?
+                .ok_or_else(|| "materialized sync entity is missing".to_string())?;
+            match entity.entity_type {
+                SyncEntityType::ModelCollection => {
+                    let Some(local_id) = mapping.local_id.as_deref() else {
+                        continue;
+                    };
+                    if !local_id.starts_with("pf-sync-collection-") {
+                        continue;
+                    }
+                    if mapping.tombstone {
+                        self.conn
+                            .execute("DELETE FROM collections WHERE id = ?1", params![local_id])
+                            .map_err(sql_error)?;
+                    } else {
+                        let snapshot: sync::CollectionSnapshotDto = serde_json::from_value(
+                            mapping
+                                .snapshot
+                                .ok_or_else(|| "collection snapshot is missing".to_string())?,
+                        )
+                        .map_err(|error| format!("invalid collection snapshot: {error}"))?;
+                        self.conn
+                            .execute(
+                                "INSERT INTO collections(id, name, shared_to_farm, created_at, updated_at)
+                                 VALUES(?1, ?2, ?3, ?4, ?5)
+                                 ON CONFLICT(id) DO UPDATE SET name = excluded.name,
+                                    shared_to_farm = excluded.shared_to_farm,
+                                    updated_at = excluded.updated_at",
+                                params![
+                                    local_id,
+                                    snapshot.name,
+                                    i64::from(snapshot.is_shared),
+                                    snapshot.created_at,
+                                    snapshot.updated_at
+                                ],
+                            )
+                            .map_err(sql_error)?;
+                    }
+                }
+                SyncEntityType::Tag => {
+                    let Some(local_id) = mapping.local_id.as_deref() else {
+                        continue;
+                    };
+                    if !local_id.starts_with("pf-sync-tag-") {
+                        continue;
+                    }
+                    if mapping.tombstone {
+                        self.conn
+                            .execute("DELETE FROM tags WHERE id = ?1", params![local_id])
+                            .map_err(sql_error)?;
+                    } else {
+                        let snapshot: sync::TagSnapshotDto = serde_json::from_value(
+                            mapping
+                                .snapshot
+                                .ok_or_else(|| "tag snapshot is missing".to_string())?,
+                        )
+                        .map_err(|error| format!("invalid tag snapshot: {error}"))?;
+                        self.conn
+                            .execute(
+                                "INSERT INTO tags(id, name) VALUES(?1, ?2)
+                                 ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+                                params![local_id, snapshot.name],
+                            )
+                            .map_err(sql_error)?;
+                    }
+                }
+                SyncEntityType::ModelCollectionMembership => {}
+            }
+        }
+        for old in previous
+            .iter()
+            .flatten()
+            .filter(|mapping| mapping.entity_type == SyncEntityType::ModelCollectionMembership)
+        {
+            self.remove_materialized_membership(&batch.profile_id, old)?;
+        }
+        self.materialize_memberships(&batch.profile_id)
     }
 
     fn dispose_failed_batch_inner(
@@ -866,6 +1038,7 @@ impl CatalogStore for SqliteCatalog {
             if batch.server_revision < current.server_revision {
                 return Err("serverRevision must not move backwards".to_string());
             }
+            let mut previous_entities = Vec::with_capacity(batch.entities.len());
             for entity in &batch.entities {
                 if let Some(local_id) = &entity.local_id {
                     let rebound: Option<String> = self
@@ -909,7 +1082,9 @@ impl CatalogStore for SqliteCatalog {
                 )?;
                 let mapping = sync::merge_entity_revision(existing.as_ref(), incoming)?;
                 self.upsert_entity_revision(&mapping)?;
+                previous_entities.push(existing);
             }
+            self.materialize_pull(&batch, &previous_entities)?;
             for conflict in &batch.conflicts {
                 self.insert_conflict(&batch.profile_id, conflict)?;
             }
@@ -976,6 +1151,7 @@ impl CatalogStore for SqliteCatalog {
                     sql_error(error)
                 }
             })?;
+        self.materialize_memberships(&link.profile_id)?;
         Ok(link)
     }
 
@@ -1379,6 +1555,53 @@ impl CatalogStore for SqliteCatalog {
                 params![profile_id, now],
             )
             .map_err(sql_error)
+    }
+
+    fn fail_outbound_batch(
+        &mut self,
+        failure: FailOutboundBatchDto,
+    ) -> Result<Vec<OutboundOperationDto>, String> {
+        sync::validate_batch_failure(&failure)?;
+        self.begin_batch()?;
+        let result = (|| {
+            let existing = self.load_outbound_batch(&failure.profile_id, &failure.batch_id)?;
+            if existing.is_empty()
+                || existing.iter().any(|operation| {
+                    operation.batch_incarnation != failure.batch_incarnation
+                        || operation.state != OutboundState::InFlight
+                        || operation.lease_token.as_deref() != Some(&failure.lease_token)
+                })
+            {
+                return Err("outbound batch is not owned by the active lease".to_string());
+            }
+            let (state, retry_eligible) = match failure.outcome {
+                OutboundFailureOutcome::DefiniteTransient => ("failed", 1_i64),
+                OutboundFailureOutcome::Ambiguous => ("uncertain", 0_i64),
+            };
+            self.conn
+                .execute(
+                    "UPDATE sync_outbox SET state = ?5, retry_eligible = ?6,
+                        retry_at = ?7, lease_until = NULL, lease_token = NULL,
+                        last_error = ?8, updated_at = ?9
+                     WHERE profile_id = ?1 AND batch_id = ?2
+                       AND batch_incarnation = ?3 AND lease_token = ?4
+                       AND state = 'inFlight'",
+                    params![
+                        failure.profile_id,
+                        failure.batch_id,
+                        failure.batch_incarnation,
+                        failure.lease_token,
+                        state,
+                        retry_eligible,
+                        failure.retry_at,
+                        failure.error,
+                        failure.failed_at
+                    ],
+                )
+                .map_err(sql_error)?;
+            self.load_outbound_batch(&failure.profile_id, &failure.batch_id)
+        })();
+        self.finish_batch(result)
     }
 
     fn complete_outbound_operation(
@@ -2408,6 +2631,45 @@ mod tests {
             .unwrap();
         drop(conn);
         assert!(SqliteCatalog::open(&db).is_err());
+    }
+
+    #[test]
+    fn v6_tag_migration_preserves_assignments_and_allows_duplicate_display_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("v5-tags.sqlite3");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.execute_batch(SCHEMA_V2).unwrap();
+            conn.execute_batch(SCHEMA_V3).unwrap();
+            conn.execute_batch(SCHEMA_V4).unwrap();
+            conn.execute_batch(SCHEMA_V5).unwrap();
+            conn.execute(
+                "INSERT INTO models(hash, format, size_bytes, created_at, updated_at)
+                 VALUES('hash', 'stl', 1, '1', '1')",
+                [],
+            )
+            .unwrap();
+            conn.execute("INSERT INTO tags(id, name) VALUES('local', 'Same')", [])
+                .unwrap();
+            conn.execute(
+                "INSERT INTO model_tags(model_hash, tag_id) VALUES('hash', 'local')",
+                [],
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 5).unwrap();
+        }
+
+        let store = SqliteCatalog::open(&db).unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO tags(id, name) VALUES('pf-sync-tag-a', 'Same')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(store.tags_for_model("hash")[0].id, "local");
+        assert_eq!(store.all_tags().len(), 2);
     }
 
     #[test]

@@ -8,7 +8,7 @@
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -239,6 +239,29 @@ CREATE INDEX idx_sync_conflicts_incarnation
     ON sync_conflicts(profile_id, batch_id, batch_incarnation, resolved_at);
 "#;
 
+/// Additive v6 removes the global tag-name uniqueness constraint. Remote tags
+/// keep stable profile-scoped ids, so equal display names must remain distinct.
+pub const SCHEMA_V6: &str = r#"
+CREATE TABLE tags_v6 (
+    id   TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+);
+INSERT INTO tags_v6(id, name) SELECT id, name FROM tags;
+
+CREATE TABLE model_tags_v6 (
+    model_hash TEXT NOT NULL REFERENCES models(hash) ON DELETE CASCADE,
+    tag_id     TEXT NOT NULL REFERENCES tags_v6(id) ON DELETE CASCADE,
+    PRIMARY KEY (model_hash, tag_id)
+);
+INSERT INTO model_tags_v6(model_hash, tag_id)
+SELECT model_hash, tag_id FROM model_tags;
+
+DROP TABLE model_tags;
+DROP TABLE tags;
+ALTER TABLE tags_v6 RENAME TO tags;
+ALTER TABLE model_tags_v6 RENAME TO model_tags;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,7 +288,8 @@ mod tests {
     #[test]
     fn sync_schema_contains_no_transport_or_secret_fields() {
         let sync_schema =
-            format!("{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}").to_lowercase();
+            format!("{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}\n{SCHEMA_V6}")
+                .to_lowercase();
         for forbidden in ["server_url", "auth_token", "api_key", "password", "jwt"] {
             assert!(!sync_schema.contains(forbidden));
         }

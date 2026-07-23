@@ -47,9 +47,9 @@ use crate::catalog::{reconcile_root, CatalogStore, InMemoryCatalog};
 use crate::rpc::{
     extract_vendor_metadata_dto, load_scene_dto, render_thumbnail_dto, ApplyPullBatchDto,
     CollectionDto, ConflictInputDto, ConflictResolution, DisposeFailedBatchDto,
-    EnqueueOutboundOperationDto, ImportPreviewDto, ImportResultDto, LogicalModelDto, OutboundState,
-    ReconcileReportDto, ReconcileUncertainBatchDto, RemoteModelLinkDto, SettleOutboundBatchDto,
-    SyncEntityType, TagDto,
+    EnqueueOutboundOperationDto, FailOutboundBatchDto, ImportPreviewDto, ImportResultDto,
+    LogicalModelDto, OutboundState, ReconcileReportDto, ReconcileUncertainBatchDto,
+    RemoteModelLinkDto, SettleOutboundBatchDto, SyncEntityType, TagDto,
 };
 use crate::smart_import::{ImportPlan, ImportRuleKind};
 use crate::{sidecar_version, RPC_PROTOCOL_VERSION};
@@ -432,6 +432,12 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             Ok(serde_json::json!({
                 "markedUncertain": store.recover_outbound_operations(&params.profile_id, params.now)?
             }))
+        }
+        "failOutboundBatch" => {
+            let failure: FailOutboundBatchDto = serde_json::from_value(params)
+                .map_err(|e| format!("invalid failOutboundBatch params: {e}"))?;
+            serde_json::to_value(store.fail_outbound_batch(failure)?)
+                .map_err(|e| format!("failed to serialize outbound batch failure: {e}"))
         }
         "completeOutboundOperation" => {
             let params: CompleteOutboundParams = serde_json::from_value(params)

@@ -59,6 +59,98 @@ export interface SidecarClientOptions {
   maxConsecutiveFailures?: number;
 }
 
+export type SidecarSyncEntityType =
+  'ModelCollection' | 'ModelCollectionMembership' | 'Tag';
+export type SidecarSyncOperation = 'Create' | 'Update' | 'Delete';
+export type SidecarSyncVisibility = 'Private' | 'Shared';
+export type SidecarOutboundState =
+  'pending' | 'inFlight' | 'uncertain' | 'failed' | 'acked';
+
+export interface SidecarSyncStatus {
+  profileId: string;
+  cursor: string | null;
+  serverRevision: number;
+  checkpointGeneration: number;
+  lastPulledAt: number | null;
+  lastPushedAt: number | null;
+  updatedAt: number;
+}
+
+export interface SidecarPullEntity {
+  entityType: SidecarSyncEntityType;
+  localId: string | null;
+  remoteId: string;
+  revision: number;
+  concurrencyToken: string | null;
+  tombstone: boolean;
+  visibility: SidecarSyncVisibility;
+  snapshot: unknown;
+}
+
+export interface SidecarApplyPullBatch {
+  profileId: string;
+  expectedCheckpointGeneration: number;
+  expectedPreviousCursor: string | null;
+  cursor: string | null;
+  serverRevision: number;
+  appliedAt: number;
+  entities: SidecarPullEntity[];
+  conflicts: SidecarConflictInput[];
+}
+
+export interface SidecarEntityRevision extends SidecarPullEntity {
+  profileId: string;
+  updatedAt: number;
+}
+
+export interface SidecarConflictInput {
+  conflictId: string;
+  entityType: SidecarSyncEntityType;
+  entityId: string;
+  localPayload: unknown;
+  serverPayload: unknown;
+  submittedPayload: unknown;
+  reason: string;
+  serverRevision: number;
+  createdAt: number;
+}
+
+export interface SidecarOutboundOperation {
+  profileId: string;
+  operationId: string;
+  sequence: number;
+  batchId: string;
+  batchIncarnation: string;
+  batchOrdinal: number;
+  entityType: SidecarSyncEntityType;
+  operation: SidecarSyncOperation;
+  entityId: string;
+  payload: unknown;
+  baseRevision: number | null;
+  concurrencyToken: string | null;
+  state: SidecarOutboundState;
+  attemptCount: number;
+  retryEligible: boolean;
+  retryAt: number | null;
+  leaseUntil: number | null;
+  leaseToken: string | null;
+  attemptToken: string | null;
+  lastError: string | null;
+  createdAt: number;
+  updatedAt: number;
+  ackedAt: number | null;
+}
+
+export interface SidecarClaimedOutboundBatch {
+  profileId: string;
+  batchId: string;
+  batchIncarnation: string;
+  leaseToken: string;
+  attemptToken: string;
+  leaseUntil: number;
+  operations: SidecarOutboundOperation[];
+}
+
 interface RequestPolicy {
   timeoutMs: number;
   terminateOnTimeout: boolean;
@@ -219,6 +311,137 @@ export class SidecarClient {
     hash: string,
   ): Promise<unknown> {
     return this.request('removeModelFromCollection', { collectionId, hash });
+  }
+
+  async getSyncStatus(profileId: string): Promise<SidecarSyncStatus> {
+    return (await this.request('getSyncStatus', {
+      profileId,
+    })) as SidecarSyncStatus;
+  }
+
+  async applySyncPullBatch(
+    batch: SidecarApplyPullBatch,
+  ): Promise<SidecarSyncStatus> {
+    return (await this.request(
+      'applySyncPullBatch',
+      batch,
+    )) as SidecarSyncStatus;
+  }
+
+  async getSyncEntityRevision(
+    profileId: string,
+    entityType: SidecarSyncEntityType,
+    remoteId: string,
+  ): Promise<SidecarEntityRevision | null> {
+    return (await this.request('getEntityRevision', {
+      profileId,
+      entityType,
+      remoteId,
+    })) as SidecarEntityRevision | null;
+  }
+
+  async listSyncEntityRevisions(
+    profileId: string,
+    entityType?: SidecarSyncEntityType,
+    limit = 500,
+  ): Promise<SidecarEntityRevision[]> {
+    return (await this.request('listEntityRevisions', {
+      profileId,
+      ...(entityType ? { entityType } : {}),
+      limit,
+    })) as SidecarEntityRevision[];
+  }
+
+  async listOutboundOperations(
+    profileId: string,
+    states: SidecarOutboundState[],
+    limit = 500,
+  ): Promise<SidecarOutboundOperation[]> {
+    return (await this.request('listOutboundOperations', {
+      profileId,
+      states,
+      limit,
+    })) as SidecarOutboundOperation[];
+  }
+
+  async recoverOutboundOperations(
+    profileId: string,
+    now: number,
+  ): Promise<{ markedUncertain: number }> {
+    return (await this.request('recoverOutboundOperations', {
+      profileId,
+      now,
+    })) as { markedUncertain: number };
+  }
+
+  async claimOutboundOperations(
+    profileId: string,
+    limit: number,
+    now: number,
+    leaseSeconds: number,
+  ): Promise<SidecarClaimedOutboundBatch | null> {
+    return (await this.request('claimOutboundOperations', {
+      profileId,
+      limit,
+      now,
+      leaseSeconds,
+    })) as SidecarClaimedOutboundBatch | null;
+  }
+
+  async failOutboundBatch(input: {
+    profileId: string;
+    batchId: string;
+    batchIncarnation: string;
+    leaseToken: string;
+    outcome: 'definiteTransient' | 'ambiguous';
+    error: string;
+    failedAt: number;
+    retryAt: number | null;
+  }): Promise<SidecarOutboundOperation[]> {
+    return (await this.request(
+      'failOutboundBatch',
+      input,
+    )) as SidecarOutboundOperation[];
+  }
+
+  async settleOutboundBatch(input: {
+    profileId: string;
+    batchId: string;
+    batchIncarnation: string;
+    leaseToken: string;
+    settledAt: number;
+    serverRevision: number;
+    applied: Array<{
+      operationId: string;
+      remoteId: string;
+      revision: number;
+      concurrencyToken: string | null;
+    }>;
+    conflicts: Array<{
+      operationId: string;
+      conflict: SidecarConflictInput;
+    }>;
+  }): Promise<unknown> {
+    return this.request('settleOutboundBatch', input);
+  }
+
+  async reconcileUncertainBatch(input: {
+    profileId: string;
+    batchId: string;
+    batchIncarnation: string;
+    expectedAttemptToken: string;
+    resolution: 'acked' | 'requeue';
+    reconciledAt: number;
+    operations: Array<{
+      operationId: string;
+      baseRevision: number | null;
+      concurrencyToken: string | null;
+    }>;
+  }): Promise<SidecarOutboundOperation[]> {
+    return (await this.request(
+      'reconcileUncertainBatch',
+      input,
+    )) as SidecarOutboundOperation[];
   }
 
   /** Stop the sidecar and reject any in-flight requests. */

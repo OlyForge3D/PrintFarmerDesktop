@@ -404,6 +404,27 @@ pub struct ClaimedOutboundBatchDto {
     pub operations: Vec<OutboundOperationDto>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OutboundFailureOutcome {
+    DefiniteTransient,
+    Ambiguous,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailOutboundBatchDto {
+    pub profile_id: String,
+    pub batch_id: String,
+    pub batch_incarnation: String,
+    pub lease_token: String,
+    pub outcome: OutboundFailureOutcome,
+    pub error: String,
+    pub failed_at: i64,
+    #[serde(default)]
+    pub retry_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppliedOutboundResultDto {
@@ -848,6 +869,7 @@ pub(crate) fn validate_settlement(settlement: &SettleOutboundBatchDto) -> Result
             "settlement batches are limited to {MAX_SYNC_BATCH} items"
         ));
     }
+
     if !settlement.applied.is_empty() && !settlement.conflicts.is_empty() {
         return Err("a server batch cannot be both applied and conflicted".to_string());
     }
@@ -867,6 +889,33 @@ pub(crate) fn validate_settlement(settlement: &SettleOutboundBatchDto) -> Result
         if !ids.insert(conflict.operation_id.as_str()) {
             return Err("settlement contains duplicate operationId".to_string());
         }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_batch_failure(failure: &FailOutboundBatchDto) -> Result<(), String> {
+    validate_profile(&failure.profile_id)?;
+    validate_identifier("batchId", &failure.batch_id)?;
+    validate_identifier("batchIncarnation", &failure.batch_incarnation)?;
+    validate_identifier("leaseToken", &failure.lease_token)?;
+    validate_timestamp("failedAt", failure.failed_at)?;
+    if failure.error.is_empty() || failure.error.len() > MAX_ERROR_BYTES {
+        return Err(format!("error must be 1..={MAX_ERROR_BYTES} bytes"));
+    }
+    match (failure.outcome, failure.retry_at) {
+        (OutboundFailureOutcome::DefiniteTransient, Some(retry_at)) => {
+            validate_timestamp("retryAt", retry_at)?;
+            if retry_at < failure.failed_at {
+                return Err("retryAt must not precede failedAt".to_string());
+            }
+        }
+        (OutboundFailureOutcome::DefiniteTransient, None) => {
+            return Err("definite transient failures require retryAt".to_string());
+        }
+        (OutboundFailureOutcome::Ambiguous, Some(_)) => {
+            return Err("ambiguous failures cannot have retryAt".to_string());
+        }
+        (OutboundFailureOutcome::Ambiguous, None) => {}
     }
     Ok(())
 }

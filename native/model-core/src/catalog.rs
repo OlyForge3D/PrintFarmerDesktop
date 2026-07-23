@@ -17,11 +17,12 @@ use crate::hash::{hash_file, ContentHash};
 use crate::model::{FileFingerprint, ModelFormat};
 use crate::scan::ScanResult;
 use crate::sync::{
-    self, ApplyPullBatchDto, ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution,
-    DisposeFailedBatchDto, EnqueueOutboundOperationDto, EntityRevisionDto, OutboundOperationDto,
+    self, ApplyPullBatchDto, ClaimedOutboundBatchDto, CollectionSnapshotDto, ConflictInputDto,
+    ConflictResolution, DisposeFailedBatchDto, EnqueueOutboundOperationDto, EntityRevisionDto,
+    FailOutboundBatchDto, MembershipSnapshotDto, OutboundFailureOutcome, OutboundOperationDto,
     OutboundState, ReconcileUncertainBatchDto, RemoteModelLinkDto, SettleOutboundBatchDto,
     SettledOutboundBatchDto, SyncConflictDto, SyncEntityType, SyncStatusDto, SyncVisibility,
-    UnknownOutcomeResolution,
+    TagSnapshotDto, UnknownOutcomeResolution,
 };
 
 /// Stable identifier for a source root (a user-selected folder).
@@ -285,6 +286,12 @@ pub trait CatalogStore {
     ) -> Result<Option<ClaimedOutboundBatchDto>, String>;
 
     fn recover_outbound_operations(&mut self, profile_id: &str, now: i64) -> Result<usize, String>;
+
+    /// Atomically release or quarantine every operation in one leased batch.
+    fn fail_outbound_batch(
+        &mut self,
+        failure: FailOutboundBatchDto,
+    ) -> Result<Vec<OutboundOperationDto>, String>;
 
     fn complete_outbound_operation(
         &mut self,
@@ -814,6 +821,7 @@ impl CatalogStore for InMemoryCatalog {
         if batch.server_revision < current.server_revision {
             return Err("serverRevision must not move backwards".to_string());
         }
+        let mut previous_entities = Vec::with_capacity(batch.entities.len());
         for entity in &batch.entities {
             if let Some(local_id) = &entity.local_id {
                 if self.sync_entities.values().any(|existing| {
@@ -849,9 +857,12 @@ impl CatalogStore for InMemoryCatalog {
                     snapshot: entity.snapshot.clone(),
                     updated_at: batch.applied_at,
                 };
-                let revision = sync::merge_entity_revision(self.sync_entities.get(&key), incoming)?;
+                let previous = self.sync_entities.get(&key).cloned();
+                let revision = sync::merge_entity_revision(previous.as_ref(), incoming)?;
                 self.sync_entities.insert(key, revision);
+                previous_entities.push(previous);
             }
+            materialize_memory_pull(self, &batch, &previous_entities)?;
             for conflict in &batch.conflicts {
                 insert_memory_conflict(self, &batch.profile_id, conflict)?;
             }
@@ -910,6 +921,7 @@ impl CatalogStore for InMemoryCatalog {
         self.sync_statuses
             .entry(link.profile_id.clone())
             .or_insert_with(|| SyncStatusDto::empty(&link.profile_id));
+        materialize_memory_memberships(self, &link.profile_id)?;
         Ok(link)
     }
 
@@ -1250,6 +1262,63 @@ impl CatalogStore for InMemoryCatalog {
         sync::validate_profile(profile_id)?;
         sync::validate_timestamp("now", now)?;
         Ok(recover_memory_outbox(self, profile_id, now))
+    }
+
+    fn fail_outbound_batch(
+        &mut self,
+        failure: FailOutboundBatchDto,
+    ) -> Result<Vec<OutboundOperationDto>, String> {
+        sync::validate_batch_failure(&failure)?;
+        self.begin_batch()?;
+        let result = (|| {
+            let mut keys: Vec<_> = self
+                .sync_outbox
+                .iter()
+                .filter(|(_, operation)| {
+                    operation.profile_id == failure.profile_id
+                        && operation.batch_id == failure.batch_id
+                })
+                .map(|(key, operation)| (operation.batch_ordinal, key.clone()))
+                .collect();
+            keys.sort();
+            if keys.is_empty()
+                || keys.iter().any(|(_, key)| {
+                    let operation = &self.sync_outbox[key];
+                    operation.batch_incarnation != failure.batch_incarnation
+                        || operation.state != OutboundState::InFlight
+                        || operation.lease_token.as_deref() != Some(&failure.lease_token)
+                })
+            {
+                return Err("outbound batch is not owned by the active lease".to_string());
+            }
+            let mut failed = Vec::with_capacity(keys.len());
+            for (_, key) in keys {
+                let operation = self.sync_outbox.get_mut(&key).expect("outbox key exists");
+                operation.state = match failure.outcome {
+                    OutboundFailureOutcome::DefiniteTransient => OutboundState::Failed,
+                    OutboundFailureOutcome::Ambiguous => OutboundState::Uncertain,
+                };
+                operation.retry_eligible =
+                    failure.outcome == OutboundFailureOutcome::DefiniteTransient;
+                operation.retry_at = failure.retry_at;
+                operation.lease_until = None;
+                operation.lease_token = None;
+                operation.last_error = Some(failure.error.clone());
+                operation.updated_at = failure.failed_at;
+                failed.push(operation.clone());
+            }
+            Ok(failed)
+        })();
+        match result {
+            Ok(failed) => {
+                self.commit_batch()?;
+                Ok(failed)
+            }
+            Err(error) => {
+                self.rollback_batch();
+                Err(error)
+            }
+        }
     }
 
     fn complete_outbound_operation(
@@ -1872,6 +1941,163 @@ impl CatalogStore for InMemoryCatalog {
     }
 }
 
+fn materialize_memory_pull(
+    store: &mut InMemoryCatalog,
+    batch: &ApplyPullBatchDto,
+    previous: &[Option<EntityRevisionDto>],
+) -> Result<(), String> {
+    for entity in &batch.entities {
+        let key = (
+            batch.profile_id.clone(),
+            entity.entity_type,
+            entity.remote_id.clone(),
+        );
+        let mapping = store
+            .sync_entities
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| "materialized sync entity is missing".to_string())?;
+        match entity.entity_type {
+            SyncEntityType::ModelCollection => {
+                let Some(local_id) = mapping.local_id.as_deref() else {
+                    continue;
+                };
+                if !local_id.starts_with("pf-sync-collection-") {
+                    continue;
+                }
+                if mapping.tombstone {
+                    store.collections.remove(local_id);
+                    store.collection_members.remove(local_id);
+                } else {
+                    let snapshot: CollectionSnapshotDto = serde_json::from_value(
+                        mapping
+                            .snapshot
+                            .clone()
+                            .ok_or_else(|| "collection snapshot is missing".to_string())?,
+                    )
+                    .map_err(|error| format!("invalid collection snapshot: {error}"))?;
+                    store
+                        .collections
+                        .insert(local_id.to_string(), (snapshot.name, snapshot.is_shared));
+                }
+            }
+            SyncEntityType::Tag => {
+                let Some(local_id) = mapping.local_id.as_deref() else {
+                    continue;
+                };
+                if !local_id.starts_with("pf-sync-tag-") {
+                    continue;
+                }
+                if mapping.tombstone {
+                    store.tags.remove(local_id);
+                    for tags in store.model_tags.values_mut() {
+                        tags.remove(local_id);
+                    }
+                } else {
+                    let snapshot: TagSnapshotDto = serde_json::from_value(
+                        mapping
+                            .snapshot
+                            .clone()
+                            .ok_or_else(|| "tag snapshot is missing".to_string())?,
+                    )
+                    .map_err(|error| format!("invalid tag snapshot: {error}"))?;
+                    store.tags.insert(local_id.to_string(), snapshot.name);
+                }
+            }
+            SyncEntityType::ModelCollectionMembership => {}
+        }
+    }
+
+    for old in previous
+        .iter()
+        .flatten()
+        .filter(|mapping| mapping.entity_type == SyncEntityType::ModelCollectionMembership)
+    {
+        remove_memory_membership(store, &batch.profile_id, old)?;
+    }
+    materialize_memory_memberships(store, &batch.profile_id)
+}
+
+fn remove_memory_membership(
+    store: &mut InMemoryCatalog,
+    profile_id: &str,
+    mapping: &EntityRevisionDto,
+) -> Result<(), String> {
+    let Some(snapshot) = mapping.snapshot.clone() else {
+        return Ok(());
+    };
+    let snapshot: MembershipSnapshotDto = serde_json::from_value(snapshot)
+        .map_err(|error| format!("invalid membership snapshot: {error}"))?;
+    let collection_id = store
+        .sync_entities
+        .get(&(
+            profile_id.to_string(),
+            SyncEntityType::ModelCollection,
+            snapshot.collection_id,
+        ))
+        .and_then(|collection| collection.local_id.as_deref())
+        .map(str::to_string);
+    let model_hash = store
+        .remote_model_links
+        .values()
+        .find(|link| link.profile_id == profile_id && link.remote_model_id == snapshot.model_id)
+        .map(|link| link.local_model_hash.clone());
+    if let (Some(collection_id), Some(model_hash)) = (collection_id, model_hash) {
+        if let Some(members) = store.collection_members.get_mut(&collection_id) {
+            members.remove(&model_hash);
+        }
+    }
+    Ok(())
+}
+
+fn materialize_memory_memberships(
+    store: &mut InMemoryCatalog,
+    profile_id: &str,
+) -> Result<(), String> {
+    let memberships: Vec<_> = store
+        .sync_entities
+        .values()
+        .filter(|mapping| {
+            mapping.profile_id == profile_id
+                && mapping.entity_type == SyncEntityType::ModelCollectionMembership
+                && !mapping.tombstone
+        })
+        .cloned()
+        .collect();
+    for mapping in memberships {
+        let snapshot: MembershipSnapshotDto = serde_json::from_value(
+            mapping
+                .snapshot
+                .ok_or_else(|| "membership snapshot is missing".to_string())?,
+        )
+        .map_err(|error| format!("invalid membership snapshot: {error}"))?;
+        let collection_id = store
+            .sync_entities
+            .get(&(
+                profile_id.to_string(),
+                SyncEntityType::ModelCollection,
+                snapshot.collection_id,
+            ))
+            .filter(|collection| !collection.tombstone)
+            .and_then(|collection| collection.local_id.clone());
+        let model_hash = store
+            .remote_model_links
+            .values()
+            .find(|link| link.profile_id == profile_id && link.remote_model_id == snapshot.model_id)
+            .map(|link| link.local_model_hash.clone());
+        if let (Some(collection_id), Some(model_hash)) = (collection_id, model_hash) {
+            if store.models.contains_key(&model_hash) {
+                store
+                    .collection_members
+                    .entry(collection_id)
+                    .or_default()
+                    .insert(model_hash);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn outbound_matches_input(
     existing: &OutboundOperationDto,
     batch_id: &str,
@@ -2196,5 +2422,157 @@ mod tests {
 
         store.delete_collection(&coll.id);
         assert!(store.all_collections().is_empty());
+    }
+
+    #[test]
+    fn pull_materializes_profile_scoped_entities_and_reconciles_late_model_links() {
+        let (mut store, hash) = one_model_store();
+        store.add_model_tag(&hash, "Shared name").unwrap();
+        let timestamp = "2026-07-23T12:00:00Z";
+        store
+            .apply_pull_batch(ApplyPullBatchDto {
+                profile_id: "profile-a".to_string(),
+                expected_checkpoint_generation: 0,
+                expected_previous_cursor: None,
+                cursor: Some("cursor-1".to_string()),
+                server_revision: 3,
+                applied_at: 1,
+                entities: vec![
+                    crate::sync::PullEntityDto {
+                        entity_type: SyncEntityType::ModelCollection,
+                        local_id: Some("pf-sync-collection-a".to_string()),
+                        remote_id: "remote-collection".to_string(),
+                        revision: 1,
+                        concurrency_token: Some("collection-token".to_string()),
+                        tombstone: false,
+                        visibility: SyncVisibility::Shared,
+                        snapshot: Some(serde_json::json!({
+                            "id": "remote-collection",
+                            "name": "Shared name",
+                            "description": null,
+                            "ownerUserId": "owner",
+                            "isShared": true,
+                            "createdAt": timestamp,
+                            "updatedAt": timestamp,
+                            "memberCount": 1,
+                            "modelIds": ["remote-model"],
+                            "revision": 1,
+                            "concurrencyToken": "collection-token"
+                        })),
+                    },
+                    crate::sync::PullEntityDto {
+                        entity_type: SyncEntityType::ModelCollectionMembership,
+                        local_id: Some("pf-sync-membership-a".to_string()),
+                        remote_id: "remote-membership".to_string(),
+                        revision: 2,
+                        concurrency_token: None,
+                        tombstone: false,
+                        visibility: SyncVisibility::Shared,
+                        snapshot: Some(serde_json::json!({
+                            "id": "remote-membership",
+                            "collectionId": "remote-collection",
+                            "modelId": "remote-model",
+                            "createdAt": timestamp,
+                            "updatedAt": timestamp,
+                            "revision": 2
+                        })),
+                    },
+                    crate::sync::PullEntityDto {
+                        entity_type: SyncEntityType::Tag,
+                        local_id: Some("pf-sync-tag-a".to_string()),
+                        remote_id: "remote-tag".to_string(),
+                        revision: 3,
+                        concurrency_token: Some("tag-token".to_string()),
+                        tombstone: false,
+                        visibility: SyncVisibility::Shared,
+                        snapshot: Some(serde_json::json!({
+                            "id": "remote-tag",
+                            "name": "Shared name",
+                            "category": null,
+                            "isAutoGenerated": false,
+                            "color": null,
+                            "description": null,
+                            "revision": 3,
+                            "concurrencyToken": "tag-token"
+                        })),
+                    },
+                ],
+                conflicts: vec![],
+            })
+            .unwrap();
+
+        assert_eq!(store.all_collections()[0].id, "pf-sync-collection-a");
+        assert_eq!(store.all_collections()[0].member_count, 0);
+        assert_eq!(store.all_tags().len(), 2);
+        assert!(store
+            .collections_for_model(&hash)
+            .iter()
+            .all(|collection| collection.id != "pf-sync-collection-a"));
+
+        store
+            .link_remote_model(RemoteModelLinkDto {
+                profile_id: "profile-a".to_string(),
+                local_model_hash: hash.clone(),
+                remote_model_id: "remote-model".to_string(),
+                client_upload_id: "upload-a".to_string(),
+                etag: None,
+                upload_status: crate::sync::RemoteUploadStatus::Pending,
+                created_at: 2,
+                updated_at: 2,
+                uploaded_at: None,
+            })
+            .unwrap();
+
+        assert_eq!(
+            store.collections_for_model(&hash)[0].id,
+            "pf-sync-collection-a"
+        );
+        assert_eq!(store.all_collections()[0].member_count, 1);
+    }
+
+    #[test]
+    fn ambiguous_batch_failure_atomically_quarantines_every_operation() {
+        let mut store = InMemoryCatalog::new();
+        let operation = |id: &str| EnqueueOutboundOperationDto {
+            operation_id: id.to_string(),
+            entity_type: SyncEntityType::ModelCollection,
+            operation: crate::sync::SyncOperationKind::Create,
+            entity_id: format!("local-{id}"),
+            payload: serde_json::json!({"name": id}),
+            base_revision: None,
+            concurrency_token: None,
+            created_at: 1,
+        };
+        store
+            .enqueue_outbound_operations(
+                "profile-a",
+                "batch-a",
+                vec![operation("one"), operation("two")],
+            )
+            .unwrap();
+        let claimed = store
+            .claim_outbound_operations("profile-a", 500, 2, 60)
+            .unwrap()
+            .unwrap();
+
+        let failed = store
+            .fail_outbound_batch(FailOutboundBatchDto {
+                profile_id: "profile-a".to_string(),
+                batch_id: claimed.batch_id,
+                batch_incarnation: claimed.batch_incarnation,
+                lease_token: claimed.lease_token,
+                outcome: OutboundFailureOutcome::Ambiguous,
+                error: "unknown result".to_string(),
+                failed_at: 3,
+                retry_at: None,
+            })
+            .unwrap();
+
+        assert_eq!(failed.len(), 2);
+        assert!(failed.iter().all(|operation| {
+            operation.state == OutboundState::Uncertain
+                && !operation.retry_eligible
+                && operation.lease_token.is_none()
+        }));
     }
 }
