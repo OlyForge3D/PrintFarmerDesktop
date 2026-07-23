@@ -12,14 +12,17 @@ import {
   hardenWindow,
 } from './security.js';
 import { registerIpcHandlers } from './ipc.js';
+import { resolveAppIconPath } from './appIcon.js';
 
 const createMainWindow = (): void => {
+  const iconPath = resolveAppIconPath(app.getAppPath());
   const mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
     minWidth: 1120,
     minHeight: 700,
     title: 'PrintFarmer Desktop',
+    icon: iconPath,
     backgroundColor: '#0e1116',
     show: false,
     autoHideMenuBar: true,
@@ -157,6 +160,9 @@ if (!enforceSingleInstance()) {
   app.quit();
 } else {
   void app.whenReady().then(() => {
+    if (process.platform === 'darwin') {
+      app.dock.setIcon(resolveAppIconPath(app.getAppPath()));
+    }
     installApplicationMenu();
     applyContentSecurityPolicy(
       session.defaultSession,

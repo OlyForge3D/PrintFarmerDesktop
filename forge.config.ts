@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
+const iconBasePath = path.join(repoRoot, 'assets', 'icon');
+const windowsIconPath = `${iconBasePath}.ico`;
 
 /** Build and stage the Rust sidecar into `resources/sidecar/` before packaging. */
 function stageSidecar(): void {
@@ -29,6 +31,7 @@ const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
     name: 'PrintFarmer Desktop',
+    icon: iconBasePath,
     // Ship the compiled sidecar next to the app so the packaged main process
     // resolves it via `resolveSidecarPath()` at `<resources>/sidecar/<binary>`.
     extraResource: ['./resources/sidecar'],
@@ -46,7 +49,11 @@ const config: ForgeConfig = {
     // Windows installer (unsigned by default — no certificateFile set). Produces
     // a single `*.Setup.exe`. Unsigned installers trigger a SmartScreen
     // "unknown publisher" prompt that users clear via "More info → Run anyway".
-    new MakerSquirrel({}),
+    new MakerSquirrel({
+      setupIcon: windowsIconPath,
+      iconUrl:
+        'https://raw.githubusercontent.com/OlyForge3D/PrintFarmerDesktop/development/assets/icon.ico',
+    }),
     // Portable, no-install Windows build for users who would rather unzip a
     // folder than run the unsigned installer.
     new MakerZIP({}, ['win32', 'darwin']),
