@@ -4,6 +4,7 @@ import type {
   LoadSceneResponse,
   ListServerProfilesResponse,
   LogicalModel,
+  UploadJob,
   VendorMetadata,
 } from '@shared/ipc';
 import { useLibrary } from './library/useLibrary';
@@ -37,6 +38,7 @@ import type { Projection } from './viewer/ModelViewer';
 import { Icon } from './ui/Icon';
 import appIconUrl from '../../assets/icon.png';
 import { ServerProfilesDialog } from './serverProfiles/ServerProfilesDialog';
+import { UploadQueueDialog } from './uploads/UploadQueueDialog';
 
 interface PreviewTarget {
   path: string;
@@ -45,7 +47,12 @@ interface PreviewTarget {
 }
 
 type ModalOwner =
-  'none' | 'profiles' | 'import' | 'previewPreparation' | 'preview';
+  | 'none'
+  | 'profiles'
+  | 'import'
+  | 'previewPreparation'
+  | 'preview'
+  | 'uploadQueue';
 
 export function App(): React.JSX.Element {
   const [info, setInfo] = useState<AppInfoResponse | null>(null);
@@ -62,6 +69,14 @@ export function App(): React.JSX.Element {
   const [filter, setFilter] = useState<FilterKey>(defaultLibraryView.filter);
   const [sort, setSort] = useState<SortKey>(defaultLibraryView.sort);
   const [selectedHash, setSelectedHash] = useState<string | null>(null);
+  const [selectedHashes, setSelectedHashes] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const selectionAnchorRef = useRef<string | null>(null);
+  const [uploadJobs, setUploadJobs] = useState<UploadJob[]>([]);
+  const [uploadQueueOpen, setUploadQueueOpen] = useState(false);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(
@@ -87,6 +102,7 @@ export function App(): React.JSX.Element {
   const previewReturnFocusRef = useRef<HTMLElement | null>(null);
   const importReturnFocusRef = useRef<HTMLElement | null>(null);
   const profileReturnFocusRef = useRef<HTMLElement | null>(null);
+  const uploadReturnFocusRef = useRef<HTMLElement | null>(null);
   const restoreProfileFocusRef = useRef(false);
   const importPreparationRef = useRef(false);
   const modalOwnerRef = useRef<ModalOwner>('none');
@@ -158,7 +174,11 @@ export function App(): React.JSX.Element {
     },
     [releaseModal],
   );
-  const modalOpen = previewOpen || library.importDraft !== null || profilesOpen;
+  const modalOpen =
+    previewOpen ||
+    library.importDraft !== null ||
+    profilesOpen ||
+    uploadQueueOpen;
   const prepareFolderImport = library.addFolder;
   const dismissFolderImport = library.cancelImport;
   const commitFolderImport = library.confirmImport;
@@ -247,6 +267,53 @@ export function App(): React.JSX.Element {
     }),
     [library.models, favorites],
   );
+  const handleModelSelection = useCallback(
+    (
+      model: LogicalModel,
+      modifiers: { toggle: boolean; range: boolean } = {
+        toggle: false,
+        range: false,
+      },
+    ): void => {
+      const visibleHashes = presentation.visibleModels.map((item) => item.hash);
+      if (modifiers.range && selectionAnchorRef.current) {
+        const anchor = visibleHashes.indexOf(selectionAnchorRef.current);
+        const target = visibleHashes.indexOf(model.hash);
+        if (anchor >= 0 && target >= 0) {
+          const range = visibleHashes.slice(
+            Math.min(anchor, target),
+            Math.max(anchor, target) + 1,
+          );
+          setSelectedHashes((current) =>
+            modifiers.toggle ? new Set([...current, ...range]) : new Set(range),
+          );
+          setSelectedHash(model.hash);
+          return;
+        }
+      }
+      selectionAnchorRef.current = model.hash;
+      if (modifiers.toggle) {
+        setSelectedHashes((current) => {
+          const next = new Set(current);
+          if (next.has(model.hash)) next.delete(model.hash);
+          else next.add(model.hash);
+          if (next.has(model.hash)) {
+            setSelectedHash(model.hash);
+          } else if (selectedHash === model.hash) {
+            setSelectedHash(
+              [...visibleHashes].reverse().find((hash) => next.has(hash)) ??
+                null,
+            );
+          }
+          return next;
+        });
+      } else {
+        setSelectedHashes(new Set([model.hash]));
+        setSelectedHash(model.hash);
+      }
+    },
+    [presentation.visibleModels, selectedHash],
+  );
 
   const isScanning = library.status === 'scanning';
   const busy = library.status !== 'idle';
@@ -268,6 +335,15 @@ export function App(): React.JSX.Element {
           setAppError(err instanceof Error ? err.message : String(err));
         }
       });
+  }, []);
+  const refreshUploadJobs = useCallback((): void => {
+    if (!window.printFarmer.listUploadJobs) return;
+    void window.printFarmer
+      .listUploadJobs()
+      .then(setUploadJobs)
+      .catch((err: unknown) =>
+        setUploadError(err instanceof Error ? err.message : String(err)),
+      );
   }, []);
 
   useEffect(() => {
@@ -291,6 +367,23 @@ export function App(): React.JSX.Element {
   }, [refreshServerProfiles]);
 
   useEffect(() => {
+    refreshUploadJobs();
+    const interval = setInterval(refreshUploadJobs, 750);
+    return () => clearInterval(interval);
+  }, [refreshUploadJobs]);
+
+  useEffect(() => {
+    const catalogHashes = new Set(library.models.map((model) => model.hash));
+    setSelectedHashes((current) => {
+      const next = new Set(
+        [...current].filter((hash) => catalogHashes.has(hash)),
+      );
+      return next.size === current.size ? current : next;
+    });
+    if (selectedHash && !catalogHashes.has(selectedHash)) setSelectedHash(null);
+  }, [library.models, selectedHash]);
+
+  useEffect(() => {
     const focusSearch = (event: KeyboardEvent): void => {
       if (modalOpen) {
         return;
@@ -300,11 +393,23 @@ export function App(): React.JSX.Element {
         document
           .querySelector<HTMLInputElement>('.sidebar-search input')
           ?.focus();
+      } else if (
+        (event.ctrlKey || event.metaKey) &&
+        event.key.toLowerCase() === 'a' &&
+        !(event.target instanceof HTMLInputElement) &&
+        !(event.target instanceof HTMLTextAreaElement) &&
+        !(event.target instanceof HTMLSelectElement)
+      ) {
+        event.preventDefault();
+        const hashes = presentation.visibleModels.map((model) => model.hash);
+        setSelectedHashes(new Set(hashes));
+        setSelectedHash(hashes[0] ?? null);
+        selectionAnchorRef.current = hashes[0] ?? null;
       }
     };
     document.addEventListener('keydown', focusSearch);
     return () => document.removeEventListener('keydown', focusSearch);
-  }, [modalOpen]);
+  }, [modalOpen, presentation.visibleModels]);
 
   useEffect(() => {
     for (const element of [
@@ -341,6 +446,8 @@ export function App(): React.JSX.Element {
       releaseModal('import');
     } else if (modalOwnerRef.current === 'preview' && !previewOpen) {
       releaseModal('preview');
+    } else if (modalOwnerRef.current === 'uploadQueue' && !uploadQueueOpen) {
+      releaseModal('uploadQueue');
     }
   }, [
     busy,
@@ -348,6 +455,7 @@ export function App(): React.JSX.Element {
     library.importDraft,
     previewOpen,
     profilesOpen,
+    uploadQueueOpen,
     releaseModal,
   ]);
 
@@ -516,6 +624,8 @@ export function App(): React.JSX.Element {
       const entryEpoch = reserveModal('previewPreparation');
       if (entryEpoch === null) return;
       setSelectedHash(model.hash);
+      setSelectedHashes(new Set([model.hash]));
+      selectionAnchorRef.current = model.hash;
       rememberPreviewTrigger();
       void loadPreview(
         {
@@ -674,6 +784,71 @@ export function App(): React.JSX.Element {
     setProfilesOpen(false);
     releaseModal('profiles');
   };
+  const openUploadQueue = (): void => {
+    if (modalOwnerRef.current !== 'none') return;
+    if (reserveModal('uploadQueue') === null) return;
+    uploadReturnFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setUploadError(null);
+    refreshUploadJobs();
+    setUploadQueueOpen(true);
+  };
+  const closeUploadQueue = (): void => {
+    setUploadQueueOpen(false);
+    releaseModal('uploadQueue');
+    setTimeout(() => {
+      const previous = uploadReturnFocusRef.current;
+      const fallback =
+        document.querySelector<HTMLElement>('.open-upload-queue');
+      (previous?.isConnected ? previous : fallback)?.focus();
+    });
+  };
+  const selectedForUpload = library.models.filter((model) =>
+    selectedHashes.has(model.hash),
+  );
+  const startUpload = (): void => {
+    if (
+      !activeServer ||
+      !activeServer.availability.modelUpload.available ||
+      selectedForUpload.length === 0 ||
+      !window.printFarmer.startUploadJob ||
+      modalOwnerRef.current !== 'none'
+    ) {
+      return;
+    }
+    openUploadQueue();
+    setUploadBusy(true);
+    setUploadError(null);
+    void window.printFarmer
+      .startUploadJob({
+        profileId: activeServer.id,
+        hashes: selectedForUpload.map((model) => model.hash),
+      })
+      .then(() => refreshUploadJobs())
+      .catch((err: unknown) =>
+        setUploadError(err instanceof Error ? err.message : String(err)),
+      )
+      .finally(() => setUploadBusy(false));
+  };
+  const runUploadAction = (
+    action: (request: { jobId: string }) => Promise<unknown>,
+    jobId: string,
+  ): void => {
+    setUploadBusy(true);
+    setUploadError(null);
+    void action({ jobId })
+      .then(() => refreshUploadJobs())
+      .catch((err: unknown) =>
+        setUploadError(err instanceof Error ? err.message : String(err)),
+      )
+      .finally(() => setUploadBusy(false));
+  };
+  const queuedUploadCount = uploadJobs.reduce(
+    (count, job) => count + job.summary.queued + job.summary.uploading,
+    0,
+  );
 
   return (
     <div className={`app-root${info ? ` platform-${info.platform}` : ''}`}>
@@ -728,6 +903,9 @@ export function App(): React.JSX.Element {
               <span className="library-result-count">
                 {presentation.visibleModels.length} of {library.models.length}
               </span>
+              <span className="library-selection-count" aria-live="polite">
+                {selectedHashes.size} selected
+              </span>
             </div>
             <div className="library-command-actions">
               <label className="sort-control">
@@ -752,8 +930,78 @@ export function App(): React.JSX.Element {
                 <Icon name="folder" />
                 Open file
               </button>
+              <button
+                type="button"
+                className="command-button upload-selected"
+                disabled={
+                  workspaceActionsDisabled ||
+                  selectedForUpload.length === 0 ||
+                  !activeServer ||
+                  !activeServer.availability.modelUpload.available
+                }
+                onClick={startUpload}
+                title={
+                  !activeServer
+                    ? 'Connect a PrintFarmer server profile first.'
+                    : !activeServer.availability.modelUpload.available
+                      ? (activeServer.availability.modelUpload.reason ??
+                        'Model upload is unavailable.')
+                      : activeServer.availability.modelUpload.mode ===
+                          'legacyModelOnly'
+                        ? 'Legacy model-only upload; interrupted retries can create duplicates.'
+                        : 'Upload selected models with idempotent retry protection.'
+                }
+              >
+                Upload to PrintFarmer
+              </button>
+              <button
+                type="button"
+                className="command-button open-upload-queue"
+                disabled={workspaceActionsDisabled}
+                onClick={openUploadQueue}
+              >
+                Upload queue{queuedUploadCount ? ` (${queuedUploadCount})` : ''}
+              </button>
             </div>
           </header>
+
+          <div
+            className="selection-toolbar"
+            aria-label="Model selection actions"
+          >
+            <button
+              type="button"
+              onClick={() => {
+                const hashes = presentation.visibleModels.map(
+                  (model) => model.hash,
+                );
+                setSelectedHashes(new Set(hashes));
+                setSelectedHash(hashes[0] ?? null);
+                selectionAnchorRef.current = hashes[0] ?? null;
+              }}
+              disabled={presentation.visibleModels.length === 0}
+            >
+              Select all visible
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedHashes(new Set());
+                setSelectedHash(null);
+                selectionAnchorRef.current = null;
+              }}
+              disabled={selectedHashes.size === 0}
+            >
+              Clear selection
+            </button>
+            {activeServer?.availability.modelUpload.mode ===
+              'legacyModelOnly' && selectedHashes.size > 0 ? (
+              <span className="upload-warning">
+                Legacy upload: server thumbnails only; interrupted retries may
+                duplicate models.
+              </span>
+            ) : null}
+          </div>
 
           <p
             ref={scanStatusRef}
@@ -786,8 +1034,8 @@ export function App(): React.JSX.Element {
           <div className="library-content">
             <ModelGrid
               models={presentation.visibleModels}
-              selectedHash={selectedHash}
-              onSelect={(model) => setSelectedHash(model.hash)}
+              selectedHashes={selectedHashes}
+              onSelect={handleModelSelection}
               onPreview={previewModel}
               previewDisabled={workspaceActionsDisabled}
               isFavorite={isFavorite}
@@ -912,6 +1160,45 @@ export function App(): React.JSX.Element {
           profiles={serverProfiles}
           onMutationSettled={refreshServerProfiles}
           onClose={closeProfiles}
+        />
+      ) : null}
+
+      {uploadQueueOpen ? (
+        <UploadQueueDialog
+          jobs={uploadJobs}
+          busy={uploadBusy}
+          error={uploadError}
+          onPause={(jobId) =>
+            runUploadAction(
+              (request) => window.printFarmer.pauseUploadJob(request),
+              jobId,
+            )
+          }
+          onResume={(jobId) =>
+            runUploadAction(
+              (request) => window.printFarmer.resumeUploadJob(request),
+              jobId,
+            )
+          }
+          onCancel={(jobId) =>
+            runUploadAction(
+              (request) => window.printFarmer.cancelUploadJob(request),
+              jobId,
+            )
+          }
+          onRetry={(jobId) =>
+            runUploadAction(
+              (request) => window.printFarmer.retryUploadJob(request),
+              jobId,
+            )
+          }
+          onRemove={(jobId) =>
+            runUploadAction(
+              (request) => window.printFarmer.removeUploadJob(request),
+              jobId,
+            )
+          }
+          onClose={closeUploadQueue}
         />
       ) : null}
     </div>

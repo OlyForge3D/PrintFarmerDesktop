@@ -39,6 +39,13 @@ export const IpcChannel = {
   SaveServerProfile: 'serverProfiles:save',
   SelectServerProfile: 'serverProfiles:select',
   DeleteServerProfile: 'serverProfiles:delete',
+  StartUploadJob: 'uploadJobs:start',
+  ListUploadJobs: 'uploadJobs:list',
+  PauseUploadJob: 'uploadJobs:pause',
+  ResumeUploadJob: 'uploadJobs:resume',
+  CancelUploadJob: 'uploadJobs:cancel',
+  RetryUploadJob: 'uploadJobs:retry',
+  RemoveUploadJob: 'uploadJobs:remove',
 } as const;
 
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel];
@@ -603,6 +610,130 @@ export type DeleteServerProfileResponse = z.infer<
   typeof DeleteServerProfileResponse
 >;
 
+// --- durable model upload jobs ---------------------------------------------
+
+export const UploadItemState = z.enum([
+  'queued',
+  'uploading',
+  'succeeded',
+  'failed',
+  'cancelled',
+  'uncertain',
+]);
+export type UploadItemState = z.infer<typeof UploadItemState>;
+
+export const UploadError = z
+  .object({
+    code: z.string().min(1).max(64),
+    message: z.string().min(1).max(1024),
+    retryable: z.boolean(),
+    retryAfterSeconds: z.number().int().nonnegative().max(86_400).nullable(),
+    duplicateRisk: z.boolean(),
+  })
+  .strict();
+export type UploadError = z.infer<typeof UploadError>;
+
+export const RemoteUploadResult = z
+  .object({
+    id: z.string().min(1).max(256),
+    name: z.string().min(1).max(1024),
+    fileName: z.string().min(1).max(1024),
+    fileSize: z.number().int().nonnegative(),
+    fileType: z.string().min(1).max(128),
+    uploadedAt: z.string().datetime(),
+    url: z.string().max(4096),
+    thumbnailUrl: z.string().max(4096).nullable(),
+    wasExisting: z.boolean(),
+    clientUploadId: z.string().uuid().nullable(),
+    etag: z.string().min(1).max(1024).nullable(),
+  })
+  .strict();
+export type RemoteUploadResult = z.infer<typeof RemoteUploadResult>;
+
+export const UploadJobItem = z
+  .object({
+    id: z.string().uuid(),
+    hash: z.string().regex(/^[a-f0-9]{64}$/),
+    clientUploadId: z.string().uuid(),
+    displayName: z.string().min(1).max(1024),
+    size: z.number().int().nonnegative().max(512_000_000),
+    state: UploadItemState,
+    bytesSent: z.number().int().nonnegative().max(512_000_000),
+    attempts: z.number().int().nonnegative().max(10_000),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+    remote: RemoteUploadResult.nullable(),
+    error: UploadError.nullable(),
+  })
+  .strict();
+export type UploadJobItem = z.infer<typeof UploadJobItem>;
+
+export const UploadJobState = z.enum([
+  'running',
+  'paused',
+  'completed',
+  'partialFailure',
+  'cancelled',
+  'attention',
+]);
+export type UploadJobState = z.infer<typeof UploadJobState>;
+
+export const UploadJob = z
+  .object({
+    id: z.string().uuid(),
+    profileId: z.string().uuid(),
+    profileName: z.string().min(1).max(80),
+    mode: z.enum(['modern', 'legacyModelOnly']),
+    state: UploadJobState,
+    paused: z.boolean(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+    items: z.array(UploadJobItem).min(1).max(500),
+    totalBytes: z.number().int().nonnegative(),
+    bytesSent: z.number().int().nonnegative(),
+    summary: z
+      .object({
+        queued: z.number().int().nonnegative(),
+        uploading: z.number().int().nonnegative(),
+        succeeded: z.number().int().nonnegative(),
+        failed: z.number().int().nonnegative(),
+        cancelled: z.number().int().nonnegative(),
+        uncertain: z.number().int().nonnegative(),
+      })
+      .strict(),
+  })
+  .strict();
+export type UploadJob = z.infer<typeof UploadJob>;
+
+export const StartUploadJobRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    hashes: z
+      .array(z.string().regex(/^[a-f0-9]{64}$/))
+      .min(1)
+      .max(500)
+      .refine((hashes) => new Set(hashes).size === hashes.length, {
+        message: 'Upload hashes must be unique.',
+      }),
+  })
+  .strict();
+export type StartUploadJobRequest = z.infer<typeof StartUploadJobRequest>;
+export const StartUploadJobResponse = UploadJob;
+export type StartUploadJobResponse = z.infer<typeof StartUploadJobResponse>;
+
+export const ListUploadJobsRequest = z.void();
+export const ListUploadJobsResponse = z.array(UploadJob).max(100);
+export type ListUploadJobsResponse = z.infer<typeof ListUploadJobsResponse>;
+
+export const UploadJobRequest = z.object({ jobId: z.string().uuid() }).strict();
+export type UploadJobRequest = z.infer<typeof UploadJobRequest>;
+export const UploadJobResponse = UploadJob;
+export type UploadJobResponse = z.infer<typeof UploadJobResponse>;
+export const RemoveUploadJobResponse = z
+  .object({ removed: z.literal(true) })
+  .strict();
+export type RemoveUploadJobResponse = z.infer<typeof RemoveUploadJobResponse>;
+
 /**
  * Registry mapping each channel to its request/response schemas. Used by both
  * the main-process handler registration and the preload bridge.
@@ -712,6 +843,34 @@ export const ipcSchemas = {
     request: DeleteServerProfileRequest,
     response: DeleteServerProfileResponse,
   },
+  [IpcChannel.StartUploadJob]: {
+    request: StartUploadJobRequest,
+    response: StartUploadJobResponse,
+  },
+  [IpcChannel.ListUploadJobs]: {
+    request: ListUploadJobsRequest,
+    response: ListUploadJobsResponse,
+  },
+  [IpcChannel.PauseUploadJob]: {
+    request: UploadJobRequest,
+    response: UploadJobResponse,
+  },
+  [IpcChannel.ResumeUploadJob]: {
+    request: UploadJobRequest,
+    response: UploadJobResponse,
+  },
+  [IpcChannel.CancelUploadJob]: {
+    request: UploadJobRequest,
+    response: UploadJobResponse,
+  },
+  [IpcChannel.RetryUploadJob]: {
+    request: UploadJobRequest,
+    response: UploadJobResponse,
+  },
+  [IpcChannel.RemoveUploadJob]: {
+    request: UploadJobRequest,
+    response: RemoveUploadJobResponse,
+  },
 } as const;
 
 export type IpcSchemas = typeof ipcSchemas;
@@ -768,4 +927,13 @@ export interface PrintFarmerApi {
   deleteServerProfile(
     request: DeleteServerProfileRequest,
   ): Promise<DeleteServerProfileResponse>;
+  startUploadJob(
+    request: StartUploadJobRequest,
+  ): Promise<StartUploadJobResponse>;
+  listUploadJobs(): Promise<ListUploadJobsResponse>;
+  pauseUploadJob(request: UploadJobRequest): Promise<UploadJobResponse>;
+  resumeUploadJob(request: UploadJobRequest): Promise<UploadJobResponse>;
+  cancelUploadJob(request: UploadJobRequest): Promise<UploadJobResponse>;
+  retryUploadJob(request: UploadJobRequest): Promise<UploadJobResponse>;
+  removeUploadJob(request: UploadJobRequest): Promise<RemoveUploadJobResponse>;
 }

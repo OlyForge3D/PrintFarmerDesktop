@@ -165,6 +165,21 @@ export class SidecarClient {
     return this.request('listModels', {});
   }
 
+  /** Persist a successful local-to-remote model upload mapping. */
+  async linkRemoteModel(link: {
+    profileId: string;
+    localModelHash: string;
+    remoteModelId: string;
+    clientUploadId: string;
+    etag: string | null;
+    uploadStatus: 'uploaded';
+    createdAt: number;
+    updatedAt: number;
+    uploadedAt: number | null;
+  }): Promise<unknown> {
+    return this.request('linkRemoteModel', link);
+  }
+
   /** List every tag known to the catalog (raw wire array). */
   async listTags(): Promise<unknown> {
     return this.request('listTags', {});

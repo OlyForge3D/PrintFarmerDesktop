@@ -63,8 +63,8 @@ probes use isolated ephemeral authentication identities.
 
 The App owns ordered profile-list reconciliation, including mutations that
 finish after the profile dialog closes. A synchronous modal owner coordinates
-profile, import, file-picker, and preview entry so asynchronous preparation
-cannot overlap or later remount another modal.
+profile, import, file-picker, preview, and upload-queue entry so asynchronous
+preparation cannot overlap or later remount another modal.
 
 The main process probes the anonymous version and capability endpoints and
 publishes only redacted profile metadata plus explicit feature availability.
@@ -75,3 +75,12 @@ server-thumbnail fallback; modern idempotent upload, client thumbnails, and
 library sync stay gated. HTTPS certificate verification is never bypassed.
 Remote DTO parsers tolerate additive server fields, then transform responses
 into the strict internal IPC/profile models.
+
+Model uploads are durable main-process jobs. The renderer submits only a
+profile ID and catalog SHA-256 identities; main resolves and re-verifies an
+available catalog location, acquires JWTs, streams bounded multipart requests,
+and persists progress atomically under `userData`. Modern jobs retain one
+client upload ID per item for safe retry. Confirmed legacy servers omit client
+IDs and client thumbnails, and interrupted active uploads become explicitly
+uncertain because retrying can create a duplicate. Successful jobs persist the
+profile-scoped remote-model link through the sidecar before reporting success.

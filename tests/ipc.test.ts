@@ -71,12 +71,34 @@ describe('ipc contract', () => {
       thumbnailGenerationEnabled: true,
       gcodeUploadEnabled: true,
     });
+
     expect(capabilities).toMatchObject({
       platformNote: null,
       clientThumbnailUploadEnabled: false,
       idempotentModelUploadEnabled: false,
       modelThumbnailReplacementEnabled: false,
     });
+  });
+
+  it('strictly accepts upload hashes without accepting renderer file paths', () => {
+    const request = ipcSchemas[IpcChannel.StartUploadJob].request.parse({
+      profileId: '11111111-1111-4111-8111-111111111111',
+      hashes: ['a'.repeat(64)],
+    });
+    expect(request.hashes).toEqual(['a'.repeat(64)]);
+    expect(() =>
+      ipcSchemas[IpcChannel.StartUploadJob].request.parse({
+        profileId: '11111111-1111-4111-8111-111111111111',
+        hashes: ['a'.repeat(64)],
+        path: 'C:\\private\\model.stl',
+      }),
+    ).toThrow();
+    expect(() =>
+      ipcSchemas[IpcChannel.StartUploadJob].request.parse({
+        profileId: '11111111-1111-4111-8111-111111111111',
+        hashes: ['a'.repeat(64), 'a'.repeat(64)],
+      }),
+    ).toThrow();
   });
 
   it('accepts a valid sidecar ping request', () => {

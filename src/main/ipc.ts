@@ -14,6 +14,7 @@ import {
   type ChannelFactory,
 } from './sidecar.js';
 import { ServerProfileService } from './serverProfiles.js';
+import { createUploadJobService, type UploadJobService } from './uploadJobs.js';
 
 /**
  * Register all IPC handlers. Every incoming payload is validated against its
@@ -27,6 +28,7 @@ import { ServerProfileService } from './serverProfiles.js';
 export function registerIpcHandlers(
   channelFactory?: ChannelFactory,
   profileService?: ServerProfileService,
+  uploadJobService?: UploadJobService,
 ): void {
   const sidecar = new SidecarClient(channelFactory ?? spawnSidecarChannel);
   const profiles =
@@ -35,12 +37,17 @@ export function registerIpcHandlers(
       userDataPath: app.getPath('userData'),
       secretStorage: safeStorage,
     });
+  const uploads =
+    uploadJobService ??
+    createUploadJobService(app.getPath('userData'), sidecar, profiles);
+  void uploads.initialize();
 
   // Terminate the sidecar child process when the app exits. Windows does not
   // reap child processes on parent exit, so without this the `model-core`
   // process would linger as an orphan after every quit.
   app.on('will-quit', () => {
     sidecar.dispose();
+    uploads.dispose();
     profiles.clearTokens();
   });
 
@@ -330,6 +337,44 @@ export function registerIpcHandlers(
       return ipcSchemas[IpcChannel.DeleteServerProfile].response.parse(
         response,
       );
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.StartUploadJob,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.StartUploadJob].request.parse(rawRequest);
+      const response = await uploads.start(request);
+      return ipcSchemas[IpcChannel.StartUploadJob].response.parse(response);
+    },
+  );
+
+  ipcMain.handle(IpcChannel.ListUploadJobs, async () => {
+    const response = await uploads.list();
+    return ipcSchemas[IpcChannel.ListUploadJobs].response.parse(response);
+  });
+
+  for (const [channel, action] of [
+    [IpcChannel.PauseUploadJob, (id: string) => uploads.pause(id)],
+    [IpcChannel.ResumeUploadJob, (id: string) => uploads.resume(id)],
+    [IpcChannel.CancelUploadJob, (id: string) => uploads.cancel(id)],
+    [IpcChannel.RetryUploadJob, (id: string) => uploads.retry(id)],
+  ] as const) {
+    ipcMain.handle(channel, async (_event, rawRequest: unknown) => {
+      const request = ipcSchemas[channel].request.parse(rawRequest);
+      const response = await action(request.jobId);
+      return ipcSchemas[channel].response.parse(response);
+    });
+  }
+
+  ipcMain.handle(
+    IpcChannel.RemoveUploadJob,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.RemoveUploadJob].request.parse(rawRequest);
+      const response = await uploads.remove(request.jobId);
+      return ipcSchemas[IpcChannel.RemoveUploadJob].response.parse(response);
     },
   );
 }
