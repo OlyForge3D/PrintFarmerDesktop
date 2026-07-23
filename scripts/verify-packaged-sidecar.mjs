@@ -48,3 +48,23 @@ if (!found) {
   process.exit(1);
 }
 console.log(`[verify-packaged-sidecar] OK: bundled sidecar at ${found}`);
+
+const icon = findFile(outDir, 'icon.png');
+if (!icon || path.basename(path.dirname(icon)).toLowerCase() !== 'resources') {
+  console.error(
+    `[verify-packaged-sidecar] FAILED: runtime icon.png not found in packaged resources under ${outDir}`,
+  );
+  process.exit(1);
+}
+console.log(`[verify-packaged-sidecar] OK: bundled runtime icon at ${icon}`);
+
+if (process.platform === 'darwin') {
+  const macIcon = findFile(outDir, 'icon.icns');
+  if (!macIcon) {
+    console.error(
+      `[verify-packaged-sidecar] FAILED: packaged icon.icns not found under ${outDir}`,
+    );
+    process.exit(1);
+  }
+  console.log(`[verify-packaged-sidecar] OK: bundled macOS icon at ${macIcon}`);
+}

@@ -56,6 +56,9 @@ describe('application icon packaging', () => {
     expect(forgeConfig.packagerConfig?.icon).toBe(
       path.join(repoRoot, 'assets', 'icon'),
     );
+    expect(forgeConfig.packagerConfig?.extraResource).toContain(
+      './assets/icon.png',
+    );
     const squirrel = forgeConfig.makers
       ?.filter(isForgeMaker)
       .find((maker) => maker.name === 'squirrel');
@@ -63,8 +66,18 @@ describe('application icon packaging', () => {
     expect(squirrel?.config).toMatchObject({
       setupIcon: assetPath('ico'),
     });
-    expect(resolveAppIconPath('C:\\app')).toBe(
+    const dmg = forgeConfig.makers
+      ?.filter(isForgeMaker)
+      .find((maker) => maker.name === 'dmg');
+    await dmg?.prepareConfig('x64');
+    expect(dmg?.config).toMatchObject({
+      icon: assetPath('icns'),
+    });
+    expect(resolveAppIconPath('C:\\app', 'C:\\resources', false)).toBe(
       path.join('C:\\app', 'assets', 'icon.png'),
+    );
+    expect(resolveAppIconPath('C:\\app', 'C:\\resources', true)).toBe(
+      path.join('C:\\resources', 'icon.png'),
     );
   });
 });

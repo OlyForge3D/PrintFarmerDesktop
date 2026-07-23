@@ -15,7 +15,11 @@ import { registerIpcHandlers } from './ipc.js';
 import { resolveAppIconPath } from './appIcon.js';
 
 const createMainWindow = (): void => {
-  const iconPath = resolveAppIconPath(app.getAppPath());
+  const iconPath = resolveAppIconPath(
+    app.getAppPath(),
+    process.resourcesPath,
+    app.isPackaged,
+  );
   const mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -160,8 +164,10 @@ if (!enforceSingleInstance()) {
   app.quit();
 } else {
   void app.whenReady().then(() => {
-    if (process.platform === 'darwin') {
-      app.dock.setIcon(resolveAppIconPath(app.getAppPath()));
+    if (process.platform === 'darwin' && !app.isPackaged) {
+      app.dock.setIcon(
+        resolveAppIconPath(app.getAppPath(), process.resourcesPath, false),
+      );
     }
     installApplicationMenu();
     applyContentSecurityPolicy(

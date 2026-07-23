@@ -34,7 +34,7 @@ const config: ForgeConfig = {
     icon: iconBasePath,
     // Ship the compiled sidecar next to the app so the packaged main process
     // resolves it via `resolveSidecarPath()` at `<resources>/sidecar/<binary>`.
-    extraResource: ['./resources/sidecar'],
+    extraResource: ['./resources/sidecar', './assets/icon.png'],
   },
   rebuildConfig: {},
   hooks: {
@@ -59,7 +59,7 @@ const config: ForgeConfig = {
     new MakerZIP({}, ['win32', 'darwin']),
     // macOS disk image (unsigned / un-notarized — Gatekeeper requires the user
     // to right-click → Open, or clear the quarantine xattr, on first launch).
-    new MakerDMG({}, ['darwin']),
+    new MakerDMG({ icon: `${iconBasePath}.icns` }, ['darwin']),
   ],
   plugins: [
     new VitePlugin({
