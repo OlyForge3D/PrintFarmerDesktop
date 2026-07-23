@@ -22,11 +22,12 @@ use crate::vendor;
 
 pub use crate::sync::{
     AppliedOutboundResultDto, ApplyPullBatchDto, ClaimedOutboundBatchDto, CollectionSnapshotDto,
-    ConflictInputDto, ConflictResolution, EnqueueOutboundOperationDto, EntityRevisionDto,
-    MembershipSnapshotDto, OutboundOperationDto, OutboundState, PullEntityDto,
-    ReconcileUncertainBatchDto, RemoteModelLinkDto, RemoteUploadStatus, SettleOutboundBatchDto,
-    SettledOutboundBatchDto, SettlementConflictDto, SyncConflictDto, SyncEntityType,
-    SyncOperationKind, SyncStatusDto, SyncVisibility, TagSnapshotDto, UnknownOutcomeResolution,
+    ConflictInputDto, ConflictResolution, DisposeFailedBatchDto, EnqueueOutboundOperationDto,
+    EntityRevisionDto, FailedBatchDisposition, MembershipSnapshotDto, OutboundOperationDto,
+    OutboundState, PullEntityDto, ReconcileOperationDto, ReconcileUncertainBatchDto,
+    RemoteModelLinkDto, RemoteUploadStatus, SettleOutboundBatchDto, SettledOutboundBatchDto,
+    SettlementConflictDto, SyncConflictDto, SyncEntityType, SyncOperationKind, SyncStatusDto,
+    SyncVisibility, TagSnapshotDto, UnknownOutcomeResolution,
 };
 
 /// Axis-aligned bounds in wire form.

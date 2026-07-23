@@ -46,9 +46,10 @@ use serde_json::Value;
 use crate::catalog::{reconcile_root, CatalogStore, InMemoryCatalog};
 use crate::rpc::{
     extract_vendor_metadata_dto, load_scene_dto, render_thumbnail_dto, ApplyPullBatchDto,
-    CollectionDto, ConflictInputDto, ConflictResolution, EnqueueOutboundOperationDto,
-    ImportPreviewDto, ImportResultDto, LogicalModelDto, OutboundState, ReconcileReportDto,
-    ReconcileUncertainBatchDto, RemoteModelLinkDto, SettleOutboundBatchDto, SyncEntityType, TagDto,
+    CollectionDto, ConflictInputDto, ConflictResolution, DisposeFailedBatchDto,
+    EnqueueOutboundOperationDto, ImportPreviewDto, ImportResultDto, LogicalModelDto, OutboundState,
+    ReconcileReportDto, ReconcileUncertainBatchDto, RemoteModelLinkDto, SettleOutboundBatchDto,
+    SyncEntityType, TagDto,
 };
 use crate::smart_import::{ImportPlan, ImportRuleKind};
 use crate::{sidecar_version, RPC_PROTOCOL_VERSION};
@@ -311,6 +312,8 @@ struct ResolveConflictParams {
     conflict_id: String,
     resolution: ConflictResolution,
     resolved_at: i64,
+    #[serde(default)]
+    failed_disposition: Option<DisposeFailedBatchDto>,
 }
 
 const fn default_sync_limit() -> usize {
@@ -464,6 +467,12 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             serde_json::to_value(store.reconcile_uncertain_batch(reconciliation)?)
                 .map_err(|e| format!("failed to serialize reconciled batch: {e}"))
         }
+        "disposeFailedBatch" => {
+            let disposition: DisposeFailedBatchDto = serde_json::from_value(params)
+                .map_err(|e| format!("invalid disposeFailedBatch params: {e}"))?;
+            serde_json::to_value(store.dispose_failed_batch(disposition)?)
+                .map_err(|e| format!("failed to serialize failed batch disposition: {e}"))
+        }
         "pruneAckedOutboundOperations" => {
             let params: PruneOutboundParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid pruneAckedOutboundOperations params: {e}"))?;
@@ -499,6 +508,7 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
                 &params.conflict_id,
                 params.resolution,
                 params.resolved_at,
+                params.failed_disposition,
             )?)
             .map_err(|e| format!("failed to serialize sync conflict: {e}"))
         }
@@ -1157,6 +1167,7 @@ mod tests {
             "method": "applySyncPullBatch",
             "params": {
                 "profileId": "profile-a",
+                "expectedCheckpointGeneration": 0,
                 "cursor": "opaque",
                 "serverRevision": 4,
                 "appliedAt": 10,

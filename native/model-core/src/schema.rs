@@ -8,7 +8,7 @@
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -187,7 +187,7 @@ ALTER TABLE sync_outbox ADD COLUMN lease_token TEXT;
 
 UPDATE sync_outbox
 SET sequence = rowid,
-    batch_id = 'legacy-' || operation_id,
+    batch_id = 'legacy-' || printf('%016x', rowid),
     batch_ordinal = 0
 WHERE sequence IS NULL;
 
@@ -215,6 +215,20 @@ CREATE INDEX idx_sync_outbox_batch_state
     ON sync_outbox(profile_id, batch_id, state, sequence);
 "#;
 
+/// Additive v4 checkpoint fencing and conflict/outbox association.
+pub const SCHEMA_V4: &str = r#"
+ALTER TABLE sync_profiles ADD COLUMN checkpoint_generation INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sync_conflicts ADD COLUMN batch_id TEXT;
+ALTER TABLE sync_conflicts ADD COLUMN operation_id TEXT;
+
+UPDATE sync_outbox
+SET batch_id = 'legacy-' || printf('%016x', sequence)
+WHERE length(batch_id) > 256;
+
+CREATE INDEX idx_sync_conflicts_batch
+    ON sync_conflicts(profile_id, batch_id, resolved_at);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,7 +254,7 @@ mod tests {
 
     #[test]
     fn sync_schema_contains_no_transport_or_secret_fields() {
-        let sync_schema = format!("{SCHEMA_V2}\n{SCHEMA_V3}").to_lowercase();
+        let sync_schema = format!("{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}").to_lowercase();
         for forbidden in ["server_url", "auth_token", "api_key", "password", "jwt"] {
             assert!(!sync_schema.contains(forbidden));
         }
