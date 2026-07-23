@@ -443,7 +443,11 @@ export const ServerVersion = z
   .object({
     service: z.string().min(1).max(128),
     version: z.string().min(1).max(64),
-    commit: z.string().max(128).nullable(),
+    commit: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((value) => value ?? null),
     environment: z.string().min(1).max(64),
     runtime: z.string().min(1).max(128),
     timestamp: z.string().datetime(),
@@ -458,10 +462,14 @@ export const ServerCapabilities = z
     modelFilesEnabled: z.boolean(),
     thumbnailGenerationEnabled: z.boolean(),
     gcodeUploadEnabled: z.boolean(),
-    clientThumbnailUploadEnabled: z.boolean(),
-    idempotentModelUploadEnabled: z.boolean(),
-    modelThumbnailReplacementEnabled: z.boolean(),
-    platformNote: z.string().max(1024).nullable(),
+    clientThumbnailUploadEnabled: z.boolean().optional().default(false),
+    idempotentModelUploadEnabled: z.boolean().optional().default(false),
+    modelThumbnailReplacementEnabled: z.boolean().optional().default(false),
+    platformNote: z
+      .string()
+      .max(1024)
+      .nullish()
+      .transform((value) => value ?? null),
     operatorFeatures: z.record(z.boolean()).optional(),
   })
   .strict();
@@ -469,10 +477,16 @@ export type ServerCapabilities = z.infer<typeof ServerCapabilities>;
 
 export const FeatureAvailability = z
   .object({
-    modelUpload: z.object({
-      available: z.boolean(),
-      reason: z.string().max(256).nullable(),
-    }),
+    modelUpload: z
+      .object({
+        available: z.boolean(),
+        mode: z.enum(['modern', 'legacyModelOnly', 'unavailable']).optional(),
+        reason: z.string().max(256).nullable(),
+      })
+      .transform((value) => ({
+        ...value,
+        mode: value.mode ?? (value.available ? 'modern' : 'unavailable'),
+      })),
     librarySync: z.object({
       available: z.boolean(),
       reason: z.string().max(256).nullable(),
@@ -481,6 +495,15 @@ export const FeatureAvailability = z
       available: z.boolean(),
       reason: z.string().max(256).nullable(),
     }),
+    serverThumbnailFallback: z
+      .object({
+        available: z.boolean(),
+        reason: z.string().max(256).nullable(),
+      })
+      .default({
+        available: false,
+        reason: 'Server-thumbnail fallback is not required.',
+      }),
   })
   .strict();
 export type FeatureAvailability = z.infer<typeof FeatureAvailability>;

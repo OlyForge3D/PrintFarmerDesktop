@@ -28,9 +28,13 @@ const connected: ServerProfile = {
     platformNote: null,
   },
   availability: {
-    modelUpload: { available: true, reason: null },
+    modelUpload: { available: true, mode: 'modern', reason: null },
     librarySync: { available: true, reason: null },
     clientThumbnailUpload: { available: true, reason: null },
+    serverThumbnailFallback: {
+      available: false,
+      reason: 'Modern server',
+    },
   },
   status: 'connected',
   lastCheckedAt: '2026-07-23T12:00:00.000Z',
@@ -108,9 +112,17 @@ describe('<ServerProfilesDialog />', () => {
       capabilities: null,
       warnings: ['insecureHttp', 'legacy'],
       availability: {
-        modelUpload: { available: false, reason: 'Legacy server' },
+        modelUpload: {
+          available: true,
+          mode: 'legacyModelOnly',
+          reason: 'Legacy model-only fallback',
+        },
         librarySync: { available: false, reason: 'Legacy server' },
         clientThumbnailUpload: { available: false, reason: 'Legacy server' },
+        serverThumbnailFallback: {
+          available: true,
+          reason: 'Server thumbnails',
+        },
       },
     };
     installApi({ testServerProfile: vi.fn().mockResolvedValue(legacy) });
@@ -136,7 +148,78 @@ describe('<ServerProfilesDialog />', () => {
     );
     expect(save).toBeEnabled();
     expect(
-      screen.getByText(/capability-gated actions are disabled/),
+      screen.getByText(
+        /Modern idempotent upload, client thumbnails, and sync are disabled/,
+      ),
     ).toBeVisible();
+  });
+
+  it('does not refocus Close while busy and remains escapable', () => {
+    const onClose = vi.fn();
+    const testServerProfile = vi.fn<PrintFarmerApi['testServerProfile']>(
+      () => new Promise<ServerProfile>(() => undefined),
+    );
+    installApi({ testServerProfile });
+    render(
+      <>
+        <button type="button">Outside</button>
+        <ServerProfilesDialog
+          profiles={{ profiles: [], selectedProfileId: null }}
+          onChange={vi.fn()}
+          onClose={onClose}
+        />
+      </>,
+    );
+    const close = screen.getByRole('button', {
+      name: 'Close server profiles',
+    });
+    expect(close).toHaveFocus();
+    const name = screen.getByLabelText('Profile name');
+    fireEvent.change(name, { target: { value: 'Stalled farm' } });
+    fireEvent.change(screen.getByLabelText('Desktop API key'), {
+      target: { value: 'key' },
+    });
+    name.focus();
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    expect(name).toHaveFocus();
+    expect(close).toBeEnabled();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledOnce();
+
+    screen.getByRole('button', { name: 'Outside' }).focus();
+    expect(close).toHaveFocus();
+  });
+
+  it('refreshes persisted error state after a saved retest rejects', async () => {
+    const failed = { ...connected, status: 'error' as const };
+    const testServerProfile = vi
+      .fn<PrintFarmerApi['testServerProfile']>()
+      .mockRejectedValue(new Error('Server unavailable'));
+    const listServerProfiles = vi
+      .fn<PrintFarmerApi['listServerProfiles']>()
+      .mockResolvedValue({
+        profiles: [failed],
+        selectedProfileId: failed.id,
+      });
+    const onChange = vi.fn();
+    installApi({ testServerProfile, listServerProfiles });
+    render(
+      <ServerProfilesDialog
+        profiles={{ profiles: [connected], selectedProfileId: connected.id }}
+        onChange={onChange}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Test' }));
+
+    await waitFor(() =>
+      expect(onChange).toHaveBeenCalledWith({
+        profiles: [failed],
+        selectedProfileId: failed.id,
+      }),
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent('Server unavailable');
   });
 });

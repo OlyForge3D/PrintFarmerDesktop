@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   ServerProfileError,
@@ -9,10 +10,10 @@ import {
 import type { ServerProfileDraft } from '@shared/ipc';
 
 const NOW = Date.parse('2026-07-23T12:00:00.000Z');
+const TEST_USER_DATA_PATH = path.join(process.cwd(), 'profile-test-data');
 const VERSION = {
   service: 'Farm.Web.Api',
   version: '0.2.2',
-  commit: '63b0053f2',
   environment: 'Production',
   runtime: '.NET 9',
   timestamp: '2026-07-23T11:59:00.000Z',
@@ -26,7 +27,6 @@ const CAPABILITIES = {
   clientThumbnailUploadEnabled: true,
   idempotentModelUploadEnabled: true,
   modelThumbnailReplacementEnabled: true,
-  platformNote: null,
   operatorFeatures: { queue: true },
 };
 
@@ -144,7 +144,7 @@ function service(
 ): ServerProfileService {
   let id = 0;
   return new ServerProfileService({
-    userDataPath: 'C:\\profile-test',
+    userDataPath: TEST_USER_DATA_PATH,
     fileSystem,
     secretStorage: storage,
     fetch: fetchImpl,
@@ -190,6 +190,8 @@ describe('server profiles', () => {
       warnings: ['insecureHttp'],
     });
     expect(saved.availability.librarySync.available).toBe(true);
+    expect(saved.capabilities?.platformNote).toBeNull();
+    expect(saved.version?.commit).toBeNull();
     expect(listed.profiles).toEqual([saved]);
     expect(JSON.stringify(listed)).not.toContain('encryptedSecret');
     expect(persisted).not.toContain('desktop-secret');
@@ -245,7 +247,7 @@ describe('server profiles', () => {
     });
   });
 
-  it('performs password login without exposing or persisting the password', async () => {
+  it('accepts an omission-shaped successful login without exposing the password', async () => {
     const fs = new MemoryFileSystem();
     let loginBody: unknown;
     const fetchImpl = successfulFetch();
@@ -260,7 +262,6 @@ describe('server profiles', () => {
               token: 'password-jwt',
               expiresAt: new Date(NOW + 15 * 60_000).toISOString(),
               user: { id: 'operator' },
-              error: null,
             }),
           );
         }
@@ -308,8 +309,241 @@ describe('server profiles', () => {
     expect(await profiles.getToken(saved.id)).toBe('short-lived-jwt');
     expect(exchanges).toBe(1);
     currentTime += 14 * 60_000 + 1;
-    expect(await profiles.getToken(saved.id)).toBe('short-lived-jwt');
+    await expect(
+      Promise.all([
+        profiles.getToken(saved.id),
+        profiles.getToken(saved.id),
+        profiles.getToken(saved.id),
+      ]),
+    ).resolves.toEqual([
+      'short-lived-jwt',
+      'short-lived-jwt',
+      'short-lived-jwt',
+    ]);
     expect(exchanges).toBe(2);
+  });
+
+  it('forces fresh authentication and current-user validation for a saved test', async () => {
+    const fs = new MemoryFileSystem();
+    let exchanges = 0;
+    let currentUserChecks = 0;
+    const profiles = service(
+      fs,
+      successfulFetch((url) => {
+        if (url.pathname === '/api/auth/api-key/exchange') exchanges += 1;
+        if (url.pathname === '/api/auth/me') currentUserChecks += 1;
+      }),
+    );
+    const saved = await profiles.save(apiKeyDraft());
+
+    await profiles.test({ source: 'saved', id: saved.id });
+
+    expect(exchanges).toBe(2);
+    expect(currentUserChecks).toBe(2);
+  });
+
+  it('rebinds cached authentication when URL and credentials are replaced', async () => {
+    const fs = new MemoryFileSystem();
+    const authentications: Array<{
+      host: string;
+      endpoint: string;
+      body: unknown;
+    }> = [];
+    const baseline = successfulFetch((url, init) => {
+      if (url.pathname === '/api/auth/api-key/exchange') {
+        authentications.push({
+          host: url.host,
+          endpoint: url.pathname,
+          body: requestBody(init),
+        });
+      }
+    });
+    const fetchImpl: typeof globalThis.fetch = vi.fn(
+      (input: string | URL | Request, init?: RequestInit) => {
+        const url = requestUrl(input);
+        if (url.pathname === '/api/auth/login') {
+          authentications.push({
+            host: url.host,
+            endpoint: url.pathname,
+            body: requestBody(init),
+          });
+          return Promise.resolve(
+            json({
+              success: true,
+              token: 'replacement-jwt',
+              expiresAt: new Date(NOW + 15 * 60_000).toISOString(),
+              user: { id: 'operator' },
+            }),
+          );
+        }
+        return baseline(input, init);
+      },
+    );
+    const profiles = service(fs, fetchImpl);
+    const saved = await profiles.save(apiKeyDraft());
+
+    await profiles.save(
+      apiKeyDraft({
+        id: saved.id,
+        baseUrl: 'https://replacement.example',
+        credentials: {
+          authMode: 'password',
+          username: 'replacement-user',
+          password: 'replacement-secret',
+          rememberMe: true,
+        },
+      }),
+    );
+    await expect(profiles.getToken(saved.id)).resolves.toBe('replacement-jwt');
+
+    expect(authentications).toEqual([
+      {
+        host: '10.0.0.20',
+        endpoint: '/api/auth/api-key/exchange',
+        body: { apiKey: 'desktop-secret' },
+      },
+      {
+        host: 'replacement.example',
+        endpoint: '/api/auth/login',
+        body: {
+          usernameOrEmail: 'replacement-user',
+          password: 'replacement-secret',
+          rememberMe: true,
+        },
+      },
+    ]);
+  });
+
+  it('accepts older omission-shaped capabilities as gated legacy fallback', async () => {
+    const fetchImpl = successfulFetch();
+    vi.mocked(fetchImpl).mockImplementation(
+      (input: string | URL | Request, init?: RequestInit) => {
+        const url = requestUrl(input);
+        if (url.pathname === '/api/system/capabilities') {
+          return Promise.resolve(
+            json({
+              architecture: 'X64',
+              slicingEnabled: true,
+              modelFilesEnabled: true,
+              thumbnailGenerationEnabled: true,
+              gcodeUploadEnabled: true,
+            }),
+          );
+        }
+        return successfulFetch()(input, init);
+      },
+    );
+    const tested = await service(new MemoryFileSystem(), fetchImpl).test({
+      source: 'draft',
+      draft: apiKeyDraft(),
+    });
+
+    expect(tested.status).toBe('legacy');
+    expect(tested.capabilities).toMatchObject({
+      platformNote: null,
+      clientThumbnailUploadEnabled: false,
+      idempotentModelUploadEnabled: false,
+      modelThumbnailReplacementEnabled: false,
+    });
+    expect(tested.availability.modelUpload).toMatchObject({
+      available: true,
+      mode: 'legacyModelOnly',
+    });
+    expect(tested.availability.librarySync.available).toBe(false);
+    expect(tested.availability.clientThumbnailUpload.available).toBe(false);
+    expect(tested.availability.serverThumbnailFallback.available).toBe(true);
+  });
+
+  it('does not label non-idempotent upload as modern when capabilities are explicit', async () => {
+    const baseline = successfulFetch();
+    const fetchImpl: typeof globalThis.fetch = vi.fn(
+      (input: string | URL | Request, init?: RequestInit) =>
+        requestUrl(input).pathname === '/api/system/capabilities'
+          ? Promise.resolve(
+              json({
+                ...CAPABILITIES,
+                clientThumbnailUploadEnabled: false,
+                idempotentModelUploadEnabled: false,
+                modelThumbnailReplacementEnabled: false,
+              }),
+            )
+          : baseline(input, init),
+    );
+
+    const tested = await service(new MemoryFileSystem(), fetchImpl).test({
+      source: 'draft',
+      draft: apiKeyDraft(),
+    });
+
+    expect(tested.status).toBe('connected');
+    expect(tested.availability.modelUpload.mode).toBe('legacyModelOnly');
+    expect(tested.availability.librarySync.available).toBe(false);
+    expect(tested.availability.clientThumbnailUpload.available).toBe(false);
+    expect(tested.availability.serverThumbnailFallback.available).toBe(true);
+  });
+
+  it('keeps the deadline active while a response body stalls', async () => {
+    vi.useFakeTimers();
+    try {
+      let cancelled = false;
+      const stalled = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"service":'));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      const fetchImpl = successfulFetch();
+      vi.mocked(fetchImpl).mockImplementation(
+        (input: string | URL | Request, init?: RequestInit) => {
+          if (requestUrl(input).pathname === '/api/system/version') {
+            return Promise.resolve(new Response(stalled, { status: 200 }));
+          }
+          return successfulFetch()(input, init);
+        },
+      );
+      const pending = service(new MemoryFileSystem(), fetchImpl).test({
+        source: 'draft',
+        draft: apiKeyDraft(),
+      });
+      const assertion = expect(pending).rejects.toMatchObject({
+        code: 'TIMEOUT',
+      });
+
+      await vi.advanceTimersByTimeAsync(10_001);
+      await assertion;
+      expect(cancelled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels an unconsumed 404 response body before legacy fallback', async () => {
+    let cancelled = false;
+    const notFoundBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('not used'));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const baseline = successfulFetch();
+    const fetchImpl: typeof globalThis.fetch = vi.fn(
+      (input: string | URL | Request, init?: RequestInit) =>
+        requestUrl(input).pathname === '/api/system/capabilities'
+          ? Promise.resolve(new Response(notFoundBody, { status: 404 }))
+          : baseline(input, init),
+    );
+
+    const tested = await service(new MemoryFileSystem(), fetchImpl).test({
+      source: 'draft',
+      draft: apiKeyDraft(),
+    });
+
+    expect(tested.status).toBe('legacy');
+    expect(cancelled).toBe(true);
   });
 
   it('reports rate limiting and Retry-After without parsing an error body', async () => {
@@ -410,13 +644,50 @@ describe('server profiles', () => {
       capabilities: null,
     });
     expect(tested.availability.librarySync.available).toBe(false);
-    expect(tested.availability.librarySync.reason).toContain('legacy');
+    expect(tested.availability.modelUpload).toMatchObject({
+      available: true,
+      mode: 'legacyModelOnly',
+    });
+    expect(tested.availability.serverThumbnailFallback.available).toBe(true);
     await expect(profiles.save(draft)).rejects.toMatchObject({
       code: 'LEGACY_CONFIRMATION_REQUIRED',
     });
     await expect(
       profiles.save({ ...draft, allowLegacy: true }),
     ).resolves.toMatchObject({ status: 'legacy' });
+  });
+
+  it('persists error status when a saved-profile retest rejects', async () => {
+    const fs = new MemoryFileSystem();
+    let failRetest = false;
+    let exchanges = 0;
+    const baseline = successfulFetch((url) => {
+      if (url.pathname === '/api/auth/api-key/exchange') exchanges += 1;
+    });
+    const fetchImpl: typeof globalThis.fetch = vi.fn(
+      (input: string | URL | Request, init?: RequestInit) => {
+        if (
+          failRetest &&
+          requestUrl(input).pathname === '/api/system/capabilities'
+        ) {
+          return Promise.resolve(json({}, 503));
+        }
+        return baseline(input, init);
+      },
+    );
+    const profiles = service(fs, fetchImpl);
+    const saved = await profiles.save(apiKeyDraft());
+    failRetest = true;
+
+    await expect(
+      profiles.test({ source: 'saved', id: saved.id }),
+    ).rejects.toMatchObject({ code: 'TRANSPORT_ERROR' });
+    await expect(profiles.list()).resolves.toMatchObject({
+      profiles: [{ id: saved.id, status: 'error' }],
+    });
+    failRetest = false;
+    await profiles.getToken(saved.id);
+    expect(exchanges).toBe(2);
   });
 
   it('rejects malformed capabilities and corrupt stores explicitly', async () => {
@@ -437,7 +708,7 @@ describe('server profiles', () => {
 
     const fs = new MemoryFileSystem();
     fs.files.set(
-      'C:\\profile-test\\server-profiles.v1.json',
+      path.join(TEST_USER_DATA_PATH, 'server-profiles.v1.json'),
       new TextEncoder().encode('{"version":999}'),
     );
     await expect(service(fs).list()).rejects.toMatchObject({

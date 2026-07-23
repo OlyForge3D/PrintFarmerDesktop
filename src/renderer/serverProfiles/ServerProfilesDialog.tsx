@@ -29,13 +29,15 @@ export function ServerProfilesDialog({
   const [error, setError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     closeRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape' && !busy) {
+      if (event.key === 'Escape') {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== 'Tab') return;
@@ -68,7 +70,7 @@ export function ServerProfilesDialog({
       document.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('focusin', onFocusIn);
     };
-  }, [busy, onClose]);
+  }, []);
 
   const invalidateTest = (): void => {
     setTested(null);
@@ -150,7 +152,15 @@ export function ServerProfilesDialog({
         ),
       });
     } catch (cause) {
-      setError(errorMessage(cause));
+      const testError = errorMessage(cause);
+      try {
+        onChange(await window.printFarmer.listServerProfiles());
+        setError(testError);
+      } catch (refreshCause) {
+        setError(
+          `${testError} The saved error status could not be refreshed: ${errorMessage(refreshCause)}`,
+        );
+      }
     } finally {
       setBusy(false);
     }
@@ -189,7 +199,6 @@ export function ServerProfilesDialog({
             type="button"
             className="icon-button"
             aria-label="Close server profiles"
-            disabled={busy}
             onClick={onClose}
           >
             &times;
@@ -380,8 +389,9 @@ export function ServerProfilesDialog({
                       onChange={(event) => setAllowLegacy(event.target.checked)}
                     />
                     <span>
-                      Save in legacy mode. Upload and library sync remain
-                      unavailable until capabilities are published.
+                      Save in legacy mode. Only the model-file/server-thumbnail
+                      fallback is available; idempotent upload, client
+                      thumbnails, and library sync remain disabled.
                     </span>
                   </label>
                 ) : null}
@@ -439,7 +449,8 @@ function ProfileDetails({
       ) : null}
       {profile.warnings.includes('legacy') ? (
         <span className="profile-warning">
-          Legacy mode: capability-gated actions are disabled.
+          Legacy mode: model-only upload uses server thumbnails where available.
+          Modern idempotent upload, client thumbnails, and sync are disabled.
         </span>
       ) : null}
     </div>

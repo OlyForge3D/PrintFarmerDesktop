@@ -398,6 +398,18 @@ select:disabled {
   font-size: 10.5px;
 }
 
+.server-profile-entry .server-accessible-status.connected {
+  color: var(--success);
+}
+
+.server-profile-entry .server-accessible-status.legacy {
+  color: var(--warning);
+}
+
+.server-profile-entry .server-accessible-status.error {
+  color: var(--danger);
+}
+
 .server-status-dot {
   width: 8px;
   height: 8px;

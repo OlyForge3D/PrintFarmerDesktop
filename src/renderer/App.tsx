@@ -229,13 +229,6 @@ export function App(): React.JSX.Element {
   }, [modalOpen]);
 
   useEffect(() => {
-    if (!profilesOpen && restoreProfileFocusRef.current) {
-      restoreProfileFocusRef.current = false;
-      profileReturnFocusRef.current?.focus();
-    }
-  }, [profilesOpen]);
-
-  useEffect(() => {
     for (const element of [
       titlebarRef.current,
       workspaceRef.current,
@@ -248,6 +241,15 @@ export function App(): React.JSX.Element {
       }
     }
   }, [modalOpen]);
+
+  useEffect(() => {
+    if (profilesOpen || !restoreProfileFocusRef.current) return;
+    restoreProfileFocusRef.current = false;
+    const timeout = setTimeout(() => {
+      profileReturnFocusRef.current?.focus();
+    }, 0);
+    return () => clearTimeout(timeout);
+  }, [profilesOpen]);
 
   const beginImport = useCallback(() => {
     if (

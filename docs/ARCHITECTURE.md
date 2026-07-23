@@ -52,4 +52,6 @@ The main process probes the anonymous version and capability endpoints and
 publishes only redacted profile metadata plus explicit feature availability.
 HTTP LAN profiles remain supported with a persistent warning. A missing
 capability/version endpoint is treated as legacy and requires explicit user
-confirmation; HTTPS certificate verification is never bypassed.
+confirmation. Legacy availability exposes only the conservative model-file and
+server-thumbnail fallback; modern idempotent upload, client thumbnails, and
+library sync stay gated. HTTPS certificate verification is never bypassed.

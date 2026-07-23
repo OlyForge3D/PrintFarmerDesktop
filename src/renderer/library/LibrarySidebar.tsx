@@ -161,6 +161,18 @@ export function LibrarySidebar({
                 ? (serverProfile.version?.version ?? 'Legacy server')
                 : 'Manage profiles'}
             </small>
+            <small
+              className={`server-accessible-status ${serverProfile?.status ?? 'none'}`}
+            >
+              Status:{' '}
+              {serverProfile
+                ? serverProfile.status === 'error'
+                  ? 'Connection error'
+                  : serverProfile.status === 'legacy'
+                    ? 'Legacy fallback'
+                    : 'Connected'
+                : 'Disconnected'}
+            </small>
           </span>
         </button>
         {serverProfile?.warnings.includes('insecureHttp') ? (

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { IPC_CONTRACT_VERSION, ipcSchemas, IpcChannel } from '@shared/ipc';
+import {
+  IPC_CONTRACT_VERSION,
+  ipcSchemas,
+  IpcChannel,
+  ServerCapabilities,
+} from '@shared/ipc';
 
 describe('ipc contract', () => {
   it('accepts a valid app info response', () => {
@@ -31,6 +36,7 @@ describe('ipc contract', () => {
       credentials: { authMode: 'apiKey', apiKey: 'secret' },
       allowLegacy: false,
     });
+
     expect(request.credentials.authMode).toBe('apiKey');
 
     const response = ipcSchemas[IpcChannel.ListServerProfiles].response.parse({
@@ -46,6 +52,22 @@ describe('ipc contract', () => {
         allowLegacy: false,
       }),
     ).toThrow();
+  });
+
+  it('normalizes nullable and older omitted capability fields conservatively', () => {
+    const capabilities = ServerCapabilities.parse({
+      architecture: 'X64',
+      slicingEnabled: true,
+      modelFilesEnabled: true,
+      thumbnailGenerationEnabled: true,
+      gcodeUploadEnabled: true,
+    });
+    expect(capabilities).toMatchObject({
+      platformNote: null,
+      clientThumbnailUploadEnabled: false,
+      idempotentModelUploadEnabled: false,
+      modelThumbnailReplacementEnabled: false,
+    });
   });
 
   it('accepts a valid sidecar ping request', () => {

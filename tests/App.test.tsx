@@ -12,6 +12,7 @@ import type {
   LoadSceneResponse,
   LogicalModel,
   PrintFarmerApi,
+  ServerProfile,
 } from '@shared/ipc';
 import { rootIdForPath } from '../src/renderer/library/model.js';
 
@@ -117,19 +118,73 @@ describe('<App />', () => {
     const { container } = render(<App />);
 
     const manage = await screen.findByRole('button', {
-      name: /Not connected Manage profiles/,
+      name: /Not connected Manage profiles Status: Disconnected/,
     });
+    expect(manage).toHaveAccessibleName(/Status: Disconnected/);
     manage.focus();
     fireEvent.click(manage);
     expect(
       screen.getByRole('dialog', { name: 'Server profiles' }),
     ).toBeVisible();
-    expect(container.querySelector('.workspace')).toHaveAttribute('inert');
+    const workspace = container.querySelector('.workspace');
+    expect(workspace).toHaveAttribute('inert');
+    let inertWhenFocusReturned: boolean | null = null;
+    manage.addEventListener('focus', () => {
+      inertWhenFocusReturned = workspace?.hasAttribute('inert') ?? null;
+    });
 
     fireEvent.click(
       screen.getByRole('button', { name: 'Close server profiles' }),
     );
     await waitFor(() => expect(manage).toHaveFocus());
+    expect(inertWhenFocusReturned).toBe(false);
+  });
+
+  it('announces a selected server connection error in sidebar text', async () => {
+    const failedProfile: ServerProfile = {
+      id: '11111111-1111-4111-8111-111111111111',
+      displayName: 'Broken farm',
+      baseUrl: 'https://farm.example',
+      authMode: 'apiKey',
+      version: null,
+      capabilities: null,
+      availability: {
+        modelUpload: {
+          available: true,
+          mode: 'legacyModelOnly',
+          reason: 'Legacy fallback',
+        },
+        librarySync: { available: false, reason: 'Unavailable' },
+        clientThumbnailUpload: { available: false, reason: 'Unavailable' },
+        serverThumbnailFallback: {
+          available: true,
+          reason: 'Server thumbnails',
+        },
+      },
+      status: 'error',
+      lastCheckedAt: '2026-07-23T12:00:00.000Z',
+      warnings: ['legacy'],
+    };
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 1,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([]),
+      listServerProfiles: vi.fn().mockResolvedValue({
+        profiles: [failedProfile],
+        selectedProfileId: failedProfile.id,
+      }),
+    });
+    render(<App />);
+
+    expect(
+      await screen.findByRole('button', {
+        name: /Broken farm Legacy server Status: Connection error/,
+      }),
+    ).toBeVisible();
   });
 
   it('shows an error when the main process call fails', async () => {
