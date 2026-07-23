@@ -34,6 +34,7 @@ import {
 import { PreviewWorkspace } from './viewer/PreviewWorkspace';
 import type { Projection } from './viewer/ModelViewer';
 import { Icon } from './ui/Icon';
+import appIconUrl from '../../assets/icon.png';
 
 interface PreviewTarget {
   path: string;
@@ -440,7 +441,14 @@ export function App(): React.JSX.Element {
         aria-hidden={modalOpen ? 'true' : undefined}
       >
         <div className="product-identity">
-          <Icon name="app" size={18} />
+          <img
+            className="product-icon"
+            src={appIconUrl}
+            alt=""
+            width={20}
+            height={20}
+            draggable={false}
+          />
           <h1>PrintFarmer Desktop</h1>
         </div>
         <div className="titlebar-drag-region" aria-hidden="true" />

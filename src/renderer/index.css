@@ -127,6 +127,15 @@ select:disabled {
   padding-left: 82px;
 }
 
+.product-icon {
+  display: block;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  object-fit: contain;
+}
+
 .product-identity h1 {
   min-width: 0;
   margin: 0;

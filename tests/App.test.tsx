@@ -53,6 +53,33 @@ describe('<App />', () => {
     vi.restoreAllMocks();
   });
 
+  it('uses the canonical application icon in the custom titlebar', async () => {
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 1,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([]),
+    });
+
+    render(<App />);
+
+    const identity = screen
+      .getByRole('heading', { name: 'PrintFarmer Desktop' })
+      .closest('.product-identity');
+    const icon = identity?.querySelector('.product-icon');
+
+    expect(icon).toBeInstanceOf(HTMLImageElement);
+    expect(icon).toHaveAttribute('src', expect.stringContaining('icon.png'));
+    await waitFor(() =>
+      expect(screen.getByLabelText('Application status')).toHaveTextContent(
+        'v0.1.0 / win32',
+      ),
+    );
+  });
+
   it('renders app info returned by the main process', async () => {
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({

@@ -1,7 +1,6 @@
 import type { SVGProps } from 'react';
 
 export type IconName =
-  | 'app'
   | 'collection'
   | 'cube'
   | 'duplicate'
@@ -46,13 +45,6 @@ export function Icon({
 
 function iconPath(name: IconName): React.JSX.Element {
   switch (name) {
-    case 'app':
-      return (
-        <>
-          <path d="M5 7.5 12 3l7 4.5v9L12 21l-7-4.5z" />
-          <path d="m5 7.5 7 4.5 7-4.5M12 12v9" />
-        </>
-      );
     case 'collection':
       return (
         <>
