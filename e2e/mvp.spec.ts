@@ -185,13 +185,15 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
     const favoriteBounds = favorite.getBoundingClientRect();
     const previewBounds = preview.getBoundingClientRect();
     return {
-      favoriteWidth: Math.round(favoriteBounds.width),
-      favoriteHeight: Math.round(favoriteBounds.height),
-      previewWidth: Math.round(previewBounds.width),
-      previewHeight: Math.round(previewBounds.height),
-      horizontalOffset: Math.round(previewBounds.left - favoriteBounds.left),
-      verticalGap: Math.round(previewBounds.top - favoriteBounds.bottom),
-      visibleText: preview.textContent?.trim() ?? '',
+      favoriteWidth: favoriteBounds.width,
+      favoriteHeight: favoriteBounds.height,
+      previewWidth: previewBounds.width,
+      previewHeight: previewBounds.height,
+      horizontalOffset: previewBounds.left - favoriteBounds.left,
+      verticalGap: previewBounds.top - favoriteBounds.bottom,
+      visibleText: preview.innerText.trim(),
+      beforeContent: getComputedStyle(preview, '::before').content,
+      afterContent: getComputedStyle(preview, '::after').content,
     };
   });
   expect(cardActions).toEqual({
@@ -202,6 +204,8 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
     horizontalOffset: 0,
     verticalGap: 6,
     visibleText: '',
+    beforeContent: 'none',
+    afterContent: 'none',
   });
 
   const truncation = await page.locator('.model-name').evaluate((element) => {
