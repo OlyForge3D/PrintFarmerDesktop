@@ -39,7 +39,7 @@ interface ResponseEnvelope {
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 /** Default per-request timeout. Parsing a very large model can be slow. */
@@ -120,15 +120,20 @@ export class SidecarClient {
       relativePath: string;
       kind: 'collection' | 'tag';
       name: string;
+      collectionId?: string | undefined;
     }>,
     commonTags: string[],
   ): Promise<unknown> {
-    return this.request('importRoot', {
-      rootId,
-      path,
-      rules,
-      commonTags,
-    });
+    return this.request(
+      'importRoot',
+      {
+        rootId,
+        path,
+        rules,
+        commonTags,
+      },
+      false,
+    );
   }
 
   /** List every logical model known to the catalog (raw wire array). */
@@ -200,7 +205,11 @@ export class SidecarClient {
     channel?.close();
   }
 
-  private request(method: string, params: unknown): Promise<unknown> {
+  private request(
+    method: string,
+    params: unknown,
+    useTimeout = true,
+  ): Promise<unknown> {
     let channel: SidecarChannel;
     try {
       channel = this.ensureChannel();
@@ -214,18 +223,26 @@ export class SidecarClient {
     const line = JSON.stringify({ id, method, params });
 
     return new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        this.recordFailure();
-        reject(new Error(`sidecar request '${method}' timed out`));
-      }, this.requestTimeoutMs);
+      const timer = useTimeout
+        ? setTimeout(() => {
+            this.pending.delete(id);
+            this.recordFailure();
+            reject(new Error(`sidecar request '${method}' timed out`));
+          }, this.requestTimeoutMs)
+        : undefined;
 
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, {
+        resolve,
+        reject,
+        ...(timer ? { timer } : {}),
+      });
 
       try {
         channel.send(line);
       } catch (error) {
-        clearTimeout(timer);
+        if (timer) {
+          clearTimeout(timer);
+        }
         this.pending.delete(id);
         this.recordFailure();
         reject(error instanceof Error ? error : new Error(String(error)));
@@ -269,7 +286,9 @@ export class SidecarClient {
       return;
     }
     this.pending.delete(envelope.id);
-    clearTimeout(pending.timer);
+    if (pending.timer) {
+      clearTimeout(pending.timer);
+    }
 
     if (envelope.ok) {
       this.consecutiveFailures = 0;
@@ -305,7 +324,9 @@ export class SidecarClient {
 
   private rejectAllPending(reason: Error): void {
     for (const [, pending] of this.pending) {
-      clearTimeout(pending.timer);
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+      }
       pending.reject(reason);
     }
     this.pending.clear();

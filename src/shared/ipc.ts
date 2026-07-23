@@ -263,6 +263,7 @@ export const ImportPreviewResponse = z.object({
   modelCount: z.number().int().nonnegative(),
   totalBytes: z.number().int().nonnegative(),
   skippedErrors: z.number().int().nonnegative(),
+  complete: z.boolean(),
   formats: z.object({
     stl: z.number().int().nonnegative(),
     threeMf: z.number().int().nonnegative(),
@@ -273,11 +274,20 @@ export const ImportPreviewResponse = z.object({
 });
 export type ImportPreviewResponse = z.infer<typeof ImportPreviewResponse>;
 
-export const ImportRule = z.object({
+const ImportRuleBase = z.object({
   relativePath: z.string().max(4096),
-  kind: z.enum(['collection', 'tag']),
   name: z.string().trim().min(1).max(128),
 });
+
+export const ImportRule = z.discriminatedUnion('kind', [
+  ImportRuleBase.extend({
+    kind: z.literal('collection'),
+    collectionId: z.string().min(1).max(256).optional(),
+  }).strict(),
+  ImportRuleBase.extend({
+    kind: z.literal('tag'),
+  }).strict(),
+]);
 export type ImportRule = z.infer<typeof ImportRule>;
 
 export const ImportRootRequest = ScanRootRequest.extend({

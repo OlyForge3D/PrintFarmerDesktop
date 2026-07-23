@@ -129,6 +129,8 @@ struct ImportRuleParam {
     relative_path: String,
     kind: ImportRuleKindParam,
     name: String,
+    #[serde(default)]
+    collection_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -230,6 +232,7 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
                         rule.relative_path,
                         ImportRuleKind::from(rule.kind),
                         rule.name,
+                        rule.collection_id,
                     )
                 }),
                 params.common_tags,
@@ -745,6 +748,7 @@ mod tests {
 
         assert_eq!(value["ok"], true, "preview response was {value}");
         assert_eq!(value["result"]["modelCount"], 2);
+        assert_eq!(value["result"]["complete"], true);
         assert_eq!(value["result"]["formats"]["stl"], 1);
         assert_eq!(value["result"]["formats"]["threeMf"], 1);
         assert_eq!(value["result"]["folders"][0]["relativePath"], "Animals");

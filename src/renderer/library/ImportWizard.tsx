@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { Collection } from '@shared/ipc';
 import type { ImportDraft } from './useLibrary';
 import {
   buildImportPlan,
@@ -26,7 +27,10 @@ export function ImportWizard({
   onConfirm,
 }: ImportWizardProps): React.JSX.Element {
   const [choices, setChoices] = useState<ImportChoices>(() =>
-    initialImportChoices(draft.rootId, basename(draft.path), draft.preview),
+    bindKnownCollections(
+      initialImportChoices(draft.rootId, basename(draft.path), draft.preview),
+      draft.collections,
+    ),
   );
   const [remember, setRemember] = useState(true);
   const dialogRef = useRef<HTMLElement | null>(null);
@@ -44,10 +48,22 @@ export function ImportWizard({
       : plan.commonTags.some((tag) => tag.length > 128)
         ? 'Each tag must be 128 characters or fewer.'
         : null;
+  const ambiguousRoot =
+    choices.rootCollection &&
+    !choices.rootCollectionId &&
+    matchingCollections(choices.rootCollectionName, draft.collections).length >
+      1;
+  const ambiguousFolders = choices.folders.filter(
+    (folder) =>
+      folder.mode === 'collection' &&
+      !folder.collectionId &&
+      matchingCollections(folder.name, draft.collections).length > 1,
+  );
   const canImport =
-    draft.preview.modelCount > 0 &&
     namedRulesAreValid &&
     commonTagsError === null &&
+    !ambiguousRoot &&
+    ambiguousFolders.length === 0 &&
     !busy;
 
   useEffect(() => {
@@ -96,14 +112,12 @@ export function ImportWizard({
 
   const updateFolder = (
     relativePath: string,
-    change: Partial<Pick<ImportFolderChoice, 'mode' | 'name'>>,
+    update: (folder: ImportFolderChoice) => ImportFolderChoice,
   ): void => {
     setChoices((current) => ({
       ...current,
       folders: current.folders.map((folder) =>
-        folder.relativePath === relativePath
-          ? { ...folder, ...change }
-          : folder,
+        folder.relativePath === relativePath ? update(folder) : folder,
       ),
     }));
   };
@@ -162,6 +176,12 @@ export function ImportWizard({
             skipped.
           </p>
         ) : null}
+        {draft.preview.modelCount === 0 ? (
+          <p className="import-warning">
+            No supported files were found. Confirming will reconcile this source
+            and mark its previously cataloged files as missing.
+          </p>
+        ) : null}
         {draft.preview.foldersTruncated ? (
           <p className="import-warning">
             Folder choices are limited to the first 500 paths. All supported
@@ -202,13 +222,31 @@ export function ImportWizard({
                 list="known-import-collections"
                 disabled={busy || !choices.rootCollection}
                 onChange={(event) =>
-                  setChoices((current) => ({
-                    ...current,
-                    rootCollectionName: event.target.value,
-                  }))
+                  setChoices((current) => {
+                    const name = event.target.value;
+                    return withRootCollectionId(
+                      { ...current, rootCollectionName: name },
+                      uniqueCollectionId(name, draft.collections),
+                    );
+                  })
                 }
               />
             </label>
+            {ambiguousRoot ? (
+              <CollectionDisambiguator
+                label="Choose import collection"
+                name={choices.rootCollectionName}
+                collections={draft.collections}
+                disabled={busy}
+                onSelect={(collection) =>
+                  setChoices((current) => ({
+                    ...current,
+                    rootCollectionName: collection.name,
+                    rootCollectionId: collection.id,
+                  }))
+                }
+              />
+            ) : null}
             <label className="import-common-tags">
               <span>Tags for all models</span>
               <input
@@ -268,9 +306,18 @@ export function ImportWizard({
                       value={folder.mode}
                       disabled={busy}
                       onChange={(event) =>
-                        updateFolder(folder.relativePath, {
-                          mode: event.target.value as
-                            'collection' | 'tag' | 'ignore',
+                        updateFolder(folder.relativePath, (current) => {
+                          const mode = event.target.value as
+                            'collection' | 'tag' | 'ignore';
+                          return withFolderCollectionId(
+                            { ...current, mode },
+                            mode === 'collection'
+                              ? uniqueCollectionId(
+                                  current.name,
+                                  draft.collections,
+                                )
+                              : undefined,
+                          );
                         })
                       }
                     >
@@ -296,11 +343,35 @@ export function ImportWizard({
                       }
                       disabled={busy || folder.mode === 'ignore'}
                       onChange={(event) =>
-                        updateFolder(folder.relativePath, {
-                          name: event.target.value,
+                        updateFolder(folder.relativePath, (current) => {
+                          const name = event.target.value;
+                          return withFolderCollectionId(
+                            { ...current, name },
+                            current.mode === 'collection'
+                              ? uniqueCollectionId(name, draft.collections)
+                              : undefined,
+                          );
                         })
                       }
                     />
+                    {folder.mode === 'collection' &&
+                    !folder.collectionId &&
+                    matchingCollections(folder.name, draft.collections).length >
+                      1 ? (
+                      <CollectionDisambiguator
+                        label={`Choose collection for ${folder.relativePath}`}
+                        name={folder.name}
+                        collections={draft.collections}
+                        disabled={busy}
+                        onSelect={(collection) =>
+                          updateFolder(folder.relativePath, (current) => ({
+                            ...current,
+                            name: collection.name,
+                            collectionId: collection.id,
+                          }))
+                        }
+                      />
+                    ) : null}
                   </div>
                 ))}
               </div>
@@ -341,7 +412,9 @@ export function ImportWizard({
             >
               {busy
                 ? 'Importing...'
-                : `Import ${draft.preview.modelCount} files`}
+                : draft.preview.modelCount === 0
+                  ? 'Reconcile source'
+                  : `Import ${draft.preview.modelCount} files`}
             </button>
           </div>
         </footer>
@@ -364,6 +437,112 @@ export function ImportWizard({
 function validOrganizationName(value: string): boolean {
   const length = value.trim().length;
   return length > 0 && length <= 128;
+}
+
+function bindKnownCollections(
+  choices: ImportChoices,
+  collections: readonly Collection[],
+): ImportChoices {
+  const rootId =
+    choices.rootCollectionId &&
+    collections.some((collection) => collection.id === choices.rootCollectionId)
+      ? choices.rootCollectionId
+      : uniqueCollectionId(choices.rootCollectionName, collections);
+  return {
+    ...withRootCollectionId(choices, rootId),
+    folders: choices.folders.map((folder) =>
+      withFolderCollectionId(
+        folder,
+        folder.mode === 'collection'
+          ? folder.collectionId &&
+            collections.some(
+              (collection) => collection.id === folder.collectionId,
+            )
+            ? folder.collectionId
+            : uniqueCollectionId(folder.name, collections)
+          : undefined,
+      ),
+    ),
+  };
+}
+
+function matchingCollections(
+  name: string,
+  collections: readonly Collection[],
+): Collection[] {
+  const normalized = name.trim().toLocaleLowerCase();
+  return collections.filter(
+    (collection) => collection.name.toLocaleLowerCase() === normalized,
+  );
+}
+
+function uniqueCollectionId(
+  name: string,
+  collections: readonly Collection[],
+): string | undefined {
+  const matches = matchingCollections(name, collections);
+  return matches.length === 1 ? matches[0]?.id : undefined;
+}
+
+function withRootCollectionId(
+  choices: ImportChoices,
+  collectionId: string | undefined,
+): ImportChoices {
+  const next = { ...choices };
+  delete next.rootCollectionId;
+  return collectionId ? { ...next, rootCollectionId: collectionId } : next;
+}
+
+function withFolderCollectionId(
+  folder: ImportFolderChoice,
+  collectionId: string | undefined,
+): ImportFolderChoice {
+  const next = { ...folder };
+  delete next.collectionId;
+  return collectionId ? { ...next, collectionId } : next;
+}
+
+function CollectionDisambiguator({
+  label,
+  name,
+  collections,
+  disabled,
+  onSelect,
+}: {
+  label: string;
+  name: string;
+  collections: readonly Collection[];
+  disabled: boolean;
+  onSelect: (collection: Collection) => void;
+}): React.JSX.Element {
+  const matches = matchingCollections(name, collections);
+  return (
+    <label className="import-collection-choice">
+      <span>Multiple collections have this name</span>
+      <select
+        aria-label={label}
+        value=""
+        disabled={disabled}
+        onChange={(event) => {
+          const collection = matches.find(
+            (candidate) => candidate.id === event.target.value,
+          );
+          if (collection) {
+            onSelect(collection);
+          }
+        }}
+      >
+        <option value="" disabled>
+          Choose a collection
+        </option>
+        {matches.map((collection) => (
+          <option value={collection.id} key={collection.id}>
+            {collection.name} ({collection.id.slice(0, 8)})
+          </option>
+        ))}
+      </select>
+    </label>
+  );
 }
 
 function SummaryStat({

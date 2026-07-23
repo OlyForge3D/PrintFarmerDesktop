@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Tag } from '@shared/ipc';
 
 export interface ModelTagsState {
   tags: Tag[];
   error: string | null;
+  refresh: () => Promise<void>;
   add: (name: string) => Promise<void>;
   remove: (tagId: string) => Promise<void>;
 }
@@ -16,30 +17,30 @@ export interface ModelTagsState {
 export function useModelTags(hash: string | null): ModelTagsState {
   const [tags, setTags] = useState<Tag[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const activeHashRef = useRef(hash);
+  activeHashRef.current = hash;
 
-  useEffect(() => {
+  const refresh = useCallback(async () => {
     if (!hash) {
       setTags([]);
       return;
     }
-    let cancelled = false;
     setError(null);
-    window.printFarmer
-      .tagsForModel({ hash })
-      .then((next) => {
-        if (!cancelled) {
-          setTags(next);
-        }
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err));
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
+    try {
+      const next = await window.printFarmer.tagsForModel({ hash });
+      if (activeHashRef.current === hash) {
+        setTags(next);
+      }
+    } catch (err: unknown) {
+      if (activeHashRef.current === hash) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    }
   }, [hash]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
 
   const add = useCallback(
     async (name: string) => {
@@ -71,5 +72,5 @@ export function useModelTags(hash: string | null): ModelTagsState {
     [hash],
   );
 
-  return { tags, error, add, remove };
+  return { tags, error, refresh, add, remove };
 }

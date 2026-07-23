@@ -62,6 +62,7 @@ describe('ipc contract', () => {
       modelCount: 3,
       totalBytes: 4096,
       skippedErrors: 0,
+      complete: true,
       formats: { stl: 1, threeMf: 1, obj: 1 },
       folders: [
         {
@@ -87,12 +88,14 @@ describe('ipc contract', () => {
           relativePath: 'Animals',
           kind: 'collection',
           name: 'Animals',
+          collectionId: 'collection-1',
         },
       ],
       commonTags: ['printable'],
     });
 
     expect(value.rules).toHaveLength(1);
+    expect(value.rules[0]).toMatchObject({ collectionId: 'collection-1' });
     expect(() =>
       ipcSchemas[IpcChannel.ImportRoot].request.parse({
         rootId: 'root-1',
@@ -102,6 +105,21 @@ describe('ipc contract', () => {
             relativePath: 'Animals',
             kind: 'tag',
             name: '   ',
+          },
+        ],
+        commonTags: [],
+      }),
+    ).toThrow();
+    expect(() =>
+      ipcSchemas[IpcChannel.ImportRoot].request.parse({
+        rootId: 'root-1',
+        path: 'C:\\models',
+        rules: [
+          {
+            relativePath: 'Animals',
+            kind: 'tag',
+            name: 'Animals',
+            collectionId: 'collection-1',
           },
         ],
         commonTags: [],

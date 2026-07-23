@@ -13,6 +13,7 @@ export interface ModelCardProps {
   selected: boolean;
   onSelect: (model: LogicalModel) => void;
   onPreview?: (model: LogicalModel) => void;
+  previewDisabled?: boolean;
   favorite?: boolean;
   onToggleFavorite?: (model: LogicalModel) => void;
 }
@@ -23,6 +24,7 @@ export function ModelCard({
   selected,
   onSelect,
   onPreview,
+  previewDisabled = false,
   favorite = false,
   onToggleFavorite,
 }: ModelCardProps): React.JSX.Element {
@@ -54,7 +56,7 @@ export function ModelCard({
         aria-label={`Select ${name}`}
         onClick={() => onSelect(model)}
         onDoubleClick={() => {
-          if (available) {
+          if (available && !previewDisabled) {
             onPreview?.(model);
           }
         }}
@@ -84,9 +86,15 @@ export function ModelCard({
           type="button"
           className="model-preview-button"
           onClick={() => onPreview(model)}
-          disabled={!available}
+          disabled={!available || previewDisabled}
           aria-label={`Preview ${name} in 3D`}
-          title={available ? 'Preview in 3D' : 'File unavailable'}
+          title={
+            !available
+              ? 'File unavailable'
+              : previewDisabled
+                ? 'Import in progress'
+                : 'Preview in 3D'
+          }
         >
           <Icon name="preview" />
         </button>

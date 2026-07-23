@@ -72,6 +72,7 @@ export function App(): React.JSX.Element {
   );
   const previewReturnFocusRef = useRef<HTMLElement | null>(null);
   const importReturnFocusRef = useRef<HTMLElement | null>(null);
+  const importPreparationRef = useRef(false);
   const previewRequestRef = useRef(0);
   const titlebarRef = useRef<HTMLElement | null>(null);
   const workspaceRef = useRef<HTMLDivElement | null>(null);
@@ -221,12 +222,23 @@ export function App(): React.JSX.Element {
   }, [modalOpen]);
 
   const beginImport = useCallback(() => {
+    if (
+      importPreparationRef.current ||
+      busy ||
+      previewOpen ||
+      library.importDraft
+    ) {
+      return;
+    }
+    importPreparationRef.current = true;
     importReturnFocusRef.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
-    void prepareFolderImport();
-  }, [prepareFolderImport]);
+    void prepareFolderImport().finally(() => {
+      importPreparationRef.current = false;
+    });
+  }, [busy, library.importDraft, prepareFolderImport, previewOpen]);
 
   const cancelImport = useCallback(() => {
     dismissFolderImport();
@@ -242,13 +254,17 @@ export function App(): React.JSX.Element {
   const confirmImport = useCallback(
     async (plan: ImportPlan, remember: boolean): Promise<boolean> => {
       const rootId = importRootId;
-      const succeeded = await commitFolderImport(plan);
+      const succeeded = await commitFolderImport({
+        rules: plan.rules,
+        commonTags: plan.commonTags,
+      });
       if (succeeded && rootId) {
         if (remember) {
           rememberImportPlan(rootId, plan);
         } else {
           forgetImportPlan(rootId);
         }
+        await Promise.all([modelTags.refresh(), modelCollections.refresh()]);
         queueMicrotask(() => {
           const previous = importReturnFocusRef.current;
           const fallback = document.querySelector<HTMLElement>(
@@ -259,7 +275,7 @@ export function App(): React.JSX.Element {
       }
       return succeeded;
     },
-    [commitFolderImport, importRootId],
+    [commitFolderImport, importRootId, modelCollections, modelTags],
   );
 
   const rememberPreviewTrigger = useCallback(() => {
@@ -301,7 +317,13 @@ export function App(): React.JSX.Element {
 
   const previewModel = useCallback(
     (model: LogicalModel) => {
-      if (!isAvailable(model)) {
+      if (
+        importPreparationRef.current ||
+        busy ||
+        previewOpen ||
+        library.importDraft ||
+        !isAvailable(model)
+      ) {
         return;
       }
       const path = preferredPath(model);
@@ -316,10 +338,24 @@ export function App(): React.JSX.Element {
         hash: model.hash,
       });
     },
-    [loadPreview, rememberPreviewTrigger],
+    [
+      busy,
+      library.importDraft,
+      loadPreview,
+      previewOpen,
+      rememberPreviewTrigger,
+    ],
   );
 
   const openModelFile = useCallback(async () => {
+    if (
+      importPreparationRef.current ||
+      busy ||
+      previewOpen ||
+      library.importDraft
+    ) {
+      return;
+    }
     setAppError(null);
     try {
       const selection = await window.printFarmer.openModelFile();
@@ -332,7 +368,13 @@ export function App(): React.JSX.Element {
     } catch (err: unknown) {
       setAppError(err instanceof Error ? err.message : String(err));
     }
-  }, [loadPreview, rememberPreviewTrigger]);
+  }, [
+    busy,
+    library.importDraft,
+    loadPreview,
+    previewOpen,
+    rememberPreviewTrigger,
+  ]);
 
   const closePreview = useCallback(() => {
     previewRequestRef.current += 1;
@@ -449,6 +491,7 @@ export function App(): React.JSX.Element {
               <button
                 type="button"
                 className="command-button"
+                disabled={busy}
                 onClick={() => {
                   void openModelFile();
                 }}
@@ -493,6 +536,7 @@ export function App(): React.JSX.Element {
               selectedHash={selectedHash}
               onSelect={(model) => setSelectedHash(model.hash)}
               onPreview={previewModel}
+              previewDisabled={busy}
               isFavorite={isFavorite}
               onToggleFavorite={(model) => toggleFavorite(model.hash)}
               emptyLabel={emptyState(
@@ -520,6 +564,7 @@ export function App(): React.JSX.Element {
           collections={modelCollections.all}
           collectionMembership={modelCollections.membership}
           organizationError={organizationError}
+          previewDisabled={busy}
           onToggleFavorite={() => {
             if (selectedModel) {
               toggleFavorite(selectedModel.hash);

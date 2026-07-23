@@ -355,6 +355,7 @@ pub struct ImportPreviewDto {
     pub model_count: usize,
     pub total_bytes: u64,
     pub skipped_errors: usize,
+    pub complete: bool,
     pub formats: ImportFormatCountsDto,
     pub folders: Vec<ImportFolderDto>,
     pub folders_truncated: bool,
@@ -366,6 +367,7 @@ impl From<&crate::smart_import::ImportPreview> for ImportPreviewDto {
             model_count: preview.model_count,
             total_bytes: preview.total_bytes,
             skipped_errors: preview.skipped_errors,
+            complete: preview.complete,
             formats: ImportFormatCountsDto {
                 stl: preview.formats.stl,
                 three_mf: preview.formats.three_mf,

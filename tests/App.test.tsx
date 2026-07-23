@@ -149,6 +149,7 @@ describe('<App />', () => {
       modelCount: 2,
       totalBytes: 3072,
       skippedErrors: 0,
+      complete: true,
       formats: { stl: 1, threeMf: 1, obj: 0 },
       folders: [
         {
@@ -251,6 +252,148 @@ describe('<App />', () => {
         }),
       ).not.toBeInTheDocument(),
     );
+  });
+
+  it('disables preview entry points while an import is being prepared', async () => {
+    const model: LogicalModel = {
+      hash: 'part',
+      format: 'stl',
+      size: 100,
+      locations: [
+        {
+          rootId: 'root',
+          path: 'C:\\models\\part.stl',
+          rootRelative: 'part.stl',
+          size: 100,
+          available: true,
+        },
+      ],
+    };
+    const openFolder = vi.fn(
+      () => new Promise<{ path: string } | null>(() => undefined),
+    );
+    const loadScene = vi.fn();
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 1,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([model]),
+      openFolder,
+      openModelFile: vi.fn(),
+      loadScene,
+      renderThumbnail: vi.fn().mockResolvedValue({
+        width: 256,
+        height: 256,
+        pngBase64: 'AAAA',
+      }),
+    });
+    render(<App />);
+    await screen.findByRole('button', { name: 'Select part.stl' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }));
+    await waitFor(() => expect(openFolder).toHaveBeenCalledTimes(1));
+
+    expect(screen.getByRole('button', { name: 'Open file' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Preview part.stl in 3D' }),
+    ).toBeDisabled();
+    fireEvent.doubleClick(
+      screen.getByRole('button', { name: 'Select part.stl' }),
+    );
+    expect(loadScene).not.toHaveBeenCalled();
+  });
+
+  it('refreshes selected-model organization after a successful import', async () => {
+    const selected: LogicalModel = {
+      hash: 'selected',
+      format: 'stl',
+      size: 100,
+      locations: [
+        {
+          rootId: 'root',
+          path: 'C:\\models\\selected.stl',
+          rootRelative: 'selected.stl',
+          size: 100,
+          available: true,
+        },
+      ],
+    };
+    const collection = {
+      id: 'collection-1',
+      name: 'Imported',
+      sharedToFarm: false,
+      memberCount: 1,
+    };
+    const tagsForModel = vi
+      .fn()
+      .mockResolvedValueOnce([{ id: 'before', name: 'Before import' }])
+      .mockResolvedValueOnce([{ id: 'after', name: 'After import' }]);
+    const collectionsForModel = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([collection]);
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 1,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([selected]),
+      renderThumbnail: vi.fn().mockResolvedValue({
+        width: 256,
+        height: 256,
+        pngBase64: 'AAAA',
+      }),
+      tagsForModel,
+      collectionsForModel,
+      listCollections: vi.fn().mockResolvedValue([collection]),
+      listTags: vi.fn().mockResolvedValue([]),
+      openFolder: vi.fn().mockResolvedValue({ path: 'C:\\ImportRoot' }),
+      previewImport: vi.fn().mockResolvedValue({
+        modelCount: 1,
+        totalBytes: 100,
+        skippedErrors: 0,
+        complete: true,
+        formats: { stl: 1, threeMf: 0, obj: 0 },
+        folders: [],
+        foldersTruncated: false,
+      }),
+      importRoot: vi.fn().mockResolvedValue({
+        report: {
+          added: 0,
+          changed: 0,
+          unchanged: 1,
+          missing: 0,
+          hashErrors: 0,
+        },
+        modelsOrganized: 1,
+        collectionsCreated: 0,
+        collectionAssignments: 1,
+        tagAssignments: 1,
+      }),
+    });
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Select selected.stl' }),
+    );
+    await waitFor(() => expect(tagsForModel).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Import 1 files' }),
+    );
+
+    await waitFor(() => expect(tagsForModel).toHaveBeenCalledTimes(2));
+    expect(collectionsForModel).toHaveBeenCalledTimes(2);
+    expect(
+      within(screen.getByLabelText('Model properties')).getByText(
+        'After import',
+      ),
+    ).toBeVisible();
   });
 
   it('ignores a stale preview failure after another model is opened', async () => {

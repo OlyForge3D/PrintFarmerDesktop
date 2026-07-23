@@ -36,6 +36,7 @@ pub struct ImportPreview {
     pub model_count: usize,
     pub total_bytes: u64,
     pub skipped_errors: usize,
+    pub complete: bool,
     pub formats: ImportFormatCounts,
     pub folders: Vec<ImportFolder>,
     pub folders_truncated: bool,
@@ -46,6 +47,7 @@ pub fn preview_scan(scan: &ScanResult) -> ImportPreview {
     let mut preview = ImportPreview {
         model_count: scan.files.len(),
         skipped_errors: scan.skipped_errors,
+        complete: !scan.cancelled && scan.skipped_errors == 0,
         ..ImportPreview::default()
     };
 
@@ -95,6 +97,7 @@ pub struct ImportRule {
     pub relative_path: PathBuf,
     pub kind: ImportRuleKind,
     pub name: String,
+    pub collection_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -122,6 +125,19 @@ pub enum ImportError {
     InvalidName,
     #[error("folder rule path must be relative and cannot contain '.' or '..' components")]
     InvalidRelativePath,
+    #[error("collection id must contain 1 to 256 characters")]
+    InvalidCollectionId,
+    #[error(
+        "import scan was incomplete ({skipped_errors} filesystem errors, cancelled: {cancelled})"
+    )]
+    IncompleteScan {
+        skipped_errors: usize,
+        cancelled: bool,
+    },
+    #[error("collection '{id}' no longer exists")]
+    UnknownCollection { id: String },
+    #[error("collection name '{name}' matches {matches} collections; select one by id")]
+    AmbiguousCollectionName { name: String, matches: usize },
     #[error("failed to assign model '{hash}' to collection '{collection}'")]
     CollectionAssignment { hash: String, collection: String },
     #[error("failed to assign tag '{tag}' to model '{hash}'")]
@@ -130,7 +146,7 @@ pub enum ImportError {
 
 impl ImportPlan {
     pub fn new(
-        rules: impl IntoIterator<Item = (String, ImportRuleKind, String)>,
+        rules: impl IntoIterator<Item = (String, ImportRuleKind, String, Option<String>)>,
         common_tags: impl IntoIterator<Item = String>,
     ) -> Result<Self, ImportError> {
         let raw_rules: Vec<_> = rules.into_iter().collect();
@@ -143,12 +159,26 @@ impl ImportPlan {
         }
 
         let mut normalized_rules = Vec::with_capacity(raw_rules.len());
-        for (relative_path, kind, name) in raw_rules {
+        for (relative_path, kind, name, collection_id) in raw_rules {
+            let collection_id = match (kind, collection_id) {
+                (ImportRuleKind::Collection, Some(id)) => Some(checked_collection_id(&id)?),
+                (ImportRuleKind::Collection, None) | (ImportRuleKind::Tag, None) => None,
+                (ImportRuleKind::Tag, Some(_)) => return Err(ImportError::InvalidCollectionId),
+            };
             normalized_rules.push(ImportRule {
                 relative_path: checked_relative_path(&relative_path)?,
                 kind,
                 name: checked_name(&name)?,
+                collection_id,
             });
+        }
+
+        fn checked_collection_id(value: &str) -> Result<String, ImportError> {
+            let trimmed = value.trim();
+            if trimmed.is_empty() || trimmed.chars().count() > 256 {
+                return Err(ImportError::InvalidCollectionId);
+            }
+            Ok(trimmed.to_string())
         }
 
         let mut normalized_tags = BTreeMap::new();
@@ -195,14 +225,16 @@ pub fn import_root(
     scan: &ScanResult,
     plan: &ImportPlan,
 ) -> Result<ImportResult, ImportError> {
+    if scan.cancelled || scan.skipped_errors > 0 {
+        return Err(ImportError::IncompleteScan {
+            skipped_errors: scan.skipped_errors,
+            cancelled: scan.cancelled,
+        });
+    }
+    let rules_by_path = resolved_rules_by_path(store, &plan.rules)?;
     let report = reconcile_root(store, root_id, scan);
-    let rules_by_path = rules_by_path(&plan.rules);
     let models = store.models();
-    let mut collection_ids: HashMap<String, String> = store
-        .all_collections()
-        .into_iter()
-        .map(|collection| (collection.name.to_lowercase(), collection.id))
-        .collect();
+    let mut created_collection_ids = HashMap::<String, String>::new();
 
     let mut result = ImportResult {
         report,
@@ -222,7 +254,7 @@ pub fn import_root(
             continue;
         }
 
-        let mut collection_names = BTreeMap::<String, String>::new();
+        let mut collection_targets = BTreeMap::<String, ResolvedCollectionTarget>::new();
         let mut tag_names = BTreeMap::<String, String>::new();
         for tag in &plan.common_tags {
             tag_names
@@ -236,16 +268,16 @@ pub fn import_root(
                 let current = folder.unwrap_or_else(|| Path::new(""));
                 if let Some(rules) = rules_by_path.get(current) {
                     for rule in rules {
-                        match rule.kind {
-                            ImportRuleKind::Collection => {
-                                collection_names
-                                    .entry(rule.name.to_lowercase())
-                                    .or_insert_with(|| rule.name.clone());
+                        match rule {
+                            ResolvedRule::Collection(target) => {
+                                collection_targets
+                                    .entry(target.key.clone())
+                                    .or_insert_with(|| target.clone());
                             }
-                            ImportRuleKind::Tag => {
+                            ResolvedRule::Tag(name) => {
                                 tag_names
-                                    .entry(rule.name.to_lowercase())
-                                    .or_insert_with(|| rule.name.clone());
+                                    .entry(name.to_lowercase())
+                                    .or_insert_with(|| name.clone());
                             }
                         }
                     }
@@ -257,7 +289,7 @@ pub fn import_root(
             }
         }
 
-        if collection_names.is_empty() && tag_names.is_empty() {
+        if collection_targets.is_empty() && tag_names.is_empty() {
             continue;
         }
         result.models_organized += 1;
@@ -267,22 +299,24 @@ pub fn import_root(
             .into_iter()
             .map(|collection| collection.id)
             .collect();
-        for (key, name) in collection_names {
-            let collection_id = if let Some(id) = collection_ids.get(&key) {
+        for (key, target) in collection_targets {
+            let collection_id = if let Some(id) = &target.id {
+                id.clone()
+            } else if let Some(id) = created_collection_ids.get(&key) {
                 id.clone()
             } else {
                 let created = store
-                    .create_collection(&name)
+                    .create_collection(&target.name)
                     .ok_or(ImportError::InvalidName)?;
                 result.collections_created += 1;
-                collection_ids.insert(key, created.id.clone());
+                created_collection_ids.insert(key, created.id.clone());
                 created.id
             };
             if !existing_collection_ids.contains(&collection_id) {
                 if !store.add_model_to_collection(&collection_id, &model.hash) {
                     return Err(ImportError::CollectionAssignment {
                         hash: model.hash,
-                        collection: name,
+                        collection: target.name,
                     });
                 }
                 result.collection_assignments += 1;
@@ -312,15 +346,74 @@ pub fn import_root(
     Ok(result)
 }
 
-fn rules_by_path(rules: &[ImportRule]) -> HashMap<PathBuf, Vec<&ImportRule>> {
-    let mut result: HashMap<PathBuf, Vec<&ImportRule>> = HashMap::new();
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedCollectionTarget {
+    key: String,
+    id: Option<String>,
+    name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResolvedRule {
+    Collection(ResolvedCollectionTarget),
+    Tag(String),
+}
+
+fn resolved_rules_by_path(
+    store: &dyn CatalogStore,
+    rules: &[ImportRule],
+) -> Result<HashMap<PathBuf, Vec<ResolvedRule>>, ImportError> {
+    let collections = store.all_collections();
+    let mut result: HashMap<PathBuf, Vec<ResolvedRule>> = HashMap::new();
     for rule in rules {
+        let resolved = match rule.kind {
+            ImportRuleKind::Tag => ResolvedRule::Tag(rule.name.clone()),
+            ImportRuleKind::Collection => {
+                let target = if let Some(id) = &rule.collection_id {
+                    let collection = collections
+                        .iter()
+                        .find(|collection| collection.id == *id)
+                        .ok_or_else(|| ImportError::UnknownCollection { id: id.clone() })?;
+                    ResolvedCollectionTarget {
+                        key: format!("id:{}", collection.id),
+                        id: Some(collection.id.clone()),
+                        name: collection.name.clone(),
+                    }
+                } else {
+                    let matches: Vec<_> = collections
+                        .iter()
+                        .filter(|collection| {
+                            collection.name.to_lowercase() == rule.name.to_lowercase()
+                        })
+                        .collect();
+                    match matches.as_slice() {
+                        [] => ResolvedCollectionTarget {
+                            key: format!("name:{}", rule.name.to_lowercase()),
+                            id: None,
+                            name: rule.name.clone(),
+                        },
+                        [collection] => ResolvedCollectionTarget {
+                            key: format!("id:{}", collection.id),
+                            id: Some(collection.id.clone()),
+                            name: collection.name.clone(),
+                        },
+                        _ => {
+                            return Err(ImportError::AmbiguousCollectionName {
+                                name: rule.name.clone(),
+                                matches: matches.len(),
+                            });
+                        }
+                    }
+                };
+                ResolvedRule::Collection(target)
+            }
+        };
         result
             .entry(rule.relative_path.clone())
             .or_default()
-            .push(rule);
+            .push(resolved);
     }
-    result
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -355,6 +448,7 @@ mod tests {
         assert_eq!(preview.formats.stl, 1);
         assert_eq!(preview.formats.three_mf, 1);
         assert_eq!(preview.formats.obj, 1);
+        assert!(preview.complete);
         assert_eq!(
             preview
                 .folders
@@ -373,6 +467,17 @@ mod tests {
     }
 
     #[test]
+    fn preview_marks_traversal_errors_as_incomplete() {
+        let preview = preview_scan(&ScanResult {
+            skipped_errors: 1,
+            ..Default::default()
+        });
+
+        assert!(!preview.complete);
+        assert_eq!(preview.skipped_errors, 1);
+    }
+
+    #[test]
     fn imports_root_and_applies_folder_collections_and_tags() {
         let dir = tempfile::tempdir().unwrap();
         write(&dir.path().join("Animals/Cats/a.stl"), b"a");
@@ -384,16 +489,19 @@ mod tests {
                     "".to_string(),
                     ImportRuleKind::Collection,
                     "My Models".to_string(),
+                    None,
                 ),
                 (
                     "Animals".to_string(),
                     ImportRuleKind::Collection,
                     "Animals".to_string(),
+                    None,
                 ),
                 (
                     "Animals/Cats".to_string(),
                     ImportRuleKind::Tag,
                     "Cats".to_string(),
+                    None,
                 ),
             ],
             ["ready".to_string()],
@@ -439,6 +547,7 @@ mod tests {
                 "Parts".to_string(),
                 ImportRuleKind::Collection,
                 "Parts".to_string(),
+                None,
             )],
             ["reviewed".to_string()],
         )
@@ -462,10 +571,80 @@ mod tests {
                 "../outside".to_string(),
                 ImportRuleKind::Tag,
                 "bad".to_string(),
+                None,
             )],
             [],
         );
         assert_eq!(result, Err(ImportError::InvalidRelativePath));
+    }
+
+    #[test]
+    fn incomplete_scan_cannot_mutate_or_reconcile_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("part.stl"), b"part");
+        let scan = scan_root(dir.path(), &AtomicBool::new(false));
+        let mut store = InMemoryCatalog::new();
+        let empty_plan = ImportPlan::new([], []).unwrap();
+        import_root(&mut store, "root", &scan, &empty_plan).unwrap();
+        let incomplete = ScanResult {
+            files: Vec::new(),
+            cancelled: false,
+            skipped_errors: 1,
+        };
+
+        let result = import_root(&mut store, "root", &incomplete, &empty_plan);
+
+        assert_eq!(
+            result,
+            Err(ImportError::IncompleteScan {
+                skipped_errors: 1,
+                cancelled: false,
+            })
+        );
+        assert!(store.models()[0].locations[0].available);
+    }
+
+    #[test]
+    fn duplicate_collection_names_require_an_explicit_id() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("Parts/a.stl"), b"a");
+        let scan = scan_root(dir.path(), &AtomicBool::new(false));
+        let mut store = InMemoryCatalog::new();
+        let selected = store.create_collection("Parts").unwrap();
+        store.create_collection("Parts").unwrap();
+        let ambiguous = ImportPlan::new(
+            [(
+                "Parts".to_string(),
+                ImportRuleKind::Collection,
+                "Parts".to_string(),
+                None,
+            )],
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(
+            import_root(&mut store, "root", &scan, &ambiguous),
+            Err(ImportError::AmbiguousCollectionName {
+                name: "Parts".to_string(),
+                matches: 2,
+            })
+        );
+        assert!(store.models().is_empty());
+
+        let explicit = ImportPlan::new(
+            [(
+                "Parts".to_string(),
+                ImportRuleKind::Collection,
+                "Parts".to_string(),
+                Some(selected.id.clone()),
+            )],
+            [],
+        )
+        .unwrap();
+        import_root(&mut store, "root", &scan, &explicit).unwrap();
+        let model = store.models().pop().unwrap();
+        assert_eq!(store.collections_for_model(&model.hash)[0].id, selected.id);
     }
 
     #[cfg(feature = "sqlite")]
@@ -481,11 +660,13 @@ mod tests {
                     "Vehicles".to_string(),
                     ImportRuleKind::Collection,
                     "Vehicles".to_string(),
+                    None,
                 ),
                 (
                     "Vehicles/Truck".to_string(),
                     ImportRuleKind::Tag,
                     "Truck".to_string(),
+                    None,
                 ),
             ],
             ["functional".to_string()],

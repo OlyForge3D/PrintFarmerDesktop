@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Collection } from '@shared/ipc';
 
 export interface ModelCollectionsState {
   all: Collection[];
   membership: Set<string>;
   error: string | null;
+  refresh: () => Promise<void>;
   toggle: (collectionId: string) => Promise<void>;
   createAndAdd: (name: string) => Promise<void>;
 }
@@ -20,6 +21,8 @@ export function useModelCollections(
   const [all, setAll] = useState<Collection[]>([]);
   const [membership, setMembership] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const activeHashRef = useRef(hash);
+  activeHashRef.current = hash;
 
   const load = useCallback(async (target: string) => {
     setError(null);
@@ -28,21 +31,29 @@ export function useModelCollections(
         window.printFarmer.listCollections(),
         window.printFarmer.collectionsForModel({ hash: target }),
       ]);
-      setAll(collections);
-      setMembership(new Set(mine.map((c) => c.id)));
+      if (activeHashRef.current === target) {
+        setAll(collections);
+        setMembership(new Set(mine.map((c) => c.id)));
+      }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (activeHashRef.current === target) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     }
   }, []);
 
-  useEffect(() => {
+  const refresh = useCallback(async () => {
     if (!hash) {
       setAll([]);
       setMembership(new Set());
       return;
     }
-    void load(hash);
+    await load(hash);
   }, [hash, load]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
 
   const toggle = useCallback(
     async (collectionId: string) => {
@@ -84,5 +95,5 @@ export function useModelCollections(
     [hash, load],
   );
 
-  return { all, membership, error, toggle, createAndAdd };
+  return { all, membership, error, refresh, toggle, createAndAdd };
 }

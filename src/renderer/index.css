@@ -891,7 +891,8 @@ select:disabled {
 .import-root-rule > input[type='text'],
 .import-common-tags input,
 .import-rule-row input,
-.import-rule-row select {
+.import-rule-row select,
+.import-collection-choice select {
   height: 30px;
   min-width: 0;
   border: 1px solid var(--border);
@@ -942,6 +943,23 @@ select:disabled {
 
 .import-rule-row:last-child {
   border-bottom: 0;
+}
+
+.import-collection-choice {
+  display: grid;
+  gap: 4px;
+  padding: 0 13px 8px 35px;
+  color: var(--danger);
+  font-size: 10px;
+}
+
+.import-rule-row .import-collection-choice {
+  grid-column: 3;
+  padding: 0 0 4px;
+}
+
+.import-collection-choice select {
+  padding: 0 22px 0 7px;
 }
 
 .import-rule-row select {

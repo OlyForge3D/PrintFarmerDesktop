@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   Collection,
   ImportPreviewResponse,
@@ -62,6 +62,7 @@ export function useLibrary(): Library {
   const [scanningPath, setScanningPath] = useState<string | null>(null);
   const [importDraft, setImportDraft] = useState<ImportDraft | null>(null);
   const [lastImport, setLastImport] = useState<ImportRootResponse | null>(null);
+  const importInFlightRef = useRef(false);
 
   const refresh = useCallback(async () => {
     setStatus('loading');
@@ -76,25 +77,29 @@ export function useLibrary(): Library {
   }, []);
 
   const addFolder = useCallback(async () => {
+    if (importInFlightRef.current) {
+      setError('An import operation is already in progress.');
+      return;
+    }
+    importInFlightRef.current = true;
     setError(null);
-    let selection: Awaited<ReturnType<typeof window.printFarmer.openFolder>>;
-    try {
-      selection = await window.printFarmer.openFolder();
-    } catch (err: unknown) {
-      setError(messageOf(err));
-      return;
-    }
-    if (!selection) {
-      return;
-    }
-
     setStatus('preparing');
     try {
+      const selection = await window.printFarmer.openFolder();
+      if (!selection) {
+        return;
+      }
       const [preview, collections, tags] = await Promise.all([
         window.printFarmer.previewImport({ path: selection.path }),
         window.printFarmer.listCollections(),
         window.printFarmer.listTags(),
       ]);
+      if (!preview.complete) {
+        setError(
+          `Could not inspect the entire folder (${preview.skippedErrors} filesystem errors). No files were imported.`,
+        );
+        return;
+      }
       setImportDraft({
         rootId: rootIdForPath(selection.path),
         path: selection.path,
@@ -105,6 +110,7 @@ export function useLibrary(): Library {
     } catch (err: unknown) {
       setError(messageOf(err));
     } finally {
+      importInFlightRef.current = false;
       setStatus('idle');
     }
   }, []);
@@ -117,6 +123,11 @@ export function useLibrary(): Library {
         setError('No folder is ready to import.');
         return false;
       }
+      if (importInFlightRef.current) {
+        setError('An import operation is already in progress.');
+        return false;
+      }
+      importInFlightRef.current = true;
       setError(null);
       setStatus('scanning');
       setScanningPath(importDraft.path);
@@ -128,13 +139,20 @@ export function useLibrary(): Library {
         });
         setLastImport(result);
         setLastReport(result.report);
-        setModels(await window.printFarmer.listModels());
         setImportDraft(null);
+        try {
+          setModels(await window.printFarmer.listModels());
+        } catch (refreshError: unknown) {
+          setError(
+            `Import completed, but the catalog could not be refreshed: ${messageOf(refreshError)}`,
+          );
+        }
         return true;
       } catch (err: unknown) {
         setError(messageOf(err));
         return false;
       } finally {
+        importInFlightRef.current = false;
         setScanningPath(null);
         setStatus('idle');
       }

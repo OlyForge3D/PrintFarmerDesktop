@@ -29,6 +29,7 @@ export interface PropertiesInspectorProps {
   collections: Collection[];
   collectionMembership: Set<string>;
   organizationError: string | null;
+  previewDisabled: boolean;
   onToggleFavorite: () => void;
   onPreview: () => void;
   onAddTag: (name: string) => void;
@@ -68,6 +69,7 @@ function SelectedModelInspector({
   collections,
   collectionMembership,
   organizationError,
+  previewDisabled,
   onToggleFavorite,
   onPreview,
   onAddTag,
@@ -116,8 +118,14 @@ function SelectedModelInspector({
           type="button"
           className="inspector-preview-button"
           onClick={onPreview}
-          disabled={!available}
-          title={available ? `Preview ${name} in 3D` : 'File unavailable'}
+          disabled={!available || previewDisabled}
+          title={
+            !available
+              ? 'File unavailable'
+              : previewDisabled
+                ? 'Import in progress'
+                : `Preview ${name} in 3D`
+          }
         >
           <Icon name="preview" />
           <span>Preview in 3D</span>

@@ -260,8 +260,9 @@ pub fn reconcile_root<S: CatalogStore + ?Sized>(
     }
 
     // Anything previously known under this root but not seen this pass is now
-    // missing. Only meaningful for a completed (non-cancelled) scan.
-    if !scan.cancelled {
+    // missing. Only meaningful when traversal completed without cancellation or
+    // filesystem errors; otherwise unseen paths may still exist.
+    if !scan.cancelled && scan.skipped_errors == 0 {
         let seen_set: std::collections::HashSet<&PathBuf> = seen.iter().collect();
         for known in store.paths_for_root(root_id) {
             if !seen_set.contains(&known) {
@@ -681,6 +682,24 @@ mod tests {
             ..Default::default()
         };
         let report = reconcile_root(&mut store, "r", &cancelled);
+        assert_eq!(report.missing, 0);
+        assert!(store.models()[0].locations[0].available);
+    }
+
+    #[test]
+    fn scan_with_traversal_errors_does_not_mark_files_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("a.stl"), b"bytes");
+
+        let mut store = InMemoryCatalog::new();
+        reconcile_root(&mut store, "r", &scan(root));
+
+        let incomplete = ScanResult {
+            skipped_errors: 1,
+            ..Default::default()
+        };
+        let report = reconcile_root(&mut store, "r", &incomplete);
         assert_eq!(report.missing, 0);
         assert!(store.models()[0].locations[0].available);
     }

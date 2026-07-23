@@ -8,6 +8,7 @@ import { z } from 'zod';
 const STORAGE_PREFIX = 'printfarmer.import-recipe.v1.';
 const SavedRecipe = z.object({
   rules: z.array(ImportRuleSchema).max(1000),
+  ignoredPaths: z.array(z.string().max(4096)).max(500).default([]),
   commonTags: z.array(z.string().trim().min(1).max(128)).max(100),
 });
 
@@ -19,17 +20,20 @@ export interface ImportFolderChoice {
   modelCount: number;
   mode: RuleMode;
   name: string;
+  collectionId?: string;
 }
 
 export interface ImportChoices {
   rootCollection: boolean;
   rootCollectionName: string;
+  rootCollectionId?: string;
   folders: ImportFolderChoice[];
   commonTagsText: string;
 }
 
 export interface ImportPlan {
   rules: ImportRule[];
+  ignoredPaths: string[];
   commonTags: string[];
 }
 
@@ -42,21 +46,30 @@ export function initialImportChoices(
   const rootRule = saved?.rules.find(
     (rule) => rule.relativePath === '' && rule.kind === 'collection',
   );
+  const ignoredPaths = new Set(saved?.ignoredPaths ?? []);
+  const rootCollectionId =
+    rootRule?.kind === 'collection' ? rootRule.collectionId : undefined;
 
   return {
     rootCollection: saved ? Boolean(rootRule) : true,
     rootCollectionName: rootRule?.name ?? rootName,
+    ...(rootCollectionId ? { rootCollectionId } : {}),
     folders: preview.folders.map((folder) => {
       const prior = saved?.rules.find(
         (rule) => rule.relativePath === folder.relativePath,
       );
-      return {
+      const choice: ImportFolderChoice = {
         relativePath: folder.relativePath,
         depth: folder.depth,
         modelCount: folder.modelCount,
-        mode: prior?.kind ?? (folder.depth === 1 ? 'collection' : 'tag'),
+        mode: ignoredPaths.has(folder.relativePath)
+          ? 'ignore'
+          : (prior?.kind ?? (folder.depth === 1 ? 'collection' : 'tag')),
         name: prior?.name ?? folder.name,
       };
+      return prior?.kind === 'collection' && prior.collectionId
+        ? { ...choice, collectionId: prior.collectionId }
+        : choice;
     }),
     commonTagsText: saved?.commonTags.join(', ') ?? '',
   };
@@ -70,20 +83,35 @@ export function buildImportPlan(choices: ImportChoices): ImportPlan {
       relativePath: '',
       kind: 'collection',
       name: rootName,
+      ...(choices.rootCollectionId
+        ? { collectionId: choices.rootCollectionId }
+        : {}),
     });
   }
   for (const folder of choices.folders) {
     const name = folder.name.trim();
     if (folder.mode !== 'ignore' && name) {
-      rules.push({
-        relativePath: folder.relativePath,
-        kind: folder.mode,
-        name,
-      });
+      if (folder.mode === 'collection') {
+        rules.push({
+          relativePath: folder.relativePath,
+          kind: folder.mode,
+          name,
+          ...(folder.collectionId ? { collectionId: folder.collectionId } : {}),
+        });
+      } else {
+        rules.push({
+          relativePath: folder.relativePath,
+          kind: folder.mode,
+          name,
+        });
+      }
     }
   }
   return {
     rules,
+    ignoredPaths: choices.folders
+      .filter((folder) => folder.mode === 'ignore')
+      .map((folder) => folder.relativePath),
     commonTags: parseTags(choices.commonTagsText),
   };
 }

@@ -197,6 +197,7 @@ describe('SidecarClient', () => {
             modelCount: 2,
             totalBytes: 2048,
             skippedErrors: 0,
+            complete: true,
             formats: { stl: 1, threeMf: 1, obj: 0 },
             folders: [],
             foldersTruncated: false,
@@ -244,6 +245,7 @@ describe('SidecarClient', () => {
         relativePath: 'Animals',
         kind: 'collection' as const,
         name: 'Animals',
+        collectionId: 'collection-1',
       },
     ];
 
@@ -260,6 +262,58 @@ describe('SidecarClient', () => {
       rules,
       commonTags: ['printable'],
     });
+  });
+
+  it('does not report a mutating import as failed while it is still running', async () => {
+    vi.useFakeTimers();
+    try {
+      let requestId = 0;
+      let emitResponse: ((line: string) => void) | undefined;
+      const { channel } = makeFakeChannel((req, emit) => {
+        requestId = req.id;
+        emitResponse = emit;
+      });
+      const client = new SidecarClient(() => channel, {
+        requestTimeoutMs: 10,
+      });
+      let settled = false;
+      const pending = client.importRoot('root1', 'C:/models', [], []);
+      void pending.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      vi.runAllTicks();
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(settled).toBe(false);
+
+      emitResponse?.(
+        JSON.stringify({
+          id: requestId,
+          ok: true,
+          result: {
+            report: {
+              added: 0,
+              changed: 0,
+              unchanged: 0,
+              missing: 0,
+              hashErrors: 0,
+            },
+            modelsOrganized: 0,
+            collectionsCreated: 0,
+            collectionAssignments: 0,
+            tagAssignments: 0,
+          },
+        }),
+      );
+      await expect(pending).resolves.toMatchObject({ modelsOrganized: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('sends a listModels request and resolves the model array', async () => {
