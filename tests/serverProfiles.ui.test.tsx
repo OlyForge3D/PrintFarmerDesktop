@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { ServerProfilesDialog } from '../src/renderer/serverProfiles/ServerProfilesDialog.js';
 import type { PrintFarmerApi, ServerProfile } from '@shared/ipc';
@@ -46,6 +52,17 @@ function installApi(api: Partial<PrintFarmerApi>): void {
     value: api,
     configurable: true,
   });
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
 }
 
 describe('<ServerProfilesDialog />', () => {
@@ -154,10 +171,11 @@ describe('<ServerProfilesDialog />', () => {
     ).toBeVisible();
   });
 
-  it('does not refocus Close while busy and remains escapable', () => {
+  it('does not refocus Close while busy and ignores completion after close', async () => {
     const onClose = vi.fn();
+    const pending = deferred<ServerProfile>();
     const testServerProfile = vi.fn<PrintFarmerApi['testServerProfile']>(
-      () => new Promise<ServerProfile>(() => undefined),
+      () => pending.promise,
     );
     installApi({ testServerProfile });
     render(
@@ -186,6 +204,11 @@ describe('<ServerProfilesDialog />', () => {
     expect(close).toBeEnabled();
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledOnce();
+    await act(async () => {
+      pending.resolve(connected);
+      await pending.promise;
+    });
+    expect(screen.queryByText('Connection successful')).not.toBeInTheDocument();
 
     screen.getByRole('button', { name: 'Outside' }).focus();
     expect(close).toHaveFocus();
@@ -221,5 +244,35 @@ describe('<ServerProfilesDialog />', () => {
       }),
     );
     expect(screen.getByRole('alert')).toHaveTextContent('Server unavailable');
+  });
+
+  it('ignores a mutation callback that resolves after close', async () => {
+    const pending = deferred<{
+      profiles: ServerProfile[];
+      selectedProfileId: string | null;
+    }>();
+    const deleteServerProfile = vi.fn<PrintFarmerApi['deleteServerProfile']>(
+      () => pending.promise,
+    );
+    const onChange = vi.fn();
+    installApi({ deleteServerProfile });
+    render(
+      <ServerProfilesDialog
+        profiles={{ profiles: [connected], selectedProfileId: connected.id }}
+        onChange={onChange}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Remove Production farm' }),
+    );
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await act(async () => {
+      pending.resolve({ profiles: [], selectedProfileId: null });
+      await pending.promise;
+    });
+
+    expect(onChange).not.toHaveBeenCalled();
   });
 });

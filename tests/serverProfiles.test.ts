@@ -136,6 +136,31 @@ function requestBody(init: RequestInit | undefined): unknown {
   return JSON.parse(init.body) as unknown;
 }
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+function persistedStore(fileSystem: MemoryFileSystem): string {
+  const value = fileSystem.files.get(
+    path.join(TEST_USER_DATA_PATH, 'server-profiles.v1.json'),
+  );
+  if (!value) throw new Error('Expected persisted profile store');
+  return new TextDecoder().decode(value);
+}
+
+function encryptedBlob(serializedStore: string): string {
+  const match = /"encryptedSecret":"([^"]+)"/.exec(serializedStore);
+  if (!match?.[1]) throw new Error('Expected encrypted profile secret');
+  return match[1];
+}
+
 function service(
   fileSystem: MemoryFileSystem,
   fetchImpl = successfulFetch(),
@@ -689,6 +714,133 @@ describe('server profiles', () => {
     await profiles.getToken(saved.id);
     expect(exchanges).toBe(2);
   });
+
+  it('does not resurrect a profile deleted during a gated retest', async () => {
+    const fs = new MemoryFileSystem();
+    const capabilityGate = deferred<Response>();
+    const retestReachedNetwork = deferred<void>();
+    const baseline = successfulFetch();
+    let capabilityCalls = 0;
+    const fetchImpl: typeof globalThis.fetch = vi.fn(
+      (input: string | URL | Request, init?: RequestInit) => {
+        if (requestUrl(input).pathname === '/api/system/capabilities') {
+          capabilityCalls += 1;
+          if (capabilityCalls === 2) {
+            retestReachedNetwork.resolve();
+            return capabilityGate.promise;
+          }
+        }
+        return baseline(input, init);
+      },
+    );
+    const profiles = service(fs, fetchImpl);
+    const saved = await profiles.save(apiKeyDraft());
+
+    const retest = profiles.test({ source: 'saved', id: saved.id });
+    const retestResult = expect(retest).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+    await retestReachedNetwork.promise;
+    await profiles.delete(saved.id);
+    capabilityGate.resolve(json(CAPABILITIES));
+
+    await retestResult;
+    await expect(profiles.list()).resolves.toEqual({
+      profiles: [],
+      selectedProfileId: null,
+    });
+    expect(persistedStore(fs)).not.toContain('encryptedSecret');
+  });
+
+  it('does not overwrite a profile updated during a gated retest', async () => {
+    const fs = new MemoryFileSystem();
+    const capabilityGate = deferred<Response>();
+    const retestReachedNetwork = deferred<void>();
+    const baseline = successfulFetch();
+    let capabilityCalls = 0;
+    const fetchImpl: typeof globalThis.fetch = vi.fn(
+      (input: string | URL | Request, init?: RequestInit) => {
+        if (requestUrl(input).pathname === '/api/system/capabilities') {
+          capabilityCalls += 1;
+          if (capabilityCalls === 2) {
+            retestReachedNetwork.resolve();
+            return capabilityGate.promise;
+          }
+        }
+        return baseline(input, init);
+      },
+    );
+    const profiles = service(fs, fetchImpl);
+    const saved = await profiles.save(apiKeyDraft());
+    const originalEncryptedSecret = encryptedBlob(persistedStore(fs));
+
+    const retest = profiles.test({ source: 'saved', id: saved.id });
+    const retestResult = expect(retest).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+    });
+    await retestReachedNetwork.promise;
+    await profiles.save(
+      apiKeyDraft({
+        id: saved.id,
+        displayName: 'Replacement farm',
+        baseUrl: 'https://replacement.example',
+        credentials: { authMode: 'apiKey', apiKey: 'replacement-key' },
+      }),
+    );
+    const replacementEncryptedSecret = encryptedBlob(persistedStore(fs));
+    capabilityGate.resolve(json(CAPABILITIES));
+
+    await retestResult;
+    await expect(profiles.list()).resolves.toMatchObject({
+      profiles: [
+        {
+          id: saved.id,
+          displayName: 'Replacement farm',
+          baseUrl: 'https://replacement.example',
+          status: 'connected',
+        },
+      ],
+    });
+    expect(replacementEncryptedSecret).not.toBe(originalEncryptedSecret);
+    expect(encryptedBlob(persistedStore(fs))).toBe(replacementEncryptedSecret);
+  });
+
+  it.each([
+    ['safeStorage unavailable', 'ENCRYPTION_UNAVAILABLE'],
+    ['decryption failure', 'CORRUPT_STORE'],
+  ] as const)(
+    'persists error status after guarded %s',
+    async (failure, expectedCode) => {
+      const fs = new MemoryFileSystem();
+      let vaultFails = false;
+      const fetchImpl = successfulFetch();
+      const storage: SecretStorage = {
+        ...secureStorage,
+        isEncryptionAvailable: () =>
+          failure === 'safeStorage unavailable' ? !vaultFails : true,
+        decryptString: (value) => {
+          if (failure === 'decryption failure' && vaultFails) {
+            throw new Error('vault internals must be scrubbed');
+          }
+          return secureStorage.decryptString(value);
+        },
+      };
+      const profiles = service(fs, fetchImpl, () => NOW, storage);
+      const saved = await profiles.save(apiKeyDraft());
+      const requestsBeforeRetest = vi.mocked(fetchImpl).mock.calls.length;
+      vaultFails = true;
+
+      const retest = profiles.test({ source: 'saved', id: saved.id });
+      await expect(retest).rejects.toMatchObject({ code: expectedCode });
+      await expect(retest).rejects.not.toThrow(/vault internals/);
+      await expect(profiles.list()).resolves.toMatchObject({
+        profiles: [{ id: saved.id, status: 'error' }],
+      });
+      expect(vi.mocked(fetchImpl).mock.calls).toHaveLength(
+        requestsBeforeRetest,
+      );
+    },
+  );
 
   it('rejects malformed capabilities and corrupt stores explicitly', async () => {
     const malformed = successfulFetch();

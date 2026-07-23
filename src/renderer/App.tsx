@@ -53,6 +53,7 @@ export function App(): React.JSX.Element {
       selectedProfileId: null,
     });
   const [profilesOpen, setProfilesOpen] = useState(false);
+  const [importPreparing, setImportPreparing] = useState(false);
   const [query, setQuery] = useState(defaultLibraryView.query);
   const [filter, setFilter] = useState<FilterKey>(defaultLibraryView.filter);
   const [sort, setSort] = useState<SortKey>(defaultLibraryView.sort);
@@ -84,6 +85,7 @@ export function App(): React.JSX.Element {
   const profileReturnFocusRef = useRef<HTMLElement | null>(null);
   const restoreProfileFocusRef = useRef(false);
   const importPreparationRef = useRef(false);
+  const profileExclusionRef = useRef(false);
   const previewRequestRef = useRef(0);
   const titlebarRef = useRef<HTMLElement | null>(null);
   const workspaceRef = useRef<HTMLDivElement | null>(null);
@@ -251,9 +253,19 @@ export function App(): React.JSX.Element {
     return () => clearTimeout(timeout);
   }, [profilesOpen]);
 
+  useEffect(() => {
+    profileExclusionRef.current =
+      busy ||
+      importPreparing ||
+      previewOpen ||
+      library.importDraft !== null ||
+      profilesOpen;
+  }, [busy, importPreparing, library.importDraft, previewOpen, profilesOpen]);
+
   const beginImport = useCallback(() => {
     if (
       importPreparationRef.current ||
+      profileExclusionRef.current ||
       busy ||
       previewOpen ||
       library.importDraft
@@ -261,12 +273,15 @@ export function App(): React.JSX.Element {
       return;
     }
     importPreparationRef.current = true;
+    profileExclusionRef.current = true;
+    setImportPreparing(true);
     importReturnFocusRef.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
     void prepareFolderImport().finally(() => {
       importPreparationRef.current = false;
+      setImportPreparing(false);
     });
   }, [busy, library.importDraft, prepareFolderImport, previewOpen]);
 
@@ -317,6 +332,7 @@ export function App(): React.JSX.Element {
 
   const loadPreview = useCallback(async (target: PreviewTarget) => {
     const requestId = ++previewRequestRef.current;
+    profileExclusionRef.current = true;
     setPreviewTarget(target);
     setPreviewOpen(true);
     setPreviewError(null);
@@ -465,7 +481,15 @@ export function App(): React.JSX.Element {
     serverProfiles.profiles.find(
       (profile) => profile.id === serverProfiles.selectedProfileId,
     ) ?? null;
+  const serverProfilesDisabled =
+    busy ||
+    importPreparing ||
+    previewOpen ||
+    library.importDraft !== null ||
+    profilesOpen;
   const openProfiles = (): void => {
+    if (profileExclusionRef.current || serverProfilesDisabled) return;
+    profileExclusionRef.current = true;
     profileReturnFocusRef.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
@@ -518,6 +542,7 @@ export function App(): React.JSX.Element {
             void library.refresh();
           }}
           serverProfile={activeServer}
+          serverProfilesDisabled={serverProfilesDisabled}
           onManageServerProfiles={openProfiles}
         />
 
@@ -708,7 +733,7 @@ export function App(): React.JSX.Element {
         />
       ) : null}
 
-      {profilesOpen ? (
+      {profilesOpen && !library.importDraft && !previewOpen ? (
         <ServerProfilesDialog
           profiles={serverProfiles}
           onChange={setServerProfiles}

@@ -196,6 +196,7 @@ export class ServerProfileService {
   private readonly tokens = new Map<string, CachedToken>();
   private readonly tokenBindings = new Map<string, string>();
   private readonly tokenRenewals = new Map<string, TokenRenewal>();
+  private mutationTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly dependencies: ServerProfileDependencies) {
     this.fileSystem = dependencies.fileSystem ?? nodeFileSystem;
@@ -215,8 +216,10 @@ export class ServerProfileService {
   }
 
   async list(): Promise<ListServerProfilesResponse> {
-    const store = await this.readStore();
-    return this.redactStore(store);
+    return this.withMutationLock(async () => {
+      const store = await this.readStore();
+      return this.redactStore(store);
+    });
   }
 
   async test(request: TestServerProfileRequest): Promise<RedactedProfile> {
@@ -235,43 +238,86 @@ export class ServerProfileService {
       }
     }
 
-    const store = await this.readStore();
-    const index = store.profiles.findIndex(
-      (profile) => profile.id === request.id,
-    );
-    if (index < 0) {
-      throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
-    }
-    const stored = store.profiles[index]!;
-    const secret = this.decryptSecret(stored.encryptedSecret);
-    try {
-      const tested = await this.probe(
-        stored.id,
-        stored.displayName,
-        stored.baseUrl,
-        secret,
+    const snapshot = await this.withMutationLock(async () => {
+      const store = await this.readStore();
+      const index = store.profiles.findIndex(
+        (profile) => profile.id === request.id,
       );
-      store.profiles[index] = {
-        ...tested,
-        encryptedSecret: stored.encryptedSecret,
-      };
-      await this.writeStore(store);
-      return tested;
+      if (index < 0) {
+        throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
+      }
+      const stored = store.profiles[index]!;
+      const revision = profileRevision(stored);
+      try {
+        return {
+          profile: stored,
+          revision,
+          secret: this.decryptSecret(stored.encryptedSecret),
+        };
+      } catch (error) {
+        store.profiles[index] = errorProfile(stored, this.now());
+        try {
+          await this.writeStore(store);
+        } catch {
+          throw new ServerProfileError(
+            'CORRUPT_STORE',
+            'The saved server profile error state could not be persisted.',
+          );
+        }
+        throw scrubVaultError(error);
+      }
+    });
+
+    let tested: RedactedProfile | null = null;
+    let probeError: unknown;
+    try {
+      tested = await this.probe(
+        snapshot.profile.id,
+        snapshot.profile.displayName,
+        snapshot.profile.baseUrl,
+        snapshot.secret,
+      );
     } catch (error) {
-      store.profiles[index] = {
-        ...stored,
-        status: 'error',
-        lastCheckedAt: new Date(this.now()).toISOString(),
-      };
-      await this.writeStore(store);
-      throw error;
+      probeError = error;
     }
+
+    return this.withMutationLock(async () => {
+      const store = await this.readStore();
+      const index = store.profiles.findIndex(
+        (profile) => profile.id === request.id,
+      );
+      if (index < 0) {
+        this.invalidateToken(request.id);
+        throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
+      }
+      const current = store.profiles[index]!;
+      if (profileRevision(current) !== snapshot.revision) {
+        this.invalidateToken(request.id);
+        throw profileChangedError();
+      }
+      if (tested) {
+        store.profiles[index] = mergeProbeResult(current, tested);
+        await this.writeStore(store);
+        return tested;
+      }
+      store.profiles[index] = errorProfile(current, this.now());
+      await this.writeStore(store);
+      throw scrubProbeError(probeError);
+    });
   }
 
   async save(draft: ServerProfileDraft): Promise<RedactedProfile> {
     this.requireEncryption();
     const secret = this.secretFromDraft(draft);
     const id = draft.id ?? this.createId();
+    const expectedRevision = await this.withMutationLock(async () => {
+      const store = await this.readStore();
+      const existing = store.profiles.find((profile) => profile.id === id);
+      if (draft.id && !existing) {
+        throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
+      }
+      return existing ? profileRevision(existing) : null;
+    });
     const tested = await this.probe(
       id,
       draft.displayName,
@@ -289,57 +335,74 @@ export class ServerProfileService {
     const encryptedSecret = Buffer.from(
       this.dependencies.secretStorage.encryptString(JSON.stringify(secret)),
     ).toString('base64');
-    const store = await this.readStore();
-    const index = store.profiles.findIndex((profile) => profile.id === id);
-    const stored: StoredProfile = { ...tested, encryptedSecret };
-    if (index < 0) {
-      store.profiles.push(stored);
-    } else {
-      store.profiles[index] = stored;
-    }
-    store.selectedProfileId ??= id;
-    try {
-      await this.writeStore(store);
-    } catch (error) {
-      this.invalidateToken(id);
-      throw error;
-    }
+    await this.withMutationLock(async () => {
+      const store = await this.readStore();
+      const index = store.profiles.findIndex((profile) => profile.id === id);
+      const current = index < 0 ? null : store.profiles[index]!;
+      const currentRevision = current ? profileRevision(current) : null;
+      if (currentRevision !== expectedRevision) {
+        this.invalidateToken(id);
+        throw profileChangedError();
+      }
+      const stored: StoredProfile = { ...tested, encryptedSecret };
+      if (index < 0) {
+        store.profiles.push(stored);
+      } else {
+        store.profiles[index] = stored;
+      }
+      store.selectedProfileId ??= id;
+      try {
+        await this.writeStore(store);
+      } catch (error) {
+        this.invalidateToken(id);
+        throw error;
+      }
+    });
     return tested;
   }
 
   async select(id: string): Promise<RedactedProfile> {
-    const store = await this.readStore();
-    const profile = store.profiles.find((candidate) => candidate.id === id);
-    if (!profile) {
-      throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
-    }
-    store.selectedProfileId = id;
-    await this.writeStore(store);
-    return this.redact(profile);
+    return this.withMutationLock(async () => {
+      const store = await this.readStore();
+      const profile = store.profiles.find((candidate) => candidate.id === id);
+      if (!profile) {
+        throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
+      }
+      store.selectedProfileId = id;
+      await this.writeStore(store);
+      return this.redact(profile);
+    });
   }
 
   async delete(id: string): Promise<ListServerProfilesResponse> {
-    const store = await this.readStore();
-    const index = store.profiles.findIndex((profile) => profile.id === id);
-    if (index < 0) {
-      throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
-    }
-    store.profiles.splice(index, 1);
-    this.invalidateToken(id);
-    if (store.selectedProfileId === id) {
-      store.selectedProfileId = store.profiles[0]?.id ?? null;
-    }
-    await this.writeStore(store);
-    return this.redactStore(store);
+    return this.withMutationLock(async () => {
+      const store = await this.readStore();
+      const index = store.profiles.findIndex((profile) => profile.id === id);
+      if (index < 0) {
+        throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
+      }
+      store.profiles.splice(index, 1);
+      this.invalidateToken(id);
+      if (store.selectedProfileId === id) {
+        store.selectedProfileId = store.profiles[0]?.id ?? null;
+      }
+      await this.writeStore(store);
+      return this.redactStore(store);
+    });
   }
 
   async getToken(id: string): Promise<string> {
-    const store = await this.readStore();
-    const profile = store.profiles.find((candidate) => candidate.id === id);
-    if (!profile) {
-      throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
-    }
-    const secret = this.decryptSecret(profile.encryptedSecret);
+    const { profile, secret } = await this.withMutationLock(async () => {
+      const store = await this.readStore();
+      const profile = store.profiles.find((candidate) => candidate.id === id);
+      if (!profile) {
+        throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
+      }
+      return {
+        profile,
+        secret: this.decryptSecret(profile.encryptedSecret),
+      };
+    });
     return this.authenticate(profile.baseUrl, secret, id, false);
   }
 
@@ -695,6 +758,20 @@ export class ServerProfileService {
     this.tokenRenewals.delete(id);
   }
 
+  private async withMutationLock<T>(action: () => Promise<T>): Promise<T> {
+    const previous = this.mutationTail;
+    let release: () => void = () => undefined;
+    this.mutationTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await action();
+    } finally {
+      release();
+    }
+  }
+
   private secretFromDraft(draft: ServerProfileDraft): StoredSecret {
     return StoredSecret.parse(
       draft.credentials.authMode === 'apiKey'
@@ -898,6 +975,79 @@ function availabilityFor(
         : 'Server-thumbnail fallback is not required or not supported.',
     },
   };
+}
+
+function profileRevision(profile: StoredProfile): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        id: profile.id,
+        displayName: profile.displayName,
+        baseUrl: profile.baseUrl,
+        authMode: profile.authMode,
+        username: profile.username ?? null,
+        encryptedSecret: profile.encryptedSecret,
+      }),
+    )
+    .digest('hex');
+}
+
+function mergeProbeResult(
+  current: StoredProfile,
+  tested: RedactedProfile,
+): StoredProfile {
+  return {
+    ...current,
+    version: tested.version,
+    capabilities: tested.capabilities,
+    availability: tested.availability,
+    status: tested.status,
+    lastCheckedAt: tested.lastCheckedAt,
+    warnings: tested.warnings,
+  };
+}
+
+function errorProfile(profile: StoredProfile, now: number): StoredProfile {
+  return {
+    ...profile,
+    status: 'error',
+    lastCheckedAt: new Date(now).toISOString(),
+  };
+}
+
+function profileChangedError(): ServerProfileError {
+  return new ServerProfileError(
+    'VALIDATION_ERROR',
+    'The server profile changed while the operation was running. Test it again.',
+  );
+}
+
+function scrubVaultError(error: unknown): ServerProfileError {
+  if (error instanceof ServerProfileError) {
+    return new ServerProfileError(
+      error.code,
+      error.message,
+      error.retryAfterSeconds,
+    );
+  }
+  return new ServerProfileError(
+    'CORRUPT_STORE',
+    'A saved server credential could not be decrypted or validated.',
+  );
+}
+
+function scrubProbeError(error: unknown): ServerProfileError {
+  if (error instanceof ServerProfileError) {
+    return new ServerProfileError(
+      error.code,
+      error.message,
+      error.retryAfterSeconds,
+    );
+  }
+  return new ServerProfileError(
+    'TRANSPORT_ERROR',
+    'The server profile test failed.',
+  );
 }
 
 async function readBoundedBody(

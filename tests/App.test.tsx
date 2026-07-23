@@ -49,6 +49,17 @@ function installApi(api: Partial<PrintFarmerApi>): void {
   });
 }
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
 describe('<App />', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -185,6 +196,72 @@ describe('<App />', () => {
         name: /Broken farm Legacy server Status: Connection error/,
       }),
     ).toBeVisible();
+  });
+
+  it('excludes server profiles throughout import preparation and its modal', async () => {
+    const preview = deferred<{
+      modelCount: number;
+      totalBytes: number;
+      skippedErrors: number;
+      complete: boolean;
+      formats: { stl: number; threeMf: number; obj: number };
+      folders: [];
+      foldersTruncated: boolean;
+    }>();
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 1,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([]),
+      listServerProfiles: vi.fn().mockResolvedValue({
+        profiles: [],
+        selectedProfileId: null,
+      }),
+      openFolder: vi.fn().mockResolvedValue({ path: 'C:\\GatedImport' }),
+      previewImport: vi.fn().mockReturnValue(preview.promise),
+      listCollections: vi.fn().mockResolvedValue([]),
+      listTags: vi.fn().mockResolvedValue([]),
+    });
+    const { container } = render(<App />);
+    const manage = await screen.findByRole('button', {
+      name: /Not connected Manage profiles Status: Disconnected/,
+    });
+    await waitFor(() => expect(manage).toBeEnabled());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }));
+    expect(manage).toBeDisabled();
+    fireEvent.click(manage);
+    expect(
+      screen.queryByRole('dialog', { name: 'Server profiles' }),
+    ).not.toBeInTheDocument();
+
+    preview.resolve({
+      modelCount: 1,
+      totalBytes: 100,
+      skippedErrors: 0,
+      complete: true,
+      formats: { stl: 1, threeMf: 0, obj: 0 },
+      folders: [],
+      foldersTruncated: false,
+    });
+    fireEvent.click(manage);
+
+    expect(
+      await screen.findByRole('dialog', {
+        name: 'Organize models before importing',
+      }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole('dialog', { name: 'Server profiles' }),
+    ).not.toBeInTheDocument();
+    expect(container.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    const cancel = screen.getByRole('button', { name: 'Cancel import' });
+    await waitFor(() => expect(cancel).toHaveFocus());
+    screen.getByLabelText('Search models').focus();
+    expect(cancel).toHaveFocus();
   });
 
   it('shows an error when the main process call fails', async () => {

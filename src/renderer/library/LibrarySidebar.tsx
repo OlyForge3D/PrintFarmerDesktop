@@ -31,6 +31,7 @@ export interface LibrarySidebarProps {
   onAddFolder: () => void;
   onRefresh: () => void;
   serverProfile: ServerProfile | null;
+  serverProfilesDisabled: boolean;
   onManageServerProfiles: () => void;
 }
 
@@ -68,6 +69,7 @@ export function LibrarySidebar({
   onAddFolder,
   onRefresh,
   serverProfile,
+  serverProfilesDisabled,
   onManageServerProfiles,
 }: LibrarySidebarProps): React.JSX.Element {
   return (
@@ -148,6 +150,7 @@ export function LibrarySidebar({
         <button
           type="button"
           className="server-profile-entry"
+          disabled={serverProfilesDisabled}
           onClick={onManageServerProfiles}
         >
           <span

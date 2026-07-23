@@ -30,14 +30,25 @@ export function ServerProfilesDialog({
   const dialogRef = useRef<HTMLElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
   const onCloseRef = useRef(onClose);
+  const mountedRef = useRef(true);
+  const operationEpochRef = useRef(0);
   onCloseRef.current = onClose;
+  const closeDialog = (): void => {
+    operationEpochRef.current += 1;
+    onCloseRef.current();
+  };
+  const closeDialogRef = useRef(closeDialog);
+  closeDialogRef.current = closeDialog;
+  const operationIsCurrent = (epoch: number): boolean =>
+    mountedRef.current && operationEpochRef.current === epoch;
 
   useEffect(() => {
+    mountedRef.current = true;
     closeRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        onCloseRef.current();
+        closeDialogRef.current();
         return;
       }
       if (event.key !== 'Tab') return;
@@ -67,6 +78,8 @@ export function ServerProfilesDialog({
     document.addEventListener('keydown', onKeyDown);
     document.addEventListener('focusin', onFocusIn);
     return () => {
+      mountedRef.current = false;
+      operationEpochRef.current += 1;
       document.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('focusin', onFocusIn);
     };
@@ -89,55 +102,65 @@ export function ServerProfilesDialog({
   });
 
   const testDraft = async (): Promise<void> => {
+    const epoch = ++operationEpochRef.current;
     setBusy(true);
     setError(null);
     try {
-      setTested(
-        await window.printFarmer.testServerProfile({
-          source: 'draft',
-          draft: draft(),
-        }),
-      );
+      const result = await window.printFarmer.testServerProfile({
+        source: 'draft',
+        draft: draft(),
+      });
+      if (!operationIsCurrent(epoch)) return;
+      setTested(result);
     } catch (cause) {
+      if (!operationIsCurrent(epoch)) return;
       setTested(null);
       setError(errorMessage(cause));
     } finally {
-      setBusy(false);
+      if (operationIsCurrent(epoch)) setBusy(false);
     }
   };
 
   const saveDraft = async (): Promise<void> => {
+    const epoch = ++operationEpochRef.current;
     setBusy(true);
     setError(null);
     try {
       await window.printFarmer.saveServerProfile(draft());
+      if (!operationIsCurrent(epoch)) return;
       const latest = await window.printFarmer.listServerProfiles();
+      if (!operationIsCurrent(epoch)) return;
       onChange(latest);
       setTested(null);
       setDisplayName('');
       setApiKey('');
       setPassword('');
     } catch (cause) {
+      if (!operationIsCurrent(epoch)) return;
       setError(errorMessage(cause));
     } finally {
-      setBusy(false);
+      if (operationIsCurrent(epoch)) setBusy(false);
     }
   };
 
   const selectProfile = async (id: string): Promise<void> => {
+    const epoch = ++operationEpochRef.current;
     setBusy(true);
     setError(null);
     try {
       await window.printFarmer.selectServerProfile({ id });
+      if (!operationIsCurrent(epoch)) return;
       onChange({ ...profiles, selectedProfileId: id });
     } catch (cause) {
+      if (!operationIsCurrent(epoch)) return;
       setError(errorMessage(cause));
     } finally {
-      setBusy(false);
+      if (operationIsCurrent(epoch)) setBusy(false);
     }
   };
 
   const retestProfile = async (id: string): Promise<void> => {
+    const epoch = ++operationEpochRef.current;
     setBusy(true);
     setError(null);
     try {
@@ -145,6 +168,7 @@ export function ServerProfilesDialog({
         source: 'saved',
         id,
       });
+      if (!operationIsCurrent(epoch)) return;
       onChange({
         ...profiles,
         profiles: profiles.profiles.map((profile) =>
@@ -152,29 +176,37 @@ export function ServerProfilesDialog({
         ),
       });
     } catch (cause) {
+      if (!operationIsCurrent(epoch)) return;
       const testError = errorMessage(cause);
       try {
-        onChange(await window.printFarmer.listServerProfiles());
+        const latest = await window.printFarmer.listServerProfiles();
+        if (!operationIsCurrent(epoch)) return;
+        onChange(latest);
         setError(testError);
       } catch (refreshCause) {
+        if (!operationIsCurrent(epoch)) return;
         setError(
           `${testError} The saved error status could not be refreshed: ${errorMessage(refreshCause)}`,
         );
       }
     } finally {
-      setBusy(false);
+      if (operationIsCurrent(epoch)) setBusy(false);
     }
   };
 
   const removeProfile = async (id: string): Promise<void> => {
+    const epoch = ++operationEpochRef.current;
     setBusy(true);
     setError(null);
     try {
-      onChange(await window.printFarmer.deleteServerProfile({ id }));
+      const latest = await window.printFarmer.deleteServerProfile({ id });
+      if (!operationIsCurrent(epoch)) return;
+      onChange(latest);
     } catch (cause) {
+      if (!operationIsCurrent(epoch)) return;
       setError(errorMessage(cause));
     } finally {
-      setBusy(false);
+      if (operationIsCurrent(epoch)) setBusy(false);
     }
   };
 
@@ -199,7 +231,7 @@ export function ServerProfilesDialog({
             type="button"
             className="icon-button"
             aria-label="Close server profiles"
-            onClick={onClose}
+            onClick={closeDialog}
           >
             &times;
           </button>

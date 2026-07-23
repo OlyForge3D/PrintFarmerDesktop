@@ -44,8 +44,10 @@ of tags and collections.
 
 Server profiles are stored as a strictly validated, versioned file below
 Electron's per-user data directory. Writes use a temporary file and atomic
-rename. API keys and passwords are encrypted with Electron `safeStorage`; the
-main process refuses to save them when OS-backed encryption is unavailable.
+rename. Profile mutations are serialized and network retests use configuration
+revisions so a stale result cannot overwrite an update or resurrect a deleted
+credential. API keys and passwords are encrypted with Electron `safeStorage`;
+the main process refuses to save them when OS-backed encryption is unavailable.
 JWTs exist only in main-process memory and are reissued before expiration.
 
 The main process probes the anonymous version and capability endpoints and
