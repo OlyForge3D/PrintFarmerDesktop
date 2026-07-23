@@ -263,6 +263,7 @@ struct RecoverOutboundParams {
 struct CompleteOutboundParams {
     profile_id: String,
     operation_id: String,
+    batch_incarnation: String,
     lease_token: String,
     completed_at: i64,
 }
@@ -272,6 +273,7 @@ struct CompleteOutboundParams {
 struct FailOutboundParams {
     profile_id: String,
     operation_id: String,
+    batch_incarnation: String,
     lease_token: String,
     error: String,
     failed_at: i64,
@@ -437,6 +439,7 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             serde_json::to_value(store.complete_outbound_operation(
                 &params.profile_id,
                 &params.operation_id,
+                &params.batch_incarnation,
                 &params.lease_token,
                 params.completed_at,
             )?)
@@ -448,6 +451,7 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             serde_json::to_value(store.fail_outbound_operation(
                 &params.profile_id,
                 &params.operation_id,
+                &params.batch_incarnation,
                 &params.lease_token,
                 &params.error,
                 params.failed_at,

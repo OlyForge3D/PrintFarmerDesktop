@@ -8,7 +8,7 @@
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -221,12 +221,22 @@ ALTER TABLE sync_profiles ADD COLUMN checkpoint_generation INTEGER NOT NULL DEFA
 ALTER TABLE sync_conflicts ADD COLUMN batch_id TEXT;
 ALTER TABLE sync_conflicts ADD COLUMN operation_id TEXT;
 
-UPDATE sync_outbox
-SET batch_id = 'legacy-' || printf('%016x', sequence)
-WHERE length(batch_id) > 256;
-
 CREATE INDEX idx_sync_conflicts_batch
     ON sync_conflicts(profile_id, batch_id, resolved_at);
+"#;
+
+/// Additive v5 incarnation and attempt fencing. Existing rows are populated by
+/// the Rust migration while the schema transaction remains open.
+pub const SCHEMA_V5: &str = r#"
+ALTER TABLE sync_outbox ADD COLUMN batch_incarnation TEXT;
+ALTER TABLE sync_outbox ADD COLUMN attempt_token TEXT;
+ALTER TABLE sync_conflicts ADD COLUMN batch_incarnation TEXT;
+ALTER TABLE sync_conflicts ADD COLUMN attempt_token TEXT;
+
+CREATE INDEX idx_sync_outbox_incarnation
+    ON sync_outbox(profile_id, batch_id, batch_incarnation, state, sequence);
+CREATE INDEX idx_sync_conflicts_incarnation
+    ON sync_conflicts(profile_id, batch_id, batch_incarnation, resolved_at);
 "#;
 
 #[cfg(test)]
@@ -254,7 +264,8 @@ mod tests {
 
     #[test]
     fn sync_schema_contains_no_transport_or_secret_fields() {
-        let sync_schema = format!("{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}").to_lowercase();
+        let sync_schema =
+            format!("{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}").to_lowercase();
         for forbidden in ["server_url", "auth_token", "api_key", "password", "jwt"] {
             assert!(!sync_schema.contains(forbidden));
         }

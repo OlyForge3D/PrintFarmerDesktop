@@ -22,7 +22,7 @@ use crate::catalog::{
     CatalogStore, Collection, LocationUpsert, LogicalModel, ModelLocation, StoredLocation, Tag,
 };
 use crate::model::{FileFingerprint, ModelFormat};
-use crate::schema::{SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_VERSION};
+use crate::schema::{SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_VERSION};
 use crate::sync::{
     self, ApplyPullBatchDto, ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution,
     DisposeFailedBatchDto, EnqueueOutboundOperationDto, EntityRevisionDto, OutboundOperationDto,
@@ -77,6 +77,10 @@ impl SqliteCatalog {
                 }
                 if version < 4 {
                     conn.execute_batch(SCHEMA_V4)?;
+                }
+                if version < 5 {
+                    conn.execute_batch(SCHEMA_V5)?;
+                    migrate_v5_fencing(&conn)?;
                 }
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 conn.execute_batch("COMMIT")
@@ -188,7 +192,8 @@ impl SqliteCatalog {
                 "SELECT profile_id, operation_id, entity_type, operation_kind, entity_id,
                         payload_json, base_revision, concurrency_token, state, attempt_count,
                         retry_eligible, retry_at, lease_until, last_error, created_at,
-                        updated_at, acked_at, sequence, batch_id, batch_ordinal, lease_token
+                        updated_at, acked_at, sequence, batch_id, batch_ordinal, lease_token,
+                        batch_incarnation, attempt_token
                  FROM sync_outbox WHERE profile_id = ?1 AND operation_id = ?2",
                 params![profile_id, operation_id],
                 outbound_from_row,
@@ -208,7 +213,8 @@ impl SqliteCatalog {
                 "SELECT profile_id, operation_id, entity_type, operation_kind, entity_id,
                         payload_json, base_revision, concurrency_token, state, attempt_count,
                         retry_eligible, retry_at, lease_until, last_error, created_at,
-                        updated_at, acked_at, sequence, batch_id, batch_ordinal, lease_token
+                        updated_at, acked_at, sequence, batch_id, batch_ordinal, lease_token,
+                        batch_incarnation, attempt_token
                  FROM sync_outbox WHERE profile_id = ?1 AND batch_id = ?2
                  ORDER BY batch_ordinal LIMIT 500",
             )
@@ -275,11 +281,32 @@ impl SqliteCatalog {
     ) -> Result<Vec<OutboundOperationDto>, String> {
         let existing = self.load_outbound_batch(&disposition.profile_id, &disposition.batch_id)?;
         if existing.is_empty()
-            || existing
-                .iter()
-                .any(|operation| operation.state != OutboundState::Failed)
+            || existing.iter().any(|operation| {
+                operation.batch_incarnation != disposition.batch_incarnation
+                    || operation.attempt_token.as_deref()
+                        != Some(&disposition.expected_attempt_token)
+                    || operation.state != OutboundState::Failed
+            })
         {
             return Err("only a wholly failed batch can be disposed".to_string());
+        }
+        let unresolved: bool = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(
+                SELECT 1 FROM sync_conflicts
+                WHERE profile_id = ?1 AND batch_id = ?2 AND batch_incarnation = ?3
+                  AND resolved_at IS NULL)",
+                params![
+                    disposition.profile_id,
+                    disposition.batch_id,
+                    disposition.batch_incarnation
+                ],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if unresolved {
+            return Err("failed batch still has unresolved conflicts".to_string());
         }
         let replacements: std::collections::HashMap<_, _> = disposition
             .operations
@@ -342,7 +369,7 @@ impl SqliteCatalog {
         profile_id: &str,
         input: &ConflictInputDto,
     ) -> Result<SyncConflictDto, String> {
-        self.insert_conflict_associated(profile_id, input, None, None)
+        self.insert_conflict_associated(profile_id, input, None, None, None, None)
     }
 
     fn insert_conflict_associated(
@@ -351,6 +378,8 @@ impl SqliteCatalog {
         input: &ConflictInputDto,
         batch_id: Option<&str>,
         operation_id: Option<&str>,
+        batch_incarnation: Option<&str>,
+        attempt_token: Option<&str>,
     ) -> Result<SyncConflictDto, String> {
         let incoming = SyncConflictDto {
             profile_id: profile_id.to_string(),
@@ -359,6 +388,8 @@ impl SqliteCatalog {
             entity_id: input.entity_id.clone(),
             batch_id: batch_id.map(str::to_string),
             operation_id: operation_id.map(str::to_string),
+            batch_incarnation: batch_incarnation.map(str::to_string),
+            attempt_token: attempt_token.map(str::to_string),
             local_payload: input.local_payload.clone(),
             server_payload: input.server_payload.clone(),
             submitted_payload: input.submitted_payload.clone(),
@@ -374,7 +405,7 @@ impl SqliteCatalog {
                 "SELECT profile_id, conflict_id, entity_type, entity_id,
                         local_payload_json, server_payload_json, submitted_payload_json,
                         reason, server_revision, created_at, resolved_at, resolution,
-                        batch_id, operation_id
+                        batch_id, operation_id, batch_incarnation, attempt_token
                  FROM sync_conflicts WHERE profile_id = ?1 AND conflict_id = ?2",
                 params![profile_id, input.conflict_id],
                 conflict_from_row,
@@ -386,6 +417,8 @@ impl SqliteCatalog {
                 && existing.entity_id == incoming.entity_id
                 && existing.batch_id == incoming.batch_id
                 && existing.operation_id == incoming.operation_id
+                && existing.batch_incarnation == incoming.batch_incarnation
+                && existing.attempt_token == incoming.attempt_token
                 && existing.local_payload == incoming.local_payload
                 && existing.server_payload == incoming.server_payload
                 && existing.submitted_payload == incoming.submitted_payload
@@ -406,8 +439,10 @@ impl SqliteCatalog {
                 "INSERT INTO sync_conflicts(
                     profile_id, conflict_id, entity_type, entity_id, local_payload_json,
                     server_payload_json, submitted_payload_json, reason, server_revision,
-                    created_at, resolved_at, resolution, batch_id, operation_id)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL, ?11, ?12)",
+                    created_at, resolved_at, resolution, batch_id, operation_id,
+                    batch_incarnation, attempt_token)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL,
+                        ?11, ?12, ?13, ?14)",
                 params![
                     profile_id,
                     input.conflict_id,
@@ -421,6 +456,8 @@ impl SqliteCatalog {
                     input.created_at,
                     batch_id,
                     operation_id,
+                    batch_incarnation,
+                    attempt_token,
                 ],
             )
             .map_err(sql_error)?;
@@ -1107,6 +1144,20 @@ impl CatalogStore for SqliteCatalog {
                     return Err("operationId already belongs to another logical batch".to_string());
                 }
             }
+            let unresolved: bool = self
+                .conn
+                .query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM sync_conflicts
+                        WHERE profile_id = ?1 AND batch_id = ?2 AND resolved_at IS NULL)",
+                    params![profile_id, batch_id],
+                    |row| row.get(0),
+                )
+                .map_err(sql_error)?;
+            if unresolved {
+                return Err("batchId is still referenced by unresolved conflicts".to_string());
+            }
+            let batch_incarnation = sync::new_batch_incarnation();
             self.conn
                 .execute(
                     "INSERT OR IGNORE INTO sync_profile_sequences(profile_id, next_sequence)
@@ -1152,9 +1203,11 @@ impl CatalogStore for SqliteCatalog {
                             profile_id, operation_id, entity_type, operation_kind, entity_id,
                             payload_json, base_revision, concurrency_token, state, attempt_count,
                             retry_eligible, retry_at, lease_until, last_error, created_at,
-                            updated_at, acked_at, sequence, batch_id, batch_ordinal, lease_token)
+                            updated_at, acked_at, sequence, batch_id, batch_ordinal, lease_token,
+                            batch_incarnation, attempt_token)
                          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'pending', 0,
-                                1, NULL, NULL, NULL, ?9, ?9, NULL, ?10, ?11, ?12, NULL)",
+                                1, NULL, NULL, NULL, ?9, ?9, NULL, ?10, ?11, ?12, NULL,
+                                ?13, NULL)",
                         params![
                             profile_id,
                             operation.operation_id,
@@ -1168,6 +1221,7 @@ impl CatalogStore for SqliteCatalog {
                             sequence,
                             batch_id,
                             ordinal as i64,
+                            batch_incarnation,
                         ],
                     )
                     .map_err(sql_error)?;
@@ -1219,7 +1273,8 @@ impl CatalogStore for SqliteCatalog {
                 "SELECT profile_id, operation_id, entity_type, operation_kind, entity_id,
                         payload_json, base_revision, concurrency_token, state, attempt_count,
                         retry_eligible, retry_at, lease_until, last_error, created_at,
-                        updated_at, acked_at, sequence, batch_id, batch_ordinal, lease_token
+                        updated_at, acked_at, sequence, batch_id, batch_ordinal, lease_token,
+                        batch_incarnation, attempt_token
                  FROM sync_outbox WHERE profile_id = ?1 AND {state_filter}
                  ORDER BY sequence LIMIT ?2"
             ))
@@ -1293,7 +1348,7 @@ impl CatalogStore for SqliteCatalog {
                 .execute(
                     "UPDATE sync_outbox SET state = 'inFlight',
                         attempt_count = attempt_count + 1, retry_at = NULL,
-                        lease_until = ?3, lease_token = ?4, updated_at = ?5
+                        lease_until = ?3, lease_token = ?4, attempt_token = ?4, updated_at = ?5
                      WHERE profile_id = ?1 AND batch_id = ?2",
                     params![profile_id, batch_id, lease_until, lease_token, now],
                 )
@@ -1302,7 +1357,9 @@ impl CatalogStore for SqliteCatalog {
             Ok(Some(ClaimedOutboundBatchDto {
                 profile_id: profile_id.to_string(),
                 batch_id,
-                lease_token,
+                batch_incarnation: operations[0].batch_incarnation.clone(),
+                lease_token: lease_token.clone(),
+                attempt_token: lease_token,
                 lease_until,
                 operations,
             }))
@@ -1328,11 +1385,13 @@ impl CatalogStore for SqliteCatalog {
         &mut self,
         profile_id: &str,
         operation_id: &str,
+        batch_incarnation: &str,
         lease_token: &str,
         completed_at: i64,
     ) -> Result<OutboundOperationDto, String> {
         sync::validate_profile(profile_id)?;
         sync::validate_identifier("operationId", operation_id)?;
+        sync::validate_identifier("batchIncarnation", batch_incarnation)?;
         sync::validate_identifier("leaseToken", lease_token)?;
         sync::validate_timestamp("completedAt", completed_at)?;
         let existing = self
@@ -1345,7 +1404,8 @@ impl CatalogStore for SqliteCatalog {
         {
             return Err("multi-operation batches require transactional settlement".to_string());
         }
-        if existing.state != OutboundState::InFlight
+        if existing.batch_incarnation != batch_incarnation
+            || existing.state != OutboundState::InFlight
             || existing.lease_token.as_deref() != Some(lease_token)
         {
             return Err("operation is not owned by the active lease".to_string());
@@ -1361,8 +1421,14 @@ impl CatalogStore for SqliteCatalog {
                         retry_at = NULL, lease_until = NULL, lease_token = NULL, last_error = NULL,
                         updated_at = ?3, acked_at = ?3
                      WHERE profile_id = ?1 AND operation_id = ?2 AND state = 'inFlight'
-                       AND lease_token = ?4",
-                    params![profile_id, operation_id, completed_at, lease_token],
+                       AND batch_incarnation = ?4 AND lease_token = ?5",
+                    params![
+                        profile_id,
+                        operation_id,
+                        completed_at,
+                        batch_incarnation,
+                        lease_token
+                    ],
                 )
                 .map_err(sql_error)?;
             self.ensure_sync_profile(profile_id)?;
@@ -1379,10 +1445,12 @@ impl CatalogStore for SqliteCatalog {
         self.finish_batch(result)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn fail_outbound_operation(
         &mut self,
         profile_id: &str,
         operation_id: &str,
+        batch_incarnation: &str,
         lease_token: &str,
         error: &str,
         failed_at: i64,
@@ -1390,6 +1458,7 @@ impl CatalogStore for SqliteCatalog {
     ) -> Result<OutboundOperationDto, String> {
         sync::validate_profile(profile_id)?;
         sync::validate_identifier("operationId", operation_id)?;
+        sync::validate_identifier("batchIncarnation", batch_incarnation)?;
         sync::validate_identifier("leaseToken", lease_token)?;
         sync::validate_timestamp("failedAt", failed_at)?;
         if error.is_empty() || error.len() > sync::MAX_ERROR_BYTES {
@@ -1411,7 +1480,8 @@ impl CatalogStore for SqliteCatalog {
         {
             return Err("multi-operation batches require transactional settlement".to_string());
         }
-        if existing.state != OutboundState::InFlight
+        if existing.batch_incarnation != batch_incarnation
+            || existing.state != OutboundState::InFlight
             || existing.lease_token.as_deref() != Some(lease_token)
         {
             return Err("operation is not owned by the active lease".to_string());
@@ -1425,7 +1495,7 @@ impl CatalogStore for SqliteCatalog {
                     retry_at = ?4, lease_until = NULL, lease_token = NULL,
                     last_error = ?5, updated_at = ?6
                  WHERE profile_id = ?1 AND operation_id = ?2 AND state = 'inFlight'
-                   AND lease_token = ?7",
+                   AND batch_incarnation = ?7 AND lease_token = ?8",
                 params![
                     profile_id,
                     operation_id,
@@ -1433,6 +1503,7 @@ impl CatalogStore for SqliteCatalog {
                     retry_at,
                     error,
                     failed_at,
+                    batch_incarnation,
                     lease_token
                 ],
             )
@@ -1451,7 +1522,8 @@ impl CatalogStore for SqliteCatalog {
             return Err("outbound batch not found".to_string());
         }
         if existing.iter().any(|operation| {
-            operation.state != OutboundState::InFlight
+            operation.batch_incarnation != settlement.batch_incarnation
+                || operation.state != OutboundState::InFlight
                 || operation.lease_token.as_deref() != Some(&settlement.lease_token)
         }) {
             return Err("outbound batch is not owned by the active lease".to_string());
@@ -1479,6 +1551,55 @@ impl CatalogStore for SqliteCatalog {
         {
             return Err("settlement references an operation outside the batch".to_string());
         }
+        let mut mapping_plan = Vec::new();
+        if settlement.conflicts.is_empty() {
+            for applied in &settlement.applied {
+                let operation = existing
+                    .iter()
+                    .find(|operation| operation.operation_id == applied.operation_id)
+                    .expect("settlement operation was preflighted");
+                let local_conflict: bool = self
+                    .conn
+                    .query_row(
+                        "SELECT EXISTS(
+                            SELECT 1 FROM sync_entities
+                            WHERE profile_id = ?1 AND entity_type = ?2 AND local_id = ?3
+                              AND remote_id <> ?4)",
+                        params![
+                            settlement.profile_id,
+                            operation.entity_type.as_db(),
+                            operation.entity_id,
+                            applied.remote_id
+                        ],
+                        |row| row.get(0),
+                    )
+                    .map_err(sql_error)?;
+                if local_conflict {
+                    return Err(
+                        "settlement localId is already mapped to a different remote entity"
+                            .to_string(),
+                    );
+                }
+                let incoming = EntityRevisionDto {
+                    profile_id: settlement.profile_id.clone(),
+                    entity_type: operation.entity_type,
+                    local_id: Some(operation.entity_id.clone()),
+                    remote_id: applied.remote_id.clone(),
+                    revision: applied.revision,
+                    concurrency_token: applied.concurrency_token.clone(),
+                    tombstone: operation.operation == sync::SyncOperationKind::Delete,
+                    visibility: SyncVisibility::Private,
+                    snapshot: None,
+                    updated_at: settlement.settled_at,
+                };
+                let current = self.entity_by_remote(
+                    &settlement.profile_id,
+                    operation.entity_type,
+                    &applied.remote_id,
+                )?;
+                mapping_plan.push(sync::merge_entity_revision(current.as_ref(), incoming)?);
+            }
+        }
 
         self.begin_batch()?;
         let result = (|| {
@@ -1495,63 +1616,21 @@ impl CatalogStore for SqliteCatalog {
                                 retry_at = NULL, lease_until = NULL, lease_token = NULL,
                                 last_error = NULL, updated_at = ?5, acked_at = ?5
                              WHERE profile_id = ?1 AND batch_id = ?2 AND operation_id = ?3
-                               AND state = 'inFlight' AND lease_token = ?4",
+                               AND state = 'inFlight' AND lease_token = ?4
+                               AND batch_incarnation = ?6",
                             params![
                                 settlement.profile_id,
                                 settlement.batch_id,
                                 operation.operation_id,
                                 settlement.lease_token,
-                                settlement.settled_at
+                                settlement.settled_at,
+                                settlement.batch_incarnation
                             ],
                         )
                         .map_err(sql_error)?;
-                    let incoming = EntityRevisionDto {
-                        profile_id: settlement.profile_id.clone(),
-                        entity_type: operation.entity_type,
-                        local_id: Some(operation.entity_id.clone()),
-                        remote_id: applied.remote_id.clone(),
-                        revision: applied.revision,
-                        concurrency_token: applied.concurrency_token.clone(),
-                        tombstone: operation.operation == sync::SyncOperationKind::Delete,
-                        visibility: SyncVisibility::Private,
-                        snapshot: None,
-                        updated_at: settlement.settled_at,
-                    };
-                    let local_conflict = self
-                        .conn
-                        .query_row(
-                            "SELECT profile_id, entity_type, local_id, remote_id, revision,
-                                    concurrency_token, tombstone, visibility, snapshot_json,
-                                    updated_at
-                             FROM sync_entities
-                             WHERE profile_id = ?1 AND entity_type = ?2 AND local_id = ?3
-                               AND remote_id <> ?4",
-                            params![
-                                settlement.profile_id,
-                                operation.entity_type.as_db(),
-                                operation.entity_id,
-                                applied.remote_id
-                            ],
-                            entity_from_row,
-                        )
-                        .optional()
-                        .map_err(sql_error)?;
-                    if let Some(mapping) = local_conflict {
-                        if mapping.revision >= applied.revision {
-                            continue;
-                        }
-                        return Err(
-                            "settlement would rebind a localId to a different remote entity"
-                                .to_string(),
-                        );
-                    }
-                    let current = self.entity_by_remote(
-                        &settlement.profile_id,
-                        operation.entity_type,
-                        &applied.remote_id,
-                    )?;
-                    let mapping = sync::merge_entity_revision(current.as_ref(), incoming)?;
-                    self.upsert_entity_revision(&mapping)?;
+                }
+                for mapping in &mapping_plan {
+                    self.upsert_entity_revision(mapping)?;
                 }
             } else {
                 self.conn
@@ -1560,12 +1639,13 @@ impl CatalogStore for SqliteCatalog {
                             retry_at = NULL, lease_until = NULL, lease_token = NULL,
                             last_error = 'server conflict', updated_at = ?4
                          WHERE profile_id = ?1 AND batch_id = ?2 AND lease_token = ?3
-                           AND state = 'inFlight'",
+                           AND state = 'inFlight' AND batch_incarnation = ?5",
                         params![
                             settlement.profile_id,
                             settlement.batch_id,
                             settlement.lease_token,
-                            settlement.settled_at
+                            settlement.settled_at,
+                            settlement.batch_incarnation
                         ],
                     )
                     .map_err(sql_error)?;
@@ -1575,6 +1655,8 @@ impl CatalogStore for SqliteCatalog {
                         &conflict.conflict,
                         Some(&settlement.batch_id),
                         Some(&conflict.operation_id),
+                        Some(&settlement.batch_incarnation),
+                        Some(&settlement.lease_token),
                     )?);
                 }
             }
@@ -1607,9 +1689,12 @@ impl CatalogStore for SqliteCatalog {
         let existing =
             self.load_outbound_batch(&reconciliation.profile_id, &reconciliation.batch_id)?;
         if existing.is_empty()
-            || existing
-                .iter()
-                .any(|operation| operation.state != OutboundState::Uncertain)
+            || existing.iter().any(|operation| {
+                operation.batch_incarnation != reconciliation.batch_incarnation
+                    || operation.attempt_token.as_deref()
+                        != Some(&reconciliation.expected_attempt_token)
+                    || operation.state != OutboundState::Uncertain
+            })
         {
             return Err("only a wholly uncertain batch can be reconciled".to_string());
         }
@@ -1680,13 +1765,19 @@ impl CatalogStore for SqliteCatalog {
         sync::validate_profile(profile_id)?;
         sync::validate_timestamp("ackedBefore", acked_before)?;
         sync::validate_limit(limit)?;
-        let candidates: Vec<(String, usize)> = {
+        let candidates: Vec<(String, String, usize)> = {
             let mut stmt = self
                 .conn
                 .prepare(
-                    "SELECT batch_id, COUNT(*) FROM sync_outbox
-                     WHERE profile_id = ?1
-                     GROUP BY batch_id
+                    "SELECT o.batch_id, o.batch_incarnation, COUNT(*) FROM sync_outbox o
+                     WHERE o.profile_id = ?1
+                       AND NOT EXISTS (
+                           SELECT 1 FROM sync_conflicts c
+                           WHERE c.profile_id = o.profile_id
+                             AND c.batch_id = o.batch_id
+                             AND c.batch_incarnation = o.batch_incarnation
+                             AND c.resolved_at IS NULL)
+                     GROUP BY o.batch_id, o.batch_incarnation
                      HAVING SUM(CASE WHEN state = 'acked' THEN 1 ELSE 0 END) = COUNT(*)
                         AND COUNT(acked_at) = COUNT(*)
                         AND MAX(acked_at) < ?2
@@ -1695,7 +1786,7 @@ impl CatalogStore for SqliteCatalog {
                 .map_err(sql_error)?;
             let rows = stmt
                 .query_map(params![profile_id, acked_before], |row| {
-                    Ok((row.get(0)?, row.get::<_, i64>(1)? as usize))
+                    Ok((row.get(0)?, row.get(1)?, row.get::<_, i64>(2)? as usize))
                 })
                 .map_err(sql_error)?
                 .collect::<rusqlite::Result<Vec<_>>>()
@@ -1704,24 +1795,25 @@ impl CatalogStore for SqliteCatalog {
         };
         let mut selected = Vec::new();
         let mut count = 0;
-        for (batch_id, batch_count) in candidates {
+        for (batch_id, batch_incarnation, batch_count) in candidates {
             if count + batch_count > limit {
                 break;
             }
             count += batch_count;
-            selected.push(batch_id);
+            selected.push((batch_id, batch_incarnation));
         }
         if selected.is_empty() {
             return Ok(0);
         }
         self.begin_batch()?;
         let result = (|| {
-            for batch_id in &selected {
+            for (batch_id, batch_incarnation) in &selected {
                 self.conn
                     .execute(
                         "DELETE FROM sync_outbox
-                         WHERE profile_id = ?1 AND batch_id = ?2 AND state = 'acked'",
-                        params![profile_id, batch_id],
+                         WHERE profile_id = ?1 AND batch_id = ?2
+                           AND batch_incarnation = ?3 AND state = 'acked'",
+                        params![profile_id, batch_id, batch_incarnation],
                     )
                     .map_err(sql_error)?;
             }
@@ -1770,7 +1862,7 @@ impl CatalogStore for SqliteCatalog {
                 "SELECT profile_id, conflict_id, entity_type, entity_id,
                         local_payload_json, server_payload_json, submitted_payload_json,
                         reason, server_revision, created_at, resolved_at, resolution,
-                        batch_id, operation_id
+                        batch_id, operation_id, batch_incarnation, attempt_token
                  FROM sync_conflicts
                  WHERE profile_id = ?1 AND (?2 = 1 OR resolved_at IS NULL)
                  ORDER BY created_at, conflict_id LIMIT ?3",
@@ -1804,7 +1896,7 @@ impl CatalogStore for SqliteCatalog {
                 "SELECT profile_id, conflict_id, entity_type, entity_id,
                         local_payload_json, server_payload_json, submitted_payload_json,
                         reason, server_revision, created_at, resolved_at, resolution,
-                        batch_id, operation_id
+                        batch_id, operation_id, batch_incarnation, attempt_token
                  FROM sync_conflicts WHERE profile_id = ?1 AND conflict_id = ?2",
                 params![profile_id, conflict_id],
                 conflict_from_row,
@@ -1822,15 +1914,30 @@ impl CatalogStore for SqliteCatalog {
             sync::validate_failed_disposition(disposition)?;
             if disposition.profile_id != profile_id
                 || existing.batch_id.as_deref() != Some(&disposition.batch_id)
+                || existing.batch_incarnation.as_deref() != Some(&disposition.batch_incarnation)
+                || existing.attempt_token.as_deref() != Some(&disposition.expected_attempt_token)
             {
                 return Err("conflict disposition does not match the associated batch".to_string());
+            }
+            let siblings: bool = self
+                .conn
+                .query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM sync_conflicts
+                        WHERE profile_id = ?1 AND batch_incarnation = ?2
+                          AND conflict_id <> ?3 AND resolved_at IS NULL)",
+                    params![profile_id, disposition.batch_incarnation, conflict_id],
+                    |row| row.get(0),
+                )
+                .map_err(sql_error)?;
+            if siblings {
+                return Err(
+                    "all sibling conflicts must be resolved before batch disposition".to_string(),
+                );
             }
         }
         self.begin_batch()?;
         let result = (|| {
-            if let Some(disposition) = &failed_disposition {
-                self.dispose_failed_batch_inner(disposition)?;
-            }
             self.conn
                 .execute(
                     "UPDATE sync_conflicts SET resolved_at = ?3, resolution = ?4
@@ -1838,12 +1945,15 @@ impl CatalogStore for SqliteCatalog {
                     params![profile_id, conflict_id, resolved_at, resolution.as_db()],
                 )
                 .map_err(sql_error)?;
+            if let Some(disposition) = &failed_disposition {
+                self.dispose_failed_batch_inner(disposition)?;
+            }
             self.conn
                 .query_row(
                     "SELECT profile_id, conflict_id, entity_type, entity_id,
                             local_payload_json, server_payload_json, submitted_payload_json,
                             reason, server_revision, created_at, resolved_at, resolution,
-                            batch_id, operation_id
+                            batch_id, operation_id, batch_incarnation, attempt_token
                      FROM sync_conflicts WHERE profile_id = ?1 AND conflict_id = ?2",
                     params![profile_id, conflict_id],
                     conflict_from_row,
@@ -1882,6 +1992,87 @@ fn format_from_db(value: &str) -> ModelFormat {
         "obj" => ModelFormat::Obj,
         _ => ModelFormat::Stl,
     }
+}
+
+fn migrate_v5_fencing(conn: &Connection) -> rusqlite::Result<()> {
+    let oversized: Vec<(i64, String, i64)> = {
+        let mut stmt = conn.prepare(
+            "SELECT rowid, profile_id, sequence FROM sync_outbox
+             WHERE length(CAST(batch_id AS BLOB)) > 256 ORDER BY profile_id, sequence",
+        )?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    for (rowid, profile_id, sequence) in oversized {
+        let base = format!("legacy-{sequence:016x}");
+        let mut suffix = 0_u32;
+        let replacement = loop {
+            let candidate = if suffix == 0 {
+                base.clone()
+            } else {
+                format!("{base}-{suffix:08x}")
+            };
+            let collision: bool = conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sync_outbox
+                    WHERE profile_id = ?1 AND batch_id = ?2 AND rowid <> ?3)",
+                params![profile_id, candidate, rowid],
+                |row| row.get(0),
+            )?;
+            if !collision {
+                break candidate;
+            }
+            suffix = suffix.checked_add(1).ok_or(rusqlite::Error::InvalidQuery)?;
+        };
+        conn.execute(
+            "UPDATE sync_outbox SET batch_id = ?2 WHERE rowid = ?1",
+            params![rowid, replacement],
+        )?;
+    }
+
+    let batches: Vec<(String, String, i64)> = {
+        let mut stmt = conn.prepare(
+            "SELECT profile_id, batch_id, MIN(sequence) FROM sync_outbox
+             GROUP BY profile_id, batch_id ORDER BY profile_id, MIN(sequence)",
+        )?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    for (profile_id, batch_id, sequence) in batches {
+        let incarnation = format!("migrated-batch-{sequence:016x}");
+        let attempt = format!("migrated-attempt-{sequence:016x}");
+        conn.execute(
+            "UPDATE sync_outbox SET batch_incarnation = COALESCE(batch_incarnation, ?3)
+             WHERE profile_id = ?1 AND batch_id = ?2",
+            params![profile_id, batch_id, incarnation],
+        )?;
+        conn.execute(
+            "UPDATE sync_outbox
+             SET attempt_token = COALESCE(attempt_token, lease_token, ?3)
+             WHERE profile_id = ?1 AND batch_id = ?2
+               AND state IN ('inFlight', 'uncertain', 'failed')",
+            params![profile_id, batch_id, attempt],
+        )?;
+    }
+    conn.execute_batch(
+        "UPDATE sync_conflicts
+         SET batch_incarnation = (
+                 SELECT o.batch_incarnation FROM sync_outbox o
+                 WHERE o.profile_id = sync_conflicts.profile_id
+                   AND o.batch_id = sync_conflicts.batch_id
+                 ORDER BY o.sequence LIMIT 1),
+             attempt_token = (
+                 SELECT o.attempt_token FROM sync_outbox o
+                 WHERE o.profile_id = sync_conflicts.profile_id
+                   AND o.batch_id = sync_conflicts.batch_id
+                 ORDER BY o.sequence LIMIT 1)
+         WHERE batch_id IS NOT NULL;",
+    )?;
+    Ok(())
 }
 
 fn sql_error(error: rusqlite::Error) -> String {
@@ -1952,6 +2143,7 @@ fn outbound_from_row(row: &Row<'_>) -> rusqlite::Result<OutboundOperationDto> {
         operation_id: row.get(1)?,
         sequence: row.get::<_, i64>(17)? as u64,
         batch_id: row.get(18)?,
+        batch_incarnation: row.get(21)?,
         batch_ordinal: row.get::<_, i64>(19)? as u32,
         entity_type: SyncEntityType::from_db(&entity_type).map_err(|_| invalid_db_value())?,
         operation: crate::sync::SyncOperationKind::from_db(&operation)
@@ -1968,6 +2160,7 @@ fn outbound_from_row(row: &Row<'_>) -> rusqlite::Result<OutboundOperationDto> {
         retry_at: row.get(11)?,
         lease_until: row.get(12)?,
         lease_token: row.get(20)?,
+        attempt_token: row.get(22)?,
         last_error: row.get(13)?,
         created_at: row.get(14)?,
         updated_at: row.get(15)?,
@@ -1988,6 +2181,8 @@ fn conflict_from_row(row: &Row<'_>) -> rusqlite::Result<SyncConflictDto> {
         entity_id: row.get(3)?,
         batch_id: row.get(12)?,
         operation_id: row.get(13)?,
+        batch_incarnation: row.get(14)?,
+        attempt_token: row.get(15)?,
         local_payload: parse_optional_json(local_payload)?,
         server_payload: parse_optional_json(server_payload)?,
         submitted_payload: parse_optional_json(submitted_payload)?,
@@ -2095,6 +2290,7 @@ mod tests {
                 )
                 .unwrap();
             }
+
             conn.pragma_update(None, "user_version", 2).unwrap();
         }
 
@@ -2116,6 +2312,7 @@ mod tests {
             .settle_outbound_batch(SettleOutboundBatchDto {
                 profile_id: "p".to_string(),
                 batch_id: claim.batch_id,
+                batch_incarnation: claim.batch_incarnation,
                 lease_token: claim.lease_token,
                 settled_at: 3,
                 server_revision: 1,
@@ -2128,6 +2325,88 @@ mod tests {
                 conflicts: vec![],
             })
             .unwrap();
+    }
+
+    #[test]
+    fn v3_migration_uses_utf8_bytes_and_avoids_synthetic_id_collisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("v3-collision.sqlite3");
+        let multibyte_operation_id = "é".repeat(125);
+        assert_eq!(multibyte_operation_id.len(), 250);
+        let synthetic_collision = "legacy-0000000000000002";
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.execute_batch(SCHEMA_V2).unwrap();
+            conn.execute_batch(SCHEMA_V3).unwrap();
+            conn.execute("INSERT INTO sync_profiles(profile_id) VALUES('p')", [])
+                .unwrap();
+            conn.execute(
+                "INSERT INTO sync_profile_sequences(profile_id, next_sequence) VALUES('p', 3)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sync_outbox(
+                    profile_id, operation_id, entity_type, operation_kind, entity_id,
+                    payload_json, state, attempt_count, retry_eligible, created_at, updated_at,
+                    sequence, batch_id, batch_ordinal)
+                 VALUES('p', 'collision', 'ModelCollection', 'Create', 'collision-local',
+                        '{}', 'pending', 0, 1, 1, 1, 1, ?1, 0)",
+                params![synthetic_collision],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sync_outbox(
+                    profile_id, operation_id, entity_type, operation_kind, entity_id,
+                    payload_json, state, attempt_count, retry_eligible, created_at, updated_at,
+                    sequence, batch_id, batch_ordinal)
+                 VALUES('p', ?1, 'ModelCollection', 'Create', 'multibyte-local',
+                        '{}', 'pending', 0, 1, 1, 1, 2, ?2, 0)",
+                params![
+                    multibyte_operation_id,
+                    format!("legacy-{multibyte_operation_id}")
+                ],
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 3).unwrap();
+        }
+
+        let mut store = SqliteCatalog::open(&db).unwrap();
+        let operations = store
+            .outbound_operations("p", &[OutboundState::Pending], 10)
+            .unwrap();
+        assert_eq!(operations.len(), 2);
+        assert_ne!(operations[0].batch_id, operations[1].batch_id);
+        assert!(operations
+            .iter()
+            .all(|operation| operation.batch_id.len() <= 256));
+        assert_eq!(operations[1].operation_id.len(), 250);
+
+        for (now, remote_id) in [(2, "collision-remote"), (4, "multibyte-remote")] {
+            let claim = store
+                .claim_outbound_operations("p", 1, now, 10)
+                .unwrap()
+                .unwrap();
+            let operation_id = claim.operations[0].operation_id.clone();
+            store
+                .settle_outbound_batch(SettleOutboundBatchDto {
+                    profile_id: "p".to_string(),
+                    batch_id: claim.batch_id,
+                    batch_incarnation: claim.batch_incarnation,
+                    lease_token: claim.lease_token,
+                    settled_at: now + 1,
+                    server_revision: now as u64,
+                    applied: vec![crate::sync::AppliedOutboundResultDto {
+                        operation_id,
+                        remote_id: remote_id.to_string(),
+                        revision: now as u64,
+                        concurrency_token: None,
+                    }],
+                    conflicts: vec![],
+                })
+                .unwrap();
+        }
     }
 
     #[test]
@@ -2430,16 +2709,18 @@ mod tests {
                  INSERT INTO sync_outbox(
                     profile_id, operation_id, entity_type, operation_kind, entity_id,
                     payload_json, state, attempt_count, retry_eligible, created_at, updated_at,
-                    acked_at, sequence, batch_id, batch_ordinal)
+                    acked_at, sequence, batch_id, batch_ordinal, batch_incarnation)
                  SELECT 'history', 'acked-' || x, 'ModelCollection', 'Create', 'entity-' || x,
-                        'not-json', 'acked', 1, 0, 1, 1, 1, x, 'batch-' || x, 0
+                        'not-json', 'acked', 1, 0, 1, 1, 1, x, 'batch-' || x, 0,
+                        'inc-' || x
                  FROM n;
                  INSERT INTO sync_outbox(
                     profile_id, operation_id, entity_type, operation_kind, entity_id,
                     payload_json, state, attempt_count, retry_eligible, created_at, updated_at,
-                    sequence, batch_id, batch_ordinal)
+                    sequence, batch_id, batch_ordinal, batch_incarnation)
                  VALUES('history', 'pending', 'ModelCollection', 'Create', 'pending',
-                        '{}', 'pending', 0, 1, 2, 2, 1001, 'pending-batch', 0);",
+                        '{}', 'pending', 0, 1, 2, 2, 1001, 'pending-batch', 0,
+                        'pending-inc');",
             )
             .unwrap();
 

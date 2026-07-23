@@ -290,14 +290,17 @@ pub trait CatalogStore {
         &mut self,
         profile_id: &str,
         operation_id: &str,
+        batch_incarnation: &str,
         lease_token: &str,
         completed_at: i64,
     ) -> Result<OutboundOperationDto, String>;
 
+    #[allow(clippy::too_many_arguments)]
     fn fail_outbound_operation(
         &mut self,
         profile_id: &str,
         operation_id: &str,
+        batch_incarnation: &str,
         lease_token: &str,
         error: &str,
         failed_at: i64,
@@ -1041,6 +1044,14 @@ impl CatalogStore for InMemoryCatalog {
             }) {
                 return Err("operationId already belongs to another logical batch".to_string());
             }
+            if self.sync_conflicts.values().any(|conflict| {
+                conflict.profile_id == profile_id
+                    && conflict.batch_id.as_deref() == Some(batch_id)
+                    && conflict.resolved_at.is_none()
+            }) {
+                return Err("batchId is still referenced by unresolved conflicts".to_string());
+            }
+            let batch_incarnation = sync::new_batch_incarnation();
             let mut queued = Vec::with_capacity(operations.len());
             for (ordinal, operation) in operations.into_iter().enumerate() {
                 let key = (profile_id.to_string(), operation.operation_id.clone());
@@ -1070,6 +1081,7 @@ impl CatalogStore for InMemoryCatalog {
                     operation_id: operation.operation_id,
                     sequence: *sequence,
                     batch_id: batch_id.to_string(),
+                    batch_incarnation: batch_incarnation.clone(),
                     batch_ordinal: ordinal as u32,
                     entity_type: operation.entity_type,
                     operation: operation.operation,
@@ -1083,6 +1095,7 @@ impl CatalogStore for InMemoryCatalog {
                     retry_at: None,
                     lease_until: None,
                     lease_token: None,
+                    attempt_token: None,
                     last_error: None,
                     created_at: operation.created_at,
                     updated_at: operation.created_at,
@@ -1204,13 +1217,19 @@ impl CatalogStore for InMemoryCatalog {
                 operation.retry_at = None;
                 operation.lease_until = Some(lease_until);
                 operation.lease_token = Some(lease_token.clone());
+                operation.attempt_token = Some(lease_token.clone());
                 operation.updated_at = now;
                 claimed.push(operation.clone());
             }
             Ok(Some(ClaimedOutboundBatchDto {
                 profile_id: profile_id.to_string(),
                 batch_id,
+                batch_incarnation: claimed[0].batch_incarnation.clone(),
                 lease_token,
+                attempt_token: claimed[0]
+                    .attempt_token
+                    .clone()
+                    .expect("claimed operations have an attempt token"),
                 lease_until,
                 operations: claimed,
             }))
@@ -1237,11 +1256,13 @@ impl CatalogStore for InMemoryCatalog {
         &mut self,
         profile_id: &str,
         operation_id: &str,
+        batch_incarnation: &str,
         lease_token: &str,
         completed_at: i64,
     ) -> Result<OutboundOperationDto, String> {
         sync::validate_profile(profile_id)?;
         sync::validate_identifier("operationId", operation_id)?;
+        sync::validate_identifier("batchIncarnation", batch_incarnation)?;
         sync::validate_identifier("leaseToken", lease_token)?;
         sync::validate_timestamp("completedAt", completed_at)?;
         let batch_id = self
@@ -1264,7 +1285,8 @@ impl CatalogStore for InMemoryCatalog {
             .sync_outbox
             .get_mut(&(profile_id.to_string(), operation_id.to_string()))
             .ok_or_else(|| "outbound operation not found".to_string())?;
-        if operation.state != OutboundState::InFlight
+        if operation.batch_incarnation != batch_incarnation
+            || operation.state != OutboundState::InFlight
             || operation.lease_token.as_deref() != Some(lease_token)
         {
             return Err("operation is not owned by the active lease".to_string());
@@ -1290,10 +1312,12 @@ impl CatalogStore for InMemoryCatalog {
         Ok(result)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn fail_outbound_operation(
         &mut self,
         profile_id: &str,
         operation_id: &str,
+        batch_incarnation: &str,
         lease_token: &str,
         error: &str,
         failed_at: i64,
@@ -1301,6 +1325,7 @@ impl CatalogStore for InMemoryCatalog {
     ) -> Result<OutboundOperationDto, String> {
         sync::validate_profile(profile_id)?;
         sync::validate_identifier("operationId", operation_id)?;
+        sync::validate_identifier("batchIncarnation", batch_incarnation)?;
         sync::validate_identifier("leaseToken", lease_token)?;
         sync::validate_timestamp("failedAt", failed_at)?;
         if error.is_empty() || error.len() > sync::MAX_ERROR_BYTES {
@@ -1332,7 +1357,8 @@ impl CatalogStore for InMemoryCatalog {
             .sync_outbox
             .get_mut(&(profile_id.to_string(), operation_id.to_string()))
             .ok_or_else(|| "outbound operation not found".to_string())?;
-        if operation.state != OutboundState::InFlight
+        if operation.batch_incarnation != batch_incarnation
+            || operation.state != OutboundState::InFlight
             || operation.lease_token.as_deref() != Some(lease_token)
         {
             return Err("operation is not owned by the active lease".to_string());
@@ -1370,7 +1396,8 @@ impl CatalogStore for InMemoryCatalog {
         }
         if keys.iter().any(|(_, key)| {
             let operation = &self.sync_outbox[key];
-            operation.state != OutboundState::InFlight
+            operation.batch_incarnation != settlement.batch_incarnation
+                || operation.state != OutboundState::InFlight
                 || operation.lease_token.as_deref() != Some(&settlement.lease_token)
         }) {
             return Err("outbound batch is not owned by the active lease".to_string());
@@ -1398,6 +1425,46 @@ impl CatalogStore for InMemoryCatalog {
         {
             return Err("settlement references an operation outside the batch".to_string());
         }
+        let mut mapping_plan = Vec::new();
+        if settlement.conflicts.is_empty() {
+            for applied in &settlement.applied {
+                let operation = keys
+                    .iter()
+                    .map(|(_, key)| &self.sync_outbox[key])
+                    .find(|operation| operation.operation_id == applied.operation_id)
+                    .expect("settlement operation was preflighted");
+                if self.sync_entities.values().any(|mapping| {
+                    mapping.profile_id == settlement.profile_id
+                        && mapping.entity_type == operation.entity_type
+                        && mapping.local_id.as_deref() == Some(&operation.entity_id)
+                        && mapping.remote_id != applied.remote_id
+                }) {
+                    return Err(
+                        "settlement localId is already mapped to a different remote entity"
+                            .to_string(),
+                    );
+                }
+                let key = (
+                    settlement.profile_id.clone(),
+                    operation.entity_type,
+                    applied.remote_id.clone(),
+                );
+                let incoming = EntityRevisionDto {
+                    profile_id: settlement.profile_id.clone(),
+                    entity_type: operation.entity_type,
+                    local_id: Some(operation.entity_id.clone()),
+                    remote_id: applied.remote_id.clone(),
+                    revision: applied.revision,
+                    concurrency_token: applied.concurrency_token.clone(),
+                    tombstone: operation.operation == sync::SyncOperationKind::Delete,
+                    visibility: SyncVisibility::Private,
+                    snapshot: None,
+                    updated_at: settlement.settled_at,
+                };
+                let mapping = sync::merge_entity_revision(self.sync_entities.get(&key), incoming)?;
+                mapping_plan.push((key, mapping));
+            }
+        }
 
         self.begin_batch()?;
         let result = (|| {
@@ -1418,43 +1485,9 @@ impl CatalogStore for InMemoryCatalog {
                     operation.last_error = None;
                     operation.updated_at = settlement.settled_at;
                     operation.acked_at = Some(settlement.settled_at);
-                    let incoming = EntityRevisionDto {
-                        profile_id: settlement.profile_id.clone(),
-                        entity_type: operation.entity_type,
-                        local_id: Some(operation.entity_id.clone()),
-                        remote_id: applied.remote_id.clone(),
-                        revision: applied.revision,
-                        concurrency_token: applied.concurrency_token.clone(),
-                        tombstone: operation.operation == sync::SyncOperationKind::Delete,
-                        visibility: SyncVisibility::Private,
-                        snapshot: None,
-                        updated_at: settlement.settled_at,
-                    };
-                    let local_conflict = self.sync_entities.values().find(|mapping| {
-                        mapping.profile_id == settlement.profile_id
-                            && mapping.entity_type == operation.entity_type
-                            && mapping.local_id.as_deref() == Some(&operation.entity_id)
-                            && mapping.remote_id != applied.remote_id
-                    });
-                    if let Some(mapping) = local_conflict {
-                        if mapping.revision >= applied.revision {
-                            continue;
-                        }
-                        return Err(
-                            "settlement would rebind a localId to a different remote entity"
-                                .to_string(),
-                        );
-                    }
-                    let mapping_key = (
-                        settlement.profile_id.clone(),
-                        operation.entity_type,
-                        applied.remote_id.clone(),
-                    );
-                    let mapping = sync::merge_entity_revision(
-                        self.sync_entities.get(&mapping_key),
-                        incoming,
-                    )?;
-                    self.sync_entities.insert(mapping_key, mapping);
+                }
+                for (key, mapping) in mapping_plan {
+                    self.sync_entities.insert(key, mapping);
                 }
             } else {
                 for (_, key) in &keys {
@@ -1474,6 +1507,8 @@ impl CatalogStore for InMemoryCatalog {
                         &conflict.conflict,
                         Some(&settlement.batch_id),
                         Some(&conflict.operation_id),
+                        Some(&settlement.batch_incarnation),
+                        Some(&settlement.lease_token),
                     )?);
                 }
             }
@@ -1521,9 +1556,13 @@ impl CatalogStore for InMemoryCatalog {
             .collect();
         keys.sort();
         if keys.is_empty()
-            || keys
-                .iter()
-                .any(|(_, key)| self.sync_outbox[key].state != OutboundState::Uncertain)
+            || keys.iter().any(|(_, key)| {
+                let operation = &self.sync_outbox[key];
+                operation.batch_incarnation != reconciliation.batch_incarnation
+                    || operation.attempt_token.as_deref()
+                        != Some(&reconciliation.expected_attempt_token)
+                    || operation.state != OutboundState::Uncertain
+            })
         {
             return Err("only a wholly uncertain batch can be reconciled".to_string());
         }
@@ -1584,11 +1623,23 @@ impl CatalogStore for InMemoryCatalog {
             .collect();
         keys.sort();
         if keys.is_empty()
-            || keys
-                .iter()
-                .any(|(_, key)| self.sync_outbox[key].state != OutboundState::Failed)
+            || keys.iter().any(|(_, key)| {
+                let operation = &self.sync_outbox[key];
+                operation.batch_incarnation != disposition.batch_incarnation
+                    || operation.attempt_token.as_deref()
+                        != Some(&disposition.expected_attempt_token)
+                    || operation.state != OutboundState::Failed
+            })
         {
             return Err("only a wholly failed batch can be disposed".to_string());
+        }
+        if self.sync_conflicts.values().any(|conflict| {
+            conflict.profile_id == disposition.profile_id
+                && conflict.batch_id.as_deref() == Some(&disposition.batch_id)
+                && conflict.batch_incarnation.as_deref() == Some(&disposition.batch_incarnation)
+                && conflict.resolved_at.is_none()
+        }) {
+            return Err("failed batch still has unresolved conflicts".to_string());
         }
         let replacements: HashMap<_, _> = disposition
             .operations
@@ -1665,6 +1716,12 @@ impl CatalogStore for InMemoryCatalog {
                         && operation
                             .acked_at
                             .is_some_and(|acked_at| acked_at < acked_before)
+                }) && !self.sync_conflicts.values().any(|conflict| {
+                    conflict.profile_id == profile_id
+                        && conflict.batch_id.as_deref() == Some(&operations[0].1.batch_id)
+                        && conflict.batch_incarnation.as_deref()
+                            == Some(&operations[0].1.batch_incarnation)
+                        && conflict.resolved_at.is_none()
                 })
             })
             .map(|(batch_id, operations)| {
@@ -1778,24 +1835,37 @@ impl CatalogStore for InMemoryCatalog {
         if let Some(disposition) = &failed_disposition {
             if disposition.profile_id != profile_id
                 || existing.batch_id.as_deref() != Some(&disposition.batch_id)
+                || existing.batch_incarnation.as_deref() != Some(&disposition.batch_incarnation)
+                || existing.attempt_token.as_deref() != Some(&disposition.expected_attempt_token)
             {
                 return Err("conflict disposition does not match the associated batch".to_string());
             }
-        }
-        self.begin_batch()?;
-        if let Some(disposition) = failed_disposition {
-            if let Err(error) = self.dispose_failed_batch(disposition) {
-                self.rollback_batch();
-                return Err(error);
+            if self.sync_conflicts.values().any(|conflict| {
+                conflict.profile_id == profile_id
+                    && conflict.conflict_id != conflict_id
+                    && conflict.batch_incarnation == existing.batch_incarnation
+                    && conflict.resolved_at.is_none()
+            }) {
+                return Err(
+                    "all sibling conflicts must be resolved before batch disposition".to_string(),
+                );
             }
         }
+        self.begin_batch()?;
         let conflict = self
             .sync_conflicts
             .get_mut(&(profile_id.to_string(), conflict_id.to_string()))
             .expect("conflict was preflighted");
         conflict.resolved_at = Some(resolved_at);
         conflict.resolution = Some(resolution);
-        let result = conflict.clone();
+        if let Some(disposition) = failed_disposition {
+            if let Err(error) = self.dispose_failed_batch(disposition) {
+                self.rollback_batch();
+                return Err(error);
+            }
+        }
+        let result =
+            self.sync_conflicts[&(profile_id.to_string(), conflict_id.to_string())].clone();
         self.commit_batch()?;
         Ok(result)
     }
@@ -1824,7 +1894,7 @@ fn insert_memory_conflict(
     profile_id: &str,
     input: &ConflictInputDto,
 ) -> Result<SyncConflictDto, String> {
-    insert_memory_conflict_associated(store, profile_id, input, None, None)
+    insert_memory_conflict_associated(store, profile_id, input, None, None, None, None)
 }
 
 fn insert_memory_conflict_associated(
@@ -1833,6 +1903,8 @@ fn insert_memory_conflict_associated(
     input: &ConflictInputDto,
     batch_id: Option<&str>,
     operation_id: Option<&str>,
+    batch_incarnation: Option<&str>,
+    attempt_token: Option<&str>,
 ) -> Result<SyncConflictDto, String> {
     let key = (profile_id.to_string(), input.conflict_id.clone());
     if let Some(existing) = store.sync_conflicts.get(&key) {
@@ -1840,6 +1912,8 @@ fn insert_memory_conflict_associated(
             && existing.entity_id == input.entity_id
             && existing.batch_id.as_deref() == batch_id
             && existing.operation_id.as_deref() == operation_id
+            && existing.batch_incarnation.as_deref() == batch_incarnation
+            && existing.attempt_token.as_deref() == attempt_token
             && existing.local_payload == input.local_payload
             && existing.server_payload == input.server_payload
             && existing.submitted_payload == input.submitted_payload
@@ -1862,6 +1936,8 @@ fn insert_memory_conflict_associated(
         entity_id: input.entity_id.clone(),
         batch_id: batch_id.map(str::to_string),
         operation_id: operation_id.map(str::to_string),
+        batch_incarnation: batch_incarnation.map(str::to_string),
+        attempt_token: attempt_token.map(str::to_string),
         local_payload: input.local_payload.clone(),
         server_payload: input.server_payload.clone(),
         submitted_payload: input.submitted_payload.clone(),

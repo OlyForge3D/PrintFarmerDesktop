@@ -363,6 +363,7 @@ pub struct OutboundOperationDto {
     pub operation_id: String,
     pub sequence: u64,
     pub batch_id: String,
+    pub batch_incarnation: String,
     pub batch_ordinal: u32,
     pub entity_type: SyncEntityType,
     pub operation: SyncOperationKind,
@@ -382,6 +383,8 @@ pub struct OutboundOperationDto {
     #[serde(default)]
     pub lease_token: Option<String>,
     #[serde(default)]
+    pub attempt_token: Option<String>,
+    #[serde(default)]
     pub last_error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -394,7 +397,9 @@ pub struct OutboundOperationDto {
 pub struct ClaimedOutboundBatchDto {
     pub profile_id: String,
     pub batch_id: String,
+    pub batch_incarnation: String,
     pub lease_token: String,
+    pub attempt_token: String,
     pub lease_until: i64,
     pub operations: Vec<OutboundOperationDto>,
 }
@@ -421,6 +426,7 @@ pub struct SettlementConflictDto {
 pub struct SettleOutboundBatchDto {
     pub profile_id: String,
     pub batch_id: String,
+    pub batch_incarnation: String,
     pub lease_token: String,
     pub settled_at: i64,
     pub server_revision: u64,
@@ -459,6 +465,8 @@ pub struct ReconcileOperationDto {
 pub struct ReconcileUncertainBatchDto {
     pub profile_id: String,
     pub batch_id: String,
+    pub batch_incarnation: String,
+    pub expected_attempt_token: String,
     pub resolution: UnknownOutcomeResolution,
     pub reconciled_at: i64,
     #[serde(default)]
@@ -478,6 +486,8 @@ pub enum FailedBatchDisposition {
 pub struct DisposeFailedBatchDto {
     pub profile_id: String,
     pub batch_id: String,
+    pub batch_incarnation: String,
+    pub expected_attempt_token: String,
     pub disposition: FailedBatchDisposition,
     pub disposed_at: i64,
     #[serde(default)]
@@ -495,6 +505,10 @@ pub struct SyncConflictDto {
     pub batch_id: Option<String>,
     #[serde(default)]
     pub operation_id: Option<String>,
+    #[serde(default)]
+    pub batch_incarnation: Option<String>,
+    #[serde(default)]
+    pub attempt_token: Option<String>,
     #[serde(default)]
     pub local_payload: Option<Value>,
     #[serde(default)]
@@ -820,6 +834,7 @@ pub(crate) fn validate_lease(now: i64, lease_seconds: i64) -> Result<i64, String
 pub(crate) fn validate_settlement(settlement: &SettleOutboundBatchDto) -> Result<(), String> {
     validate_profile(&settlement.profile_id)?;
     validate_identifier("batchId", &settlement.batch_id)?;
+    validate_identifier("batchIncarnation", &settlement.batch_incarnation)?;
     validate_identifier("leaseToken", &settlement.lease_token)?;
     validate_timestamp("settledAt", settlement.settled_at)?;
     validate_revision("serverRevision", settlement.server_revision)?;
@@ -861,6 +876,11 @@ pub(crate) fn validate_reconciliation(
 ) -> Result<(), String> {
     validate_profile(&reconciliation.profile_id)?;
     validate_identifier("batchId", &reconciliation.batch_id)?;
+    validate_identifier("batchIncarnation", &reconciliation.batch_incarnation)?;
+    validate_identifier(
+        "expectedAttemptToken",
+        &reconciliation.expected_attempt_token,
+    )?;
     validate_timestamp("reconciledAt", reconciliation.reconciled_at)?;
     validate_reconciliation_entries(&reconciliation.operations)
 }
@@ -870,6 +890,8 @@ pub(crate) fn validate_failed_disposition(
 ) -> Result<(), String> {
     validate_profile(&disposition.profile_id)?;
     validate_identifier("batchId", &disposition.batch_id)?;
+    validate_identifier("batchIncarnation", &disposition.batch_incarnation)?;
+    validate_identifier("expectedAttemptToken", &disposition.expected_attempt_token)?;
     validate_timestamp("disposedAt", disposition.disposed_at)?;
     if disposition.disposition == FailedBatchDisposition::Requeue {
         validate_reconciliation_entries(&disposition.operations)?;
@@ -955,6 +977,14 @@ pub(crate) fn merge_entity_revision(
 }
 
 pub(crate) fn new_lease_token() -> String {
+    new_collision_resistant_token("lease")
+}
+
+pub(crate) fn new_batch_incarnation() -> String {
+    new_collision_resistant_token("batch")
+}
+
+fn new_collision_resistant_token(prefix: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -964,7 +994,7 @@ pub(crate) fn new_lease_token() -> String {
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
     let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("lease-{nanos:x}-{sequence:x}")
+    format!("{prefix}-{nanos:x}-{sequence:x}")
 }
 
 #[cfg(test)]
@@ -1180,6 +1210,8 @@ mod tests {
             .reconcile_uncertain_batch(ReconcileUncertainBatchDto {
                 profile_id: "p1".to_string(),
                 batch_id: "batch-1".to_string(),
+                batch_incarnation: first_claim.batch_incarnation.clone(),
+                expected_attempt_token: first_claim.attempt_token.clone(),
                 resolution: UnknownOutcomeResolution::Requeue,
                 reconciled_at: 41,
                 operations: vec![ReconcileOperationDto {
@@ -1195,15 +1227,30 @@ mod tests {
             .unwrap();
         assert_ne!(first_claim.lease_token, second_claim.lease_token);
         assert!(store
-            .complete_outbound_operation("p1", "op-1", &first_claim.lease_token, 43)
+            .complete_outbound_operation(
+                "p1",
+                "op-1",
+                &first_claim.batch_incarnation,
+                &first_claim.lease_token,
+                43,
+            )
             .is_err());
         assert!(store
-            .fail_outbound_operation("p1", "op-1", &first_claim.lease_token, "stale", 43, None,)
+            .fail_outbound_operation(
+                "p1",
+                "op-1",
+                &first_claim.batch_incarnation,
+                &first_claim.lease_token,
+                "stale",
+                43,
+                None,
+            )
             .is_err());
         let settled = store
             .settle_outbound_batch(SettleOutboundBatchDto {
                 profile_id: "p1".to_string(),
                 batch_id: "batch-1".to_string(),
+                batch_incarnation: second_claim.batch_incarnation.clone(),
                 lease_token: second_claim.lease_token,
                 settled_at: 43,
                 server_revision: 9,
@@ -1333,7 +1380,7 @@ mod tests {
             .enqueue_outbound_operations("p", "batch", vec![operation("op")])
             .is_ok());
         assert!(store
-            .complete_outbound_operation("p", "op", "not-a-lease", 20)
+            .complete_outbound_operation("p", "op", "not-an-incarnation", "not-a-lease", 20)
             .is_err());
         assert!(store.claim_outbound_operations("p", 0, 20, 10).is_err());
         assert!(store.claim_outbound_operations("p", 1, 20, 0).is_err());
@@ -1700,6 +1747,7 @@ mod tests {
         let failed = store.settle_outbound_batch(SettleOutboundBatchDto {
             profile_id: "atomic".to_string(),
             batch_id: "batch".to_string(),
+            batch_incarnation: claim.batch_incarnation.clone(),
             lease_token: claim.lease_token.clone(),
             settled_at: 11,
             server_revision: 1,
@@ -1744,7 +1792,7 @@ mod tests {
         store
             .enqueue_outbound_operations("unknown", "later", vec![operation("must-wait")])
             .unwrap();
-        store
+        let claim = store
             .claim_outbound_operations("unknown", 1, 10, 5)
             .unwrap()
             .unwrap();
@@ -1757,6 +1805,8 @@ mod tests {
             .reconcile_uncertain_batch(ReconcileUncertainBatchDto {
                 profile_id: "unknown".to_string(),
                 batch_id: "create-batch".to_string(),
+                batch_incarnation: claim.batch_incarnation,
+                expected_attempt_token: claim.attempt_token,
                 resolution: UnknownOutcomeResolution::Acked,
                 reconciled_at: 17,
                 operations: vec![ReconcileOperationDto {
@@ -1855,6 +1905,7 @@ mod tests {
             .settle_outbound_batch(SettleOutboundBatchDto {
                 profile_id: profile.to_string(),
                 batch_id: batch_id.to_string(),
+                batch_incarnation: claim.batch_incarnation.clone(),
                 lease_token: claim.lease_token,
                 settled_at: 11,
                 server_revision: 1,
@@ -1886,6 +1937,8 @@ mod tests {
                 Some(DisposeFailedBatchDto {
                     profile_id: "discard".to_string(),
                     batch_id: "failed".to_string(),
+                    batch_incarnation: conflict.batch_incarnation.clone().unwrap(),
+                    expected_attempt_token: conflict.attempt_token.clone().unwrap(),
                     disposition: FailedBatchDisposition::Discard,
                     disposed_at: 12,
                     operations: vec![],
@@ -1902,6 +1955,10 @@ mod tests {
         );
 
         settle_conflicted_batch(store, "correct", "failed", "correct-op", "correct-conflict");
+        let conflict = store
+            .sync_conflicts("correct", false, 10)
+            .unwrap()
+            .remove(0);
         store
             .resolve_sync_conflict(
                 "correct",
@@ -1911,6 +1968,8 @@ mod tests {
                 Some(DisposeFailedBatchDto {
                     profile_id: "correct".to_string(),
                     batch_id: "failed".to_string(),
+                    batch_incarnation: conflict.batch_incarnation.unwrap(),
+                    expected_attempt_token: conflict.attempt_token.unwrap(),
                     disposition: FailedBatchDisposition::Requeue,
                     disposed_at: 12,
                     operations: vec![ReconcileOperationDto {
@@ -1956,7 +2015,7 @@ mod tests {
         store
             .enqueue_outbound_operations("cas", "batch", vec![first, second])
             .unwrap();
-        store
+        let claim = store
             .claim_outbound_operations("cas", 2, 10, 5)
             .unwrap()
             .unwrap();
@@ -1965,6 +2024,8 @@ mod tests {
             .reconcile_uncertain_batch(ReconcileUncertainBatchDto {
                 profile_id: "cas".to_string(),
                 batch_id: "batch".to_string(),
+                batch_incarnation: claim.batch_incarnation.clone(),
+                expected_attempt_token: claim.attempt_token.clone(),
                 resolution: UnknownOutcomeResolution::Requeue,
                 reconciled_at: 16,
                 operations: vec![ReconcileOperationDto {
@@ -1978,6 +2039,8 @@ mod tests {
             .reconcile_uncertain_batch(ReconcileUncertainBatchDto {
                 profile_id: "cas".to_string(),
                 batch_id: "batch".to_string(),
+                batch_incarnation: claim.batch_incarnation.clone(),
+                expected_attempt_token: claim.attempt_token.clone(),
                 resolution: UnknownOutcomeResolution::Requeue,
                 reconciled_at: 16,
                 operations: vec![
@@ -1998,6 +2061,8 @@ mod tests {
             .reconcile_uncertain_batch(ReconcileUncertainBatchDto {
                 profile_id: "cas".to_string(),
                 batch_id: "batch".to_string(),
+                batch_incarnation: claim.batch_incarnation,
+                expected_attempt_token: claim.attempt_token,
                 resolution: UnknownOutcomeResolution::Requeue,
                 reconciled_at: 16,
                 operations: vec![
@@ -2062,6 +2127,7 @@ mod tests {
             .settle_outbound_batch(SettleOutboundBatchDto {
                 profile_id: "merge".to_string(),
                 batch_id: "delayed".to_string(),
+                batch_incarnation: claim.batch_incarnation.clone(),
                 lease_token: claim.lease_token,
                 settled_at: 12,
                 server_revision: 10,
@@ -2111,6 +2177,7 @@ mod tests {
             .settle_outbound_batch(SettleOutboundBatchDto {
                 profile_id: "merge".to_string(),
                 batch_id: "equal".to_string(),
+                batch_incarnation: claim.batch_incarnation.clone(),
                 lease_token: claim.lease_token,
                 settled_at: 15,
                 server_revision: 12,
@@ -2157,10 +2224,13 @@ mod tests {
             .claim_outbound_operations("prune", 2, 10, 10)
             .unwrap()
             .unwrap();
+        let old_incarnation = claim.batch_incarnation.clone();
+        let old_lease = claim.lease_token.clone();
         store
             .settle_outbound_batch(SettleOutboundBatchDto {
                 profile_id: "prune".to_string(),
                 batch_id: "batch".to_string(),
+                batch_incarnation: claim.batch_incarnation.clone(),
                 lease_token: claim.lease_token,
                 settled_at: 11,
                 server_revision: 1,
@@ -2203,15 +2273,37 @@ mod tests {
         store
             .enqueue_outbound_operations("prune", "batch", vec![first, second])
             .unwrap();
-        assert_eq!(
-            store
-                .claim_outbound_operations("prune", 2, 13, 10)
-                .unwrap()
-                .unwrap()
-                .operations
-                .len(),
-            2
-        );
+        let recreated = store
+            .claim_outbound_operations("prune", 2, 13, 10)
+            .unwrap()
+            .unwrap();
+        assert_eq!(recreated.operations.len(), 2);
+        assert_ne!(recreated.batch_incarnation, old_incarnation);
+        assert!(store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "prune".to_string(),
+                batch_id: "batch".to_string(),
+                batch_incarnation: old_incarnation,
+                lease_token: old_lease,
+                settled_at: 14,
+                server_revision: 2,
+                applied: vec![
+                    AppliedOutboundResultDto {
+                        operation_id: "prune-1".to_string(),
+                        remote_id: "stale-1".to_string(),
+                        revision: 2,
+                        concurrency_token: None,
+                    },
+                    AppliedOutboundResultDto {
+                        operation_id: "prune-2".to_string(),
+                        remote_id: "stale-2".to_string(),
+                        revision: 2,
+                        concurrency_token: None,
+                    },
+                ],
+                conflicts: vec![],
+            })
+            .is_err());
     }
 
     #[test]
@@ -2223,6 +2315,236 @@ mod tests {
     #[test]
     fn sqlite_pruning_respects_batch_boundaries() {
         assert_pruning_respects_batch_boundaries(
+            &mut crate::sqlite_catalog::SqliteCatalog::open_in_memory().unwrap(),
+        );
+    }
+
+    fn assert_attempt_and_sibling_conflict_fencing(store: &mut dyn CatalogStore) {
+        let mut sibling = operation("sibling-2");
+        sibling.entity_id = "sibling-local-2".to_string();
+        store
+            .enqueue_outbound_operations("siblings", "batch", vec![operation("sibling-1"), sibling])
+            .unwrap();
+        let claim = store
+            .claim_outbound_operations("siblings", 2, 10, 5)
+            .unwrap()
+            .unwrap();
+        store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "siblings".to_string(),
+                batch_id: "batch".to_string(),
+                batch_incarnation: claim.batch_incarnation.clone(),
+                lease_token: claim.lease_token,
+                settled_at: 11,
+                server_revision: 1,
+                applied: vec![],
+                conflicts: vec![
+                    SettlementConflictDto {
+                        operation_id: "sibling-1".to_string(),
+                        conflict: conflict("sibling-conflict-1", "first"),
+                    },
+                    SettlementConflictDto {
+                        operation_id: "sibling-2".to_string(),
+                        conflict: conflict("sibling-conflict-2", "second"),
+                    },
+                ],
+            })
+            .unwrap();
+        let conflicts = store.sync_conflicts("siblings", false, 10).unwrap();
+        let first = conflicts
+            .iter()
+            .find(|conflict| conflict.conflict_id == "sibling-conflict-1")
+            .unwrap();
+        let disposition = DisposeFailedBatchDto {
+            profile_id: "siblings".to_string(),
+            batch_id: "batch".to_string(),
+            batch_incarnation: first.batch_incarnation.clone().unwrap(),
+            expected_attempt_token: first.attempt_token.clone().unwrap(),
+            disposition: FailedBatchDisposition::Discard,
+            disposed_at: 12,
+            operations: vec![],
+        };
+        assert!(store
+            .resolve_sync_conflict(
+                "siblings",
+                "sibling-conflict-1",
+                ConflictResolution::AcceptServer,
+                12,
+                Some(disposition.clone()),
+            )
+            .is_err());
+        store
+            .resolve_sync_conflict(
+                "siblings",
+                "sibling-conflict-1",
+                ConflictResolution::AcceptServer,
+                12,
+                None,
+            )
+            .unwrap();
+        store
+            .resolve_sync_conflict(
+                "siblings",
+                "sibling-conflict-2",
+                ConflictResolution::AcceptServer,
+                13,
+                Some(DisposeFailedBatchDto {
+                    disposed_at: 13,
+                    ..disposition
+                }),
+            )
+            .unwrap();
+        assert!(store
+            .sync_conflicts("siblings", false, 10)
+            .unwrap()
+            .is_empty());
+
+        store
+            .enqueue_outbound_operations("attempts", "batch", vec![operation("attempt")])
+            .unwrap();
+        let attempt_a = store
+            .claim_outbound_operations("attempts", 1, 20, 5)
+            .unwrap()
+            .unwrap();
+        store.recover_outbound_operations("attempts", 25).unwrap();
+        store
+            .reconcile_uncertain_batch(ReconcileUncertainBatchDto {
+                profile_id: "attempts".to_string(),
+                batch_id: "batch".to_string(),
+                batch_incarnation: attempt_a.batch_incarnation.clone(),
+                expected_attempt_token: attempt_a.attempt_token.clone(),
+                resolution: UnknownOutcomeResolution::Requeue,
+                reconciled_at: 26,
+                operations: vec![ReconcileOperationDto {
+                    operation_id: "attempt".to_string(),
+                    base_revision: None,
+                    concurrency_token: None,
+                }],
+            })
+            .unwrap();
+        let attempt_b = store
+            .claim_outbound_operations("attempts", 1, 27, 5)
+            .unwrap()
+            .unwrap();
+        store.recover_outbound_operations("attempts", 32).unwrap();
+        assert!(store
+            .reconcile_uncertain_batch(ReconcileUncertainBatchDto {
+                profile_id: "attempts".to_string(),
+                batch_id: "batch".to_string(),
+                batch_incarnation: attempt_a.batch_incarnation,
+                expected_attempt_token: attempt_a.attempt_token,
+                resolution: UnknownOutcomeResolution::Acked,
+                reconciled_at: 33,
+                operations: vec![ReconcileOperationDto {
+                    operation_id: "attempt".to_string(),
+                    base_revision: None,
+                    concurrency_token: None,
+                }],
+            })
+            .is_err());
+        store
+            .reconcile_uncertain_batch(ReconcileUncertainBatchDto {
+                profile_id: "attempts".to_string(),
+                batch_id: "batch".to_string(),
+                batch_incarnation: attempt_b.batch_incarnation,
+                expected_attempt_token: attempt_b.attempt_token,
+                resolution: UnknownOutcomeResolution::Acked,
+                reconciled_at: 33,
+                operations: vec![ReconcileOperationDto {
+                    operation_id: "attempt".to_string(),
+                    base_revision: None,
+                    concurrency_token: None,
+                }],
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn in_memory_fences_attempts_and_sibling_conflicts() {
+        assert_attempt_and_sibling_conflict_fencing(&mut InMemoryCatalog::new());
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_fences_attempts_and_sibling_conflicts() {
+        assert_attempt_and_sibling_conflict_fencing(
+            &mut crate::sqlite_catalog::SqliteCatalog::open_in_memory().unwrap(),
+        );
+    }
+
+    fn assert_conflicting_remote_settlement_rolls_back(store: &mut dyn CatalogStore) {
+        store
+            .apply_pull_batch(ApplyPullBatchDto {
+                profile_id: "remote-conflict".to_string(),
+                expected_checkpoint_generation: 0,
+                expected_previous_cursor: None,
+                cursor: Some("pulled".to_string()),
+                server_revision: 300,
+                applied_at: 1,
+                entities: vec![tombstone(
+                    SyncEntityType::ModelCollection,
+                    "remote-old",
+                    "local-c",
+                    300,
+                )],
+                conflicts: vec![],
+            })
+            .unwrap();
+        store
+            .enqueue_outbound_operations(
+                "remote-conflict",
+                "batch",
+                vec![operation("conflicting-result")],
+            )
+            .unwrap();
+        let claim = store
+            .claim_outbound_operations("remote-conflict", 1, 2, 10)
+            .unwrap()
+            .unwrap();
+        assert!(store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "remote-conflict".to_string(),
+                batch_id: "batch".to_string(),
+                batch_incarnation: claim.batch_incarnation.clone(),
+                lease_token: claim.lease_token.clone(),
+                settled_at: 3,
+                server_revision: 300,
+                applied: vec![AppliedOutboundResultDto {
+                    operation_id: "conflicting-result".to_string(),
+                    remote_id: "remote-new".to_string(),
+                    revision: 200,
+                    concurrency_token: None,
+                }],
+                conflicts: vec![],
+            })
+            .is_err());
+        let operations = store
+            .outbound_operations("remote-conflict", &[OutboundState::InFlight], 10)
+            .unwrap();
+        assert_eq!(operations.len(), 1);
+        assert_eq!(
+            operations[0].lease_token.as_deref(),
+            Some(claim.lease_token.as_str())
+        );
+        assert!(store
+            .entity_revision_by_remote(
+                "remote-conflict",
+                SyncEntityType::ModelCollection,
+                "remote-new",
+            )
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn in_memory_rejects_conflicting_remote_settlement_before_ack() {
+        assert_conflicting_remote_settlement_rolls_back(&mut InMemoryCatalog::new());
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_rejects_conflicting_remote_settlement_before_ack() {
+        assert_conflicting_remote_settlement_rolls_back(
             &mut crate::sqlite_catalog::SqliteCatalog::open_in_memory().unwrap(),
         );
     }
