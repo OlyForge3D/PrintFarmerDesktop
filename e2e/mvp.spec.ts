@@ -132,21 +132,31 @@ test('switches between all three working design concepts', async () => {
       design,
     );
   }
+
+  await page.getByRole('button', { name: 'Archive' }).click();
+  await page.reload();
+  await expect(page.locator('.app-root')).toHaveAttribute(
+    'data-design',
+    'archive',
+  );
+  // Leave a deterministic concept for tests that run with or without this test.
+  await page.getByRole('button', { name: 'Studio' }).click();
 });
 
-test('removes Electron native menu chrome', async () => {
+test('uses reliable custom window chrome', async () => {
   const chrome = await app.evaluate(({ BrowserWindow, Menu }) => {
     const window = BrowserWindow.getAllWindows()[0];
     return {
+      platform: process.platform,
       applicationMenuRemoved: Menu.getApplicationMenu() === null,
       menuBarVisible: window?.isMenuBarVisible() ?? true,
+      windowVisible: window?.isVisible() ?? false,
     };
   });
 
-  expect(chrome).toEqual({
-    applicationMenuRemoved: true,
-    menuBarVisible: false,
-  });
+  expect(chrome.windowVisible).toBe(true);
+  expect(chrome.menuBarVisible).toBe(false);
+  expect(chrome.applicationMenuRemoved).toBe(chrome.platform !== 'darwin');
   await expect(page.locator('.window-titlebar')).toBeVisible();
 });
 
@@ -198,13 +208,54 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
   await expect(page.getByRole('application')).toHaveCount(0);
   await expect(page.getByRole('dialog')).toHaveCount(0);
 
-  await page
+  for (const [button, design] of [
+    ['Studio', 'studio'],
+    ['Archive', 'archive'],
+    ['Console', 'console'],
+  ] as const) {
+    await page.getByRole('button', { name: button }).click();
+    await expect(page.locator('.app-root')).toHaveAttribute(
+      'data-design',
+      design,
+    );
+    await expect(select).toBeVisible();
+    await expect(
+      page.locator('.properties-inspector').getByRole('heading', {
+        name: filename,
+      }),
+    ).toBeVisible();
+    await expect
+      .poll(() =>
+        page.locator('.model-name').evaluate((element) => ({
+          clipped: element.scrollWidth > element.clientWidth,
+          textOverflow: getComputedStyle(element).textOverflow,
+        })),
+      )
+      .toEqual({ clipped: true, textOverflow: 'ellipsis' });
+  }
+
+  const inspectorPreview = page
     .locator('.properties-inspector')
-    .getByRole('button', { name: 'Preview in 3D' })
-    .click();
+    .getByRole('button', { name: 'Preview in 3D' });
+  await inspectorPreview.click();
   await expect(
     page.getByRole('dialog', { name: `3D preview of ${filename}` }),
   ).toBeVisible();
+  expect(
+    await page
+      .locator('.workspace')
+      .evaluate((element) => element.hasAttribute('inert')),
+  ).toBe(true);
+
+  await page.keyboard.press(
+    process.platform === 'darwin' ? 'Meta+f' : 'Control+f',
+  );
+  await expect(page.getByLabel('Search models')).not.toBeFocused();
+  expect(
+    await page
+      .getByRole('dialog', { name: `3D preview of ${filename}` })
+      .evaluate((dialog) => dialog.contains(document.activeElement)),
+  ).toBe(true);
 
   // The viewer canvas is mounted only after explicit Preview.
   const viewer = page.getByRole('application', {
@@ -214,6 +265,14 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
 
   // The "Reset view" toolbar button reframes the model without error.
   await page.getByRole('button', { name: 'Reset' }).click();
+  const wireframe = page.getByRole('button', { name: 'Wireframe' });
+  await wireframe.click();
+  await expect(page.getByRole('button', { name: 'Solid' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await page.getByRole('button', { name: 'Orthographic' }).click();
+  await expect(page.getByRole('button', { name: 'Perspective' })).toBeVisible();
 
   // Keyboard controls (orbit / zoom / reset) are handled on the focused viewer.
   await viewer.focus();
@@ -229,6 +288,7 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
   await page.getByRole('button', { name: 'Back to library' }).click();
   await expect(page.getByRole('application')).toHaveCount(0);
   await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(inspectorPreview).toBeFocused();
 });
 
 test('renders without severe renderer console errors', () => {

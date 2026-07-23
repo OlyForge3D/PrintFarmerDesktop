@@ -1,4 +1,10 @@
-import { app, BrowserWindow, Menu, session } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  Menu,
+  session,
+  type MenuItemConstructorOptions,
+} from 'electron';
 import path from 'node:path';
 import {
   applyContentSecurityPolicy,
@@ -64,29 +70,90 @@ const createMainWindow = (): void => {
     console.error(`[renderer] render-process-gone: ${details.reason}`);
   });
 
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  const showMainWindow = (): void => {
+    if (!mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      mainWindow.show();
+    }
+  };
+  mainWindow.once('ready-to-show', showMainWindow);
 
   // Renderer entry: dev server when running `electron-forge start`, otherwise
   // the packaged HTML produced by the Vite plugin.
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-    void mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
+    void mainWindow
+      .loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL)
+      .then(showMainWindow)
+      .catch((error: unknown) =>
+        console.error('[renderer] failed to load dev server', error),
+      );
   } else {
-    void mainWindow.loadFile(
-      path.join(
-        import.meta.dirname,
-        `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`,
-      ),
-    );
+    void mainWindow
+      .loadFile(
+        path.join(
+          import.meta.dirname,
+          `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`,
+        ),
+      )
+      .then(showMainWindow)
+      .catch((error: unknown) =>
+        console.error('[renderer] failed to load packaged UI', error),
+      );
   }
 };
+
+function installApplicationMenu(): void {
+  if (process.platform !== 'darwin') {
+    Menu.setApplicationMenu(null);
+    return;
+  }
+
+  // macOS keeps its menu in the system menu bar rather than inside the window.
+  // Preserve standard application/Edit/Window roles and accelerators while the
+  // BrowserWindow itself uses renderer-owned titlebar chrome.
+  const template: MenuItemConstructorOptions[] = [
+    {
+      label: app.name,
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'delete' },
+        { role: 'selectAll' },
+      ],
+    },
+    {
+      label: 'Window',
+      submenu: [
+        { role: 'minimize' },
+        { role: 'zoom' },
+        { type: 'separator' },
+        { role: 'front' },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
 
 if (!enforceSingleInstance()) {
   app.quit();
 } else {
   void app.whenReady().then(() => {
-    // The application uses a custom in-window titlebar and command surfaces.
-    // Removing the application menu also removes Electron's default menu strip.
-    Menu.setApplicationMenu(null);
+    installApplicationMenu();
     applyContentSecurityPolicy(
       session.defaultSession,
       MAIN_WINDOW_VITE_DEV_SERVER_URL,

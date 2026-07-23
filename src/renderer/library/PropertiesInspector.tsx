@@ -18,6 +18,8 @@ import {
 } from './model';
 import { useThumbnail } from './useThumbnail';
 
+const MAX_VISIBLE_LOCATIONS = 25;
+
 export interface PropertiesInspectorProps {
   model: LogicalModel | null;
   favorite: boolean;
@@ -78,6 +80,8 @@ function SelectedModelInspector({
   const name = modelDisplayName(model);
   const available = isAvailable(model);
   const thumbnail = useThumbnail(model);
+  const visibleLocations = model.locations.slice(0, MAX_VISIBLE_LOCATIONS);
+  const hiddenLocationCount = model.locations.length - visibleLocations.length;
 
   return (
     <div className="inspector-content">
@@ -139,7 +143,7 @@ function SelectedModelInspector({
 
       <InspectorSection title="Locations">
         <ul className="location-list">
-          {model.locations.map((location) => (
+          {visibleLocations.map((location) => (
             <li key={`${location.rootId}:${location.path}`}>
               <span
                 className={
@@ -155,6 +159,12 @@ function SelectedModelInspector({
               </span>
             </li>
           ))}
+          {hiddenLocationCount > 0 ? (
+            <li className="location-overflow">
+              Showing the first {MAX_VISIBLE_LOCATIONS} of{' '}
+              {model.locations.length.toLocaleString()} locations.
+            </li>
+          ) : null}
         </ul>
       </InspectorSection>
 

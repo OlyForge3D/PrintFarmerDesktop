@@ -10,6 +10,7 @@ import {
 import type { LogicalModel, PrintFarmerApi } from '@shared/ipc';
 import { useLibrary } from '../src/renderer/library/useLibrary.js';
 import { ModelGrid } from '../src/renderer/library/ModelGrid.js';
+import { PropertiesInspector } from '../src/renderer/library/PropertiesInspector.js';
 import { TagEditor } from '../src/renderer/library/TagEditor.js';
 import { CollectionEditor } from '../src/renderer/library/CollectionEditor.js';
 import { PartTree } from '../src/renderer/library/PartTree.js';
@@ -488,6 +489,44 @@ describe('<ModelGrid />', () => {
   });
 });
 
+describe('<PropertiesInspector />', () => {
+  it('bounds the rendered duplicate-location list', () => {
+    installApi({
+      renderThumbnail: vi.fn().mockRejectedValue(new Error('no renderer')),
+    });
+    const locations = Array.from({ length: 30 }, (_, index) => ({
+      rootId: `root-${index}`,
+      path: `D:\\copies\\${index}\\widget.stl`,
+      rootRelative: `${index}\\widget.stl`,
+      size: 2048,
+      available: true,
+    }));
+    const { container } = render(
+      <PropertiesInspector
+        model={model({ locations })}
+        favorite={false}
+        mesh={null}
+        vendorMetadata={null}
+        tags={[]}
+        collections={[]}
+        collectionMembership={new Set()}
+        organizationError={null}
+        onToggleFavorite={vi.fn()}
+        onPreview={vi.fn()}
+        onAddTag={vi.fn()}
+        onRemoveTag={vi.fn()}
+        onToggleCollection={vi.fn()}
+        onCreateCollection={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText('Showing the first 25 of 30 locations.'),
+    ).toBeVisible();
+    expect(container.querySelectorAll('.location-list > li')).toHaveLength(26);
+  });
+});
+
 describe('useModelTags', () => {
   it('loads tags for the selected model and adds/removes them', async () => {
     const tagsForModel = vi.fn().mockResolvedValue([{ id: 'a', name: 'A' }]);
@@ -908,6 +947,68 @@ describe('useThumbnail', () => {
     await waitFor(() => expect(second.result.current.status).toBe('ready'));
 
     expect(renderThumbnail).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares an in-flight render across hook instances', async () => {
+    const result = {
+      width: 256,
+      height: 256,
+      pngBase64: 'SHARED',
+    };
+    let finish!: (value: typeof result) => void;
+    const renderThumbnail = vi.fn(
+      () =>
+        new Promise<typeof result>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    installApi({ renderThumbnail });
+
+    const first = renderHook(() => useThumbnail(model({ hash: 'pending' })));
+    const second = renderHook(() => useThumbnail(model({ hash: 'pending' })));
+    await waitFor(() => expect(renderThumbnail).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      finish(result);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(first.result.current.status).toBe('ready'));
+    expect(second.result.current.status).toBe('ready');
+  });
+
+  it('bounds concurrent thumbnail work', async () => {
+    const result = {
+      width: 256,
+      height: 256,
+      pngBase64: 'BOUNDED',
+    };
+    const finishes: Array<(value: typeof result) => void> = [];
+    const renderThumbnail = vi.fn(
+      () =>
+        new Promise<typeof result>((resolve) => {
+          finishes.push(resolve);
+        }),
+    );
+    installApi({ renderThumbnail });
+
+    const hooks = ['one', 'two', 'three', 'four'].map((hash) =>
+      renderHook(() => useThumbnail(model({ hash }))),
+    );
+    await waitFor(() => expect(renderThumbnail).toHaveBeenCalledTimes(3));
+
+    await act(async () => {
+      finishes[0]?.(result);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(renderThumbnail).toHaveBeenCalledTimes(4));
+
+    await act(async () => {
+      finishes.slice(1).forEach((finish) => finish(result));
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      hooks.forEach((hook) => expect(hook.result.current.status).toBe('ready')),
+    );
   });
 
   it('reports an error when the sidecar cannot render', async () => {

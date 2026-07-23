@@ -1006,6 +1006,13 @@ select:disabled {
   font-size: 10.5px;
 }
 
+.location-overflow {
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--quiet);
+  font-size: 10.5px;
+}
+
 .location-list {
   display: flex;
   flex-direction: column;
@@ -1282,6 +1289,13 @@ select:disabled {
 }
 
 /* On-demand 3D preview */
+
+.preview-backdrop {
+  position: fixed;
+  z-index: 19;
+  inset: 40px 0 24px;
+  background: rgb(3 5 7 / 72%);
+}
 
 .preview-workspace {
   position: fixed;

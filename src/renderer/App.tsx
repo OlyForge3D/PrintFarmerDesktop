@@ -62,6 +62,10 @@ export function App(): React.JSX.Element {
     () => new Set(),
   );
   const previewReturnFocusRef = useRef<HTMLElement | null>(null);
+  const previewRequestRef = useRef(0);
+  const titlebarRef = useRef<HTMLElement | null>(null);
+  const workspaceRef = useRef<HTMLDivElement | null>(null);
+  const statusbarRef = useRef<HTMLElement | null>(null);
 
   const library = useLibrary();
   const { favorites, isFavorite, toggle: toggleFavorite } = useFavorites();
@@ -134,6 +138,9 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     const focusSearch = (event: KeyboardEvent): void => {
+      if (previewOpen) {
+        return;
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
         event.preventDefault();
         document
@@ -143,7 +150,21 @@ export function App(): React.JSX.Element {
     };
     document.addEventListener('keydown', focusSearch);
     return () => document.removeEventListener('keydown', focusSearch);
-  }, []);
+  }, [previewOpen]);
+
+  useEffect(() => {
+    for (const element of [
+      titlebarRef.current,
+      workspaceRef.current,
+      statusbarRef.current,
+    ]) {
+      if (previewOpen) {
+        element?.setAttribute('inert', '');
+      } else {
+        element?.removeAttribute('inert');
+      }
+    }
+  }, [previewOpen]);
 
   const selectDesign = useCallback((concept: DesignConcept) => {
     setDesign(concept);
@@ -158,6 +179,7 @@ export function App(): React.JSX.Element {
   }, []);
 
   const loadPreview = useCallback(async (target: PreviewTarget) => {
+    const requestId = ++previewRequestRef.current;
     setPreviewTarget(target);
     setPreviewOpen(true);
     setPreviewError(null);
@@ -166,11 +188,17 @@ export function App(): React.JSX.Element {
     setLoading(true);
     try {
       const scene = await window.printFarmer.loadScene({ path: target.path });
-      setLoadedMesh(scene);
+      if (previewRequestRef.current === requestId) {
+        setLoadedMesh(scene);
+      }
     } catch (err: unknown) {
-      setPreviewError(err instanceof Error ? err.message : String(err));
+      if (previewRequestRef.current === requestId) {
+        setPreviewError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      setLoading(false);
+      if (previewRequestRef.current === requestId) {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -210,8 +238,19 @@ export function App(): React.JSX.Element {
   }, [loadPreview, rememberPreviewTrigger]);
 
   const closePreview = useCallback(() => {
+    previewRequestRef.current += 1;
     setPreviewOpen(false);
-    queueMicrotask(() => previewReturnFocusRef.current?.focus());
+    setPreviewTarget(null);
+    setLoadedMesh(null);
+    setPreviewError(null);
+    setLoading(false);
+    queueMicrotask(() => {
+      const previous = previewReturnFocusRef.current;
+      const fallback = document.querySelector<HTMLElement>(
+        '.model-card-button.selected, .sidebar-search input',
+      );
+      (previous?.isConnected ? previous : fallback)?.focus();
+    });
   }, []);
 
   const retryPreview = useCallback(() => {
@@ -256,7 +295,11 @@ export function App(): React.JSX.Element {
       className={`app-root design-${design}${info ? ` platform-${info.platform}` : ''}`}
       data-design={design}
     >
-      <header className="window-titlebar">
+      <header
+        ref={titlebarRef}
+        className="window-titlebar"
+        aria-hidden={previewOpen ? 'true' : undefined}
+      >
         <div className="product-identity">
           <Icon name="app" size={18} />
           <h1>PrintFarmer Desktop</h1>
@@ -278,7 +321,11 @@ export function App(): React.JSX.Element {
         <div className="titlebar-drag-region" aria-hidden="true" />
       </header>
 
-      <div className="workspace" aria-hidden={previewOpen ? 'true' : undefined}>
+      <div
+        ref={workspaceRef}
+        className="workspace"
+        aria-hidden={previewOpen ? 'true' : undefined}
+      >
         <LibrarySidebar
           query={query}
           filter={filter}
@@ -416,7 +463,12 @@ export function App(): React.JSX.Element {
         />
       </div>
 
-      <footer className="app-statusbar" aria-label="Application status">
+      <footer
+        ref={statusbarRef}
+        className="app-statusbar"
+        aria-label="Application status"
+        aria-hidden={previewOpen ? 'true' : undefined}
+      >
         <span>
           {library.status === 'loading'
             ? 'Loading catalog'

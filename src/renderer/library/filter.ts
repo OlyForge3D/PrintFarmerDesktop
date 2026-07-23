@@ -59,17 +59,17 @@ export function selectLibraryView(
     if (needle.length === 0) {
       return true;
     }
-    const searchable = [
-      modelDisplayName(model),
-      model.format,
-      ...model.locations.flatMap((location) => [
-        location.path,
-        location.rootRelative,
-      ]),
-    ]
-      .join(' ')
-      .toLowerCase();
-    return searchable.includes(needle);
+    if (
+      modelDisplayName(model).toLowerCase().includes(needle) ||
+      model.format.toLowerCase().includes(needle)
+    ) {
+      return true;
+    }
+    return model.locations.some(
+      (location) =>
+        location.path.toLowerCase().includes(needle) ||
+        location.rootRelative.toLowerCase().includes(needle),
+    );
   });
 
   const sorted = [...filtered];

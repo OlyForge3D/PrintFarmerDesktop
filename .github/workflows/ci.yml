@@ -103,3 +103,6 @@ jobs:
 
       - name: Verify the sidecar was bundled
         run: node scripts/verify-packaged-sidecar.mjs
+
+      - name: Packaged Electron end-to-end tests
+        run: npx playwright test

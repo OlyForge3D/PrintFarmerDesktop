@@ -73,116 +73,133 @@ export function PreviewWorkspace({
         }
       }
     };
+    const onFocusIn = (event: FocusEvent): void => {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        dialogRef.current &&
+        !dialogRef.current.contains(target)
+      ) {
+        closeRef.current?.focus();
+      }
+    };
     document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
+    document.addEventListener('focusin', onFocusIn);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('focusin', onFocusIn);
+    };
   }, [onClose]);
 
   return (
-    <section
-      ref={dialogRef}
-      className="preview-workspace"
-      role="dialog"
-      aria-modal="true"
-      aria-label={`3D preview of ${name}`}
-    >
-      <header className="preview-header">
-        <button
-          ref={closeRef}
-          type="button"
-          className="preview-back"
-          onClick={onClose}
-        >
-          <span aria-hidden="true">&larr;</span>
-          <span>Back to library</span>
-        </button>
-        <div className="preview-title">
-          <span>3D Preview</span>
-          <strong title={name}>{name}</strong>
-        </div>
-        <div
-          className="preview-toolbar"
-          role="toolbar"
-          aria-label="3D view controls"
-        >
+    <>
+      <div className="preview-backdrop" aria-hidden="true" />
+      <section
+        ref={dialogRef}
+        className="preview-workspace"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`3D preview of ${name}`}
+      >
+        <header className="preview-header">
           <button
+            ref={closeRef}
             type="button"
-            aria-pressed={wireframe}
-            onClick={onToggleWireframe}
-            disabled={!mesh}
+            className="preview-back"
+            onClick={onClose}
           >
-            <Icon name="view" />
-            {wireframe ? 'Solid' : 'Wireframe'}
+            <span aria-hidden="true">&larr;</span>
+            <span>Back to library</span>
           </button>
-          <button type="button" onClick={onToggleProjection} disabled={!mesh}>
-            {projection === 'perspective' ? 'Orthographic' : 'Perspective'}
-          </button>
-          <button type="button" onClick={onReset} disabled={!mesh}>
-            <Icon name="reset" />
-            Reset
-          </button>
-        </div>
-      </header>
+          <div className="preview-title">
+            <span>3D Preview</span>
+            <strong title={name}>{name}</strong>
+          </div>
+          <div
+            className="preview-toolbar"
+            role="toolbar"
+            aria-label="3D view controls"
+          >
+            <button
+              type="button"
+              aria-pressed={wireframe}
+              onClick={onToggleWireframe}
+              disabled={!mesh}
+            >
+              <Icon name="view" />
+              {wireframe ? 'Solid' : 'Wireframe'}
+            </button>
+            <button type="button" onClick={onToggleProjection} disabled={!mesh}>
+              {projection === 'perspective' ? 'Orthographic' : 'Perspective'}
+            </button>
+            <button type="button" onClick={onReset} disabled={!mesh}>
+              <Icon name="reset" />
+              Reset
+            </button>
+          </div>
+        </header>
 
-      <div className="preview-body">
-        <div className="preview-stage">
-          {loading ? (
-            <div className="preview-state" role="status">
-              <span className="loading-indicator" aria-hidden="true" />
-              <strong>Loading {name}</strong>
-              <span>Preparing geometry and materials...</span>
-            </div>
-          ) : error ? (
-            <div className="preview-state preview-failure" role="alert">
-              <Icon name="missing" size={28} />
-              <strong>Could not open this model</strong>
-              <span>{error}</span>
-              <div>
-                <button type="button" onClick={onRetry}>
-                  Retry
-                </button>
-                <button type="button" onClick={onClose}>
-                  Close
-                </button>
+        <div className="preview-body">
+          <div className="preview-stage">
+            {loading ? (
+              <div className="preview-state" role="status">
+                <span className="loading-indicator" aria-hidden="true" />
+                <strong>Loading {name}</strong>
+                <span>Preparing geometry and materials...</span>
               </div>
-            </div>
-          ) : mesh ? (
-            <ModelViewer
-              mesh={mesh}
-              wireframe={wireframe}
-              projection={projection}
-              hiddenParts={hiddenParts}
-              resetToken={resetToken}
-              className="viewer-canvas"
-              background="#0b0e12"
-            />
+            ) : error ? (
+              <div className="preview-state preview-failure" role="alert">
+                <Icon name="missing" size={28} />
+                <strong>Could not open this model</strong>
+                <span>{error}</span>
+                <div>
+                  <button type="button" onClick={onRetry}>
+                    Retry
+                  </button>
+                  <button type="button" onClick={onClose}>
+                    Close
+                  </button>
+                </div>
+              </div>
+            ) : mesh ? (
+              <ModelViewer
+                mesh={mesh}
+                wireframe={wireframe}
+                projection={projection}
+                hiddenParts={hiddenParts}
+                resetToken={resetToken}
+                className="viewer-canvas"
+                background="#0b0e12"
+              />
+            ) : null}
+          </div>
+
+          {mesh ? (
+            <aside className="preview-details" aria-label="Preview details">
+              <section>
+                <h2>Geometry</h2>
+                <ModelStats mesh={mesh} />
+              </section>
+              {(mesh.parts?.length ?? 0) > 1 ? (
+                <section>
+                  <h2>Parts</h2>
+                  <PartTree
+                    parts={mesh.parts ?? []}
+                    hidden={hiddenParts}
+                    onToggle={onTogglePart}
+                    onToggleAll={onToggleAllParts}
+                  />
+                </section>
+              ) : null}
+              {vendorMetadata ? (
+                <section>
+                  <VendorPanel metadata={vendorMetadata} />
+                </section>
+              ) : null}
+            </aside>
           ) : null}
         </div>
-
-        {mesh ? (
-          <aside className="preview-details" aria-label="Preview details">
-            <section>
-              <h2>Geometry</h2>
-              <ModelStats mesh={mesh} />
-            </section>
-            {(mesh.parts?.length ?? 0) > 1 ? (
-              <section>
-                <h2>Parts</h2>
-                <PartTree
-                  parts={mesh.parts ?? []}
-                  hidden={hiddenParts}
-                  onToggle={onTogglePart}
-                  onToggleAll={onToggleAllParts}
-                />
-              </section>
-            ) : null}
-            {vendorMetadata ? (
-              <section>
-                <VendorPanel metadata={vendorMetadata} />
-              </section>
-            ) : null}
-          </aside>
-        ) : null}
-      </div>
-    </section>
+      </section>
+    </>
   );
 }
