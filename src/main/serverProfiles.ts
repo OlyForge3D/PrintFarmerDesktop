@@ -191,6 +191,7 @@ export interface ServerProfileDependencies {
 export type ProfileErrorCode =
   | 'AUTHENTICATION_FAILED'
   | 'AUTHORIZATION_FAILED'
+  | 'AUTHENTICATION_SUPERSEDED'
   | 'CERTIFICATE_ERROR'
   | 'CORRUPT_STORE'
   | 'ENCRYPTION_UNAVAILABLE'
@@ -210,6 +211,16 @@ export class ServerProfileError extends Error {
   ) {
     super(message);
     this.name = 'ServerProfileError';
+  }
+}
+
+class ProbeFailure extends Error {
+  constructor(
+    readonly expectedGeneration: number,
+    readonly error: ServerProfileError,
+  ) {
+    super(error.message);
+    this.name = 'ProbeFailure';
   }
 }
 
@@ -350,6 +361,8 @@ export class ServerProfileService {
           ephemeralCacheId,
         );
         return probed.profile;
+      } catch (error) {
+        throw unwrapProbeFailure(error);
       } finally {
         this.disposeEphemeralAuth(ephemeralCacheId);
       }
@@ -387,7 +400,7 @@ export class ServerProfileService {
 
     let tested: RedactedProfile | null = null;
     let authentication: AuthenticatedToken | null = null;
-    let probeError: unknown;
+    let probeFailure: ProbeFailure | null = null;
     try {
       const probed = await this.probe(
         snapshot.profile.id,
@@ -398,7 +411,11 @@ export class ServerProfileService {
       tested = probed.profile;
       authentication = probed.authentication;
     } catch (error) {
-      probeError = error;
+      if (error instanceof ProbeFailure) {
+        probeFailure = error;
+      } else {
+        throw error;
+      }
     }
 
     return this.withMutationLock(async () => {
@@ -411,9 +428,25 @@ export class ServerProfileService {
         throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
       }
       const current = store.profiles[index]!;
+      const expectedGeneration =
+        authentication?.generation ?? probeFailure?.expectedGeneration;
+      if (
+        expectedGeneration === undefined ||
+        this.currentAuthGeneration(request.id) !== expectedGeneration
+      ) {
+        throw authenticationSupersededError();
+      }
       if (profileRevision(current) !== snapshot.revision) {
         this.invalidateToken(request.id);
         throw profileChangedError();
+      }
+      if (probeFailure) {
+        if (isAuthenticationSuperseded(probeFailure.error)) {
+          throw probeFailure.error;
+        }
+        store.profiles[index] = errorProfile(current, this.now());
+        await this.writeStore(store);
+        throw probeFailure.error;
       }
       if (tested) {
         if (!authentication || !this.authenticationIsCurrent(authentication)) {
@@ -422,13 +455,14 @@ export class ServerProfileService {
         store.profiles[index] = mergeProbeResult(current, tested);
         await this.writeStore(store);
         if (authentication) {
-          this.cacheAuthenticatedToken(authentication);
+          this.installAuthenticatedToken(authentication);
         }
         return tested;
       }
-      store.profiles[index] = errorProfile(current, this.now());
-      await this.writeStore(store);
-      throw scrubProbeError(probeError);
+      throw new ServerProfileError(
+        'TRANSPORT_ERROR',
+        'The server profile test did not produce a result.',
+      );
     });
   }
 
@@ -444,15 +478,18 @@ export class ServerProfileService {
       }
       return existing ? profileRevision(existing) : null;
     });
-    const probed = await this.probe(
-      id,
-      draft.displayName,
-      draft.baseUrl,
-      secret,
-    );
+    let probed: ProbedProfile;
+    try {
+      probed = await this.probe(id, draft.displayName, draft.baseUrl, secret);
+    } catch (error) {
+      throw unwrapProbeFailure(error);
+    }
     const tested = probed.profile;
     if (tested.status === 'legacy' && !draft.allowLegacy) {
-      this.invalidateToken(id);
+      await this.withMutationLock(() => {
+        this.invalidateToken(id);
+        return Promise.resolve();
+      });
       throw new ServerProfileError(
         'LEGACY_CONFIRMATION_REQUIRED',
         'This server does not publish desktop capabilities. Confirm legacy mode before saving it.',
@@ -481,7 +518,7 @@ export class ServerProfileService {
       store.selectedProfileId ??= id;
       try {
         await this.writeStore(store);
-        this.cacheAuthenticatedToken(probed.authentication);
+        this.installAuthenticatedToken(probed.authentication);
       } catch (error) {
         this.invalidateToken(id);
         throw error;
@@ -583,7 +620,7 @@ export class ServerProfileService {
           snapshot.generation,
         )
       ) {
-        throw profileChangedError();
+        throw authenticationSupersededError();
       }
       this.tokens.set(id, {
         ...issued,
@@ -602,40 +639,54 @@ export class ServerProfileService {
     cacheId = id,
   ): Promise<ProbedProfile> {
     const baseUrl = normalizeServerUrl(rawBaseUrl);
-    this.invalidateToken(cacheId);
-    const [versionResult, capabilityProbe] = await Promise.all([
-      this.getAnonymous(baseUrl, '/api/system/version', RemoteServerVersion),
-      this.getCapabilities(baseUrl),
-    ]);
-    const capabilitiesResult = capabilityProbe?.capabilities ?? null;
-    const legacy =
-      versionResult === null ||
-      capabilityProbe === null ||
-      !capabilityProbe.modernUploadContract;
-    const authentication = await this.authenticate(baseUrl, secret, cacheId);
-
-    const availability = availabilityFor(capabilitiesResult, legacy);
-    return {
-      profile: ServerProfile.parse({
-        id,
-        displayName: displayName.trim(),
+    const expectedGeneration = await this.withMutationLock(() =>
+      Promise.resolve(this.invalidateToken(cacheId)),
+    );
+    try {
+      this.assertAuthGeneration(cacheId, expectedGeneration);
+      const [versionResult, capabilityProbe] = await Promise.all([
+        this.getAnonymous(baseUrl, '/api/system/version', RemoteServerVersion),
+        this.getCapabilities(baseUrl),
+      ]);
+      this.assertAuthGeneration(cacheId, expectedGeneration);
+      const capabilitiesResult = capabilityProbe?.capabilities ?? null;
+      const legacy =
+        versionResult === null ||
+        capabilityProbe === null ||
+        !capabilityProbe.modernUploadContract;
+      const authentication = await this.authenticate(
         baseUrl,
-        authMode: secret.authMode,
-        ...(secret.authMode === 'password'
-          ? { username: secret.username }
-          : {}),
-        version: versionResult,
-        capabilities: capabilitiesResult,
-        availability,
-        status: legacy ? 'legacy' : 'connected',
-        lastCheckedAt: new Date(this.now()).toISOString(),
-        warnings: [
-          ...(baseUrl.startsWith('http:') ? (['insecureHttp'] as const) : []),
-          ...(legacy ? (['legacy'] as const) : []),
-        ],
-      }),
-      authentication,
-    };
+        secret,
+        cacheId,
+        expectedGeneration,
+      );
+      this.assertAuthGeneration(cacheId, expectedGeneration);
+
+      const availability = availabilityFor(capabilitiesResult, legacy);
+      return {
+        profile: ServerProfile.parse({
+          id,
+          displayName: displayName.trim(),
+          baseUrl,
+          authMode: secret.authMode,
+          ...(secret.authMode === 'password'
+            ? { username: secret.username }
+            : {}),
+          version: versionResult,
+          capabilities: capabilitiesResult,
+          availability,
+          status: legacy ? 'legacy' : 'connected',
+          lastCheckedAt: new Date(this.now()).toISOString(),
+          warnings: [
+            ...(baseUrl.startsWith('http:') ? (['insecureHttp'] as const) : []),
+            ...(legacy ? (['legacy'] as const) : []),
+          ],
+        }),
+        authentication,
+      };
+    } catch (error) {
+      throw new ProbeFailure(expectedGeneration, scrubProbeError(error));
+    }
   }
 
   private async getAnonymous<T>(
@@ -691,9 +742,11 @@ export class ServerProfileService {
     baseUrl: string,
     secret: StoredSecret,
     cacheId: string,
+    expectedGeneration: number,
   ): Promise<AuthenticatedToken> {
+    this.assertAuthGeneration(cacheId, expectedGeneration);
     const binding = credentialBinding(baseUrl, secret);
-    const generation = this.currentAuthGeneration(cacheId);
+    const generation = expectedGeneration;
     this.tokenBindings.set(cacheId, { binding, generation });
     const issued = await this.renewToken(
       baseUrl,
@@ -702,6 +755,7 @@ export class ServerProfileService {
       binding,
       generation,
     );
+    this.assertAuthGeneration(cacheId, expectedGeneration);
     if (
       this.currentAuthGeneration(cacheId) !== generation ||
       !tokenBindingMatches(this.tokenBindings.get(cacheId), binding, generation)
@@ -953,6 +1007,12 @@ export class ServerProfileService {
     return this.authGenerations.get(id) ?? 0;
   }
 
+  private assertAuthGeneration(id: string, expectedGeneration: number): void {
+    if (this.currentAuthGeneration(id) !== expectedGeneration) {
+      throw authenticationSupersededError();
+    }
+  }
+
   private authenticationIsCurrent(authentication: AuthenticatedToken): boolean {
     return (
       this.currentAuthGeneration(authentication.cacheId) ===
@@ -965,10 +1025,7 @@ export class ServerProfileService {
     );
   }
 
-  private cacheAuthenticatedToken(authentication: AuthenticatedToken): void {
-    if (!this.authenticationIsCurrent(authentication)) {
-      throw authenticationSupersededError();
-    }
+  private installAuthenticatedToken(authentication: AuthenticatedToken): void {
     this.tokens.set(authentication.cacheId, {
       token: authentication.token,
       expiresAt: authentication.expiresAt,
@@ -1331,9 +1388,20 @@ function profileChangedError(): ServerProfileError {
 
 function authenticationSupersededError(): ServerProfileError {
   return new ServerProfileError(
-    'VALIDATION_ERROR',
+    'AUTHENTICATION_SUPERSEDED',
     'Authentication was cancelled because the server profile changed.',
   );
+}
+
+function isAuthenticationSuperseded(error: unknown): boolean {
+  return (
+    error instanceof ServerProfileError &&
+    error.code === 'AUTHENTICATION_SUPERSEDED'
+  );
+}
+
+function unwrapProbeFailure(error: unknown): ServerProfileError {
+  return error instanceof ProbeFailure ? error.error : scrubProbeError(error);
 }
 
 function tokenBindingMatches(

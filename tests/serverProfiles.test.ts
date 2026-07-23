@@ -34,6 +34,28 @@ const CAPABILITIES = {
 class MemoryFileSystem implements ProfileFileSystem {
   readonly files = new Map<string, Uint8Array>();
   renames = 0;
+  private nextWriteGate: {
+    reached: () => void;
+    release: Promise<void>;
+  } | null = null;
+  private nextWriteError: Error | null = null;
+
+  gateNextWrite(): {
+    reached: Promise<void>;
+    release: () => void;
+  } {
+    const reached = deferred<void>();
+    const release = deferred<void>();
+    this.nextWriteGate = {
+      reached: () => reached.resolve(),
+      release: release.promise,
+    };
+    return { reached: reached.promise, release: () => release.resolve() };
+  }
+
+  failNextWrite(error: Error): void {
+    this.nextWriteError = error;
+  }
 
   readFile(filePath: string): Promise<Uint8Array> {
     const value = this.files.get(filePath);
@@ -45,9 +67,19 @@ class MemoryFileSystem implements ProfileFileSystem {
     return Promise.resolve(value);
   }
 
-  writeFile(filePath: string, data: string): Promise<void> {
+  async writeFile(filePath: string, data: string): Promise<void> {
+    const gate = this.nextWriteGate;
+    if (gate) {
+      this.nextWriteGate = null;
+      gate.reached();
+      await gate.release;
+    }
+    const writeError = this.nextWriteError;
+    if (writeError) {
+      this.nextWriteError = null;
+      throw writeError;
+    }
     this.files.set(filePath, new TextEncoder().encode(data));
-    return Promise.resolve();
   }
 
   async rename(from: string, to: string): Promise<void> {
@@ -717,7 +749,7 @@ describe('server profiles', () => {
 
     const oldRenewal = profiles.getToken(saved.id);
     const oldRenewalResult = expect(oldRenewal).rejects.toMatchObject({
-      code: 'VALIDATION_ERROR',
+      code: 'AUTHENTICATION_SUPERSEDED',
     });
     await renewalReached.promise;
     await profiles.test({ source: 'saved', id: saved.id });
@@ -731,6 +763,131 @@ describe('server profiles', () => {
 
     await oldRenewalResult;
     await expect(profiles.getToken(saved.id)).resolves.toBe('forced-probe-jwt');
+    expect(exchanges).toBe(3);
+  });
+
+  it('keeps newer retest state when an older stalled retest finishes', async () => {
+    const fs = new MemoryFileSystem();
+    const olderVersionGate = deferred<Response>();
+    const olderRetestReached = deferred<void>();
+    const baseline = successfulFetch();
+    let versionCalls = 0;
+    const fetchImpl: typeof globalThis.fetch = vi.fn(
+      (input: string | URL | Request, init?: RequestInit) => {
+        if (requestUrl(input).pathname === '/api/system/version') {
+          versionCalls += 1;
+          if (versionCalls === 2) {
+            olderRetestReached.resolve();
+            return olderVersionGate.promise;
+          }
+          if (versionCalls === 3) {
+            return Promise.resolve(json({ ...VERSION, version: 'B-newer' }));
+          }
+        }
+        return baseline(input, init);
+      },
+    );
+    const profiles = service(fs, fetchImpl);
+    const saved = await profiles.save(apiKeyDraft());
+
+    const olderRetest = profiles.test({ source: 'saved', id: saved.id });
+    const olderResult = expect(olderRetest).rejects.toMatchObject({
+      code: 'AUTHENTICATION_SUPERSEDED',
+    });
+    await olderRetestReached.promise;
+    await expect(
+      profiles.test({ source: 'saved', id: saved.id }),
+    ).resolves.toMatchObject({
+      status: 'connected',
+      version: { version: 'B-newer' },
+    });
+    olderVersionGate.resolve(json({ ...VERSION, version: 'A-older' }));
+
+    await olderResult;
+    await expect(profiles.list()).resolves.toMatchObject({
+      profiles: [
+        {
+          id: saved.id,
+          status: 'connected',
+          version: { version: 'B-newer' },
+        },
+      ],
+    });
+    expect(persistedStore(fs)).toContain('"version":"B-newer"');
+    expect(persistedStore(fs)).not.toContain('"version":"A-older"');
+  });
+
+  it('finishes a guarded save commit before a newer retest generation starts', async () => {
+    const fs = new MemoryFileSystem();
+    const newerRetestVersionGate = deferred<Response>();
+    const newerRetestReached = deferred<void>();
+    const baseline = successfulFetch();
+    let versionCalls = 0;
+    const fetchImpl: typeof globalThis.fetch = vi.fn(
+      (input: string | URL | Request, init?: RequestInit) => {
+        if (requestUrl(input).pathname === '/api/system/version') {
+          versionCalls += 1;
+          if (versionCalls === 2) {
+            return Promise.resolve(
+              json({ ...VERSION, version: 'Save-A-version' }),
+            );
+          }
+          if (versionCalls === 3) {
+            newerRetestReached.resolve();
+            return newerRetestVersionGate.promise;
+          }
+        }
+        return baseline(input, init);
+      },
+    );
+    const profiles = service(fs, fetchImpl);
+    const saved = await profiles.save(apiKeyDraft());
+    const writeGate = fs.gateNextWrite();
+
+    const saveA = profiles.save(
+      apiKeyDraft({ id: saved.id, displayName: 'Save A' }),
+    );
+    await writeGate.reached;
+    const retestB = profiles.test({ source: 'saved', id: saved.id });
+    writeGate.release();
+
+    await expect(saveA).resolves.toMatchObject({
+      displayName: 'Save A',
+      version: { version: 'Save-A-version' },
+    });
+    await newerRetestReached.promise;
+    expect(persistedStore(fs)).toContain('"displayName":"Save A"');
+    expect(persistedStore(fs)).toContain('"version":"Save-A-version"');
+
+    newerRetestVersionGate.resolve(
+      json({ ...VERSION, version: 'Retest-B-version' }),
+    );
+    await expect(retestB).resolves.toMatchObject({
+      displayName: 'Save A',
+      version: { version: 'Retest-B-version' },
+    });
+    expect(persistedStore(fs)).toContain('"version":"Retest-B-version"');
+  });
+
+  it('does not install a token candidate when the profile write fails', async () => {
+    const fs = new MemoryFileSystem();
+    let exchanges = 0;
+    const profiles = service(
+      fs,
+      successfulFetch((url) => {
+        if (url.pathname === '/api/auth/api-key/exchange') exchanges += 1;
+      }),
+    );
+    const saved = await profiles.save(apiKeyDraft());
+    fs.failNextWrite(new Error('disk full'));
+
+    await expect(
+      profiles.save(
+        apiKeyDraft({ id: saved.id, displayName: 'Must not persist' }),
+      ),
+    ).rejects.toThrow('disk full');
+    expect(persistedStore(fs)).not.toContain('Must not persist');
+    await expect(profiles.getToken(saved.id)).resolves.toBe('short-lived-jwt');
     expect(exchanges).toBe(3);
   });
 
@@ -1143,7 +1300,7 @@ describe('server profiles', () => {
 
     const retest = profiles.test({ source: 'saved', id: saved.id });
     const retestResult = expect(retest).rejects.toMatchObject({
-      code: 'VALIDATION_ERROR',
+      code: 'AUTHENTICATION_SUPERSEDED',
     });
     await retestReachedNetwork.promise;
     await profiles.save(

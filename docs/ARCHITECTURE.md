@@ -53,7 +53,11 @@ URL, authentication mode, and username identity. JWTs exist only in
 main-process memory and are reissued before expiration. Per-profile
 authentication generations prevent superseded renewals from caching or
 returning tokens; a renewed token is returned only after the profile revision is
-revalidated. Draft probes use isolated ephemeral authentication identities.
+revalidated. Probes retain their starting generation across all network awaits;
+superseded probes are cancellation outcomes and cannot mark a profile as
+failed. The atomic profile write is the final guarded commit before its validated
+token candidate is installed. Draft probes use isolated ephemeral authentication
+identities.
 
 The App owns ordered profile-list reconciliation, including mutations that
 finish after the profile dialog closes. A synchronous modal owner coordinates
