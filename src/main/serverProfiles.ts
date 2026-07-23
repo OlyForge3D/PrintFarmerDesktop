@@ -188,6 +188,8 @@ export interface ServerProfileDependencies {
   createId?: () => string;
   /** Test seam immediately before the legacy-confirmation generation CAS. */
   beforeLegacyConfirmationCas?: () => Promise<void>;
+  /** Synchronous test seam immediately after save probing completes. */
+  afterSaveProbe?: () => void;
 }
 
 export type ProfileErrorCode =
@@ -486,6 +488,10 @@ export class ServerProfileService {
       probed = await this.probe(id, draft.displayName, draft.baseUrl, secret);
     } catch (error) {
       throw unwrapProbeFailure(error);
+    }
+    const afterSaveProbe = this.dependencies.afterSaveProbe;
+    if (afterSaveProbe) {
+      afterSaveProbe();
     }
     const tested = probed.profile;
     if (tested.status === 'legacy' && !draft.allowLegacy) {

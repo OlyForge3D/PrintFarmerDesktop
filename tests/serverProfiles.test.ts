@@ -230,6 +230,7 @@ function service(
   now: () => number = () => NOW,
   storage: SecretStorage = secureStorage,
   beforeLegacyConfirmationCas?: () => Promise<void>,
+  afterSaveProbe?: () => void,
 ): ServerProfileService {
   let id = 0;
   return new ServerProfileService({
@@ -239,6 +240,7 @@ function service(
     fetch: fetchImpl,
     now,
     ...(beforeLegacyConfirmationCas ? { beforeLegacyConfirmationCas } : {}),
+    ...(afterSaveProbe ? { afterSaveProbe } : {}),
     createId: () =>
       id++ === 0
         ? '11111111-1111-4111-8111-111111111111'
@@ -1315,61 +1317,76 @@ describe('server profiles', () => {
     expect(exchanges).toBe(3);
   });
 
-  it('preserves no-hook supersession while an older legacy probe is stalled', async () => {
+  it('reserves the no-hook legacy CAS before a queued competing mutation', async () => {
     const fs = new MemoryFileSystem();
-    const olderCapabilitiesGate = deferred<Response>();
-    const olderProbeReached = deferred<void>();
+    const finalProbeGate = deferred<Response>();
+    const finalProbeReached = deferred<void>();
+    const probeReturned = deferred<void>();
+    const competitorStarted = deferred<void>();
     const baseline = successfulFetch();
     let capabilityCalls = 0;
-    let versionCalls = 0;
+    let currentUserCalls = 0;
     const fetchImpl: typeof globalThis.fetch = vi.fn(
       (input: string | URL | Request, init?: RequestInit) => {
         const endpoint = requestUrl(input).pathname;
         if (endpoint === '/api/system/capabilities') {
           capabilityCalls += 1;
           if (capabilityCalls === 2) {
-            olderProbeReached.resolve();
-            return olderCapabilitiesGate.promise;
+            return Promise.resolve(json({}, 404));
           }
         }
-        if (endpoint === '/api/system/version') {
-          versionCalls += 1;
-          if (versionCalls === 3) {
-            return Promise.resolve(
-              json({ ...VERSION, version: 'no-hook-newer' }),
-            );
+        if (endpoint === '/api/auth/me') {
+          currentUserCalls += 1;
+          if (currentUserCalls === 2) {
+            finalProbeReached.resolve();
+            return finalProbeGate.promise;
           }
         }
         return baseline(input, init);
       },
     );
-    const profiles = service(fs, fetchImpl);
+    let raceEnabled = false;
+    let savedId = '';
+    let competingDelete: ReturnType<ServerProfileService['delete']> | null =
+      null;
+    const profiles = service(
+      fs,
+      fetchImpl,
+      () => NOW,
+      secureStorage,
+      undefined,
+      () => {
+        if (!raceEnabled) return;
+        probeReturned.resolve();
+        queueMicrotask(() => {
+          competingDelete = profiles.delete(savedId);
+          competitorStarted.resolve();
+        });
+      },
+    );
     const saved = await profiles.save(apiKeyDraft());
+    savedId = saved.id;
+    raceEnabled = true;
 
     const olderSave = profiles.save(
       apiKeyDraft({
         id: saved.id,
-        displayName: 'No-hook older legacy',
+        displayName: 'No-hook legacy',
         allowLegacy: false,
       }),
     );
     const olderResult = expect(olderSave).rejects.toMatchObject({
-      code: 'AUTHENTICATION_SUPERSEDED',
+      code: 'LEGACY_CONFIRMATION_REQUIRED',
     });
-    await olderProbeReached.promise;
-    await profiles.test({ source: 'saved', id: saved.id });
-    olderCapabilitiesGate.resolve(json({}, 404));
+    await finalProbeReached.promise;
+    finalProbeGate.resolve(json({ id: 'operator' }));
+    await probeReturned.promise;
+    await competitorStarted.promise;
 
     await olderResult;
-    await expect(profiles.list()).resolves.toMatchObject({
-      profiles: [
-        {
-          id: saved.id,
-          displayName: 'Farm',
-          status: 'connected',
-          version: { version: 'no-hook-newer' },
-        },
-      ],
+    await expect(competingDelete).resolves.toEqual({
+      profiles: [],
+      selectedProfileId: null,
     });
   });
 
