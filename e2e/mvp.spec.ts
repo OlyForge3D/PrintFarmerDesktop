@@ -81,6 +81,7 @@ test('mounts the React app shell', async () => {
     page.getByRole('heading', { name: 'PrintFarmer Desktop' }),
   ).toBeVisible();
   await expect(page.locator('.window-titlebar')).toBeVisible();
+  await expect(page.getByLabel('UI design concepts')).toHaveCount(0);
   await expect(page.getByLabel('Library navigation')).toBeVisible();
   await expect(page.getByLabel('Model properties')).toBeVisible();
 });
