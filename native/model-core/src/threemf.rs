@@ -391,19 +391,37 @@ pub fn parse_bytes(data: &[u8]) -> Result<ThreeMfMesh, ThreeMfError> {
 pub(crate) fn locate_model_part<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
 ) -> Result<String, ThreeMfError> {
-    if let Some(rels) =
-        read_text_entry_limited(archive, RELATIONSHIPS_PART, MAX_METADATA_XML_BYTES)?
-    {
-        if let Some(target) = model_target_from_rels(&rels)? {
-            if archive.by_name(&target).is_ok() {
-                return Ok(target);
+    if let Some(relationships_name) = archive_part_name(archive, RELATIONSHIPS_PART)? {
+        if let Some(relationships) =
+            read_text_entry_limited(archive, &relationships_name, MAX_METADATA_XML_BYTES)?
+        {
+            if let Some(target) = model_target_from_rels(&relationships)? {
+                if let Some(actual_name) = archive_part_name(archive, &target)? {
+                    return Ok(actual_name);
+                }
             }
         }
     }
-    if archive.by_name(DEFAULT_MODEL_PART).is_ok() {
-        return Ok(DEFAULT_MODEL_PART.to_string());
+    archive_part_name(archive, DEFAULT_MODEL_PART)?.ok_or(ThreeMfError::MissingModelPart)
+}
+
+fn archive_part_name<R: Read + Seek>(
+    archive: &ZipArchive<R>,
+    part_name: &str,
+) -> Result<Option<String>, ThreeMfError> {
+    let key = opc_part_key(part_name);
+    let mut actual_name = None;
+    for name in archive.file_names() {
+        if opc_part_key(name) != key {
+            continue;
+        }
+        if actual_name.replace(name.to_string()).is_some() {
+            return Err(ThreeMfError::Malformed(
+                "archive contains case-equivalent duplicate package parts".to_string(),
+            ));
+        }
     }
-    Err(ThreeMfError::MissingModelPart)
+    Ok(actual_name)
 }
 
 fn locate_model_part_indexed<R: Read + Seek>(

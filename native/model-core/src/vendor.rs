@@ -503,6 +503,27 @@ mod tests {
     }
 
     #[test]
+    fn extracts_core_metadata_from_case_variant_model_part() {
+        let relationships = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"
+    Target="/3D/Objects/Body.model"/>
+</Relationships>"#;
+        let zip = build_zip(&[
+            ("_RELS/.RELS", relationships.as_bytes()),
+            (
+                "3d/OBJECTS/BODY.MODEL",
+                model_with_metadata("OrcaSlicer-2.1.0").as_bytes(),
+            ),
+        ]);
+
+        let metadata = extract_bytes(&zip).unwrap();
+        assert_eq!(metadata.slicer, Slicer::OrcaSlicer);
+        assert_eq!(metadata.core.title.as_deref(), Some("My Widget"));
+        assert_eq!(metadata.core.designer.as_deref(), Some("Ada"));
+    }
+
+    #[test]
     fn extracts_per_plate_slice_info() {
         let zip = build_zip(&[
             ("_rels/.rels", RELS.as_bytes()),
