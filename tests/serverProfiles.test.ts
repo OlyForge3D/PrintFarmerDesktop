@@ -347,6 +347,29 @@ describe('server profiles', () => {
     );
   });
 
+  it('notifies coordinated listeners when a profile endpoint changes or is removed', async () => {
+    const fileSystem = new MemoryFileSystem();
+    const profiles = service(fileSystem);
+    const changed = vi.fn((profileId: string, binding: string) => {
+      void profileId;
+      void binding;
+      return Promise.resolve();
+    });
+    profiles.onProfileBindingChanged(changed);
+    const saved = await profiles.save(apiKeyDraft());
+    await profiles.save({
+      id: saved.id,
+      displayName: saved.displayName,
+      baseUrl: 'https://other-farm.example',
+      credentials: { authMode: 'apiKey', apiKey: 'replacement-key' },
+      allowLegacy: false,
+    });
+    expect(changed).toHaveBeenCalledTimes(1);
+    await profiles.delete(saved.id);
+    expect(changed).toHaveBeenCalledTimes(2);
+    expect(changed.mock.calls[0]?.[0]).toBe(saved.id);
+  });
+
   it('accepts additive remote version, capability, and exchange fields', async () => {
     const baseline = successfulFetch();
     const fetchImpl: typeof globalThis.fetch = vi.fn(

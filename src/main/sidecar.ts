@@ -44,6 +44,7 @@ interface PendingRequest {
 
 /** Default per-request timeout. Parsing a very large model can be slow. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+export const SIDECAR_RPC_PROTOCOL_VERSION = 1 as const;
 /** Imports get a longer watchdog; expiry terminates the mutating sidecar. */
 export const DEFAULT_MUTATION_TIMEOUT_MS = 15 * 60_000;
 /** Maximum wait for a killed sidecar to confirm process closure. */
@@ -101,6 +102,11 @@ export class SidecarClient {
       protocolVersion: number;
       sidecarVersion: string;
     };
+    if (result.protocolVersion !== SIDECAR_RPC_PROTOCOL_VERSION) {
+      throw new Error(
+        `unsupported sidecar protocol ${result.protocolVersion}; expected ${SIDECAR_RPC_PROTOCOL_VERSION}`,
+      );
+    }
     return result;
   }
 
@@ -186,6 +192,20 @@ export class SidecarClient {
       profileId,
       localModelHash: hash,
     });
+  }
+
+  async removeRemoteModelLink(
+    profileId: string,
+    hash: string,
+  ): Promise<unknown> {
+    return this.request('removeRemoteModelLink', {
+      profileId,
+      localModelHash: hash,
+    });
+  }
+
+  async purgeRemoteModelLinks(profileId: string): Promise<unknown> {
+    return this.request('purgeRemoteModelLinks', { profileId });
   }
 
   /** List every tag known to the catalog (raw wire array). */

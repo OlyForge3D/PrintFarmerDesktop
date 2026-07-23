@@ -5,7 +5,7 @@ import {
   type ElectronApplication,
   type Page,
 } from '@playwright/test';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -48,6 +48,8 @@ test.beforeAll(async () => {
   // per-user database. The main process only sets this when unset.
   e2eStateRoot = mkdtempSync(path.join(repoRoot, '.pf-e2e-'));
   const catalogDb = path.join(e2eStateRoot, 'catalog.sqlite3');
+  const userDataPath = path.join(e2eStateRoot, 'user-data');
+  mkdirSync(userDataPath, { recursive: true });
 
   app = await electron.launch({
     args: ['.'],
@@ -55,7 +57,7 @@ test.beforeAll(async () => {
     env: {
       ...process.env,
       PRINTFARMER_CATALOG_DB: catalogDb,
-      PRINTFARMER_USER_DATA_PATH: path.join(e2eStateRoot, 'user-data'),
+      PRINTFARMER_USER_DATA_PATH: userDataPath,
     },
   });
 
@@ -100,7 +102,7 @@ test('exposes the printFarmer preload bridge', async () => {
 
 test('reports app info from the main process over IPC', async () => {
   const info = await page.evaluate(() => window.printFarmer.getAppInfo());
-  expect(info.contractVersion).toBe(1);
+  expect(info.contractVersion).toBe(2);
   await expect(page.getByLabel('Application status')).toContainText(
     `v${info.appVersion}`,
   );

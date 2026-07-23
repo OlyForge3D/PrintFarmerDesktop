@@ -1022,6 +1022,33 @@ impl CatalogStore for SqliteCatalog {
         Ok(links)
     }
 
+    fn remove_remote_model_link(
+        &mut self,
+        profile_id: &str,
+        local_model_hash: &str,
+    ) -> Result<bool, String> {
+        crate::sync::validate_profile(profile_id)?;
+        crate::sync::validate_local_hash(local_model_hash)?;
+        self.conn
+            .execute(
+                "DELETE FROM remote_model_links
+                 WHERE profile_id = ?1 AND local_model_hash = ?2",
+                params![profile_id, local_model_hash],
+            )
+            .map(|changed| changed > 0)
+            .map_err(sql_error)
+    }
+
+    fn purge_remote_model_links(&mut self, profile_id: &str) -> Result<usize, String> {
+        crate::sync::validate_profile(profile_id)?;
+        self.conn
+            .execute(
+                "DELETE FROM remote_model_links WHERE profile_id = ?1",
+                params![profile_id],
+            )
+            .map_err(sql_error)
+    }
+
     fn entity_revisions(
         &self,
         profile_id: &str,

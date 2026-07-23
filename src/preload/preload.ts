@@ -52,6 +52,7 @@ import {
   type UploadJobResponse,
   type RemoveUploadJobResponse,
   type ResetUploadJobsResponse,
+  type ResetApprovedRootsResponse,
 } from '@shared/ipc';
 
 /**
@@ -250,6 +251,10 @@ const api: PrintFarmerApi = {
     ipcRenderer.invoke(
       IpcChannel.ResetUploadJobs,
     ) as Promise<ResetUploadJobsResponse>,
+  resetApprovedRoots: (): Promise<ResetApprovedRootsResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ResetApprovedRoots,
+    ) as Promise<ResetApprovedRootsResponse>,
 };
 
 contextBridge.exposeInMainWorld('printFarmer', api);

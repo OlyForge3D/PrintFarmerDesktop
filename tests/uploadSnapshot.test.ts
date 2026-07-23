@@ -27,7 +27,7 @@ describe('immutable private upload snapshots', () => {
     await fs.writeFile(source, bytes);
     const manager = new PrivateSnapshotManager(userData);
     const snapshot = await manager.create(
-      source,
+      await approvedFile(source),
       sha256(bytes),
       '11111111-1111-4111-8111-111111111111',
       new AbortController().signal,
@@ -40,27 +40,6 @@ describe('immutable private upload snapshots', () => {
     });
   });
 
-  it('rejects a pathname swap between lstat and open', async () => {
-    const source = path.join(fixtureRoot, 'part.stl');
-    const replacement = path.join(fixtureRoot, 'replacement.stl');
-    await fs.writeFile(source, 'expected');
-    await fs.writeFile(replacement, 'different');
-    const manager = new PrivateSnapshotManager(userData, randomUUID, {
-      afterLstat: async () => {
-        await fs.unlink(source);
-        await fs.rename(replacement, source);
-      },
-    });
-    await expect(
-      manager.create(
-        source,
-        sha256(Buffer.from('expected')),
-        '11111111-1111-4111-8111-111111111111',
-        new AbortController().signal,
-      ),
-    ).rejects.toBeInstanceOf(SnapshotError);
-  });
-
   it('keeps opened bytes when an equal-metadata pathname is replaced', async () => {
     const source = path.join(fixtureRoot, 'part.stl');
     const replacement = path.join(fixtureRoot, 'replacement.stl');
@@ -68,14 +47,12 @@ describe('immutable private upload snapshots', () => {
     const changed = Buffer.alloc(expected.length, 2);
     await fs.writeFile(source, expected);
     await fs.writeFile(replacement, changed);
-    const manager = new PrivateSnapshotManager(userData, randomUUID, {
-      afterOpen: async () => {
-        await fs.unlink(source);
-        await fs.rename(replacement, source);
-      },
-    });
+    const approved = await approvedFile(source);
+    await fs.unlink(source);
+    await fs.rename(replacement, source);
+    const manager = new PrivateSnapshotManager(userData);
     const snapshot = await manager.create(
-      source,
+      approved,
       sha256(expected),
       '11111111-1111-4111-8111-111111111111',
       new AbortController().signal,
@@ -102,7 +79,7 @@ describe('immutable private upload snapshots', () => {
       });
       await expect(
         manager.create(
-          source,
+          await approvedFile(source),
           sha256(expected),
           '11111111-1111-4111-8111-111111111111',
           new AbortController().signal,
@@ -119,27 +96,6 @@ describe('immutable private upload snapshots', () => {
     },
   );
 
-  it('rejects symbolic-link sources', async () => {
-    const target = path.join(fixtureRoot, 'target.stl');
-    const source = path.join(fixtureRoot, 'link.stl');
-    await fs.writeFile(target, 'target');
-    try {
-      await fs.symlink(target, source, 'file');
-    } catch (error) {
-      if ((error as { code?: unknown }).code === 'EPERM') return;
-      throw error;
-    }
-    const manager = new PrivateSnapshotManager(userData);
-    await expect(
-      manager.create(
-        source,
-        sha256(Buffer.from('target')),
-        '11111111-1111-4111-8111-111111111111',
-        new AbortController().signal,
-      ),
-    ).rejects.toMatchObject({ code: 'SOURCE_SYMLINK' });
-  });
-
   it('cleans partial snapshots when cancelled', async () => {
     const source = path.join(fixtureRoot, 'part.stl');
     const expected = Buffer.alloc(256 * 1024, 4);
@@ -153,7 +109,7 @@ describe('immutable private upload snapshots', () => {
     });
     await expect(
       manager.create(
-        source,
+        await approvedFile(source),
         sha256(expected),
         '11111111-1111-4111-8111-111111111111',
         controller.signal,
@@ -163,8 +119,64 @@ describe('immutable private upload snapshots', () => {
       fs.readdir(path.join(userData, 'upload-snapshots')),
     ).resolves.toEqual([]);
   });
+
+  it('sweeps only safe stale per-job snapshot directories at startup', async () => {
+    const snapshots = path.join(userData, 'upload-snapshots');
+    const staleJob = path.join(
+      snapshots,
+      '11111111-1111-4111-8111-111111111111',
+    );
+    const unsafeDirectory = path.join(snapshots, 'not-a-job');
+    await fs.mkdir(staleJob, { recursive: true });
+    await fs.mkdir(unsafeDirectory, { recursive: true });
+    await fs.writeFile(
+      path.join(staleJob, '22222222-2222-4222-8222-222222222222.model'),
+      'orphan',
+    );
+    await fs.writeFile(path.join(unsafeDirectory, 'keep.txt'), 'keep');
+    const manager = new PrivateSnapshotManager(userData);
+    await manager.initialize();
+    await expect(fs.stat(staleJob)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(
+      fs.readFile(path.join(unsafeDirectory, 'keep.txt')),
+    ).resolves.toBeInstanceOf(Buffer);
+  });
+
+  it('retries snapshot cleanup after a transient failure', async () => {
+    const source = path.join(fixtureRoot, 'part.stl');
+    const bytes = Buffer.from('cleanup retry');
+    await fs.writeFile(source, bytes);
+    let cleanupAttempts = 0;
+    const manager = new PrivateSnapshotManager(userData, randomUUID, {
+      beforeCleanup: () => {
+        cleanupAttempts += 1;
+        return cleanupAttempts === 1
+          ? Promise.reject(new Error('transient cleanup error'))
+          : Promise.resolve();
+      },
+    });
+    const snapshot = await manager.create(
+      await approvedFile(source),
+      sha256(bytes),
+      '11111111-1111-4111-8111-111111111111',
+      new AbortController().signal,
+    );
+    await expect(snapshot.cleanup()).rejects.toThrow(/transient/);
+    await expect(snapshot.cleanup()).resolves.toBeUndefined();
+    expect(cleanupAttempts).toBe(2);
+  });
 });
 
 function sha256(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+async function approvedFile(filePath: string) {
+  const handle = await fs.open(filePath, 'r');
+  const stat = await handle.stat();
+  return {
+    handle,
+    canonicalPath: await fs.realpath(filePath),
+    size: stat.size,
+  };
 }

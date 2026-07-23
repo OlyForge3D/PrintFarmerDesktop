@@ -8,6 +8,7 @@ import {
   UploadJobStore,
   type UploadJobFileSystem,
   type UploadProfileService,
+  type UploadRootApprovals,
   type UploadSidecar,
 } from '../src/main/uploadJobs.js';
 import {
@@ -346,6 +347,43 @@ describe('UploadJobService', () => {
     await expect(service.retry(job.id)).rejects.toThrow(/no safely retryable/i);
   });
 
+  it('keeps legacy duplicate risk when remote-link persistence fails after upload', async () => {
+    const hash = '5'.repeat(64);
+    const service = await serviceFixture({
+      hashes: [hash],
+      profile: profile('legacyModelOnly'),
+      sidecarFactory: (models) => ({
+        listModels: () => Promise.resolve(models),
+        renderThumbnail: () => Promise.resolve(null),
+        getRemoteModelLink: () => Promise.resolve(null),
+        removeRemoteModelLink: () => Promise.resolve(false),
+        purgeRemoteModelLinks: () => Promise.resolve(0),
+        linkRemoteModel: () => Promise.reject(new Error('disk unavailable')),
+      }),
+      transport: (request) =>
+        Promise.resolve(
+          remote(
+            request.clientUploadId,
+            request.displayName,
+            request.modelSize,
+          ),
+        ),
+    });
+    const job = await service.start({
+      profileId: PROFILE.id,
+      hashes: [hash],
+    });
+    const jobs = await waitFor(
+      () => service.list(),
+      (value) => value[0]?.items[0]?.state === 'uncertain',
+    );
+    expect(jobs[0]?.items[0]?.error).toMatchObject({
+      retryable: false,
+      duplicateRisk: true,
+    });
+    await expect(service.retry(job.id)).rejects.toThrow(/no safely retryable/i);
+  });
+
   it('invalidates exactly one rejected auth context and retries with the same identity', async () => {
     const bytes = await fs.readFile(MODEL_PATH);
     const hash = createHash('sha256').update(bytes).digest('hex');
@@ -400,8 +438,63 @@ describe('UploadJobService', () => {
       () => service.list(),
       (jobs) => jobs[0]?.items[0]?.state === 'succeeded',
     );
-    expect(tokens).toEqual(['token-2', 'token-3']);
+    expect(tokens).toEqual(['token-3', 'token-4']);
     expect(new Set(uploadIds).size).toBe(1);
+    expect(invalidations).toBe(1);
+  });
+
+  it('lets parallel stale-token uploads share one conditional refresh', async () => {
+    const hashes = ['6'.repeat(64), '7'.repeat(64)];
+    const bothStale = deferred<void>();
+    let staleAttempts = 0;
+    let invalidations = 0;
+    let fresh = false;
+    const profiles: UploadProfileService = {
+      list: () =>
+        Promise.resolve({ profiles: [PROFILE], selectedProfileId: PROFILE.id }),
+      getAuthenticatedContext: () =>
+        Promise.resolve(authContext(fresh ? 'fresh-token' : 'stale-token')),
+      revalidateAuthenticatedContext: () => Promise.resolve(),
+      invalidateRejectedContext: () => {
+        if (fresh) return Promise.resolve(false);
+        fresh = true;
+        invalidations += 1;
+        return Promise.resolve(true);
+      },
+    };
+    const service = await serviceFixture({
+      hashes,
+      profiles,
+      concurrency: 2,
+      transport: async (request) => {
+        if (request.token === 'stale-token') {
+          staleAttempts += 1;
+          if (staleAttempts === 2) bothStale.resolve(undefined);
+          await bothStale.promise;
+          throw new ModelUploadError(
+            {
+              code: 'UNAUTHENTICATED',
+              message: 'rejected',
+              retryable: true,
+              retryAfterSeconds: null,
+              duplicateRisk: false,
+            },
+            'responseReceived',
+          );
+        }
+        return remote(
+          request.clientUploadId,
+          request.displayName,
+          request.modelSize,
+        );
+      },
+    });
+    await service.start({ profileId: PROFILE.id, hashes });
+    await waitFor(
+      () => service.list(),
+      (jobs) => jobs[0]?.summary.succeeded === 2,
+    );
+    expect(staleAttempts).toBe(2);
     expect(invalidations).toBe(1);
   });
 
@@ -456,6 +549,8 @@ describe('UploadJobService', () => {
         listModels: () => Promise.resolve(models),
         renderThumbnail: () => Promise.resolve(null),
         getRemoteModelLink: () => Promise.resolve(savedLink),
+        removeRemoteModelLink: () => Promise.resolve(false),
+        purgeRemoteModelLinks: () => Promise.resolve(0),
         linkRemoteModel: (link) => {
           if (
             savedLink &&
@@ -498,6 +593,124 @@ describe('UploadJobService', () => {
       clientUploadId: durableId,
     });
     expect(sends).toBe(1);
+  });
+
+  it('does not let a pending remote link suppress an upload', async () => {
+    const hash = '9'.repeat(64);
+    let removed = 0;
+    let sends = 0;
+    const service = await serviceFixture({
+      hashes: [hash],
+      sidecarFactory: (models) => ({
+        listModels: () => Promise.resolve(models),
+        renderThumbnail: () => Promise.resolve(null),
+        getRemoteModelLink: () =>
+          Promise.resolve({
+            profileId: PROFILE.id,
+            localModelHash: hash,
+            remoteModelId: 'pending-remote',
+            clientUploadId: '99999999-9999-4999-8999-999999999999',
+            uploadStatus: 'pending',
+            etag: null,
+            uploadedAt: null,
+          }),
+        removeRemoteModelLink: () => {
+          removed += 1;
+          return Promise.resolve(true);
+        },
+        purgeRemoteModelLinks: () => Promise.resolve(0),
+        linkRemoteModel: (link) => Promise.resolve(link),
+      }),
+      transport: (request) => {
+        sends += 1;
+        return Promise.resolve(
+          remote(
+            request.clientUploadId,
+            request.displayName,
+            request.modelSize,
+          ),
+        );
+      },
+    });
+    await service.start({ profileId: PROFILE.id, hashes: [hash] });
+    await waitFor(
+      () => service.list(),
+      (jobs) => jobs[0]?.state === 'completed',
+    );
+    expect(removed).toBeGreaterThan(0);
+    expect(sends).toBe(1);
+  });
+
+  it('aborts old-binding jobs and purges links when the profile endpoint changes', async () => {
+    const hash = '8'.repeat(64);
+    const listeners: {
+      binding?: (
+        profileId: string,
+        previousBinding: string,
+      ) => Promise<void> | void;
+    } = {};
+    let purges = 0;
+    let entered = false;
+    const profiles: UploadProfileService = {
+      list: () =>
+        Promise.resolve({ profiles: [PROFILE], selectedProfileId: PROFILE.id }),
+      getAuthenticatedContext: () => Promise.resolve(authContext('token')),
+      revalidateAuthenticatedContext: () => Promise.resolve(),
+      invalidateRejectedContext: () => Promise.resolve(true),
+      onProfileBindingChanged: (callback) => {
+        listeners.binding = callback;
+        return () => {
+          delete listeners.binding;
+        };
+      },
+    };
+    const service = await serviceFixture({
+      hashes: [hash],
+      profiles,
+      sidecarFactory: (models) => ({
+        listModels: () => Promise.resolve(models),
+        renderThumbnail: () => Promise.resolve(null),
+        getRemoteModelLink: () => Promise.resolve(null),
+        removeRemoteModelLink: () => Promise.resolve(false),
+        purgeRemoteModelLinks: () => {
+          purges += 1;
+          return Promise.resolve(0);
+        },
+        linkRemoteModel: (link) => Promise.resolve(link),
+      }),
+      transport: (request) =>
+        new Promise((_resolve, reject) => {
+          entered = true;
+          request.signal.addEventListener('abort', () =>
+            reject(
+              new ModelUploadError(
+                {
+                  code: 'ABORTED',
+                  message: 'stopped',
+                  retryable: true,
+                  retryAfterSeconds: null,
+                  duplicateRisk: false,
+                },
+                'modelStreaming',
+              ),
+            ),
+          );
+        }),
+    });
+    await service.start({ profileId: PROFILE.id, hashes: [hash] });
+    await waitFor(
+      () => service.list(),
+      () => entered,
+    );
+    const bindingListener = listeners.binding;
+    if (!bindingListener)
+      throw new Error('profile listener was not registered');
+    await bindingListener(PROFILE.id, 'binding-1');
+    await waitFor(
+      () => service.list(),
+      (jobs) => jobs[0]?.items[0]?.state === 'cancelled',
+    );
+    expect(purges).toBe(1);
   });
 
   it('rejects a duplicate active profile/hash upload', async () => {
@@ -636,6 +849,194 @@ describe('UploadJobService', () => {
       (jobs) => jobs.every((job) => job.state === 'completed'),
     );
   });
+
+  it('lets a concurrent pause win before the atomic scheduler claim', async () => {
+    const hash = 'd'.repeat(64);
+    const claim = deferred<void>();
+    let claimEntered = false;
+    let sends = 0;
+    const service = await serviceFixture({
+      hashes: [hash],
+      beforeClaim: () => {
+        claimEntered = true;
+        return claim.promise;
+      },
+      transport: () => {
+        sends += 1;
+        return Promise.reject(new Error('must not send'));
+      },
+    });
+    const job = await service.start({
+      profileId: PROFILE.id,
+      hashes: [hash],
+    });
+    await waitFor(
+      () => service.list(),
+      () => claimEntered,
+    );
+    await service.pause(job.id);
+    claim.resolve(undefined);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(sends).toBe(0);
+    expect((await service.list())[0]).toMatchObject({
+      paused: true,
+      items: [{ state: 'queued' }],
+    });
+  });
+
+  it('generation-fences reset from late progress and completion callbacks', async () => {
+    const hash = 'e'.repeat(64);
+    const callbacks: {
+      progress?: (bytesSent: number) => void | Promise<void>;
+    } = {};
+    let entered = false;
+    const service = await serviceFixture({
+      hashes: [hash],
+      transport: (request) =>
+        new Promise((_resolve, reject) => {
+          entered = true;
+          callbacks.progress = (bytesSent) => request.onProgress(bytesSent);
+          request.signal.addEventListener('abort', () =>
+            reject(
+              new ModelUploadError(
+                {
+                  code: 'ABORTED',
+                  message: 'stopped',
+                  retryable: true,
+                  retryAfterSeconds: null,
+                  duplicateRisk: false,
+                },
+                'modelStreaming',
+              ),
+            ),
+          );
+        }),
+    });
+    await service.start({ profileId: PROFILE.id, hashes: [hash] });
+    await waitFor(
+      () => service.list(),
+      () => entered,
+    );
+    await service.reset();
+    await callbacks.progress?.(50);
+    expect(await service.list()).toEqual([]);
+  });
+
+  it('generation-fences reset against a late initialization failure', async () => {
+    const hash = '4'.repeat(64);
+    const store = new UploadJobStore({
+      userDataPath: 'data',
+      fileSystem: memoryFileSystem(),
+    });
+    const loading = deferred<{
+      jobs: [];
+      identities: [];
+    }>();
+    vi.spyOn(store, 'loadState').mockReturnValueOnce(loading.promise);
+    const service = await serviceFixture({
+      hashes: [hash],
+      store,
+      initialize: false,
+      transport: () => Promise.reject(new Error('must not send')),
+    });
+    const initialization = service.initialize();
+    const reset = service.reset();
+    await new Promise((resolve) => setImmediate(resolve));
+    loading.reject(new Error('late corrupt store'));
+    await expect(initialization).resolves.toBeUndefined();
+    await expect(reset).resolves.toMatchObject({ reset: true });
+    expect(await service.list()).toEqual([]);
+  });
+
+  it('does not let a late progress callback resurrect a removed job', async () => {
+    const hash = '3'.repeat(64);
+    const callbacks: {
+      progress?: (bytesSent: number) => void | Promise<void>;
+    } = {};
+    const service = await serviceFixture({
+      hashes: [hash],
+      transport: (request) => {
+        callbacks.progress = (bytesSent) => request.onProgress(bytesSent);
+        return Promise.resolve(
+          remote(
+            request.clientUploadId,
+            request.displayName,
+            request.modelSize,
+          ),
+        );
+      },
+    });
+    const job = await service.start({
+      profileId: PROFILE.id,
+      hashes: [hash],
+    });
+    await waitFor(
+      () => service.list(),
+      (jobs) => jobs[0]?.state === 'completed',
+    );
+    await service.remove(job.id);
+    const lateProgress = callbacks.progress;
+    if (!lateProgress) throw new Error('progress callback not captured');
+    await expect(Promise.resolve(lateProgress(10))).rejects.toThrow(
+      /upload job not found/i,
+    );
+    expect(await service.list()).toEqual([]);
+  });
+
+  it('skips an unapproved duplicate and opens the next approved location', async () => {
+    const hash = 'f'.repeat(64);
+    const stat = await fs.stat(MODEL_PATH);
+    const attempted: string[] = [];
+    const service = await serviceFixture({
+      hashes: [hash],
+      locations: [
+        {
+          rootId: 'unapproved',
+          path: path.resolve('unapproved-copy.stl'),
+          rootRelative: 'copy.stl',
+          size: stat.size,
+          available: true,
+        },
+        {
+          rootId: 'approved',
+          path: MODEL_PATH,
+          rootRelative: 'package.json',
+          size: stat.size,
+          available: true,
+        },
+      ],
+      approvals: {
+        openApprovedFile: async (sourcePath) => {
+          attempted.push(sourcePath);
+          if (sourcePath !== MODEL_PATH) throw new Error('not approved');
+          const handle = await fs.open(sourcePath, 'r');
+          const opened = await handle.stat();
+          return {
+            handle,
+            canonicalPath: sourcePath,
+            size: opened.size,
+          };
+        },
+      },
+      transport: (request) =>
+        Promise.resolve(
+          remote(
+            request.clientUploadId,
+            request.displayName,
+            request.modelSize,
+          ),
+        ),
+    });
+    await service.start({ profileId: PROFILE.id, hashes: [hash] });
+    await waitFor(
+      () => service.list(),
+      (jobs) => jobs[0]?.state === 'completed',
+    );
+    expect(attempted).toEqual([
+      path.resolve('unapproved-copy.stl'),
+      MODEL_PATH,
+    ]);
+  });
 });
 
 it('redacts bearer tokens, credentials, and local paths from errors', () => {
@@ -700,6 +1101,16 @@ async function serviceFixture(options: {
     }>,
   ) => UploadSidecar;
   store?: UploadJobStore;
+  beforeClaim?: () => Promise<void>;
+  initialize?: boolean;
+  approvals?: UploadRootApprovals;
+  locations?: Array<{
+    rootId: string;
+    path: string;
+    rootRelative: string;
+    size: number;
+    available: boolean;
+  }>;
   links?: unknown[];
 }): Promise<UploadJobService> {
   const stat = await fs.stat(MODEL_PATH);
@@ -707,7 +1118,7 @@ async function serviceFixture(options: {
     hash,
     format: 'stl' as const,
     size: stat.size,
-    locations: [
+    locations: options.locations ?? [
       {
         rootId: 'root',
         path: MODEL_PATH,
@@ -721,6 +1132,8 @@ async function serviceFixture(options: {
     listModels: vi.fn().mockResolvedValue(models),
     renderThumbnail: vi.fn(),
     getRemoteModelLink: vi.fn().mockResolvedValue(null),
+    removeRemoteModelLink: vi.fn().mockResolvedValue(false),
+    purgeRemoteModelLinks: vi.fn().mockResolvedValue(0),
     linkRemoteModel: (link) => {
       options.links?.push(link);
       return Promise.resolve(link);
@@ -742,6 +1155,7 @@ async function serviceFixture(options: {
           token: 'jwt-test-value',
           revision: 'revision-1',
           generation: 1,
+          serverBinding: 'binding-1',
           endpoint: (relativePath: string) =>
             new URL(relativePath, 'https://farm.example/'),
         }),
@@ -749,30 +1163,42 @@ async function serviceFixture(options: {
       revalidateAuthenticatedContext: vi.fn().mockResolvedValue(undefined),
       invalidateRejectedContext: vi.fn().mockResolvedValue(true),
     },
-    approvals: {
-      authorizeFile: vi
+    approvals: options.approvals ?? {
+      openApprovedFile: vi
         .fn()
-        .mockImplementation((sourcePath: string) =>
-          Promise.resolve({ sourcePath, canonicalPath: sourcePath }),
-        ),
+        .mockImplementation(async (sourcePath: string) => {
+          const handle = await fs.open(sourcePath, 'r');
+          const opened = await handle.stat();
+          return {
+            handle,
+            canonicalPath: sourcePath,
+            size: opened.size,
+          };
+        }),
     },
     snapshots: {
-      create: vi.fn().mockImplementation((sourcePath: string) =>
-        Promise.resolve({
-          path: sourcePath,
-          size: stat.size,
-          cleanup: () => Promise.resolve(),
-        }),
-      ),
+      create: vi
+        .fn()
+        .mockImplementation(
+          async (approved: { handle: { close(): Promise<void> } }) => {
+            await approved.handle.close();
+            return {
+              path: MODEL_PATH,
+              size: stat.size,
+              cleanup: () => Promise.resolve(),
+            };
+          },
+        ),
     },
     transport: options.transport,
     ...(options.concurrency !== undefined
       ? { concurrency: options.concurrency }
       : {}),
+    ...(options.beforeClaim ? { beforeClaim: options.beforeClaim } : {}),
     createId: uuidFactory(),
     now: () => Date.parse('2026-07-23T20:00:00.000Z'),
   });
-  await service.initialize();
+  if (options.initialize !== false) await service.initialize();
   return service;
 }
 
@@ -798,6 +1224,7 @@ function authContext(token: string) {
     token,
     revision: 'revision-1',
     generation: 1,
+    serverBinding: 'binding-1',
     endpoint: (relativePath: string) =>
       new URL(relativePath, 'https://farm.example/prefix/'),
   };
@@ -828,4 +1255,18 @@ async function expectEventuallyRejected(
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error('expected operation to reject');
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: Error) => void;
+} {
+  let resolve: (value: T) => void = () => undefined;
+  let reject: (reason: Error) => void = () => undefined;
+  const promise = new Promise<T>((settle, fail) => {
+    resolve = settle;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 }

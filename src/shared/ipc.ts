@@ -9,7 +9,7 @@ import { z } from 'zod';
  * primitive; it may only invoke the explicit channels defined here.
  */
 
-export const IPC_CONTRACT_VERSION = 1 as const;
+export const IPC_CONTRACT_VERSION = 2 as const;
 
 /** Channel names. Keep these stable; bump IPC_CONTRACT_VERSION on breaks. */
 export const IpcChannel = {
@@ -48,6 +48,7 @@ export const IpcChannel = {
   ConfirmLegacyUploadRetry: 'uploadJobs:confirmLegacyRetry',
   RemoveUploadJob: 'uploadJobs:remove',
   ResetUploadJobs: 'uploadJobs:reset',
+  ResetApprovedRoots: 'catalog:resetApprovedRoots',
 } as const;
 
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel];
@@ -694,6 +695,7 @@ export const UploadJob = z
     profileId: z.string().uuid(),
     profileName: z.string().min(1).max(80),
     profileRevision: z.string().min(1).max(128).default('legacy-unbound'),
+    serverBinding: z.string().min(1).max(128).default('legacy-unbound'),
     mode: z.enum(['modern', 'legacyModelOnly']),
     state: UploadJobState,
     paused: z.boolean(),
@@ -749,6 +751,13 @@ export const ResetUploadJobsResponse = z
   .object({ reset: z.literal(true), backupCreated: z.boolean() })
   .strict();
 export type ResetUploadJobsResponse = z.infer<typeof ResetUploadJobsResponse>;
+export const ResetApprovedRootsRequest = z.void();
+export const ResetApprovedRootsResponse = z
+  .object({ reset: z.literal(true) })
+  .strict();
+export type ResetApprovedRootsResponse = z.infer<
+  typeof ResetApprovedRootsResponse
+>;
 
 /**
  * Registry mapping each channel to its request/response schemas. Used by both
@@ -895,6 +904,10 @@ export const ipcSchemas = {
     request: ResetUploadJobsRequest,
     response: ResetUploadJobsResponse,
   },
+  [IpcChannel.ResetApprovedRoots]: {
+    request: ResetApprovedRootsRequest,
+    response: ResetApprovedRootsResponse,
+  },
 } as const;
 
 export type IpcSchemas = typeof ipcSchemas;
@@ -964,4 +977,5 @@ export interface PrintFarmerApi {
   ): Promise<UploadJobResponse>;
   removeUploadJob(request: UploadJobRequest): Promise<RemoveUploadJobResponse>;
   resetUploadJobs(): Promise<ResetUploadJobsResponse>;
+  resetApprovedRoots(): Promise<ResetApprovedRootsResponse>;
 }

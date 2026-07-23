@@ -102,7 +102,9 @@ export function UploadQueueDialog({
               const removable = terminal && job.summary.uncertain === 0;
               const retryable = job.items.some(
                 (item) =>
-                  (item.state === 'failed' || item.state === 'cancelled') &&
+                  (item.state === 'failed' ||
+                    item.state === 'cancelled' ||
+                    item.state === 'uncertain') &&
                   item.error?.retryable === true &&
                   !item.error.duplicateRisk,
               );

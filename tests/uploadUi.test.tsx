@@ -140,12 +140,71 @@ describe('catalog multi-selection and upload queue UI', () => {
     );
     expect(reset).toHaveBeenCalledOnce();
   });
+
+  it('confirms before deliberately resetting approved folders', async () => {
+    const resetApprovedRoots = vi.fn().mockResolvedValue({ reset: true });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    installApi({ resetApprovedRoots });
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Reset approved folders' }),
+    );
+    expect(confirm).toHaveBeenCalledWith(
+      expect.stringContaining('require reauthorization'),
+    );
+    await waitFor(() => expect(resetApprovedRoots).toHaveBeenCalledOnce());
+  });
+
+  it('offers ordinary retry for modern recoverable uncertainty', () => {
+    const job = uploadJob();
+    job.mode = 'modern';
+    job.state = 'attention';
+    job.items[0]!.state = 'uncertain';
+    job.items[0]!.error = {
+      code: 'INTERRUPTED',
+      message: 'Retry safely with the retained identity.',
+      retryable: true,
+      retryAfterSeconds: null,
+      duplicateRisk: false,
+    };
+    job.summary = {
+      queued: 0,
+      uploading: 0,
+      succeeded: 0,
+      failed: 0,
+      cancelled: 0,
+      uncertain: 1,
+    };
+    const retry = vi.fn();
+    render(
+      <UploadQueueDialog
+        jobs={[job]}
+        busy={false}
+        error={null}
+        onPause={vi.fn()}
+        onResume={vi.fn()}
+        onCancel={vi.fn()}
+        onRetry={retry}
+        onConfirmLegacyRetry={vi.fn()}
+        onRemove={vi.fn()}
+        onReset={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Retry incomplete' }));
+    expect(retry).toHaveBeenCalledWith(job.id);
+    expect(
+      screen.queryByRole('button', {
+        name: 'I understand—retry legacy upload',
+      }),
+    ).not.toBeInTheDocument();
+  });
 });
 
 function installApi(overrides: Partial<PrintFarmerApi>): void {
   const api: Partial<PrintFarmerApi> = {
     getAppInfo: vi.fn().mockResolvedValue({
-      contractVersion: 1,
+      contractVersion: 2,
       appVersion: '0.1.0',
       platform: 'win32',
       electronVersion: '33',
@@ -206,6 +265,7 @@ function uploadJob(): UploadJob {
     profileId: legacyProfile().id,
     profileName: 'Legacy farm',
     profileRevision: 'revision-1',
+    serverBinding: 'binding-1',
     mode: 'legacyModelOnly',
     state: 'running',
     paused: false,

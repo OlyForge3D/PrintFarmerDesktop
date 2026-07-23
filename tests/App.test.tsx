@@ -95,7 +95,7 @@ describe('<App />', () => {
   it('uses the canonical application icon in the custom titlebar', async () => {
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -122,7 +122,7 @@ describe('<App />', () => {
   it('renders app info returned by the main process', async () => {
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'darwin',
         electronVersion: '33.0.0',
@@ -142,7 +142,7 @@ describe('<App />', () => {
   it('opens server profiles from the sidebar and excludes the workspace', async () => {
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -205,7 +205,7 @@ describe('<App />', () => {
     };
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -243,7 +243,7 @@ describe('<App />', () => {
     );
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -303,7 +303,7 @@ describe('<App />', () => {
     });
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -364,7 +364,7 @@ describe('<App />', () => {
     }>();
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -445,7 +445,7 @@ describe('<App />', () => {
     });
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -498,7 +498,7 @@ describe('<App />', () => {
     const openFolder = vi.fn();
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -544,7 +544,7 @@ describe('<App />', () => {
     async (_label, outcome) => {
       installApi({
         getAppInfo: vi.fn().mockResolvedValue({
-          contractVersion: 1,
+          contractVersion: 2,
           appVersion: '0.1.0',
           platform: 'win32',
           electronVersion: '33.0.0',
@@ -587,7 +587,7 @@ describe('<App />', () => {
     async (_label, outcome) => {
       installApi({
         getAppInfo: vi.fn().mockResolvedValue({
-          contractVersion: 1,
+          contractVersion: 2,
           appVersion: '0.1.0',
           platform: 'win32',
           electronVersion: '33.0.0',
@@ -655,7 +655,7 @@ describe('<App />', () => {
     const loadScene = vi.fn();
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -740,7 +740,7 @@ describe('<App />', () => {
     const scanRoot = vi.fn();
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -840,7 +840,7 @@ describe('<App />', () => {
     const loadScene = vi.fn();
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -912,7 +912,7 @@ describe('<App />', () => {
       .mockReturnValueOnce(collectionRefresh);
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -1041,7 +1041,7 @@ describe('<App />', () => {
     });
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',

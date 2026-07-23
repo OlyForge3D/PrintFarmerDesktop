@@ -102,6 +102,8 @@ interface WriterState {
   phase: UploadRequestPhase;
   stream: ReturnType<typeof createReadStream> | null;
   stopped: boolean;
+  stopPromise: Promise<void>;
+  resolveStop(): void;
 }
 
 export function createNodeUploadTransport(
@@ -164,10 +166,16 @@ export function createNodeUploadTransport(
       target.protocol === 'https:'
         ? (options.secureRequest ?? httpsRequest)
         : (options.request ?? httpRequest);
+    let resolveStop: () => void = () => undefined;
+    const stopPromise = new Promise<void>((resolve) => {
+      resolveStop = resolve;
+    });
     const state: WriterState = {
       phase: 'notStarted',
       stream: null,
       stopped: false,
+      stopPromise,
+      resolveStop,
     };
     let response: IncomingMessage | null = null;
     let responseTimer: ReturnType<typeof setTimeout> | null = null;
@@ -188,6 +196,7 @@ export function createNodeUploadTransport(
       settleOutcome(outcome);
     };
     const stopWriter = (reason: Error, destroyRequest: boolean): void => {
+      if (!state.stopped) state.resolveStop();
       state.stopped = true;
       state.stream?.destroy(reason);
       if (destroyRequest && !req.destroyed) req.destroy(reason);
@@ -334,6 +343,7 @@ async function writeMultipart(
   end: Buffer,
   streamFactory: typeof createReadStream,
 ): Promise<void> {
+  if (state.stopped) return;
   await writeChunk(request, modelHeader);
   if (state.stopped) return;
   state.phase = 'modelStreaming';
@@ -348,23 +358,41 @@ async function writeMultipart(
         throw new Error('snapshot grew');
       }
       await writeChunk(request, chunk);
-      await input.onProgress(sent);
+      const progress = Promise.resolve(input.onProgress(sent)).then(
+        () => 'completed' as const,
+      );
+      const progressResult = await Promise.race([
+        progress,
+        state.stopPromise.then(() => 'stopped' as const),
+      ]);
+      if (progressResult === 'stopped') return;
     }
   } finally {
     state.stream = null;
   }
   if (state.stopped) return;
   if (sent !== input.modelSize) throw new Error('snapshot length mismatch');
-  await writeChunk(request, Buffer.from('\r\n'));
+  if (!(await writeTailChunk(request, state, Buffer.from('\r\n')))) return;
   if (thumbnailHeader && input.thumbnail) {
-    await writeChunk(request, thumbnailHeader);
-    await writeChunk(request, input.thumbnail);
-    await writeChunk(request, Buffer.from('\r\n'));
+    if (!(await writeTailChunk(request, state, thumbnailHeader))) return;
+    if (!(await writeTailChunk(request, state, input.thumbnail))) return;
+    if (!(await writeTailChunk(request, state, Buffer.from('\r\n')))) return;
   }
-  if (clientIdPart) await writeChunk(request, clientIdPart);
+  if (clientIdPart && !(await writeTailChunk(request, state, clientIdPart)))
+    return;
   if (state.stopped) return;
   state.phase = 'bodyComplete';
   request.end(end);
+}
+
+async function writeTailChunk(
+  request: ClientRequest,
+  state: WriterState,
+  chunk: Buffer,
+): Promise<boolean> {
+  if (state.stopped) return false;
+  await writeChunk(request, chunk);
+  return !state.stopped;
 }
 
 function writeChunk(request: ClientRequest, chunk: Buffer): Promise<void> {
@@ -548,7 +576,7 @@ function httpStatusError(
   phase: UploadRequestPhase,
 ): ModelUploadError {
   const retryAfterSeconds = parseRetryAfter(retryAfterHeader);
-  const message = safeServerMessage(body);
+  void body;
   const descriptions: Record<number, [string, string, boolean]> = {
     400: ['BAD_REQUEST', 'The server rejected the upload request.', false],
     401: ['UNAUTHENTICATED', 'Authentication expired or was rejected.', true],
@@ -580,13 +608,9 @@ function httpStatusError(
           `The server returned HTTP ${status}.`,
           false,
         ] as const));
-  return makeUploadError(
-    mapped[0],
-    message ? `${mapped[1]} ${message}` : mapped[1],
-    mapped[2],
-    phase,
-    { retryAfterSeconds },
-  );
+  return makeUploadError(mapped[0], mapped[1], mapped[2], phase, {
+    retryAfterSeconds,
+  });
 }
 
 export function parseRetryAfter(
@@ -599,40 +623,6 @@ export function parseRetryAfter(
   const date = Date.parse(raw);
   if (!Number.isFinite(date)) return null;
   return Math.min(Math.max(0, Math.ceil((date - now) / 1000)), 86_400);
-}
-
-function safeServerMessage(body: string): string {
-  if (!body) return '';
-  try {
-    const raw = JSON.parse(body) as Record<string, unknown>;
-    const message =
-      typeof raw.message === 'string'
-        ? raw.message
-        : typeof raw.error === 'string'
-          ? raw.error
-          : '';
-    return safeRemoteMessage(message);
-  } catch {
-    return '';
-  }
-}
-
-function safeRemoteMessage(message: string): string {
-  if (
-    message.length > 300 ||
-    message.includes('\\') ||
-    message.includes('/') ||
-    message.includes(':')
-  ) {
-    return '';
-  }
-
-  return Array.from(message)
-    .filter((character) => {
-      const code = character.charCodeAt(0);
-      return code >= 32 && code !== 127;
-    })
-    .join('');
 }
 
 /** Convert an untrusted local error into a path- and secret-free message. */

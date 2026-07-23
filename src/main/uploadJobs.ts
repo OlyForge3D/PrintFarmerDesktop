@@ -22,6 +22,7 @@ import {
 } from './serverProfiles.js';
 import type { SidecarClient } from './sidecar.js';
 import type { RootApprovalStore } from './rootApprovals.js';
+import type { ApprovedFile } from './rootApprovals.js';
 import {
   createNodeUploadTransport,
   makeUploadError,
@@ -47,6 +48,7 @@ const UploadIdentity = z
     profileId: z.string().uuid(),
     hash: z.string().regex(/^[a-f0-9]{64}$/),
     clientUploadId: z.string().uuid(),
+    serverBinding: z.string().min(1).max(128).default('legacy-unbound'),
     remoteModelId: z.string().min(1).max(256).nullable(),
     etag: z.string().min(1).max(1024).nullable(),
     updatedAt: z.string().datetime(),
@@ -267,6 +269,7 @@ export interface RemoteModelLink {
   localModelHash: string;
   remoteModelId: string;
   clientUploadId: string;
+  uploadStatus: 'pending' | 'uploading' | 'uploaded' | 'failed';
   etag?: string | null;
   uploadedAt?: number | null;
 }
@@ -275,6 +278,8 @@ export interface UploadSidecar {
   listModels(): Promise<unknown>;
   renderThumbnail(filePath: string, size?: number): Promise<unknown>;
   getRemoteModelLink(profileId: string, hash: string): Promise<unknown>;
+  removeRemoteModelLink(profileId: string, hash: string): Promise<unknown>;
+  purgeRemoteModelLinks(profileId: string): Promise<unknown>;
   linkRemoteModel(link: {
     profileId: string;
     localModelHash: string;
@@ -300,13 +305,16 @@ export interface UploadProfileService {
   invalidateRejectedContext(
     context: AuthenticatedProfileContext,
   ): Promise<boolean>;
+  onProfileBindingChanged?(
+    listener: (
+      profileId: string,
+      previousBinding: string,
+    ) => Promise<void> | void,
+  ): () => void;
 }
 
 export interface UploadRootApprovals {
-  authorizeFile(filePath: string): Promise<{
-    sourcePath: string;
-    canonicalPath: string;
-  }>;
+  openApprovedFile(filePath: string): Promise<ApprovedFile>;
 }
 
 export interface UploadJobServiceOptions {
@@ -319,12 +327,18 @@ export interface UploadJobServiceOptions {
   concurrency?: number;
   now?: () => number;
   createId?: () => string;
+  beforeClaim?: () => Promise<void>;
 }
 
 interface ActiveUpload {
   controller: AbortController;
   action: 'pause' | 'cancel' | null;
+  generation: number;
+  worker: Promise<void>;
 }
+
+class StaleQueueGenerationError extends Error {}
+class SchedulerClaimLostError extends Error {}
 
 export class UploadJobService {
   private state: UploadJobStoreState = { jobs: [], identities: [] };
@@ -340,6 +354,10 @@ export class UploadJobService {
   private pumpPending = false;
   private pumping = false;
   private lastScheduledJobId: string | null = null;
+  private queueGeneration = 0;
+  private resetting = false;
+  private readonly unsubscribeProfileChanges: (() => void) | null;
+  private readonly changingProfileBindings = new Set<string>();
 
   constructor(private readonly options: UploadJobServiceOptions) {
     this.transport = options.transport ?? createNodeUploadTransport();
@@ -349,20 +367,29 @@ export class UploadJobService {
     );
     this.now = options.now ?? Date.now;
     this.createId = options.createId ?? randomUUID;
+    this.unsubscribeProfileChanges =
+      options.profiles.onProfileBindingChanged?.((profileId, binding) =>
+        this.handleProfileBindingChanged(profileId, binding),
+      ) ?? null;
   }
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
     if (!this.initializePromise) {
-      this.initializePromise = this.options.store
-        .loadState()
-        .then((state) => {
+      const generation = this.queueGeneration;
+      this.initializePromise = Promise.all([
+        this.options.store.loadState(),
+        this.options.snapshots.initialize?.() ?? Promise.resolve(),
+      ])
+        .then(([state]) => {
+          if (generation !== this.queueGeneration || this.resetting) return;
           this.state = state;
           this.initialized = true;
           this.queueError = null;
           this.schedulePump();
         })
         .catch((error: unknown) => {
+          if (generation !== this.queueGeneration || this.resetting) return;
           this.queueError = controlledQueueError(error);
           throw this.queueError;
         });
@@ -376,13 +403,36 @@ export class UploadJobService {
   }
 
   async reset(): Promise<{ reset: true; backupCreated: boolean }> {
-    for (const active of this.active.values()) active.controller.abort();
-    const result = await this.options.store.reset();
-    this.state = { jobs: [], identities: [] };
-    this.queueError = null;
-    this.initialized = true;
-    this.initializePromise = Promise.resolve();
-    return { reset: true, backupCreated: result.backupCreated };
+    let generation = 0;
+    await this.withMutationLock(() => {
+      this.queueGeneration += 1;
+      generation = this.queueGeneration;
+      this.resetting = true;
+      this.initialized = false;
+      this.initializePromise = null;
+      this.pumpPending = false;
+      return Promise.resolve();
+    });
+    const workers = [...this.active.values()].map((active) => {
+      active.controller.abort();
+      return active.worker;
+    });
+    await Promise.allSettled(workers);
+    let backupCreated = false;
+    await this.withMutationLock(async () => {
+      if (generation !== this.queueGeneration) {
+        throw new StaleQueueGenerationError();
+      }
+      const result = await this.options.store.reset();
+      backupCreated = result.backupCreated;
+      this.state = { jobs: [], identities: [] };
+      this.active.clear();
+      this.queueError = null;
+      this.initialized = true;
+      this.resetting = false;
+      this.initializePromise = Promise.resolve();
+    });
+    return { reset: true, backupCreated };
   }
 
   async start(request: StartUploadJobRequest): Promise<UploadJobDto> {
@@ -392,6 +442,9 @@ export class UploadJobService {
       this.options.profiles.getAuthenticatedContext(validatedRequest.profileId),
       this.options.sidecar.listModels(),
     ]);
+    if (this.changingProfileBindings.has(validatedRequest.profileId)) {
+      throw new Error('The server profile binding is still being updated.');
+    }
     const profile = startingContext.profile;
     const mode = modeForProfile(profile);
     const models = ListModelsResponse.parse(rawModels);
@@ -427,18 +480,43 @@ export class UploadJobService {
           `${displayName(model)} already has an active or recoverable upload for this profile.`,
         );
       }
-      const remoteLink = parseRemoteLink(
+      let remoteLink = parseRemoteLink(
         await this.options.sidecar.getRemoteModelLink(profile.id, hash),
       );
       let identity = draft.identities.find(
         (candidate) =>
           candidate.profileId === profile.id && candidate.hash === hash,
       );
+      if (
+        identity &&
+        identity.serverBinding !== startingContext.serverBinding
+      ) {
+        await this.options.sidecar.purgeRemoteModelLinks(profile.id);
+        draft.identities = draft.identities.filter(
+          (candidate) =>
+            candidate.profileId !== profile.id ||
+            candidate.serverBinding === startingContext.serverBinding,
+        );
+        identity = undefined;
+        remoteLink = null;
+      }
+      const trustedRemoteLink =
+        remoteLink?.uploadStatus === 'uploaded' &&
+        identity?.serverBinding === startingContext.serverBinding
+          ? remoteLink
+          : null;
+      if (remoteLink && !trustedRemoteLink) {
+        await this.options.sidecar.removeRemoteModelLink(profile.id, hash);
+        remoteLink = null;
+      } else {
+        remoteLink = trustedRemoteLink;
+      }
       if (!identity) {
         identity = {
           profileId: profile.id,
           hash,
-          clientUploadId: remoteLink?.clientUploadId ?? this.createId(),
+          clientUploadId: this.createId(),
+          serverBinding: startingContext.serverBinding,
           remoteModelId: remoteLink?.remoteModelId ?? null,
           etag: remoteLink?.etag ?? null,
           updatedAt: timestamp,
@@ -476,6 +554,7 @@ export class UploadJobService {
       profileId: profile.id,
       profileName: profile.displayName,
       profileRevision: startingContext.revision,
+      serverBinding: startingContext.serverBinding,
       mode,
       state: 'running',
       paused: false,
@@ -533,7 +612,9 @@ export class UploadJobService {
       let changed = false;
       for (const item of job.items) {
         if (
-          (item.state === 'failed' || item.state === 'cancelled') &&
+          (item.state === 'failed' ||
+            item.state === 'cancelled' ||
+            item.state === 'uncertain') &&
           item.error?.retryable === true &&
           !item.error.duplicateRisk
         ) {
@@ -576,34 +657,97 @@ export class UploadJobService {
 
   async remove(jobId: string): Promise<{ removed: true }> {
     await this.requireReady();
-    const draft = cloneState(this.state);
-    const index = draft.jobs.findIndex((job) => job.id === jobId);
-    if (index < 0) throw new Error('Upload job not found.');
-    const job = draft.jobs[index]!;
-    if (
-      job.items.some(
-        (item) =>
-          item.state === 'queued' ||
-          item.state === 'uploading' ||
-          item.state === 'uncertain',
-      )
-    ) {
-      throw new Error(
-        'Active or uncertain uploads cannot be removed. Resolve or cancel them first.',
-      );
-    }
-    draft.jobs.splice(index, 1);
-    await this.commitDraft(draft);
+    await this.durableMutate((draft) => {
+      const index = draft.jobs.findIndex((job) => job.id === jobId);
+      if (index < 0) throw new Error('Upload job not found.');
+      const job = draft.jobs[index]!;
+      if (
+        job.items.some(
+          (item) =>
+            item.state === 'queued' ||
+            item.state === 'uploading' ||
+            item.state === 'uncertain',
+        )
+      ) {
+        throw new Error(
+          'Active or uncertain uploads cannot be removed. Resolve or cancel them first.',
+        );
+      }
+      draft.jobs.splice(index, 1);
+    });
     return { removed: true };
   }
 
   dispose(): void {
+    this.unsubscribeProfileChanges?.();
     for (const active of this.active.values()) active.controller.abort();
   }
 
+  private async handleProfileBindingChanged(
+    profileId: string,
+    previousBinding: string,
+  ): Promise<void> {
+    this.changingProfileBindings.add(profileId);
+    try {
+      await this.requireReady();
+    } catch {
+      try {
+        await this.options.sidecar.purgeRemoteModelLinks(profileId);
+      } finally {
+        this.changingProfileBindings.delete(profileId);
+      }
+      return;
+    }
+    try {
+      for (const job of this.state.jobs) {
+        if (
+          job.profileId !== profileId ||
+          job.serverBinding !== previousBinding
+        )
+          continue;
+        this.abortJob(job.id, 'cancel');
+      }
+      await this.durableMutate((draft) => {
+        for (const job of draft.jobs) {
+          if (
+            job.profileId !== profileId ||
+            job.serverBinding !== previousBinding
+          )
+            continue;
+          for (const item of job.items) {
+            if (item.state === 'queued') {
+              setItemState(item, 'cancelled', this.isoNow(), {
+                code: 'PROFILE_CHANGED',
+                message:
+                  'The server profile endpoint changed. Create a new upload job.',
+                retryable: false,
+                retryAfterSeconds: null,
+                duplicateRisk: false,
+              });
+            }
+          }
+        }
+        draft.identities = draft.identities.filter(
+          (identity) =>
+            identity.profileId !== profileId ||
+            identity.serverBinding !== previousBinding,
+        );
+      });
+      await this.options.sidecar.purgeRemoteModelLinks(profileId);
+    } finally {
+      this.changingProfileBindings.delete(profileId);
+    }
+  }
+
   private async requireReady(): Promise<void> {
+    if (this.resetting) {
+      throw new Error('The upload queue reset is still in progress.');
+    }
     if (this.queueError) throw this.queueError;
     await this.initialize();
+    if (this.resetting) {
+      throw new Error('The upload queue reset is still in progress.');
+    }
     if (this.queueError !== null) {
       throw controlledQueueError(this.queueError);
     }
@@ -637,12 +781,20 @@ export class UploadJobService {
   }
 
   private schedulePump(): void {
-    if (!this.initialized || this.pumpPending || this.queueError) return;
+    if (
+      !this.initialized ||
+      this.resetting ||
+      this.pumpPending ||
+      this.queueError
+    )
+      return;
     this.pumpPending = true;
     queueMicrotask(() => {
       this.pumpPending = false;
       void this.pump().catch((error: unknown) => {
-        this.queueError = controlledQueueError(error);
+        if (!(error instanceof StaleQueueGenerationError)) {
+          this.queueError = controlledQueueError(error);
+        }
       });
     });
   }
@@ -652,27 +804,58 @@ export class UploadJobService {
     this.pumping = true;
     try {
       while (this.active.size < this.concurrency && !this.queueError) {
+        const generation = this.queueGeneration;
         const candidate = this.nextQueuedItem();
         if (!candidate) break;
         const controller = new AbortController();
-        await this.durableMutate((draft) => {
-          const item = requireItem(
-            draft.jobs,
-            candidate.jobId,
-            candidate.itemId,
-          );
-          setItemState(item, 'uploading', this.isoNow(), null);
-          item.attempts += 1;
-        });
-        this.active.set(candidate.itemId, { controller, action: null });
-        void this.runItem(candidate.jobId, candidate.itemId, controller.signal)
+        await this.options.beforeClaim?.();
+        try {
+          await this.durableMutate((draft) => {
+            const job = requireJob(draft.jobs, candidate.jobId);
+            const item = job.items.find(
+              (entry) => entry.id === candidate.itemId,
+            );
+            if (
+              !item ||
+              job.paused ||
+              item.state !== 'queued' ||
+              this.active.has(candidate.itemId)
+            ) {
+              throw new SchedulerClaimLostError();
+            }
+            setItemState(item, 'uploading', this.isoNow(), null);
+            item.attempts += 1;
+          }, generation);
+        } catch (error) {
+          if (error instanceof SchedulerClaimLostError) continue;
+          throw error;
+        }
+        if (generation !== this.queueGeneration || this.resetting) continue;
+        const active: ActiveUpload = {
+          controller,
+          action: null,
+          generation,
+          worker: Promise.resolve(),
+        };
+        this.active.set(candidate.itemId, active);
+        const worker = this.runItem(
+          candidate.jobId,
+          candidate.itemId,
+          controller.signal,
+          generation,
+        )
           .catch((error: unknown) => {
-            this.queueError = controlledQueueError(error);
+            if (!(error instanceof StaleQueueGenerationError)) {
+              this.queueError = controlledQueueError(error);
+            }
           })
           .finally(() => {
-            this.active.delete(candidate.itemId);
-            this.schedulePump();
+            if (this.active.get(candidate.itemId) === active) {
+              this.active.delete(candidate.itemId);
+            }
+            if (generation === this.queueGeneration) this.schedulePump();
           });
+        active.worker = worker;
       }
     } finally {
       this.pumping = false;
@@ -707,18 +890,32 @@ export class UploadJobService {
     jobId: string,
     itemId: string,
     signal: AbortSignal,
+    generation: number,
   ): Promise<void> {
     let snapshot: UploadSnapshot | null = null;
     let cleanupError: Error | null = null;
+    let legacyBytesCommitted = false;
     try {
       const current = this.currentItem(jobId, itemId);
+      let context = await this.options.profiles.getAuthenticatedContext(
+        current.job.profileId,
+      );
+      assertContextMatchesJob(context, current.job);
       const existingLink = parseRemoteLink(
         await this.options.sidecar.getRemoteModelLink(
           current.job.profileId,
           current.item.hash,
         ),
       );
-      if (existingLink) {
+      const currentIdentity = requireIdentity(
+        this.state.identities,
+        current.job.profileId,
+        current.item.hash,
+      );
+      if (
+        existingLink?.uploadStatus === 'uploaded' &&
+        currentIdentity.serverBinding === current.job.serverBinding
+      ) {
         if (existingLink.clientUploadId !== current.item.clientUploadId) {
           throw new Error(
             'The catalog remote link conflicts with the durable upload identity.',
@@ -736,31 +933,33 @@ export class UploadJobService {
           identity.remoteModelId = existingLink.remoteModelId;
           identity.etag = existingLink.etag ?? null;
           identity.updatedAt = this.isoNow();
-        });
+        }, generation);
         return;
+      } else if (existingLink) {
+        await this.options.sidecar.removeRemoteModelLink(
+          current.job.profileId,
+          current.item.hash,
+        );
       }
       const rawModels = await this.options.sidecar.listModels();
       const model = ListModelsResponse.parse(rawModels).find(
         (candidate) => candidate.hash === current.item.hash,
       );
-      const location = model ? availableLocation(model) : null;
-      if (!model || !location) {
+      if (!model || !model.locations.some((location) => location.available)) {
         throw makeUploadError(
           'FILE_UNAVAILABLE',
           'The catalog file is no longer available.',
           false,
         );
       }
-      const approved = await this.options.approvals.authorizeFile(
-        location.path,
-      );
+      const approved = await this.openFirstApprovedLocation(model);
       snapshot = await this.options.snapshots.create(
-        approved.sourcePath,
+        approved,
         current.item.hash,
         current.job.id,
         signal,
       );
-      let context = await this.options.profiles.getAuthenticatedContext(
+      context = await this.options.profiles.getAuthenticatedContext(
         current.job.profileId,
       );
       assertContextMatchesJob(context, current.job);
@@ -779,22 +978,27 @@ export class UploadJobService {
           snapshot,
           thumbnail,
           signal,
+          generation,
         );
+        legacyBytesCommitted = current.job.mode === 'legacyModelOnly';
       } catch (error) {
         if (
           error instanceof ModelUploadError &&
           error.detail.code === 'UNAUTHENTICATED' &&
           current.job.mode === 'modern'
         ) {
-          const invalidated =
-            await this.options.profiles.invalidateRejectedContext(context);
-          if (!invalidated) throw profileChangedUploadError();
-          context = await this.options.profiles.getAuthenticatedContext(
-            current.job.profileId,
-          );
-          if (context.revision !== current.job.profileRevision) {
+          await this.options.profiles.invalidateRejectedContext(context);
+          const refreshedContext =
+            await this.options.profiles.getAuthenticatedContext(
+              current.job.profileId,
+            );
+          if (
+            refreshedContext.revision !== current.job.profileRevision ||
+            refreshedContext.serverBinding !== current.job.serverBinding
+          ) {
             throw profileChangedUploadError();
           }
+          context = refreshedContext;
           assertContextMatchesJob(context, current.job);
           thumbnail = await this.thumbnailFor(
             context,
@@ -809,6 +1013,7 @@ export class UploadJobService {
             snapshot,
             thumbnail,
             signal,
+            generation,
           );
         } else {
           throw error;
@@ -830,7 +1035,7 @@ export class UploadJobService {
         identity.remoteModelId = remote.id;
         identity.etag = remote.etag;
         identity.updatedAt = this.isoNow();
-      });
+      }, generation);
     } catch (error) {
       if (snapshot) {
         try {
@@ -839,7 +1044,15 @@ export class UploadJobService {
           cleanupError = controlledQueueError(cleanupFailure);
         }
       }
-      await this.recordFailure(jobId, itemId, cleanupError ?? error);
+      await this.recordFailure(
+        jobId,
+        itemId,
+        cleanupError ?? error,
+        generation,
+        legacyBytesCommitted ||
+          (error instanceof ModelUploadError &&
+            error.bytesMayHaveReachedServer),
+      );
       if (cleanupError) throw cleanupError;
     }
   }
@@ -851,6 +1064,7 @@ export class UploadJobService {
     snapshot: UploadSnapshot,
     thumbnail: Buffer | undefined,
     signal: AbortSignal,
+    generation: number,
   ): Promise<RemoteUploadResultDto> {
     return this.transport({
       endpoint: context.endpoint('api/3d-models/upload').toString(),
@@ -863,6 +1077,7 @@ export class UploadJobService {
       ...(thumbnail ? { thumbnail } : {}),
       signal,
       onProgress: async (bytesSent) => {
+        if (generation !== this.queueGeneration || this.resetting) return;
         const live = this.currentItem(job.id, item.id).item;
         if (
           bytesSent - live.bytesSent < PROGRESS_CHECKPOINT_BYTES &&
@@ -870,13 +1085,34 @@ export class UploadJobService {
         ) {
           return;
         }
+
         await this.durableMutate((draft) => {
           const draftItem = requireItem(draft.jobs, job.id, item.id);
           draftItem.bytesSent = Math.min(snapshot.size, bytesSent);
           draftItem.updatedAt = this.isoNow();
-        });
+        }, generation);
       },
     });
+  }
+
+  private async openFirstApprovedLocation(
+    model: LogicalModel,
+  ): Promise<ApprovedFile> {
+    let lastError: unknown = null;
+    for (const location of model.locations) {
+      if (!location.available) continue;
+      try {
+        return await this.options.approvals.openApprovedFile(location.path);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (lastError instanceof Error) throw lastError;
+    throw makeUploadError(
+      'FILE_UNAVAILABLE',
+      'No approved catalog copy is available for this model.',
+      false,
+    );
   }
 
   private async thumbnailFor(
@@ -909,6 +1145,8 @@ export class UploadJobService {
     jobId: string,
     itemId: string,
     error: unknown,
+    generation: number,
+    legacyBytesCommitted: boolean,
   ): Promise<void> {
     await this.durableMutate((draft) => {
       const job = requireJob(draft.jobs, jobId);
@@ -931,12 +1169,7 @@ export class UploadJobService {
           retryable: true,
           duplicateRisk: false,
         });
-      } else if (
-        job.mode === 'legacyModelOnly' &&
-        error instanceof ModelUploadError &&
-        error.bytesMayHaveReachedServer &&
-        isAmbiguousTransportError(error)
-      ) {
+      } else if (job.mode === 'legacyModelOnly' && legacyBytesCommitted) {
         setItemState(item, 'uncertain', this.isoNow(), {
           ...detail,
           code: 'LEGACY_UPLOAD_UNCERTAIN',
@@ -948,7 +1181,7 @@ export class UploadJobService {
       } else {
         setItemState(item, 'failed', this.isoNow(), detail);
       }
-    });
+    }, generation);
   }
 
   private async linkRemote(
@@ -960,15 +1193,22 @@ export class UploadJobService {
       await this.options.sidecar.getRemoteModelLink(job.profileId, item.hash),
     );
     if (existing) {
-      if (
-        existing.remoteModelId !== remote.id ||
-        existing.clientUploadId !== item.clientUploadId
-      ) {
-        throw new Error(
-          'The catalog remote link conflicts with the completed upload.',
+      if (existing.uploadStatus !== 'uploaded') {
+        await this.options.sidecar.removeRemoteModelLink(
+          job.profileId,
+          item.hash,
         );
+      } else {
+        if (
+          existing.remoteModelId !== remote.id ||
+          existing.clientUploadId !== item.clientUploadId
+        ) {
+          throw new Error(
+            'The catalog remote link conflicts with the completed upload.',
+          );
+        }
+        return;
       }
-      return;
     }
     const now = Math.floor(this.now() / 1000);
     const uploadedAt = Math.floor(Date.parse(remote.uploadedAt) / 1000);
@@ -997,8 +1237,12 @@ export class UploadJobService {
 
   private async durableMutate(
     operation: (draft: UploadJobStoreState) => void,
+    expectedGeneration = this.queueGeneration,
   ): Promise<void> {
     await this.withMutationLock(async () => {
+      if (expectedGeneration !== this.queueGeneration || this.resetting) {
+        throw new StaleQueueGenerationError();
+      }
       const draft = cloneState(this.state);
       operation(draft);
       for (const job of draft.jobs) refreshDerived(job);
@@ -1065,6 +1309,7 @@ function assertContextMatchesJob(
   if (
     currentMode !== job.mode ||
     context.revision !== job.profileRevision ||
+    context.serverBinding !== job.serverBinding ||
     context.profile.id !== job.profileId
   ) {
     throw profileChangedUploadError();
@@ -1108,17 +1353,6 @@ function isProfileChanged(error: unknown): boolean {
   );
 }
 
-function isAmbiguousTransportError(error: ModelUploadError): boolean {
-  return [
-    'ABORTED',
-    'UPLOAD_TIMEOUT',
-    'RESPONSE_TIMEOUT',
-    'TRANSPORT_ERROR',
-    'INVALID_RESPONSE',
-    'RESPONSE_TOO_LARGE',
-  ].includes(error.detail.code);
-}
-
 function parseRemoteLink(raw: unknown): RemoteModelLink | null {
   if (raw === null || raw === undefined) return null;
   const parsed = z
@@ -1129,6 +1363,7 @@ function parseRemoteLink(raw: unknown): RemoteModelLink | null {
       clientUploadId: z.string().uuid(),
       etag: z.string().min(1).max(1024).nullable().optional(),
       uploadedAt: z.number().int().nonnegative().nullable().optional(),
+      uploadStatus: z.enum(['pending', 'uploading', 'uploaded', 'failed']),
     })
     .passthrough()
     .safeParse(raw);
@@ -1139,6 +1374,7 @@ function parseRemoteLink(raw: unknown): RemoteModelLink | null {
     localModelHash: parsed.data.localModelHash,
     remoteModelId: parsed.data.remoteModelId,
     clientUploadId: parsed.data.clientUploadId,
+    uploadStatus: parsed.data.uploadStatus,
     etag: parsed.data.etag ?? null,
     uploadedAt: parsed.data.uploadedAt ?? null,
   };
@@ -1303,6 +1539,7 @@ function identitiesFromJobs(jobs: UploadJobDto[]): UploadIdentity[] {
         profileId: job.profileId,
         hash: item.hash,
         clientUploadId: item.clientUploadId,
+        serverBinding: job.serverBinding,
         remoteModelId: item.remote?.id ?? null,
         etag: item.remote?.etag ?? null,
         updatedAt: item.updatedAt,

@@ -2,9 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import {
   SidecarClient,
+  SIDECAR_RPC_PROTOCOL_VERSION,
   resolveSidecarPath,
   type SidecarChannel,
 } from '../src/main/sidecar';
+import { IPC_CONTRACT_VERSION } from '@shared/ipc';
 
 /**
  * An in-memory fake sidecar channel. Tests supply a `respond` callback that
@@ -62,6 +64,10 @@ function makeFakeChannel(
 }
 
 describe('SidecarClient', () => {
+  it('keeps Desktop IPC v2 independent from sidecar protocol v1', () => {
+    expect(IPC_CONTRACT_VERSION).toBe(2);
+    expect(SIDECAR_RPC_PROTOCOL_VERSION).toBe(1);
+  });
   it('resolves a handshake response', async () => {
     const { channel } = makeFakeChannel((req, emit) => {
       emit(
@@ -77,6 +83,22 @@ describe('SidecarClient', () => {
       protocolVersion: 1,
       sidecarVersion: '0.1.0',
     });
+  });
+
+  it('rejects a sidecar handshake protocol mismatch independently of Desktop IPC', async () => {
+    const { channel } = makeFakeChannel((req, emit) => {
+      emit(
+        JSON.stringify({
+          id: req.id,
+          ok: true,
+          result: { protocolVersion: 2, sidecarVersion: 'future' },
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel);
+    await expect(client.handshake()).rejects.toThrow(
+      /unsupported sidecar protocol 2; expected 1/,
+    );
   });
 
   it('sends a well-formed loadScene request and resolves the result', async () => {

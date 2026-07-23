@@ -1009,6 +1009,29 @@ export function App(): React.JSX.Element {
             >
               Clear selection
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (
+                  !window.confirm(
+                    'Reset all approved folders? Catalog files will require reauthorization before they can be opened or uploaded.',
+                  )
+                ) {
+                  return;
+                }
+                void window.printFarmer
+                  .resetApprovedRoots()
+                  .then(() => library.refresh())
+                  .catch((err: unknown) =>
+                    setAppError(
+                      err instanceof Error ? err.message : String(err),
+                    ),
+                  );
+              }}
+              disabled={workspaceActionsDisabled}
+            >
+              Reset approved folders
+            </button>
             {activeServer?.availability.modelUpload.mode ===
               'legacyModelOnly' && selectedHashes.size > 0 ? (
               <span className="upload-warning">

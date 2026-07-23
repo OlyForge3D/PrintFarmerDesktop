@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants as fsConstants, promises as fs } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { MAX_UPLOAD_REQUEST_BYTES } from './uploadTransport.js';
+import type { ApprovedFile } from './rootApprovals.js';
 
 const COPY_CHUNK_BYTES = 64 * 1024;
 
@@ -13,8 +14,9 @@ export interface UploadSnapshot {
 }
 
 export interface SnapshotManager {
+  initialize?(): Promise<void>;
   create(
-    sourcePath: string,
+    source: ApprovedFile,
     expectedHash: string,
     jobId: string,
     signal: AbortSignal,
@@ -43,65 +45,82 @@ export class PrivateSnapshotManager implements SnapshotManager {
     userDataPath: string,
     private readonly createId: () => string = randomUUID,
     private readonly hooks: {
-      afterLstat?: () => Promise<void>;
-      afterOpen?: () => Promise<void>;
       afterChunk?: (bytesCopied: number) => Promise<void>;
+      beforeCleanup?: () => Promise<void>;
     } = {},
   ) {
     this.root = path.join(userDataPath, 'upload-snapshots');
   }
 
+  async initialize(): Promise<void> {
+    await fs.mkdir(this.root, { recursive: true, mode: 0o700 });
+    await fs.chmod(this.root, 0o700);
+    const entries = await fs.readdir(this.root, { withFileTypes: true });
+    for (const entry of entries) {
+      if (
+        !entry.isDirectory() ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          entry.name,
+        )
+      ) {
+        continue;
+      }
+      const directory = path.join(this.root, entry.name);
+      const directoryStat = await fs.lstat(directory);
+      if (directoryStat.isSymbolicLink()) continue;
+      const children = await fs.readdir(directory, { withFileTypes: true });
+      if (
+        children.some(
+          (child) =>
+            !child.isFile() ||
+            child.isSymbolicLink() ||
+            !/^[0-9a-f-]{36}\.model$/i.test(child.name),
+        )
+      ) {
+        continue;
+      }
+      for (const child of children) {
+        await fs.unlink(path.join(directory, child.name));
+      }
+      await fs.rmdir(directory);
+    }
+  }
+
   async create(
-    sourcePath: string,
+    approved: ApprovedFile,
     expectedHash: string,
     jobId: string,
     signal: AbortSignal,
   ): Promise<UploadSnapshot> {
     const directory = path.join(this.root, jobId);
     const snapshotPath = path.join(directory, `${this.createId()}.model`);
-    let source: FileHandle | null = null;
+    let source: FileHandle | null = approved.handle;
     let destination: FileHandle | null = null;
     try {
-      const before = await fs.lstat(sourcePath);
-      if (before.isSymbolicLink()) {
-        throw new SnapshotError(
-          'SOURCE_SYMLINK',
-          'Symbolic-link model sources cannot be uploaded.',
-        );
-      }
-      if (!before.isFile()) {
+      const opened = await source.stat();
+      if (!opened.isFile()) {
         throw new SnapshotError(
           'SOURCE_UNAVAILABLE',
           'The catalog source is not a regular file.',
         );
       }
-      if (before.size > MAX_UPLOAD_REQUEST_BYTES) {
+      if (
+        opened.size !== approved.size ||
+        opened.size > MAX_UPLOAD_REQUEST_BYTES
+      ) {
         throw new SnapshotError(
           'SOURCE_TOO_LARGE',
           'The model exceeds the server upload limit.',
         );
       }
-      await this.hooks.afterLstat?.();
       await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-      const noFollow = fsConstants.O_NOFOLLOW ?? 0;
-      source = await fs.open(sourcePath, fsConstants.O_RDONLY | noFollow);
-      const opened = await source.stat();
-      if (
-        !opened.isFile() ||
-        opened.dev !== before.dev ||
-        opened.ino !== before.ino
-      ) {
-        throw new SnapshotError(
-          'SOURCE_CHANGED',
-          'The catalog source changed while it was being opened.',
-        );
-      }
-      await this.hooks.afterOpen?.();
+      await fs.chmod(directory, 0o700);
       destination = await fs.open(
         snapshotPath,
         fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL,
         0o600,
       );
+      await destination.chmod(0o600);
       const hash = createHash('sha256');
       const buffer = Buffer.allocUnsafe(COPY_CHUNK_BYTES);
       let total = 0;
@@ -160,8 +179,9 @@ export class PrivateSnapshotManager implements SnapshotManager {
         size: finalStat.size,
         cleanup: async () => {
           if (cleaned) return;
-          cleaned = true;
+          await this.hooks.beforeCleanup?.();
           await removeSnapshot(snapshotPath, directory);
+          cleaned = true;
         },
       };
     } catch (error) {

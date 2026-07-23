@@ -1,5 +1,7 @@
 import path from 'node:path';
-import { promises as fs } from 'node:fs';
+import { constants as fsConstants, promises as fs } from 'node:fs';
+import type { Stats } from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
@@ -33,6 +35,8 @@ export interface RootApprovalFileSystem {
   mkdir(directory: string): Promise<void>;
   unlink(filePath: string): Promise<void>;
   realpath(filePath: string): Promise<string>;
+  lstat?(filePath: string): Promise<Stats>;
+  open?(filePath: string, flags: number): Promise<FileHandle>;
 }
 
 const nodeFileSystem: RootApprovalFileSystem = {
@@ -43,7 +47,15 @@ const nodeFileSystem: RootApprovalFileSystem = {
     fs.mkdir(directory, { recursive: true }).then(() => undefined),
   unlink: (filePath) => fs.unlink(filePath),
   realpath: (filePath) => fs.realpath(filePath),
+  lstat: (filePath) => fs.lstat(filePath),
+  open: (filePath, flags) => fs.open(filePath, flags),
 };
+
+export interface ApprovedFile {
+  handle: FileHandle;
+  canonicalPath: string;
+  size: number;
+}
 
 export class RootApprovalError extends Error {
   constructor(
@@ -61,6 +73,8 @@ export interface RootApprovalStoreOptions {
   fileSystem?: RootApprovalFileSystem;
   createId?: () => string;
   now?: () => number;
+  beforeApprovedOpen?: () => Promise<void>;
+  afterApprovedOpen?: () => Promise<void>;
 }
 
 export class RootApprovalStore {
@@ -68,6 +82,8 @@ export class RootApprovalStore {
   private readonly createId: () => string;
   private readonly now: () => number;
   private readonly storePath: string;
+  private readonly beforeApprovedOpen: (() => Promise<void>) | undefined;
+  private readonly afterApprovedOpen: (() => Promise<void>) | undefined;
   private mutationTail: Promise<void> = Promise.resolve();
 
   constructor(options: RootApprovalStoreOptions) {
@@ -75,6 +91,8 @@ export class RootApprovalStore {
     this.createId = options.createId ?? randomUUID;
     this.now = options.now ?? Date.now;
     this.storePath = path.join(options.userDataPath, 'approved-roots.v1.json');
+    this.beforeApprovedOpen = options.beforeApprovedOpen;
+    this.afterApprovedOpen = options.afterApprovedOpen;
   }
 
   async approveFromPicker(selectedPath: string): Promise<{
@@ -177,6 +195,91 @@ export class RootApprovalStore {
     );
   }
 
+  async openApprovedFile(filePath: string): Promise<ApprovedFile> {
+    const lstat = (candidate: string): Promise<Stats> =>
+      this.fileSystem.lstat
+        ? this.fileSystem.lstat(candidate)
+        : fs.lstat(candidate);
+    const open = (candidate: string, flags: number): Promise<FileHandle> =>
+      this.fileSystem.open
+        ? this.fileSystem.open(candidate, flags)
+        : fs.open(candidate, flags);
+    let beforePath: string;
+    let before: Stats;
+    try {
+      [beforePath, before] = await Promise.all([
+        this.fileSystem.realpath(filePath),
+        lstat(filePath),
+      ]);
+    } catch {
+      throw new RootApprovalError(
+        'APPROVAL_REQUIRED',
+        'The catalog source is unavailable or no longer approved.',
+      );
+    }
+    if (before.isSymbolicLink() || !before.isFile()) {
+      throw new RootApprovalError(
+        'APPROVAL_REQUIRED',
+        'Symbolic-link or reparse-point model sources cannot be uploaded.',
+      );
+    }
+    const store = await this.readStore();
+    let approved = false;
+    for (const root of store.roots) {
+      try {
+        const currentRoot = await this.fileSystem.realpath(root.canonicalPath);
+        if (
+          samePath(currentRoot, root.canonicalPath) &&
+          isWithinRoot(currentRoot, beforePath)
+        ) {
+          approved = true;
+          break;
+        }
+      } catch {
+        // An unavailable root cannot authorize a source.
+      }
+    }
+    if (!approved) {
+      throw new RootApprovalError(
+        'APPROVAL_REQUIRED',
+        'This catalog location must be reauthorized before it can be uploaded.',
+      );
+    }
+    await this.beforeApprovedOpen?.();
+    const noFollow = fsConstants.O_NOFOLLOW ?? 0;
+    let handle: FileHandle | null = null;
+    try {
+      handle = await open(filePath, fsConstants.O_RDONLY | noFollow);
+      await this.afterApprovedOpen?.();
+      const [afterPath, after, opened] = await Promise.all([
+        this.fileSystem.realpath(filePath),
+        lstat(filePath),
+        handle.stat(),
+      ]);
+      if (
+        !samePath(beforePath, afterPath) ||
+        after.isSymbolicLink() ||
+        !after.isFile() ||
+        !opened.isFile() ||
+        !sameIdentity(before, after) ||
+        !sameIdentity(after, opened)
+      ) {
+        throw new RootApprovalError(
+          'APPROVAL_REQUIRED',
+          'The catalog source changed while its approved handle was opened.',
+        );
+      }
+      return { handle, canonicalPath: afterPath, size: opened.size };
+    } catch (error) {
+      await handle?.close().catch(() => undefined);
+      if (error instanceof RootApprovalError) throw error;
+      throw new RootApprovalError(
+        'APPROVAL_REQUIRED',
+        'The approved catalog source could not be opened securely.',
+      );
+    }
+  }
+
   async canonicalizePickerFile(filePath: string): Promise<string> {
     try {
       return await this.fileSystem.realpath(filePath);
@@ -268,21 +371,24 @@ export class RootApprovalStore {
 }
 
 export function isWithinRoot(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate);
+  const normalizedRoot = path.normalize(root);
+  const normalizedCandidate = path.normalize(candidate);
   return (
-    relative === '' ||
-    (!relative.startsWith(`..${path.sep}`) &&
-      relative !== '..' &&
-      !path.isAbsolute(relative))
+    normalizedCandidate === normalizedRoot ||
+    normalizedCandidate.startsWith(
+      normalizedRoot.endsWith(path.sep)
+        ? normalizedRoot
+        : `${normalizedRoot}${path.sep}`,
+    )
   );
 }
 
 function samePath(left: string, right: string): boolean {
-  const normalize = (value: string): string => {
-    const normalized = path.normalize(value);
-    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
-  };
-  return normalize(left) === normalize(right);
+  return path.normalize(left) === path.normalize(right);
+}
+
+function sameIdentity(left: Stats, right: Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 function parseJson(value: string): unknown {

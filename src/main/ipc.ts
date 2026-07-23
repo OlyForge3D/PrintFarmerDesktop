@@ -49,11 +49,7 @@ export function registerIpcHandlers(
     requestedPath: string,
   ): Promise<string> => {
     const canonicalPath = await approvals.canonicalizePickerFile(requestedPath);
-    const key =
-      process.platform === 'win32'
-        ? canonicalPath.toLowerCase()
-        : canonicalPath;
-    if (approvedPickerFiles.has(key)) return canonicalPath;
+    if (approvedPickerFiles.has(canonicalPath)) return canonicalPath;
     return (await approvals.authorizeFile(requestedPath)).canonicalPath;
   };
   const uploads =
@@ -354,11 +350,7 @@ export function registerIpcHandlers(
       ? await approvals.canonicalizePickerFile(selectedPath)
       : null;
     if (canonicalPath) {
-      approvedPickerFiles.add(
-        process.platform === 'win32'
-          ? canonicalPath.toLowerCase()
-          : canonicalPath,
-      );
+      approvedPickerFiles.add(canonicalPath);
     }
     const selected = canonicalPath ? { path: canonicalPath } : null;
     const response: OpenModelFileResponse = selected;
@@ -459,5 +451,13 @@ export function registerIpcHandlers(
   ipcMain.handle(IpcChannel.ResetUploadJobs, async () => {
     const response = await uploads.reset();
     return ipcSchemas[IpcChannel.ResetUploadJobs].response.parse(response);
+  });
+
+  ipcMain.handle(IpcChannel.ResetApprovedRoots, async () => {
+    await approvals.reset();
+    approvedPickerFiles.clear();
+    return ipcSchemas[IpcChannel.ResetApprovedRoots].response.parse({
+      reset: true,
+    });
   });
 }

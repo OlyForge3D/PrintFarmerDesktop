@@ -26,7 +26,9 @@ or uploads source models without an explicit user action.
 
 All renderer↔main messages are defined once in `src/shared/ipc.ts` with Zod
 schemas. The main process validates every request and response; the renderer
-gets static types. Bump `IPC_CONTRACT_VERSION` on any breaking change.
+gets static types. Desktop IPC is currently version 2. It is intentionally
+independent from the Rust sidecar RPC handshake, which remains protocol version
+1; bump each constant only for changes to its own wire boundary.
 
 ## Data model
 
@@ -102,3 +104,13 @@ generation are revalidated immediately before send; a conditional 401 refresh
 can retry one modern request with the same durable profile/hash upload
 identity. Legacy ambiguity requires a separate duplicate-risk confirmation.
 Queue reset is deliberate and retains the previous store as a backup.
+
+Upload source approval returns one verified file handle: main compares
+canonical paths and lstat/fstat identities before and after opening, without
+case folding, and snapshot hashing reads only that handle. Startup removes only
+well-formed stale snapshot directories. Queue generations fence initialization,
+scheduler claims, workers, progress, reset, and removal. Remote links suppress
+uploads only when their status is uploaded and their durable profile/endpoint
+binding still matches; profile endpoint changes abort old work and purge the
+old binding through the sidecar. Approval reset is a separate confirmed user
+action.

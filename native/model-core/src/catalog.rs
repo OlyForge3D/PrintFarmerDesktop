@@ -239,6 +239,14 @@ pub trait CatalogStore {
         limit: usize,
     ) -> Result<Vec<RemoteModelLinkDto>, String>;
 
+    fn remove_remote_model_link(
+        &mut self,
+        profile_id: &str,
+        local_model_hash: &str,
+    ) -> Result<bool, String>;
+
+    fn purge_remote_model_links(&mut self, profile_id: &str) -> Result<usize, String>;
+
     fn entity_revisions(
         &self,
         profile_id: &str,
@@ -942,6 +950,27 @@ impl CatalogStore for InMemoryCatalog {
         links.sort_by(|a, b| a.local_model_hash.cmp(&b.local_model_hash));
         links.truncate(limit);
         Ok(links)
+    }
+
+    fn remove_remote_model_link(
+        &mut self,
+        profile_id: &str,
+        local_model_hash: &str,
+    ) -> Result<bool, String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_local_hash(local_model_hash)?;
+        Ok(self
+            .remote_model_links
+            .remove(&(profile_id.to_string(), local_model_hash.to_string()))
+            .is_some())
+    }
+
+    fn purge_remote_model_links(&mut self, profile_id: &str) -> Result<usize, String> {
+        sync::validate_profile(profile_id)?;
+        let before = self.remote_model_links.len();
+        self.remote_model_links
+            .retain(|(stored_profile, _), _| stored_profile != profile_id);
+        Ok(before - self.remote_model_links.len())
     }
 
     fn entity_revisions(

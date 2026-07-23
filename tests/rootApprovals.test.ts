@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { promises as fs } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   isWithinRoot,
@@ -92,6 +94,7 @@ describe('main-owned root approvals', () => {
     expect(
       isWithinRoot(root, path.resolve('models-private', 'secret.stl')),
     ).toBe(false);
+    expect(isWithinRoot('C:\\Models', 'C:\\models\\part.stl')).toBe(false);
 
     const store = new RootApprovalStore({
       userDataPath: path.resolve('user-data'),
@@ -100,6 +103,59 @@ describe('main-owned root approvals', () => {
     await expect(
       store.resolve('22222222-2222-4222-8222-222222222222'),
     ).rejects.toMatchObject({ code: 'APPROVAL_REQUIRED' });
+  });
+
+  it('rejects an ancestor path swap around the approved open', async () => {
+    const fixture = path.resolve('tests', `.approval-${randomUUID()}`);
+    const root = path.join(fixture, 'root');
+    const ancestor = path.join(root, 'models');
+    const replacement = path.join(root, 'replacement');
+    const source = path.join(ancestor, 'part.stl');
+    try {
+      await fs.mkdir(ancestor, { recursive: true });
+      await fs.mkdir(replacement, { recursive: true });
+      await fs.writeFile(source, 'approved bytes');
+      await fs.writeFile(path.join(replacement, 'part.stl'), 'other bytes');
+      const store = new RootApprovalStore({
+        userDataPath: path.join(fixture, 'user-data'),
+        beforeApprovedOpen: async () => {
+          await fs.rename(ancestor, path.join(root, 'old-models'));
+          await fs.rename(replacement, ancestor);
+        },
+      });
+      await store.approveFromPicker(root);
+      await expect(store.openApprovedFile(source)).rejects.toMatchObject({
+        code: 'APPROVAL_REQUIRED',
+      });
+    } finally {
+      await fs.rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a symbolic-link source before opening it', async () => {
+    const fixture = path.resolve('tests', `.approval-${randomUUID()}`);
+    const root = path.join(fixture, 'root');
+    const target = path.join(root, 'target.stl');
+    const source = path.join(root, 'link.stl');
+    try {
+      await fs.mkdir(root, { recursive: true });
+      await fs.writeFile(target, 'bytes');
+      try {
+        await fs.symlink(target, source, 'file');
+      } catch (error) {
+        if ((error as { code?: unknown }).code === 'EPERM') return;
+        throw error;
+      }
+      const store = new RootApprovalStore({
+        userDataPath: path.join(fixture, 'user-data'),
+      });
+      await store.approveFromPicker(root);
+      await expect(store.openApprovedFile(source)).rejects.toMatchObject({
+        code: 'APPROVAL_REQUIRED',
+      });
+    } finally {
+      await fs.rm(fixture, { recursive: true, force: true });
+    }
   });
 
   it('surfaces corruption and only resets after an explicit call', async () => {

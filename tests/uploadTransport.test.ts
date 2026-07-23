@@ -188,6 +188,30 @@ describe('streaming multipart upload transport', () => {
     });
   });
 
+  it('times out and tears down even when an async progress callback hangs', async () => {
+    const modelPath = path.resolve('package.json');
+    const stat = await fs.stat(modelPath);
+    const baseUrl = await listen((request, response) => {
+      void response;
+      request.resume();
+    });
+    await expect(
+      createNodeUploadTransport({ uploadTimeoutMs: 20 })({
+        endpoint: `${baseUrl}/api/3d-models/upload`,
+        token: 'token',
+        modelPath,
+        displayName: 'model.stl',
+        modelSize: stat.size,
+        clientUploadId: '11111111-1111-4111-8111-111111111111',
+        mode: 'modern',
+        signal: new AbortController().signal,
+        onProgress: () => new Promise<void>(() => undefined),
+      }),
+    ).rejects.toMatchObject({
+      detail: { code: 'UPLOAD_TIMEOUT' },
+    });
+  });
+
   it('omits clientUploadId and thumbnail fields for legacy fallback', async () => {
     const modelPath = path.resolve('package.json');
     const stat = await fs.stat(modelPath);
@@ -257,9 +281,12 @@ describe('streaming multipart upload transport', () => {
         duplicateRisk: false,
       },
     });
+    expect((caught as { detail: { message: string } }).detail.message).toBe(
+      'The server is rate limiting uploads.',
+    );
     expect(
       (caught as { detail: { message: string } }).detail.message,
-    ).toContain('Please retry later');
+    ).not.toContain('Please retry later');
   });
 });
 

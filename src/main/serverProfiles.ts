@@ -172,6 +172,15 @@ export interface ProfileFileSystem {
   unlink(filePath: string): Promise<void>;
 }
 
+export function serverProfileBinding(
+  profileId: string,
+  baseUrl: string,
+): string {
+  return createHash('sha256')
+    .update(`${profileId}\0${normalizeServerUrl(baseUrl)}`)
+    .digest('hex');
+}
+
 export interface SecretStorage {
   isEncryptionAvailable(): boolean;
   encryptString(value: string): Uint8Array;
@@ -262,6 +271,7 @@ export interface AuthenticatedProfileContext {
   token: string;
   revision: string;
   generation: number;
+  serverBinding: string;
   endpoint(relativePath: string): URL;
 }
 
@@ -344,6 +354,9 @@ export class ServerProfileService {
   private readonly tokenBindings = new Map<string, TokenBinding>();
   private readonly tokenRenewals = new Map<string, TokenRenewal>();
   private readonly authGenerations = new Map<string, number>();
+  private readonly profileBindingListeners = new Set<
+    (profileId: string, previousBinding: string) => Promise<void> | void
+  >();
   private mutationTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly dependencies: ServerProfileDependencies) {
@@ -367,6 +380,16 @@ export class ServerProfileService {
     for (const id of ids) {
       this.invalidateToken(id);
     }
+  }
+
+  onProfileBindingChanged(
+    listener: (
+      profileId: string,
+      previousBinding: string,
+    ) => Promise<void> | void,
+  ): () => void {
+    this.profileBindingListeners.add(listener);
+    return () => this.profileBindingListeners.delete(listener);
   }
 
   async list(): Promise<ListServerProfilesResponse> {
@@ -500,13 +523,18 @@ export class ServerProfileService {
     this.requireEncryption();
     const secret = this.secretFromDraft(draft);
     const id = draft.id ?? this.createId();
-    const expectedRevision = await this.withMutationLock(async () => {
+    const expected = await this.withMutationLock(async () => {
       const store = await this.readStore();
       const existing = store.profiles.find((profile) => profile.id === id);
       if (draft.id && !existing) {
         throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
       }
-      return existing ? profileRevision(existing) : null;
+      return {
+        revision: existing ? profileRevision(existing) : null,
+        binding: existing
+          ? serverProfileBinding(existing.id, existing.baseUrl)
+          : null,
+      };
     });
     let probed: ProbedProfile;
     try {
@@ -542,7 +570,7 @@ export class ServerProfileService {
       const index = store.profiles.findIndex((profile) => profile.id === id);
       const current = index < 0 ? null : store.profiles[index]!;
       const currentRevision = current ? profileRevision(current) : null;
-      if (currentRevision !== expectedRevision) {
+      if (currentRevision !== expected.revision) {
         this.invalidateToken(id);
         throw profileChangedError();
       }
@@ -564,6 +592,10 @@ export class ServerProfileService {
         throw error;
       }
     });
+    const newBinding = serverProfileBinding(id, tested.baseUrl);
+    if (expected.binding && expected.binding !== newBinding) {
+      await this.notifyProfileBindingChanged(id, expected.binding);
+    }
     return tested;
   }
 
@@ -581,12 +613,15 @@ export class ServerProfileService {
   }
 
   async delete(id: string): Promise<ListServerProfilesResponse> {
-    return this.withMutationLock(async () => {
+    let previousBinding = '';
+    const result = await this.withMutationLock(async () => {
       const store = await this.readStore();
       const index = store.profiles.findIndex((profile) => profile.id === id);
       if (index < 0) {
         throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
       }
+      const removed = store.profiles[index]!;
+      previousBinding = serverProfileBinding(removed.id, removed.baseUrl);
       store.profiles.splice(index, 1);
       this.invalidateToken(id);
       if (store.selectedProfileId === id) {
@@ -595,6 +630,8 @@ export class ServerProfileService {
       await this.writeStore(store);
       return this.redactStore(store);
     });
+    await this.notifyProfileBindingChanged(id, previousBinding);
+    return result;
   }
 
   async getToken(id: string): Promise<string> {
@@ -697,6 +734,7 @@ export class ServerProfileService {
         token,
         revision,
         generation: cached.generation,
+        serverBinding: serverProfileBinding(stored.id, stored.baseUrl),
         endpoint: (relativePath: string) =>
           buildServerEndpoint(stored.baseUrl, relativePath),
       };
@@ -745,6 +783,17 @@ export class ServerProfileService {
       this.invalidateToken(context.profile.id);
       return true;
     });
+  }
+
+  private async notifyProfileBindingChanged(
+    profileId: string,
+    previousBinding: string,
+  ): Promise<void> {
+    await Promise.allSettled(
+      [...this.profileBindingListeners].map((listener) =>
+        Promise.resolve(listener(profileId, previousBinding)),
+      ),
+    );
   }
 
   private async probe(
