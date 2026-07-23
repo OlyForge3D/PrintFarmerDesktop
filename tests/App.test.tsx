@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react';
 import { App } from '../src/renderer/App.js';
 import type {
@@ -82,6 +83,63 @@ describe('<App />', () => {
     await waitFor(() =>
       expect(screen.getByRole('alert')).toHaveTextContent('bridge down'),
     );
+  });
+
+  it('shows detected slicer metadata after selecting a 3MF model', async () => {
+    const project: LogicalModel = {
+      hash: 'project',
+      format: 'threeMf',
+      size: 4096,
+      locations: [
+        {
+          rootId: 'root',
+          path: 'C:\\models\\project.3mf',
+          rootRelative: 'project.3mf',
+          size: 4096,
+          available: true,
+        },
+      ],
+    };
+    const extractVendorMetadata = vi.fn().mockResolvedValue({
+      slicer: 'orcaSlicer',
+      core: { application: 'OrcaSlicer-2.3.0' },
+      plates: [],
+      thumbnails: [],
+    });
+    const loadScene = vi.fn();
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 1,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([project]),
+      renderThumbnail: vi.fn().mockResolvedValue({
+        width: 256,
+        height: 256,
+        pngBase64: 'AAAA',
+      }),
+      tagsForModel: vi.fn().mockResolvedValue([]),
+      listCollections: vi.fn().mockResolvedValue([]),
+      collectionsForModel: vi.fn().mockResolvedValue([]),
+      extractVendorMetadata,
+      loadScene,
+    });
+
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Select project.3mf' }),
+    );
+
+    const inspector = screen.getByLabelText('Model properties');
+    await waitFor(() =>
+      expect(within(inspector).getByText('OrcaSlicer')).toBeVisible(),
+    );
+    expect(extractVendorMetadata).toHaveBeenCalledWith({
+      path: 'C:\\models\\project.3mf',
+    });
+    expect(loadScene).not.toHaveBeenCalled();
   });
 
   it('ignores a stale preview failure after another model is opened', async () => {

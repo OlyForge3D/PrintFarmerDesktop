@@ -141,6 +141,12 @@ function SelectedModelInspector({
         </dl>
       </InspectorSection>
 
+      {vendorMetadata ? (
+        <InspectorSection title="Slicer project">
+          <VendorPanel metadata={vendorMetadata} />
+        </InspectorSection>
+      ) : null}
+
       <InspectorSection title="Locations">
         <ul className="location-list">
           {visibleLocations.map((location) => (
@@ -193,12 +199,6 @@ function SelectedModelInspector({
         <p role="alert" className="inline-error">
           {organizationError}
         </p>
-      ) : null}
-
-      {vendorMetadata ? (
-        <InspectorSection title="Slicer project">
-          <VendorPanel metadata={vendorMetadata} />
-        </InspectorSection>
       ) : null}
     </div>
   );

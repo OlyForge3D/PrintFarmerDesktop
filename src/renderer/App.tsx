@@ -72,16 +72,50 @@ export function App(): React.JSX.Element {
 
   const library = useLibrary();
   const { favorites, isFavorite, toggle: toggleFavorite } = useFavorites();
+  const selectedModel = useMemo(
+    () =>
+      selectedHash
+        ? (library.models.find((model) => model.hash === selectedHash) ?? null)
+        : null,
+    [library.models, selectedHash],
+  );
+  const selectedPath =
+    selectedModel && isAvailable(selectedModel)
+      ? preferredPath(selectedModel)
+      : null;
   const modelTags = useModelTags(selectedHash);
   const modelCollections = useModelCollections(selectedHash);
-  const vendor = useVendorMetadata(
-    previewTarget?.path ?? null,
-    loadedMesh?.sourceFormat ?? null,
+  const selectedVendorState = useVendorMetadata(
+    selectedPath,
+    selectedModel?.format ?? null,
   );
-  const previewVendor =
-    previewTarget && vendor.sourcePath === previewTarget.path
-      ? vendor.metadata
+  const previewUsesSelectedVendor =
+    previewTarget !== null && previewTarget.path === selectedPath;
+  const previewVendorState = useVendorMetadata(
+    previewTarget && !previewUsesSelectedVendor ? previewTarget.path : null,
+    previewTarget && !previewUsesSelectedVendor
+      ? (loadedMesh?.sourceFormat ?? null)
+      : null,
+  );
+  const selectedVendor =
+    selectedPath && selectedVendorState.sourcePath === selectedPath
+      ? selectedVendorState.metadata
       : null;
+  const previewVendor =
+    previewTarget && previewUsesSelectedVendor
+      ? selectedVendor
+      : previewTarget && previewVendorState.sourcePath === previewTarget.path
+        ? previewVendorState.metadata
+        : null;
+
+  useEffect(() => {
+    if (selectedModel && selectedVendor) {
+      setCachedVendor({
+        hash: selectedModel.hash,
+        metadata: selectedVendor,
+      });
+    }
+  }, [selectedModel, selectedVendor]);
 
   useEffect(() => {
     if (previewTarget?.hash && previewVendor) {
@@ -91,14 +125,6 @@ export function App(): React.JSX.Element {
       });
     }
   }, [previewTarget, previewVendor]);
-
-  const selectedModel = useMemo(
-    () =>
-      selectedHash
-        ? (library.models.find((model) => model.hash === selectedHash) ?? null)
-        : null,
-    [library.models, selectedHash],
-  );
 
   const libraryView = useMemo(
     () => ({ query, filter, sort, favorites }),
@@ -304,9 +330,10 @@ export function App(): React.JSX.Element {
       ? cachedStats.stats
       : null;
   const inspectedVendor =
-    selectedHash && cachedVendor?.hash === selectedHash
+    selectedVendor ??
+    (selectedHash && cachedVendor?.hash === selectedHash
       ? cachedVendor.metadata
-      : null;
+      : null);
   const organizationError = modelTags.error ?? modelCollections.error;
 
   return (
