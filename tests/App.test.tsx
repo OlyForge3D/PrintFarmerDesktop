@@ -533,6 +533,88 @@ describe('<App />', () => {
     expect(addFolder).toBeEnabled();
   });
 
+  it.each([
+    ['cancellation', null],
+    ['failure', new Error('folder picker unavailable')],
+  ] as const)(
+    'restores Add folder focus after native picker %s',
+    async (_label, outcome) => {
+      installApi({
+        getAppInfo: vi.fn().mockResolvedValue({
+          contractVersion: 1,
+          appVersion: '0.1.0',
+          platform: 'win32',
+          electronVersion: '33.0.0',
+        }),
+        listModels: vi.fn().mockResolvedValue([]),
+        openFolder:
+          outcome instanceof Error
+            ? vi.fn().mockRejectedValue(outcome)
+            : vi.fn().mockResolvedValue(outcome),
+      });
+      render(<App />);
+      const addFolder = await screen.findByRole('button', {
+        name: 'Add folder',
+      });
+      await waitFor(() => expect(addFolder).toBeEnabled());
+      addFolder.focus();
+
+      fireEvent.click(addFolder);
+
+      await waitFor(() => expect(addFolder).toBeEnabled());
+      await waitFor(() => expect(addFolder).toHaveFocus());
+      expect(
+        screen.queryByRole('dialog', {
+          name: 'Organize models before importing',
+        }),
+      ).not.toBeInTheDocument();
+      if (outcome instanceof Error) {
+        expect(screen.getByRole('alert')).toHaveTextContent(
+          'folder picker unavailable',
+        );
+      }
+    },
+  );
+
+  it.each([
+    ['cancellation', null],
+    ['failure', new Error('file picker unavailable')],
+  ] as const)(
+    'restores Open file focus after native picker %s',
+    async (_label, outcome) => {
+      installApi({
+        getAppInfo: vi.fn().mockResolvedValue({
+          contractVersion: 1,
+          appVersion: '0.1.0',
+          platform: 'win32',
+          electronVersion: '33.0.0',
+        }),
+        listModels: vi.fn().mockResolvedValue([]),
+        openModelFile:
+          outcome instanceof Error
+            ? vi.fn().mockRejectedValue(outcome)
+            : vi.fn().mockResolvedValue(outcome),
+      });
+      render(<App />);
+      const openFile = await screen.findByRole('button', { name: 'Open file' });
+      await waitFor(() => expect(openFile).toBeEnabled());
+      openFile.focus();
+
+      fireEvent.click(openFile);
+
+      await waitFor(() => expect(openFile).toBeEnabled());
+      await waitFor(() => expect(openFile).toHaveFocus());
+      expect(
+        screen.queryByRole('dialog', { name: /3D preview/ }),
+      ).not.toBeInTheDocument();
+      if (outcome instanceof Error) {
+        expect(screen.getByRole('alert')).toHaveTextContent(
+          'file picker unavailable',
+        );
+      }
+    },
+  );
+
   it('shows an error when the main process call fails', async () => {
     installApi({
       getAppInfo: vi.fn().mockRejectedValue(new Error('bridge down')),

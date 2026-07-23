@@ -34,7 +34,7 @@ export interface Library {
   /** Organization summary from the most recently completed import. */
   lastImport: ImportRootResponse | null;
   /** Prompt for a folder and prepare a read-only hierarchy preview. */
-  addFolder: () => Promise<void>;
+  addFolder: () => Promise<boolean>;
   /** Reconcile and organize the prepared folder using the confirmed rules. */
   confirmImport: (
     plan: Pick<ImportRootRequest, 'rules' | 'commonTags'>,
@@ -79,7 +79,7 @@ export function useLibrary(): Library {
   const addFolder = useCallback(async () => {
     if (importInFlightRef.current) {
       setError('An import operation is already in progress.');
-      return;
+      return false;
     }
     importInFlightRef.current = true;
     setError(null);
@@ -87,7 +87,7 @@ export function useLibrary(): Library {
     try {
       const selection = await window.printFarmer.openFolder();
       if (!selection) {
-        return;
+        return false;
       }
       const [preview, collections, tags] = await Promise.all([
         window.printFarmer.previewImport({ path: selection.path }),
@@ -98,7 +98,7 @@ export function useLibrary(): Library {
         setError(
           `Could not inspect the entire folder (${preview.skippedErrors} filesystem errors). No files were imported.`,
         );
-        return;
+        return false;
       }
       setImportDraft({
         rootId: rootIdForPath(selection.path),
@@ -107,8 +107,10 @@ export function useLibrary(): Library {
         collections,
         tags,
       });
+      return true;
     } catch (err: unknown) {
       setError(messageOf(err));
+      return false;
     } finally {
       importInFlightRef.current = false;
       setStatus('idle');

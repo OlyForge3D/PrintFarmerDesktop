@@ -120,6 +120,44 @@ export function App(): React.JSX.Element {
     },
     [setModalOwner],
   );
+  const releaseAndRestoreTrigger = useCallback(
+    (
+      owner: 'import' | 'previewPreparation',
+      ownerEpoch: number,
+      trigger: React.RefObject<HTMLElement | null>,
+      fallbackSelector: string,
+    ): void => {
+      if (
+        modalOwnerRef.current !== owner ||
+        modalOwnerEpochRef.current !== ownerEpoch
+      ) {
+        return;
+      }
+      releaseModal(owner);
+      const releasedEpoch = modalOwnerEpochRef.current;
+      const focusWhenEnabled = (attempt: number): void => {
+        setTimeout(() => {
+          if (
+            modalOwnerRef.current !== 'none' ||
+            modalOwnerEpochRef.current !== releasedEpoch
+          ) {
+            return;
+          }
+          const previous = trigger.current;
+          const fallback =
+            document.querySelector<HTMLElement>(fallbackSelector);
+          const target = previous?.isConnected ? previous : fallback;
+          if (target && !target.matches(':disabled')) {
+            target.focus();
+          } else if (attempt < 3) {
+            focusWhenEnabled(attempt + 1);
+          }
+        }, 0);
+      };
+      focusWhenEnabled(0);
+    },
+    [releaseModal],
+  );
   const modalOpen = previewOpen || library.importDraft !== null || profilesOpen;
   const prepareFolderImport = library.addFolder;
   const dismissFolderImport = library.cancelImport;
@@ -322,22 +360,44 @@ export function App(): React.JSX.Element {
     ) {
       return;
     }
-    if (reserveModal('import') === null) return;
+    const ownerEpoch = reserveModal('import');
+    if (ownerEpoch === null) return;
     importPreparationRef.current = true;
     setImportPreparing(true);
     importReturnFocusRef.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
-    void prepareFolderImport().finally(() => {
-      importPreparationRef.current = false;
-      setImportPreparing(false);
-    });
+    void prepareFolderImport().then(
+      (opened) => {
+        importPreparationRef.current = false;
+        setImportPreparing(false);
+        if (!opened) {
+          releaseAndRestoreTrigger(
+            'import',
+            ownerEpoch,
+            importReturnFocusRef,
+            '.sidebar-primary-action',
+          );
+        }
+      },
+      () => {
+        importPreparationRef.current = false;
+        setImportPreparing(false);
+        releaseAndRestoreTrigger(
+          'import',
+          ownerEpoch,
+          importReturnFocusRef,
+          '.sidebar-primary-action',
+        );
+      },
+    );
   }, [
     busy,
     library.importDraft,
     prepareFolderImport,
     previewOpen,
+    releaseAndRestoreTrigger,
     reserveModal,
   ]);
 
@@ -498,7 +558,12 @@ export function App(): React.JSX.Element {
         return;
       }
       if (!selection) {
-        releaseModal('previewPreparation');
+        releaseAndRestoreTrigger(
+          'previewPreparation',
+          entryEpoch,
+          previewReturnFocusRef,
+          '.library-commandbar .command-button',
+        );
         return;
       }
       const name = selection.path.replace(/^.*[\\/]/, '');
@@ -508,8 +573,13 @@ export function App(): React.JSX.Element {
         modalOwnerRef.current === 'previewPreparation' &&
         modalOwnerEpochRef.current === entryEpoch
       ) {
-        releaseModal('previewPreparation');
         setAppError(err instanceof Error ? err.message : String(err));
+        releaseAndRestoreTrigger(
+          'previewPreparation',
+          entryEpoch,
+          previewReturnFocusRef,
+          '.library-commandbar .command-button',
+        );
       }
     }
   }, [
@@ -517,7 +587,7 @@ export function App(): React.JSX.Element {
     library.importDraft,
     loadPreview,
     previewOpen,
-    releaseModal,
+    releaseAndRestoreTrigger,
     rememberPreviewTrigger,
     reserveModal,
   ]);
