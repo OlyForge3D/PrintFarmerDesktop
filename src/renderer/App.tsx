@@ -28,12 +28,6 @@ import { computeSceneStats, type SceneStats } from './library/sceneStats';
 import { PreviewWorkspace } from './viewer/PreviewWorkspace';
 import type { Projection } from './viewer/ModelViewer';
 import { Icon } from './ui/Icon';
-import {
-  DESIGN_CONCEPTS,
-  initialDesignConcept,
-  persistDesignConcept,
-  type DesignConcept,
-} from './ui/design';
 
 interface PreviewTarget {
   path: string;
@@ -44,7 +38,6 @@ interface PreviewTarget {
 export function App(): React.JSX.Element {
   const [info, setInfo] = useState<AppInfoResponse | null>(null);
   const [appError, setAppError] = useState<string | null>(null);
-  const [design, setDesign] = useState<DesignConcept>(initialDesignConcept);
   const [query, setQuery] = useState(defaultLibraryView.query);
   const [filter, setFilter] = useState<FilterKey>(defaultLibraryView.filter);
   const [sort, setSort] = useState<SortKey>(defaultLibraryView.sort);
@@ -189,11 +182,6 @@ export function App(): React.JSX.Element {
     }
   }, [previewOpen]);
 
-  const selectDesign = useCallback((concept: DesignConcept) => {
-    setDesign(concept);
-    persistDesignConcept(concept);
-  }, []);
-
   const rememberPreviewTrigger = useCallback(() => {
     previewReturnFocusRef.current =
       document.activeElement instanceof HTMLElement
@@ -322,10 +310,7 @@ export function App(): React.JSX.Element {
   const organizationError = modelTags.error ?? modelCollections.error;
 
   return (
-    <div
-      className={`app-root design-${design}${info ? ` platform-${info.platform}` : ''}`}
-      data-design={design}
-    >
+    <div className={`app-root${info ? ` platform-${info.platform}` : ''}`}>
       <header
         ref={titlebarRef}
         className="window-titlebar"
@@ -334,20 +319,6 @@ export function App(): React.JSX.Element {
         <div className="product-identity">
           <Icon name="app" size={18} />
           <h1>PrintFarmer Desktop</h1>
-        </div>
-        <div className="design-review" aria-label="UI design concepts">
-          <span className="design-review-label">Design review</span>
-          {DESIGN_CONCEPTS.map((concept) => (
-            <button
-              key={concept.id}
-              type="button"
-              aria-pressed={design === concept.id}
-              title={`${concept.name}: ${concept.description}`}
-              onClick={() => selectDesign(concept.id)}
-            >
-              {concept.shortName}
-            </button>
-          ))}
         </div>
         <div className="titlebar-drag-region" aria-hidden="true" />
       </header>
@@ -513,7 +484,6 @@ export function App(): React.JSX.Element {
           </span>
         ) : null}
         <span className="statusbar-spacer" />
-        <span>{DESIGN_CONCEPTS.find((item) => item.id === design)?.name}</span>
         {info ? (
           <span>
             v{info.appVersion} / {info.platform}

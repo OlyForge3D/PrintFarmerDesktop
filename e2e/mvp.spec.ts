@@ -80,7 +80,7 @@ test('mounts the React app shell', async () => {
   await expect(
     page.getByRole('heading', { name: 'PrintFarmer Desktop' }),
   ).toBeVisible();
-  await expect(page.getByLabel('UI design concepts')).toBeVisible();
+  await expect(page.locator('.window-titlebar')).toBeVisible();
   await expect(page.getByLabel('Library navigation')).toBeVisible();
   await expect(page.getByLabel('Model properties')).toBeVisible();
 });
@@ -118,29 +118,6 @@ test('shows onboarding CTA for a fresh empty catalog', async () => {
       name: 'Add your first folder',
     }),
   ).toBeVisible();
-});
-
-test('switches between all three working design concepts', async () => {
-  for (const [button, design] of [
-    ['Studio', 'studio'],
-    ['Archive', 'archive'],
-    ['Console', 'console'],
-  ] as const) {
-    await page.getByRole('button', { name: button }).click();
-    await expect(page.locator('.app-root')).toHaveAttribute(
-      'data-design',
-      design,
-    );
-  }
-
-  await page.getByRole('button', { name: 'Archive' }).click();
-  await page.reload();
-  await expect(page.locator('.app-root')).toHaveAttribute(
-    'data-design',
-    'archive',
-  );
-  // Leave a deterministic concept for tests that run with or without this test.
-  await page.getByRole('button', { name: 'Studio' }).click();
 });
 
 test('uses reliable custom window chrome', async () => {
@@ -216,53 +193,30 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
   await expect(page.getByRole('application')).toHaveCount(0);
   await expect(page.getByRole('dialog')).toHaveCount(0);
 
-  for (const [button, design, accent, layout] of [
-    ['Studio', 'studio', '#62b0e8', 'grid'],
-    ['Archive', 'archive', '#7a4034', 'grid'],
-    ['Console', 'console', '#4ea7a2', 'list'],
-  ] as const) {
-    await page.getByRole('button', { name: button }).click();
-    await expect(page.locator('.app-root')).toHaveAttribute(
-      'data-design',
-      design,
-    );
-    await expect(select).toBeVisible();
-    await expect(
-      page.locator('.properties-inspector').getByRole('heading', {
-        name: filename,
-      }),
-    ).toBeVisible();
-    await expect
-      .poll(() =>
-        page.locator('.model-name').evaluate((element) => ({
-          clipped: element.scrollWidth > element.clientWidth,
-          textOverflow: getComputedStyle(element).textOverflow,
-        })),
-      )
-      .toEqual({ clipped: true, textOverflow: 'ellipsis' });
-    const conceptMetrics = await page.evaluate(() => {
-      const root = document.querySelector('.app-root');
-      const grid = document.querySelector('.model-grid');
-      const card = document.querySelector('.model-card');
-      if (!root || !grid || !card) {
-        throw new Error('Concept layout did not render');
-      }
-      return {
-        accent: getComputedStyle(root).getPropertyValue('--accent').trim(),
-        columnCount:
-          getComputedStyle(grid).gridTemplateColumns.split(' ').length,
-        cardHeight: card.getBoundingClientRect().height,
-      };
-    });
-    expect(conceptMetrics.accent).toBe(accent);
-    if (layout === 'list') {
-      expect(conceptMetrics.columnCount).toBe(1);
-      expect(conceptMetrics.cardHeight).toBeLessThan(70);
-    } else {
-      expect(conceptMetrics.columnCount).toBeGreaterThan(1);
-      expect(conceptMetrics.cardHeight).toBeGreaterThan(120);
+  await expect
+    .poll(() =>
+      page.locator('.model-name').evaluate((element) => ({
+        clipped: element.scrollWidth > element.clientWidth,
+        textOverflow: getComputedStyle(element).textOverflow,
+      })),
+    )
+    .toEqual({ clipped: true, textOverflow: 'ellipsis' });
+  const studioMetrics = await page.evaluate(() => {
+    const root = document.querySelector('.app-root');
+    const grid = document.querySelector('.model-grid');
+    const card = document.querySelector('.model-card');
+    if (!root || !grid || !card) {
+      throw new Error('Studio layout did not render');
     }
-  }
+    return {
+      accent: getComputedStyle(root).getPropertyValue('--accent').trim(),
+      columnCount: getComputedStyle(grid).gridTemplateColumns.split(' ').length,
+      cardHeight: card.getBoundingClientRect().height,
+    };
+  });
+  expect(studioMetrics.accent).toBe('#62b0e8');
+  expect(studioMetrics.columnCount).toBeGreaterThan(1);
+  expect(studioMetrics.cardHeight).toBeGreaterThan(120);
 
   const inspectorPreview = page
     .locator('.properties-inspector')
