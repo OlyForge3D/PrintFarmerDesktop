@@ -1425,46 +1425,40 @@ impl CatalogStore for InMemoryCatalog {
         {
             return Err("settlement references an operation outside the batch".to_string());
         }
-        let mut mapping_plan = Vec::new();
-        if settlement.conflicts.is_empty() {
-            for applied in &settlement.applied {
-                let operation = keys
-                    .iter()
-                    .map(|(_, key)| &self.sync_outbox[key])
-                    .find(|operation| operation.operation_id == applied.operation_id)
-                    .expect("settlement operation was preflighted");
-                if self.sync_entities.values().any(|mapping| {
-                    mapping.profile_id == settlement.profile_id
-                        && mapping.entity_type == operation.entity_type
-                        && mapping.local_id.as_deref() == Some(&operation.entity_id)
-                        && mapping.remote_id != applied.remote_id
-                }) {
-                    return Err(
-                        "settlement localId is already mapped to a different remote entity"
-                            .to_string(),
-                    );
-                }
-                let key = (
-                    settlement.profile_id.clone(),
-                    operation.entity_type,
-                    applied.remote_id.clone(),
-                );
-                let incoming = EntityRevisionDto {
-                    profile_id: settlement.profile_id.clone(),
-                    entity_type: operation.entity_type,
-                    local_id: Some(operation.entity_id.clone()),
-                    remote_id: applied.remote_id.clone(),
-                    revision: applied.revision,
-                    concurrency_token: applied.concurrency_token.clone(),
-                    tombstone: operation.operation == sync::SyncOperationKind::Delete,
-                    visibility: SyncVisibility::Private,
-                    snapshot: None,
-                    updated_at: settlement.settled_at,
-                };
-                let mapping = sync::merge_entity_revision(self.sync_entities.get(&key), incoming)?;
-                mapping_plan.push((key, mapping));
-            }
-        }
+        let mapping_plan = if settlement.conflicts.is_empty() {
+            let incoming: Vec<_> = settlement
+                .applied
+                .iter()
+                .map(|applied| {
+                    let operation = keys
+                        .iter()
+                        .map(|(_, key)| &self.sync_outbox[key])
+                        .find(|operation| operation.operation_id == applied.operation_id)
+                        .expect("settlement operation was preflighted");
+                    EntityRevisionDto {
+                        profile_id: settlement.profile_id.clone(),
+                        entity_type: operation.entity_type,
+                        local_id: Some(operation.entity_id.clone()),
+                        remote_id: applied.remote_id.clone(),
+                        revision: applied.revision,
+                        concurrency_token: applied.concurrency_token.clone(),
+                        tombstone: operation.operation == sync::SyncOperationKind::Delete,
+                        visibility: SyncVisibility::Private,
+                        snapshot: None,
+                        updated_at: settlement.settled_at,
+                    }
+                })
+                .collect();
+            let existing: Vec<_> = self
+                .sync_entities
+                .values()
+                .filter(|mapping| mapping.profile_id == settlement.profile_id)
+                .cloned()
+                .collect();
+            sync::preflight_entity_revision_set(&existing, incoming)?
+        } else {
+            Vec::new()
+        };
 
         self.begin_batch()?;
         let result = (|| {
@@ -1486,8 +1480,15 @@ impl CatalogStore for InMemoryCatalog {
                     operation.updated_at = settlement.settled_at;
                     operation.acked_at = Some(settlement.settled_at);
                 }
-                for (key, mapping) in mapping_plan {
-                    self.sync_entities.insert(key, mapping);
+                for mapping in mapping_plan {
+                    self.sync_entities.insert(
+                        (
+                            mapping.profile_id.clone(),
+                            mapping.entity_type,
+                            mapping.remote_id.clone(),
+                        ),
+                        mapping,
+                    );
                 }
             } else {
                 for (_, key) in &keys {

@@ -1551,36 +1551,29 @@ impl CatalogStore for SqliteCatalog {
         {
             return Err("settlement references an operation outside the batch".to_string());
         }
-        let mut mapping_plan = Vec::new();
-        if settlement.conflicts.is_empty() {
+        let mapping_plan = if settlement.conflicts.is_empty() {
+            let mut current_mappings = Vec::new();
+            let mut incoming = Vec::with_capacity(settlement.applied.len());
             for applied in &settlement.applied {
                 let operation = existing
                     .iter()
                     .find(|operation| operation.operation_id == applied.operation_id)
                     .expect("settlement operation was preflighted");
-                let local_conflict: bool = self
-                    .conn
-                    .query_row(
-                        "SELECT EXISTS(
-                            SELECT 1 FROM sync_entities
-                            WHERE profile_id = ?1 AND entity_type = ?2 AND local_id = ?3
-                              AND remote_id <> ?4)",
-                        params![
-                            settlement.profile_id,
-                            operation.entity_type.as_db(),
-                            operation.entity_id,
-                            applied.remote_id
-                        ],
-                        |row| row.get(0),
-                    )
-                    .map_err(sql_error)?;
-                if local_conflict {
-                    return Err(
-                        "settlement localId is already mapped to a different remote entity"
-                            .to_string(),
-                    );
+                if let Some(mapping) = self.entity_by_remote(
+                    &settlement.profile_id,
+                    operation.entity_type,
+                    &applied.remote_id,
+                )? {
+                    current_mappings.push(mapping);
                 }
-                let incoming = EntityRevisionDto {
+                if let Some(mapping) = self.entity_revision_by_local(
+                    &settlement.profile_id,
+                    operation.entity_type,
+                    &operation.entity_id,
+                )? {
+                    current_mappings.push(mapping);
+                }
+                incoming.push(EntityRevisionDto {
                     profile_id: settlement.profile_id.clone(),
                     entity_type: operation.entity_type,
                     local_id: Some(operation.entity_id.clone()),
@@ -1591,15 +1584,12 @@ impl CatalogStore for SqliteCatalog {
                     visibility: SyncVisibility::Private,
                     snapshot: None,
                     updated_at: settlement.settled_at,
-                };
-                let current = self.entity_by_remote(
-                    &settlement.profile_id,
-                    operation.entity_type,
-                    &applied.remote_id,
-                )?;
-                mapping_plan.push(sync::merge_entity_revision(current.as_ref(), incoming)?);
+                });
             }
-        }
+            sync::preflight_entity_revision_set(&current_mappings, incoming)?
+        } else {
+            Vec::new()
+        };
 
         self.begin_batch()?;
         let result = (|| {

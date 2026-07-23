@@ -976,6 +976,61 @@ pub(crate) fn merge_entity_revision(
     Ok(incoming)
 }
 
+pub(crate) fn preflight_entity_revision_set(
+    existing: &[EntityRevisionDto],
+    incoming: Vec<EntityRevisionDto>,
+) -> Result<Vec<EntityRevisionDto>, String> {
+    let mut by_remote = std::collections::HashMap::new();
+    let mut by_local = std::collections::HashMap::new();
+    for mapping in existing {
+        let remote_key = (mapping.entity_type, mapping.remote_id.clone());
+        if let Some(previous) = by_remote.insert(remote_key, mapping.clone()) {
+            if previous != *mapping {
+                return Err("existing remote mapping index is inconsistent".to_string());
+            }
+        }
+        if let Some(local_id) = &mapping.local_id {
+            let local_key = (mapping.entity_type, local_id.clone());
+            if let Some(previous_remote) = by_local.insert(local_key, mapping.remote_id.clone()) {
+                if previous_remote != mapping.remote_id {
+                    return Err("existing local mapping index is inconsistent".to_string());
+                }
+            }
+        }
+    }
+
+    let mut sibling_results = std::collections::HashMap::new();
+    let mut output_keys = Vec::new();
+    for incoming_mapping in incoming {
+        let normalized = merge_entity_revision(None, incoming_mapping)?;
+        let remote_key = (normalized.entity_type, normalized.remote_id.clone());
+        if let Some(previous) = sibling_results.get(&remote_key) {
+            if previous != &normalized {
+                return Err("sibling results conflict for the same remote mapping".to_string());
+            }
+            continue;
+        }
+        if let Some(local_id) = &normalized.local_id {
+            let local_key = (normalized.entity_type, local_id.clone());
+            if let Some(previous_remote) = by_local.get(&local_key) {
+                if previous_remote != &normalized.remote_id {
+                    return Err("sibling results map one localId to two remoteIds".to_string());
+                }
+            }
+            by_local.insert(local_key, normalized.remote_id.clone());
+        }
+        let merged = merge_entity_revision(by_remote.get(&remote_key), normalized.clone())?;
+        by_remote.insert(remote_key.clone(), merged);
+        sibling_results.insert(remote_key.clone(), normalized);
+        output_keys.push(remote_key);
+    }
+
+    Ok(output_keys
+        .into_iter()
+        .filter_map(|key| by_remote.remove(&key))
+        .collect())
+}
+
 pub(crate) fn new_lease_token() -> String {
     new_collision_resistant_token("lease")
 }
@@ -2545,6 +2600,171 @@ mod tests {
     #[test]
     fn sqlite_rejects_conflicting_remote_settlement_before_ack() {
         assert_conflicting_remote_settlement_rolls_back(
+            &mut crate::sqlite_catalog::SqliteCatalog::open_in_memory().unwrap(),
+        );
+    }
+
+    fn claim_pair(
+        store: &mut dyn CatalogStore,
+        profile: &str,
+        second_local_id: &str,
+    ) -> ClaimedOutboundBatchDto {
+        let first = operation(&format!("{profile}-1"));
+        let mut second = operation(&format!("{profile}-2"));
+        second.entity_id = second_local_id.to_string();
+        store
+            .enqueue_outbound_operations(profile, "batch", vec![first, second])
+            .unwrap();
+        store
+            .claim_outbound_operations(profile, 2, 10, 10)
+            .unwrap()
+            .unwrap()
+    }
+
+    fn assert_staged_settlement_collisions(store: &mut dyn CatalogStore) {
+        let claim = claim_pair(store, "two-locals", "local-other");
+        assert!(store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "two-locals".to_string(),
+                batch_id: "batch".to_string(),
+                batch_incarnation: claim.batch_incarnation,
+                lease_token: claim.lease_token,
+                settled_at: 11,
+                server_revision: 1,
+                applied: vec![
+                    AppliedOutboundResultDto {
+                        operation_id: "two-locals-1".to_string(),
+                        remote_id: "same-remote".to_string(),
+                        revision: 1,
+                        concurrency_token: Some("same".to_string()),
+                    },
+                    AppliedOutboundResultDto {
+                        operation_id: "two-locals-2".to_string(),
+                        remote_id: "same-remote".to_string(),
+                        revision: 1,
+                        concurrency_token: Some("same".to_string()),
+                    },
+                ],
+                conflicts: vec![],
+            })
+            .is_err());
+        assert_eq!(
+            store
+                .outbound_operations("two-locals", &[OutboundState::InFlight], 10)
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let claim = claim_pair(store, "two-remotes", "local-c");
+        assert!(store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "two-remotes".to_string(),
+                batch_id: "batch".to_string(),
+                batch_incarnation: claim.batch_incarnation,
+                lease_token: claim.lease_token,
+                settled_at: 11,
+                server_revision: 1,
+                applied: vec![
+                    AppliedOutboundResultDto {
+                        operation_id: "two-remotes-1".to_string(),
+                        remote_id: "remote-1".to_string(),
+                        revision: 1,
+                        concurrency_token: None,
+                    },
+                    AppliedOutboundResultDto {
+                        operation_id: "two-remotes-2".to_string(),
+                        remote_id: "remote-2".to_string(),
+                        revision: 1,
+                        concurrency_token: None,
+                    },
+                ],
+                conflicts: vec![],
+            })
+            .is_err());
+        assert_eq!(
+            store
+                .outbound_operations("two-remotes", &[OutboundState::InFlight], 10)
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let claim = claim_pair(store, "revision-conflict", "local-c");
+        assert!(store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "revision-conflict".to_string(),
+                batch_id: "batch".to_string(),
+                batch_incarnation: claim.batch_incarnation,
+                lease_token: claim.lease_token,
+                settled_at: 11,
+                server_revision: 2,
+                applied: vec![
+                    AppliedOutboundResultDto {
+                        operation_id: "revision-conflict-1".to_string(),
+                        remote_id: "same-remote".to_string(),
+                        revision: 1,
+                        concurrency_token: None,
+                    },
+                    AppliedOutboundResultDto {
+                        operation_id: "revision-conflict-2".to_string(),
+                        remote_id: "same-remote".to_string(),
+                        revision: 2,
+                        concurrency_token: None,
+                    },
+                ],
+                conflicts: vec![],
+            })
+            .is_err());
+
+        let claim = claim_pair(store, "compatible", "local-c");
+        let settled = store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "compatible".to_string(),
+                batch_id: "batch".to_string(),
+                batch_incarnation: claim.batch_incarnation,
+                lease_token: claim.lease_token,
+                settled_at: 11,
+                server_revision: 1,
+                applied: vec![
+                    AppliedOutboundResultDto {
+                        operation_id: "compatible-1".to_string(),
+                        remote_id: "same-remote".to_string(),
+                        revision: 1,
+                        concurrency_token: Some("same".to_string()),
+                    },
+                    AppliedOutboundResultDto {
+                        operation_id: "compatible-2".to_string(),
+                        remote_id: "same-remote".to_string(),
+                        revision: 1,
+                        concurrency_token: Some("same".to_string()),
+                    },
+                ],
+                conflicts: vec![],
+            })
+            .unwrap();
+        assert!(settled
+            .operations
+            .iter()
+            .all(|operation| operation.state == OutboundState::Acked));
+        assert_eq!(
+            store
+                .entity_revisions("compatible", Some(SyncEntityType::ModelCollection), 10,)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn in_memory_stages_all_settlement_mapping_collisions() {
+        assert_staged_settlement_collisions(&mut InMemoryCatalog::new());
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_stages_all_settlement_mapping_collisions() {
+        assert_staged_settlement_collisions(
             &mut crate::sqlite_catalog::SqliteCatalog::open_in_memory().unwrap(),
         );
     }
