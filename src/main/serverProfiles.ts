@@ -489,7 +489,10 @@ export class ServerProfileService {
     }
     const tested = probed.profile;
     if (tested.status === 'legacy' && !draft.allowLegacy) {
-      await this.dependencies.beforeLegacyConfirmationCas?.();
+      const beforeLegacyCas = this.dependencies.beforeLegacyConfirmationCas;
+      if (beforeLegacyCas) {
+        await beforeLegacyCas();
+      }
       await this.withMutationLock(() => {
         if (!this.invalidateAuthenticationIfCurrent(probed.authentication)) {
           throw authenticationSupersededError();

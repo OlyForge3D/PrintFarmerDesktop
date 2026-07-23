@@ -1315,6 +1315,64 @@ describe('server profiles', () => {
     expect(exchanges).toBe(3);
   });
 
+  it('preserves no-hook supersession while an older legacy probe is stalled', async () => {
+    const fs = new MemoryFileSystem();
+    const olderCapabilitiesGate = deferred<Response>();
+    const olderProbeReached = deferred<void>();
+    const baseline = successfulFetch();
+    let capabilityCalls = 0;
+    let versionCalls = 0;
+    const fetchImpl: typeof globalThis.fetch = vi.fn(
+      (input: string | URL | Request, init?: RequestInit) => {
+        const endpoint = requestUrl(input).pathname;
+        if (endpoint === '/api/system/capabilities') {
+          capabilityCalls += 1;
+          if (capabilityCalls === 2) {
+            olderProbeReached.resolve();
+            return olderCapabilitiesGate.promise;
+          }
+        }
+        if (endpoint === '/api/system/version') {
+          versionCalls += 1;
+          if (versionCalls === 3) {
+            return Promise.resolve(
+              json({ ...VERSION, version: 'no-hook-newer' }),
+            );
+          }
+        }
+        return baseline(input, init);
+      },
+    );
+    const profiles = service(fs, fetchImpl);
+    const saved = await profiles.save(apiKeyDraft());
+
+    const olderSave = profiles.save(
+      apiKeyDraft({
+        id: saved.id,
+        displayName: 'No-hook older legacy',
+        allowLegacy: false,
+      }),
+    );
+    const olderResult = expect(olderSave).rejects.toMatchObject({
+      code: 'AUTHENTICATION_SUPERSEDED',
+    });
+    await olderProbeReached.promise;
+    await profiles.test({ source: 'saved', id: saved.id });
+    olderCapabilitiesGate.resolve(json({}, 404));
+
+    await olderResult;
+    await expect(profiles.list()).resolves.toMatchObject({
+      profiles: [
+        {
+          id: saved.id,
+          displayName: 'Farm',
+          status: 'connected',
+          version: { version: 'no-hook-newer' },
+        },
+      ],
+    });
+  });
+
   it('persists error status when a saved-profile retest rejects', async () => {
     const fs = new MemoryFileSystem();
     let failRetest = false;
