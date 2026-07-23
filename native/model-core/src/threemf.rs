@@ -18,7 +18,8 @@ use std::io::{Cursor, Read, Seek};
 use std::path::Path;
 
 use quick_xml::events::{BytesStart, Event};
-use quick_xml::Reader;
+use quick_xml::name::ResolveResult;
+use quick_xml::{NsReader, Reader};
 use thiserror::Error;
 use zip::result::ZipError;
 use zip::ZipArchive;
@@ -28,13 +29,24 @@ use crate::geometry::Aabb;
 /// Upper bounds so a malformed or hostile package cannot exhaust memory.
 pub const MAX_VERTICES: usize = 20_000_000;
 pub const MAX_TRIANGLES: usize = 40_000_000;
+pub const MAX_OBJECTS: usize = 1_000_000;
+pub const MAX_COMPONENTS: usize = 1_000_000;
 pub const MAX_MODEL_PARTS: usize = 10_000;
+pub const MAX_MODEL_XML_BYTES: u64 = 512 * 1024 * 1024;
+pub const MAX_TOTAL_MODEL_XML_BYTES: u64 = 1024 * 1024 * 1024;
 /// Maximum component nesting depth; also breaks any reference cycle.
 pub const MAX_COMPONENT_DEPTH: usize = 50;
 
 /// Conventional location of the model part when relationships are absent.
 const DEFAULT_MODEL_PART: &str = "3D/3dmodel.model";
 const RELATIONSHIPS_PART: &str = "_rels/.rels";
+const CONTENT_TYPES_PART: &str = "[Content_Types].xml";
+const MAX_METADATA_XML_BYTES: u64 = 8 * 1024 * 1024;
+const MODEL_CONTENT_TYPE: &str = "application/vnd.ms-package.3dmanufacturing-3dmodel+xml";
+const MODEL_RELATIONSHIP_TYPE: &str =
+    "http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel";
+const PRODUCTION_NAMESPACE: &[u8] =
+    b"http://schemas.microsoft.com/3dmanufacturing/production/2015/06";
 
 #[derive(Debug, Error)]
 pub enum ThreeMfError {
@@ -177,6 +189,58 @@ struct RawPackage {
     root_part: String,
 }
 
+#[derive(Debug, Default)]
+struct ParseBudget {
+    vertices: usize,
+    triangles: usize,
+    objects: usize,
+    components: usize,
+}
+
+impl ParseBudget {
+    fn add(current: &mut usize, limit: usize) -> Result<(), ThreeMfError> {
+        *current = current.checked_add(1).ok_or(ThreeMfError::TooLarge)?;
+        if *current > limit {
+            return Err(ThreeMfError::TooLarge);
+        }
+        Ok(())
+    }
+
+    fn add_vertex(&mut self) -> Result<(), ThreeMfError> {
+        Self::add(&mut self.vertices, MAX_VERTICES)
+    }
+
+    fn add_triangle(&mut self) -> Result<(), ThreeMfError> {
+        Self::add(&mut self.triangles, MAX_TRIANGLES)
+    }
+
+    fn add_object(&mut self) -> Result<(), ThreeMfError> {
+        Self::add(&mut self.objects, MAX_OBJECTS)
+    }
+
+    fn add_component(&mut self) -> Result<(), ThreeMfError> {
+        Self::add(&mut self.components, MAX_COMPONENTS)
+    }
+}
+
+#[derive(Debug, Default)]
+struct ContentTypes {
+    defaults: HashMap<String, String>,
+    overrides: HashMap<String, String>,
+}
+
+impl ContentTypes {
+    fn content_type_for(&self, model_part: &str) -> Option<&str> {
+        self.overrides
+            .get(model_part)
+            .map(String::as_str)
+            .or_else(|| {
+                let extension = model_part.rsplit_once('.')?.1.to_ascii_lowercase();
+                self.defaults.get(&extension).map(String::as_str)
+            })
+    }
+}
+
 /// One placed build instance, retained as a selectable "part" of the flattened
 /// scene. `triangle_start`/`triangle_count` index into [`ThreeMfMesh::triangles`]
 /// so the viewer can isolate or hide an instance without a second parse.
@@ -222,10 +286,17 @@ pub fn parse_file(path: &Path) -> Result<ThreeMfMesh, ThreeMfError> {
 
 /// Parse a 3MF package from an in-memory byte buffer.
 pub fn parse_bytes(data: &[u8]) -> Result<ThreeMfMesh, ThreeMfError> {
+    let declared_part_count = declared_zip_entry_count(data)?;
     let mut archive = ZipArchive::new(Cursor::new(data))?;
+    validate_archive_parts(&mut archive, declared_part_count)?;
+
+    let mut model_xml_bytes = 0u64;
+    let mut parse_budget = ParseBudget::default();
     let root_part = locate_model_part(&mut archive)?;
-    let root_xml = read_entry(&mut archive, &root_part)?.ok_or(ThreeMfError::MissingModelPart)?;
-    let root_model = parse_model_xml(&root_xml, true)?;
+    let root_xml = read_model_entry(&mut archive, &root_part, &mut model_xml_bytes)?
+        .ok_or(ThreeMfError::MissingModelPart)?;
+    let root_model = parse_model_xml(&root_xml, true, &mut parse_budget)?;
+    let root_unit = root_model.unit.clone();
 
     let mut referenced_parts = referenced_model_parts(&root_model);
     referenced_parts.remove(&root_part);
@@ -234,13 +305,20 @@ pub fn parse_bytes(data: &[u8]) -> Result<ThreeMfMesh, ThreeMfError> {
     }
     let mut external_parts: Vec<String> = referenced_parts.into_iter().collect();
     external_parts.sort();
+    validate_external_model_parts(&mut archive, &root_part, &external_parts)?;
 
     let mut models = HashMap::with_capacity(external_parts.len() + 1);
     for model_part in external_parts {
-        let xml = read_entry(&mut archive, &model_part)?.ok_or_else(|| {
-            ThreeMfError::Malformed(format!("referenced model part '/{model_part}' is missing"))
-        })?;
-        let model = parse_model_xml(&xml, false)?;
+        let xml = read_model_entry(&mut archive, &model_part, &mut model_xml_bytes)?.ok_or_else(
+            || ThreeMfError::Malformed(format!("referenced model part '/{model_part}' is missing")),
+        )?;
+        let model = parse_model_xml(&xml, false, &mut parse_budget)?;
+        if model.unit != root_unit {
+            return Err(ThreeMfError::Malformed(format!(
+                "model part '/{model_part}' uses unit '{}' but the root model uses '{}'",
+                model.unit, root_unit
+            )));
+        }
         models.insert(model_part, model);
     }
     models.insert(root_part.clone(), root_model);
@@ -253,9 +331,11 @@ pub fn parse_bytes(data: &[u8]) -> Result<ThreeMfMesh, ThreeMfError> {
 pub(crate) fn locate_model_part<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
 ) -> Result<String, ThreeMfError> {
-    if let Some(rels) = read_entry(archive, RELATIONSHIPS_PART)? {
+    if let Some(rels) =
+        read_text_entry_limited(archive, RELATIONSHIPS_PART, MAX_METADATA_XML_BYTES)?
+    {
         if let Some(target) = model_target_from_rels(&rels)? {
-            let cleaned = target.trim_start_matches('/').to_string();
+            let cleaned = resolve_relationship_target("", &target)?;
             if archive.by_name(&cleaned).is_ok() {
                 return Ok(cleaned);
             }
@@ -272,15 +352,174 @@ pub(crate) fn read_entry<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     name: &str,
 ) -> Result<Option<String>, ThreeMfError> {
+    read_text_entry_limited(archive, name, MAX_MODEL_XML_BYTES)
+}
+
+fn read_model_entry<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    name: &str,
+    total_bytes: &mut u64,
+) -> Result<Option<String>, ThreeMfError> {
+    let remaining = MAX_TOTAL_MODEL_XML_BYTES
+        .checked_sub(*total_bytes)
+        .ok_or(ThreeMfError::TooLarge)?;
+    let limit = remaining.min(MAX_MODEL_XML_BYTES);
+    let contents = read_text_entry_limited(archive, name, limit)?;
+    if let Some(contents) = &contents {
+        *total_bytes = total_bytes
+            .checked_add(contents.len() as u64)
+            .ok_or(ThreeMfError::TooLarge)?;
+    }
+    Ok(contents)
+}
+
+fn read_text_entry_limited<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    name: &str,
+    max_bytes: u64,
+) -> Result<Option<String>, ThreeMfError> {
     match archive.by_name(name) {
         Ok(mut file) => {
+            if file.size() > max_bytes {
+                return Err(ThreeMfError::TooLarge);
+            }
             let mut contents = String::new();
-            file.read_to_string(&mut contents)?;
+            file.by_ref()
+                .take(max_bytes.saturating_add(1))
+                .read_to_string(&mut contents)?;
+            if contents.len() as u64 > max_bytes {
+                return Err(ThreeMfError::TooLarge);
+            }
             Ok(Some(contents))
         }
         Err(ZipError::FileNotFound) => Ok(None),
         Err(e) => Err(e.into()),
     }
+}
+
+fn validate_archive_parts<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    declared_part_count: usize,
+) -> Result<(), ThreeMfError> {
+    // `zip` indexes entries by decoded name and keeps only one duplicate. The
+    // central-directory count therefore exposes ambiguous duplicate names.
+    if archive.len() != declared_part_count {
+        return Err(ThreeMfError::Malformed(
+            "archive contains duplicate package part names".to_string(),
+        ));
+    }
+
+    for index in 0..archive.len() {
+        let file = archive.by_index(index)?;
+        if file.is_dir() {
+            continue;
+        }
+        let name = file.name();
+        if name.starts_with('/')
+            || name.contains('\\')
+            || name
+                .split('/')
+                .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+        {
+            return Err(ThreeMfError::Malformed(format!(
+                "invalid package part name '{name}'"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn declared_zip_entry_count(data: &[u8]) -> Result<usize, ThreeMfError> {
+    const EOCD_SIGNATURE: &[u8; 4] = b"PK\x05\x06";
+    const ZIP64_EOCD_SIGNATURE: &[u8; 4] = b"PK\x06\x06";
+    const ZIP64_LOCATOR_SIGNATURE: &[u8; 4] = b"PK\x06\x07";
+    const EOCD_MIN_SIZE: usize = 22;
+    const MAX_COMMENT_SIZE: usize = u16::MAX as usize;
+
+    if data.len() < EOCD_MIN_SIZE {
+        return Err(ThreeMfError::Malformed(
+            "ZIP end-of-central-directory record is missing".to_string(),
+        ));
+    }
+    let search_start = data.len().saturating_sub(EOCD_MIN_SIZE + MAX_COMMENT_SIZE);
+    let eocd = (search_start..=data.len() - EOCD_MIN_SIZE)
+        .rev()
+        .find(|&offset| {
+            data.get(offset..offset + 4) == Some(EOCD_SIGNATURE)
+                && read_u16(data, offset + 20).is_some_and(|comment_size| {
+                    offset + EOCD_MIN_SIZE + comment_size as usize == data.len()
+                })
+        })
+        .ok_or_else(|| {
+            ThreeMfError::Malformed("ZIP end-of-central-directory record is missing".to_string())
+        })?;
+
+    let disk = read_u16(data, eocd + 4).ok_or_else(invalid_central_directory)?;
+    let central_disk = read_u16(data, eocd + 6).ok_or_else(invalid_central_directory)?;
+    let entries_on_disk = read_u16(data, eocd + 8).ok_or_else(invalid_central_directory)?;
+    let total_entries = read_u16(data, eocd + 10).ok_or_else(invalid_central_directory)?;
+    if disk != 0 || central_disk != 0 || entries_on_disk != total_entries {
+        return Err(ThreeMfError::Malformed(
+            "multi-disk ZIP packages are not supported".to_string(),
+        ));
+    }
+    if total_entries != u16::MAX {
+        return Ok(total_entries as usize);
+    }
+
+    let locator = eocd.checked_sub(20).ok_or_else(invalid_central_directory)?;
+    if data.get(locator..locator + 4) != Some(ZIP64_LOCATOR_SIGNATURE) {
+        return Err(invalid_central_directory());
+    }
+    let zip64_eocd = data[..locator]
+        .windows(4)
+        .rposition(|window| window == ZIP64_EOCD_SIGNATURE)
+        .ok_or_else(invalid_central_directory)?;
+    let record_size =
+        usize::try_from(read_u64(data, zip64_eocd + 4).ok_or_else(invalid_central_directory)?)
+            .map_err(|_| ThreeMfError::TooLarge)?;
+    let record_end = zip64_eocd
+        .checked_add(12)
+        .and_then(|offset| offset.checked_add(record_size))
+        .ok_or_else(invalid_central_directory)?;
+    if record_end != locator {
+        return Err(invalid_central_directory());
+    }
+    let zip64_disk = read_u32(data, zip64_eocd + 16).ok_or_else(invalid_central_directory)?;
+    let zip64_central_disk =
+        read_u32(data, zip64_eocd + 20).ok_or_else(invalid_central_directory)?;
+    let zip64_entries_on_disk =
+        read_u64(data, zip64_eocd + 24).ok_or_else(invalid_central_directory)?;
+    let zip64_total_entries =
+        read_u64(data, zip64_eocd + 32).ok_or_else(invalid_central_directory)?;
+    if zip64_disk != 0 || zip64_central_disk != 0 || zip64_entries_on_disk != zip64_total_entries {
+        return Err(ThreeMfError::Malformed(
+            "multi-disk ZIP packages are not supported".to_string(),
+        ));
+    }
+    usize::try_from(zip64_total_entries).map_err(|_| ThreeMfError::TooLarge)
+}
+
+fn invalid_central_directory() -> ThreeMfError {
+    ThreeMfError::Malformed("invalid ZIP central directory".to_string())
+}
+
+fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(
+        data.get(offset..offset + 2)?.try_into().ok()?,
+    ))
+}
+
+fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        data.get(offset..offset + 4)?.try_into().ok()?,
+    ))
+}
+
+fn read_u64(data: &[u8], offset: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(
+        data.get(offset..offset + 8)?.try_into().ok()?,
+    ))
 }
 
 /// Read a named entry to raw bytes, returning `None` if it is absent.
@@ -301,24 +540,210 @@ pub(crate) fn read_entry_bytes<R: Read + Seek>(
 
 /// Find the target of the relationship whose type marks the 3D model part.
 fn model_target_from_rels(xml: &str) -> Result<Option<String>, ThreeMfError> {
+    let mut targets = model_relationship_targets(xml, "")?;
+    if targets.len() > 1 {
+        return Err(ThreeMfError::Malformed(
+            "package declares more than one root 3D model relationship".to_string(),
+        ));
+    }
+    Ok(targets.pop())
+}
+
+fn model_relationship_targets(xml: &str, source_part: &str) -> Result<Vec<String>, ThreeMfError> {
     let mut reader = Reader::from_str(xml);
+    let mut targets = Vec::new();
     loop {
         match reader.read_event()? {
-            Event::Empty(e) | Event::Start(e) if e.name().as_ref() == b"Relationship" => {
-                let rel_type = get_attr(&e, b"Type").unwrap_or_default();
-                if rel_type.ends_with("3dmodel") {
-                    return Ok(get_attr(&e, b"Target"));
+            Event::Empty(e) | Event::Start(e) if e.local_name().as_ref() == b"Relationship" => {
+                let rel_type = decoded_attr(&reader, &e, b"Type")?.unwrap_or_default();
+                if rel_type == MODEL_RELATIONSHIP_TYPE {
+                    let target = decoded_attr(&reader, &e, b"Target")?.ok_or_else(|| {
+                        ThreeMfError::Malformed(
+                            "3D model relationship is missing its Target".to_string(),
+                        )
+                    })?;
+                    targets.push(resolve_relationship_target(source_part, &target)?);
                 }
             }
-            Event::Eof => return Ok(None),
+            Event::Eof => return Ok(targets),
             _ => {}
         }
     }
 }
 
-/// Stream the model XML into reusable objects and the build's instance list.
-fn parse_model_xml(xml: &str, is_root_model: bool) -> Result<RawModel, ThreeMfError> {
+fn validate_external_model_parts<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    root_part: &str,
+    model_parts: &[String],
+) -> Result<(), ThreeMfError> {
+    if model_parts.is_empty() {
+        return Ok(());
+    }
+
+    let relationships_part = relationships_part_for(root_part);
+    let relationships =
+        read_text_entry_limited(archive, &relationships_part, MAX_METADATA_XML_BYTES)?.ok_or_else(
+            || {
+                ThreeMfError::Malformed(format!(
+                    "root model part '/{root_part}' has Production Extension references but no relationship part"
+                ))
+            },
+        )?;
+    let relationship_targets = model_relationship_targets(&relationships, root_part)?;
+
+    let content_types_xml =
+        read_text_entry_limited(archive, CONTENT_TYPES_PART, MAX_METADATA_XML_BYTES)?.ok_or_else(
+            || {
+                ThreeMfError::Malformed(
+                    "Production Extension package is missing [Content_Types].xml".to_string(),
+                )
+            },
+        )?;
+    let content_types = parse_content_types(&content_types_xml)?;
+
+    for model_part in model_parts {
+        let relationship_count = relationship_targets
+            .iter()
+            .filter(|target| *target == model_part)
+            .count();
+        if relationship_count != 1 {
+            return Err(ThreeMfError::Malformed(format!(
+                "referenced model part '/{model_part}' must have exactly one 3D model relationship"
+            )));
+        }
+        if content_types.content_type_for(model_part) != Some(MODEL_CONTENT_TYPE) {
+            return Err(ThreeMfError::Malformed(format!(
+                "referenced model part '/{model_part}' does not declare the 3D model content type"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn relationships_part_for(model_part: &str) -> String {
+    match model_part.rsplit_once('/') {
+        Some((directory, filename)) => format!("{directory}/_rels/{filename}.rels"),
+        None => format!("_rels/{model_part}.rels"),
+    }
+}
+
+fn parse_content_types(xml: &str) -> Result<ContentTypes, ThreeMfError> {
     let mut reader = Reader::from_str(xml);
+    let mut content_types = ContentTypes::default();
+    loop {
+        match reader.read_event()? {
+            Event::Empty(e) | Event::Start(e) if e.local_name().as_ref() == b"Default" => {
+                let extension = decoded_attr(&reader, &e, b"Extension")?
+                    .ok_or_else(|| {
+                        ThreeMfError::Malformed(
+                            "content type Default is missing Extension".to_string(),
+                        )
+                    })?
+                    .to_ascii_lowercase();
+                let content_type = decoded_attr(&reader, &e, b"ContentType")?.ok_or_else(|| {
+                    ThreeMfError::Malformed(
+                        "content type Default is missing ContentType".to_string(),
+                    )
+                })?;
+                if content_types
+                    .defaults
+                    .insert(extension.clone(), content_type)
+                    .is_some()
+                {
+                    return Err(ThreeMfError::Malformed(format!(
+                        "duplicate default content type for extension '{extension}'"
+                    )));
+                }
+            }
+            Event::Empty(e) | Event::Start(e) if e.local_name().as_ref() == b"Override" => {
+                let part_name = decoded_attr(&reader, &e, b"PartName")?.ok_or_else(|| {
+                    ThreeMfError::Malformed("content type Override is missing PartName".to_string())
+                })?;
+                let part_name = normalize_model_part_path(&part_name)?;
+                let content_type = decoded_attr(&reader, &e, b"ContentType")?.ok_or_else(|| {
+                    ThreeMfError::Malformed(
+                        "content type Override is missing ContentType".to_string(),
+                    )
+                })?;
+                if content_types
+                    .overrides
+                    .insert(part_name.clone(), content_type)
+                    .is_some()
+                {
+                    return Err(ThreeMfError::Malformed(format!(
+                        "duplicate content type override for '/{part_name}'"
+                    )));
+                }
+            }
+            Event::Eof => return Ok(content_types),
+            _ => {}
+        }
+    }
+}
+
+fn resolve_relationship_target(source_part: &str, target: &str) -> Result<String, ThreeMfError> {
+    let target = target.trim();
+    if target.is_empty() || target.contains('\\') || target.contains('?') || target.contains('#') {
+        return Err(ThreeMfError::Malformed(format!(
+            "invalid model relationship target '{target}'"
+        )));
+    }
+
+    let mut segments: Vec<&str> = if target.starts_with('/') || source_part.is_empty() {
+        Vec::new()
+    } else {
+        source_part
+            .rsplit_once('/')
+            .map(|(directory, _)| directory.split('/').collect())
+            .unwrap_or_default()
+    };
+    for segment in target.trim_start_matches('/').split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                if segments.pop().is_none() {
+                    return Err(ThreeMfError::Malformed(format!(
+                        "model relationship target escapes the package root: '{target}'"
+                    )));
+                }
+            }
+            _ => segments.push(segment),
+        }
+    }
+    if segments.is_empty() {
+        return Err(ThreeMfError::Malformed(format!(
+            "invalid model relationship target '{target}'"
+        )));
+    }
+    Ok(segments.join("/"))
+}
+
+fn decoded_attr<R>(
+    reader: &Reader<R>,
+    element: &BytesStart,
+    name: &[u8],
+) -> Result<Option<String>, ThreeMfError> {
+    for attribute in element.attributes() {
+        let attribute = attribute
+            .map_err(|error| ThreeMfError::Malformed(format!("invalid XML attribute: {error}")))?;
+        if attribute.key.as_ref() == name {
+            return Ok(Some(
+                attribute
+                    .decode_and_unescape_value(reader.decoder())?
+                    .into_owned(),
+            ));
+        }
+    }
+    Ok(None)
+}
+
+/// Stream the model XML into reusable objects and the build's instance list.
+fn parse_model_xml(
+    xml: &str,
+    is_root_model: bool,
+    budget: &mut ParseBudget,
+) -> Result<RawModel, ThreeMfError> {
+    let mut reader = NsReader::from_str(xml);
 
     let mut objects: HashMap<u32, RawObject> = HashMap::new();
     let mut build: Vec<Component> = Vec::new();
@@ -333,14 +758,15 @@ fn parse_model_xml(xml: &str, is_root_model: bool) -> Result<RawModel, ThreeMfEr
         match reader.read_event()? {
             Event::Start(e) | Event::Empty(e) => match e.name().as_ref() {
                 b"model" => {
-                    if let Some(u) = get_attr(&e, b"unit") {
+                    if let Some(u) = decoded_attr(&reader, &e, b"unit")? {
                         unit = u;
                     }
                 }
                 b"object" => {
                     current_id = Some(attr_u32(&e, b"id")?);
                     current_geometry = None;
-                    current_name = get_attr(&e, b"name").filter(|n| !n.trim().is_empty());
+                    current_name =
+                        decoded_attr(&reader, &e, b"name")?.filter(|name| !name.trim().is_empty());
                 }
                 b"mesh" => {
                     current_geometry = Some(ObjectGeometry::Mesh {
@@ -350,6 +776,7 @@ fn parse_model_xml(xml: &str, is_root_model: bool) -> Result<RawModel, ThreeMfEr
                 }
                 b"vertex" => {
                     if let Some(ObjectGeometry::Mesh { vertices, .. }) = current_geometry.as_mut() {
+                        budget.add_vertex()?;
                         vertices.push([
                             attr_f32(&e, b"x")?,
                             attr_f32(&e, b"y")?,
@@ -360,6 +787,7 @@ fn parse_model_xml(xml: &str, is_root_model: bool) -> Result<RawModel, ThreeMfEr
                 b"triangle" => {
                     if let Some(ObjectGeometry::Mesh { triangles, .. }) = current_geometry.as_mut()
                     {
+                        budget.add_triangle()?;
                         triangles.push([
                             attr_u32(&e, b"v1")?,
                             attr_u32(&e, b"v2")?,
@@ -372,18 +800,20 @@ fn parse_model_xml(xml: &str, is_root_model: bool) -> Result<RawModel, ThreeMfEr
                 }
                 b"component" => {
                     if let Some(ObjectGeometry::Components(list)) = current_geometry.as_mut() {
+                        budget.add_component()?;
                         list.push(Component {
                             object_id: attr_u32(&e, b"objectid")?,
-                            model_part: optional_model_part(&e, is_root_model)?,
+                            model_part: optional_model_part(&reader, &e, is_root_model)?,
                             transform: optional_transform(&e)?,
                         });
                     }
                 }
                 b"build" => in_build = is_root_model,
                 b"item" if in_build => {
+                    budget.add_component()?;
                     build.push(Component {
                         object_id: attr_u32(&e, b"objectid")?,
-                        model_part: optional_model_part(&e, is_root_model)?,
+                        model_part: optional_model_part(&reader, &e, is_root_model)?,
                         transform: optional_transform(&e)?,
                     });
                 }
@@ -396,13 +826,21 @@ fn parse_model_xml(xml: &str, is_root_model: bool) -> Result<RawModel, ThreeMfEr
                             vertices: Vec::new(),
                             triangles: Vec::new(),
                         });
-                        objects.insert(
-                            id,
-                            RawObject {
-                                geometry,
-                                name: current_name.take(),
-                            },
-                        );
+                        budget.add_object()?;
+                        if objects
+                            .insert(
+                                id,
+                                RawObject {
+                                    geometry,
+                                    name: current_name.take(),
+                                },
+                            )
+                            .is_some()
+                        {
+                            return Err(ThreeMfError::Malformed(format!(
+                                "duplicate object id {id}"
+                            )));
+                        }
                     }
                 }
                 b"build" => in_build = false,
@@ -579,18 +1017,38 @@ pub(crate) fn get_attr(e: &BytesStart, name: &[u8]) -> Option<String> {
         .map(|a| String::from_utf8_lossy(&a.value).into_owned())
 }
 
-fn get_attr_by_local_name(e: &BytesStart, name: &[u8]) -> Option<String> {
-    e.attributes()
-        .flatten()
-        .find(|attribute| attribute.key.as_ref().rsplit(|byte| *byte == b':').next() == Some(name))
-        .map(|attribute| String::from_utf8_lossy(&attribute.value).into_owned())
-}
-
-fn optional_model_part(
+fn optional_model_part<R>(
+    reader: &NsReader<R>,
     e: &BytesStart,
     is_root_model: bool,
 ) -> Result<Option<String>, ThreeMfError> {
-    let Some(path) = get_attr_by_local_name(e, b"path") else {
+    let mut path = None;
+    for attribute in e.attributes() {
+        let attribute = attribute
+            .map_err(|error| ThreeMfError::Malformed(format!("invalid XML attribute: {error}")))?;
+        let (namespace, local_name) = reader.resolve_attribute(attribute.key);
+        if local_name.as_ref() != b"path"
+            || !matches!(
+                namespace,
+                ResolveResult::Bound(namespace)
+                    if namespace.as_ref() == PRODUCTION_NAMESPACE
+            )
+        {
+            continue;
+        }
+        if path.is_some() {
+            return Err(ThreeMfError::Malformed(
+                "element declares more than one Production Extension path".to_string(),
+            ));
+        }
+        path = Some(
+            attribute
+                .decode_and_unescape_value(reader.decoder())?
+                .into_owned(),
+        );
+    }
+
+    let Some(path) = path else {
         return Ok(None);
     };
     if !is_root_model {
@@ -603,13 +1061,18 @@ fn optional_model_part(
 
 fn normalize_model_part_path(path: &str) -> Result<String, ThreeMfError> {
     let path = path.trim();
-    if path.is_empty() || path.contains('\\') {
+    if !path.starts_with('/')
+        || path.starts_with("//")
+        || path.contains('\\')
+        || path.contains('?')
+        || path.contains('#')
+    {
         return Err(ThreeMfError::Malformed(format!(
             "invalid Production Extension model path '{path}'"
         )));
     }
 
-    let path = path.trim_start_matches('/');
+    let path = &path[1..];
     if path.is_empty()
         || path
             .split('/')
@@ -663,6 +1126,8 @@ fn optional_transform(e: &BytesStart) -> Result<Transform, ThreeMfError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine as _;
     use std::io::Write;
     use zip::write::SimpleFileOptions;
     use zip::CompressionMethod;
@@ -671,6 +1136,11 @@ mod tests {
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rel0" Target="/3D/3dmodel.model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
 </Relationships>"#;
+    const CONTENT_TYPES_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+</Types>"#;
 
     /// Build a minimal 3MF package around a model XML document.
     fn package(model_xml: &str, include_rels: bool, model_part: &str) -> Vec<u8> {
@@ -691,11 +1161,28 @@ mod tests {
     }
 
     fn production_package(root_xml: &str, model_parts: &[(&str, &str)]) -> Vec<u8> {
+        let relationship_paths: Vec<&str> = model_parts.iter().map(|(path, _)| *path).collect();
+        production_package_with_relationships(
+            root_xml,
+            &relationship_paths,
+            model_parts,
+            CONTENT_TYPES_XML,
+        )
+    }
+
+    fn production_package_with_relationships(
+        root_xml: &str,
+        relationship_paths: &[&str],
+        model_parts: &[(&str, &str)],
+        content_types_xml: &str,
+    ) -> Vec<u8> {
         let mut buf = Vec::new();
         {
             let mut writer = zip::ZipWriter::new(Cursor::new(&mut buf));
             let options =
                 SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            writer.start_file(CONTENT_TYPES_PART, options).unwrap();
+            writer.write_all(content_types_xml.as_bytes()).unwrap();
             writer.start_file(RELATIONSHIPS_PART, options).unwrap();
             writer.write_all(RELS_XML.as_bytes()).unwrap();
             writer.start_file(DEFAULT_MODEL_PART, options).unwrap();
@@ -705,10 +1192,10 @@ mod tests {
                 r#"<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
             );
-            for (index, (path, _)) in model_parts.iter().enumerate() {
+            for (index, path) in relationship_paths.iter().enumerate() {
                 model_rels.push_str(&format!(
                     r#"<Relationship Id="rel{index}" Target="/{}" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>"#,
-                    path.trim_start_matches('/')
+                    escape_xml_attribute(path.trim_start_matches('/'))
                 ));
             }
             model_rels.push_str("</Relationships>");
@@ -726,6 +1213,13 @@ mod tests {
             writer.finish().unwrap();
         }
         buf
+    }
+
+    fn escape_xml_attribute(value: &str) -> String {
+        value
+            .replace('&', "&amp;")
+            .replace('"', "&quot;")
+            .replace('<', "&lt;")
     }
 
     /// A single-triangle mesh object placed by one build item.
@@ -933,6 +1427,11 @@ mod tests {
 <model unit="millimeter">
   <resources>
     <object id="1" type="model" name="Body">
+      <components>
+        <component objectid="2" transform="1 0 0 0 1 0 0 0 1 0 0 3"/>
+      </components>
+    </object>
+    <object id="2" type="model">
       <mesh>
         <vertices>
           <vertex x="0" y="0" z="0"/>
@@ -948,11 +1447,11 @@ mod tests {
         let data = production_package(root, &[("3D/Objects/body.model", body)]);
         let mesh = parse_bytes(&data).unwrap();
 
-        assert_eq!(mesh.object_count, 2);
+        assert_eq!(mesh.object_count, 3);
         assert_eq!(mesh.build_item_count, 1);
         assert_eq!(mesh.triangle_count(), 1);
-        assert_eq!(mesh.bounds.min, [5.0, 7.0, 0.0]);
-        assert_eq!(mesh.bounds.max, [6.0, 8.0, 0.0]);
+        assert_eq!(mesh.bounds.min, [5.0, 7.0, 3.0]);
+        assert_eq!(mesh.bounds.max, [6.0, 8.0, 3.0]);
         assert_eq!(mesh.parts[0].name, "Assembly");
     }
 
@@ -991,10 +1490,10 @@ mod tests {
 
     #[test]
     fn rejects_production_paths_in_non_root_components() {
-        let root = r#"<model xmlns:p="urn:production"><resources/><build>
+        let root = r#"<model xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06"><resources/><build>
   <item p:path="/3D/Objects/body.model" objectid="1"/>
 </build></model>"#;
-        let body = r#"<model xmlns:p="urn:production"><resources>
+        let body = r#"<model xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06"><resources>
   <object id="1"><components>
     <component p:path="/3D/Objects/nested.model" objectid="2"/>
   </components></object>
@@ -1014,10 +1513,15 @@ mod tests {
 
     #[test]
     fn reports_missing_production_model_parts() {
-        let root = r#"<model xmlns:p="urn:production"><resources/><build>
+        let root = r#"<model xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06"><resources/><build>
   <item p:path="/3D/Objects/missing.model" objectid="1"/>
 </build></model>"#;
-        let data = package(root, true, DEFAULT_MODEL_PART);
+        let data = production_package_with_relationships(
+            root,
+            &["3D/Objects/missing.model"],
+            &[],
+            CONTENT_TYPES_XML,
+        );
 
         let error = parse_bytes(&data).unwrap_err().to_string();
         assert!(error.contains("referenced model part '/3D/Objects/missing.model' is missing"));
@@ -1025,13 +1529,126 @@ mod tests {
 
     #[test]
     fn rejects_unsafe_production_model_paths() {
-        let root = r#"<model xmlns:p="urn:production"><resources/><build>
+        let root = r#"<model xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06"><resources/><build>
   <item p:path="/3D/../outside.model" objectid="1"/>
 </build></model>"#;
         let data = package(root, true, DEFAULT_MODEL_PART);
 
         let error = parse_bytes(&data).unwrap_err().to_string();
         assert!(error.contains("invalid Production Extension model path"));
+    }
+
+    #[test]
+    fn ignores_path_attributes_from_other_namespaces() {
+        let model = r#"<model xmlns:vendor="urn:vendor"><resources>
+  <object id="1"><mesh>
+    <vertices>
+      <vertex x="0" y="0" z="0"/>
+      <vertex x="1" y="0" z="0"/>
+      <vertex x="0" y="1" z="0"/>
+    </vertices>
+    <triangles><triangle v1="0" v2="1" v3="2"/></triangles>
+  </mesh></object>
+</resources><build>
+  <item vendor:path="/3D/Objects/missing.model" objectid="1"/>
+</build></model>"#;
+        let data = package(model, true, DEFAULT_MODEL_PART);
+
+        assert_eq!(parse_bytes(&data).unwrap().triangle_count(), 1);
+    }
+
+    #[test]
+    fn unescapes_production_model_paths() {
+        let root = r#"<model xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06"><resources/><build>
+  <item p:path="/3D/Objects/A&amp;B.model" objectid="1"/>
+</build></model>"#;
+        let body = single_triangle_model();
+        let data = production_package(root, &[("3D/Objects/A&B.model", &body)]);
+
+        assert_eq!(parse_bytes(&data).unwrap().triangle_count(), 1);
+    }
+
+    #[test]
+    fn rejects_mixed_units_across_model_parts() {
+        let root = r#"<model unit="millimeter" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06"><resources/><build>
+  <item p:path="/3D/Objects/body.model" objectid="1"/>
+</build></model>"#;
+        let body = single_triangle_model().replace("millimeter", "inch");
+        let data = production_package(root, &[("3D/Objects/body.model", &body)]);
+
+        let error = parse_bytes(&data).unwrap_err().to_string();
+        assert!(error.contains("uses unit 'inch' but the root model uses 'millimeter'"));
+    }
+
+    #[test]
+    fn requires_relationships_for_production_model_parts() {
+        let root = r#"<model xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06"><resources/><build>
+  <item p:path="/3D/Objects/body.model" objectid="1"/>
+</build></model>"#;
+        let body = single_triangle_model();
+        let data = production_package_with_relationships(
+            root,
+            &[],
+            &[("3D/Objects/body.model", &body)],
+            CONTENT_TYPES_XML,
+        );
+
+        let error = parse_bytes(&data).unwrap_err().to_string();
+        assert!(error.contains("must have exactly one 3D model relationship"));
+    }
+
+    #[test]
+    fn requires_model_content_type_for_production_parts() {
+        let root = r#"<model xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06"><resources/><build>
+  <item p:path="/3D/Objects/body.model" objectid="1"/>
+</build></model>"#;
+        let body = single_triangle_model();
+        let content_types = r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="model" ContentType="application/octet-stream"/>
+</Types>"#;
+        let data = production_package_with_relationships(
+            root,
+            &["3D/Objects/body.model"],
+            &[("3D/Objects/body.model", &body)],
+            content_types,
+        );
+
+        let error = parse_bytes(&data).unwrap_err().to_string();
+        assert!(error.contains("does not declare the 3D model content type"));
+    }
+
+    #[test]
+    fn rejects_duplicate_package_parts() {
+        let data = BASE64
+            .decode(
+                "UEsDBBQAAAAIAOCo9lxX7nGSDQAAAAUAAAAQAAAAM0QvM2Rtb2RlbC5tb2RlbErLLCouAQAAAP//AwBQSwMEFAAAAAgA4Kj2XGkRH7YOAAAABgAAABAAAAAzRC8zZG1vZGVsLm1vZGVsKk5Nzs9LAQAAAP//AwBQSwECFAAUAAAACADgqPZcV+5xkg0AAAAFAAAAEAAAAAAAAAAAAAAAAAAAAAAAM0QvM2Rtb2RlbC5tb2RlbFBLAQIUABQAAAAIAOCo9lxpER+2DgAAAAYAAAAQAAAAAAAAAAAAAAAAADsAAAAzRC8zZG1vZGVsLm1vZGVsUEsFBgAAAAACAAIAfAAAAHcAAAAAAA==",
+            )
+            .unwrap();
+
+        let error = parse_bytes(&data).unwrap_err().to_string();
+        assert!(error.contains("duplicate package part"));
+    }
+
+    #[test]
+    fn enforces_model_xml_and_parse_budgets_before_flattening() {
+        let data = package(&single_triangle_model(), true, DEFAULT_MODEL_PART);
+        let mut archive = ZipArchive::new(Cursor::new(data)).unwrap();
+        assert!(matches!(
+            read_text_entry_limited(&mut archive, DEFAULT_MODEL_PART, 8),
+            Err(ThreeMfError::TooLarge)
+        ));
+
+        let mut budget = ParseBudget {
+            vertices: MAX_VERTICES,
+            ..ParseBudget::default()
+        };
+        let model = r#"<model><resources><object id="1"><mesh><vertices>
+  <vertex x="0" y="0" z="0"/>
+</vertices></mesh></object></resources></model>"#;
+        assert!(matches!(
+            parse_model_xml(model, true, &mut budget),
+            Err(ThreeMfError::TooLarge)
+        ));
     }
 
     #[test]
