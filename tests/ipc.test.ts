@@ -160,7 +160,7 @@ describe('ipc contract', () => {
   it('validates confirmed import rules', () => {
     const value = ipcSchemas[IpcChannel.ImportRoot].request.parse({
       rootId: 'root-1',
-      path: 'C:\\models',
+      approvalId: '11111111-1111-4111-8111-111111111111',
       rules: [
         {
           relativePath: 'Animals',
@@ -177,7 +177,7 @@ describe('ipc contract', () => {
     expect(() =>
       ipcSchemas[IpcChannel.ImportRoot].request.parse({
         rootId: 'root-1',
-        path: 'C:\\models',
+        approvalId: '11111111-1111-4111-8111-111111111111',
         rules: [
           {
             relativePath: 'Animals',
@@ -191,7 +191,7 @@ describe('ipc contract', () => {
     expect(() =>
       ipcSchemas[IpcChannel.ImportRoot].request.parse({
         rootId: 'root-1',
-        path: 'C:\\models',
+        approvalId: '11111111-1111-4111-8111-111111111111',
         rules: [
           {
             relativePath: 'Animals',
@@ -410,17 +410,29 @@ describe('ipc contract', () => {
   it('accepts a valid scan-root request', () => {
     const value = ipcSchemas[IpcChannel.ScanRoot].request.parse({
       rootId: 'root1',
-      path: 'C:\\models',
+      approvalId: '11111111-1111-4111-8111-111111111111',
     });
     expect(value.rootId).toBe('root1');
-    expect(value.path).toContain('models');
+    expect(value.approvalId).toContain('1111');
+    expect(() =>
+      ipcSchemas[IpcChannel.ScanRoot].request.parse({
+        rootId: 'root1',
+        approvalId: '11111111-1111-4111-8111-111111111111',
+        path: 'C:\\private',
+      }),
+    ).toThrow();
+    expect(() =>
+      ipcSchemas[IpcChannel.PreviewImport].request.parse({
+        path: 'C:\\private',
+      }),
+    ).toThrow();
   });
 
   it('rejects a scan-root request with an empty rootId', () => {
     expect(() =>
       ipcSchemas[IpcChannel.ScanRoot].request.parse({
         rootId: '',
-        path: 'C:\\models',
+        approvalId: '11111111-1111-4111-8111-111111111111',
       }),
     ).toThrow();
   });
@@ -469,8 +481,12 @@ describe('ipc contract', () => {
   it('accepts a selected open-folder response', () => {
     const value = ipcSchemas[IpcChannel.OpenFolder].response.parse({
       path: 'C:\\models',
+      approvalId: '11111111-1111-4111-8111-111111111111',
     });
-    expect(value).toEqual({ path: 'C:\\models' });
+    expect(value).toEqual({
+      path: 'C:\\models',
+      approvalId: '11111111-1111-4111-8111-111111111111',
+    });
   });
 
   it('accepts a null open-folder response (cancelled)', () => {

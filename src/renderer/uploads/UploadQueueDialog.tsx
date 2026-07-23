@@ -10,7 +10,9 @@ export interface UploadQueueDialogProps {
   onResume: (jobId: string) => void;
   onCancel: (jobId: string) => void;
   onRetry: (jobId: string) => void;
+  onConfirmLegacyRetry: (jobId: string) => void;
   onRemove: (jobId: string) => void;
+  onReset: () => void;
   onClose: () => void;
 }
 
@@ -22,7 +24,9 @@ export function UploadQueueDialog({
   onResume,
   onCancel,
   onRetry,
+  onConfirmLegacyRetry,
   onRemove,
+  onReset,
   onClose,
 }: UploadQueueDialogProps): React.JSX.Element {
   const closeRef = useRef<HTMLButtonElement | null>(null);
@@ -75,9 +79,12 @@ export function UploadQueueDialog({
             : summarizeJobs(jobs) || 'Upload queue is empty.'}
         </p>
         {error ? (
-          <p className="library-alert" role="alert">
-            {error}
-          </p>
+          <div className="library-alert" role="alert">
+            <span>{error}</span>
+            <button type="button" disabled={busy} onClick={onReset}>
+              Reset queue (keep backup)
+            </button>
+          </div>
         ) : null}
 
         <div className="upload-job-list">
@@ -92,11 +99,18 @@ export function UploadQueueDialog({
             jobs.map((job) => {
               const terminal =
                 job.summary.queued === 0 && job.summary.uploading === 0;
-              const retryable =
-                job.summary.failed +
-                  job.summary.cancelled +
-                  job.summary.uncertain >
-                0;
+              const removable = terminal && job.summary.uncertain === 0;
+              const retryable = job.items.some(
+                (item) =>
+                  (item.state === 'failed' || item.state === 'cancelled') &&
+                  item.error?.retryable === true &&
+                  !item.error.duplicateRisk,
+              );
+              const legacyRisk = job.items.some(
+                (item) =>
+                  item.state === 'uncertain' &&
+                  item.error?.duplicateRisk === true,
+              );
               const percent =
                 job.totalBytes === 0
                   ? 0
@@ -138,7 +152,9 @@ export function UploadQueueDialog({
                         <div>
                           <strong>{item.displayName}</strong>
                           <span className={`upload-item-state ${item.state}`}>
-                            {item.state}
+                            {item.state === 'succeeded' && item.remote === null
+                              ? 'already uploaded'
+                              : item.state}
                           </span>
                         </div>
                         <progress
@@ -198,7 +214,16 @@ export function UploadQueueDialog({
                         Retry incomplete
                       </button>
                     ) : null}
-                    {terminal ? (
+                    {legacyRisk ? (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => onConfirmLegacyRetry(job.id)}
+                      >
+                        I understand—retry legacy upload
+                      </button>
+                    ) : null}
+                    {removable ? (
                       <button
                         type="button"
                         disabled={busy}

@@ -5,8 +5,7 @@ import {
   type ElectronApplication,
   type Page,
 } from '@playwright/test';
-import { existsSync, mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -31,6 +30,7 @@ const modelFixtureDir = path.join(repoRoot, 'e2e', 'fixtures', 'models');
 
 let app: ElectronApplication;
 let page: Page;
+let e2eStateRoot: string;
 const consoleErrors: string[] = [];
 
 test.beforeAll(async () => {
@@ -46,15 +46,17 @@ test.beforeAll(async () => {
 
   // Isolate the catalog so the suite never touches the developer's real
   // per-user database. The main process only sets this when unset.
-  const catalogDb = path.join(
-    mkdtempSync(path.join(tmpdir(), 'pf-e2e-')),
-    'catalog.sqlite3',
-  );
+  e2eStateRoot = mkdtempSync(path.join(repoRoot, '.pf-e2e-'));
+  const catalogDb = path.join(e2eStateRoot, 'catalog.sqlite3');
 
   app = await electron.launch({
     args: ['.'],
     cwd: repoRoot,
-    env: { ...process.env, PRINTFARMER_CATALOG_DB: catalogDb },
+    env: {
+      ...process.env,
+      PRINTFARMER_CATALOG_DB: catalogDb,
+      PRINTFARMER_USER_DATA_PATH: path.join(e2eStateRoot, 'user-data'),
+    },
   });
 
   page = await app.firstWindow();
@@ -71,6 +73,9 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   await app?.close();
+  if (e2eStateRoot) {
+    rmSync(e2eStateRoot, { recursive: true, force: true });
+  }
 });
 
 test('mounts the React app shell', async () => {
@@ -152,18 +157,26 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
   await expect(page.getByRole('application')).toHaveCount(0);
   await expect(page.getByRole('dialog')).toHaveCount(0);
 
+  await app.evaluate(({ dialog }, fixturePath) => {
+    dialog.showOpenDialog = () =>
+      Promise.resolve({
+        canceled: false,
+        filePaths: [fixturePath],
+      });
+  }, modelFixtureDir);
+  const approval = await page.evaluate(() => window.printFarmer.openFolder());
+  if (!approval) throw new Error('fixture folder approval failed');
   const importPreview = await page.evaluate(
-    async (fixturePath) =>
-      window.printFarmer.previewImport({ path: fixturePath }),
-    modelFixtureDir,
+    (approvalId) => window.printFarmer.previewImport({ approvalId }),
+    approval.approvalId,
   );
   expect(importPreview.modelCount).toBe(1);
   expect(importPreview.formats.obj).toBe(1);
   const importResult = await page.evaluate(
-    async (fixturePath) =>
+    async (approvalId) =>
       window.printFarmer.importRoot({
         rootId: 'e2e-model-fixtures',
-        path: fixturePath,
+        approvalId,
         rules: [
           {
             relativePath: '',
@@ -173,7 +186,7 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
         ],
         commonTags: ['e2e'],
       }),
-    modelFixtureDir,
+    approval.approvalId,
   );
   expect(importResult.report.added).toBe(1);
   expect(importResult.modelsOrganized).toBe(1);

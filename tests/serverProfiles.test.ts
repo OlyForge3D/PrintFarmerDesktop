@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   ServerProfileError,
   ServerProfileService,
+  buildServerEndpoint,
   normalizeServerUrl,
   type ProfileFileSystem,
   type SecretStorage,
@@ -136,7 +137,8 @@ function successfulFetch(
   return vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = requestUrl(input);
     onRequest?.(url, init ?? {});
-    switch (url.pathname) {
+    const endpointPath = url.pathname.replace(/^\/prefix(?=\/)/, '');
+    switch (endpointPath) {
       case '/api/system/version':
         return Promise.resolve(json(VERSION));
       case '/api/system/capabilities':
@@ -248,6 +250,15 @@ function service(
   });
 }
 
+it('builds authenticated endpoints without dropping reverse-proxy prefixes', () => {
+  expect(
+    buildServerEndpoint(
+      'https://farm.example/print-farmer',
+      '/api/3d-models/upload',
+    ).toString(),
+  ).toBe('https://farm.example/print-farmer/api/3d-models/upload');
+});
+
 describe('server profiles', () => {
   it('normalizes deterministic server URLs and rejects unsafe components', () => {
     expect(normalizeServerUrl(' HTTP://Example.COM:80/farm/// ')).toBe(
@@ -290,6 +301,50 @@ describe('server profiles', () => {
     expect(persisted).not.toContain('short-lived-jwt');
     expect(calls).toContain('/api/auth/me');
     expect(fs.renames).toBeGreaterThan(0);
+  });
+
+  it('binds authenticated contexts to profile revision and token generation', async () => {
+    const fileSystem = new MemoryFileSystem();
+    const paths: string[] = [];
+    const profiles = service(
+      fileSystem,
+      successfulFetch((url) => paths.push(url.pathname)),
+    );
+    const saved = await profiles.save({
+      ...apiKeyDraft(),
+      baseUrl: 'https://farm.example/prefix',
+    });
+    const context = await profiles.getAuthenticatedContext(saved.id);
+    expect(context.endpoint('/api/3d-models/upload').toString()).toBe(
+      'https://farm.example/prefix/api/3d-models/upload',
+    );
+    expect(paths.every((value) => value.startsWith('/prefix/api/'))).toBe(true);
+    await expect(
+      profiles.revalidateAuthenticatedContext(context),
+    ).resolves.toBeUndefined();
+
+    mutateStoredProfile(fileSystem, (profile) => {
+      profile.baseUrl = 'https://other-farm.example';
+    });
+    await expect(
+      profiles.revalidateAuthenticatedContext(context),
+    ).rejects.toMatchObject({ code: 'AUTHENTICATION_SUPERSEDED' });
+    await expect(profiles.invalidateRejectedContext(context)).resolves.toBe(
+      false,
+    );
+  });
+
+  it('invalidates a rejected JWT only once for its exact context', async () => {
+    const fileSystem = new MemoryFileSystem();
+    const profiles = service(fileSystem);
+    const saved = await profiles.save(apiKeyDraft());
+    const context = await profiles.getAuthenticatedContext(saved.id);
+    await expect(profiles.invalidateRejectedContext(context)).resolves.toBe(
+      true,
+    );
+    await expect(profiles.invalidateRejectedContext(context)).resolves.toBe(
+      false,
+    );
   });
 
   it('accepts additive remote version, capability, and exchange fields', async () => {

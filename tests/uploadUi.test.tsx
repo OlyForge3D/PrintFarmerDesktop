@@ -7,6 +7,7 @@ import type {
   UploadJob,
 } from '@shared/ipc';
 import { App } from '../src/renderer/App.js';
+import { UploadQueueDialog } from '../src/renderer/uploads/UploadQueueDialog.js';
 
 const models: LogicalModel[] = ['a', 'b', 'c'].map((name, index) => ({
   hash: String(index + 1).repeat(64),
@@ -85,6 +86,60 @@ describe('catalog multi-selection and upload queue UI', () => {
     await waitFor(() => expect(upload).toHaveFocus());
     expect(container.querySelector('.workspace')).not.toHaveAttribute('inert');
   });
+
+  it('requires explicit legacy-risk confirmation and offers deliberate reset recovery', () => {
+    const job = uploadJob();
+    job.state = 'attention';
+    job.items[0]!.state = 'uncertain';
+    job.items[0]!.error = {
+      code: 'LEGACY_UPLOAD_UNCERTAIN',
+      message: 'Bytes may have reached the server.',
+      retryable: false,
+      retryAfterSeconds: null,
+      duplicateRisk: true,
+    };
+    job.summary = {
+      queued: 0,
+      uploading: 0,
+      succeeded: 0,
+      failed: 0,
+      cancelled: 0,
+      uncertain: 1,
+    };
+    const confirm = vi.fn();
+    const reset = vi.fn();
+    render(
+      <UploadQueueDialog
+        jobs={[job]}
+        busy={false}
+        error="The upload queue is corrupt."
+        onPause={vi.fn()}
+        onResume={vi.fn()}
+        onCancel={vi.fn()}
+        onRetry={vi.fn()}
+        onConfirmLegacyRetry={confirm}
+        onRemove={vi.fn()}
+        onReset={reset}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(
+      screen.queryByRole('button', { name: 'Retry incomplete' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Remove' }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'I understand—retry legacy upload',
+      }),
+    );
+    expect(confirm).toHaveBeenCalledWith(job.id);
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Reset queue (keep backup)' }),
+    );
+    expect(reset).toHaveBeenCalledOnce();
+  });
 });
 
 function installApi(overrides: Partial<PrintFarmerApi>): void {
@@ -150,6 +205,7 @@ function uploadJob(): UploadJob {
     id: '22222222-2222-4222-8222-222222222222',
     profileId: legacyProfile().id,
     profileName: 'Legacy farm',
+    profileRevision: 'revision-1',
     mode: 'legacyModelOnly',
     state: 'running',
     paused: false,

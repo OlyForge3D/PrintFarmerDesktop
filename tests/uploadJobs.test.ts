@@ -7,6 +7,7 @@ import {
   UploadJobService,
   UploadJobStore,
   type UploadJobFileSystem,
+  type UploadProfileService,
   type UploadSidecar,
 } from '../src/main/uploadJobs.js';
 import {
@@ -14,9 +15,10 @@ import {
   scrubSensitiveText,
   type UploadTransport,
 } from '../src/main/uploadTransport.js';
+import { ServerProfileError } from '../src/main/serverProfiles.js';
 
 const MODEL_PATH = path.resolve('package.json');
-const STORE_PATH = path.join('data', 'upload-jobs.v1.json');
+const STORE_PATH = path.join('data', 'upload-jobs.v2.json');
 
 function uuidFactory(): () => string {
   let value = 1;
@@ -88,6 +90,20 @@ describe('UploadJobStore', () => {
     expect(fileSystem.operations).toEqual([]);
   });
 
+  it('resets corruption only explicitly and retains a recovery backup', async () => {
+    const fileSystem = memoryFileSystem('{not json');
+    const store = new UploadJobStore({
+      userDataPath: 'data',
+      fileSystem,
+      now: () => 123,
+    });
+    await expect(store.load()).rejects.toMatchObject({ code: 'CORRUPT_STORE' });
+    const reset = await store.reset();
+    expect(reset.backupCreated).toBe(true);
+    expect(fileSystem.files.has(`${STORE_PATH}.backup-123`)).toBe(true);
+    expect(await store.load()).toEqual([]);
+  });
+
   it('recovers crash-left modern uploads as retryable uncertainty', async () => {
     const now = Date.parse('2026-07-23T20:00:00.000Z');
     const fileSystem = memoryFileSystem(
@@ -151,13 +167,13 @@ describe('UploadJobService', () => {
   it('bounds parallel uploads, records progress, and links every success', async () => {
     const bytes = await fs.readFile(MODEL_PATH);
     const hash = createHash('sha256').update(bytes).digest('hex');
-    const hashes = [hash, hash, hash];
+    const hashes = [hash, 'b'.repeat(64), 'c'.repeat(64)];
     let active = 0;
     let peak = 0;
     const transport: UploadTransport = async (request) => {
       active += 1;
       peak = Math.max(peak, active);
-      request.onProgress(request.modelSize);
+      await request.onProgress(request.modelSize);
       await new Promise((resolve) => setTimeout(resolve, 25));
       active -= 1;
       return remote(
@@ -202,13 +218,16 @@ describe('UploadJobService', () => {
         transportEntered = true;
         request.signal.addEventListener('abort', () =>
           reject(
-            new ModelUploadError({
-              code: 'ABORTED',
-              message: 'stopped',
-              retryable: true,
-              retryAfterSeconds: null,
-              duplicateRisk: request.mode === 'legacyModelOnly',
-            }),
+            new ModelUploadError(
+              {
+                code: 'ABORTED',
+                message: 'stopped',
+                retryable: true,
+                retryAfterSeconds: null,
+                duplicateRisk: request.mode === 'legacyModelOnly',
+              },
+              'modelStreaming',
+            ),
           ),
         );
       });
@@ -235,6 +254,22 @@ describe('UploadJobService', () => {
       expect(jobs[0]?.items[0]?.error?.duplicateRisk).toBe(
         mode === 'legacyModelOnly',
       );
+      if (mode === 'legacyModelOnly') {
+        await expect(service.retry(job.id)).rejects.toThrow(
+          /no safely retryable/i,
+        );
+        transportEntered = false;
+        await service.confirmLegacyRetry(job.id);
+        await waitFor(
+          () => service.list(),
+          () => transportEntered,
+        );
+        await service.cancel(job.id);
+        await waitFor(
+          () => service.list(),
+          (value) => value[0]?.items[0]?.state === 'uncertain',
+        );
+      }
       transportEntered = false;
     }
   });
@@ -279,6 +314,327 @@ describe('UploadJobService', () => {
     );
     expect(ids).toHaveLength(2);
     expect(ids[0]).toBe(ids[1]);
+  });
+
+  it('does not requeue permanent upload failures', async () => {
+    const bytes = await fs.readFile(MODEL_PATH);
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    const service = await serviceFixture({
+      hashes: [hash],
+      transport: () =>
+        Promise.reject(
+          new ModelUploadError(
+            {
+              code: 'BAD_REQUEST',
+              message: 'The server rejected the request.',
+              retryable: false,
+              retryAfterSeconds: null,
+              duplicateRisk: false,
+            },
+            'responseReceived',
+          ),
+        ),
+    });
+    const job = await service.start({
+      profileId: PROFILE.id,
+      hashes: [hash],
+    });
+    await waitFor(
+      () => service.list(),
+      (jobs) => jobs[0]?.items[0]?.state === 'failed',
+    );
+    await expect(service.retry(job.id)).rejects.toThrow(/no safely retryable/i);
+  });
+
+  it('invalidates exactly one rejected auth context and retries with the same identity', async () => {
+    const bytes = await fs.readFile(MODEL_PATH);
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    let contextNumber = 0;
+    let invalidations = 0;
+    const tokens: string[] = [];
+    const uploadIds: string[] = [];
+    const profiles: UploadProfileService = {
+      list: () =>
+        Promise.resolve({ profiles: [PROFILE], selectedProfileId: PROFILE.id }),
+      getAuthenticatedContext: () => {
+        contextNumber += 1;
+        return Promise.resolve(authContext(`token-${contextNumber}`));
+      },
+      revalidateAuthenticatedContext: () => Promise.resolve(),
+      invalidateRejectedContext: () => {
+        invalidations += 1;
+        return Promise.resolve(true);
+      },
+    };
+    const service = await serviceFixture({
+      hashes: [hash],
+      profiles,
+      transport: (request) => {
+        tokens.push(request.token);
+        uploadIds.push(request.clientUploadId);
+        if (tokens.length === 1) {
+          return Promise.reject(
+            new ModelUploadError(
+              {
+                code: 'UNAUTHENTICATED',
+                message: 'rejected',
+                retryable: true,
+                retryAfterSeconds: null,
+                duplicateRisk: false,
+              },
+              'responseReceived',
+            ),
+          );
+        }
+        return Promise.resolve(
+          remote(
+            request.clientUploadId,
+            request.displayName,
+            request.modelSize,
+          ),
+        );
+      },
+    });
+    await service.start({ profileId: PROFILE.id, hashes: [hash] });
+    await waitFor(
+      () => service.list(),
+      (jobs) => jobs[0]?.items[0]?.state === 'succeeded',
+    );
+    expect(tokens).toEqual(['token-2', 'token-3']);
+    expect(new Set(uploadIds).size).toBe(1);
+    expect(invalidations).toBe(1);
+  });
+
+  it('cancels without transport when the profile changes before send', async () => {
+    const bytes = await fs.readFile(MODEL_PATH);
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    let sends = 0;
+    const service = await serviceFixture({
+      hashes: [hash],
+      profiles: {
+        list: () =>
+          Promise.resolve({
+            profiles: [PROFILE],
+            selectedProfileId: PROFILE.id,
+          }),
+        getAuthenticatedContext: () => Promise.resolve(authContext('token-a')),
+        revalidateAuthenticatedContext: () =>
+          Promise.reject(
+            new ServerProfileError(
+              'AUTHENTICATION_SUPERSEDED',
+              'profile changed',
+            ),
+          ),
+        invalidateRejectedContext: () => Promise.resolve(false),
+      },
+      transport: () => {
+        sends += 1;
+        return Promise.reject(new Error('must not send'));
+      },
+    });
+    await service.start({ profileId: PROFILE.id, hashes: [hash] });
+    const jobs = await waitFor(
+      () => service.list(),
+      (value) => value[0]?.items[0]?.state === 'cancelled',
+    );
+    expect(sends).toBe(0);
+    expect(jobs[0]?.items[0]?.error).toMatchObject({
+      code: 'AUTHENTICATION_SUPERSEDED',
+      duplicateRisk: false,
+    });
+  });
+
+  it('reuses an immutable sidecar link after the UI job is removed', async () => {
+    const bytes = await fs.readFile(MODEL_PATH);
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    let savedLink: Parameters<UploadSidecar['linkRemoteModel']>[0] | null =
+      null;
+    let sends = 0;
+    const service = await serviceFixture({
+      hashes: [hash],
+      sidecarFactory: (models) => ({
+        listModels: () => Promise.resolve(models),
+        renderThumbnail: () => Promise.resolve(null),
+        getRemoteModelLink: () => Promise.resolve(savedLink),
+        linkRemoteModel: (link) => {
+          if (
+            savedLink &&
+            (savedLink.remoteModelId !== link.remoteModelId ||
+              savedLink.clientUploadId !== link.clientUploadId)
+          ) {
+            return Promise.reject(new Error('immutable link mismatch'));
+          }
+          savedLink = link;
+          return Promise.resolve(link);
+        },
+      }),
+      transport: (request) => {
+        sends += 1;
+        return Promise.resolve(
+          remote(
+            request.clientUploadId,
+            request.displayName,
+            request.modelSize,
+          ),
+        );
+      },
+    });
+    const first = await service.start({
+      profileId: PROFILE.id,
+      hashes: [hash],
+    });
+    const completed = await waitFor(
+      () => service.list(),
+      (jobs) => jobs[0]?.state === 'completed',
+    );
+    const durableId = completed[0]!.items[0]!.clientUploadId;
+    await service.remove(first.id);
+    const second = await service.start({
+      profileId: PROFILE.id,
+      hashes: [hash],
+    });
+    expect(second.items[0]).toMatchObject({
+      state: 'succeeded',
+      clientUploadId: durableId,
+    });
+    expect(sends).toBe(1);
+  });
+
+  it('rejects a duplicate active profile/hash upload', async () => {
+    const bytes = await fs.readFile(MODEL_PATH);
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    const service = await serviceFixture({
+      hashes: [hash],
+      transport: (request) =>
+        new Promise((_resolve, reject) => {
+          request.signal.addEventListener('abort', () =>
+            reject(
+              new ModelUploadError(
+                {
+                  code: 'ABORTED',
+                  message: 'stopped',
+                  retryable: true,
+                  retryAfterSeconds: null,
+                  duplicateRisk: false,
+                },
+                'modelStreaming',
+              ),
+            ),
+          );
+        }),
+    });
+    const first = await service.start({
+      profileId: PROFILE.id,
+      hashes: [hash],
+    });
+    await expect(
+      service.start({ profileId: PROFILE.id, hashes: [hash] }),
+    ).rejects.toThrow(/active or recoverable upload/i);
+    await service.cancel(first.id);
+  });
+
+  it('rolls back a job creation when its atomic checkpoint fails', async () => {
+    const bytes = await fs.readFile(MODEL_PATH);
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    const store = new UploadJobStore({
+      userDataPath: 'data',
+      fileSystem: memoryFileSystem(),
+    });
+    vi.spyOn(store, 'saveState').mockRejectedValueOnce(
+      new Error('simulated disk failure'),
+    );
+    const service = await serviceFixture({
+      hashes: [hash],
+      store,
+      transport: () => Promise.reject(new Error('must not send')),
+    });
+    await expect(
+      service.start({ profileId: PROFILE.id, hashes: [hash] }),
+    ).rejects.toThrow();
+    expect(await service.list()).toEqual([]);
+  });
+
+  it('never sends when the durable uploading checkpoint fails', async () => {
+    const bytes = await fs.readFile(MODEL_PATH);
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    const store = new UploadJobStore({
+      userDataPath: 'data',
+      fileSystem: memoryFileSystem(),
+    });
+    const realSave = store.saveState.bind(store);
+    let saves = 0;
+    vi.spyOn(store, 'saveState').mockImplementation((state) => {
+      saves += 1;
+      return saves === 2
+        ? Promise.reject(new Error('checkpoint unavailable'))
+        : realSave(state);
+    });
+    let sends = 0;
+    const service = await serviceFixture({
+      hashes: [hash],
+      store,
+      transport: () => {
+        sends += 1;
+        return Promise.reject(new Error('must not send'));
+      },
+    });
+    await service.start({ profileId: PROFILE.id, hashes: [hash] });
+    await expectEventuallyRejected(() => service.list());
+    expect(sends).toBe(0);
+  });
+
+  it('schedules jobs round-robin while preserving each job item order', async () => {
+    const hashes = ['a'.repeat(64), 'b'.repeat(64), 'c'.repeat(64)];
+    const started: string[] = [];
+    const releases: Array<() => void> = [];
+    const service = await serviceFixture({
+      hashes,
+      concurrency: 1,
+      transport: (request) =>
+        new Promise((resolve) => {
+          started.push(request.clientUploadId);
+          releases.push(() =>
+            resolve(
+              remote(
+                request.clientUploadId,
+                request.displayName,
+                request.modelSize,
+              ),
+            ),
+          );
+        }),
+    });
+    const first = await service.start({
+      profileId: PROFILE.id,
+      hashes: hashes.slice(0, 2),
+    });
+    await waitFor(
+      () => service.list(),
+      () => started.length === 1,
+    );
+    const second = await service.start({
+      profileId: PROFILE.id,
+      hashes: [hashes[2]!],
+    });
+    const firstIds = first.items.map((item) => item.clientUploadId);
+    const secondId = second.items[0]!.clientUploadId;
+    releases.shift()?.();
+    await waitFor(
+      () => service.list(),
+      () => started.length === 2,
+    );
+    expect(started).toEqual([firstIds[0], secondId]);
+    releases.shift()?.();
+    await waitFor(
+      () => service.list(),
+      () => started.length === 3,
+    );
+    expect(started[2]).toBe(firstIds[1]);
+    releases.shift()?.();
+    await waitFor(
+      () => service.list(),
+      (jobs) => jobs.every((job) => job.state === 'completed'),
+    );
   });
 });
 
@@ -328,6 +684,22 @@ async function serviceFixture(options: {
   transport: UploadTransport;
   concurrency?: number;
   profile?: ServerProfile;
+  profiles?: UploadProfileService;
+  sidecarFactory?: (
+    models: Array<{
+      hash: string;
+      format: 'stl';
+      size: number;
+      locations: Array<{
+        rootId: string;
+        path: string;
+        rootRelative: string;
+        size: number;
+        available: boolean;
+      }>;
+    }>,
+  ) => UploadSidecar;
+  store?: UploadJobStore;
   links?: unknown[];
 }): Promise<UploadJobService> {
   const stat = await fs.stat(MODEL_PATH);
@@ -345,9 +717,10 @@ async function serviceFixture(options: {
       },
     ],
   }));
-  const sidecar: UploadSidecar = {
+  const sidecar: UploadSidecar = options.sidecarFactory?.(models) ?? {
     listModels: vi.fn().mockResolvedValue(models),
     renderThumbnail: vi.fn(),
+    getRemoteModelLink: vi.fn().mockResolvedValue(null),
     linkRemoteModel: (link) => {
       options.links?.push(link);
       return Promise.resolve(link);
@@ -355,14 +728,42 @@ async function serviceFixture(options: {
   };
   const fileSystem = memoryFileSystem();
   const service = new UploadJobService({
-    store: new UploadJobStore({ userDataPath: 'data', fileSystem }),
+    store:
+      options.store ?? new UploadJobStore({ userDataPath: 'data', fileSystem }),
     sidecar,
-    profiles: {
+    profiles: options.profiles ?? {
       list: vi.fn().mockResolvedValue({
         profiles: [options.profile ?? PROFILE],
         selectedProfileId: PROFILE.id,
       }),
-      getToken: vi.fn().mockResolvedValue('jwt-secret'),
+      getAuthenticatedContext: vi.fn().mockImplementation(() =>
+        Promise.resolve({
+          profile: options.profile ?? PROFILE,
+          token: 'jwt-test-value',
+          revision: 'revision-1',
+          generation: 1,
+          endpoint: (relativePath: string) =>
+            new URL(relativePath, 'https://farm.example/'),
+        }),
+      ),
+      revalidateAuthenticatedContext: vi.fn().mockResolvedValue(undefined),
+      invalidateRejectedContext: vi.fn().mockResolvedValue(true),
+    },
+    approvals: {
+      authorizeFile: vi
+        .fn()
+        .mockImplementation((sourcePath: string) =>
+          Promise.resolve({ sourcePath, canonicalPath: sourcePath }),
+        ),
+    },
+    snapshots: {
+      create: vi.fn().mockImplementation((sourcePath: string) =>
+        Promise.resolve({
+          path: sourcePath,
+          size: stat.size,
+          cleanup: () => Promise.resolve(),
+        }),
+      ),
     },
     transport: options.transport,
     ...(options.concurrency !== undefined
@@ -391,6 +792,17 @@ function remote(clientUploadId: string, name: string, size: number) {
   };
 }
 
+function authContext(token: string) {
+  return {
+    profile: PROFILE,
+    token,
+    revision: 'revision-1',
+    generation: 1,
+    endpoint: (relativePath: string) =>
+      new URL(relativePath, 'https://farm.example/prefix/'),
+  };
+}
+
 async function waitFor<T>(
   read: () => Promise<T>,
   condition: (value: T) => boolean,
@@ -400,5 +812,20 @@ async function waitFor<T>(
     if (condition(value)) return value;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+
   throw new Error('condition not reached');
+}
+
+async function expectEventuallyRejected(
+  read: () => Promise<unknown>,
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      await read();
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('expected operation to reject');
 }

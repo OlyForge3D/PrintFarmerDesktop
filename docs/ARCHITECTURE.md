@@ -84,3 +84,21 @@ client upload ID per item for safe retry. Confirmed legacy servers omit client
 IDs and client thumbnails, and interrupted active uploads become explicitly
 uncertain because retrying can create a duplicate. Successful jobs persist the
 profile-scoped remote-model link through the sidecar before reporting success.
+
+Folder access is separately authorized by the native picker. Main persists
+canonical roots and gives the renderer opaque approval IDs; scan, preview,
+import, and upload operations reject renderer-supplied paths or catalog
+locations outside an approved path boundary. Existing catalog roots require
+reauthorization. Model parsing and thumbnail RPCs likewise accept only files
+under an approved root or the exact canonical file returned by the native file
+picker.
+
+Before network I/O, main rejects symlink sources and copies one securely opened
+file handle through bounded SHA-256 verification into a private per-job
+snapshot. Multipart streaming reads only that immutable snapshot and always
+tears down its writer before releasing scheduler capacity. State transitions
+to uploading are copy-on-write atomic checkpoints. Profile revision and auth
+generation are revalidated immediately before send; a conditional 401 refresh
+can retry one modern request with the same durable profile/hash upload
+identity. Legacy ambiguity requires a separate duplicate-risk confirmation.
+Queue reset is deliberate and retains the previous store as a backup.

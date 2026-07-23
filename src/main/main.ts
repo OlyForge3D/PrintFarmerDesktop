@@ -14,6 +14,11 @@ import {
 import { registerIpcHandlers } from './ipc.js';
 import { resolveAppIconPath } from './appIcon.js';
 
+const userDataOverride = process.env.PRINTFARMER_USER_DATA_PATH;
+if (userDataOverride) {
+  app.setPath('userData', path.resolve(userDataOverride));
+}
+
 const createMainWindow = (): void => {
   const iconPath = resolveAppIconPath(
     app.getAppPath(),

@@ -14,6 +14,7 @@ export type LibraryStatus = 'idle' | 'loading' | 'preparing' | 'scanning';
 
 export interface ImportDraft {
   rootId: string;
+  approvalId: string;
   path: string;
   preview: ImportPreviewResponse;
   collections: Collection[];
@@ -90,7 +91,7 @@ export function useLibrary(): Library {
         return false;
       }
       const [preview, collections, tags] = await Promise.all([
-        window.printFarmer.previewImport({ path: selection.path }),
+        window.printFarmer.previewImport({ approvalId: selection.approvalId }),
         window.printFarmer.listCollections(),
         window.printFarmer.listTags(),
       ]);
@@ -102,6 +103,7 @@ export function useLibrary(): Library {
       }
       setImportDraft({
         rootId: rootIdForPath(selection.path),
+        approvalId: selection.approvalId,
         path: selection.path,
         preview,
         collections,
@@ -136,7 +138,7 @@ export function useLibrary(): Library {
       try {
         const result = await window.printFarmer.importRoot({
           rootId: importDraft.rootId,
-          path: importDraft.path,
+          approvalId: importDraft.approvalId,
           ...plan,
         });
         setLastImport(result);

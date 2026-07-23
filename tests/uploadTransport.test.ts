@@ -5,6 +5,7 @@ import {
 } from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   createNodeUploadTransport,
@@ -32,7 +33,9 @@ describe('streaming multipart upload transport', () => {
     const stat = await fs.stat(modelPath);
     let body = Buffer.alloc(0);
     let declaredLength = '';
+    let requestedPath = '';
     const baseUrl = await listen((request, response) => {
+      requestedPath = request.url ?? '';
       declaredLength = String(request.headers['content-length']);
       const chunks: Buffer[] = [];
       request.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -56,13 +59,14 @@ describe('streaming multipart upload transport', () => {
             wasExisting: false,
             clientUploadId: '11111111-1111-4111-8111-111111111111',
             etag: '"body-etag"',
+            additiveFutureField: { supported: true },
           }),
         );
       });
     });
     const progress: number[] = [];
     const result = await createNodeUploadTransport()({
-      baseUrl,
+      endpoint: `${baseUrl}/proxy/api/3d-models/upload`,
       token: 'not-a-real-token',
       modelPath,
       displayName: 'bad"\r\nname.obj',
@@ -71,16 +75,117 @@ describe('streaming multipart upload transport', () => {
       mode: 'modern',
       thumbnail: png(1, 1),
       signal: new AbortController().signal,
-      onProgress: (bytes) => progress.push(bytes),
+      onProgress: (bytes) => {
+        progress.push(bytes);
+      },
     });
     const multipart = body.toString('latin1');
     expect(Number(declaredLength)).toBe(body.length);
+    expect(requestedPath).toBe('/proxy/api/3d-models/upload');
     expect(multipart).toContain('name="modelFile"');
     expect(multipart).toContain('name="thumbnailFile"');
     expect(multipart).toContain('name="clientUploadId"');
     expect(multipart).not.toContain('\r\nname.obj"\r\n');
     expect(progress.at(-1)).toBe(stat.size);
     expect(result.etag).toBe('"server-etag"');
+  });
+
+  it.each([401, 413])(
+    'tears down the writer before releasing an early HTTP %s response',
+    async (status) => {
+      const baseUrl = await listen((_request, response) => {
+        response.writeHead(status, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ message: 'rejected' }));
+      });
+      let reads = 0;
+      let destroyed = false;
+      class CountingStream extends Readable {
+        override _read(): void {
+          setImmediate(() => {
+            if (this.destroyed || reads >= 1024) {
+              if (!this.destroyed) this.push(null);
+              return;
+            }
+            reads += 1;
+            this.push(Buffer.alloc(64 * 1024));
+          });
+        }
+
+        override _destroy(
+          error: Error | null,
+          callback: (error?: Error | null) => void,
+        ): void {
+          destroyed = true;
+          callback(error);
+        }
+      }
+      const createStream = (() =>
+        new CountingStream()) as unknown as typeof import('node:fs').createReadStream;
+      await expect(
+        createNodeUploadTransport({ createReadStream: createStream })({
+          endpoint: `${baseUrl}/proxy/api/3d-models/upload`,
+          token: 'token',
+          modelPath: 'private-snapshot',
+          displayName: 'large.stl',
+          modelSize: 64 * 1024 * 1024,
+          clientUploadId: '11111111-1111-4111-8111-111111111111',
+          mode: 'modern',
+          signal: new AbortController().signal,
+          onProgress: () => undefined,
+        }),
+      ).rejects.toMatchObject({
+        detail: {
+          code: status === 401 ? 'UNAUTHENTICATED' : 'PAYLOAD_TOO_LARGE',
+        },
+      });
+      expect(destroyed).toBe(true);
+      const readsAtRelease = reads;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(reads).toBe(readsAtRelease);
+    },
+  );
+
+  it('treats a mismatched modern upload identity as recoverable ambiguity', async () => {
+    const modelPath = path.resolve('package.json');
+    const stat = await fs.stat(modelPath);
+    const baseUrl = await listen((request, response) => {
+      request.resume();
+      response.writeHead(201, {
+        'content-type': 'application/json',
+        etag: '"etag"',
+      });
+      response.end(
+        JSON.stringify({
+          id: 'remote',
+          name: 'model',
+          fileName: 'model.stl',
+          fileSize: stat.size,
+          fileType: 'stl',
+          uploadedAt: '2026-07-23T20:00:00.000Z',
+          url: '/models/remote',
+          thumbnailUrl: null,
+          wasExisting: false,
+          clientUploadId: '22222222-2222-4222-8222-222222222222',
+          etag: '"etag"',
+        }),
+      );
+    });
+    await expect(
+      createNodeUploadTransport()({
+        endpoint: `${baseUrl}/api/3d-models/upload`,
+        token: 'token',
+        modelPath,
+        displayName: 'model.stl',
+        modelSize: stat.size,
+        clientUploadId: '11111111-1111-4111-8111-111111111111',
+        mode: 'modern',
+        signal: new AbortController().signal,
+        onProgress: () => undefined,
+      }),
+    ).rejects.toMatchObject({
+      detail: { code: 'INVALID_RESPONSE', retryable: true },
+      phase: 'responseReceived',
+    });
   });
 
   it('omits clientUploadId and thumbnail fields for legacy fallback', async () => {
@@ -97,7 +202,7 @@ describe('streaming multipart upload transport', () => {
       });
     });
     const result = await createNodeUploadTransport()({
-      baseUrl,
+      endpoint: `${baseUrl}/api/3d-models/upload`,
       token: 'token',
       modelPath,
       displayName: 'model.stl',
@@ -131,7 +236,7 @@ describe('streaming multipart upload transport', () => {
     let caught: unknown;
     try {
       await createNodeUploadTransport()({
-        baseUrl,
+        endpoint: `${baseUrl}/api/3d-models/upload`,
         token: 'token',
         modelPath,
         displayName: 'model.stl',
@@ -158,11 +263,9 @@ describe('streaming multipart upload transport', () => {
   });
 });
 
-it('validates PNG dimensions and sanitizes multipart filenames', async () => {
-  await expect(validateThumbnailPng(png(4096, 3906))).resolves.toBeUndefined();
-  await expect(validateThumbnailPng(png(4096, 4096))).rejects.toMatchObject({
-    detail: { code: 'INVALID_THUMBNAIL' },
-  });
+it('validates PNG dimensions and sanitizes multipart filenames', () => {
+  expect(() => validateThumbnailPng(png(4096, 3906))).not.toThrow();
+  expect(() => validateThumbnailPng(png(4096, 4096))).toThrow();
   expect(sanitizeMultipartFilename('..\\evil"\r\n.stl')).not.toMatch(
     /["\r\n\\]/,
   );

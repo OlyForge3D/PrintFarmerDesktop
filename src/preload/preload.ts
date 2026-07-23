@@ -51,6 +51,7 @@ import {
   type UploadJobRequest,
   type UploadJobResponse,
   type RemoveUploadJobResponse,
+  type ResetUploadJobsResponse,
 } from '@shared/ipc';
 
 /**
@@ -231,6 +232,13 @@ const api: PrintFarmerApi = {
       IpcChannel.RetryUploadJob,
       request,
     ) as Promise<UploadJobResponse>,
+  confirmLegacyUploadRetry: (
+    request: UploadJobRequest,
+  ): Promise<UploadJobResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ConfirmLegacyUploadRetry,
+      request,
+    ) as Promise<UploadJobResponse>,
   removeUploadJob: (
     request: UploadJobRequest,
   ): Promise<RemoveUploadJobResponse> =>
@@ -238,6 +246,10 @@ const api: PrintFarmerApi = {
       IpcChannel.RemoveUploadJob,
       request,
     ) as Promise<RemoveUploadJobResponse>,
+  resetUploadJobs: (): Promise<ResetUploadJobsResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ResetUploadJobs,
+    ) as Promise<ResetUploadJobsResponse>,
 };
 
 contextBridge.exposeInMainWorld('printFarmer', api);

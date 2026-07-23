@@ -1,8 +1,10 @@
+import path from 'node:path';
 import { app, BrowserWindow, dialog, ipcMain, safeStorage } from 'electron';
 import {
   AppInfoResponse,
   IPC_CONTRACT_VERSION,
   IpcChannel,
+  ListModelsResponse,
   ipcSchemas,
   type OpenModelFileResponse,
   type OpenFolderResponse,
@@ -15,6 +17,7 @@ import {
 } from './sidecar.js';
 import { ServerProfileService } from './serverProfiles.js';
 import { createUploadJobService, type UploadJobService } from './uploadJobs.js';
+import { RootApprovalStore } from './rootApprovals.js';
 
 /**
  * Register all IPC handlers. Every incoming payload is validated against its
@@ -29,6 +32,7 @@ export function registerIpcHandlers(
   channelFactory?: ChannelFactory,
   profileService?: ServerProfileService,
   uploadJobService?: UploadJobService,
+  rootApprovalStore?: RootApprovalStore,
 ): void {
   const sidecar = new SidecarClient(channelFactory ?? spawnSidecarChannel);
   const profiles =
@@ -37,10 +41,30 @@ export function registerIpcHandlers(
       userDataPath: app.getPath('userData'),
       secretStorage: safeStorage,
     });
+  const approvals =
+    rootApprovalStore ??
+    new RootApprovalStore({ userDataPath: app.getPath('userData') });
+  const approvedPickerFiles = new Set<string>();
+  const authorizeRendererFile = async (
+    requestedPath: string,
+  ): Promise<string> => {
+    const canonicalPath = await approvals.canonicalizePickerFile(requestedPath);
+    const key =
+      process.platform === 'win32'
+        ? canonicalPath.toLowerCase()
+        : canonicalPath;
+    if (approvedPickerFiles.has(key)) return canonicalPath;
+    return (await approvals.authorizeFile(requestedPath)).canonicalPath;
+  };
   const uploads =
     uploadJobService ??
-    createUploadJobService(app.getPath('userData'), sidecar, profiles);
-  void uploads.initialize();
+    createUploadJobService(
+      app.getPath('userData'),
+      sidecar,
+      profiles,
+      approvals,
+    );
+  void uploads.initialize().catch(() => undefined);
 
   // Terminate the sidecar child process when the app exits. Windows does not
   // reap child processes on parent exit, so without this the `model-core`
@@ -89,7 +113,8 @@ export function registerIpcHandlers(
 
   ipcMain.handle(IpcChannel.LoadScene, async (_event, rawRequest: unknown) => {
     const request = ipcSchemas[IpcChannel.LoadScene].request.parse(rawRequest);
-    const raw = await sidecar.loadScene(request.path);
+    const approvedPath = await authorizeRendererFile(request.path);
+    const raw = await sidecar.loadScene(approvedPath);
     // Validate the sidecar's response against the contract before trusting it
     // in the renderer.
     return ipcSchemas[IpcChannel.LoadScene].response.parse(raw);
@@ -100,7 +125,8 @@ export function registerIpcHandlers(
     async (_event, rawRequest: unknown) => {
       const request =
         ipcSchemas[IpcChannel.ExtractVendorMetadata].request.parse(rawRequest);
-      const raw = await sidecar.extractVendorMetadata(request.path);
+      const approvedPath = await authorizeRendererFile(request.path);
+      const raw = await sidecar.extractVendorMetadata(approvedPath);
       return ipcSchemas[IpcChannel.ExtractVendorMetadata].response.parse(raw);
     },
   );
@@ -110,14 +136,16 @@ export function registerIpcHandlers(
     async (_event, rawRequest: unknown) => {
       const request =
         ipcSchemas[IpcChannel.RenderThumbnail].request.parse(rawRequest);
-      const raw = await sidecar.renderThumbnail(request.path, request.size);
+      const approvedPath = await authorizeRendererFile(request.path);
+      const raw = await sidecar.renderThumbnail(approvedPath, request.size);
       return ipcSchemas[IpcChannel.RenderThumbnail].response.parse(raw);
     },
   );
 
   ipcMain.handle(IpcChannel.ScanRoot, async (_event, rawRequest: unknown) => {
     const request = ipcSchemas[IpcChannel.ScanRoot].request.parse(rawRequest);
-    const raw = await sidecar.scanRoot(request.rootId, request.path);
+    const approvedPath = await approvals.resolve(request.approvalId);
+    const raw = await sidecar.scanRoot(request.rootId, approvedPath);
     return ipcSchemas[IpcChannel.ScanRoot].response.parse(raw);
   });
 
@@ -126,16 +154,18 @@ export function registerIpcHandlers(
     async (_event, rawRequest: unknown) => {
       const request =
         ipcSchemas[IpcChannel.PreviewImport].request.parse(rawRequest);
-      const raw = await sidecar.previewImport(request.path);
+      const approvedPath = await approvals.resolve(request.approvalId);
+      const raw = await sidecar.previewImport(approvedPath);
       return ipcSchemas[IpcChannel.PreviewImport].response.parse(raw);
     },
   );
 
   ipcMain.handle(IpcChannel.ImportRoot, async (_event, rawRequest: unknown) => {
     const request = ipcSchemas[IpcChannel.ImportRoot].request.parse(rawRequest);
+    const approvedPath = await approvals.resolve(request.approvalId);
     const raw = await sidecar.importRoot(
       request.rootId,
-      request.path,
+      approvedPath,
       request.rules,
       request.commonTags,
     );
@@ -144,7 +174,34 @@ export function registerIpcHandlers(
 
   ipcMain.handle(IpcChannel.ListModels, async () => {
     const raw = await sidecar.listModels();
-    return ipcSchemas[IpcChannel.ListModels].response.parse(raw);
+    const models = ListModelsResponse.parse(raw);
+    const filtered = await Promise.all(
+      models.map(async (model) => ({
+        ...model,
+        locations: await Promise.all(
+          model.locations.map(async (location) => {
+            if (!location.available) {
+              return {
+                ...location,
+                path: path.basename(location.path),
+                available: false,
+              };
+            }
+            try {
+              const approved = await approvals.authorizeFile(location.path);
+              return { ...location, path: approved.canonicalPath };
+            } catch {
+              return {
+                ...location,
+                path: path.basename(location.path),
+                available: false,
+              };
+            }
+          }),
+        ),
+      })),
+    );
+    return ipcSchemas[IpcChannel.ListModels].response.parse(filtered);
   });
 
   ipcMain.handle(IpcChannel.ListTags, async () => {
@@ -259,10 +316,16 @@ export function registerIpcHandlers(
       ? await dialog.showOpenDialog(owner, options)
       : await dialog.showOpenDialog(options);
 
-    const selected =
+    const selectedPath =
       result.canceled || result.filePaths.length === 0
         ? null
-        : { path: result.filePaths[0]! };
+        : result.filePaths[0]!;
+    const approval = selectedPath
+      ? await approvals.approveFromPicker(selectedPath)
+      : null;
+    const selected = approval
+      ? { path: approval.canonicalPath, approvalId: approval.id }
+      : null;
     const response: OpenFolderResponse = selected;
     return ipcSchemas[IpcChannel.OpenFolder].response.parse(response);
   });
@@ -283,10 +346,21 @@ export function registerIpcHandlers(
       ? await dialog.showOpenDialog(owner, options)
       : await dialog.showOpenDialog(options);
 
-    const selected =
+    const selectedPath =
       result.canceled || result.filePaths.length === 0
         ? null
-        : { path: result.filePaths[0]! };
+        : result.filePaths[0]!;
+    const canonicalPath = selectedPath
+      ? await approvals.canonicalizePickerFile(selectedPath)
+      : null;
+    if (canonicalPath) {
+      approvedPickerFiles.add(
+        process.platform === 'win32'
+          ? canonicalPath.toLowerCase()
+          : canonicalPath,
+      );
+    }
+    const selected = canonicalPath ? { path: canonicalPath } : null;
     const response: OpenModelFileResponse = selected;
     return ipcSchemas[IpcChannel.OpenModelFile].response.parse(response);
   });
@@ -360,6 +434,10 @@ export function registerIpcHandlers(
     [IpcChannel.ResumeUploadJob, (id: string) => uploads.resume(id)],
     [IpcChannel.CancelUploadJob, (id: string) => uploads.cancel(id)],
     [IpcChannel.RetryUploadJob, (id: string) => uploads.retry(id)],
+    [
+      IpcChannel.ConfirmLegacyUploadRetry,
+      (id: string) => uploads.confirmLegacyRetry(id),
+    ],
   ] as const) {
     ipcMain.handle(channel, async (_event, rawRequest: unknown) => {
       const request = ipcSchemas[channel].request.parse(rawRequest);
@@ -377,4 +455,9 @@ export function registerIpcHandlers(
       return ipcSchemas[IpcChannel.RemoveUploadJob].response.parse(response);
     },
   );
+
+  ipcMain.handle(IpcChannel.ResetUploadJobs, async () => {
+    const response = await uploads.reset();
+    return ipcSchemas[IpcChannel.ResetUploadJobs].response.parse(response);
+  });
 }

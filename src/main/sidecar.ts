@@ -180,6 +180,14 @@ export class SidecarClient {
     return this.request('linkRemoteModel', link);
   }
 
+  /** Return the durable profile/hash upload mapping, when one exists. */
+  async getRemoteModelLink(profileId: string, hash: string): Promise<unknown> {
+    return this.request('getRemoteModelLink', {
+      profileId,
+      localModelHash: hash,
+    });
+  }
+
   /** List every tag known to the catalog (raw wire array). */
   async listTags(): Promise<unknown> {
     return this.request('listTags', {});

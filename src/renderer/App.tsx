@@ -46,6 +46,8 @@ interface PreviewTarget {
   hash: string | null;
 }
 
+const MAX_UPLOAD_SELECTION = 500;
+
 type ModalOwner =
   | 'none'
   | 'profiles'
@@ -284,9 +286,13 @@ export function App(): React.JSX.Element {
             Math.min(anchor, target),
             Math.max(anchor, target) + 1,
           );
-          setSelectedHashes((current) =>
-            modifiers.toggle ? new Set([...current, ...range]) : new Set(range),
-          );
+          setSelectedHashes((current) => {
+            const values = modifiers.toggle ? [...current, ...range] : range;
+            if (new Set(values).size > MAX_UPLOAD_SELECTION) {
+              setAppError('Select at most 500 models per upload job.');
+            }
+            return new Set([...new Set(values)].slice(0, MAX_UPLOAD_SELECTION));
+          });
           setSelectedHash(model.hash);
           return;
         }
@@ -296,7 +302,8 @@ export function App(): React.JSX.Element {
         setSelectedHashes((current) => {
           const next = new Set(current);
           if (next.has(model.hash)) next.delete(model.hash);
-          else next.add(model.hash);
+          else if (next.size < MAX_UPLOAD_SELECTION) next.add(model.hash);
+          else setAppError('Select at most 500 models per upload job.');
           if (next.has(model.hash)) {
             setSelectedHash(model.hash);
           } else if (selectedHash === model.hash) {
@@ -401,7 +408,9 @@ export function App(): React.JSX.Element {
         !(event.target instanceof HTMLSelectElement)
       ) {
         event.preventDefault();
-        const hashes = presentation.visibleModels.map((model) => model.hash);
+        const hashes = presentation.visibleModels
+          .map((model) => model.hash)
+          .slice(0, MAX_UPLOAD_SELECTION);
         setSelectedHashes(new Set(hashes));
         setSelectedHash(hashes[0] ?? null);
         selectionAnchorRef.current = hashes[0] ?? null;
@@ -972,9 +981,15 @@ export function App(): React.JSX.Element {
             <button
               type="button"
               onClick={() => {
-                const hashes = presentation.visibleModels.map(
+                const allHashes = presentation.visibleModels.map(
                   (model) => model.hash,
                 );
+                const hashes = allHashes.slice(0, MAX_UPLOAD_SELECTION);
+                if (allHashes.length > MAX_UPLOAD_SELECTION) {
+                  setAppError(
+                    'Selected the first 500 visible models. Start another job for the remainder.',
+                  );
+                }
                 setSelectedHashes(new Set(hashes));
                 setSelectedHash(hashes[0] ?? null);
                 selectionAnchorRef.current = hashes[0] ?? null;
@@ -1192,12 +1207,33 @@ export function App(): React.JSX.Element {
               jobId,
             )
           }
+          onConfirmLegacyRetry={(jobId) =>
+            runUploadAction(
+              (request) => window.printFarmer.confirmLegacyUploadRetry(request),
+              jobId,
+            )
+          }
           onRemove={(jobId) =>
             runUploadAction(
               (request) => window.printFarmer.removeUploadJob(request),
               jobId,
             )
           }
+          onReset={() => {
+            setUploadBusy(true);
+            void window.printFarmer
+              .resetUploadJobs()
+              .then(() => {
+                setUploadError(null);
+                refreshUploadJobs();
+              })
+              .catch((err: unknown) =>
+                setUploadError(
+                  err instanceof Error ? err.message : String(err),
+                ),
+              )
+              .finally(() => setUploadBusy(false));
+          }}
           onClose={closeUploadQueue}
         />
       ) : null}

@@ -374,7 +374,10 @@ describe('<App />', () => {
         profiles: [],
         selectedProfileId: null,
       }),
-      openFolder: vi.fn().mockResolvedValue({ path: 'C:\\GatedImport' }),
+      openFolder: vi.fn().mockResolvedValue({
+        path: 'C:\\GatedImport',
+        approvalId: '11111111-1111-4111-8111-111111111111',
+      }),
       previewImport: vi.fn().mockReturnValue(preview.promise),
       listCollections: vi.fn().mockResolvedValue([]),
       listTags: vi.fn().mockResolvedValue([]),
@@ -743,7 +746,10 @@ describe('<App />', () => {
         electronVersion: '33.0.0',
       }),
       listModels: vi.fn().mockResolvedValue([]),
-      openFolder: vi.fn().mockResolvedValue({ path: selectedPath }),
+      openFolder: vi.fn().mockResolvedValue({
+        path: selectedPath,
+        approvalId: '11111111-1111-4111-8111-111111111111',
+      }),
       previewImport,
       importRoot,
       scanRoot,
@@ -761,7 +767,9 @@ describe('<App />', () => {
         name: 'Organize models before importing',
       }),
     ).toBeVisible();
-    expect(previewImport).toHaveBeenCalledWith({ path: selectedPath });
+    expect(previewImport).toHaveBeenCalledWith({
+      approvalId: '11111111-1111-4111-8111-111111111111',
+    });
     expect(scanRoot).not.toHaveBeenCalled();
     expect(screen.getByLabelText('Organization for Cats')).toHaveValue(
       'collection',
@@ -778,7 +786,7 @@ describe('<App />', () => {
     await waitFor(() =>
       expect(importRoot).toHaveBeenCalledWith({
         rootId: rootIdForPath(selectedPath),
-        path: selectedPath,
+        approvalId: '11111111-1111-4111-8111-111111111111',
         rules: [
           {
             relativePath: '',
@@ -824,7 +832,10 @@ describe('<App />', () => {
       ],
     };
     const openFolder = vi.fn(
-      () => new Promise<{ path: string } | null>(() => undefined),
+      () =>
+        new Promise<{ path: string; approvalId: string } | null>(
+          () => undefined,
+        ),
     );
     const loadScene = vi.fn();
     installApi({
@@ -916,7 +927,10 @@ describe('<App />', () => {
       collectionsForModel,
       listCollections: vi.fn().mockResolvedValue([collection]),
       listTags: vi.fn().mockResolvedValue([]),
-      openFolder: vi.fn().mockResolvedValue({ path: 'C:\\ImportRoot' }),
+      openFolder: vi.fn().mockResolvedValue({
+        path: 'C:\\ImportRoot',
+        approvalId: '11111111-1111-4111-8111-111111111111',
+      }),
       previewImport: vi.fn().mockResolvedValue({
         modelCount: 1,
         totalBytes: 100,

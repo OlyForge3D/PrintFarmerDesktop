@@ -1,8 +1,12 @@
-import { createReadStream, promises as fs } from 'node:fs';
-import { request as httpRequest, type RequestOptions } from 'node:http';
+import { createReadStream } from 'node:fs';
+import {
+  request as httpRequest,
+  type ClientRequest,
+  type IncomingMessage,
+  type RequestOptions,
+} from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { basename, extname } from 'node:path';
-import { once } from 'node:events';
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { RemoteUploadResult, type UploadError } from '@shared/ipc';
@@ -13,10 +17,23 @@ export const MAX_RESPONSE_BYTES = 256 * 1024;
 export const DEFAULT_UPLOAD_TIMEOUT_MS = 15 * 60_000;
 export const DEFAULT_RESPONSE_TIMEOUT_MS = 30_000;
 
-const ModernUploadResponse = RemoteUploadResult.extend({
-  etag: z.string().min(1).max(1024),
-}).strict();
-const LegacyUploadResponse = z
+const ModernWireResponse = z
+  .object({
+    id: z.string().min(1).max(256).refine(noControlCharacters),
+    name: z.string().min(1).max(1024),
+    fileName: z.string().min(1).max(1024),
+    fileSize: z.number().int().nonnegative(),
+    fileType: z.string().min(1).max(128),
+    uploadedAt: z.string().datetime(),
+    url: z.string().max(4096),
+    thumbnailUrl: z.string().max(4096).nullable(),
+    wasExisting: z.boolean(),
+    clientUploadId: z.string().uuid(),
+    etag: z.string().min(1).max(1024).refine(noControlCharacters),
+  })
+  .passthrough();
+
+const LegacyWireResponse = z
   .object({
     id: z.union([z.string(), z.number()]).transform(String),
     name: z.string().optional(),
@@ -30,18 +47,34 @@ const LegacyUploadResponse = z
   })
   .passthrough();
 
+export type UploadRequestPhase =
+  | 'notStarted'
+  | 'headersSent'
+  | 'modelStreaming'
+  | 'bodyComplete'
+  | 'responseReceived';
+
 export class ModelUploadError extends Error {
   constructor(
     readonly detail: UploadError,
+    readonly phase: UploadRequestPhase = 'notStarted',
     override readonly cause?: unknown,
   ) {
     super(detail.message);
     this.name = 'ModelUploadError';
   }
+
+  get bytesMayHaveReachedServer(): boolean {
+    return (
+      this.phase === 'modelStreaming' ||
+      this.phase === 'bodyComplete' ||
+      this.phase === 'responseReceived'
+    );
+  }
 }
 
 export interface UploadTransportRequest {
-  baseUrl: string;
+  endpoint: string;
   token: string;
   modelPath: string;
   displayName: string;
@@ -50,7 +83,7 @@ export interface UploadTransportRequest {
   mode: 'modern' | 'legacyModelOnly';
   thumbnail?: Buffer;
   signal: AbortSignal;
-  onProgress(bytesSent: number): void;
+  onProgress(bytesSent: number): void | Promise<void>;
 }
 
 export type UploadTransport = (
@@ -62,6 +95,13 @@ export interface NodeUploadTransportOptions {
   responseTimeoutMs?: number;
   request?: typeof httpRequest;
   secureRequest?: typeof httpsRequest;
+  createReadStream?: typeof createReadStream;
+}
+
+interface WriterState {
+  phase: UploadRequestPhase;
+  stream: ReturnType<typeof createReadStream> | null;
+  stopped: boolean;
 }
 
 export function createNodeUploadTransport(
@@ -69,15 +109,17 @@ export function createNodeUploadTransport(
 ): UploadTransport {
   return async (input) => {
     if (input.signal.aborted) {
-      throw uploadError('ABORTED', 'The upload was stopped.', true, undefined, {
-        duplicateRisk: input.mode === 'legacyModelOnly',
-      });
+      throw makeUploadError('ABORTED', 'The upload was stopped.', true);
     }
-    const target = new URL('/api/3d-models/upload', input.baseUrl);
+    const target = validateEndpoint(input.endpoint);
     const boundary = `----PrintFarmerDesktop${randomBytes(18).toString('hex')}`;
     const filename = sanitizeMultipartFilename(input.displayName);
-    const modelType = contentTypeFor(filename);
-    const modelHeader = partHeader(boundary, 'modelFile', filename, modelType);
+    const modelHeader = partHeader(
+      boundary,
+      'modelFile',
+      filename,
+      contentTypeFor(filename),
+    );
     const thumbnailHeader = input.thumbnail
       ? partHeader(boundary, 'thumbnailFile', 'thumbnail.png', 'image/png')
       : null;
@@ -88,20 +130,19 @@ export function createNodeUploadTransport(
           )
         : null;
     const end = Buffer.from(`--${boundary}--\r\n`);
-    const thumbnailTail = input.thumbnail ? Buffer.from('\r\n') : null;
     const contentLength =
       modelHeader.length +
       input.modelSize +
       2 +
       (thumbnailHeader?.length ?? 0) +
       (input.thumbnail?.length ?? 0) +
-      (thumbnailTail?.length ?? 0) +
+      (input.thumbnail ? 2 : 0) +
       (clientIdPart?.length ?? 0) +
       end.length;
     if (contentLength > MAX_UPLOAD_REQUEST_BYTES) {
-      throw uploadError(
+      throw makeUploadError(
         'PAYLOAD_TOO_LARGE',
-        `The multipart upload is ${contentLength.toLocaleString()} bytes and exceeds the server's 512,000,000-byte request limit.`,
+        'The multipart request exceeds the server upload limit.',
         false,
       );
     }
@@ -123,179 +164,342 @@ export function createNodeUploadTransport(
       target.protocol === 'https:'
         ? (options.secureRequest ?? httpsRequest)
         : (options.request ?? httpRequest);
-
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      let uploadTimer: ReturnType<typeof setTimeout> | null = null;
-      let responseTimer: ReturnType<typeof setTimeout> | null = null;
-      const finish = (
-        error: Error | null,
-        value?: z.infer<typeof RemoteUploadResult>,
-      ): void => {
-        if (settled) return;
-        settled = true;
-        if (uploadTimer) clearTimeout(uploadTimer);
-        if (responseTimer) clearTimeout(responseTimer);
-        input.signal.removeEventListener('abort', abort);
-        if (error) reject(error);
-        else resolve(value!);
-      };
-      const req = requestImpl(requestOptions, (response) => {
-        if (uploadTimer) clearTimeout(uploadTimer);
-        responseTimer = setTimeout(() => {
-          req.destroy(new Error('response timeout'));
-          finish(
-            uploadError(
-              'RESPONSE_TIMEOUT',
-              'The server did not finish its response in time.',
-              true,
-            ),
-          );
-        }, options.responseTimeoutMs ?? DEFAULT_RESPONSE_TIMEOUT_MS);
-        const chunks: Buffer[] = [];
-        let received = 0;
-        response.on('data', (chunk: Buffer) => {
-          received += chunk.length;
-          if (received > MAX_RESPONSE_BYTES) {
-            req.destroy(new Error('response too large'));
-            finish(
-              uploadError(
-                'RESPONSE_TOO_LARGE',
-                'The server response exceeded the 256 KiB safety limit.',
-                false,
-              ),
-            );
-            return;
-          }
-          chunks.push(chunk);
-        });
-        response.on('end', () => {
-          if (settled) return;
-          const body = Buffer.concat(chunks).toString('utf8');
-          const status = response.statusCode ?? 0;
-          if (status !== 201) {
-            finish(
-              httpStatusError(status, body, response.headers['retry-after']),
-            );
-            return;
-          }
-          try {
-            const raw: unknown = JSON.parse(body);
-            const etagHeader = headerValue(response.headers.etag);
-            if (input.mode === 'modern') {
-              const candidate =
-                raw && typeof raw === 'object' && etagHeader
-                  ? { ...(raw as Record<string, unknown>), etag: etagHeader }
-                  : raw;
-              finish(null, ModernUploadResponse.parse(candidate));
-              return;
-            }
-            const legacy = LegacyUploadResponse.parse(raw);
-            const uploadedAt = legacy.uploadedAt ?? new Date().toISOString();
-            const normalized = RemoteUploadResult.parse({
-              id: legacy.id,
-              name: legacy.name ?? filename,
-              fileName: legacy.fileName ?? filename,
-              fileSize: legacy.fileSize ?? input.modelSize,
-              fileType:
-                legacy.fileType ?? extname(filename).slice(1).toLowerCase(),
-              uploadedAt,
-              url: legacy.url ?? '',
-              thumbnailUrl: legacy.thumbnailUrl ?? null,
-              wasExisting: false,
-              clientUploadId: null,
-              etag: etagHeader ?? legacy.etag ?? null,
-            });
-            finish(null, normalized);
-          } catch (error) {
-            finish(
-              uploadError(
-                'INVALID_RESPONSE',
-                'The server returned 201 but its upload result was invalid.',
-                false,
-                error,
-              ),
-            );
-          }
-        });
-      });
-      const abort = (): void => {
-        req.destroy(new Error('upload aborted'));
-        finish(
-          uploadError('ABORTED', 'The upload was stopped.', true, undefined, {
-            duplicateRisk: input.mode === 'legacyModelOnly',
-          }),
-        );
-      };
-      input.signal.addEventListener('abort', abort, { once: true });
-      req.on('error', (error) => {
-        if (settled) return;
-        finish(
-          uploadError(
-            'TRANSPORT_ERROR',
-            'The upload connection failed.',
-            true,
-            error,
-            { duplicateRisk: input.mode === 'legacyModelOnly' },
-          ),
-        );
-      });
-      uploadTimer = setTimeout(() => {
-        req.destroy(new Error('upload timeout'));
-        finish(
-          uploadError(
-            'UPLOAD_TIMEOUT',
-            'The upload did not complete in time.',
-            true,
-            undefined,
-            { duplicateRisk: input.mode === 'legacyModelOnly' },
-          ),
-        );
-      }, options.uploadTimeoutMs ?? DEFAULT_UPLOAD_TIMEOUT_MS);
-
-      void (async () => {
-        try {
-          await writeChunk(req, modelHeader);
-          const stream = createReadStream(input.modelPath, {
-            highWaterMark: 64 * 1024,
-          });
-          const stopStream = (): void => {
-            stream.destroy(new Error('aborted'));
-          };
-          input.signal.addEventListener('abort', stopStream, { once: true });
-          let sent = 0;
-          try {
-            for await (const chunk of stream as AsyncIterable<Buffer>) {
-              await writeChunk(req, chunk);
-              sent += chunk.length;
-              input.onProgress(sent);
-            }
-          } finally {
-            input.signal.removeEventListener('abort', stopStream);
-          }
-          await writeChunk(req, Buffer.from('\r\n'));
-          if (thumbnailHeader && input.thumbnail && thumbnailTail) {
-            await writeChunk(req, thumbnailHeader);
-            await writeChunk(req, input.thumbnail);
-            await writeChunk(req, thumbnailTail);
-          }
-          if (clientIdPart) await writeChunk(req, clientIdPart);
-          req.end(end);
-        } catch (error) {
-          req.destroy(
-            error instanceof Error ? error : new Error(String(error)),
-          );
-        }
-      })();
+    const state: WriterState = {
+      phase: 'notStarted',
+      stream: null,
+      stopped: false,
+    };
+    let response: IncomingMessage | null = null;
+    let responseTimer: ReturnType<typeof setTimeout> | null = null;
+    let settleOutcome: (
+      outcome: Error | z.infer<typeof RemoteUploadResult>,
+    ) => void = () => undefined;
+    const outcomePromise = new Promise<
+      Error | z.infer<typeof RemoteUploadResult>
+    >((resolve) => {
+      settleOutcome = resolve;
     });
+    let outcomeSettled = false;
+    const settle = (
+      outcome: Error | z.infer<typeof RemoteUploadResult>,
+    ): void => {
+      if (outcomeSettled) return;
+      outcomeSettled = true;
+      settleOutcome(outcome);
+    };
+    const stopWriter = (reason: Error, destroyRequest: boolean): void => {
+      state.stopped = true;
+      state.stream?.destroy(reason);
+      if (destroyRequest && !req.destroyed) req.destroy(reason);
+    };
+
+    const req = requestImpl(requestOptions, (incoming) => {
+      response = incoming;
+      const responseArrivedEarly = state.phase !== 'bodyComplete';
+      state.phase = 'responseReceived';
+      clearTimeout(uploadTimer);
+      responseTimer = setTimeout(() => {
+        stopWriter(new Error('response timeout'), true);
+        incoming.destroy();
+        settle(
+          makeUploadError(
+            'RESPONSE_TIMEOUT',
+            'The server did not finish its response in time.',
+            true,
+            state.phase,
+            { duplicateRisk: input.mode === 'legacyModelOnly' },
+          ),
+        );
+      }, options.responseTimeoutMs ?? DEFAULT_RESPONSE_TIMEOUT_MS);
+      if (responseArrivedEarly) {
+        stopWriter(
+          new Error('server responded before request body completed'),
+          false,
+        );
+      }
+      void readResponse(incoming, input, filename)
+        .then((result) =>
+          settle(
+            responseArrivedEarly
+              ? makeUploadError(
+                  'INVALID_RESPONSE',
+                  'The server reported success before receiving the complete request.',
+                  input.mode === 'modern',
+                  'responseReceived',
+                  { duplicateRisk: input.mode === 'legacyModelOnly' },
+                )
+              : result,
+          ),
+        )
+        .catch((error: unknown) => {
+          settle(
+            error instanceof ModelUploadError
+              ? error
+              : makeUploadError(
+                  'TRANSPORT_ERROR',
+                  'The server response connection failed.',
+                  true,
+                  state.phase,
+                  { duplicateRisk: input.mode === 'legacyModelOnly' },
+                  error,
+                ),
+          );
+        });
+    });
+    state.phase = 'headersSent';
+    req.on('error', () => {
+      settle(
+        makeUploadError(
+          'TRANSPORT_ERROR',
+          'The upload connection failed.',
+          true,
+          state.phase,
+          { duplicateRisk: input.mode === 'legacyModelOnly' },
+        ),
+      );
+    });
+    const abort = (): void => {
+      stopWriter(new Error('upload aborted'), true);
+      response?.destroy();
+      settle(
+        makeUploadError(
+          'ABORTED',
+          'The upload was stopped.',
+          true,
+          state.phase,
+          {
+            duplicateRisk: input.mode === 'legacyModelOnly',
+          },
+        ),
+      );
+    };
+    input.signal.addEventListener('abort', abort, { once: true });
+    const uploadTimer = setTimeout(() => {
+      stopWriter(new Error('upload timeout'), true);
+      response?.destroy();
+      settle(
+        makeUploadError(
+          'UPLOAD_TIMEOUT',
+          'The upload did not complete in time.',
+          true,
+          state.phase,
+          { duplicateRisk: input.mode === 'legacyModelOnly' },
+        ),
+      );
+    }, options.uploadTimeoutMs ?? DEFAULT_UPLOAD_TIMEOUT_MS);
+
+    const writerPromise = writeMultipart(
+      req,
+      state,
+      input,
+      modelHeader,
+      thumbnailHeader,
+      clientIdPart,
+      end,
+      options.createReadStream ?? createReadStream,
+    ).catch((error: unknown) => {
+      if (!outcomeSettled && !state.stopped) {
+        settle(
+          makeUploadError(
+            'SOURCE_READ_FAILED',
+            'The private upload snapshot could not be read completely.',
+            false,
+            state.phase,
+            {},
+            error,
+          ),
+        );
+      }
+    });
+
+    const outcome = await outcomePromise;
+    stopWriter(new Error('upload settled'), outcome instanceof Error);
+    await writerPromise;
+    clearTimeout(uploadTimer);
+    if (responseTimer) clearTimeout(responseTimer);
+    input.signal.removeEventListener('abort', abort);
+    if (!req.destroyed && outcome instanceof Error) req.destroy();
+    if (outcome instanceof Error) throw outcome;
+    return outcome;
   };
 }
 
-async function writeChunk(
-  request: ReturnType<typeof httpRequest>,
-  chunk: Buffer,
+async function writeMultipart(
+  request: ClientRequest,
+  state: WriterState,
+  input: UploadTransportRequest,
+  modelHeader: Buffer,
+  thumbnailHeader: Buffer | null,
+  clientIdPart: Buffer | null,
+  end: Buffer,
+  streamFactory: typeof createReadStream,
 ): Promise<void> {
-  if (!request.write(chunk)) await once(request, 'drain');
+  await writeChunk(request, modelHeader);
+  if (state.stopped) return;
+  state.phase = 'modelStreaming';
+  const stream = streamFactory(input.modelPath, { highWaterMark: 64 * 1024 });
+  state.stream = stream;
+  let sent = 0;
+  try {
+    for await (const chunk of stream as AsyncIterable<Buffer>) {
+      if (state.stopped) break;
+      sent += chunk.length;
+      if (sent > input.modelSize) {
+        throw new Error('snapshot grew');
+      }
+      await writeChunk(request, chunk);
+      await input.onProgress(sent);
+    }
+  } finally {
+    state.stream = null;
+  }
+  if (state.stopped) return;
+  if (sent !== input.modelSize) throw new Error('snapshot length mismatch');
+  await writeChunk(request, Buffer.from('\r\n'));
+  if (thumbnailHeader && input.thumbnail) {
+    await writeChunk(request, thumbnailHeader);
+    await writeChunk(request, input.thumbnail);
+    await writeChunk(request, Buffer.from('\r\n'));
+  }
+  if (clientIdPart) await writeChunk(request, clientIdPart);
+  if (state.stopped) return;
+  state.phase = 'bodyComplete';
+  request.end(end);
+}
+
+function writeChunk(request: ClientRequest, chunk: Buffer): Promise<void> {
+  return new Promise((resolve, reject) => {
+    request.write(chunk, (error?: Error | null) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+async function readResponse(
+  response: IncomingMessage,
+  input: UploadTransportRequest,
+  filename: string,
+): Promise<z.infer<typeof RemoteUploadResult>> {
+  const chunks: Buffer[] = [];
+  let received = 0;
+  for await (const chunk of response as AsyncIterable<Buffer>) {
+    received += chunk.length;
+    if (received > MAX_RESPONSE_BYTES) {
+      response.destroy();
+      throw makeUploadError(
+        'RESPONSE_TOO_LARGE',
+        'The server response exceeded the safety limit.',
+        false,
+        'responseReceived',
+      );
+    }
+    chunks.push(chunk);
+  }
+  const body = Buffer.concat(chunks).toString('utf8');
+  const status = response.statusCode ?? 0;
+  if (status !== 201) {
+    throw httpStatusError(
+      status,
+      body,
+      response.headers['retry-after'],
+      'responseReceived',
+    );
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(body) as unknown;
+  } catch {
+    throw makeUploadError(
+      'INVALID_RESPONSE',
+      'The server returned 201 with invalid JSON.',
+      input.mode === 'modern',
+      'responseReceived',
+      { duplicateRisk: input.mode === 'legacyModelOnly' },
+    );
+  }
+  const etagHeader = headerValue(response.headers.etag);
+  if (input.mode === 'modern') {
+    const parsed = ModernWireResponse.safeParse(
+      raw && typeof raw === 'object' && etagHeader
+        ? { ...(raw as Record<string, unknown>), etag: etagHeader }
+        : raw,
+    );
+    if (
+      !parsed.success ||
+      parsed.data.clientUploadId !== input.clientUploadId
+    ) {
+      throw makeUploadError(
+        'INVALID_RESPONSE',
+        'The server returned an upload identity that did not match this request.',
+        true,
+        'responseReceived',
+      );
+    }
+    const value = parsed.data;
+    return RemoteUploadResult.parse({
+      id: value.id,
+      name: value.name,
+      fileName: value.fileName,
+      fileSize: value.fileSize,
+      fileType: value.fileType,
+      uploadedAt: value.uploadedAt,
+      url: value.url,
+      thumbnailUrl: value.thumbnailUrl,
+      wasExisting: value.wasExisting,
+      clientUploadId: value.clientUploadId,
+      etag: value.etag,
+    });
+  }
+  const parsed = LegacyWireResponse.safeParse(raw);
+  if (!parsed.success) {
+    throw makeUploadError(
+      'INVALID_RESPONSE',
+      'The legacy server returned an invalid upload result.',
+      false,
+      'responseReceived',
+      { duplicateRisk: true },
+    );
+  }
+  const legacy = parsed.data;
+  return RemoteUploadResult.parse({
+    id: legacy.id,
+    name: legacy.name ?? filename,
+    fileName: legacy.fileName ?? filename,
+    fileSize: legacy.fileSize ?? input.modelSize,
+    fileType: legacy.fileType ?? extname(filename).slice(1).toLowerCase(),
+    uploadedAt: legacy.uploadedAt ?? new Date().toISOString(),
+    url: legacy.url ?? '',
+    thumbnailUrl: legacy.thumbnailUrl ?? null,
+    wasExisting: false,
+    clientUploadId: null,
+    etag: etagHeader ?? legacy.etag ?? null,
+  });
+}
+
+function validateEndpoint(value: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw makeUploadError(
+      'INVALID_ENDPOINT',
+      'The authenticated upload endpoint is invalid.',
+      false,
+    );
+  }
+  if (
+    (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
+    parsed.username ||
+    parsed.password
+  ) {
+    throw makeUploadError(
+      'INVALID_ENDPOINT',
+      'The authenticated upload endpoint is invalid.',
+      false,
+    );
+  }
+  return parsed;
 }
 
 function partHeader(
@@ -341,6 +545,7 @@ function httpStatusError(
   status: number,
   body: string,
   retryAfterHeader: string | string[] | undefined,
+  phase: UploadRequestPhase,
 ): ModelUploadError {
   const retryAfterSeconds = parseRetryAfter(retryAfterHeader);
   const message = safeServerMessage(body);
@@ -375,11 +580,11 @@ function httpStatusError(
           `The server returned HTTP ${status}.`,
           false,
         ] as const));
-  return uploadError(
+  return makeUploadError(
     mapped[0],
     message ? `${mapped[1]} ${message}` : mapped[1],
     mapped[2],
-    undefined,
+    phase,
     { retryAfterSeconds },
   );
 }
@@ -406,39 +611,54 @@ function safeServerMessage(body: string): string {
         : typeof raw.error === 'string'
           ? raw.error
           : '';
-    return scrubSensitiveText(message).slice(0, 300);
+    return safeRemoteMessage(message);
   } catch {
     return '';
   }
 }
 
-export function scrubSensitiveText(value: string): string {
-  return value
-    .replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [redacted]')
-    .replace(/[A-Za-z]:\\(?:[^\\\s"'<>|]+\\)+[^\\\s"'<>|]*/g, '[local file]')
-    .replace(/\/(?:home|Users)\/[^\s"'<>]+/g, '[local file]')
-    .replace(
-      /(?:token|secret|password|api[_-]?key)\s*[:=]\s*\S+/gi,
-      '$1=[redacted]',
-    );
+function safeRemoteMessage(message: string): string {
+  if (
+    message.length > 300 ||
+    message.includes('\\') ||
+    message.includes('/') ||
+    message.includes(':')
+  ) {
+    return '';
+  }
+
+  return Array.from(message)
+    .filter((character) => {
+      const code = character.charCodeAt(0);
+      return code >= 32 && code !== 127;
+    })
+    .join('');
 }
 
-function uploadError(
+/** Convert an untrusted local error into a path- and secret-free message. */
+export function scrubSensitiveText(message: string): string {
+  void message;
+  return 'The upload failed before a trusted result was available.';
+}
+
+export function makeUploadError(
   code: string,
   message: string,
   retryable: boolean,
-  cause?: unknown,
+  phase: UploadRequestPhase = 'notStarted',
   overrides: Partial<UploadError> = {},
+  cause?: unknown,
 ): ModelUploadError {
   return new ModelUploadError(
     {
       code,
-      message: scrubSensitiveText(message).slice(0, 1024),
+      message: message.slice(0, 1024),
       retryable,
       retryAfterSeconds: null,
       duplicateRisk: false,
       ...overrides,
     },
+    phase,
     cause,
   );
 }
@@ -447,10 +667,16 @@ function headerValue(value: string | string[] | undefined): string | null {
   return Array.isArray(value) ? (value[0] ?? null) : (value ?? null);
 }
 
-export async function validateThumbnailPng(buffer: Buffer): Promise<void> {
-  await Promise.resolve();
+function noControlCharacters(value: string): boolean {
+  return Array.from(value).every((character) => {
+    const code = character.charCodeAt(0);
+    return code >= 32 && code !== 127;
+  });
+}
+
+export function validateThumbnailPng(buffer: Buffer): void {
   if (buffer.length > MAX_THUMBNAIL_BYTES) {
-    throw uploadError(
+    throw makeUploadError(
       'INVALID_THUMBNAIL',
       'The thumbnail exceeds 10 MiB.',
       false,
@@ -462,7 +688,7 @@ export async function validateThumbnailPng(buffer: Buffer): Promise<void> {
     !buffer.subarray(0, signature.length).equals(signature) ||
     buffer.toString('ascii', 12, 16) !== 'IHDR'
   ) {
-    throw uploadError(
+    throw makeUploadError(
       'INVALID_THUMBNAIL',
       'The thumbnail is not a valid PNG.',
       false,
@@ -477,25 +703,10 @@ export async function validateThumbnailPng(buffer: Buffer): Promise<void> {
     height > 4096 ||
     width * height > 16_000_000
   ) {
-    throw uploadError(
+    throw makeUploadError(
       'INVALID_THUMBNAIL',
       'The thumbnail dimensions exceed server limits.',
       false,
     );
   }
-}
-
-export async function stableFileStat(filePath: string): Promise<{
-  size: number;
-  mtimeMs: number;
-}> {
-  const stat = await fs.stat(filePath);
-  if (!stat.isFile()) {
-    throw uploadError(
-      'FILE_UNAVAILABLE',
-      'The catalog location is not a file.',
-      false,
-    );
-  }
-  return { size: stat.size, mtimeMs: stat.mtimeMs };
 }

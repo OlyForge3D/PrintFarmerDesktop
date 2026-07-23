@@ -257,6 +257,14 @@ interface TokenBinding {
   generation: number;
 }
 
+export interface AuthenticatedProfileContext {
+  profile: RedactedProfile;
+  token: string;
+  revision: string;
+  generation: number;
+  endpoint(relativePath: string): URL;
+}
+
 interface PendingResponse {
   response: Response;
   signal: AbortSignal;
@@ -292,6 +300,7 @@ export function normalizeServerUrl(raw: string): string {
       'Enter a valid HTTP or HTTPS server URL.',
     );
   }
+
   if (
     (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
     parsed.username ||
@@ -307,6 +316,22 @@ export function normalizeServerUrl(raw: string): string {
   parsed.pathname =
     parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '');
   return parsed.toString().replace(/\/$/, '');
+}
+
+export function buildServerEndpoint(
+  baseUrl: string,
+  relativePath: string,
+): URL {
+  const normalized = normalizeServerUrl(baseUrl);
+  const base = new URL(`${normalized}/`);
+  const relative = relativePath.replace(/^\/+/, '');
+  if (!relative || relative.includes('\\')) {
+    throw new ServerProfileError(
+      'VALIDATION_ERROR',
+      'The server endpoint path is invalid.',
+    );
+  }
+  return new URL(relative, base);
 }
 
 export class ServerProfileService {
@@ -579,6 +604,7 @@ export class ServerProfileService {
       if (!profile) {
         throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
       }
+
       const secret = this.decryptSecret(profile);
       const binding = credentialBinding(profile.baseUrl, secret);
       const generation = this.currentAuthGeneration(id);
@@ -590,6 +616,7 @@ export class ServerProfileService {
       ) {
         return { cachedToken: cached.token };
       }
+
       return {
         profile,
         secret,
@@ -643,6 +670,80 @@ export class ServerProfileService {
         generation: snapshot.generation,
       });
       return issued.token;
+    });
+  }
+
+  async getAuthenticatedContext(
+    id: string,
+  ): Promise<AuthenticatedProfileContext> {
+    const token = await this.getToken(id);
+    return this.withMutationLock(async () => {
+      const store = await this.readStore();
+      const stored = store.profiles.find((profile) => profile.id === id);
+      const cached = this.tokens.get(id);
+      if (!stored || !cached || cached.token !== token) {
+        throw authenticationSupersededError();
+      }
+      const revision = profileRevision(stored);
+      if (
+        cached.generation !== this.currentAuthGeneration(id) ||
+        cached.binding !==
+          credentialBinding(stored.baseUrl, this.decryptSecret(stored))
+      ) {
+        throw authenticationSupersededError();
+      }
+      return {
+        profile: this.redact(stored),
+        token,
+        revision,
+        generation: cached.generation,
+        endpoint: (relativePath: string) =>
+          buildServerEndpoint(stored.baseUrl, relativePath),
+      };
+    });
+  }
+
+  async revalidateAuthenticatedContext(
+    context: AuthenticatedProfileContext,
+  ): Promise<void> {
+    await this.withMutationLock(async () => {
+      const store = await this.readStore();
+      const stored = store.profiles.find(
+        (profile) => profile.id === context.profile.id,
+      );
+      const cached = this.tokens.get(context.profile.id);
+      if (
+        !stored ||
+        profileRevision(stored) !== context.revision ||
+        this.currentAuthGeneration(context.profile.id) !== context.generation ||
+        cached?.generation !== context.generation ||
+        cached.token !== context.token
+      ) {
+        throw authenticationSupersededError();
+      }
+    });
+  }
+
+  async invalidateRejectedContext(
+    context: AuthenticatedProfileContext,
+  ): Promise<boolean> {
+    return this.withMutationLock(async () => {
+      const store = await this.readStore();
+      const stored = store.profiles.find(
+        (profile) => profile.id === context.profile.id,
+      );
+      const cached = this.tokens.get(context.profile.id);
+      if (
+        !stored ||
+        profileRevision(stored) !== context.revision ||
+        this.currentAuthGeneration(context.profile.id) !== context.generation ||
+        cached?.generation !== context.generation ||
+        cached.token !== context.token
+      ) {
+        return false;
+      }
+      this.invalidateToken(context.profile.id);
+      return true;
     });
   }
 

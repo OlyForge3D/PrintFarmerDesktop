@@ -45,7 +45,9 @@ export const IpcChannel = {
   ResumeUploadJob: 'uploadJobs:resume',
   CancelUploadJob: 'uploadJobs:cancel',
   RetryUploadJob: 'uploadJobs:retry',
+  ConfirmLegacyUploadRetry: 'uploadJobs:confirmLegacyRetry',
   RemoveUploadJob: 'uploadJobs:remove',
+  ResetUploadJobs: 'uploadJobs:reset',
 } as const;
 
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel];
@@ -249,10 +251,12 @@ export const ReconcileReport = z.object({
 });
 export type ReconcileReport = z.infer<typeof ReconcileReport>;
 
-export const ScanRootRequest = z.object({
-  rootId: z.string().min(1).max(256),
-  path: z.string().min(1).max(4096),
-});
+export const ScanRootRequest = z
+  .object({
+    rootId: z.string().min(1).max(256),
+    approvalId: z.string().uuid(),
+  })
+  .strict();
 export type ScanRootRequest = z.infer<typeof ScanRootRequest>;
 
 export const ScanRootResponse = ReconcileReport;
@@ -266,9 +270,11 @@ export const ImportFolder = z.object({
 });
 export type ImportFolder = z.infer<typeof ImportFolder>;
 
-export const ImportPreviewRequest = z.object({
-  path: z.string().min(1).max(4096),
-});
+export const ImportPreviewRequest = z
+  .object({
+    approvalId: z.string().uuid(),
+  })
+  .strict();
 export type ImportPreviewRequest = z.infer<typeof ImportPreviewRequest>;
 
 export const ImportPreviewResponse = z.object({
@@ -437,7 +443,11 @@ export type OpenFolderRequest = z.infer<typeof OpenFolderRequest>;
 
 /** The folder the user picked, or `null` when they cancelled the dialog. */
 export const OpenFolderResponse = z
-  .object({ path: z.string().min(1) })
+  .object({
+    path: z.string().min(1),
+    approvalId: z.string().uuid(),
+  })
+  .strict()
   .nullable();
 export type OpenFolderResponse = z.infer<typeof OpenFolderResponse>;
 
@@ -683,6 +693,7 @@ export const UploadJob = z
     id: z.string().uuid(),
     profileId: z.string().uuid(),
     profileName: z.string().min(1).max(80),
+    profileRevision: z.string().min(1).max(128).default('legacy-unbound'),
     mode: z.enum(['modern', 'legacyModelOnly']),
     state: UploadJobState,
     paused: z.boolean(),
@@ -733,6 +744,11 @@ export const RemoveUploadJobResponse = z
   .object({ removed: z.literal(true) })
   .strict();
 export type RemoveUploadJobResponse = z.infer<typeof RemoveUploadJobResponse>;
+export const ResetUploadJobsRequest = z.void();
+export const ResetUploadJobsResponse = z
+  .object({ reset: z.literal(true), backupCreated: z.boolean() })
+  .strict();
+export type ResetUploadJobsResponse = z.infer<typeof ResetUploadJobsResponse>;
 
 /**
  * Registry mapping each channel to its request/response schemas. Used by both
@@ -867,9 +883,17 @@ export const ipcSchemas = {
     request: UploadJobRequest,
     response: UploadJobResponse,
   },
+  [IpcChannel.ConfirmLegacyUploadRetry]: {
+    request: UploadJobRequest,
+    response: UploadJobResponse,
+  },
   [IpcChannel.RemoveUploadJob]: {
     request: UploadJobRequest,
     response: RemoveUploadJobResponse,
+  },
+  [IpcChannel.ResetUploadJobs]: {
+    request: ResetUploadJobsRequest,
+    response: ResetUploadJobsResponse,
   },
 } as const;
 
@@ -935,5 +959,9 @@ export interface PrintFarmerApi {
   resumeUploadJob(request: UploadJobRequest): Promise<UploadJobResponse>;
   cancelUploadJob(request: UploadJobRequest): Promise<UploadJobResponse>;
   retryUploadJob(request: UploadJobRequest): Promise<UploadJobResponse>;
+  confirmLegacyUploadRetry(
+    request: UploadJobRequest,
+  ): Promise<UploadJobResponse>;
   removeUploadJob(request: UploadJobRequest): Promise<RemoveUploadJobResponse>;
+  resetUploadJobs(): Promise<ResetUploadJobsResponse>;
 }
