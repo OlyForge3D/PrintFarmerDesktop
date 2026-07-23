@@ -167,6 +167,12 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
   const select = page.getByRole('button', { name: `Select ${filename}` });
   await expect(select).toBeVisible();
 
+  await select.hover();
+  await expect(
+    select.locator('..').getByRole('button', {
+      name: `Preview ${filename} in 3D`,
+    }),
+  ).toHaveCSS('opacity', '1');
   const cardActions = await select.locator('..').evaluate((card) => {
     const favorite = card.querySelector('.model-fav-button');
     const preview = card.querySelector('.model-preview-button');
@@ -179,15 +185,23 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
     const favoriteBounds = favorite.getBoundingClientRect();
     const previewBounds = preview.getBoundingClientRect();
     return {
-      sameWidth: previewBounds.width === favoriteBounds.width,
-      sameHeight: previewBounds.height === favoriteBounds.height,
-      stackedBelow: previewBounds.top > favoriteBounds.bottom,
+      favoriteWidth: Math.round(favoriteBounds.width),
+      favoriteHeight: Math.round(favoriteBounds.height),
+      previewWidth: Math.round(previewBounds.width),
+      previewHeight: Math.round(previewBounds.height),
+      horizontalOffset: Math.round(previewBounds.left - favoriteBounds.left),
+      verticalGap: Math.round(previewBounds.top - favoriteBounds.bottom),
+      visibleText: preview.textContent?.trim() ?? '',
     };
   });
   expect(cardActions).toEqual({
-    sameWidth: true,
-    sameHeight: true,
-    stackedBelow: true,
+    favoriteWidth: 28,
+    favoriteHeight: 28,
+    previewWidth: 28,
+    previewHeight: 28,
+    horizontalOffset: 0,
+    verticalGap: 6,
+    visibleText: '',
   });
 
   const truncation = await page.locator('.model-name').evaluate((element) => {
