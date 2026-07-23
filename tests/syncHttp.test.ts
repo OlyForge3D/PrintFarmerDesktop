@@ -17,6 +17,57 @@ function json(value: unknown, status = 200, headers?: HeadersInit): Response {
 }
 
 describe('SyncHttpClient', () => {
+  it('sends and parses the deployed flat apply contract', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(() =>
+      Promise.resolve(
+        json({
+          applied: [
+            {
+              entityType: 'ModelCollection',
+              operation: 'Create',
+              entityId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+              revision: 7,
+              merged: false,
+              additive: 'accepted',
+            },
+          ],
+          serverRevision: 7,
+          additive: true,
+        }),
+      ),
+    );
+    const client = new SyncHttpClient(tokens(), { fetch });
+    const operation = {
+      entityType: 'ModelCollection' as const,
+      operation: 'Create' as const,
+      entityId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      baseRevision: null,
+      concurrencyToken: null,
+      collectionId: null,
+      modelId: null,
+      name: 'Farm parts',
+      description: null,
+      isShared: false,
+    };
+
+    await expect(
+      client.apply(
+        'profile',
+        'https://farm.example',
+        { operations: [operation] },
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({
+      kind: 'success',
+      value: { serverRevision: 7 },
+    });
+    const requestBody = fetch.mock.calls[0]![1]?.body;
+    expect(typeof requestBody).toBe('string');
+    expect(JSON.parse(requestBody as string)).toEqual({
+      operations: [operation],
+    });
+  });
+
   it('accepts additive fields and preserves an empty opaque cursor', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(() =>
       Promise.resolve(json(CHANGE_PAGE)),
@@ -141,13 +192,16 @@ describe('SyncHttpClient', () => {
         {
           operations: [
             {
-              operationId: 'op',
               entityType: 'ModelCollection',
               operation: 'Create',
-              entityId: 'local',
-              payload: {},
+              entityId: '11111111-1111-4111-8111-111111111111',
               baseRevision: null,
               concurrencyToken: null,
+              collectionId: null,
+              modelId: null,
+              name: 'Collection',
+              description: null,
+              isShared: false,
             },
           ],
         },
@@ -160,6 +214,59 @@ describe('SyncHttpClient', () => {
       }),
     );
     expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the deadline active while a response body is stalled', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start() {
+        // Deliberately never enqueue or close.
+      },
+    });
+    const client = new SyncHttpClient(tokens(), {
+      fetch: vi.fn(() => Promise.resolve(new Response(stream))),
+      timeoutMs: 10,
+      maxGetAttempts: 1,
+    });
+
+    await expect(
+      client.getChanges(
+        'profile',
+        'https://farm.example',
+        null,
+        500,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'timeout', ambiguous: false });
+  });
+
+  it('cancels a stalled body when its owning run is disposed', async () => {
+    let bodyReadStarted = (): void => undefined;
+    const started = new Promise<void>((resolve) => {
+      bodyReadStarted = resolve;
+    });
+    const stream = new ReadableStream<Uint8Array>({
+      pull() {
+        bodyReadStarted();
+      },
+      cancel: () => undefined,
+    });
+    const controller = new AbortController();
+    const client = new SyncHttpClient(tokens(), {
+      fetch: vi.fn(() => Promise.resolve(new Response(stream))),
+      timeoutMs: 10_000,
+      maxGetAttempts: 1,
+    });
+    const pending = client.getChanges(
+      'profile',
+      'https://farm.example',
+      null,
+      500,
+      controller.signal,
+    );
+
+    await started;
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: 'cancelled' });
   });
 });
 

@@ -183,8 +183,32 @@ struct CollectionMembershipParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SyncedCollectionParams {
+    profile_id: String,
+    profile_binding: String,
+    now: i64,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    hash: Option<String>,
+    #[serde(default)]
+    is_shared: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ProfileParams {
     profile_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BindProfileParams {
+    profile_id: String,
+    profile_binding: String,
+    now: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -239,6 +263,13 @@ struct ListOutboundParams {
     states: Vec<OutboundState>,
     #[serde(default = "default_sync_limit")]
     limit: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OutboundBatchParams {
+    profile_id: String,
+    batch_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -322,6 +353,17 @@ const fn default_sync_limit() -> usize {
     500
 }
 
+fn validate_profile_binding_param(store: &dyn CatalogStore, params: &Value) -> Result<(), String> {
+    let Some(binding) = params.get("profileBinding").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let profile_id = params
+        .get("profileId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "bound sync mutation requires profileId".to_string())?;
+    store.validate_sync_profile_binding(profile_id, binding)
+}
+
 /// Handle one decoded request, producing the response value or an error message.
 /// `store` backs the stateful catalog methods; stateless methods ignore it.
 fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result<Value, String> {
@@ -336,13 +378,25 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             serde_json::to_value(store.sync_status(&params.profile_id)?)
                 .map_err(|e| format!("failed to serialize sync status: {e}"))
         }
+        "bindSyncProfile" => {
+            let params: BindProfileParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid bindSyncProfile params: {e}"))?;
+            serde_json::to_value(store.bind_sync_profile(
+                &params.profile_id,
+                &params.profile_binding,
+                params.now,
+            )?)
+            .map_err(|e| format!("failed to serialize bound sync profile: {e}"))
+        }
         "applySyncPullBatch" => {
+            validate_profile_binding_param(store, &params)?;
             let batch: ApplyPullBatchDto = serde_json::from_value(params)
                 .map_err(|e| format!("invalid applySyncPullBatch params: {e}"))?;
             serde_json::to_value(store.apply_pull_batch(batch)?)
                 .map_err(|e| format!("failed to serialize sync status: {e}"))
         }
         "linkRemoteModel" => {
+            validate_profile_binding_param(store, &params)?;
             let link: RemoteModelLinkDto = serde_json::from_value(params)
                 .map_err(|e| format!("invalid linkRemoteModel params: {e}"))?;
             serde_json::to_value(store.link_remote_model(link)?)
@@ -396,6 +450,7 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
                 .map_err(|e| format!("failed to serialize entity revision: {e}"))
         }
         "enqueueOutboundOperations" => {
+            validate_profile_binding_param(store, &params)?;
             let params: EnqueueOutboundParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid enqueueOutboundOperations params: {e}"))?;
             serde_json::to_value(store.enqueue_outbound_operations(
@@ -415,7 +470,14 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             )?)
             .map_err(|e| format!("failed to serialize outbound operations: {e}"))
         }
+        "getOutboundBatch" => {
+            let params: OutboundBatchParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid getOutboundBatch params: {e}"))?;
+            serde_json::to_value(store.outbound_batch(&params.profile_id, &params.batch_id)?)
+                .map_err(|e| format!("failed to serialize outbound batch: {e}"))
+        }
         "claimOutboundOperations" => {
+            validate_profile_binding_param(store, &params)?;
             let params: ClaimOutboundParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid claimOutboundOperations params: {e}"))?;
             serde_json::to_value(store.claim_outbound_operations(
@@ -427,6 +489,7 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             .map_err(|e| format!("failed to serialize outbound operations: {e}"))
         }
         "recoverOutboundOperations" => {
+            validate_profile_binding_param(store, &params)?;
             let params: RecoverOutboundParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid recoverOutboundOperations params: {e}"))?;
             Ok(serde_json::json!({
@@ -434,6 +497,7 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             }))
         }
         "failOutboundBatch" => {
+            validate_profile_binding_param(store, &params)?;
             let failure: FailOutboundBatchDto = serde_json::from_value(params)
                 .map_err(|e| format!("invalid failOutboundBatch params: {e}"))?;
             serde_json::to_value(store.fail_outbound_batch(failure)?)
@@ -466,12 +530,14 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             .map_err(|e| format!("failed to serialize outbound operation: {e}"))
         }
         "settleOutboundBatch" => {
+            validate_profile_binding_param(store, &params)?;
             let settlement: SettleOutboundBatchDto = serde_json::from_value(params)
                 .map_err(|e| format!("invalid settleOutboundBatch params: {e}"))?;
             serde_json::to_value(store.settle_outbound_batch(settlement)?)
                 .map_err(|e| format!("failed to serialize outbound settlement: {e}"))
         }
         "reconcileUncertainBatch" => {
+            validate_profile_binding_param(store, &params)?;
             let reconciliation: ReconcileUncertainBatchDto = serde_json::from_value(params)
                 .map_err(|e| format!("invalid reconcileUncertainBatch params: {e}"))?;
             serde_json::to_value(store.reconcile_uncertain_batch(reconciliation)?)
@@ -663,6 +729,41 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             serde_json::to_value(CollectionDto::from(&created))
                 .map_err(|e| format!("failed to serialize collection: {e}"))
         }
+        "createCollectionWithSync" => {
+            let params: SyncedCollectionParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid createCollectionWithSync params: {e}"))?;
+            let created = store.create_collection_with_sync(
+                params
+                    .name
+                    .as_deref()
+                    .ok_or_else(|| "createCollectionWithSync requires name".to_string())?,
+                &params.profile_id,
+                &params.profile_binding,
+                params.now,
+            )?;
+            serde_json::to_value(CollectionDto::from(&created))
+                .map_err(|e| format!("failed to serialize collection: {e}"))
+        }
+        "updateCollectionWithSync" => {
+            let params: SyncedCollectionParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid updateCollectionWithSync params: {e}"))?;
+            let updated = store.update_collection_with_sync(
+                params
+                    .id
+                    .as_deref()
+                    .ok_or_else(|| "updateCollectionWithSync requires id".to_string())?,
+                params
+                    .name
+                    .as_deref()
+                    .ok_or_else(|| "updateCollectionWithSync requires name".to_string())?,
+                params.is_shared.unwrap_or(false),
+                &params.profile_id,
+                &params.profile_binding,
+                params.now,
+            )?;
+            serde_json::to_value(CollectionDto::from(&updated))
+                .map_err(|e| format!("failed to serialize collection: {e}"))
+        }
         "deleteCollection" => {
             let params: CollectionParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid deleteCollection params: {e}"))?;
@@ -670,6 +771,26 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
                 .id
                 .ok_or_else(|| "deleteCollection requires an id".to_string())?;
             store.delete_collection(&id);
+            let collections: Vec<CollectionDto> = store
+                .all_collections()
+                .iter()
+                .map(CollectionDto::from)
+                .collect();
+            serde_json::to_value(collections)
+                .map_err(|e| format!("failed to serialize collections: {e}"))
+        }
+        "deleteCollectionWithSync" => {
+            let params: SyncedCollectionParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid deleteCollectionWithSync params: {e}"))?;
+            store.delete_collection_with_sync(
+                params
+                    .id
+                    .as_deref()
+                    .ok_or_else(|| "deleteCollectionWithSync requires id".to_string())?,
+                &params.profile_id,
+                &params.profile_binding,
+                params.now,
+            )?;
             let collections: Vec<CollectionDto> = store
                 .all_collections()
                 .iter()
@@ -690,12 +811,64 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             serde_json::to_value(collections)
                 .map_err(|e| format!("failed to serialize collections: {e}"))
         }
+        "addModelToCollectionWithSync" => {
+            let params: SyncedCollectionParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid addModelToCollectionWithSync params: {e}"))?;
+            let id = params
+                .id
+                .as_deref()
+                .ok_or_else(|| "addModelToCollectionWithSync requires id".to_string())?;
+            let hash = params
+                .hash
+                .as_deref()
+                .ok_or_else(|| "addModelToCollectionWithSync requires hash".to_string())?;
+            store.add_model_to_collection_with_sync(
+                id,
+                hash,
+                &params.profile_id,
+                &params.profile_binding,
+                params.now,
+            )?;
+            let collections: Vec<CollectionDto> = store
+                .collections_for_model(hash)
+                .iter()
+                .map(CollectionDto::from)
+                .collect();
+            serde_json::to_value(collections)
+                .map_err(|e| format!("failed to serialize collections: {e}"))
+        }
         "removeModelFromCollection" => {
             let params: CollectionMembershipParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid removeModelFromCollection params: {e}"))?;
             store.remove_model_from_collection(&params.collection_id, &params.hash);
             let collections: Vec<CollectionDto> = store
                 .collections_for_model(&params.hash)
+                .iter()
+                .map(CollectionDto::from)
+                .collect();
+            serde_json::to_value(collections)
+                .map_err(|e| format!("failed to serialize collections: {e}"))
+        }
+        "removeModelFromCollectionWithSync" => {
+            let params: SyncedCollectionParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid removeModelFromCollectionWithSync params: {e}"))?;
+            let id = params
+                .id
+                .as_deref()
+                .ok_or_else(|| "removeModelFromCollectionWithSync requires id".to_string())?;
+            let hash = params
+                .hash
+                .as_deref()
+                .ok_or_else(|| "removeModelFromCollectionWithSync requires hash".to_string())?;
+            store.remove_model_from_collection_with_sync(
+                id,
+                hash,
+                &params.profile_id,
+                &params.profile_binding,
+                params.now,
+            )?;
+            let collections: Vec<CollectionDto> = store
+                .collections_for_model(hash)
                 .iter()
                 .map(CollectionDto::from)
                 .collect();

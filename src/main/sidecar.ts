@@ -81,6 +81,7 @@ export interface SidecarPullEntity {
   localId: string | null;
   remoteId: string;
   revision: number;
+  journalRevision?: number;
   concurrencyToken: string | null;
   tombstone: boolean;
   visibility: SidecarSyncVisibility;
@@ -89,6 +90,7 @@ export interface SidecarPullEntity {
 
 export interface SidecarApplyPullBatch {
   profileId: string;
+  profileBinding: string;
   expectedCheckpointGeneration: number;
   expectedPreviousCursor: string | null;
   cursor: string | null;
@@ -101,6 +103,18 @@ export interface SidecarApplyPullBatch {
 export interface SidecarEntityRevision extends SidecarPullEntity {
   profileId: string;
   updatedAt: number;
+}
+
+export interface SidecarRemoteModelLink {
+  profileId: string;
+  localModelHash: string;
+  remoteModelId: string;
+  clientUploadId: string;
+  etag: string | null;
+  uploadStatus: 'pending' | 'uploading' | 'uploaded' | 'failed';
+  createdAt: number;
+  updatedAt: number;
+  uploadedAt: number | null;
 }
 
 export interface SidecarConflictInput {
@@ -289,12 +303,58 @@ export class SidecarClient {
 
   /** Create a collection; returns the created collection (raw wire object). */
   async createCollection(name: string): Promise<unknown> {
-    return this.request('createCollection', { name });
+    return this.mutationRequest('createCollection', { name });
+  }
+
+  async createCollectionWithSync(
+    name: string,
+    profileId: string,
+    profileBinding: string,
+    now: number,
+  ): Promise<unknown> {
+    return this.mutationRequest('createCollectionWithSync', {
+      name,
+      profileId,
+      profileBinding,
+      now,
+    });
   }
 
   /** Delete a collection; returns all collections (raw wire array). */
   async deleteCollection(id: string): Promise<unknown> {
-    return this.request('deleteCollection', { id });
+    return this.mutationRequest('deleteCollection', { id });
+  }
+
+  async deleteCollectionWithSync(
+    id: string,
+    profileId: string,
+    profileBinding: string,
+    now: number,
+  ): Promise<unknown> {
+    return this.mutationRequest('deleteCollectionWithSync', {
+      id,
+      profileId,
+      profileBinding,
+      now,
+    });
+  }
+
+  async updateCollectionWithSync(
+    id: string,
+    name: string,
+    isShared: boolean,
+    profileId: string,
+    profileBinding: string,
+    now: number,
+  ): Promise<unknown> {
+    return this.mutationRequest('updateCollectionWithSync', {
+      id,
+      name,
+      isShared,
+      profileId,
+      profileBinding,
+      now,
+    });
   }
 
   /** Add a model to a collection; returns the model's collections. */
@@ -302,7 +362,23 @@ export class SidecarClient {
     collectionId: string,
     hash: string,
   ): Promise<unknown> {
-    return this.request('addModelToCollection', { collectionId, hash });
+    return this.mutationRequest('addModelToCollection', { collectionId, hash });
+  }
+
+  async addModelToCollectionWithSync(
+    collectionId: string,
+    hash: string,
+    profileId: string,
+    profileBinding: string,
+    now: number,
+  ): Promise<unknown> {
+    return this.mutationRequest('addModelToCollectionWithSync', {
+      id: collectionId,
+      hash,
+      profileId,
+      profileBinding,
+      now,
+    });
   }
 
   /** Remove a model from a collection; returns the model's collections. */
@@ -310,7 +386,26 @@ export class SidecarClient {
     collectionId: string,
     hash: string,
   ): Promise<unknown> {
-    return this.request('removeModelFromCollection', { collectionId, hash });
+    return this.mutationRequest('removeModelFromCollection', {
+      collectionId,
+      hash,
+    });
+  }
+
+  async removeModelFromCollectionWithSync(
+    collectionId: string,
+    hash: string,
+    profileId: string,
+    profileBinding: string,
+    now: number,
+  ): Promise<unknown> {
+    return this.mutationRequest('removeModelFromCollectionWithSync', {
+      id: collectionId,
+      hash,
+      profileId,
+      profileBinding,
+      now,
+    });
   }
 
   async getSyncStatus(profileId: string): Promise<SidecarSyncStatus> {
@@ -319,10 +414,22 @@ export class SidecarClient {
     })) as SidecarSyncStatus;
   }
 
+  async bindSyncProfile(
+    profileId: string,
+    profileBinding: string,
+    now: number,
+  ): Promise<SidecarSyncStatus> {
+    return (await this.mutationRequest('bindSyncProfile', {
+      profileId,
+      profileBinding,
+      now,
+    })) as SidecarSyncStatus;
+  }
+
   async applySyncPullBatch(
     batch: SidecarApplyPullBatch,
   ): Promise<SidecarSyncStatus> {
-    return (await this.request(
+    return (await this.mutationRequest(
       'applySyncPullBatch',
       batch,
     )) as SidecarSyncStatus;
@@ -338,6 +445,28 @@ export class SidecarClient {
       entityType,
       remoteId,
     })) as SidecarEntityRevision | null;
+  }
+
+  async getSyncEntityRevisionByLocal(
+    profileId: string,
+    entityType: SidecarSyncEntityType,
+    localId: string,
+  ): Promise<SidecarEntityRevision | null> {
+    return (await this.request('getEntityRevision', {
+      profileId,
+      entityType,
+      localId,
+    })) as SidecarEntityRevision | null;
+  }
+
+  async getRemoteModelLink(
+    profileId: string,
+    localModelHash: string,
+  ): Promise<SidecarRemoteModelLink | null> {
+    return (await this.request('getRemoteModelLink', {
+      profileId,
+      localModelHash,
+    })) as SidecarRemoteModelLink | null;
   }
 
   async listSyncEntityRevisions(
@@ -364,24 +493,38 @@ export class SidecarClient {
     })) as SidecarOutboundOperation[];
   }
 
+  async getOutboundBatch(
+    profileId: string,
+    batchId: string,
+  ): Promise<SidecarOutboundOperation[]> {
+    return (await this.request('getOutboundBatch', {
+      profileId,
+      batchId,
+    })) as SidecarOutboundOperation[];
+  }
+
   async recoverOutboundOperations(
     profileId: string,
+    profileBinding: string,
     now: number,
   ): Promise<{ markedUncertain: number }> {
-    return (await this.request('recoverOutboundOperations', {
+    return (await this.mutationRequest('recoverOutboundOperations', {
       profileId,
+      profileBinding,
       now,
     })) as { markedUncertain: number };
   }
 
   async claimOutboundOperations(
     profileId: string,
+    profileBinding: string,
     limit: number,
     now: number,
     leaseSeconds: number,
   ): Promise<SidecarClaimedOutboundBatch | null> {
-    return (await this.request('claimOutboundOperations', {
+    return (await this.mutationRequest('claimOutboundOperations', {
       profileId,
+      profileBinding,
       limit,
       now,
       leaseSeconds,
@@ -390,15 +533,16 @@ export class SidecarClient {
 
   async failOutboundBatch(input: {
     profileId: string;
+    profileBinding: string;
     batchId: string;
     batchIncarnation: string;
     leaseToken: string;
-    outcome: 'definiteTransient' | 'ambiguous';
+    outcome: 'definiteTransient' | 'definitePermanent' | 'ambiguous';
     error: string;
     failedAt: number;
     retryAt: number | null;
   }): Promise<SidecarOutboundOperation[]> {
-    return (await this.request(
+    return (await this.mutationRequest(
       'failOutboundBatch',
       input,
     )) as SidecarOutboundOperation[];
@@ -406,6 +550,7 @@ export class SidecarClient {
 
   async settleOutboundBatch(input: {
     profileId: string;
+    profileBinding: string;
     batchId: string;
     batchIncarnation: string;
     leaseToken: string;
@@ -422,11 +567,12 @@ export class SidecarClient {
       conflict: SidecarConflictInput;
     }>;
   }): Promise<unknown> {
-    return this.request('settleOutboundBatch', input);
+    return this.mutationRequest('settleOutboundBatch', input);
   }
 
   async reconcileUncertainBatch(input: {
     profileId: string;
+    profileBinding: string;
     batchId: string;
     batchIncarnation: string;
     expectedAttemptToken: string;
@@ -438,7 +584,7 @@ export class SidecarClient {
       concurrencyToken: string | null;
     }>;
   }): Promise<SidecarOutboundOperation[]> {
-    return (await this.request(
+    return (await this.mutationRequest(
       'reconcileUncertainBatch',
       input,
     )) as SidecarOutboundOperation[];
@@ -460,6 +606,13 @@ export class SidecarClient {
     }
     this.rejectAllPending(new Error('sidecar client disposed'));
     channel?.close();
+  }
+
+  private mutationRequest(method: string, params: unknown): Promise<unknown> {
+    return this.request(method, params, {
+      timeoutMs: this.mutationTimeoutMs,
+      terminateOnTimeout: true,
+    });
   }
 
   private request(

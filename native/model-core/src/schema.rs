@@ -8,7 +8,7 @@
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -262,6 +262,32 @@ ALTER TABLE tags_v6 RENAME TO tags;
 ALTER TABLE model_tags_v6 RENAME TO model_tags;
 "#;
 
+/// v7 binds durable sync state to one authenticated server incarnation and
+/// records explicit provenance for materialized remote catalog rows.
+pub const SCHEMA_V7: &str = r#"
+ALTER TABLE sync_profiles ADD COLUMN profile_binding TEXT;
+ALTER TABLE sync_entities ADD COLUMN journal_revision INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE collections ADD COLUMN sync_profile_id TEXT;
+ALTER TABLE collections ADD COLUMN sync_remote_id TEXT;
+ALTER TABLE collections ADD COLUMN sync_owner_user_id TEXT;
+ALTER TABLE collections ADD COLUMN sync_visibility TEXT;
+ALTER TABLE collections ADD COLUMN sync_read_only INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE tags ADD COLUMN sync_profile_id TEXT;
+ALTER TABLE tags ADD COLUMN sync_remote_id TEXT;
+ALTER TABLE tags ADD COLUMN sync_owner_user_id TEXT;
+ALTER TABLE tags ADD COLUMN sync_visibility TEXT;
+ALTER TABLE tags ADD COLUMN sync_read_only INTEGER NOT NULL DEFAULT 0;
+
+CREATE UNIQUE INDEX idx_collections_sync_remote
+    ON collections(sync_profile_id, sync_remote_id)
+    WHERE sync_profile_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_tags_sync_remote
+    ON tags(sync_profile_id, sync_remote_id)
+    WHERE sync_profile_id IS NOT NULL;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,7 +314,7 @@ mod tests {
     #[test]
     fn sync_schema_contains_no_transport_or_secret_fields() {
         let sync_schema =
-            format!("{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}\n{SCHEMA_V6}")
+            format!("{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}\n{SCHEMA_V6}\n{SCHEMA_V7}")
                 .to_lowercase();
         for forbidden in ["server_url", "auth_token", "api_key", "password", "jwt"] {
             assert!(!sync_schema.contains(forbidden));

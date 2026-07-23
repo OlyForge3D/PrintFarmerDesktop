@@ -58,11 +58,24 @@ export interface SyncHttpClientOptions {
 export interface SyncTokenProvider {
   getToken(profileId: string): Promise<string>;
   refreshToken(profileId: string): Promise<string>;
+  getAuthenticatedContext?(
+    profileId: string,
+    expectedBaseUrl?: string,
+    forceRefresh?: boolean,
+  ): Promise<{ baseUrl: string; token: string; binding: string }>;
 }
 
 export type ApplyResult =
   | { kind: 'success'; value: ApplySuccessValue }
   | { kind: 'conflict'; value: ApplyConflictValue };
+
+interface PendingSyncResponse {
+  response: Response;
+  signal: AbortSignal;
+  timedOut(): boolean;
+  ambiguous: boolean;
+  dispose(): void;
+}
 
 export class SyncHttpClient {
   private readonly fetchImpl: typeof globalThis.fetch;
@@ -182,7 +195,7 @@ export class SyncHttpClient {
         'Outbound apply batches must contain 1..=500 operations.',
       );
     }
-    const response = await this.request(
+    const pending = await this.request(
       profileId,
       baseUrl,
       '/api/library-sync/apply',
@@ -194,19 +207,23 @@ export class SyncHttpClient {
       signal,
       true,
     );
-    if (response.status === 409) {
+    try {
+      if (pending.response.status === 409) {
+        return {
+          kind: 'conflict',
+          value: await this.parse(pending, ApplyConflictResponse),
+        };
+      }
+      if (!pending.response.ok) {
+        throw await this.statusError(pending.response);
+      }
       return {
-        kind: 'conflict',
-        value: await this.parse(response, ApplyConflictResponse, signal),
+        kind: 'success',
+        value: await this.parse(pending, ApplySuccess),
       };
+    } finally {
+      pending.dispose();
     }
-    if (!response.ok) {
-      throw await this.statusError(response, true);
-    }
-    return {
-      kind: 'success',
-      value: await this.parse(response, ApplySuccess, signal),
-    };
   }
 
   private async get<T>(
@@ -219,7 +236,7 @@ export class SyncHttpClient {
     let attempt = 0;
     while (true) {
       try {
-        const response = await this.request(
+        const pending = await this.request(
           profileId,
           baseUrl,
           resource,
@@ -227,8 +244,14 @@ export class SyncHttpClient {
           signal,
           false,
         );
-        if (!response.ok) throw await this.statusError(response, false);
-        return await this.parse(response, schema, signal);
+        try {
+          if (!pending.response.ok) {
+            throw await this.statusError(pending.response);
+          }
+          return await this.parse(pending, schema);
+        } finally {
+          pending.dispose();
+        }
       } catch (error) {
         const mapped = mapError(error, signal, false);
         attempt += 1;
@@ -271,10 +294,16 @@ export class SyncHttpClient {
     init: RequestInit,
     signal: AbortSignal,
     postMayBeAmbiguous: boolean,
-  ): Promise<Response> {
+  ): Promise<PendingSyncResponse> {
+    if (signal.aborted) {
+      throw new SyncHttpError(
+        'cancelled',
+        'Library synchronization was cancelled.',
+      );
+    }
     let token: string;
     try {
-      token = await this.tokens.getToken(profileId);
+      token = await this.getBoundToken(profileId, baseUrl, false);
     } catch {
       throw new SyncHttpError(
         'authentication',
@@ -286,6 +315,12 @@ export class SyncHttpClient {
       authenticationAttempt < 2;
       authenticationAttempt += 1
     ) {
+      if (signal.aborted) {
+        throw new SyncHttpError(
+          'cancelled',
+          'Library synchronization was cancelled.',
+        );
+      }
       const combined = deadlineSignal(signal, this.timeoutMs);
       try {
         const response = await this.fetchImpl(
@@ -300,11 +335,19 @@ export class SyncHttpClient {
             signal: combined.signal,
           },
         );
-        if (response.status !== 401 || authenticationAttempt > 0)
-          return response;
+        if (response.status !== 401 || authenticationAttempt > 0) {
+          return {
+            response,
+            signal: combined.signal,
+            timedOut: () => combined.timedOut(),
+            ambiguous: postMayBeAmbiguous,
+            dispose: () => combined.dispose(),
+          };
+        }
         await discard(response);
+        combined.dispose();
         try {
-          token = await this.tokens.refreshToken(profileId);
+          token = await this.getBoundToken(profileId, baseUrl, true);
         } catch {
           throw new SyncHttpError(
             'authentication',
@@ -313,9 +356,8 @@ export class SyncHttpClient {
           );
         }
       } catch (error) {
-        throw mapError(error, signal, postMayBeAmbiguous, combined.timedOut());
-      } finally {
         combined.dispose();
+        throw mapError(error, signal, postMayBeAmbiguous, combined.timedOut());
       }
     }
     throw new SyncHttpError(
@@ -325,12 +367,66 @@ export class SyncHttpClient {
     );
   }
 
+  private async getBoundToken(
+    profileId: string,
+    baseUrl: string,
+    forceRefresh: boolean,
+  ): Promise<string> {
+    if (this.tokens.getAuthenticatedContext) {
+      const context = await this.tokens.getAuthenticatedContext(
+        profileId,
+        baseUrl,
+        forceRefresh,
+      );
+      if (context.baseUrl !== baseUrl) {
+        throw new SyncHttpError(
+          'authentication',
+          'The server profile changed during synchronization.',
+        );
+      }
+      return context.token;
+    }
+    return forceRefresh
+      ? this.tokens.refreshToken(profileId)
+      : this.tokens.getToken(profileId);
+  }
+
   private async parse<T>(
-    response: Response,
+    pending: PendingSyncResponse,
     schema: z.ZodType<T, z.ZodTypeDef, unknown>,
-    signal: AbortSignal,
   ): Promise<T> {
-    const text = await readBoundedBody(response, this.maxResponseBytes, signal);
+    let text: string;
+    try {
+      text = await readBoundedBody(
+        pending.response,
+        this.maxResponseBytes,
+        pending.signal,
+      );
+    } catch (error) {
+      if (pending.timedOut()) {
+        throw new SyncHttpError(
+          'timeout',
+          'The library synchronization response timed out.',
+          pending.response.status,
+          null,
+          pending.ambiguous,
+        );
+      }
+      if (
+        pending.ambiguous &&
+        error instanceof SyncHttpError &&
+        error.code === 'cancelled'
+      ) {
+        throw new SyncHttpError(
+          'cancelled',
+          error.message,
+          pending.response.status,
+          null,
+          true,
+        );
+      }
+      throw error;
+    }
     let value: unknown;
     try {
       value = JSON.parse(text);
@@ -338,7 +434,7 @@ export class SyncHttpClient {
       throw new SyncHttpError(
         'invalidResponse',
         'The server returned invalid JSON.',
-        response.status,
+        pending.response.status,
       );
     }
     const parsed = schema.safeParse(value);
@@ -346,16 +442,13 @@ export class SyncHttpClient {
       throw new SyncHttpError(
         'invalidResponse',
         'The server response did not match the library sync contract.',
-        response.status,
+        pending.response.status,
       );
     }
     return parsed.data;
   }
 
-  private async statusError(
-    response: Response,
-    postMayBeAmbiguous: boolean,
-  ): Promise<SyncHttpError> {
+  private async statusError(response: Response): Promise<SyncHttpError> {
     await discard(response);
     const retryAfterMs = parseRetryAfter(
       response.headers.get('retry-after'),
@@ -395,13 +488,13 @@ export class SyncHttpClient {
       `Library synchronization failed with HTTP ${response.status}.`,
       response.status,
       retryAfterMs,
-      postMayBeAmbiguous && response.status >= 500,
+      false,
     );
   }
 
   private retryDelay(error: SyncHttpError, attempt: number): number {
     if (error.retryAfterMs !== null) {
-      return Math.min(this.maxBackoffMs, Math.max(0, error.retryAfterMs));
+      return Math.max(0, error.retryAfterMs);
     }
     const exponential = Math.min(
       this.maxBackoffMs,
@@ -431,6 +524,9 @@ function mapError(
     return new SyncHttpError(
       'cancelled',
       'Library synchronization was cancelled.',
+      null,
+      null,
+      ambiguous,
     );
   }
   if (timedOut) {
@@ -504,7 +600,7 @@ async function readBoundedBody(
           'Library synchronization was cancelled.',
         );
       }
-      const { done, value } = await reader.read();
+      const { done, value } = await readChunk(reader, signal);
       if (done) break;
       size += value.byteLength;
       if (size > limit) {
@@ -514,6 +610,39 @@ async function readBoundedBody(
           `The server response exceeded ${limit} bytes.`,
           response.status,
         );
+      }
+
+      function readChunk(
+        reader: ReadableStreamDefaultReader<Uint8Array>,
+        signal: AbortSignal,
+      ): Promise<ReadableStreamReadResult<Uint8Array>> {
+        if (signal.aborted) {
+          void reader.cancel();
+          return Promise.reject(
+            new SyncHttpError(
+              'cancelled',
+              'Library synchronization was cancelled.',
+            ),
+          );
+        }
+        return new Promise((resolve, reject) => {
+          const onAbort = (): void => {
+            void reader.cancel();
+            reject(
+              new SyncHttpError(
+                'cancelled',
+                'Library synchronization was cancelled.',
+              ),
+            );
+          };
+          signal.addEventListener('abort', onAbort, { once: true });
+          void reader
+            .read()
+            .then(resolve, reject)
+            .finally(() => {
+              signal.removeEventListener('abort', onAbort);
+            });
+        });
       }
       chunks.push(value);
     }

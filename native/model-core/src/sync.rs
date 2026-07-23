@@ -408,6 +408,7 @@ pub struct ClaimedOutboundBatchDto {
 #[serde(rename_all = "camelCase")]
 pub enum OutboundFailureOutcome {
     DefiniteTransient,
+    DefinitePermanent,
     Ambiguous,
 }
 
@@ -912,6 +913,10 @@ pub(crate) fn validate_batch_failure(failure: &FailOutboundBatchDto) -> Result<(
         (OutboundFailureOutcome::DefiniteTransient, None) => {
             return Err("definite transient failures require retryAt".to_string());
         }
+        (OutboundFailureOutcome::DefinitePermanent, Some(_)) => {
+            return Err("definite permanent failures cannot have retryAt".to_string());
+        }
+        (OutboundFailureOutcome::DefinitePermanent, None) => {}
         (OutboundFailureOutcome::Ambiguous, Some(_)) => {
             return Err("ambiguous failures cannot have retryAt".to_string());
         }
@@ -1086,6 +1091,34 @@ pub(crate) fn new_lease_token() -> String {
 
 pub(crate) fn new_batch_incarnation() -> String {
     new_collision_resistant_token("batch")
+}
+
+pub(crate) fn new_operation_token(prefix: &str) -> String {
+    new_collision_resistant_token(prefix)
+}
+
+pub(crate) fn new_remote_guid() -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(new_collision_resistant_token("remote").as_bytes());
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-4{:x}{:02x}-{:x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        digest[0],
+        digest[1],
+        digest[2],
+        digest[3],
+        digest[4],
+        digest[5],
+        digest[6] & 0x0f,
+        digest[7],
+        (digest[8] & 0x3f) | 0x80,
+        digest[9],
+        digest[10],
+        digest[11],
+        digest[12],
+        digest[13],
+        digest[14],
+        digest[15]
+    )
 }
 
 fn new_collision_resistant_token(prefix: &str) -> String {

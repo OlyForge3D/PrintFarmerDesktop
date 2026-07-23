@@ -13,15 +13,17 @@ export type SyncOperation = z.infer<typeof SyncOperation>;
 export const SyncVisibility = z.enum(['Private', 'Shared']);
 export type SyncVisibility = z.infer<typeof SyncVisibility>;
 
+export const ServerGuid = z.string().uuid();
+
 export const RemoteChange = z
   .object({
     revision: z.number().int().nonnegative(),
     entityType: SyncEntityType,
-    entityId: z.string().min(1).max(256),
+    entityId: ServerGuid,
     operation: SyncOperation,
-    ownerUserId: z.string().min(1).max(256).nullable(),
+    ownerUserId: ServerGuid.nullable(),
     visibility: SyncVisibility,
-    actorUserId: z.string().min(1).max(256),
+    actorUserId: ServerGuid,
     timestamp: z.string().datetime(),
   })
   .passthrough();
@@ -39,12 +41,12 @@ export type ChangesResponse = z.infer<typeof ChangesResponse>;
 
 export const CollectionSnapshot = z
   .object({
-    id: z.string().min(1).max(256),
+    id: ServerGuid,
     name: z.string().min(1).max(1024),
     description: z.string().max(16_384).nullable(),
-    ownerUserId: z.string().min(1).max(256),
+    ownerUserId: ServerGuid,
     isShared: z.boolean(),
-    modelIds: z.array(z.string().min(1).max(256)).max(100_000),
+    modelIds: z.array(ServerGuid).max(100_000),
     revision: z.number().int().nonnegative(),
     concurrencyToken: z.string().min(1).max(256),
     createdAt: z.string().datetime().optional(),
@@ -56,9 +58,9 @@ export type CollectionSnapshot = z.infer<typeof CollectionSnapshot>;
 
 export const MembershipSnapshot = z
   .object({
-    id: z.string().min(1).max(256),
-    collectionId: z.string().min(1).max(256),
-    modelId: z.string().min(1).max(256),
+    id: ServerGuid,
+    collectionId: ServerGuid,
+    modelId: ServerGuid,
     revision: z.number().int().nonnegative(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
@@ -68,7 +70,7 @@ export type MembershipSnapshot = z.infer<typeof MembershipSnapshot>;
 
 export const TagSnapshot = z
   .object({
-    id: z.string().min(1).max(256),
+    id: ServerGuid,
     name: z.string().min(1).max(1024),
     category: z.string().max(1024).nullable(),
     revision: z.number().int().nonnegative(),
@@ -85,10 +87,11 @@ export const MembershipList = z.array(MembershipSnapshot).max(100_000);
 
 export const AppliedOperation = z
   .object({
-    operationId: z.string().min(1).max(256),
-    remoteId: z.string().min(1).max(256),
+    entityType: SyncEntityType,
+    operation: SyncOperation,
+    entityId: ServerGuid,
     revision: z.number().int().nonnegative(),
-    concurrencyToken: z.string().min(1).max(256).nullable().optional(),
+    merged: z.boolean(),
   })
   .passthrough();
 export type AppliedOperation = z.infer<typeof AppliedOperation>;
@@ -103,14 +106,11 @@ export type ApplySuccess = z.infer<typeof ApplySuccess>;
 
 export const ApplyConflict = z
   .object({
-    conflictId: z.string().min(1).max(256).optional(),
-    operationId: z.string().min(1).max(256),
     entityType: SyncEntityType,
-    entityId: z.string().min(1).max(256),
+    entityId: ServerGuid,
     reason: z.string().min(1).max(4096),
-    localPayload: z.unknown().optional(),
-    serverPayload: z.unknown().optional(),
-    submittedPayload: z.unknown().optional(),
+    server: z.unknown().nullable(),
+    submitted: z.unknown().nullable(),
   })
   .passthrough();
 export type ApplyConflict = z.infer<typeof ApplyConflict>;
@@ -125,13 +125,16 @@ export const ApplyConflictResponse = z
 export type ApplyConflictResponse = z.infer<typeof ApplyConflictResponse>;
 
 export interface ApplyOperationRequest {
-  operationId: string;
   entityType: SyncEntityType;
   operation: SyncOperation;
   entityId: string;
-  payload: unknown;
   baseRevision: number | null;
   concurrencyToken: string | null;
+  collectionId: string | null;
+  modelId: string | null;
+  name: string | null;
+  description: string | null;
+  isShared: boolean | null;
 }
 
 export interface ApplyRequest {

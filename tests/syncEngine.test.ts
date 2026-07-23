@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/unbound-method, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument */
+/* eslint-disable @typescript-eslint/unbound-method, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument */
 import { describe, expect, it, vi } from 'vitest';
 import type { ServerProfile } from '@shared/ipc';
 import {
@@ -19,6 +19,9 @@ import type {
 const NOW = Date.parse('2026-07-23T12:00:00.000Z');
 const PROFILE_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_PROFILE_ID = '22222222-2222-4222-8222-222222222222';
+const REMOTE_COLLECTION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const REMOTE_MEMBERSHIP_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const REMOTE_MODEL_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
 describe('PrintFarmerSyncEngine pull', () => {
   it('commits multipage opaque cursors with materialized membership snapshots', async () => {
@@ -54,7 +57,7 @@ describe('PrintFarmerSyncEngine pull', () => {
     expect(status).toMatchObject({
       phase: 'succeeded',
       pulledChanges: 3,
-      cursor: null,
+      cursor: 'cursor-3',
       serverRevision: 3,
     });
     expect(sidecar.pullBatches).toHaveLength(2);
@@ -67,7 +70,7 @@ describe('PrintFarmerSyncEngine pull', () => {
     expect(sidecar.pullBatches[1]).toMatchObject({
       expectedPreviousCursor: 'opaque+cursor=1',
       expectedCheckpointGeneration: 1,
-      cursor: null,
+      cursor: 'cursor-3',
     });
     expect(
       sidecar.pullBatches[0]!.entities.find(
@@ -103,6 +106,7 @@ describe('PrintFarmerSyncEngine pull', () => {
         [
           {
             ...change(2, 'ModelCollection', 'remote-collection'),
+            operation: 'Delete',
             visibility: 'Private',
           },
         ],
@@ -119,7 +123,8 @@ describe('PrintFarmerSyncEngine pull', () => {
       entityType: 'ModelCollection',
       localId: 'stable-local-id',
       remoteId: 'remote-collection',
-      revision: 2,
+      revision: 1,
+      journalRevision: 2,
       concurrencyToken: null,
       tombstone: true,
       visibility: 'Private',
@@ -145,6 +150,48 @@ describe('PrintFarmerSyncEngine pull', () => {
     expect(status.phase).toBe('error');
     expect(remote.getChanges).toHaveBeenCalledOnce();
     expect((await sidecar.api.getSyncStatus(PROFILE_ID)).cursor).toBeNull();
+  });
+
+  it('retains an established cursor across a later empty poll', async () => {
+    const sidecar = fakeSidecar();
+    const remote = fakeRemote();
+    remote.getChanges
+      .mockResolvedValueOnce(
+        page([change(1, 'Tag', 'remote-tag')], 'cursor-1', false, 1),
+      )
+      .mockResolvedValueOnce(page([], null, false, 1));
+    remote.getTag.mockResolvedValue(tag('remote-tag', 1));
+    const engine = createEngine(sidecar.api, remote.api);
+
+    await engine.syncNow(PROFILE_ID);
+    await engine.syncNow(PROFILE_ID);
+
+    expect(remote.getChanges.mock.calls[1]![2]).toBe('cursor-1');
+    expect(sidecar.pullBatches[1]).toMatchObject({
+      expectedPreviousCursor: 'cursor-1',
+      cursor: 'cursor-1',
+    });
+  });
+
+  it('leaves an unresolved update uncheckpointed for retry', async () => {
+    const sidecar = fakeSidecar();
+    const remote = fakeRemote();
+    remote.getChanges.mockResolvedValue(
+      page(
+        [change(2, 'ModelCollection', 'eventually-consistent')],
+        'cursor-2',
+        false,
+        2,
+      ),
+    );
+    remote.getCollection.mockResolvedValue(null);
+
+    const status = await createEngine(sidecar.api, remote.api).syncNow(
+      PROFILE_ID,
+    );
+
+    expect(status.phase).toBe('error');
+    expect(sidecar.pullBatches).toHaveLength(0);
   });
 
   it('isolates checkpoints for concurrent profiles', async () => {
@@ -195,9 +242,121 @@ describe('PrintFarmerSyncEngine pull', () => {
     await expect(running).resolves.toMatchObject({ phase: 'cancelled' });
     expect(sidecar.api.applySyncPullBatch).not.toHaveBeenCalled();
   });
+
+  it('rejects an old-server result after the profile binding changes', async () => {
+    const sidecar = fakeSidecar();
+    const remote = fakeRemote();
+    const gate = deferred<ReturnType<typeof page>>();
+    remote.getChanges.mockReturnValue(gate.promise);
+    let binding = 'binding-a';
+    const profiles = {
+      list: () =>
+        Promise.resolve({
+          profiles: [profile()],
+          selectedProfileId: PROFILE_ID,
+        }),
+      getAuthenticatedContext: () =>
+        Promise.resolve({
+          baseUrl: profile().baseUrl,
+          binding,
+        }),
+    };
+    const engine = new PrintFarmerSyncEngine(
+      profiles,
+      sidecar.api,
+      remote.api,
+      {
+        now: () => NOW,
+      },
+    );
+    const running = engine.syncNow(PROFILE_ID);
+    await vi.waitFor(() => expect(remote.getChanges).toHaveBeenCalledOnce());
+
+    binding = 'binding-b';
+    gate.resolve(page([], null, false, 0));
+    const status = await running;
+
+    expect(status.phase).toBe('cancelled');
+    expect(sidecar.api.applySyncPullBatch).not.toHaveBeenCalled();
+  });
 });
 
 describe('PrintFarmerSyncEngine push and recovery', () => {
+  it('translates references to creates in the same flat server batch', async () => {
+    const collectionCreate = {
+      ...operation('create-collection', 0),
+      operation: 'Create' as const,
+      entityId: 'local-new',
+      baseRevision: null,
+      concurrencyToken: null,
+      payload: {
+        remoteId: REMOTE_COLLECTION_ID,
+        name: 'New',
+        description: null,
+        isShared: false,
+      },
+    };
+    const membershipCreate = {
+      ...operation('create-member', 1),
+      entityType: 'ModelCollectionMembership' as const,
+      operation: 'Create' as const,
+      entityId: 'local-membership',
+      baseRevision: null,
+      concurrencyToken: null,
+      payload: {
+        remoteId: REMOTE_MEMBERSHIP_ID,
+        collectionId: 'local-new',
+        modelHash: 'a'.repeat(64),
+      },
+    };
+    const sidecar = fakeSidecar(
+      [],
+      batch([collectionCreate, membershipCreate]),
+    );
+    vi.mocked(sidecar.api.getRemoteModelLink).mockResolvedValue({
+      profileId: PROFILE_ID,
+      localModelHash: 'a'.repeat(64),
+      remoteModelId: REMOTE_MODEL_ID,
+      clientUploadId: 'upload',
+      etag: null,
+      uploadStatus: 'uploaded',
+      createdAt: 1,
+      updatedAt: 1,
+      uploadedAt: 1,
+    });
+    const remote = fakeRemote();
+    remote.apply.mockResolvedValue({
+      kind: 'success',
+      value: {
+        serverRevision: 2,
+        applied: [
+          {
+            entityType: 'ModelCollection',
+            operation: 'Create',
+            entityId: REMOTE_COLLECTION_ID,
+            revision: 1,
+            merged: false,
+          },
+          {
+            entityType: 'ModelCollectionMembership',
+            operation: 'Create',
+            entityId: REMOTE_MEMBERSHIP_ID,
+            revision: 2,
+            merged: false,
+          },
+        ],
+      },
+    });
+
+    await createEngine(sidecar.api, remote.api).syncNow(PROFILE_ID);
+
+    expect(remote.apply.mock.calls[0]![2].operations[1]).toMatchObject({
+      entityId: REMOTE_MEMBERSHIP_ID,
+      collectionId: REMOTE_COLLECTION_ID,
+      modelId: REMOTE_MODEL_ID,
+    });
+  });
+
   it('claims and settles one ordered logical batch exactly once', async () => {
     const claimed = batch([operation('op-1', 0), operation('op-2', 1)]);
     const sidecar = fakeSidecar([], claimed);
@@ -207,8 +366,20 @@ describe('PrintFarmerSyncEngine push and recovery', () => {
       value: {
         serverRevision: 10,
         applied: [
-          { operationId: 'op-1', remoteId: 'r1', revision: 9 },
-          { operationId: 'op-2', remoteId: 'r2', revision: 10 },
+          {
+            entityType: 'ModelCollection',
+            operation: 'Update',
+            entityId: REMOTE_COLLECTION_ID,
+            revision: 9,
+            merged: false,
+          },
+          {
+            entityType: 'ModelCollection',
+            operation: 'Update',
+            entityId: REMOTE_COLLECTION_ID,
+            revision: 10,
+            merged: false,
+          },
         ],
       },
     });
@@ -219,11 +390,24 @@ describe('PrintFarmerSyncEngine push and recovery', () => {
 
     expect(status.pushedOperations).toBe(2);
     expect(remote.apply).toHaveBeenCalledOnce();
-    expect(
-      remote.apply.mock.calls[0]![2].operations.map(
-        (item: { operationId: string }) => item.operationId,
-      ),
-    ).toEqual(['op-1', 'op-2']);
+    expect(remote.apply.mock.calls[0]![2].operations[0]).toEqual({
+      entityType: 'ModelCollection',
+      operation: 'Update',
+      entityId: REMOTE_COLLECTION_ID,
+      baseRevision: 1,
+      concurrencyToken: 'old-token',
+      collectionId: null,
+      modelId: null,
+      name: 'Collection',
+      description: null,
+      isShared: false,
+    });
+    expect(remote.apply.mock.calls[0]![2].operations[0]).not.toHaveProperty(
+      'operationId',
+    );
+    expect(remote.apply.mock.calls[0]![2].operations[0]).not.toHaveProperty(
+      'payload',
+    );
     expect(sidecar.api.settleOutboundBatch).toHaveBeenCalledWith(
       expect.objectContaining({ batchId: 'batch-1', serverRevision: 10 }),
     );
@@ -239,11 +423,11 @@ describe('PrintFarmerSyncEngine push and recovery', () => {
         serverRevision: 11,
         conflicts: [
           {
-            operationId: 'op-1',
             entityType: 'ModelCollection',
-            entityId: 'local-1',
+            entityId: REMOTE_COLLECTION_ID,
             reason: 'revision mismatch',
-            serverPayload: { name: 'server' },
+            server: { name: 'server' },
+            submitted: { name: 'Collection' },
           },
         ],
       },
@@ -297,17 +481,24 @@ describe('PrintFarmerSyncEngine push and recovery', () => {
       profileId: PROFILE_ID,
       entityType: 'ModelCollection',
       localId: 'local-1',
-      remoteId: 'remote-1',
+      remoteId: REMOTE_COLLECTION_ID,
       revision: 3,
       concurrencyToken: 'new-token',
       tombstone: false,
       visibility: 'Private',
-      snapshot: collection('remote-1', 3),
+      snapshot: collection(REMOTE_COLLECTION_ID, 3),
       updatedAt: 3,
     };
     const sidecar = fakeSidecar([mapping], null, [uncertain]);
+    const remote = fakeRemote();
+    remote.getCollection.mockResolvedValue({
+      ...collection(REMOTE_COLLECTION_ID, 3),
+      name: 'Collection',
+      description: null,
+      isShared: false,
+    });
 
-    await createEngine(sidecar.api, fakeRemote().api).syncNow(PROFILE_ID);
+    await createEngine(sidecar.api, remote.api).syncNow(PROFILE_ID);
 
     expect(sidecar.api.reconcileUncertainBatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -316,8 +507,8 @@ describe('PrintFarmerSyncEngine push and recovery', () => {
         operations: [
           expect.objectContaining({
             operationId: 'op-1',
-            baseRevision: 3,
-            concurrencyToken: 'new-token',
+            baseRevision: 2,
+            concurrencyToken: 'old-token',
           }),
         ],
       }),
@@ -370,6 +561,35 @@ describe('PrintFarmerSyncEngine scheduling', () => {
       vi.mocked(sidecar.api.recoverOutboundOperations).mock
         .invocationCallOrder[0],
     ).toBeLessThan(remote.getChanges.mock.invocationCallOrder[0]!);
+  });
+
+  it('coalesces concurrent scheduler starts into one retained timer', async () => {
+    const sidecar = fakeSidecar();
+    const remote = fakeRemote();
+    const setInterval = vi.fn(
+      () => 17 as unknown as ReturnType<typeof globalThis.setInterval>,
+    );
+    const engine = new PrintFarmerSyncEngine(
+      {
+        list: () =>
+          Promise.resolve({
+            profiles: [profile()],
+            selectedProfileId: PROFILE_ID,
+          }),
+      },
+      sidecar.api,
+      remote.api,
+      {
+        now: () => NOW,
+        setInterval: setInterval as unknown as typeof globalThis.setInterval,
+        clearInterval: vi.fn(),
+      },
+    );
+
+    await Promise.all([engine.start(), engine.start()]);
+
+    expect(setInterval).toHaveBeenCalledOnce();
+    await engine.dispose();
   });
 });
 
@@ -439,6 +659,9 @@ function fakeSidecar(
       updatedAt: 0,
     };
   const api = {
+    bindSyncProfile: vi.fn((profileId: string) =>
+      Promise.resolve(status(profileId)),
+    ),
     getSyncStatus: vi.fn((profileId: string) =>
       Promise.resolve(status(profileId)),
     ),
@@ -481,6 +704,30 @@ function fakeSidecar(
           ) ?? null,
         ),
     ),
+    getSyncEntityRevisionByLocal: vi.fn(
+      (profileId: string, entityType: string, localId: string) =>
+        Promise.resolve(
+          revisions.find(
+            (item) =>
+              item.profileId === profileId &&
+              item.entityType === entityType &&
+              item.localId === localId,
+          ) ?? {
+            profileId,
+            entityType,
+            localId,
+            remoteId: REMOTE_COLLECTION_ID,
+            revision: 1,
+            journalRevision: 1,
+            concurrencyToken: 'old-token',
+            tombstone: false,
+            visibility: 'Private',
+            snapshot: null,
+            updatedAt: 1,
+          },
+        ),
+    ),
+    getRemoteModelLink: vi.fn(() => Promise.resolve(null)),
     listSyncEntityRevisions: vi.fn((profileId: string) =>
       Promise.resolve(revisions.filter((item) => item.profileId === profileId)),
     ),
@@ -539,7 +786,13 @@ function page(
   hasMore: boolean,
   serverRevision: number,
 ) {
-  return { changes, nextCursor, hasMore, serverRevision };
+  return {
+    changes,
+    nextCursor:
+      nextCursor ?? (changes.length > 0 ? `cursor-${serverRevision}` : null),
+    hasMore,
+    serverRevision,
+  };
 }
 
 function change(
@@ -551,7 +804,7 @@ function change(
     revision,
     entityType,
     entityId,
-    operation: 'Update' as const,
+    operation: 'Update' as 'Create' | 'Update' | 'Delete',
     ownerUserId: 'owner',
     visibility: 'Shared' as 'Shared' | 'Private',
     actorUserId: 'actor',
@@ -615,7 +868,12 @@ function operation(
     entityType: 'ModelCollection',
     operation: 'Update',
     entityId: 'local-1',
-    payload: { name: 'Collection' },
+    payload: {
+      remoteId: REMOTE_COLLECTION_ID,
+      name: 'Collection',
+      description: null,
+      isShared: false,
+    },
     baseRevision: 1,
     concurrencyToken: 'old-token',
     state: 'inFlight',

@@ -23,7 +23,7 @@ use crate::catalog::{
 };
 use crate::model::{FileFingerprint, ModelFormat};
 use crate::schema::{
-    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_VERSION,
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_VERSION,
 };
 use crate::sync::{
     self, ApplyPullBatchDto, ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution,
@@ -86,6 +86,9 @@ impl SqliteCatalog {
                 }
                 if version < 6 {
                     conn.execute_batch(SCHEMA_V6)?;
+                }
+                if version < 7 {
+                    conn.execute_batch(SCHEMA_V7)?;
                 }
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 conn.execute_batch("COMMIT")
@@ -251,18 +254,24 @@ impl SqliteCatalog {
             .map_err(sql_error)
     }
 
-    fn upsert_entity_revision(&self, mapping: &EntityRevisionDto) -> Result<(), String> {
+    fn upsert_entity_revision(
+        &self,
+        mapping: &EntityRevisionDto,
+        journal_revision: u64,
+    ) -> Result<(), String> {
         self.conn
             .execute(
                 "INSERT INTO sync_entities(
                     profile_id, entity_type, local_id, remote_id, revision,
-                    concurrency_token, tombstone, visibility, snapshot_json, updated_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                    concurrency_token, tombstone, visibility, snapshot_json, updated_at,
+                    journal_revision)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                  ON CONFLICT(profile_id, entity_type, remote_id) DO UPDATE SET
                     local_id = excluded.local_id, revision = excluded.revision,
                     concurrency_token = excluded.concurrency_token,
                     tombstone = excluded.tombstone, visibility = excluded.visibility,
-                    snapshot_json = excluded.snapshot_json, updated_at = excluded.updated_at",
+                    snapshot_json = excluded.snapshot_json, updated_at = excluded.updated_at,
+                    journal_revision = excluded.journal_revision",
                 params![
                     mapping.profile_id,
                     mapping.entity_type.as_db(),
@@ -274,6 +283,7 @@ impl SqliteCatalog {
                     mapping.visibility.as_db(),
                     optional_json(&mapping.snapshot)?,
                     mapping.updated_at,
+                    journal_revision as i64,
                 ],
             )
             .map(|_| ())
@@ -340,9 +350,19 @@ impl SqliteCatalog {
         for value in snapshots {
             let snapshot: sync::MembershipSnapshotDto = serde_json::from_str(&value)
                 .map_err(|error| format!("invalid persisted membership snapshot: {error}"))?;
-            self.conn
-                .execute(
-                    "INSERT OR IGNORE INTO collection_models(collection_id, model_hash)
+            self.materialize_membership_snapshot(profile_id, &snapshot)?;
+        }
+        Ok(())
+    }
+
+    fn materialize_membership_snapshot(
+        &self,
+        profile_id: &str,
+        snapshot: &sync::MembershipSnapshotDto,
+    ) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO collection_models(collection_id, model_hash)
                      SELECT collection.local_id, link.local_model_hash
                      FROM sync_entities collection
                      JOIN remote_model_links link
@@ -354,11 +374,10 @@ impl SqliteCatalog {
                        AND collection.entity_type = 'ModelCollection'
                        AND collection.remote_id = ?2 AND collection.tombstone = 0
                        AND collection.local_id IS NOT NULL",
-                    params![profile_id, snapshot.collection_id, snapshot.model_id],
-                )
-                .map_err(sql_error)?;
-        }
-        Ok(())
+                params![profile_id, snapshot.collection_id, snapshot.model_id],
+            )
+            .map(|_| ())
+            .map_err(sql_error)
     }
 
     fn materialize_pull(
@@ -375,14 +394,27 @@ impl SqliteCatalog {
                     let Some(local_id) = mapping.local_id.as_deref() else {
                         continue;
                     };
-                    if !local_id.starts_with("pf-sync-collection-") {
-                        continue;
-                    }
                     if mapping.tombstone {
                         self.conn
-                            .execute("DELETE FROM collections WHERE id = ?1", params![local_id])
+                            .execute(
+                                "DELETE FROM collections
+                                 WHERE id = ?1 AND sync_profile_id = ?2 AND sync_remote_id = ?3",
+                                params![local_id, batch.profile_id, mapping.remote_id],
+                            )
                             .map_err(sql_error)?;
                     } else {
+                        let provenance: Option<Option<String>> = self
+                            .conn
+                            .query_row(
+                                "SELECT sync_profile_id FROM collections WHERE id = ?1",
+                                params![local_id],
+                                |row| row.get(0),
+                            )
+                            .optional()
+                            .map_err(sql_error)?;
+                        if provenance == Some(None) {
+                            continue;
+                        }
                         let snapshot: sync::CollectionSnapshotDto = serde_json::from_value(
                             mapping
                                 .snapshot
@@ -391,17 +423,30 @@ impl SqliteCatalog {
                         .map_err(|error| format!("invalid collection snapshot: {error}"))?;
                         self.conn
                             .execute(
-                                "INSERT INTO collections(id, name, shared_to_farm, created_at, updated_at)
-                                 VALUES(?1, ?2, ?3, ?4, ?5)
+                                "INSERT INTO collections(
+                                    id, name, shared_to_farm, created_at, updated_at,
+                                    sync_profile_id, sync_remote_id, sync_owner_user_id,
+                                    sync_visibility, sync_read_only)
+                                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                                  ON CONFLICT(id) DO UPDATE SET name = excluded.name,
                                     shared_to_farm = excluded.shared_to_farm,
-                                    updated_at = excluded.updated_at",
+                                    updated_at = excluded.updated_at,
+                                    sync_profile_id = excluded.sync_profile_id,
+                                    sync_remote_id = excluded.sync_remote_id,
+                                    sync_owner_user_id = excluded.sync_owner_user_id,
+                                    sync_visibility = excluded.sync_visibility,
+                                    sync_read_only = excluded.sync_read_only",
                                 params![
                                     local_id,
                                     snapshot.name,
                                     i64::from(snapshot.is_shared),
                                     snapshot.created_at,
-                                    snapshot.updated_at
+                                    snapshot.updated_at,
+                                    batch.profile_id,
+                                    mapping.remote_id,
+                                    snapshot.owner_user_id,
+                                    mapping.visibility.as_db(),
+                                    i64::from(mapping.visibility == SyncVisibility::Shared)
                                 ],
                             )
                             .map_err(sql_error)?;
@@ -411,14 +456,27 @@ impl SqliteCatalog {
                     let Some(local_id) = mapping.local_id.as_deref() else {
                         continue;
                     };
-                    if !local_id.starts_with("pf-sync-tag-") {
-                        continue;
-                    }
                     if mapping.tombstone {
                         self.conn
-                            .execute("DELETE FROM tags WHERE id = ?1", params![local_id])
+                            .execute(
+                                "DELETE FROM tags
+                                 WHERE id = ?1 AND sync_profile_id = ?2 AND sync_remote_id = ?3",
+                                params![local_id, batch.profile_id, mapping.remote_id],
+                            )
                             .map_err(sql_error)?;
                     } else {
+                        let provenance: Option<Option<String>> = self
+                            .conn
+                            .query_row(
+                                "SELECT sync_profile_id FROM tags WHERE id = ?1",
+                                params![local_id],
+                                |row| row.get(0),
+                            )
+                            .optional()
+                            .map_err(sql_error)?;
+                        if provenance == Some(None) {
+                            continue;
+                        }
                         let snapshot: sync::TagSnapshotDto = serde_json::from_value(
                             mapping
                                 .snapshot
@@ -427,9 +485,23 @@ impl SqliteCatalog {
                         .map_err(|error| format!("invalid tag snapshot: {error}"))?;
                         self.conn
                             .execute(
-                                "INSERT INTO tags(id, name) VALUES(?1, ?2)
-                                 ON CONFLICT(id) DO UPDATE SET name = excluded.name",
-                                params![local_id, snapshot.name],
+                                "INSERT INTO tags(
+                                    id, name, sync_profile_id, sync_remote_id,
+                                    sync_visibility, sync_read_only)
+                                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)
+                                 ON CONFLICT(id) DO UPDATE SET name = excluded.name,
+                                    sync_profile_id = excluded.sync_profile_id,
+                                    sync_remote_id = excluded.sync_remote_id,
+                                    sync_visibility = excluded.sync_visibility,
+                                    sync_read_only = excluded.sync_read_only",
+                                params![
+                                    local_id,
+                                    snapshot.name,
+                                    batch.profile_id,
+                                    mapping.remote_id,
+                                    mapping.visibility.as_db(),
+                                    i64::from(mapping.visibility == SyncVisibility::Shared)
+                                ],
                             )
                             .map_err(sql_error)?;
                     }
@@ -444,7 +516,19 @@ impl SqliteCatalog {
         {
             self.remove_materialized_membership(&batch.profile_id, old)?;
         }
-        self.materialize_memberships(&batch.profile_id)
+        for entity in batch.entities.iter().filter(|entity| {
+            entity.entity_type == SyncEntityType::ModelCollectionMembership && !entity.tombstone
+        }) {
+            let snapshot: sync::MembershipSnapshotDto = serde_json::from_value(
+                entity
+                    .snapshot
+                    .clone()
+                    .ok_or_else(|| "membership snapshot is missing".to_string())?,
+            )
+            .map_err(|error| format!("invalid membership snapshot: {error}"))?;
+            self.materialize_membership_snapshot(&batch.profile_id, &snapshot)?;
+        }
+        Ok(())
     }
 
     fn dispose_failed_batch_inner(
@@ -926,6 +1010,7 @@ impl CatalogStore for SqliteCatalog {
         if display.is_empty() {
             return None;
         }
+
         let id = new_collection_id();
         let ts = now_ts();
         self.conn
@@ -941,6 +1026,32 @@ impl CatalogStore for SqliteCatalog {
             shared_to_farm: false,
             member_count: 0,
         })
+    }
+
+    fn update_collection(
+        &mut self,
+        id: &str,
+        name: &str,
+        shared_to_farm: bool,
+    ) -> Option<Collection> {
+        let display = name.trim();
+        if display.is_empty() {
+            return None;
+        }
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE collections SET name = ?2, shared_to_farm = ?3, updated_at = ?4
+                 WHERE id = ?1",
+                params![id, display, i64::from(shared_to_farm), now_ts()],
+            )
+            .expect("catalog write failed: update collection");
+        if changed == 0 {
+            return None;
+        }
+        self.all_collections()
+            .into_iter()
+            .find(|collection| collection.id == id)
     }
 
     fn delete_collection(&mut self, id: &str) {
@@ -1017,6 +1128,86 @@ impl CatalogStore for SqliteCatalog {
             .map_err(sql_error)
     }
 
+    fn bind_sync_profile(
+        &mut self,
+        profile_id: &str,
+        binding: &str,
+        now: i64,
+    ) -> Result<SyncStatusDto, String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_identifier("profileBinding", binding)?;
+        sync::validate_timestamp("now", now)?;
+        let owns_batch = self.conn.is_autocommit();
+        if owns_batch {
+            self.begin_batch()?;
+        }
+        let result = (|| {
+            let current: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT profile_binding FROM sync_profiles WHERE profile_id = ?1",
+                    params![profile_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(sql_error)?
+                .flatten();
+            if current.as_deref().is_some_and(|value| value != binding) {
+                self.conn
+                    .execute(
+                        "DELETE FROM collections WHERE sync_profile_id = ?1",
+                        params![profile_id],
+                    )
+                    .map_err(sql_error)?;
+                self.conn
+                    .execute(
+                        "DELETE FROM tags WHERE sync_profile_id = ?1",
+                        params![profile_id],
+                    )
+                    .map_err(sql_error)?;
+                self.conn
+                    .execute(
+                        "DELETE FROM sync_profiles WHERE profile_id = ?1",
+                        params![profile_id],
+                    )
+                    .map_err(sql_error)?;
+            }
+            self.ensure_sync_profile(profile_id)?;
+            self.conn
+                .execute(
+                    "UPDATE sync_profiles SET profile_binding = ?2, updated_at = ?3
+                     WHERE profile_id = ?1",
+                    params![profile_id, binding, now],
+                )
+                .map_err(sql_error)?;
+            self.sync_status(profile_id)
+        })();
+        if owns_batch {
+            self.finish_batch(result)
+        } else {
+            result
+        }
+    }
+
+    fn validate_sync_profile_binding(&self, profile_id: &str, binding: &str) -> Result<(), String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_identifier("profileBinding", binding)?;
+        let matches: bool = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_profiles
+                 WHERE profile_id = ?1 AND profile_binding = ?2)",
+                params![profile_id, binding],
+                |row| row.get(0),
+            )
+            .map_err(sql_error)?;
+        if matches {
+            Ok(())
+        } else {
+            Err("stale or unbound sync profile binding".to_string())
+        }
+    }
+
     fn apply_pull_batch(&mut self, batch: ApplyPullBatchDto) -> Result<SyncStatusDto, String> {
         sync::validate_pull_batch(&batch)?;
         self.begin_batch()?;
@@ -1040,6 +1231,39 @@ impl CatalogStore for SqliteCatalog {
             }
             let mut previous_entities = Vec::with_capacity(batch.entities.len());
             for entity in &batch.entities {
+                if let Some(local_id) = entity.local_id.as_deref() {
+                    let operation_id: Option<String> = self
+                        .conn
+                        .query_row(
+                            "SELECT operation_id FROM sync_outbox
+                             WHERE profile_id = ?1 AND entity_id = ?2 AND state <> 'acked'
+                             ORDER BY sequence LIMIT 1",
+                            params![batch.profile_id, local_id],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map_err(sql_error)?;
+                    if let Some(operation_id) = operation_id {
+                        let pending = self
+                            .outbound_by_id(&batch.profile_id, &operation_id)?
+                            .ok_or_else(|| "pending conflict operation disappeared".to_string())?;
+                        self.insert_conflict(
+                            &batch.profile_id,
+                            &ConflictInputDto {
+                                conflict_id: sync::new_operation_token("pull-conflict"),
+                                entity_type: entity.entity_type,
+                                entity_id: local_id.to_string(),
+                                local_payload: Some(pending.payload.clone()),
+                                server_payload: entity.snapshot.clone(),
+                                submitted_payload: Some(pending.payload),
+                                reason: "remote change overlaps pending local work".to_string(),
+                                server_revision: batch.server_revision,
+                                created_at: batch.applied_at,
+                            },
+                        )?;
+                        continue;
+                    }
+                }
                 if let Some(local_id) = &entity.local_id {
                     let rebound: Option<String> = self
                         .conn
@@ -1081,7 +1305,7 @@ impl CatalogStore for SqliteCatalog {
                     &entity.remote_id,
                 )?;
                 let mapping = sync::merge_entity_revision(existing.as_ref(), incoming)?;
-                self.upsert_entity_revision(&mapping)?;
+                self.upsert_entity_revision(&mapping, batch.server_revision)?;
                 previous_entities.push(existing);
             }
             self.materialize_pull(&batch, &previous_entities)?;
@@ -1285,6 +1509,29 @@ impl CatalogStore for SqliteCatalog {
             .map_err(sql_error)
     }
 
+    fn membership_revision(
+        &self,
+        profile_id: &str,
+        collection_remote_id: &str,
+        model_remote_id: &str,
+    ) -> Result<Option<EntityRevisionDto>, String> {
+        sync::validate_profile(profile_id)?;
+        self.conn
+            .query_row(
+                "SELECT profile_id, entity_type, local_id, remote_id, revision,
+                        concurrency_token, tombstone, visibility, snapshot_json, updated_at
+                 FROM sync_entities
+                 WHERE profile_id = ?1 AND entity_type = 'ModelCollectionMembership'
+                   AND json_extract(snapshot_json, '$.collectionId') = ?2
+                   AND json_extract(snapshot_json, '$.modelId') = ?3
+                 LIMIT 1",
+                params![profile_id, collection_remote_id, model_remote_id],
+                entity_from_row,
+            )
+            .optional()
+            .map_err(sql_error)
+    }
+
     fn enqueue_outbound_operations(
         &mut self,
         profile_id: &str,
@@ -1293,7 +1540,10 @@ impl CatalogStore for SqliteCatalog {
     ) -> Result<Vec<OutboundOperationDto>, String> {
         sync::validate_enqueue_batch(profile_id, &operations)?;
         sync::validate_identifier("batchId", batch_id)?;
-        self.begin_batch()?;
+        let owns_batch = self.conn.is_autocommit();
+        if owns_batch {
+            self.begin_batch()?;
+        }
         let result = (|| {
             self.ensure_sync_profile(profile_id)?;
             let existing_batch = self.load_outbound_batch(profile_id, batch_id)?;
@@ -1420,7 +1670,11 @@ impl CatalogStore for SqliteCatalog {
             }
             Ok(queued)
         })();
-        self.finish_batch(result)
+        if owns_batch {
+            self.finish_batch(result)
+        } else {
+            result
+        }
     }
 
     fn outbound_operations(
@@ -1461,6 +1715,16 @@ impl CatalogStore for SqliteCatalog {
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(sql_error)?;
         Ok(operations)
+    }
+
+    fn outbound_batch(
+        &self,
+        profile_id: &str,
+        batch_id: &str,
+    ) -> Result<Vec<OutboundOperationDto>, String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_identifier("batchId", batch_id)?;
+        self.load_outbound_batch(profile_id, batch_id)
     }
 
     fn claim_outbound_operations(
@@ -1576,6 +1840,7 @@ impl CatalogStore for SqliteCatalog {
             }
             let (state, retry_eligible) = match failure.outcome {
                 OutboundFailureOutcome::DefiniteTransient => ("failed", 1_i64),
+                OutboundFailureOutcome::DefinitePermanent => ("failed", 0_i64),
                 OutboundFailureOutcome::Ambiguous => ("uncertain", 0_i64),
             };
             self.conn
@@ -1843,7 +2108,20 @@ impl CatalogStore for SqliteCatalog {
                         .map_err(sql_error)?;
                 }
                 for mapping in &mapping_plan {
-                    self.upsert_entity_revision(mapping)?;
+                    self.upsert_entity_revision(mapping, settlement.server_revision)?;
+                    if mapping.entity_type == SyncEntityType::ModelCollection && !mapping.tombstone
+                    {
+                        if let Some(local_id) = mapping.local_id.as_deref() {
+                            self.conn
+                                .execute(
+                                    "UPDATE collections SET sync_profile_id = ?2,
+                                        sync_remote_id = ?3, sync_visibility = 'Private',
+                                        sync_read_only = 0 WHERE id = ?1",
+                                    params![local_id, mapping.profile_id, mapping.remote_id],
+                                )
+                                .map_err(sql_error)?;
+                        }
+                    }
                 }
             } else {
                 self.conn
@@ -2721,11 +2999,35 @@ mod tests {
                 },
             });
         }
+
         // Reopening the same file must find the migration already applied and
         // the previously written model intact.
         let store = SqliteCatalog::open(&db).unwrap();
         assert_eq!(store.models().len(), 1);
         assert_eq!(store.model("h").unwrap().locations.len(), 1);
+    }
+
+    #[test]
+    fn sqlite_connected_collection_create_commits_catalog_and_outbox_together() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        store
+            .bind_sync_profile("profile-a", "binding-a", 1)
+            .unwrap();
+        let collection = store
+            .create_collection_with_sync("Synced", "profile-a", "binding-a", 2)
+            .unwrap();
+        assert!(store
+            .all_collections()
+            .iter()
+            .any(|value| value.id == collection.id));
+        let queued = store
+            .outbound_operations("profile-a", &[OutboundState::Pending], 500)
+            .unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].entity_id, collection.id);
+        assert!(queued[0].payload["remoteId"]
+            .as_str()
+            .is_some_and(|value| value.len() == 36));
     }
 
     #[test]

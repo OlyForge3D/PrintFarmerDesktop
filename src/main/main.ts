@@ -2,6 +2,7 @@ import {
   app,
   BrowserWindow,
   Menu,
+  safeStorage,
   session,
   type MenuItemConstructorOptions,
 } from 'electron';
@@ -13,6 +14,15 @@ import {
 } from './security.js';
 import { registerIpcHandlers } from './ipc.js';
 import { resolveAppIconPath } from './appIcon.js';
+import { ServerProfileService } from './serverProfiles.js';
+import { SidecarClient, spawnSidecarChannel } from './sidecar.js';
+import { SyncHttpClient } from './syncHttp.js';
+import { PrintFarmerSyncEngine } from './syncEngine.js';
+
+let syncEngine: PrintFarmerSyncEngine | null = null;
+let sharedSidecar: SidecarClient | null = null;
+let sharedProfiles: ServerProfileService | null = null;
+let shutdownStarted = false;
 
 const createMainWindow = (): void => {
   const iconPath = resolveAppIconPath(
@@ -182,7 +192,20 @@ if (!enforceSingleInstance()) {
         'catalog.sqlite3',
       );
     }
-    registerIpcHandlers();
+    sharedSidecar = new SidecarClient(spawnSidecarChannel);
+    sharedProfiles = new ServerProfileService({
+      userDataPath: app.getPath('userData'),
+      secretStorage: safeStorage,
+    });
+    registerIpcHandlers(undefined, sharedProfiles, sharedSidecar);
+    syncEngine = new PrintFarmerSyncEngine(
+      sharedProfiles,
+      sharedSidecar,
+      new SyncHttpClient(sharedProfiles),
+    );
+    void syncEngine.start().catch(() => {
+      console.error('[sync] scheduler startup failed');
+    });
     createMainWindow();
 
     app.on('activate', () => {
@@ -196,6 +219,21 @@ if (!enforceSingleInstance()) {
     if (process.platform !== 'darwin') {
       app.quit();
     }
+  });
+
+  app.on('before-quit', (event) => {
+    if (shutdownStarted || !syncEngine) return;
+    event.preventDefault();
+    shutdownStarted = true;
+    const engine = syncEngine;
+    syncEngine = null;
+    void engine.dispose().finally(() => {
+      sharedSidecar?.dispose();
+      sharedSidecar = null;
+      sharedProfiles?.clearTokens();
+      sharedProfiles = null;
+      app.quit();
+    });
   });
 
   // Refuse to attach webviews or open arbitrary windows from any web contents.

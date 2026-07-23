@@ -192,6 +192,16 @@ export interface ServerProfileDependencies {
   afterSaveProbe?: () => void;
 }
 
+export interface AuthenticatedServerContext {
+  profileId: string;
+  profileRevision: string;
+  authGeneration: number;
+  baseUrl: string;
+  capabilities: RedactedProfile['capabilities'];
+  token: string;
+  binding: string;
+}
+
 export type ProfileErrorCode =
   | 'AUTHENTICATION_FAILED'
   | 'AUTHORIZATION_FAILED'
@@ -319,6 +329,9 @@ export class ServerProfileService {
   private readonly tokenBindings = new Map<string, TokenBinding>();
   private readonly tokenRenewals = new Map<string, TokenRenewal>();
   private readonly authGenerations = new Map<string, number>();
+  private readonly invalidationListeners = new Set<
+    (profileId: string) => Promise<void> | void
+  >();
   private mutationTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly dependencies: ServerProfileDependencies) {
@@ -342,6 +355,13 @@ export class ServerProfileService {
     for (const id of ids) {
       this.invalidateToken(id);
     }
+  }
+
+  subscribeInvalidation(
+    listener: (profileId: string) => Promise<void> | void,
+  ): () => void {
+    this.invalidationListeners.add(listener);
+    return () => this.invalidationListeners.delete(listener);
   }
 
   async list(): Promise<ListServerProfilesResponse> {
@@ -532,6 +552,9 @@ export class ServerProfileService {
       }
       store.selectedProfileId ??= id;
       try {
+        if (current) {
+          await this.emitInvalidation(id);
+        }
         await this.writeStore(store);
         this.installAuthenticatedTokenIfCurrent(probed.authentication);
       } catch (error) {
@@ -567,6 +590,7 @@ export class ServerProfileService {
       if (store.selectedProfileId === id) {
         store.selectedProfileId = store.profiles[0]?.id ?? null;
       }
+      await this.emitInvalidation(id);
       await this.writeStore(store);
       return this.redactStore(store);
     });
@@ -653,6 +677,56 @@ export class ServerProfileService {
       return Promise.resolve();
     });
     return this.getToken(id);
+  }
+
+  async getAuthenticatedContext(
+    id: string,
+    expectedBaseUrl?: string,
+    forceRefresh = false,
+  ): Promise<AuthenticatedServerContext> {
+    const token = forceRefresh
+      ? await this.refreshToken(id)
+      : await this.getToken(id);
+    return this.withMutationLock(async () => {
+      const store = await this.readStore();
+      const profile = store.profiles.find((candidate) => candidate.id === id);
+      if (!profile) {
+        throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
+      }
+      if (
+        expectedBaseUrl !== undefined &&
+        profile.baseUrl !== expectedBaseUrl
+      ) {
+        throw profileChangedError();
+      }
+      const secret = this.decryptSecret(profile);
+      const revision = profileRevision(profile);
+      const generation = this.currentAuthGeneration(id);
+      const binding = credentialBinding(profile.baseUrl, secret);
+      const cached = this.tokens.get(id);
+      if (
+        cached?.token !== token ||
+        cached.binding !== binding ||
+        cached.generation !== generation
+      ) {
+        throw authenticationSupersededError();
+      }
+      return {
+        profileId: id,
+        profileRevision: revision,
+        authGeneration: generation,
+        baseUrl: profile.baseUrl,
+        capabilities: profile.capabilities,
+        token,
+        binding: createHash('sha256')
+          .update(revision)
+          .update('\0')
+          .update(String(generation))
+          .update('\0')
+          .update(binding)
+          .digest('hex'),
+      };
+    });
   }
 
   private async probe(
@@ -1122,6 +1196,14 @@ export class ServerProfileService {
     } finally {
       release();
     }
+  }
+
+  private async emitInvalidation(profileId: string): Promise<void> {
+    await Promise.all(
+      [...this.invalidationListeners].map((listener) =>
+        Promise.resolve(listener(profileId)),
+      ),
+    );
   }
 
   private secretFromDraft(draft: ServerProfileDraft): StoredSecret {

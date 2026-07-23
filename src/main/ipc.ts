@@ -27,8 +27,10 @@ import { ServerProfileService } from './serverProfiles.js';
 export function registerIpcHandlers(
   channelFactory?: ChannelFactory,
   profileService?: ServerProfileService,
+  sharedSidecar?: SidecarClient,
 ): void {
-  const sidecar = new SidecarClient(channelFactory ?? spawnSidecarChannel);
+  const sidecar =
+    sharedSidecar ?? new SidecarClient(channelFactory ?? spawnSidecarChannel);
   const profiles =
     profileService ??
     new ServerProfileService({
@@ -39,10 +41,39 @@ export function registerIpcHandlers(
   // Terminate the sidecar child process when the app exits. Windows does not
   // reap child processes on parent exit, so without this the `model-core`
   // process would linger as an orphan after every quit.
-  app.on('will-quit', () => {
-    sidecar.dispose();
-    profiles.clearTokens();
-  });
+  if (!sharedSidecar) {
+    app.on('will-quit', () => {
+      sidecar.dispose();
+      profiles.clearTokens();
+    });
+  }
+
+  const activeSyncContext = async (): Promise<{
+    profileId: string;
+    binding: string;
+  } | null> => {
+    const listed = await profiles.list();
+    const profile = listed.profiles.find(
+      (candidate) => candidate.id === listed.selectedProfileId,
+    );
+    if (
+      !profile ||
+      profile.status !== 'connected' ||
+      !profile.availability.librarySync.available
+    ) {
+      return null;
+    }
+    const context = await profiles.getAuthenticatedContext(
+      profile.id,
+      profile.baseUrl,
+    );
+    await sidecar.bindSyncProfile(
+      profile.id,
+      context.binding,
+      Math.floor(Date.now() / 1000),
+    );
+    return { profileId: profile.id, binding: context.binding };
+  };
 
   ipcMain.handle(IpcChannel.AppInfo, () => {
     const response: AppInfoResponse = {
@@ -195,7 +226,15 @@ export function registerIpcHandlers(
     async (_event, rawRequest: unknown) => {
       const request =
         ipcSchemas[IpcChannel.CreateCollection].request.parse(rawRequest);
-      const raw = await sidecar.createCollection(request.name);
+      const context = await activeSyncContext();
+      const raw = context
+        ? await sidecar.createCollectionWithSync(
+            request.name,
+            context.profileId,
+            context.binding,
+            Math.floor(Date.now() / 1000),
+          )
+        : await sidecar.createCollection(request.name);
       return ipcSchemas[IpcChannel.CreateCollection].response.parse(raw);
     },
   );
@@ -205,7 +244,15 @@ export function registerIpcHandlers(
     async (_event, rawRequest: unknown) => {
       const request =
         ipcSchemas[IpcChannel.DeleteCollection].request.parse(rawRequest);
-      const raw = await sidecar.deleteCollection(request.id);
+      const context = await activeSyncContext();
+      const raw = context
+        ? await sidecar.deleteCollectionWithSync(
+            request.id,
+            context.profileId,
+            context.binding,
+            Math.floor(Date.now() / 1000),
+          )
+        : await sidecar.deleteCollection(request.id);
       return ipcSchemas[IpcChannel.DeleteCollection].response.parse(raw);
     },
   );
@@ -215,10 +262,19 @@ export function registerIpcHandlers(
     async (_event, rawRequest: unknown) => {
       const request =
         ipcSchemas[IpcChannel.AddModelToCollection].request.parse(rawRequest);
-      const raw = await sidecar.addModelToCollection(
-        request.collectionId,
-        request.hash,
-      );
+      const context = await activeSyncContext();
+      const raw = context
+        ? await sidecar.addModelToCollectionWithSync(
+            request.collectionId,
+            request.hash,
+            context.profileId,
+            context.binding,
+            Math.floor(Date.now() / 1000),
+          )
+        : await sidecar.addModelToCollection(
+            request.collectionId,
+            request.hash,
+          );
       return ipcSchemas[IpcChannel.AddModelToCollection].response.parse(raw);
     },
   );
@@ -230,10 +286,19 @@ export function registerIpcHandlers(
         ipcSchemas[IpcChannel.RemoveModelFromCollection].request.parse(
           rawRequest,
         );
-      const raw = await sidecar.removeModelFromCollection(
-        request.collectionId,
-        request.hash,
-      );
+      const context = await activeSyncContext();
+      const raw = context
+        ? await sidecar.removeModelFromCollectionWithSync(
+            request.collectionId,
+            request.hash,
+            context.profileId,
+            context.binding,
+            Math.floor(Date.now() / 1000),
+          )
+        : await sidecar.removeModelFromCollection(
+            request.collectionId,
+            request.hash,
+          );
       return ipcSchemas[IpcChannel.RemoveModelFromCollection].response.parse(
         raw,
       );

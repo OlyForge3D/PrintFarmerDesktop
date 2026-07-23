@@ -206,6 +206,15 @@ pub trait CatalogStore {
         None
     }
 
+    fn update_collection(
+        &mut self,
+        _id: &str,
+        _name: &str,
+        _shared_to_farm: bool,
+    ) -> Option<Collection> {
+        None
+    }
+
     /// Delete a collection and all of its memberships. Default: no-op.
     fn delete_collection(&mut self, _id: &str) {}
 
@@ -218,8 +227,284 @@ pub trait CatalogStore {
     /// Remove a model from a collection. Default: no-op.
     fn remove_model_from_collection(&mut self, _id: &str, _hash: &str) {}
 
+    fn create_collection_with_sync(
+        &mut self,
+        name: &str,
+        profile_id: &str,
+        profile_binding: &str,
+        now: i64,
+    ) -> Result<Collection, String> {
+        self.validate_sync_profile_binding(profile_id, profile_binding)?;
+        self.begin_batch()?;
+        let result = (|| {
+            let collection = self
+                .create_collection(name)
+                .ok_or_else(|| "collection name must not be blank".to_string())?;
+            self.enqueue_outbound_operations(
+                profile_id,
+                &sync::new_operation_token("local-batch"),
+                vec![EnqueueOutboundOperationDto {
+                    operation_id: sync::new_operation_token("local-create-collection"),
+                    entity_type: SyncEntityType::ModelCollection,
+                    operation: sync::SyncOperationKind::Create,
+                    entity_id: collection.id.clone(),
+                    payload: serde_json::json!({
+                        "remoteId": sync::new_remote_guid(),
+                        "name": collection.name,
+                        "description": null,
+                        "isShared": collection.shared_to_farm
+                    }),
+                    base_revision: None,
+                    concurrency_token: None,
+                    created_at: now,
+                }],
+            )?;
+            Ok(collection)
+        })();
+        finish_catalog_batch(self, result)
+    }
+
+    fn delete_collection_with_sync(
+        &mut self,
+        id: &str,
+        profile_id: &str,
+        profile_binding: &str,
+        now: i64,
+    ) -> Result<(), String> {
+        self.validate_sync_profile_binding(profile_id, profile_binding)?;
+        let mapping =
+            self.entity_revision_by_local(profile_id, SyncEntityType::ModelCollection, id)?;
+        let has_pending_create = self
+            .outbound_operations(profile_id, &[], sync::MAX_SYNC_BATCH)?
+            .iter()
+            .any(|operation| {
+                operation.entity_type == SyncEntityType::ModelCollection
+                    && operation.operation == sync::SyncOperationKind::Create
+                    && operation.entity_id == id
+            });
+        if mapping
+            .as_ref()
+            .is_some_and(|value| value.visibility == SyncVisibility::Shared)
+        {
+            return Err("shared remote collections are read-only".to_string());
+        }
+        self.begin_batch()?;
+        let result = (|| {
+            self.delete_collection(id);
+            if mapping.is_some() || has_pending_create {
+                self.enqueue_outbound_operations(
+                    profile_id,
+                    &sync::new_operation_token("local-batch"),
+                    vec![EnqueueOutboundOperationDto {
+                        operation_id: sync::new_operation_token("local-delete-collection"),
+                        entity_type: SyncEntityType::ModelCollection,
+                        operation: sync::SyncOperationKind::Delete,
+                        entity_id: id.to_string(),
+                        payload: serde_json::json!({}),
+                        base_revision: mapping.as_ref().map(|value| value.revision),
+                        concurrency_token: mapping.and_then(|value| value.concurrency_token),
+                        created_at: now,
+                    }],
+                )?;
+            }
+
+            Ok(())
+        })();
+        finish_catalog_batch(self, result)
+    }
+
+    fn update_collection_with_sync(
+        &mut self,
+        id: &str,
+        name: &str,
+        shared_to_farm: bool,
+        profile_id: &str,
+        profile_binding: &str,
+        now: i64,
+    ) -> Result<Collection, String> {
+        self.validate_sync_profile_binding(profile_id, profile_binding)?;
+        let mapping =
+            self.entity_revision_by_local(profile_id, SyncEntityType::ModelCollection, id)?;
+        let has_pending_create = self
+            .outbound_operations(profile_id, &[], sync::MAX_SYNC_BATCH)?
+            .iter()
+            .any(|operation| {
+                operation.entity_type == SyncEntityType::ModelCollection
+                    && operation.operation == sync::SyncOperationKind::Create
+                    && operation.entity_id == id
+            });
+        if mapping
+            .as_ref()
+            .is_some_and(|value| value.visibility == SyncVisibility::Shared)
+        {
+            return Err("shared remote collections are read-only".to_string());
+        }
+        self.begin_batch()?;
+        let result = (|| {
+            let collection = self
+                .update_collection(id, name, shared_to_farm)
+                .ok_or_else(|| "collection not found or name is blank".to_string())?;
+            if mapping.is_some() || has_pending_create {
+                self.enqueue_outbound_operations(
+                    profile_id,
+                    &sync::new_operation_token("local-batch"),
+                    vec![EnqueueOutboundOperationDto {
+                        operation_id: sync::new_operation_token("local-update-collection"),
+                        entity_type: SyncEntityType::ModelCollection,
+                        operation: sync::SyncOperationKind::Update,
+                        entity_id: id.to_string(),
+                        payload: serde_json::json!({
+                            "name": collection.name,
+                            "description": null,
+                            "isShared": collection.shared_to_farm
+                        }),
+                        base_revision: mapping.as_ref().map(|value| value.revision),
+                        concurrency_token: mapping.and_then(|value| value.concurrency_token),
+                        created_at: now,
+                    }],
+                )?;
+            }
+            Ok(collection)
+        })();
+        finish_catalog_batch(self, result)
+    }
+
+    fn add_model_to_collection_with_sync(
+        &mut self,
+        id: &str,
+        hash: &str,
+        profile_id: &str,
+        profile_binding: &str,
+        now: i64,
+    ) -> Result<bool, String> {
+        self.validate_sync_profile_binding(profile_id, profile_binding)?;
+        if self
+            .entity_revision_by_local(profile_id, SyncEntityType::ModelCollection, id)?
+            .is_some_and(|value| value.visibility == SyncVisibility::Shared)
+        {
+            return Err("shared remote collections are read-only".to_string());
+        }
+        let already_present = self
+            .collections_for_model(hash)
+            .iter()
+            .any(|collection| collection.id == id);
+        self.begin_batch()?;
+        let result = (|| {
+            let added = self.add_model_to_collection(id, hash);
+            if added && !already_present {
+                let remote_id = sync::new_remote_guid();
+                self.enqueue_outbound_operations(
+                    profile_id,
+                    &sync::new_operation_token("local-batch"),
+                    vec![EnqueueOutboundOperationDto {
+                        operation_id: sync::new_operation_token("local-create-membership"),
+                        entity_type: SyncEntityType::ModelCollectionMembership,
+                        operation: sync::SyncOperationKind::Create,
+                        entity_id: format!("membership-{remote_id}"),
+                        payload: serde_json::json!({
+                            "remoteId": remote_id,
+                            "collectionId": id,
+                            "modelHash": hash
+                        }),
+                        base_revision: None,
+                        concurrency_token: None,
+                        created_at: now,
+                    }],
+                )?;
+            }
+            Ok(added)
+        })();
+        finish_catalog_batch(self, result)
+    }
+
+    fn remove_model_from_collection_with_sync(
+        &mut self,
+        id: &str,
+        hash: &str,
+        profile_id: &str,
+        profile_binding: &str,
+        now: i64,
+    ) -> Result<(), String> {
+        self.validate_sync_profile_binding(profile_id, profile_binding)?;
+        if self
+            .entity_revision_by_local(profile_id, SyncEntityType::ModelCollection, id)?
+            .is_some_and(|value| value.visibility == SyncVisibility::Shared)
+        {
+            return Err("shared remote collections are read-only".to_string());
+        }
+        let existed = self
+            .collections_for_model(hash)
+            .iter()
+            .any(|collection| collection.id == id);
+        self.begin_batch()?;
+        let result = (|| {
+            let collection_remote = self
+                .entity_revision_by_local(profile_id, SyncEntityType::ModelCollection, id)?
+                .map(|mapping| mapping.remote_id);
+            let model_remote = self
+                .remote_model_link(profile_id, hash)?
+                .map(|link| link.remote_model_id);
+            let membership = match (collection_remote, model_remote) {
+                (Some(collection_remote), Some(model_remote)) => {
+                    self.membership_revision(profile_id, &collection_remote, &model_remote)?
+                }
+                _ => None,
+            };
+            let pending_membership = self
+                .outbound_operations(profile_id, &[], sync::MAX_SYNC_BATCH)?
+                .into_iter()
+                .find(|operation| {
+                    operation.entity_type == SyncEntityType::ModelCollectionMembership
+                        && operation.operation == sync::SyncOperationKind::Create
+                        && operation.payload["collectionId"].as_str() == Some(id)
+                        && operation.payload["modelHash"].as_str() == Some(hash)
+                });
+            self.remove_model_from_collection(id, hash);
+            if existed && (membership.is_some() || pending_membership.is_some()) {
+                let entity_id = membership
+                    .as_ref()
+                    .and_then(|value| value.local_id.clone())
+                    .or_else(|| {
+                        pending_membership
+                            .as_ref()
+                            .map(|value| value.entity_id.clone())
+                    })
+                    .or_else(|| membership.as_ref().map(|value| value.remote_id.clone()))
+                    .expect("membership deletion has a durable identity");
+                self.enqueue_outbound_operations(
+                    profile_id,
+                    &sync::new_operation_token("local-batch"),
+                    vec![EnqueueOutboundOperationDto {
+                        operation_id: sync::new_operation_token("local-delete-membership"),
+                        entity_type: SyncEntityType::ModelCollectionMembership,
+                        operation: sync::SyncOperationKind::Delete,
+                        entity_id,
+                        payload: serde_json::json!({
+                            "collectionId": id,
+                            "modelHash": hash
+                        }),
+                        base_revision: membership.as_ref().map(|value| value.revision),
+                        concurrency_token: membership.and_then(|value| value.concurrency_token),
+                        created_at: now,
+                    }],
+                )?;
+            }
+            Ok(())
+        })();
+        finish_catalog_batch(self, result)
+    }
+
     /// Read the opaque, profile-scoped synchronization checkpoint.
     fn sync_status(&self, profile_id: &str) -> Result<SyncStatusDto, String>;
+
+    fn bind_sync_profile(
+        &mut self,
+        profile_id: &str,
+        binding: &str,
+        now: i64,
+    ) -> Result<SyncStatusDto, String>;
+
+    fn validate_sync_profile_binding(&self, profile_id: &str, binding: &str) -> Result<(), String>;
 
     /// Atomically materialize a pull and advance its checkpoint.
     fn apply_pull_batch(&mut self, batch: ApplyPullBatchDto) -> Result<SyncStatusDto, String>;
@@ -261,6 +546,13 @@ pub trait CatalogStore {
         local_id: &str,
     ) -> Result<Option<EntityRevisionDto>, String>;
 
+    fn membership_revision(
+        &self,
+        profile_id: &str,
+        collection_remote_id: &str,
+        model_remote_id: &str,
+    ) -> Result<Option<EntityRevisionDto>, String>;
+
     /// Transactionally enqueue an outbound batch, preserving caller-supplied ids.
     fn enqueue_outbound_operations(
         &mut self,
@@ -274,6 +566,12 @@ pub trait CatalogStore {
         profile_id: &str,
         states: &[OutboundState],
         limit: usize,
+    ) -> Result<Vec<OutboundOperationDto>, String>;
+
+    fn outbound_batch(
+        &self,
+        profile_id: &str,
+        batch_id: &str,
     ) -> Result<Vec<OutboundOperationDto>, String>;
 
     /// Recover expired leases and claim eligible operations in one transaction.
@@ -372,6 +670,22 @@ pub struct ReconcileReport {
     pub missing: usize,
     /// Files that could not be hashed (IO/permission errors).
     pub hash_errors: usize,
+}
+
+fn finish_catalog_batch<S: CatalogStore + ?Sized, T>(
+    store: &mut S,
+    result: Result<T, String>,
+) -> Result<T, String> {
+    match result {
+        Ok(value) => {
+            store.commit_batch()?;
+            Ok(value)
+        }
+        Err(error) => {
+            store.rollback_batch();
+            Err(error)
+        }
+    }
 }
 
 /// Reconcile a root's scan against the store, hashing only new or changed
@@ -509,8 +823,11 @@ pub struct InMemoryCatalog {
     /// Collection id -> member content hashes.
     collection_members: HashMap<String, std::collections::BTreeSet<ContentHash>>,
     sync_statuses: HashMap<String, SyncStatusDto>,
+    sync_profile_bindings: HashMap<String, String>,
     remote_model_links: HashMap<(String, ContentHash), RemoteModelLinkDto>,
     sync_entities: HashMap<(String, SyncEntityType, String), EntityRevisionDto>,
+    sync_journal_revisions: HashMap<(String, SyncEntityType, String), u64>,
+    sync_materialized: HashMap<(String, SyncEntityType, String), String>,
     sync_outbox: HashMap<(String, String), OutboundOperationDto>,
     next_outbox_sequence: HashMap<String, u64>,
     sync_conflicts: HashMap<(String, String), SyncConflictDto>,
@@ -557,8 +874,11 @@ impl CatalogStore for InMemoryCatalog {
             collections: self.collections.clone(),
             collection_members: self.collection_members.clone(),
             sync_statuses: self.sync_statuses.clone(),
+            sync_profile_bindings: self.sync_profile_bindings.clone(),
             remote_model_links: self.remote_model_links.clone(),
             sync_entities: self.sync_entities.clone(),
+            sync_journal_revisions: self.sync_journal_revisions.clone(),
+            sync_materialized: self.sync_materialized.clone(),
             sync_outbox: self.sync_outbox.clone(),
             next_outbox_sequence: self.next_outbox_sequence.clone(),
             sync_conflicts: self.sync_conflicts.clone(),
@@ -762,6 +1082,7 @@ impl CatalogStore for InMemoryCatalog {
         if display.is_empty() {
             return None;
         }
+
         let id = new_collection_id();
         self.collections
             .insert(id.clone(), (display.to_string(), false));
@@ -770,6 +1091,29 @@ impl CatalogStore for InMemoryCatalog {
             name: display.to_string(),
             shared_to_farm: false,
             member_count: 0,
+        })
+    }
+
+    fn update_collection(
+        &mut self,
+        id: &str,
+        name: &str,
+        shared_to_farm: bool,
+    ) -> Option<Collection> {
+        let display = name.trim();
+        if display.is_empty() || !self.collections.contains_key(id) {
+            return None;
+        }
+        self.collections
+            .insert(id.to_string(), (display.to_string(), shared_to_farm));
+        Some(Collection {
+            id: id.to_string(),
+            name: display.to_string(),
+            shared_to_farm,
+            member_count: self
+                .collection_members
+                .get(id)
+                .map_or(0, std::collections::BTreeSet::len),
         })
     }
 
@@ -807,6 +1151,79 @@ impl CatalogStore for InMemoryCatalog {
             .unwrap_or_else(|| SyncStatusDto::empty(profile_id)))
     }
 
+    fn bind_sync_profile(
+        &mut self,
+        profile_id: &str,
+        binding: &str,
+        now: i64,
+    ) -> Result<SyncStatusDto, String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_identifier("profileBinding", binding)?;
+        sync::validate_timestamp("now", now)?;
+        if self
+            .sync_profile_bindings
+            .get(profile_id)
+            .is_some_and(|current| current != binding)
+        {
+            let materialized: Vec<_> = self
+                .sync_materialized
+                .keys()
+                .filter(|(profile, _, _)| profile == profile_id)
+                .map(|(_, entity_type, local_id)| (*entity_type, local_id.clone()))
+                .collect();
+            for (entity_type, local_id) in materialized {
+                match entity_type {
+                    SyncEntityType::ModelCollection => {
+                        self.collections.remove(&local_id);
+                        self.collection_members.remove(&local_id);
+                    }
+                    SyncEntityType::Tag => {
+                        self.tags.remove(&local_id);
+                        for tags in self.model_tags.values_mut() {
+                            tags.remove(&local_id);
+                        }
+                    }
+                    SyncEntityType::ModelCollectionMembership => {}
+                }
+            }
+            self.sync_statuses.remove(profile_id);
+            self.remote_model_links
+                .retain(|(profile, _), _| profile != profile_id);
+            self.sync_entities
+                .retain(|(profile, _, _), _| profile != profile_id);
+            self.sync_journal_revisions
+                .retain(|(profile, _, _), _| profile != profile_id);
+            self.sync_materialized
+                .retain(|(profile, _, _), _| profile != profile_id);
+            self.sync_outbox
+                .retain(|(profile, _), _| profile != profile_id);
+            self.sync_conflicts
+                .retain(|(profile, _), _| profile != profile_id);
+            self.next_outbox_sequence.remove(profile_id);
+        }
+        self.sync_profile_bindings
+            .insert(profile_id.to_string(), binding.to_string());
+        let status = self
+            .sync_statuses
+            .entry(profile_id.to_string())
+            .or_insert_with(|| SyncStatusDto::empty(profile_id));
+        status.updated_at = now;
+        Ok(status.clone())
+    }
+
+    fn validate_sync_profile_binding(&self, profile_id: &str, binding: &str) -> Result<(), String> {
+        if self
+            .sync_profile_bindings
+            .get(profile_id)
+            .map(String::as_str)
+            == Some(binding)
+        {
+            Ok(())
+        } else {
+            Err("stale or unbound sync profile binding".to_string())
+        }
+    }
+
     fn apply_pull_batch(&mut self, batch: ApplyPullBatchDto) -> Result<SyncStatusDto, String> {
         sync::validate_pull_batch(&batch)?;
         let current = self.sync_status(&batch.profile_id)?;
@@ -840,6 +1257,35 @@ impl CatalogStore for InMemoryCatalog {
         self.begin_batch()?;
         let result = (|| {
             for entity in &batch.entities {
+                if let Some(local_id) = entity.local_id.as_deref() {
+                    let pending = self
+                        .sync_outbox
+                        .values()
+                        .find(|operation| {
+                            operation.profile_id == batch.profile_id
+                                && operation.entity_id == local_id
+                                && operation.state != OutboundState::Acked
+                        })
+                        .cloned();
+                    if let Some(pending) = pending {
+                        insert_memory_conflict(
+                            self,
+                            &batch.profile_id,
+                            &ConflictInputDto {
+                                conflict_id: sync::new_operation_token("pull-conflict"),
+                                entity_type: entity.entity_type,
+                                entity_id: local_id.to_string(),
+                                local_payload: Some(pending.payload.clone()),
+                                server_payload: entity.snapshot.clone(),
+                                submitted_payload: Some(pending.payload),
+                                reason: "remote change overlaps pending local work".to_string(),
+                                server_revision: batch.server_revision,
+                                created_at: batch.applied_at,
+                            },
+                        )?;
+                        continue;
+                    }
+                }
                 let key = (
                     batch.profile_id.clone(),
                     entity.entity_type,
@@ -860,6 +1306,14 @@ impl CatalogStore for InMemoryCatalog {
                 let previous = self.sync_entities.get(&key).cloned();
                 let revision = sync::merge_entity_revision(previous.as_ref(), incoming)?;
                 self.sync_entities.insert(key, revision);
+                self.sync_journal_revisions.insert(
+                    (
+                        batch.profile_id.clone(),
+                        entity.entity_type,
+                        entity.remote_id.clone(),
+                    ),
+                    batch.server_revision,
+                );
                 previous_entities.push(previous);
             }
             materialize_memory_pull(self, &batch, &previous_entities)?;
@@ -1016,6 +1470,32 @@ impl CatalogStore for InMemoryCatalog {
             .cloned())
     }
 
+    fn membership_revision(
+        &self,
+        profile_id: &str,
+        collection_remote_id: &str,
+        model_remote_id: &str,
+    ) -> Result<Option<EntityRevisionDto>, String> {
+        sync::validate_profile(profile_id)?;
+        Ok(self
+            .sync_entities
+            .values()
+            .filter(|mapping| {
+                mapping.profile_id == profile_id
+                    && mapping.entity_type == SyncEntityType::ModelCollectionMembership
+            })
+            .find(|mapping| {
+                mapping.snapshot.as_ref().is_some_and(|snapshot| {
+                    serde_json::from_value::<sync::MembershipSnapshotDto>(snapshot.clone())
+                        .is_ok_and(|value| {
+                            value.collection_id == collection_remote_id
+                                && value.model_id == model_remote_id
+                        })
+                })
+            })
+            .cloned())
+    }
+
     fn enqueue_outbound_operations(
         &mut self,
         profile_id: &str,
@@ -1024,7 +1504,10 @@ impl CatalogStore for InMemoryCatalog {
     ) -> Result<Vec<OutboundOperationDto>, String> {
         sync::validate_enqueue_batch(profile_id, &operations)?;
         sync::validate_identifier("batchId", batch_id)?;
-        self.begin_batch()?;
+        let owns_batch = self.transaction_snapshot.is_none();
+        if owns_batch {
+            self.begin_batch()?;
+        }
         let result = (|| {
             let mut existing_batch: Vec<_> = self
                 .sync_outbox
@@ -1136,11 +1619,15 @@ impl CatalogStore for InMemoryCatalog {
         })();
         match result {
             Ok(queued) => {
-                self.commit_batch()?;
+                if owns_batch {
+                    self.commit_batch()?;
+                }
                 Ok(queued)
             }
             Err(error) => {
-                self.rollback_batch();
+                if owns_batch {
+                    self.rollback_batch();
+                }
                 Err(error)
             }
         }
@@ -1169,6 +1656,25 @@ impl CatalogStore for InMemoryCatalog {
             .collect();
         operations.sort_by_key(|operation| operation.sequence);
         operations.truncate(limit);
+        Ok(operations)
+    }
+
+    fn outbound_batch(
+        &self,
+        profile_id: &str,
+        batch_id: &str,
+    ) -> Result<Vec<OutboundOperationDto>, String> {
+        sync::validate_profile(profile_id)?;
+        sync::validate_identifier("batchId", batch_id)?;
+        let mut operations: Vec<_> = self
+            .sync_outbox
+            .values()
+            .filter(|operation| {
+                operation.profile_id == profile_id && operation.batch_id == batch_id
+            })
+            .cloned()
+            .collect();
+        operations.sort_by_key(|operation| operation.batch_ordinal);
         Ok(operations)
     }
 
@@ -1296,6 +1802,7 @@ impl CatalogStore for InMemoryCatalog {
                 let operation = self.sync_outbox.get_mut(&key).expect("outbox key exists");
                 operation.state = match failure.outcome {
                     OutboundFailureOutcome::DefiniteTransient => OutboundState::Failed,
+                    OutboundFailureOutcome::DefinitePermanent => OutboundState::Failed,
                     OutboundFailureOutcome::Ambiguous => OutboundState::Uncertain,
                 };
                 operation.retry_eligible =
@@ -1550,6 +2057,19 @@ impl CatalogStore for InMemoryCatalog {
                     operation.acked_at = Some(settlement.settled_at);
                 }
                 for mapping in mapping_plan {
+                    if mapping.entity_type == SyncEntityType::ModelCollection && !mapping.tombstone
+                    {
+                        if let Some(local_id) = mapping.local_id.as_ref() {
+                            self.sync_materialized.insert(
+                                (
+                                    mapping.profile_id.clone(),
+                                    mapping.entity_type,
+                                    local_id.clone(),
+                                ),
+                                mapping.remote_id.clone(),
+                            );
+                        }
+                    }
                     self.sync_entities.insert(
                         (
                             mapping.profile_id.clone(),
@@ -1962,13 +2482,28 @@ fn materialize_memory_pull(
                 let Some(local_id) = mapping.local_id.as_deref() else {
                     continue;
                 };
-                if !local_id.starts_with("pf-sync-collection-") {
-                    continue;
-                }
                 if mapping.tombstone {
-                    store.collections.remove(local_id);
-                    store.collection_members.remove(local_id);
+                    let provenance = (
+                        batch.profile_id.clone(),
+                        mapping.entity_type,
+                        local_id.to_string(),
+                    );
+                    if store.sync_materialized.get(&provenance) == Some(&mapping.remote_id) {
+                        store.collections.remove(local_id);
+                        store.collection_members.remove(local_id);
+                        store.sync_materialized.remove(&provenance);
+                    }
                 } else {
+                    let provenance = (
+                        batch.profile_id.clone(),
+                        mapping.entity_type,
+                        local_id.to_string(),
+                    );
+                    if store.collections.contains_key(local_id)
+                        && !store.sync_materialized.contains_key(&provenance)
+                    {
+                        continue;
+                    }
                     let snapshot: CollectionSnapshotDto = serde_json::from_value(
                         mapping
                             .snapshot
@@ -1979,21 +2514,39 @@ fn materialize_memory_pull(
                     store
                         .collections
                         .insert(local_id.to_string(), (snapshot.name, snapshot.is_shared));
+                    store
+                        .sync_materialized
+                        .insert(provenance, mapping.remote_id);
                 }
             }
             SyncEntityType::Tag => {
                 let Some(local_id) = mapping.local_id.as_deref() else {
                     continue;
                 };
-                if !local_id.starts_with("pf-sync-tag-") {
-                    continue;
-                }
                 if mapping.tombstone {
-                    store.tags.remove(local_id);
-                    for tags in store.model_tags.values_mut() {
-                        tags.remove(local_id);
+                    let provenance = (
+                        batch.profile_id.clone(),
+                        mapping.entity_type,
+                        local_id.to_string(),
+                    );
+                    if store.sync_materialized.get(&provenance) == Some(&mapping.remote_id) {
+                        store.tags.remove(local_id);
+                        for tags in store.model_tags.values_mut() {
+                            tags.remove(local_id);
+                        }
+                        store.sync_materialized.remove(&provenance);
                     }
                 } else {
+                    let provenance = (
+                        batch.profile_id.clone(),
+                        mapping.entity_type,
+                        local_id.to_string(),
+                    );
+                    if store.tags.contains_key(local_id)
+                        && !store.sync_materialized.contains_key(&provenance)
+                    {
+                        continue;
+                    }
                     let snapshot: TagSnapshotDto = serde_json::from_value(
                         mapping
                             .snapshot
@@ -2002,6 +2555,9 @@ fn materialize_memory_pull(
                     )
                     .map_err(|error| format!("invalid tag snapshot: {error}"))?;
                     store.tags.insert(local_id.to_string(), snapshot.name);
+                    store
+                        .sync_materialized
+                        .insert(provenance, mapping.remote_id);
                 }
             }
             SyncEntityType::ModelCollectionMembership => {}
@@ -2015,7 +2571,27 @@ fn materialize_memory_pull(
     {
         remove_memory_membership(store, &batch.profile_id, old)?;
     }
-    materialize_memory_memberships(store, &batch.profile_id)
+    let changed_memberships: Vec<_> = batch
+        .entities
+        .iter()
+        .filter(|entity| {
+            entity.entity_type == SyncEntityType::ModelCollectionMembership && !entity.tombstone
+        })
+        .filter_map(|entity| {
+            store
+                .sync_entities
+                .get(&(
+                    batch.profile_id.clone(),
+                    entity.entity_type,
+                    entity.remote_id.clone(),
+                ))
+                .cloned()
+        })
+        .collect();
+    for membership in changed_memberships {
+        materialize_memory_membership(store, &batch.profile_id, membership)?;
+    }
+    Ok(())
 }
 
 fn remove_memory_membership(
@@ -2065,34 +2641,43 @@ fn materialize_memory_memberships(
         .cloned()
         .collect();
     for mapping in memberships {
-        let snapshot: MembershipSnapshotDto = serde_json::from_value(
-            mapping
-                .snapshot
-                .ok_or_else(|| "membership snapshot is missing".to_string())?,
-        )
-        .map_err(|error| format!("invalid membership snapshot: {error}"))?;
-        let collection_id = store
-            .sync_entities
-            .get(&(
-                profile_id.to_string(),
-                SyncEntityType::ModelCollection,
-                snapshot.collection_id,
-            ))
-            .filter(|collection| !collection.tombstone)
-            .and_then(|collection| collection.local_id.clone());
-        let model_hash = store
-            .remote_model_links
-            .values()
-            .find(|link| link.profile_id == profile_id && link.remote_model_id == snapshot.model_id)
-            .map(|link| link.local_model_hash.clone());
-        if let (Some(collection_id), Some(model_hash)) = (collection_id, model_hash) {
-            if store.models.contains_key(&model_hash) {
-                store
-                    .collection_members
-                    .entry(collection_id)
-                    .or_default()
-                    .insert(model_hash);
-            }
+        materialize_memory_membership(store, profile_id, mapping)?;
+    }
+    Ok(())
+}
+
+fn materialize_memory_membership(
+    store: &mut InMemoryCatalog,
+    profile_id: &str,
+    mapping: EntityRevisionDto,
+) -> Result<(), String> {
+    let snapshot: MembershipSnapshotDto = serde_json::from_value(
+        mapping
+            .snapshot
+            .ok_or_else(|| "membership snapshot is missing".to_string())?,
+    )
+    .map_err(|error| format!("invalid membership snapshot: {error}"))?;
+    let collection_id = store
+        .sync_entities
+        .get(&(
+            profile_id.to_string(),
+            SyncEntityType::ModelCollection,
+            snapshot.collection_id,
+        ))
+        .filter(|collection| !collection.tombstone)
+        .and_then(|collection| collection.local_id.clone());
+    let model_hash = store
+        .remote_model_links
+        .values()
+        .find(|link| link.profile_id == profile_id && link.remote_model_id == snapshot.model_id)
+        .map(|link| link.local_model_hash.clone());
+    if let (Some(collection_id), Some(model_hash)) = (collection_id, model_hash) {
+        if store.models.contains_key(&model_hash) {
+            store
+                .collection_members
+                .entry(collection_id)
+                .or_default()
+                .insert(model_hash);
         }
     }
     Ok(())
@@ -2574,5 +3159,100 @@ mod tests {
                 && !operation.retry_eligible
                 && operation.lease_token.is_none()
         }));
+    }
+
+    #[test]
+    fn connected_collection_mutations_atomically_produce_ordered_outbox_work() {
+        let (mut store, hash) = one_model_store();
+        store
+            .bind_sync_profile("profile-a", "binding-a", 1)
+            .unwrap();
+
+        let collection = store
+            .create_collection_with_sync("Synced", "profile-a", "binding-a", 2)
+            .unwrap();
+        let create = store
+            .outbound_operations("profile-a", &[OutboundState::Pending], 500)
+            .unwrap();
+        assert_eq!(create.len(), 1);
+        assert_eq!(create[0].operation, crate::sync::SyncOperationKind::Create);
+        let remote_id = create[0].payload["remoteId"].as_str().unwrap();
+        assert_eq!(remote_id.len(), 36);
+
+        assert!(store
+            .add_model_to_collection_with_sync(&collection.id, &hash, "profile-a", "binding-a", 3,)
+            .unwrap());
+        let queued = store
+            .outbound_operations("profile-a", &[OutboundState::Pending], 500)
+            .unwrap();
+        assert_eq!(queued.len(), 2);
+        assert!(queued[0].sequence < queued[1].sequence);
+        assert_eq!(
+            queued[1].entity_type,
+            SyncEntityType::ModelCollectionMembership
+        );
+
+        assert!(store
+            .create_collection_with_sync("Rejected", "profile-a", "old-binding", 4)
+            .is_err());
+        assert!(store
+            .all_collections()
+            .iter()
+            .all(|value| value.name != "Rejected"));
+    }
+
+    #[test]
+    fn profile_rebinding_purges_only_explicit_remote_materialization() {
+        let mut store = InMemoryCatalog::new();
+        store
+            .bind_sync_profile("profile-a", "binding-a", 1)
+            .unwrap();
+        store
+            .apply_pull_batch(ApplyPullBatchDto {
+                profile_id: "profile-a".to_string(),
+                expected_checkpoint_generation: 0,
+                expected_previous_cursor: None,
+                cursor: Some("cursor-a".to_string()),
+                server_revision: 1,
+                applied_at: 2,
+                entities: vec![crate::sync::PullEntityDto {
+                    entity_type: SyncEntityType::ModelCollection,
+                    local_id: Some("remote-local".to_string()),
+                    remote_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+                    revision: 1,
+                    concurrency_token: Some("token".to_string()),
+                    tombstone: false,
+                    visibility: SyncVisibility::Shared,
+                    snapshot: Some(serde_json::json!({
+                        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                        "name": "Remote",
+                        "description": null,
+                        "ownerUserId": "owner",
+                        "isShared": true,
+                        "createdAt": "2026-07-23T12:00:00Z",
+                        "updatedAt": "2026-07-23T12:00:00Z",
+                        "memberCount": 0,
+                        "modelIds": [],
+                        "revision": 1,
+                        "concurrencyToken": "token"
+                    })),
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+        let local = store.create_collection("Local").unwrap();
+
+        let reset = store
+            .bind_sync_profile("profile-a", "binding-b", 3)
+            .unwrap();
+        assert_eq!(reset.cursor, None);
+        assert!(store
+            .all_collections()
+            .iter()
+            .all(|collection| collection.id != "remote-local"));
+        assert!(store
+            .all_collections()
+            .iter()
+            .any(|collection| collection.id == local.id));
     }
 }

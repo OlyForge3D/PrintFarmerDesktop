@@ -6,6 +6,7 @@ import type {
   SidecarConflictInput,
   SidecarEntityRevision,
   SidecarOutboundOperation,
+  SidecarRemoteModelLink,
   SidecarSyncEntityType,
   SidecarSyncStatus,
 } from './sidecar.js';
@@ -15,6 +16,9 @@ import type {
   MembershipSnapshot,
   RemoteChange,
   TagSnapshot,
+  ApplyOperationRequest,
+  AppliedOperation,
+  ApplyConflict,
 } from './syncWire.js';
 
 const PULL_LIMIT = 500;
@@ -39,10 +43,22 @@ export interface SyncProfileService {
     profiles: ServerProfile[];
     selectedProfileId: string | null;
   }>;
+  getAuthenticatedContext?(
+    profileId: string,
+    expectedBaseUrl?: string,
+  ): Promise<{ baseUrl: string; binding: string }>;
+  subscribeInvalidation?(
+    listener: (profileId: string) => Promise<void> | void,
+  ): () => void;
 }
 
 export interface SyncSidecar {
   getSyncStatus(profileId: string): Promise<SidecarSyncStatus>;
+  bindSyncProfile(
+    profileId: string,
+    profileBinding: string,
+    now: number,
+  ): Promise<SidecarSyncStatus>;
   applySyncPullBatch(batch: SidecarApplyPullBatch): Promise<SidecarSyncStatus>;
   getSyncEntityRevision(
     profileId: string,
@@ -54,33 +70,50 @@ export interface SyncSidecar {
     entityType?: SidecarSyncEntityType,
     limit?: number,
   ): Promise<SidecarEntityRevision[]>;
+  getSyncEntityRevisionByLocal(
+    profileId: string,
+    entityType: SidecarSyncEntityType,
+    localId: string,
+  ): Promise<SidecarEntityRevision | null>;
+  getRemoteModelLink(
+    profileId: string,
+    localModelHash: string,
+  ): Promise<SidecarRemoteModelLink | null>;
   listOutboundOperations(
     profileId: string,
     states: Array<'uncertain'>,
     limit?: number,
   ): Promise<SidecarOutboundOperation[]>;
+  getOutboundBatch(
+    profileId: string,
+    batchId: string,
+  ): Promise<SidecarOutboundOperation[]>;
   recoverOutboundOperations(
     profileId: string,
+    profileBinding: string,
     now: number,
   ): Promise<{ markedUncertain: number }>;
   claimOutboundOperations(
     profileId: string,
+    profileBinding: string,
     limit: number,
     now: number,
     leaseSeconds: number,
   ): Promise<SidecarClaimedOutboundBatch | null>;
   failOutboundBatch(input: {
     profileId: string;
+    profileBinding: string;
     batchId: string;
     batchIncarnation: string;
     leaseToken: string;
-    outcome: 'definiteTransient' | 'ambiguous';
+    outcome: 'definiteTransient' | 'definitePermanent' | 'ambiguous';
     error: string;
     failedAt: number;
     retryAt: number | null;
   }): Promise<SidecarOutboundOperation[]>;
   settleOutboundBatch(input: {
     profileId: string;
+    profileBinding: string;
     batchId: string;
     batchIncarnation: string;
     leaseToken: string;
@@ -99,6 +132,7 @@ export interface SyncSidecar {
   }): Promise<unknown>;
   reconcileUncertainBatch(input: {
     profileId: string;
+    profileBinding: string;
     batchId: string;
     batchIncarnation: string;
     expectedAttemptToken: string;
@@ -151,17 +185,7 @@ export interface SyncRemote {
   apply(
     profileId: string,
     baseUrl: string,
-    body: {
-      operations: Array<{
-        operationId: string;
-        entityType: SidecarSyncEntityType;
-        operation: 'Create' | 'Update' | 'Delete';
-        entityId: string;
-        payload: unknown;
-        baseRevision: number | null;
-        concurrencyToken: string | null;
-      }>;
-    },
+    body: { operations: ApplyOperationRequest[] },
     signal: AbortSignal,
   ): Promise<ApplyResult>;
 }
@@ -206,6 +230,11 @@ interface ActiveSync {
   promise: Promise<ProfileSyncStatus>;
 }
 
+interface TranslatedOperation {
+  operation: SidecarOutboundOperation;
+  wire: ApplyOperationRequest;
+}
+
 export class PrintFarmerSyncEngine {
   private readonly intervalMs: number;
   private readonly now: () => number;
@@ -217,8 +246,10 @@ export class PrintFarmerSyncEngine {
   private readonly statuses = new Map<string, ProfileSyncStatus>();
   private readonly listeners = new Set<(status: ProfileSyncStatus) => void>();
   private timer: ReturnType<typeof setInterval> | null = null;
+  private startPromise: Promise<void> | null = null;
   private disposed = false;
   private schedulerTick: Promise<void> | null = null;
+  private readonly unsubscribeInvalidation: (() => void) | null;
 
   constructor(
     private readonly profiles: SyncProfileService,
@@ -231,6 +262,22 @@ export class PrintFarmerSyncEngine {
     this.setIntervalImpl = options.setInterval ?? globalThis.setInterval;
     this.clearIntervalImpl = options.clearInterval ?? globalThis.clearInterval;
     this.permits = new Semaphore(options.maxConcurrentProfiles ?? 2);
+    this.unsubscribeInvalidation =
+      this.profiles.subscribeInvalidation?.(async (profileId) => {
+        this.cancelProfile(profileId);
+        const invalidatedBinding = createHash('sha256')
+          .update('invalidated')
+          .update('\0')
+          .update(profileId)
+          .update('\0')
+          .update(String(this.now()))
+          .digest('hex');
+        await this.sidecar.bindSyncProfile(
+          profileId,
+          invalidatedBinding,
+          toUnixSeconds(this.now()),
+        );
+      }) ?? null;
   }
 
   snapshot(profileId?: string): ProfileSyncStatus[] {
@@ -252,11 +299,20 @@ export class PrintFarmerSyncEngine {
   async start(): Promise<void> {
     this.assertNotDisposed();
     if (this.timer) return;
-    await this.runSchedulerTick(true);
-    if (this.disposed) return;
-    this.timer = this.setIntervalImpl(() => {
-      void this.runSchedulerTick(false);
-    }, this.intervalMs);
+    if (this.startPromise) return this.startPromise;
+    const starting = (async (): Promise<void> => {
+      await this.runSchedulerTick(true);
+      if (this.disposed || this.timer) return;
+      this.timer = this.setIntervalImpl(() => {
+        void this.runSchedulerTick(false).catch(() => {
+          console.error('[sync] scheduled synchronization failed');
+        });
+      }, this.intervalMs);
+    })().finally(() => {
+      if (this.startPromise === starting) this.startPromise = null;
+    });
+    this.startPromise = starting;
+    return starting;
   }
 
   stop(): void {
@@ -299,6 +355,45 @@ export class PrintFarmerSyncEngine {
     this.active.get(profileId)?.controller.abort();
   }
 
+  async resolveUncertainAsApplied(
+    profileId: string,
+    batchId: string,
+  ): Promise<void> {
+    this.assertNotDisposed();
+    const profile = await this.requireProfile(profileId);
+    const context = await this.authenticatedContext(profile);
+    await this.sidecar.bindSyncProfile(
+      profileId,
+      context.binding,
+      toUnixSeconds(this.now()),
+    );
+    const operations = await this.sidecar.getOutboundBatch(profileId, batchId);
+    if (
+      operations.length === 0 ||
+      operations.some(
+        (operation) =>
+          operation.state !== 'uncertain' || !operation.attemptToken,
+      )
+    ) {
+      throw new Error('The requested batch is not wholly uncertain.');
+    }
+    const first = operations[0]!;
+    await this.sidecar.reconcileUncertainBatch({
+      profileId,
+      profileBinding: context.binding,
+      batchId,
+      batchIncarnation: first.batchIncarnation,
+      expectedAttemptToken: first.attemptToken!,
+      resolution: 'acked',
+      reconciledAt: toUnixSeconds(this.now()),
+      operations: operations.map((operation) => ({
+        operationId: operation.operationId,
+        baseRevision: operation.baseRevision,
+        concurrencyToken: operation.concurrencyToken,
+      })),
+    });
+  }
+
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
@@ -308,6 +403,7 @@ export class PrintFarmerSyncEngine {
       [...this.active.values()].map(({ promise }) => promise),
     );
     if (this.schedulerTick) await this.schedulerTick;
+    this.unsubscribeInvalidation?.();
     this.listeners.clear();
   }
 
@@ -321,8 +417,15 @@ export class PrintFarmerSyncEngine {
         await Promise.all(
           eligible.map(async (profile) => {
             this.update(profile.id, { phase: 'recovering' });
+            const context = await this.authenticatedContext(profile);
+            await this.sidecar.bindSyncProfile(
+              profile.id,
+              context.binding,
+              toUnixSeconds(this.now()),
+            );
             await this.sidecar.recoverOutboundOperations(
               profile.id,
+              context.binding,
               toUnixSeconds(this.now()),
             );
           }),
@@ -347,6 +450,12 @@ export class PrintFarmerSyncEngine {
     try {
       this.assertCurrent(profileId, generation, signal);
       const profile = await this.requireProfile(profileId);
+      const context = await this.authenticatedContext(profile);
+      await this.sidecar.bindSyncProfile(
+        profile.id,
+        context.binding,
+        toUnixSeconds(this.now()),
+      );
       this.update(profileId, {
         phase: 'pulling',
         running: true,
@@ -358,10 +467,15 @@ export class PrintFarmerSyncEngine {
         errorMessage: null,
         nextRetryAt: null,
       });
-      await this.pull(profile, generation, signal);
-      await this.reconcileUncertain(profile.id, generation, signal);
+      await this.pull(profile, context.binding, generation, signal);
+      await this.reconcileUncertain(
+        profile,
+        context.binding,
+        generation,
+        signal,
+      );
       this.update(profileId, { phase: 'pushing' });
-      await this.push(profile, generation, signal);
+      await this.push(profile, context.binding, generation, signal);
       const durable = await this.sidecar.getSyncStatus(profileId);
       this.assertCurrent(profileId, generation, signal);
       return this.update(profileId, {
@@ -378,6 +492,7 @@ export class PrintFarmerSyncEngine {
 
   private async pull(
     profile: ServerProfile,
+    profileBinding: string,
     generation: number,
     signal: AbortSignal,
   ): Promise<void> {
@@ -404,12 +519,20 @@ export class PrintFarmerSyncEngine {
         generation,
         signal,
       );
+      if (page.nextCursor === null && page.changes.length > 0) {
+        throw new Error(
+          'The server omitted a terminal cursor for a non-empty journal page.',
+        );
+      }
+      const committedCursor = page.nextCursor ?? checkpoint.cursor;
       this.assertCurrent(profile.id, generation, signal);
+      await this.assertProfileBinding(profile, profileBinding);
       checkpoint = await this.sidecar.applySyncPullBatch({
         profileId: profile.id,
+        profileBinding,
         expectedCheckpointGeneration: checkpoint.checkpointGeneration,
         expectedPreviousCursor: checkpoint.cursor,
-        cursor: page.nextCursor,
+        cursor: committedCursor,
         serverRevision: page.serverRevision,
         appliedAt: toUnixSeconds(this.now()),
         entities,
@@ -433,7 +556,9 @@ export class PrintFarmerSyncEngine {
   ): Promise<SidecarApplyPullBatch['entities']> {
     const result: SidecarApplyPullBatch['entities'] = [];
     const membershipChanges = changes.filter(
-      (change) => change.entityType === 'ModelCollectionMembership',
+      (change) =>
+        change.entityType === 'ModelCollectionMembership' &&
+        change.operation !== 'Delete',
     );
     const memberships = membershipChanges.length
       ? await this.resolveMemberships(profile, membershipChanges, signal)
@@ -460,7 +585,9 @@ export class PrintFarmerSyncEngine {
         );
         this.assertCurrent(profile.id, generation, signal);
         if (!value) {
-          result.push(tombstone(change, existing));
+          throw new Error(
+            `Collection ${change.entityId} could not be materialized.`,
+          );
         } else {
           const timestamp = value.updatedAt ?? change.timestamp;
           result.push({
@@ -470,6 +597,7 @@ export class PrintFarmerSyncEngine {
               stableLocalId('collection', profile.id, value.id),
             remoteId: value.id,
             revision: value.revision,
+            journalRevision: change.revision,
             concurrencyToken: value.concurrencyToken,
             tombstone: false,
             visibility: change.visibility,
@@ -491,41 +619,42 @@ export class PrintFarmerSyncEngine {
           signal,
         );
         this.assertCurrent(profile.id, generation, signal);
-        result.push(
-          value
-            ? {
-                entityType: change.entityType,
-                localId:
-                  existing?.localId ??
-                  stableLocalId('tag', profile.id, value.id),
-                remoteId: value.id,
-                revision: value.revision,
-                concurrencyToken: value.concurrencyToken,
-                tombstone: false,
-                visibility: change.visibility,
-                snapshot: value,
-              }
-            : tombstone(change, existing),
-        );
+        if (!value) {
+          throw new Error(`Tag ${change.entityId} could not be materialized.`);
+        }
+        result.push({
+          entityType: change.entityType,
+          localId:
+            existing?.localId ?? stableLocalId('tag', profile.id, value.id),
+          remoteId: value.id,
+          revision: value.revision,
+          journalRevision: change.revision,
+          concurrencyToken: value.concurrencyToken,
+          tombstone: false,
+          visibility: change.visibility,
+          snapshot: value,
+        });
         continue;
       }
       const value = memberships.get(change.entityId);
-      result.push(
-        value
-          ? {
-              entityType: change.entityType,
-              localId:
-                existing?.localId ??
-                stableLocalId('membership', profile.id, value.id),
-              remoteId: value.id,
-              revision: value.revision,
-              concurrencyToken: null,
-              tombstone: false,
-              visibility: change.visibility,
-              snapshot: value,
-            }
-          : tombstone(change, existing),
-      );
+      if (!value) {
+        throw new Error(
+          `Membership ${change.entityId} could not be materialized.`,
+        );
+      }
+      result.push({
+        entityType: change.entityType,
+        localId:
+          existing?.localId ??
+          stableLocalId('membership', profile.id, value.id),
+        remoteId: value.id,
+        revision: value.revision,
+        journalRevision: change.revision,
+        concurrencyToken: null,
+        tombstone: false,
+        visibility: change.visibility,
+        snapshot: value,
+      });
     }
     return result;
   }
@@ -553,69 +682,62 @@ export class PrintFarmerSyncEngine {
       }
       throw error;
     }
-    for (const collection of collections) {
+    for (let offset = 0; offset < collections.length; offset += 6) {
       if (unresolved.size === 0) break;
-      const members = await this.remote.getCollectionMembers(
-        profile.id,
-        profile.baseUrl,
-        collection.id,
-        signal,
+      const page = collections.slice(offset, offset + 6);
+      const memberPages = await Promise.all(
+        page.map((collection) =>
+          this.remote.getCollectionMembers(
+            profile.id,
+            profile.baseUrl,
+            collection.id,
+            signal,
+          ),
+        ),
       );
-      for (const member of members ?? []) {
-        if (unresolved.delete(member.id)) found.set(member.id, member);
+      for (const members of memberPages) {
+        for (const member of members ?? []) {
+          if (unresolved.delete(member.id)) found.set(member.id, member);
+        }
       }
     }
     return found;
   }
 
   private async reconcileUncertain(
-    profileId: string,
+    profile: ServerProfile,
+    profileBinding: string,
     generation: number,
     signal: AbortSignal,
   ): Promise<void> {
     const uncertain = await this.sidecar.listOutboundOperations(
-      profileId,
+      profile.id,
       ['uncertain'],
       PULL_LIMIT,
     );
     const groups = groupBatches(uncertain);
     for (const operations of groups) {
-      this.assertCurrent(profileId, generation, signal);
-      const mappings = await this.sidecar.listSyncEntityRevisions(
-        profileId,
-        undefined,
-        PULL_LIMIT,
-      );
-      const reflected = operations.map((operation) => ({
-        operation,
-        mapping: mappings.find(
-          (mapping) =>
-            mapping.entityType === operation.entityType &&
-            mapping.localId === operation.entityId,
+      this.assertCurrent(profile.id, generation, signal);
+      const translated = await this.translateOperations(profile.id, operations);
+      const effects = await Promise.all(
+        translated.map(({ wire }) =>
+          this.remoteEffectMatches(profile, wire, signal),
         ),
-      }));
-      const allApplied = reflected.every(({ operation, mapping }) =>
-        operationReflected(operation, mapping),
       );
-      const hasUnsafeCreate = operations.some(
-        (operation) =>
-          operation.entityType === 'ModelCollection' &&
-          operation.operation === 'Create',
-      );
-      if (!allApplied && hasUnsafeCreate) continue;
+      if (!effects.every(Boolean)) continue;
       const first = operations[0]!;
       await this.sidecar.reconcileUncertainBatch({
-        profileId,
+        profileId: profile.id,
+        profileBinding,
         batchId: first.batchId,
         batchIncarnation: first.batchIncarnation,
         expectedAttemptToken: first.attemptToken!,
-        resolution: allApplied ? 'acked' : 'requeue',
+        resolution: 'acked',
         reconciledAt: toUnixSeconds(this.now()),
-        operations: reflected.map(({ operation, mapping }) => ({
+        operations: translated.map(({ operation }) => ({
           operationId: operation.operationId,
-          baseRevision: mapping?.revision ?? operation.baseRevision,
-          concurrencyToken:
-            mapping?.concurrencyToken ?? operation.concurrencyToken,
+          baseRevision: operation.baseRevision,
+          concurrencyToken: operation.concurrencyToken,
         })),
       });
     }
@@ -623,56 +745,58 @@ export class PrintFarmerSyncEngine {
 
   private async push(
     profile: ServerProfile,
+    profileBinding: string,
     generation: number,
     signal: AbortSignal,
   ): Promise<void> {
     while (true) {
       this.assertCurrent(profile.id, generation, signal);
+      await this.assertProfileBinding(profile, profileBinding);
       const claimed = await this.sidecar.claimOutboundOperations(
         profile.id,
+        profileBinding,
         PULL_LIMIT,
         toUnixSeconds(this.now()),
         OUTBOX_LEASE_SECONDS,
       );
       if (!claimed) return;
+      const translated = await this.translateOperations(
+        profile.id,
+        claimed.operations,
+      );
       let response: ApplyResult;
       try {
         response = await this.remote.apply(
           profile.id,
           profile.baseUrl,
           {
-            operations: claimed.operations.map((operation) => ({
-              operationId: operation.operationId,
-              entityType: operation.entityType,
-              operation: operation.operation,
-              entityId: operation.entityId,
-              payload: operation.payload,
-              baseRevision: operation.baseRevision,
-              concurrencyToken: operation.concurrencyToken,
-            })),
+            operations: translated.map(({ wire }) => wire),
           },
           signal,
         );
         this.assertCurrent(profile.id, generation, signal);
+        await this.assertProfileBinding(profile, profileBinding);
       } catch (error) {
-        await this.handlePushFailure(claimed, error);
+        await this.handlePushFailure(claimed, profileBinding, error);
         if (error instanceof SyncHttpError && error.code === 'cancelled')
           throw error;
         return;
       }
       if (response.kind === 'success') {
+        const associated = associateApplied(translated, response.value.applied);
         await this.sidecar.settleOutboundBatch({
           profileId: profile.id,
+          profileBinding,
           batchId: claimed.batchId,
           batchIncarnation: claimed.batchIncarnation,
           leaseToken: claimed.leaseToken,
           settledAt: toUnixSeconds(this.now()),
           serverRevision: response.value.serverRevision,
-          applied: response.value.applied.map((applied) => ({
-            operationId: applied.operationId,
-            remoteId: applied.remoteId,
+          applied: associated.map(({ operation, applied }) => ({
+            operationId: operation.operationId,
+            remoteId: applied.entityId,
             revision: applied.revision,
-            concurrencyToken: applied.concurrencyToken ?? null,
+            concurrencyToken: operation.concurrencyToken,
           })),
           conflicts: [],
         });
@@ -682,38 +806,32 @@ export class PrintFarmerSyncEngine {
             claimed.operations.length,
         });
       } else {
-        const byId = new Map(
-          claimed.operations.map((operation) => [
-            operation.operationId,
-            operation,
-          ]),
+        const associated = associateConflicts(
+          translated,
+          response.value.conflicts,
         );
         await this.sidecar.settleOutboundBatch({
           profileId: profile.id,
+          profileBinding,
           batchId: claimed.batchId,
           batchIncarnation: claimed.batchIncarnation,
           leaseToken: claimed.leaseToken,
           settledAt: toUnixSeconds(this.now()),
           serverRevision: response.value.serverRevision,
           applied: [],
-          conflicts: response.value.conflicts.map((conflict) => {
-            const operation = byId.get(conflict.operationId);
+          conflicts: associated.map(({ conflict, operation }) => {
             return {
-              operationId: conflict.operationId,
+              operationId: operation.operationId,
               conflict: {
-                conflictId:
-                  conflict.conflictId ??
-                  stableConflictId(
-                    claimed.batchIncarnation,
-                    conflict.operationId,
-                  ),
+                conflictId: stableConflictId(
+                  claimed.batchIncarnation,
+                  operation.operationId,
+                ),
                 entityType: conflict.entityType,
                 entityId: conflict.entityId,
-                localPayload:
-                  conflict.localPayload ?? operation?.payload ?? null,
-                serverPayload: conflict.serverPayload ?? null,
-                submittedPayload:
-                  conflict.submittedPayload ?? operation?.payload ?? null,
+                localPayload: operation.payload,
+                serverPayload: conflict.server,
+                submittedPayload: conflict.submitted,
                 reason: conflict.reason,
                 serverRevision: response.value.serverRevision,
                 createdAt: toUnixSeconds(this.now()),
@@ -726,8 +844,133 @@ export class PrintFarmerSyncEngine {
     }
   }
 
+  private async translateOperations(
+    profileId: string,
+    operations: SidecarOutboundOperation[],
+  ): Promise<TranslatedOperation[]> {
+    const createdCollections = new Map<string, string>();
+    for (const operation of operations) {
+      if (
+        operation.entityType === 'ModelCollection' &&
+        operation.operation === 'Create'
+      ) {
+        createdCollections.set(
+          operation.entityId,
+          requireGuid(readString(operation.payload, 'remoteId'), 'remoteId'),
+        );
+      }
+    }
+    const translated: TranslatedOperation[] = [];
+    for (const operation of operations) {
+      if (operation.entityType === 'Tag') {
+        throw new Error('Tags are pull-only and cannot be pushed.');
+      }
+      const payload = asRecord(operation.payload);
+      let entityId: string;
+      let resolvedMapping: SidecarEntityRevision | null = null;
+      if (operation.operation === 'Create') {
+        entityId = requireGuid(readString(payload, 'remoteId'), 'remoteId');
+      } else {
+        resolvedMapping = await this.sidecar.getSyncEntityRevisionByLocal(
+          profileId,
+          operation.entityType,
+          operation.entityId,
+        );
+        entityId = requireGuid(resolvedMapping?.remoteId ?? '', 'entityId');
+      }
+      let collectionId: string | null = null;
+      let modelId: string | null = null;
+      if (operation.entityType === 'ModelCollectionMembership') {
+        const localCollectionId = readString(payload, 'collectionId');
+        collectionId =
+          createdCollections.get(localCollectionId) ??
+          requireGuid(
+            (
+              await this.sidecar.getSyncEntityRevisionByLocal(
+                profileId,
+                'ModelCollection',
+                localCollectionId,
+              )
+            )?.remoteId ?? '',
+            'collectionId',
+          );
+        const modelHash = readString(payload, 'modelHash');
+        modelId = requireGuid(
+          (await this.sidecar.getRemoteModelLink(profileId, modelHash))
+            ?.remoteModelId ?? '',
+          'modelId',
+        );
+      }
+      translated.push({
+        operation,
+        wire: {
+          entityType: operation.entityType,
+          operation: operation.operation,
+          entityId,
+          baseRevision:
+            operation.baseRevision ?? resolvedMapping?.revision ?? null,
+          concurrencyToken:
+            operation.concurrencyToken ??
+            resolvedMapping?.concurrencyToken ??
+            null,
+          collectionId,
+          modelId,
+          name:
+            operation.entityType === 'ModelCollection' &&
+            operation.operation !== 'Delete'
+              ? readString(payload, 'name')
+              : null,
+          description: readNullableString(payload, 'description'),
+          isShared: readNullableBoolean(payload, 'isShared'),
+        },
+      });
+    }
+    return translated;
+  }
+
+  private async remoteEffectMatches(
+    profile: ServerProfile,
+    wire: ApplyOperationRequest,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    if (wire.entityType === 'ModelCollection') {
+      const current = await this.remote.getCollection(
+        profile.id,
+        profile.baseUrl,
+        wire.entityId,
+        signal,
+      );
+      if (wire.operation === 'Delete') return current === null;
+      return (
+        current !== null &&
+        current.name === wire.name &&
+        current.description === wire.description &&
+        current.isShared === wire.isShared
+      );
+    }
+    if (wire.entityType === 'ModelCollectionMembership') {
+      if (!wire.collectionId || !wire.modelId) return false;
+      const members = await this.remote.getCollectionMembers(
+        profile.id,
+        profile.baseUrl,
+        wire.collectionId,
+        signal,
+      );
+      if (members === null) return false;
+      const exists = members.some(
+        (member) =>
+          member.id === wire.entityId &&
+          member.collectionId === wire.collectionId &&
+          member.modelId === wire.modelId,
+      );
+      return wire.operation === 'Delete' ? !exists : exists;
+    }
+    return false;
+  }
+
   private async handlePushFailure(
     claimed: SidecarClaimedOutboundBatch,
+    profileBinding: string,
     error: unknown,
   ): Promise<void> {
     const mapped =
@@ -744,15 +987,20 @@ export class PrintFarmerSyncEngine {
       !mapped.ambiguous &&
       (mapped.code === 'rateLimited' ||
         mapped.code === 'authentication' ||
-        mapped.code === 'authorization');
+        mapped.code === 'server');
     const retryDelay = mapped.retryAfterMs ?? retryBackoff(claimed.operations);
     const failedAt = toUnixSeconds(this.now());
     await this.sidecar.failOutboundBatch({
       profileId: claimed.profileId,
+      profileBinding,
       batchId: claimed.batchId,
       batchIncarnation: claimed.batchIncarnation,
       leaseToken: claimed.leaseToken,
-      outcome: retryable ? 'definiteTransient' : 'ambiguous',
+      outcome: mapped.ambiguous
+        ? 'ambiguous'
+        : retryable
+          ? 'definiteTransient'
+          : 'definitePermanent',
       error: mapped.message.slice(0, 4096),
       failedAt,
       retryAt: retryable ? failedAt + Math.ceil(retryDelay / 1000) : null,
@@ -786,6 +1034,34 @@ export class PrintFarmerSyncEngine {
       );
     }
     return profile;
+  }
+
+  private async authenticatedContext(
+    profile: ServerProfile,
+  ): Promise<{ binding: string }> {
+    if (this.profiles.getAuthenticatedContext) {
+      return this.profiles.getAuthenticatedContext(profile.id, profile.baseUrl);
+    }
+    return {
+      binding: createHash('sha256')
+        .update(profile.id)
+        .update('\0')
+        .update(profile.baseUrl)
+        .digest('hex'),
+    };
+  }
+
+  private async assertProfileBinding(
+    profile: ServerProfile,
+    expectedBinding: string,
+  ): Promise<void> {
+    const current = await this.authenticatedContext(profile);
+    if (current.binding !== expectedBinding) {
+      throw new SyncEngineError(
+        'CANCELLED',
+        'The server profile changed during synchronization.',
+      );
+    }
   }
 
   private finishWithError(
@@ -898,7 +1174,8 @@ function tombstone(
     entityType: change.entityType,
     localId: existing?.localId ?? null,
     remoteId: change.entityId,
-    revision: change.revision,
+    revision: existing?.revision ?? 0,
+    journalRevision: change.revision,
     concurrencyToken: null,
     tombstone: true,
     visibility: change.visibility,
@@ -947,15 +1224,6 @@ function groupBatches(
   );
 }
 
-function operationReflected(
-  operation: SidecarOutboundOperation,
-  mapping: SidecarEntityRevision | undefined,
-): boolean {
-  if (!mapping) return false;
-  if (operation.operation === 'Delete') return mapping.tombstone;
-  return !mapping.tombstone && mapping.revision > (operation.baseRevision ?? 0);
-}
-
 function retryBackoff(operations: SidecarOutboundOperation[]): number {
   const attempts = Math.max(
     ...operations.map((operation) => operation.attemptCount),
@@ -964,6 +1232,102 @@ function retryBackoff(operations: SidecarOutboundOperation[]): number {
     5 * 60_000,
     1000 * 2 ** Math.min(8, Math.max(0, attempts - 1)),
   );
+}
+
+function associateApplied(
+  translated: TranslatedOperation[],
+  applied: AppliedOperation[],
+): Array<{ operation: SidecarOutboundOperation; applied: AppliedOperation }> {
+  if (translated.length !== applied.length) {
+    throw new Error('Apply success did not cover the complete logical batch.');
+  }
+  const remaining = [...translated];
+  return applied.map((result) => {
+    const index = remaining.findIndex(
+      ({ wire }) =>
+        wire.entityType === result.entityType &&
+        wire.operation === result.operation &&
+        wire.entityId === result.entityId,
+    );
+    if (index < 0) {
+      throw new Error(
+        'Apply success referenced an operation outside the batch.',
+      );
+    }
+    const [entry] = remaining.splice(index, 1);
+    return { operation: entry!.operation, applied: result };
+  });
+}
+
+function associateConflicts(
+  translated: TranslatedOperation[],
+  conflicts: ApplyConflict[],
+): Array<{ operation: SidecarOutboundOperation; conflict: ApplyConflict }> {
+  const remaining = [...translated];
+  return conflicts.map((conflict) => {
+    const index = remaining.findIndex(
+      ({ wire }) =>
+        wire.entityType === conflict.entityType &&
+        wire.entityId === conflict.entityId,
+    );
+    if (index < 0) {
+      throw new Error(
+        'Apply conflict referenced an operation outside the batch.',
+      );
+    }
+    const [entry] = remaining.splice(index, 1);
+    return { operation: entry!.operation, conflict };
+  });
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Outbound operation payload must be an object.');
+  }
+  return value as Record<string, unknown>;
+}
+
+function readString(value: unknown, key: string): string {
+  const field = asRecord(value)[key];
+  if (typeof field !== 'string' || field.length === 0) {
+    throw new Error(`Outbound operation requires ${key}.`);
+  }
+  return field;
+}
+
+function readNullableString(
+  value: Record<string, unknown>,
+  key: string,
+): string | null {
+  const field = value[key];
+  if (field === undefined || field === null) return null;
+  if (typeof field !== 'string') {
+    throw new Error(`Outbound operation ${key} must be a string or null.`);
+  }
+  return field;
+}
+
+function readNullableBoolean(
+  value: Record<string, unknown>,
+  key: string,
+): boolean | null {
+  const field = value[key];
+  if (field === undefined || field === null) return null;
+  if (typeof field !== 'boolean') {
+    throw new Error(`Outbound operation ${key} must be a boolean or null.`);
+  }
+  return field;
+}
+
+function requireGuid(value: string, name: string): string {
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value,
+    )
+  ) {
+    throw new Error(`Outbound ${name} must be a server GUID.`);
+  }
+  return value;
 }
 
 function toUnixSeconds(milliseconds: number): number {
