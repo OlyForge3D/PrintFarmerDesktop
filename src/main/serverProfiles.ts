@@ -58,15 +58,92 @@ const StoredSecret = z.discriminatedUnion('authMode', [
 ]);
 type StoredSecret = z.infer<typeof StoredSecret>;
 
-const TokenResponse = z
+const SecretEnvelope = z
+  .object({
+    version: z.literal(1),
+    profileId: z.string().uuid(),
+    baseUrl: z.string().url().max(2048),
+    authMode: z.enum(['apiKey', 'password']),
+    username: z.string().min(1).max(256).nullable(),
+    secret: StoredSecret,
+  })
+  .strict();
+type SecretEnvelope = z.infer<typeof SecretEnvelope>;
+
+const RemoteServerVersion = z
+  .object({
+    service: z.string().min(1).max(128),
+    version: z.string().min(1).max(64),
+    commit: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((value) => value ?? null),
+    environment: z.string().min(1).max(64),
+    runtime: z.string().min(1).max(128),
+    timestamp: z.string().datetime(),
+  })
+  .passthrough()
+  .transform((value) =>
+    ServerVersion.parse({
+      service: value.service,
+      version: value.version,
+      commit: value.commit,
+      environment: value.environment,
+      runtime: value.runtime,
+      timestamp: value.timestamp,
+    }),
+  );
+
+const RemoteServerCapabilities = z
+  .object({
+    architecture: z.string().min(1).max(128),
+    slicingEnabled: z.boolean(),
+    modelFilesEnabled: z.boolean(),
+    thumbnailGenerationEnabled: z.boolean(),
+    gcodeUploadEnabled: z.boolean(),
+    clientThumbnailUploadEnabled: z.boolean().optional().default(false),
+    idempotentModelUploadEnabled: z.boolean().optional().default(false),
+    modelThumbnailReplacementEnabled: z.boolean().optional().default(false),
+    platformNote: z
+      .string()
+      .max(1024)
+      .nullish()
+      .transform((value) => value ?? null),
+    operatorFeatures: z.record(z.boolean()).optional(),
+  })
+  .passthrough()
+  .transform((value) =>
+    ServerCapabilities.parse({
+      architecture: value.architecture,
+      slicingEnabled: value.slicingEnabled,
+      modelFilesEnabled: value.modelFilesEnabled,
+      thumbnailGenerationEnabled: value.thumbnailGenerationEnabled,
+      gcodeUploadEnabled: value.gcodeUploadEnabled,
+      clientThumbnailUploadEnabled: value.clientThumbnailUploadEnabled,
+      idempotentModelUploadEnabled: value.idempotentModelUploadEnabled,
+      modelThumbnailReplacementEnabled: value.modelThumbnailReplacementEnabled,
+      platformNote: value.platformNote,
+      ...(value.operatorFeatures
+        ? { operatorFeatures: value.operatorFeatures }
+        : {}),
+    }),
+  );
+
+const RemoteTokenResponse = z
   .object({
     token: z.string().min(1).max(16_384),
     expiresAt: z.string().datetime(),
     scopes: z.array(z.string().min(1).max(128)).max(100),
   })
-  .strict();
+  .passthrough()
+  .transform((value) => ({
+    token: value.token,
+    expiresAt: value.expiresAt,
+    scopes: value.scopes,
+  }));
 
-const LoginResponse = z
+const RemoteLoginResponse = z
   .object({
     success: z.boolean(),
     token: z.string().min(1).max(16_384).nullable(),
@@ -78,7 +155,14 @@ const LoginResponse = z
       .nullish()
       .transform((value) => value ?? null),
   })
-  .strict();
+  .passthrough()
+  .transform((value) => ({
+    success: value.success,
+    token: value.token,
+    expiresAt: value.expiresAt,
+    user: value.user,
+    error: value.error,
+  }));
 
 export interface ProfileFileSystem {
   readFile(filePath: string): Promise<Uint8Array>;
@@ -133,6 +217,7 @@ interface CachedToken {
   token: string;
   expiresAt: number;
   binding: string;
+  generation: number;
 }
 
 interface IssuedToken {
@@ -140,9 +225,21 @@ interface IssuedToken {
   expiresAt: number;
 }
 
+interface AuthenticatedToken extends IssuedToken {
+  cacheId: string;
+  binding: string;
+  generation: number;
+}
+
 interface TokenRenewal {
   binding: string;
+  generation: number;
   promise: Promise<IssuedToken>;
+}
+
+interface TokenBinding {
+  binding: string;
+  generation: number;
 }
 
 interface PendingResponse {
@@ -154,6 +251,11 @@ interface PendingResponse {
 interface CapabilityProbe {
   capabilities: z.infer<typeof ServerCapabilities>;
   modernUploadContract: boolean;
+}
+
+interface ProbedProfile {
+  profile: RedactedProfile;
+  authentication: AuthenticatedToken;
 }
 
 const nodeFileSystem: ProfileFileSystem = {
@@ -199,8 +301,9 @@ export class ServerProfileService {
   private readonly createId: () => string;
   private readonly storePath: string;
   private readonly tokens = new Map<string, CachedToken>();
-  private readonly tokenBindings = new Map<string, string>();
+  private readonly tokenBindings = new Map<string, TokenBinding>();
   private readonly tokenRenewals = new Map<string, TokenRenewal>();
+  private readonly authGenerations = new Map<string, number>();
   private mutationTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly dependencies: ServerProfileDependencies) {
@@ -215,9 +318,15 @@ export class ServerProfileService {
   }
 
   clearTokens(): void {
-    this.tokens.clear();
-    this.tokenBindings.clear();
-    this.tokenRenewals.clear();
+    const ids = new Set([
+      ...this.authGenerations.keys(),
+      ...this.tokens.keys(),
+      ...this.tokenBindings.keys(),
+      ...this.tokenRenewals.keys(),
+    ]);
+    for (const id of ids) {
+      this.invalidateToken(id);
+    }
   }
 
   async list(): Promise<ListServerProfilesResponse> {
@@ -231,15 +340,18 @@ export class ServerProfileService {
     if (request.source === 'draft') {
       const draft = request.draft;
       const id = draft.id ?? this.createId();
+      const ephemeralCacheId = this.createId();
       try {
-        return await this.probe(
+        const probed = await this.probe(
           id,
           draft.displayName,
           draft.baseUrl,
           this.secretFromDraft(draft),
+          ephemeralCacheId,
         );
+        return probed.profile;
       } finally {
-        this.invalidateToken(id);
+        this.disposeEphemeralAuth(ephemeralCacheId);
       }
     }
 
@@ -257,7 +369,7 @@ export class ServerProfileService {
         return {
           profile: stored,
           revision,
-          secret: this.decryptSecret(stored.encryptedSecret),
+          secret: this.decryptSecret(stored),
         };
       } catch (error) {
         store.profiles[index] = errorProfile(stored, this.now());
@@ -274,14 +386,17 @@ export class ServerProfileService {
     });
 
     let tested: RedactedProfile | null = null;
+    let authentication: AuthenticatedToken | null = null;
     let probeError: unknown;
     try {
-      tested = await this.probe(
+      const probed = await this.probe(
         snapshot.profile.id,
         snapshot.profile.displayName,
         snapshot.profile.baseUrl,
         snapshot.secret,
       );
+      tested = probed.profile;
+      authentication = probed.authentication;
     } catch (error) {
       probeError = error;
     }
@@ -301,8 +416,14 @@ export class ServerProfileService {
         throw profileChangedError();
       }
       if (tested) {
+        if (!authentication || !this.authenticationIsCurrent(authentication)) {
+          throw authenticationSupersededError();
+        }
         store.profiles[index] = mergeProbeResult(current, tested);
         await this.writeStore(store);
+        if (authentication) {
+          this.cacheAuthenticatedToken(authentication);
+        }
         return tested;
       }
       store.profiles[index] = errorProfile(current, this.now());
@@ -323,12 +444,13 @@ export class ServerProfileService {
       }
       return existing ? profileRevision(existing) : null;
     });
-    const tested = await this.probe(
+    const probed = await this.probe(
       id,
       draft.displayName,
       draft.baseUrl,
       secret,
     );
+    const tested = probed.profile;
     if (tested.status === 'legacy' && !draft.allowLegacy) {
       this.invalidateToken(id);
       throw new ServerProfileError(
@@ -337,9 +459,7 @@ export class ServerProfileService {
       );
     }
 
-    const encryptedSecret = Buffer.from(
-      this.dependencies.secretStorage.encryptString(JSON.stringify(secret)),
-    ).toString('base64');
+    const encryptedSecret = this.encryptSecret(id, tested.baseUrl, secret);
     await this.withMutationLock(async () => {
       const store = await this.readStore();
       const index = store.profiles.findIndex((profile) => profile.id === id);
@@ -348,6 +468,9 @@ export class ServerProfileService {
       if (currentRevision !== expectedRevision) {
         this.invalidateToken(id);
         throw profileChangedError();
+      }
+      if (!this.authenticationIsCurrent(probed.authentication)) {
+        throw authenticationSupersededError();
       }
       const stored: StoredProfile = { ...tested, encryptedSecret };
       if (index < 0) {
@@ -358,6 +481,7 @@ export class ServerProfileService {
       store.selectedProfileId ??= id;
       try {
         await this.writeStore(store);
+        this.cacheAuthenticatedToken(probed.authentication);
       } catch (error) {
         this.invalidateToken(id);
         throw error;
@@ -403,11 +527,13 @@ export class ServerProfileService {
       if (!profile) {
         throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
       }
-      const secret = this.decryptSecret(profile.encryptedSecret);
+      const secret = this.decryptSecret(profile);
       const binding = credentialBinding(profile.baseUrl, secret);
+      const generation = this.currentAuthGeneration(id);
       const cached = this.tokens.get(id);
       if (
         cached?.binding === binding &&
+        cached.generation === generation &&
         cached.expiresAt - TOKEN_SKEW_MS > this.now()
       ) {
         return { cachedToken: cached.token };
@@ -416,6 +542,7 @@ export class ServerProfileService {
         profile,
         secret,
         binding,
+        generation,
         revision: profileRevision(profile),
       };
     });
@@ -423,31 +550,46 @@ export class ServerProfileService {
       return snapshot.cachedToken;
     }
 
-    this.tokenBindings.set(id, snapshot.binding);
+    this.tokenBindings.set(id, {
+      binding: snapshot.binding,
+      generation: snapshot.generation,
+    });
     const issued = await this.renewToken(
       snapshot.profile.baseUrl,
       snapshot.secret,
       id,
       snapshot.binding,
+      snapshot.generation,
     );
     return this.withMutationLock(async () => {
       const store = await this.readStore();
       const current = store.profiles.find((profile) => profile.id === id);
       if (!current) {
-        this.discardTokenBinding(id, snapshot.binding);
+        this.discardTokenBinding(id, snapshot.binding, snapshot.generation);
         throw new ServerProfileError(
           'NOT_FOUND',
           'The server profile was removed while authentication was running.',
         );
       }
       if (profileRevision(current) !== snapshot.revision) {
-        this.discardTokenBinding(id, snapshot.binding);
+        this.discardTokenBinding(id, snapshot.binding, snapshot.generation);
         throw profileChangedError();
       }
-      if (this.tokenBindings.get(id) !== snapshot.binding) {
+      if (
+        this.currentAuthGeneration(id) !== snapshot.generation ||
+        !tokenBindingMatches(
+          this.tokenBindings.get(id),
+          snapshot.binding,
+          snapshot.generation,
+        )
+      ) {
         throw profileChangedError();
       }
-      this.tokens.set(id, { ...issued, binding: snapshot.binding });
+      this.tokens.set(id, {
+        ...issued,
+        binding: snapshot.binding,
+        generation: snapshot.generation,
+      });
       return issued.token;
     });
   }
@@ -457,11 +599,12 @@ export class ServerProfileService {
     displayName: string,
     rawBaseUrl: string,
     secret: StoredSecret,
-  ): Promise<RedactedProfile> {
+    cacheId = id,
+  ): Promise<ProbedProfile> {
     const baseUrl = normalizeServerUrl(rawBaseUrl);
-    this.invalidateToken(id);
+    this.invalidateToken(cacheId);
     const [versionResult, capabilityProbe] = await Promise.all([
-      this.getAnonymous(baseUrl, '/api/system/version', ServerVersion),
+      this.getAnonymous(baseUrl, '/api/system/version', RemoteServerVersion),
       this.getCapabilities(baseUrl),
     ]);
     const capabilitiesResult = capabilityProbe?.capabilities ?? null;
@@ -469,25 +612,30 @@ export class ServerProfileService {
       versionResult === null ||
       capabilityProbe === null ||
       !capabilityProbe.modernUploadContract;
-    await this.authenticate(baseUrl, secret, id, true);
+    const authentication = await this.authenticate(baseUrl, secret, cacheId);
 
     const availability = availabilityFor(capabilitiesResult, legacy);
-    return ServerProfile.parse({
-      id,
-      displayName: displayName.trim(),
-      baseUrl,
-      authMode: secret.authMode,
-      ...(secret.authMode === 'password' ? { username: secret.username } : {}),
-      version: versionResult,
-      capabilities: capabilitiesResult,
-      availability,
-      status: legacy ? 'legacy' : 'connected',
-      lastCheckedAt: new Date(this.now()).toISOString(),
-      warnings: [
-        ...(baseUrl.startsWith('http:') ? (['insecureHttp'] as const) : []),
-        ...(legacy ? (['legacy'] as const) : []),
-      ],
-    });
+    return {
+      profile: ServerProfile.parse({
+        id,
+        displayName: displayName.trim(),
+        baseUrl,
+        authMode: secret.authMode,
+        ...(secret.authMode === 'password'
+          ? { username: secret.username }
+          : {}),
+        version: versionResult,
+        capabilities: capabilitiesResult,
+        availability,
+        status: legacy ? 'legacy' : 'connected',
+        lastCheckedAt: new Date(this.now()).toISOString(),
+        warnings: [
+          ...(baseUrl.startsWith('http:') ? (['insecureHttp'] as const) : []),
+          ...(legacy ? (['legacy'] as const) : []),
+        ],
+      }),
+      authentication,
+    };
   }
 
   private async getAnonymous<T>(
@@ -520,7 +668,7 @@ export class ServerProfileService {
       return null;
     }
     const raw = await this.parseJson(response, z.unknown());
-    const parsed = ServerCapabilities.safeParse(raw);
+    const parsed = RemoteServerCapabilities.safeParse(raw);
     if (!parsed.success) {
       throw new ServerProfileError(
         'VALIDATION_ERROR',
@@ -543,28 +691,24 @@ export class ServerProfileService {
     baseUrl: string,
     secret: StoredSecret,
     cacheId: string,
-    force: boolean,
-  ): Promise<string> {
+  ): Promise<AuthenticatedToken> {
     const binding = credentialBinding(baseUrl, secret);
-    this.tokenBindings.set(cacheId, binding);
-    if (force) {
-      this.tokens.delete(cacheId);
-    }
-    const cached = this.tokens.get(cacheId);
+    const generation = this.currentAuthGeneration(cacheId);
+    this.tokenBindings.set(cacheId, { binding, generation });
+    const issued = await this.renewToken(
+      baseUrl,
+      secret,
+      cacheId,
+      binding,
+      generation,
+    );
     if (
-      cached &&
-      cached.binding === binding &&
-      cached.expiresAt - TOKEN_SKEW_MS > this.now()
+      this.currentAuthGeneration(cacheId) !== generation ||
+      !tokenBindingMatches(this.tokenBindings.get(cacheId), binding, generation)
     ) {
-      return cached.token;
+      throw authenticationSupersededError();
     }
-    this.tokens.delete(cacheId);
-
-    const issued = await this.renewToken(baseUrl, secret, cacheId, binding);
-    if (this.tokenBindings.get(cacheId) === binding) {
-      this.tokens.set(cacheId, { ...issued, binding });
-    }
-    return issued.token;
+    return { ...issued, cacheId, binding, generation };
   }
 
   private renewToken(
@@ -572,9 +716,10 @@ export class ServerProfileService {
     secret: StoredSecret,
     cacheId: string,
     binding: string,
+    generation: number,
   ): Promise<IssuedToken> {
     const renewal = this.tokenRenewals.get(cacheId);
-    if (renewal?.binding === binding) {
+    if (renewal?.binding === binding && renewal.generation === generation) {
       return renewal.promise;
     }
     let promise = this.issueToken(baseUrl, secret);
@@ -583,7 +728,7 @@ export class ServerProfileService {
         this.tokenRenewals.delete(cacheId);
       }
     });
-    this.tokenRenewals.set(cacheId, { binding, promise });
+    this.tokenRenewals.set(cacheId, { binding, generation, promise });
     return promise;
   }
 
@@ -609,7 +754,7 @@ export class ServerProfileService {
           'This server does not support Desktop API keys.',
         );
       }
-      const exchange = await this.parseJson(response, TokenResponse);
+      const exchange = await this.parseJson(response, RemoteTokenResponse);
       const missing = REQUIRED_SCOPES.filter(
         (scope) => !exchange.scopes.includes(scope),
       );
@@ -637,7 +782,7 @@ export class ServerProfileService {
           'This server does not support password login.',
         );
       }
-      const login = await this.parseJson(response, LoginResponse);
+      const login = await this.parseJson(response, RemoteLoginResponse);
       if (!login.success || !login.token || !login.expiresAt) {
         throw new ServerProfileError(
           'AUTHENTICATION_FAILED',
@@ -804,20 +949,66 @@ export class ServerProfileService {
     return result.data;
   }
 
-  private invalidateToken(id: string): void {
+  private currentAuthGeneration(id: string): number {
+    return this.authGenerations.get(id) ?? 0;
+  }
+
+  private authenticationIsCurrent(authentication: AuthenticatedToken): boolean {
+    return (
+      this.currentAuthGeneration(authentication.cacheId) ===
+        authentication.generation &&
+      tokenBindingMatches(
+        this.tokenBindings.get(authentication.cacheId),
+        authentication.binding,
+        authentication.generation,
+      )
+    );
+  }
+
+  private cacheAuthenticatedToken(authentication: AuthenticatedToken): void {
+    if (!this.authenticationIsCurrent(authentication)) {
+      throw authenticationSupersededError();
+    }
+    this.tokens.set(authentication.cacheId, {
+      token: authentication.token,
+      expiresAt: authentication.expiresAt,
+      binding: authentication.binding,
+      generation: authentication.generation,
+    });
+  }
+
+  private invalidateToken(id: string): number {
+    const generation = this.currentAuthGeneration(id) + 1;
+    this.authGenerations.set(id, generation);
     this.tokens.delete(id);
     this.tokenBindings.delete(id);
     this.tokenRenewals.delete(id);
+    return generation;
   }
 
-  private discardTokenBinding(id: string, binding: string): void {
-    if (this.tokens.get(id)?.binding === binding) {
+  private disposeEphemeralAuth(id: string): void {
+    this.invalidateToken(id);
+    this.authGenerations.delete(id);
+  }
+
+  private discardTokenBinding(
+    id: string,
+    binding: string,
+    generation: number,
+  ): void {
+    if (this.currentAuthGeneration(id) === generation) {
+      this.invalidateToken(id);
+      return;
+    }
+    const cached = this.tokens.get(id);
+    if (cached?.binding === binding && cached.generation === generation) {
       this.tokens.delete(id);
     }
-    if (this.tokenBindings.get(id) === binding) {
+    if (tokenBindingMatches(this.tokenBindings.get(id), binding, generation)) {
       this.tokenBindings.delete(id);
     }
-    if (this.tokenRenewals.get(id)?.binding === binding) {
+    const renewal = this.tokenRenewals.get(id);
+    if (renewal?.binding === binding && renewal.generation === generation) {
       this.tokenRenewals.delete(id);
     }
   }
@@ -865,19 +1056,71 @@ export class ServerProfileService {
     }
   }
 
-  private decryptSecret(encrypted: string): StoredSecret {
+  private encryptSecret(
+    profileId: string,
+    baseUrl: string,
+    secret: StoredSecret,
+  ): string {
     this.requireEncryption();
+    const envelope: SecretEnvelope = SecretEnvelope.parse({
+      version: 1,
+      profileId,
+      baseUrl,
+      authMode: secret.authMode,
+      username: secret.authMode === 'password' ? secret.username : null,
+      secret,
+    });
+    return Buffer.from(
+      this.dependencies.secretStorage.encryptString(JSON.stringify(envelope)),
+    ).toString('base64');
+  }
+
+  private decryptSecret(profile: StoredProfile): StoredSecret {
+    this.requireEncryption();
+    let raw: unknown;
     try {
       const plain = this.dependencies.secretStorage.decryptString(
-        Buffer.from(encrypted, 'base64'),
+        Buffer.from(profile.encryptedSecret, 'base64'),
       );
-      return StoredSecret.parse(JSON.parse(plain));
+      raw = JSON.parse(plain) as unknown;
     } catch {
       throw new ServerProfileError(
         'CORRUPT_STORE',
         'A saved server credential could not be decrypted or validated.',
       );
     }
+    if (StoredSecret.safeParse(raw).success) {
+      throw new ServerProfileError(
+        'CORRUPT_STORE',
+        'This profile uses an unsupported feature-branch credential format. Re-enter and save its credentials.',
+      );
+    }
+    const parsed = SecretEnvelope.safeParse(raw);
+    if (!parsed.success) {
+      throw new ServerProfileError(
+        'CORRUPT_STORE',
+        'A saved server credential envelope is invalid.',
+      );
+    }
+    const envelope = parsed.data;
+    const expectedUsername =
+      profile.authMode === 'password' ? (profile.username ?? null) : null;
+    const secretUsername =
+      envelope.secret.authMode === 'password' ? envelope.secret.username : null;
+    if (
+      envelope.profileId !== profile.id ||
+      envelope.baseUrl !== profile.baseUrl ||
+      envelope.authMode !== profile.authMode ||
+      envelope.secret.authMode !== profile.authMode ||
+      envelope.username !== expectedUsername ||
+      secretUsername !== expectedUsername
+    ) {
+      throw new ServerProfileError(
+        'CORRUPT_STORE',
+        'The saved credential does not belong to this server profile. Re-enter its credentials.',
+      );
+    }
+    return envelope.secret;
   }
 
   private async readStore(): Promise<ProfileStore> {
@@ -1084,6 +1327,21 @@ function profileChangedError(): ServerProfileError {
     'VALIDATION_ERROR',
     'The server profile changed while the operation was running. Test it again.',
   );
+}
+
+function authenticationSupersededError(): ServerProfileError {
+  return new ServerProfileError(
+    'VALIDATION_ERROR',
+    'Authentication was cancelled because the server profile changed.',
+  );
+}
+
+function tokenBindingMatches(
+  actual: TokenBinding | undefined,
+  binding: string,
+  generation: number,
+): boolean {
+  return actual?.binding === binding && actual.generation === generation;
 }
 
 function scrubVaultError(error: unknown): ServerProfileError {

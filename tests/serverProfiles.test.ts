@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import {
   ServerProfileError,
   ServerProfileService,
@@ -161,6 +162,36 @@ function encryptedBlob(serializedStore: string): string {
   return match[1];
 }
 
+const MutableProfileStore = z
+  .object({
+    selectedProfileId: z.string().uuid().nullable(),
+    profiles: z.array(z.record(z.unknown())).min(1),
+  })
+  .passthrough();
+
+function mutateStoredProfile(
+  fileSystem: MemoryFileSystem,
+  mutate: (profile: Record<string, unknown>) => void,
+): void {
+  const store = MutableProfileStore.parse(
+    JSON.parse(persistedStore(fileSystem)),
+  );
+  const profile = store.profiles[0]!;
+  const originalId = profile.id;
+  mutate(profile);
+  if (
+    typeof originalId === 'string' &&
+    typeof profile.id === 'string' &&
+    store.selectedProfileId === originalId
+  ) {
+    store.selectedProfileId = profile.id;
+  }
+  fileSystem.files.set(
+    path.join(TEST_USER_DATA_PATH, 'server-profiles.v1.json'),
+    new TextEncoder().encode(JSON.stringify(store)),
+  );
+}
+
 function service(
   fileSystem: MemoryFileSystem,
   fetchImpl = successfulFetch(),
@@ -225,6 +256,46 @@ describe('server profiles', () => {
     expect(fs.renames).toBeGreaterThan(0);
   });
 
+  it('accepts additive remote version, capability, and exchange fields', async () => {
+    const baseline = successfulFetch();
+    const fetchImpl: typeof globalThis.fetch = vi.fn(
+      (input: string | URL | Request, init?: RequestInit) => {
+        switch (requestUrl(input).pathname) {
+          case '/api/system/version':
+            return Promise.resolve(
+              json({ ...VERSION, additiveVersionField: 'future' }),
+            );
+          case '/api/system/capabilities':
+            return Promise.resolve(
+              json({
+                ...CAPABILITIES,
+                additiveCapabilityField: { enabled: true },
+              }),
+            );
+          case '/api/auth/api-key/exchange':
+            return Promise.resolve(
+              json({
+                token: 'future-jwt',
+                expiresAt: new Date(NOW + 15 * 60_000).toISOString(),
+                scopes: ['ModelRead', 'ModelWrite', 'LibrarySync'],
+                additiveExchangeField: 'future',
+              }),
+            );
+          default:
+            return baseline(input, init);
+        }
+      },
+    );
+
+    await expect(
+      service(new MemoryFileSystem(), fetchImpl).save(apiKeyDraft()),
+    ).resolves.toMatchObject({
+      status: 'connected',
+      version: { service: 'Farm.Web.Api' },
+      capabilities: { architecture: 'Integrated' },
+    });
+  });
+
   it('deleting a profile removes its encrypted secret and cached token', async () => {
     const fs = new MemoryFileSystem();
     const profiles = service(fs);
@@ -242,6 +313,72 @@ describe('server profiles', () => {
       .map((value) => new TextDecoder().decode(value))
       .join('');
     expect(persisted).not.toContain('encryptedSecret');
+  });
+
+  it.each([
+    [
+      'base URL',
+      (profile: Record<string, unknown>) => {
+        profile.baseUrl = 'https://redirected.example';
+        return profile.id as string;
+      },
+    ],
+    [
+      'profile ID',
+      (profile: Record<string, unknown>) => {
+        profile.id = '33333333-3333-4333-8333-333333333333';
+        return profile.id as string;
+      },
+    ],
+    [
+      'authentication mode',
+      (profile: Record<string, unknown>) => {
+        profile.authMode = 'password';
+        profile.username = 'redirected-user';
+        return profile.id as string;
+      },
+    ],
+  ] as const)(
+    'rejects %s tampering before sending stored credentials',
+    async (_field, tamper) => {
+      const fs = new MemoryFileSystem();
+      const fetchImpl = successfulFetch();
+      const profiles = service(fs, fetchImpl);
+      await profiles.save(apiKeyDraft());
+      const requestsBeforeTamper = vi.mocked(fetchImpl).mock.calls.length;
+      let requestedId = '';
+      mutateStoredProfile(fs, (profile) => {
+        requestedId = tamper(profile);
+      });
+
+      await expect(profiles.getToken(requestedId)).rejects.toMatchObject({
+        code: 'CORRUPT_STORE',
+      });
+      expect(vi.mocked(fetchImpl).mock.calls).toHaveLength(
+        requestsBeforeTamper,
+      );
+    },
+  );
+
+  it('reports the previous feature-branch credential format without using it', async () => {
+    const fs = new MemoryFileSystem();
+    const fetchImpl = successfulFetch();
+    const profiles = service(fs, fetchImpl);
+    const saved = await profiles.save(apiKeyDraft());
+    const requestsBeforeTamper = vi.mocked(fetchImpl).mock.calls.length;
+    const legacyEncryptedSecret = Buffer.from(
+      secureStorage.encryptString(
+        JSON.stringify({ authMode: 'apiKey', apiKey: 'legacy-key' }),
+      ),
+    ).toString('base64');
+    mutateStoredProfile(fs, (profile) => {
+      profile.encryptedSecret = legacyEncryptedSecret;
+    });
+
+    await expect(profiles.getToken(saved.id)).rejects.toThrow(
+      /unsupported feature-branch credential format/i,
+    );
+    expect(vi.mocked(fetchImpl).mock.calls).toHaveLength(requestsBeforeTamper);
   });
 
   it('fails closed without OS encryption and does not make a request', async () => {
@@ -287,6 +424,7 @@ describe('server profiles', () => {
               token: 'password-jwt',
               expiresAt: new Date(NOW + 15 * 60_000).toISOString(),
               user: { id: 'operator' },
+              additiveLoginField: { refreshSupported: false },
             }),
           );
         }
@@ -346,6 +484,79 @@ describe('server profiles', () => {
       'short-lived-jwt',
     ]);
     expect(exchanges).toBe(2);
+  });
+
+  it('keeps a saved token cached after a draft test reuses its profile ID', async () => {
+    const fs = new MemoryFileSystem();
+    let exchanges = 0;
+    const profiles = service(
+      fs,
+      successfulFetch((url) => {
+        if (url.pathname === '/api/auth/api-key/exchange') exchanges += 1;
+      }),
+    );
+    const saved = await profiles.save(apiKeyDraft());
+
+    await profiles.test({
+      source: 'draft',
+      draft: apiKeyDraft({ id: saved.id }),
+    });
+    await expect(profiles.getToken(saved.id)).resolves.toBe('short-lived-jwt');
+
+    expect(exchanges).toBe(2);
+  });
+
+  it('isolates a concurrent draft probe from a saved-profile renewal', async () => {
+    const fs = new MemoryFileSystem();
+    let currentTime = NOW;
+    let exchanges = 0;
+    const renewalReached = deferred<void>();
+    const renewalGate = deferred<Response>();
+    const baseline = successfulFetch();
+    const fetchImpl: typeof globalThis.fetch = vi.fn(
+      (input: string | URL | Request, init?: RequestInit) => {
+        if (requestUrl(input).pathname === '/api/auth/api-key/exchange') {
+          exchanges += 1;
+          if (exchanges === 2) {
+            renewalReached.resolve();
+            return renewalGate.promise;
+          }
+          return Promise.resolve(
+            json({
+              token: exchanges === 3 ? 'draft-jwt' : 'saved-jwt',
+              expiresAt: new Date(currentTime + 15 * 60_000).toISOString(),
+              scopes: ['ModelRead', 'ModelWrite', 'LibrarySync'],
+            }),
+          );
+        }
+        return baseline(input, init);
+      },
+    );
+    const profiles = service(fs, fetchImpl, () => currentTime);
+    const saved = await profiles.save(apiKeyDraft());
+    currentTime += 14 * 60_000 + 1;
+
+    const renewal = profiles.getToken(saved.id);
+    await renewalReached.promise;
+    await expect(
+      profiles.test({
+        source: 'draft',
+        draft: apiKeyDraft({ id: saved.id }),
+      }),
+    ).resolves.toMatchObject({ id: saved.id, status: 'connected' });
+    renewalGate.resolve(
+      json({
+        token: 'renewed-saved-jwt',
+        expiresAt: new Date(currentTime + 15 * 60_000).toISOString(),
+        scopes: ['ModelRead', 'ModelWrite', 'LibrarySync'],
+      }),
+    );
+
+    await expect(renewal).resolves.toBe('renewed-saved-jwt');
+    await expect(profiles.getToken(saved.id)).resolves.toBe(
+      'renewed-saved-jwt',
+    );
+    expect(exchanges).toBe(3);
   });
 
   it('rejects a gated token renewal when the profile is deleted', async () => {
@@ -472,6 +683,55 @@ describe('server profiles', () => {
 
     expect(exchanges).toBe(2);
     expect(currentUserChecks).toBe(2);
+  });
+
+  it('discards an older renewal after a forced saved-profile probe', async () => {
+    const fs = new MemoryFileSystem();
+    let currentTime = NOW;
+    let exchanges = 0;
+    const renewalReached = deferred<void>();
+    const renewalGate = deferred<Response>();
+    const baseline = successfulFetch();
+    const fetchImpl: typeof globalThis.fetch = vi.fn(
+      (input: string | URL | Request, init?: RequestInit) => {
+        if (requestUrl(input).pathname === '/api/auth/api-key/exchange') {
+          exchanges += 1;
+          if (exchanges === 2) {
+            renewalReached.resolve();
+            return renewalGate.promise;
+          }
+          return Promise.resolve(
+            json({
+              token: exchanges === 3 ? 'forced-probe-jwt' : 'initial-jwt',
+              expiresAt: new Date(currentTime + 15 * 60_000).toISOString(),
+              scopes: ['ModelRead', 'ModelWrite', 'LibrarySync'],
+            }),
+          );
+        }
+        return baseline(input, init);
+      },
+    );
+    const profiles = service(fs, fetchImpl, () => currentTime);
+    const saved = await profiles.save(apiKeyDraft());
+    currentTime += 14 * 60_000 + 1;
+
+    const oldRenewal = profiles.getToken(saved.id);
+    const oldRenewalResult = expect(oldRenewal).rejects.toMatchObject({
+      code: 'VALIDATION_ERROR',
+    });
+    await renewalReached.promise;
+    await profiles.test({ source: 'saved', id: saved.id });
+    renewalGate.resolve(
+      json({
+        token: 'superseded-renewal-jwt',
+        expiresAt: new Date(currentTime + 15 * 60_000).toISOString(),
+        scopes: ['ModelRead', 'ModelWrite', 'LibrarySync'],
+      }),
+    );
+
+    await oldRenewalResult;
+    await expect(profiles.getToken(saved.id)).resolves.toBe('forced-probe-jwt');
+    expect(exchanges).toBe(3);
   });
 
   it('rebinds cached authentication when URL and credentials are replaced', async () => {

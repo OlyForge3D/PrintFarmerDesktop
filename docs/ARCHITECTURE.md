@@ -48,8 +48,12 @@ rename. Profile mutations are serialized and network retests use configuration
 revisions so a stale result cannot overwrite an update or resurrect a deleted
 credential. API keys and passwords are encrypted with Electron `safeStorage`;
 the main process refuses to save them when OS-backed encryption is unavailable.
-JWTs exist only in main-process memory and are reissued before expiration. A
-renewed token is returned only after the profile revision is revalidated.
+The encrypted envelope binds each secret to its profile ID, normalized server
+URL, authentication mode, and username identity. JWTs exist only in
+main-process memory and are reissued before expiration. Per-profile
+authentication generations prevent superseded renewals from caching or
+returning tokens; a renewed token is returned only after the profile revision is
+revalidated. Draft probes use isolated ephemeral authentication identities.
 
 The App owns ordered profile-list reconciliation, including mutations that
 finish after the profile dialog closes. A synchronous modal owner coordinates
@@ -63,3 +67,5 @@ capability/version endpoint is treated as legacy and requires explicit user
 confirmation. Legacy availability exposes only the conservative model-file and
 server-thumbnail fallback; modern idempotent upload, client thumbnails, and
 library sync stay gated. HTTPS certificate verification is never bypassed.
+Remote DTO parsers tolerate additive server fields, then transform responses
+into the strict internal IPC/profile models.

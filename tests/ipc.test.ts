@@ -52,6 +52,15 @@ describe('ipc contract', () => {
         allowLegacy: false,
       }),
     ).toThrow();
+    expect(() =>
+      ipcSchemas[IpcChannel.SaveServerProfile].request.parse({
+        displayName: 'Farm',
+        baseUrl: 'https://farm.example',
+        credentials: { authMode: 'apiKey', apiKey: 'secret' },
+        allowLegacy: false,
+        additiveRendererField: true,
+      }),
+    ).toThrow();
   });
 
   it('normalizes nullable and older omitted capability fields conservatively', () => {
