@@ -156,6 +156,14 @@ pub struct VendorParts {
     pub thumbnails: Vec<String>,
 }
 
+/// One embedded plate thumbnail, carrying both its ZIP part name and PNG bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlateThumbnail {
+    pub part_name: String,
+    pub plate_index: Option<u32>,
+    pub png_bytes: Vec<u8>,
+}
+
 /// The full vendor metadata extracted from a slicer 3MF project.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VendorMetadata {
@@ -352,6 +360,47 @@ fn collect_parts<R: Read + Seek>(archive: &mut ZipArchive<R>) -> VendorParts {
 pub fn read_part_bytes(data: &[u8], part_name: &str) -> Result<Option<Vec<u8>>, ThreeMfError> {
     let mut archive = ZipArchive::new(Cursor::new(data))?;
     threemf::read_entry_bytes(&mut archive, part_name)
+}
+
+fn enumerate_thumbnail_parts(data: &[u8]) -> Result<Vec<String>, ThreeMfError> {
+    let mut archive = ZipArchive::new(Cursor::new(data))?;
+    Ok(collect_parts(&mut archive).thumbnails)
+}
+
+fn plate_index_from_part_name(part_name: &str) -> Option<u32> {
+    let file_name = Path::new(part_name).file_name()?.to_string_lossy();
+    let lower = file_name.to_ascii_lowercase();
+    let stem = lower.strip_suffix(".png")?;
+    let digits = stem.strip_prefix("plate_")?;
+    digits.parse::<u32>().ok()
+}
+
+/// Enumerate all embedded PNG thumbnails and return each one's ZIP part name,
+/// inferred plate index (when the part follows `plate_<n>.png`), and PNG bytes.
+///
+/// Extraction intentionally reuses [`read_part_bytes`] for each enumerated part
+/// so the public one-shot reader remains the single ZIP-entry byte path.
+pub fn read_plate_thumbnails(data: &[u8]) -> Result<Vec<PlateThumbnail>, ThreeMfError> {
+    let mut thumbnails = Vec::new();
+    for part_name in enumerate_thumbnail_parts(data)? {
+        let Some(png_bytes) = read_part_bytes(data, &part_name)? else {
+            return Err(ThreeMfError::Malformed(format!(
+                "enumerated thumbnail part '{part_name}' could not be re-read"
+            )));
+        };
+        thumbnails.push(PlateThumbnail {
+            plate_index: plate_index_from_part_name(&part_name),
+            part_name,
+            png_bytes,
+        });
+    }
+    Ok(thumbnails)
+}
+
+/// Read all embedded plate thumbnails from a 3MF file on disk.
+pub fn read_plate_thumbnails_file(path: &Path) -> Result<Vec<PlateThumbnail>, ThreeMfError> {
+    let data = std::fs::read(path)?;
+    read_plate_thumbnails(&data)
 }
 
 /// Whether a package appears to be a slicer project (has any known vendor part).
@@ -577,6 +626,30 @@ mod tests {
         assert_eq!(bytes.as_deref(), Some(png_a.as_slice()));
         let missing = read_part_bytes(&zip, "Metadata/nope.png").unwrap();
         assert_eq!(missing, None);
+    }
+
+    #[test]
+    fn reads_plate_thumbnails_with_part_names_and_indices() {
+        let png_a = b"\x89PNG\r\n\x1a\nAAA".to_vec();
+        let png_b = b"\x89PNG\r\n\x1a\nBBB".to_vec();
+        let zip = build_zip(&[
+            ("_rels/.rels", RELS.as_bytes()),
+            (
+                "3D/3dmodel.model",
+                model_with_metadata("BambuStudio-01.08.00.55").as_bytes(),
+            ),
+            ("Metadata/plate_2.png", &png_b),
+            ("Metadata/plate_1.png", &png_a),
+        ]);
+
+        let thumbnails = read_plate_thumbnails(&zip).unwrap();
+        assert_eq!(thumbnails.len(), 2);
+        assert_eq!(thumbnails[0].part_name, "Metadata/plate_1.png");
+        assert_eq!(thumbnails[0].plate_index, Some(1));
+        assert_eq!(thumbnails[0].png_bytes, png_a);
+        assert_eq!(thumbnails[1].part_name, "Metadata/plate_2.png");
+        assert_eq!(thumbnails[1].plate_index, Some(2));
+        assert_eq!(thumbnails[1].png_bytes, png_b);
     }
 
     #[test]

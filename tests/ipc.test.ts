@@ -340,6 +340,46 @@ describe('ipc contract', () => {
     ).toThrow();
   });
 
+  it('accepts a valid extract-vendor-plate-thumbnails request', () => {
+    const value = ipcSchemas[
+      IpcChannel.ExtractVendorPlateThumbnails
+    ].request.parse({
+      path: 'C:\\models\\project.3mf',
+    });
+    expect(value.path).toContain('project.3mf');
+  });
+
+  it('accepts a vendor plate thumbnails response', () => {
+    const value = ipcSchemas[
+      IpcChannel.ExtractVendorPlateThumbnails
+    ].response.parse({
+      thumbnails: [
+        {
+          partName: 'Metadata/plate_1.png',
+          plateIndex: 1,
+          pngBase64: 'iVBORw0KGgo=',
+        },
+      ],
+    });
+    expect(value.thumbnails[0]).toMatchObject({
+      partName: 'Metadata/plate_1.png',
+      plateIndex: 1,
+    });
+  });
+
+  it('rejects a vendor plate thumbnail response with an empty png', () => {
+    expect(() =>
+      ipcSchemas[IpcChannel.ExtractVendorPlateThumbnails].response.parse({
+        thumbnails: [
+          {
+            partName: 'Metadata/plate_1.png',
+            pngBase64: '',
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
   it('accepts a valid render-thumbnail request with a size', () => {
     const value = ipcSchemas[IpcChannel.RenderThumbnail].request.parse({
       path: 'C:\\models\\part.stl',

@@ -99,6 +99,20 @@ export function registerIpcHandlers(
   );
 
   ipcMain.handle(
+    IpcChannel.ExtractVendorPlateThumbnails,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.ExtractVendorPlateThumbnails].request.parse(
+          rawRequest,
+        );
+      const raw = await sidecar.extractVendorPlateThumbnails(request.path);
+      return ipcSchemas[IpcChannel.ExtractVendorPlateThumbnails].response.parse(
+        raw,
+      );
+    },
+  );
+
+  ipcMain.handle(
     IpcChannel.RenderThumbnail,
     async (_event, rawRequest: unknown) => {
       const request =
