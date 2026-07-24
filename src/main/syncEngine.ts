@@ -43,7 +43,7 @@ export interface SyncProfileService {
     profiles: ServerProfile[];
     selectedProfileId: string | null;
   }>;
-  getAuthenticatedContext?(
+  getAuthenticatedServerContext?(
     profileId: string,
     expectedBaseUrl?: string,
   ): Promise<{ baseUrl: string; binding: string }>;
@@ -97,6 +97,7 @@ export interface SyncSidecar {
   ): Promise<SidecarEntityRevision | null>;
   getRemoteModelLink(
     profileId: string,
+    serverBinding: string,
     localModelHash: string,
   ): Promise<SidecarRemoteModelLink | null>;
   listOutboundOperations(
@@ -743,7 +744,11 @@ export class PrintFarmerSyncEngine {
     const groups = groupBatches(uncertain);
     for (const operations of groups) {
       this.assertCurrent(profile.id, generation, signal);
-      const translated = await this.translateOperations(profile.id, operations);
+      const translated = await this.translateOperations(
+        profile.id,
+        profileBinding,
+        operations,
+      );
       const effects = await Promise.all(
         translated.map(({ wire }) =>
           this.remoteEffectMatches(profile, wire, signal),
@@ -789,6 +794,7 @@ export class PrintFarmerSyncEngine {
       try {
         translated = await this.translateOperations(
           profile.id,
+          profileBinding,
           claimed.operations,
         );
       } catch {
@@ -920,6 +926,7 @@ export class PrintFarmerSyncEngine {
 
   private async translateOperations(
     profileId: string,
+    profileBinding: string,
     operations: SidecarOutboundOperation[],
   ): Promise<TranslatedOperation[]> {
     const createdCollections = new Map<string, string>();
@@ -971,6 +978,7 @@ export class PrintFarmerSyncEngine {
         const modelHash = readString(payload, 'modelHash');
         const link = await this.sidecar.getRemoteModelLink(
           profileId,
+          profileBinding,
           modelHash,
         );
         if (link?.uploadStatus !== 'uploaded') {
@@ -1116,8 +1124,11 @@ export class PrintFarmerSyncEngine {
   private async authenticatedContext(
     profile: ServerProfile,
   ): Promise<{ binding: string }> {
-    if (this.profiles.getAuthenticatedContext) {
-      return this.profiles.getAuthenticatedContext(profile.id, profile.baseUrl);
+    if (this.profiles.getAuthenticatedServerContext) {
+      return this.profiles.getAuthenticatedServerContext(
+        profile.id,
+        profile.baseUrl,
+      );
     }
     return {
       binding: createHash('sha256')

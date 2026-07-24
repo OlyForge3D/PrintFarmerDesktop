@@ -8,6 +8,7 @@ export type SourceRootStatus = 'available' | 'offline' | 'missing';
 export interface StoredSourceRoot {
   rootId: string;
   path: string;
+  approvalId?: string | null;
   removed?: boolean;
   lastReport?: ReconcileReport | null;
   lastScannedAt?: string | null;
@@ -16,6 +17,7 @@ export interface StoredSourceRoot {
 export interface SourceRootSummary {
   rootId: string;
   path: string;
+  approvalId: string | null;
   label: string;
   status: SourceRootStatus;
   totalModels: number;
@@ -152,6 +154,8 @@ export function summarizeSourceRoots(
       return {
         rootId: root.rootId,
         path,
+        approvalId:
+          typeof root.approvalId === 'string' ? root.approvalId : null,
         label: basename(path) || path,
         status,
         totalModels: derived?.totalModels ?? 0,

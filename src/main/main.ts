@@ -25,6 +25,11 @@ let sharedProfiles: ServerProfileService | null = null;
 let shutdownStarted = false;
 let cleanupComplete = false;
 
+const userDataOverride = process.env.PRINTFARMER_USER_DATA_PATH;
+if (userDataOverride) {
+  app.setPath('userData', path.resolve(userDataOverride));
+}
+
 const createMainWindow = (): void => {
   const iconPath = resolveAppIconPath(
     app.getAppPath(),

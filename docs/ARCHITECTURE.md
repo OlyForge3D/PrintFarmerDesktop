@@ -26,7 +26,9 @@ or uploads source models without an explicit user action.
 
 All renderer↔main messages are defined once in `src/shared/ipc.ts` with Zod
 schemas. The main process validates every request and response; the renderer
-gets static types. Bump `IPC_CONTRACT_VERSION` on any breaking change.
+gets static types. Desktop IPC is currently version 2. It is intentionally
+independent from the Rust sidecar RPC handshake, which remains protocol version
+1; bump each constant only for changes to its own wire boundary.
 
 ## Data model
 
@@ -63,8 +65,8 @@ probes use isolated ephemeral authentication identities.
 
 The App owns ordered profile-list reconciliation, including mutations that
 finish after the profile dialog closes. A synchronous modal owner coordinates
-profile, import, file-picker, and preview entry so asynchronous preparation
-cannot overlap or later remount another modal.
+profile, import, file-picker, preview, and upload-queue entry so asynchronous
+preparation cannot overlap or later remount another modal.
 
 The main process probes the anonymous version and capability endpoints and
 publishes only redacted profile metadata plus explicit feature availability.
@@ -75,3 +77,46 @@ server-thumbnail fallback; modern idempotent upload, client thumbnails, and
 library sync stay gated. HTTPS certificate verification is never bypassed.
 Remote DTO parsers tolerate additive server fields, then transform responses
 into the strict internal IPC/profile models.
+
+Model uploads are durable main-process jobs. The renderer submits only a
+profile ID and catalog SHA-256 identities; main resolves and re-verifies an
+available catalog location, acquires JWTs, streams bounded multipart requests,
+and persists progress atomically under `userData`. Modern jobs retain one
+client upload ID per item for safe retry. Confirmed legacy servers omit client
+IDs and client thumbnails, and interrupted active uploads become explicitly
+uncertain because retrying can create a duplicate. Successful jobs persist the
+profile-scoped remote-model link through the sidecar before reporting success.
+
+Folder access is separately authorized by the native picker. Main persists
+canonical roots and gives the renderer opaque approval IDs; scan, preview,
+import, and upload operations reject renderer-supplied paths or catalog
+locations outside an approved path boundary. Existing catalog roots require
+reauthorization. Model parsing and thumbnail RPCs likewise accept only files
+under an approved root or the exact canonical file returned by the native file
+picker.
+
+Before network I/O, main rejects symlink sources and copies one securely opened
+file handle through bounded SHA-256 verification into a private per-job
+snapshot. Multipart streaming reads only that immutable snapshot and always
+tears down its writer before releasing scheduler capacity. State transitions
+to uploading are copy-on-write atomic checkpoints. Profile revision and auth
+generation are revalidated immediately before send; a conditional 401 refresh
+can retry one modern request with the same durable profile/hash upload
+identity. Legacy ambiguity requires a separate duplicate-risk confirmation.
+Queue reset is deliberate and retains the previous store as a backup.
+
+Upload source approval returns one verified file handle: main compares
+canonical paths and lstat/fstat identities before and after opening, without
+case folding, using lossless bigint device/file IDs, and snapshot hashing reads
+only that handle. Startup removes only well-formed stale snapshot directories.
+Queue generations fence initialization, scheduler claims, long-running starts,
+workers, progress, reset, and removal. Reset preserves the separate durable
+modern upload identities. Remote links are keyed and persisted in Rust/SQLite
+by profile, immutable server binding, and local hash; only uploaded,
+exact-binding links suppress transfer. Pre-migration unbound links require
+explicit duplicate-risk resolution; confirming one adopts the current
+authenticated server binding for the whole job rather than retrying against
+the placeholder binding, and already-succeeded items are never re-flagged as
+duplicate risk on a later restart. Profile endpoint changes await old workers
+before purging only the old binding. Approval reset is a separate confirmed
+user action.
