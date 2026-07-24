@@ -16,6 +16,7 @@ import type {
   ServerProfile,
 } from '@shared/ipc';
 import { rootIdForPath } from '../src/renderer/library/model.js';
+import type { SceneMesh } from '../src/renderer/viewer/types.js';
 
 vi.mock('../src/renderer/viewer/PreviewWorkspace.js', () => ({
   PreviewWorkspace: ({
@@ -28,7 +29,7 @@ vi.mock('../src/renderer/viewer/PreviewWorkspace.js', () => ({
     name: string;
     loading: boolean;
     error: string | null;
-    mesh: LoadSceneResponse | null;
+    mesh: SceneMesh | null;
     onClose: () => void;
   }) => (
     <section role="dialog" aria-label={`3D preview of ${name}`}>
