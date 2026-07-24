@@ -4,6 +4,12 @@ import type {
   ServerProfile,
 } from '@shared/ipc';
 import type { FilterKey } from './filter';
+import {
+  reconcileDetails,
+  reconcileHeadline,
+  type SourceRootSummary,
+} from './sourceRoots';
+import type { LibraryScanActivity } from './useLibrary';
 import { Icon, type IconName } from '../ui/Icon';
 
 export const FILTER_LABELS: Record<FilterKey, string> = {
@@ -53,10 +59,14 @@ export interface LibrarySidebarProps {
   lastReport: ReconcileReport | null;
   lastImport: ImportRootResponse | null;
   busy: boolean;
+  sourceRoots: SourceRootSummary[];
+  scanActivity: LibraryScanActivity;
   onQueryChange: (query: string) => void;
   onFilterChange: (filter: FilterKey) => void;
   onAddFolder: () => void;
   onRefresh: () => void;
+  onRescanRoot: (rootId: string) => void;
+  onRemoveRoot: (rootId: string) => void;
   serverProfile: ServerProfile | null;
   serverProfilesDisabled: boolean;
   onManageServerProfiles: () => void;
@@ -91,10 +101,14 @@ export function LibrarySidebar({
   lastReport,
   lastImport,
   busy,
+  sourceRoots,
+  scanActivity,
   onQueryChange,
   onFilterChange,
   onAddFolder,
   onRefresh,
+  onRescanRoot,
+  onRemoveRoot,
   serverProfile,
   serverProfilesDisabled,
   onManageServerProfiles,
@@ -170,6 +184,13 @@ export function LibrarySidebar({
           scanningFolder={scanningFolder}
           lastReport={lastReport}
           lastImport={lastImport}
+          scanActivity={scanActivity}
+        />
+        <SourceRootList
+          roots={sourceRoots}
+          busy={busy}
+          onRescanRoot={onRescanRoot}
+          onRemoveRoot={onRemoveRoot}
         />
       </div>
       <div className="sidebar-server">
@@ -257,31 +278,145 @@ function SidebarStatus({
   scanningFolder,
   lastReport,
   lastImport,
+  scanActivity,
 }: Pick<
   LibrarySidebarProps,
-  'scanningFolder' | 'lastReport' | 'lastImport'
+  'scanningFolder' | 'lastReport' | 'lastImport' | 'scanActivity'
 >): React.JSX.Element {
-  if (scanningFolder) {
+  const report = lastImport?.report ?? lastReport;
+  if (scanActivity.phase !== 'idle') {
     return (
-      <p className="sidebar-status" role="status" aria-live="polite">
-        Scanning <strong>{scanningFolder}</strong>
-      </p>
+      <div
+        className="sidebar-status sidebar-progress"
+        role="status"
+        aria-live="polite"
+      >
+        <div className="sidebar-progress-header">
+          <strong>
+            {scanActivity.phase === 'preparing'
+              ? 'Preparing source'
+              : 'Scanning library'}
+          </strong>
+          <span>
+            {scanActivity.estimatedTotal !== null
+              ? `${scanActivity.estimatedTotal} known models`
+              : 'Estimated progress'}
+          </span>
+        </div>
+        <progress aria-label="Scan progress" />
+        <p>
+          {scanActivity.label ??
+            `Scanning ${scanningFolder ?? 'selected folder'}`}
+        </p>
+      </div>
     );
   }
   if (lastImport) {
     return (
-      <p className="sidebar-status" role="status" aria-live="polite">
-        Last import: {lastImport.modelsOrganized} organized,{' '}
-        {lastImport.report.added} added
-      </p>
+      <div className="sidebar-status" role="status" aria-live="polite">
+        <strong>Last import</strong>
+        <span>
+          {lastImport.modelsOrganized} organized • {lastImport.report.added}{' '}
+          added
+        </span>
+      </div>
     );
   }
-  if (lastReport) {
+  return (
+    <div className="sidebar-status" role="status" aria-live="polite">
+      <strong>{reconcileHeadline(report)}</strong>
+      <span>
+        {reconcileDetails(report) ?? 'Catalog is local to this computer.'}
+      </span>
+    </div>
+  );
+}
+
+function SourceRootList({
+  roots,
+  busy,
+  onRescanRoot,
+  onRemoveRoot,
+}: Pick<LibrarySidebarProps, 'busy' | 'onRescanRoot' | 'onRemoveRoot'> & {
+  roots: SourceRootSummary[];
+}): React.JSX.Element {
+  if (roots.length === 0) {
     return (
-      <p className="sidebar-status" role="status" aria-live="polite">
-        Last scan: {lastReport.added} added, {lastReport.changed} changed
+      <p className="sidebar-root-empty">
+        No source folders yet. Add one to start indexing STL, 3MF, and OBJ
+        files.
       </p>
     );
   }
-  return <p className="sidebar-status">Catalog is local to this computer.</p>;
+
+  return (
+    <>
+      <ul className="source-root-list" aria-label="Source roots">
+        {roots.map((root) => (
+          <li key={root.rootId} className={`source-root-item ${root.status}`}>
+            <div className="source-root-summary">
+              <span
+                className={`source-root-dot ${root.status}`}
+                aria-hidden="true"
+              />
+              <div>
+                <strong>{root.label}</strong>
+                <span className="source-root-state">
+                  {sourceRootStateLabel(root)}
+                </span>
+                <small title={root.path}>{root.path}</small>
+                <small>{sourceRootDetail(root)}</small>
+              </div>
+            </div>
+            <div className="source-root-actions">
+              <button
+                type="button"
+                className="source-root-action"
+                disabled={busy}
+                onClick={() => onRescanRoot(root.rootId)}
+              >
+                {root.status === 'available' ? 'Scan again' : 'Reconnect'}
+              </button>
+              <button
+                type="button"
+                className="source-root-action ghost"
+                disabled={busy}
+                aria-label={`Remove ${root.label}`}
+                onClick={() => onRemoveRoot(root.rootId)}
+              >
+                Remove
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+      <p className="sidebar-root-footnote">
+        Source availability is estimated from indexed file paths until the
+        sidecar exposes root-level health and delete APIs.
+      </p>
+    </>
+  );
+}
+
+function sourceRootStateLabel(root: SourceRootSummary): string {
+  switch (root.status) {
+    case 'available':
+      return 'Available';
+    case 'missing':
+      return 'Missing files';
+    case 'offline':
+      return 'Needs scan';
+    default:
+      return 'Unknown';
+  }
+}
+
+function sourceRootDetail(root: SourceRootSummary): string {
+  if (root.status === 'missing' && root.missingLocations > 0) {
+    return `${root.missingLocations} unavailable file locations`;
+  }
+  if (root.totalModels > 0) {
+    return `${root.availableModels} of ${root.totalModels} models available`;
+  }
+  return root.lastReport ? reconcileHeadline(root.lastReport) : 'Ready to scan';
 }

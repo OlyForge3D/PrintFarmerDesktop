@@ -134,6 +134,7 @@ describe('library model helpers', () => {
 describe('useLibrary', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    window.localStorage.clear();
   });
 
   it('loads the persisted catalog on mount', async () => {
@@ -466,6 +467,67 @@ describe('useLibrary', () => {
 
     expect(previewImport).not.toHaveBeenCalled();
     expect(importRoot).not.toHaveBeenCalled();
+  });
+
+  it('tracks source root status and reconnects a missing root', async () => {
+    const missingModel = model({
+      locations: [
+        {
+          rootId: 'root-1',
+          path: 'C:\\models\\widget.stl',
+          rootRelative: 'widget.stl',
+          size: 2048,
+          available: false,
+        },
+      ],
+    });
+    const availableModel = model();
+    const listModels = vi
+      .fn()
+      .mockResolvedValueOnce([missingModel])
+      .mockResolvedValueOnce([availableModel]);
+    const scanRoot = vi.fn().mockResolvedValue({
+      added: 0,
+      changed: 0,
+      unchanged: 1,
+      missing: 0,
+      hashErrors: 0,
+    });
+    installApi({ listModels, scanRoot });
+
+    const { result } = renderHook(() => useLibrary());
+    await waitFor(() => expect(result.current.sourceRoots).toHaveLength(1));
+
+    expect(result.current.sourceRoots[0]).toMatchObject({
+      path: 'C:\\models',
+      status: 'missing',
+      totalModels: 1,
+    });
+
+    await act(async () => {
+      await result.current.rescanRoot('root-1');
+    });
+
+    expect(scanRoot).toHaveBeenCalledWith({
+      rootId: 'root-1',
+      path: 'C:\\models',
+    });
+    expect(result.current.lastReport?.unchanged).toBe(1);
+    expect(result.current.sourceRoots[0]?.status).toBe('available');
+  });
+
+  it('hides removed source roots locally from the library surface', async () => {
+    installApi({ listModels: vi.fn().mockResolvedValue([model()]) });
+
+    const { result } = renderHook(() => useLibrary());
+    await waitFor(() => expect(result.current.models).toHaveLength(1));
+
+    act(() => {
+      result.current.removeRoot('root-1');
+    });
+
+    expect(result.current.models).toEqual([]);
+    expect(result.current.sourceRoots).toEqual([]);
   });
 
   it('surfaces an error when the catalog cannot be read', async () => {
@@ -831,7 +893,12 @@ describe('smart import', () => {
 });
 
 describe('selectLibraryView', () => {
-  const stl = (name: string, size: number, available = true): LogicalModel =>
+  const stl = (
+    name: string,
+    size: number,
+    available = true,
+    overrides: Partial<LogicalModel> = {},
+  ): LogicalModel =>
     model({
       hash: `h-${name}`,
       size,
@@ -844,6 +911,7 @@ describe('selectLibraryView', () => {
           available,
         },
       ],
+      ...overrides,
     });
 
   const dup = model({
@@ -890,11 +958,70 @@ describe('selectLibraryView', () => {
     const byName = selectLibraryView(models, defaultLibraryView);
     expect(byName.map((m) => modelDisplayName(m))[0]).toBe('alpha.stl');
 
+    const byNameDesc = selectLibraryView(models, {
+      ...defaultLibraryView,
+      sort: 'name-desc',
+    });
+    expect(byNameDesc.map((m) => modelDisplayName(m))[0]).toBe('gone.stl');
+
+    const bySizeAsc = selectLibraryView(models, {
+      ...defaultLibraryView,
+      sort: 'size-asc',
+    });
+    expect(bySizeAsc.map((m) => m.hash)).toEqual([
+      'h-dup',
+      'h-alpha.stl',
+      'h-gone.stl',
+      'h-beta.stl',
+    ]);
+
     const bySize = selectLibraryView(models, {
       ...defaultLibraryView,
-      sort: 'size',
+      sort: 'size-desc',
     });
     expect(bySize[0]?.size).toBe(300);
+  });
+
+  it('sorts by newest and oldest modified date when timestamps are present', () => {
+    const dated = [
+      stl('old.stl', 10, true, {
+        locations: [
+          {
+            rootId: 'r',
+            path: 'C:\\models\\old.stl',
+            rootRelative: 'old.stl',
+            size: 10,
+            modifiedUnixSeconds: 1,
+            available: true,
+          },
+        ],
+      }),
+      stl('new.stl', 10, true, {
+        locations: [
+          {
+            rootId: 'r',
+            path: 'C:\\models\\new.stl',
+            rootRelative: 'new.stl',
+            size: 10,
+            modifiedUnixSeconds: 10,
+            available: true,
+          },
+        ],
+      }),
+      stl('unknown.stl', 10, true),
+    ];
+
+    expect(
+      selectLibraryView(dated, {
+        ...defaultLibraryView,
+        sort: 'date-desc',
+      }).map((item) => modelDisplayName(item)),
+    ).toEqual(['new.stl', 'old.stl', 'unknown.stl']);
+    expect(
+      selectLibraryView(dated, { ...defaultLibraryView, sort: 'date-asc' }).map(
+        (item) => modelDisplayName(item),
+      ),
+    ).toEqual(['old.stl', 'new.stl', 'unknown.stl']);
   });
 
   it('filters to favorites using the provided hash set', () => {
@@ -911,6 +1038,20 @@ describe('selectLibraryView', () => {
     expect(
       selectLibraryView(models, { ...defaultLibraryView, filter: 'favorites' }),
     ).toHaveLength(0);
+  });
+
+  it('filters to missing files and to duplicates', () => {
+    const missing = selectLibraryView(models, {
+      ...defaultLibraryView,
+      filter: 'missing',
+    });
+    expect(missing.map((m) => m.hash)).toEqual(['h-gone.stl']);
+
+    const duplicates = selectLibraryView(models, {
+      ...defaultLibraryView,
+      filter: 'duplicates',
+    });
+    expect(duplicates.map((m) => m.hash)).toEqual(['h-dup']);
   });
 
   it('filters by model format and searches physical paths', () => {
@@ -947,33 +1088,47 @@ describe('selectLibraryView', () => {
 describe('useFavorites', () => {
   beforeEach(() => {
     globalThis.localStorage?.clear();
+    vi.restoreAllMocks();
   });
 
-  it('toggles favorites and persists them to localStorage', () => {
-    const { result } = renderHook(() => useFavorites());
-    expect(result.current.isFavorite('abc')).toBe(false);
+  it('toggles favorites through the catalog bridge and mirrors them locally', async () => {
+    const listFavorites = vi.fn().mockResolvedValue(['seeded']);
+    const addFavorite = vi.fn().mockResolvedValue(['seeded', 'abc']);
+    const removeFavorite = vi.fn().mockResolvedValue(['seeded']);
+    installApi({ listFavorites, addFavorite, removeFavorite });
 
-    act(() => {
-      result.current.toggle('abc');
+    const { result } = renderHook(() => useFavorites());
+    await waitFor(() => expect(result.current.isFavorite('seeded')).toBe(true));
+
+    await act(async () => {
+      await result.current.toggle('abc');
     });
+    expect(addFavorite).toHaveBeenCalledWith({ hash: 'abc' });
     expect(result.current.isFavorite('abc')).toBe(true);
     expect(
       globalThis.localStorage.getItem('printfarmer.favorites.v1'),
     ).toContain('abc');
 
-    act(() => {
-      result.current.toggle('abc');
+    await act(async () => {
+      await result.current.toggle('abc');
     });
+    expect(removeFavorite).toHaveBeenCalledWith({ hash: 'abc' });
     expect(result.current.isFavorite('abc')).toBe(false);
   });
 
-  it('rehydrates favorites from localStorage', () => {
+  it('falls back to localStorage when the catalog favorite IPC is unavailable', async () => {
+    installApi({});
     globalThis.localStorage.setItem(
       'printfarmer.favorites.v1',
       JSON.stringify(['seeded']),
     );
     const { result } = renderHook(() => useFavorites());
     expect(result.current.isFavorite('seeded')).toBe(true);
+
+    await act(async () => {
+      await result.current.toggle('added-locally');
+    });
+    expect(result.current.isFavorite('added-locally')).toBe(true);
   });
 });
 
@@ -1002,6 +1157,7 @@ describe('<ModelGrid />', () => {
     );
 
     const button = screen.getByRole('button', { name: 'Select widget.stl' });
+    expect(screen.getByRole('list', { name: 'Model grid' })).toBeVisible();
     fireEvent.click(button);
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(onSelect).toHaveBeenCalledWith(

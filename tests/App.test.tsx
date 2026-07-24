@@ -8,6 +8,7 @@ import {
   within,
 } from '@testing-library/react';
 import { App } from '../src/renderer/App.js';
+import { LibraryOnboarding } from '../src/renderer/library/LibraryOnboarding.js';
 import type {
   LoadSceneResponse,
   LogicalModel,
@@ -97,6 +98,7 @@ function serverProfile(id: string, displayName: string): ServerProfile {
 describe('<App />', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    window.localStorage.clear();
   });
 
   it('uses the canonical application icon in the custom titlebar', async () => {
@@ -146,6 +148,73 @@ describe('<App />', () => {
     );
   });
 
+  it('shows onboarding with keyboard focus management and restores focus when dismissed', async () => {
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 1,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([]),
+    });
+
+    render(<App />);
+
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Set up your model library',
+    });
+    expect(dialog).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: 'Add your first folder' }),
+    ).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('dialog', { name: 'Set up your model library' }),
+      ).not.toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Add folder' })).toHaveFocus(),
+    );
+  });
+
+  it('cycles Tab within library onboarding and snaps escaped focus back inside', () => {
+    render(
+      <>
+        <button type="button">Background action</button>
+        <LibraryOnboarding
+          busy={false}
+          onAddFolder={vi.fn()}
+          onClose={vi.fn()}
+        />
+      </>,
+    );
+
+    const close = screen.getByRole('button', { name: 'Close onboarding' });
+    const addFolder = screen.getByRole('button', {
+      name: 'Add your first folder',
+    });
+    const maybeLater = screen.getByRole('button', { name: 'Maybe later' });
+    const background = screen.getByRole('button', {
+      name: 'Background action',
+    });
+
+    expect(addFolder).toHaveFocus();
+
+    maybeLater.focus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(close).toHaveFocus();
+
+    close.focus();
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(maybeLater).toHaveFocus();
+
+    background.focus();
+    expect(addFolder).toHaveFocus();
+  });
+
   it('opens server profiles from the sidebar and excludes the workspace', async () => {
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
@@ -183,6 +252,205 @@ describe('<App />', () => {
     );
     await waitFor(() => expect(manage).toHaveFocus());
     expect(inertWhenFocusReturned).toBe(false);
+  });
+
+  it('removes a source root from the local library view', async () => {
+    const models: LogicalModel[] = [
+      {
+        hash: 'deadbeef',
+        format: 'stl',
+        size: 2048,
+        locations: [
+          {
+            rootId: 'root-1',
+            path: 'C:\\models\\widget.stl',
+            rootRelative: 'widget.stl',
+            size: 2048,
+            available: true,
+          },
+        ],
+      },
+    ];
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 1,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue(models),
+      renderThumbnail: vi.fn().mockResolvedValue({
+        width: 256,
+        height: 256,
+        pngBase64: 'AAAA',
+      }),
+    });
+
+    render(<App />);
+    await screen.findByRole('button', { name: 'Select widget.stl' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove models' }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('button', { name: 'Select widget.stl' }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText('models')).not.toBeInTheDocument();
+  });
+
+  it('shows reconnect progress for a missing root and rescans it', async () => {
+    const staleModels: LogicalModel[] = [
+      {
+        hash: 'deadbeef',
+        format: 'stl',
+        size: 2048,
+        locations: [
+          {
+            rootId: 'root-1',
+            path: 'C:\\models\\widget.stl',
+            rootRelative: 'widget.stl',
+            size: 2048,
+            available: false,
+          },
+        ],
+      },
+    ];
+    const refreshedModels: LogicalModel[] = [
+      {
+        hash: 'deadbeef',
+        format: 'stl',
+        size: 2048,
+        locations: [
+          {
+            rootId: 'root-1',
+            path: 'C:\\models\\widget.stl',
+            rootRelative: 'widget.stl',
+            size: 2048,
+            available: true,
+          },
+        ],
+      },
+    ];
+    const pending = deferred<{
+      added: number;
+      changed: number;
+      unchanged: number;
+      missing: number;
+      hashErrors: number;
+    }>();
+    const listModels = vi
+      .fn()
+      .mockResolvedValueOnce(staleModels)
+      .mockResolvedValueOnce(refreshedModels);
+    const scanRoot = vi.fn(() => pending.promise);
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 1,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels,
+      scanRoot,
+      renderThumbnail: vi.fn().mockResolvedValue({
+        width: 256,
+        height: 256,
+        pngBase64: 'AAAA',
+      }),
+    });
+
+    render(<App />);
+    const reconnect = await screen.findByRole('button', { name: 'Reconnect' });
+    fireEvent.click(reconnect);
+
+    expect(
+      screen.getByRole('progressbar', { name: 'Scan progress' }),
+    ).toBeVisible();
+    expect(screen.getAllByText('Reconnecting C:\\models')).toHaveLength(2);
+
+    await act(async () => {
+      pending.resolve({
+        added: 0,
+        changed: 0,
+        unchanged: 1,
+        missing: 0,
+        hashErrors: 0,
+      });
+      await pending.promise;
+    });
+
+    await waitFor(() =>
+      expect(scanRoot).toHaveBeenCalledWith({
+        rootId: 'root-1',
+        path: 'C:\\models',
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Scan again' })).toBeVisible(),
+    );
+  });
+
+  it('shows a scan error alert and clears scanning state after a rescan failure', async () => {
+    const models: LogicalModel[] = [
+      {
+        hash: 'deadbeef',
+        format: 'stl',
+        size: 2048,
+        locations: [
+          {
+            rootId: 'root-1',
+            path: 'C:\\models\\widget.stl',
+            rootRelative: 'widget.stl',
+            size: 2048,
+            available: true,
+          },
+        ],
+      },
+    ];
+    const listModels = vi.fn().mockResolvedValue(models);
+    const scanRoot = vi.fn().mockRejectedValue(new Error('scan failed hard'));
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 1,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels,
+      scanRoot,
+      renderThumbnail: vi.fn().mockResolvedValue({
+        width: 256,
+        height: 256,
+        pngBase64: 'AAAA',
+      }),
+    });
+
+    render(<App />);
+    const rescan = await screen.findByRole('button', { name: 'Scan again' });
+
+    fireEvent.click(rescan);
+
+    await waitFor(() =>
+      expect(scanRoot).toHaveBeenCalledWith({
+        rootId: 'root-1',
+        path: 'C:\\models',
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('scan failed hard'),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('progressbar', { name: 'Scan progress' }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole('progressbar', { name: 'Current scan progress' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add folder' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Scan again' })).toBeEnabled();
+    expect(listModels).toHaveBeenCalledTimes(2);
   });
 
   it('announces a selected server connection error in the sidebar accessible name', async () => {
@@ -541,6 +809,13 @@ describe('<App />', () => {
   ] as const)(
     'restores Add folder focus after native picker %s',
     async (_label, outcome) => {
+      window.localStorage.setItem(
+        'printfarmer.library.sourceRoots.v1',
+        JSON.stringify({
+          version: 1,
+          roots: [{ rootId: 'existing-root', path: 'C:\\Existing' }],
+        }),
+      );
       installApi({
         getAppInfo: vi.fn().mockResolvedValue({
           contractVersion: 1,
@@ -584,6 +859,13 @@ describe('<App />', () => {
   ] as const)(
     'restores Open file focus after native picker %s',
     async (_label, outcome) => {
+      window.localStorage.setItem(
+        'printfarmer.library.sourceRoots.v1',
+        JSON.stringify({
+          version: 1,
+          roots: [{ rootId: 'existing-root', path: 'C:\\Existing' }],
+        }),
+      );
       installApi({
         getAppInfo: vi.fn().mockResolvedValue({
           contractVersion: 1,
@@ -689,6 +971,13 @@ describe('<App />', () => {
 
   it('previews folder rules before confirming a smart import', async () => {
     const selectedPath = 'C:\\SmartImportRoot';
+    window.localStorage.setItem(
+      'printfarmer.library.sourceRoots.v1',
+      JSON.stringify({
+        version: 1,
+        roots: [{ rootId: 'existing-root', path: 'C:\\Existing' }],
+      }),
+    );
     const previewImport = vi.fn().mockResolvedValue({
       modelCount: 2,
       totalBytes: 3072,
@@ -754,9 +1043,7 @@ describe('<App />', () => {
     });
 
     render(<App />);
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Add your first folder' }),
-    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Add folder' }));
 
     expect(
       await screen.findByRole('dialog', {
