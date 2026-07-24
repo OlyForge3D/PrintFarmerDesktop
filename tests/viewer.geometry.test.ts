@@ -16,18 +16,29 @@ import {
 import type { SceneMesh } from '../src/renderer/viewer/types';
 
 function scene(overrides: Partial<SceneMesh>): SceneMesh {
-  return {
+  const base: SceneMesh = {
     sceneVersion: 2,
     positions: [],
     indices: [],
     bounds: { min: [0, 0, 0], max: [0, 0, 0] },
     sourceFormat: 'stl',
     faceColors: null,
+    status: 'complete',
+    statusMessages: [],
     parts: [],
     objects: [],
     rootObjectIds: [],
     plates: [],
+  };
+  return {
+    ...base,
     ...overrides,
+    status: overrides.status ?? base.status,
+    statusMessages: overrides.statusMessages ?? base.statusMessages,
+    parts: overrides.parts ?? base.parts,
+    objects: overrides.objects ?? base.objects,
+    rootObjectIds: overrides.rootObjectIds ?? base.rootObjectIds,
+    plates: overrides.plates ?? base.plates,
   };
 }
 

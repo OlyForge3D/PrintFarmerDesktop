@@ -12,6 +12,8 @@ function multiObjectScene(): SceneMesh {
     bounds: { min: [0, 0, 0], max: [3, 1, 0] },
     sourceFormat: 'threeMf',
     faceColors: null,
+    status: 'complete',
+    statusMessages: [],
     parts: [
       { name: 'Body', triangleStart: 0, triangleCount: 1 },
       { name: 'Lid', triangleStart: 1, triangleCount: 1 },
@@ -134,6 +136,8 @@ describe('buildViewerSceneGraph', () => {
       bounds: { min: [0, 0, 0], max: [1, 1, 0] },
       sourceFormat: 'threeMf',
       faceColors: null,
+      status: 'complete',
+      statusMessages: [],
       parts: [{ name: 'Body', triangleStart: 0, triangleCount: 1 }],
       objects: [
         {
@@ -206,6 +210,8 @@ describe('buildViewerSceneGraph', () => {
       bounds: { min: [0, 0, 0], max: [1, 1, 0] },
       sourceFormat: 'threeMf',
       faceColors: null,
+      status: 'complete',
+      statusMessages: [],
       parts: [],
       objects: [
         {

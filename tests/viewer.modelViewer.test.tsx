@@ -16,6 +16,8 @@ function simpleMesh(id: string): SceneMesh {
     bounds: { min: [0, 0, 0], max: [1, 1, 0] },
     sourceFormat: 'stl',
     faceColors: null,
+    status: 'complete',
+    statusMessages: [],
     parts: [],
     objects: [
       {

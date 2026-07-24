@@ -1555,6 +1555,9 @@ mod tests {
                 part_number: None,
                 material_label: None,
             }],
+            objects: Vec::new(),
+            root_object_ids: Vec::new(),
+            plates: Vec::new(),
         }
     }
 

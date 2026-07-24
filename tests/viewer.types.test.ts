@@ -6,6 +6,7 @@ import { toViewerSceneMesh } from '../src/renderer/viewer/types';
 describe('toViewerSceneMesh', () => {
   it('omits undefined part metadata keys from normalized renderer state', () => {
     const raw: IpcSceneMesh = {
+      sceneVersion: 2,
       positions: [0, 0, 0],
       indices: [0, 0, 0],
       bounds: { min: [0, 0, 0], max: [0, 0, 0] },
@@ -20,10 +21,13 @@ describe('toViewerSceneMesh', () => {
           status: 'partial',
         },
       ],
+      objects: [],
+      rootObjectIds: [],
+      plates: [],
     };
 
     const normalized = toViewerSceneMesh(raw);
-    const normalizedPart = normalized.parts?.[0];
+    const normalizedPart = normalized.parts[0];
 
     expect(normalizedPart).toBeDefined();
     expect(normalizedPart && 'statusDetail' in normalizedPart).toBe(false);
