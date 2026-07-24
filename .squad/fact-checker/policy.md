@@ -12,25 +12,25 @@ Empirical check of claims against sources. Triggered by `"fact-check this"`, `"v
 
 ### What gets checked
 
-| Claim type | What to verify |
-|------------|----------------|
-| **URLs** | Does the URL actually resolve? (200, not 404 or 5xx) |
-| **Package names + versions** | Does the npm/crates.io package exist at that version? |
-| **API endpoints** | Does the documented PrintFarmer API endpoint exist per its current docs? |
-| **File paths** | Does the file exist in the repo at the claimed path (e.g. `native/model-core`, `src/`)? |
-| **Function / type signatures** | Do they match the actual source (TypeScript or Rust)? |
-| **Quoted text** | Does the source actually contain the quoted text verbatim? |
-| **Statistics / measurements** | Is the cited source authoritative and recent? |
-| **Cross-references to team decisions** | Does `.squad/decisions.md` actually say what was claimed? |
+| Claim type                             | What to verify                                                                          |
+| -------------------------------------- | --------------------------------------------------------------------------------------- |
+| **URLs**                               | Does the URL actually resolve? (200, not 404 or 5xx)                                    |
+| **Package names + versions**           | Does the npm/crates.io package exist at that version?                                   |
+| **API endpoints**                      | Does the documented PrintFarmer API endpoint exist per its current docs?                |
+| **File paths**                         | Does the file exist in the repo at the claimed path (e.g. `native/model-core`, `src/`)? |
+| **Function / type signatures**         | Do they match the actual source (TypeScript or Rust)?                                   |
+| **Quoted text**                        | Does the source actually contain the quoted text verbatim?                              |
+| **Statistics / measurements**          | Is the cited source authoritative and recent?                                           |
+| **Cross-references to team decisions** | Does `.squad/decisions.md` actually say what was claimed?                               |
 
 ### Confidence rating (every verified item gets one)
 
-| Rating | Meaning | Required next step |
-|--------|---------|--------------------|
-| ✅ **Verified** | Confirmed via source, test, or direct observation | None — proceed |
-| ⚠️ **Unverified** | Plausible but could not confirm (no source, source ambiguous) | Flag in the verification report; team decides whether to ship |
-| ❌ **Contradicted** | Found evidence that contradicts the claim | **Blocking** — must be revised before ship |
-| 🔍 **Needs Investigation** | Requires deeper analysis beyond current scope | Flag + recommend a follow-up |
+| Rating                     | Meaning                                                       | Required next step                                            |
+| -------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------- |
+| ✅ **Verified**            | Confirmed via source, test, or direct observation             | None — proceed                                                |
+| ⚠️ **Unverified**          | Plausible but could not confirm (no source, source ambiguous) | Flag in the verification report; team decides whether to ship |
+| ❌ **Contradicted**        | Found evidence that contradicts the claim                     | **Blocking** — must be revised before ship                    |
+| 🔍 **Needs Investigation** | Requires deeper analysis beyond current scope                 | Flag + recommend a follow-up                                  |
 
 ---
 
@@ -42,7 +42,7 @@ Design challenge + pre-mortem. Triggered by `"play devil's advocate"`, `"what's 
 
 1. **Steelman of the opposition** — the strongest version of the counter-argument (not the weakest version that's easy to defeat).
 2. **Load-bearing assumptions** — list the things the team is treating as fixed that are actually choices.
-3. **Pre-mortem** — concrete failure scenario in 30 days. *"Imagine this shipped and failed. Write the post-mortem now."*
+3. **Pre-mortem** — concrete failure scenario in 30 days. _"Imagine this shipped and failed. Write the post-mortem now."_
 4. **Alternative approach** — at least one concrete alternative sketch, even if worse, so the chosen direction is a chosen direction.
 5. **Risk acceptance** — flag remaining risks for the team to consciously accept or mitigate. Never a veto.
 
