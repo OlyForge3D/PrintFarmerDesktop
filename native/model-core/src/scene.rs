@@ -262,12 +262,27 @@ impl SceneMesh {
             })
             .collect();
         Self {
+            scene_version: SCENE_DTO_VERSION,
             positions: mesh.vertices.clone(),
             indices,
             bounds: mesh.bounds,
             source_format: ModelFormat::Step,
             face_colors: None,
             parts,
+            objects: vec![single_object(
+                "object-0",
+                "step:model",
+                "Model",
+                mesh.vertices.clone(),
+                mesh.triangles
+                    .iter()
+                    .flat_map(|triangle| *triangle)
+                    .collect(),
+                mesh.bounds,
+                None,
+            )],
+            root_object_ids: vec!["object-0".to_string()],
+            plates: vec![default_plate(vec!["object-0".to_string()])],
         }
     }
 
