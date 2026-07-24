@@ -55,6 +55,7 @@ After every substantial work session:
 
 4. **Propagate cross-agent updates:**
    For any newly merged decision that affects other agents, append to their `agents/{agent}/history.md`. Replace the parenthetical timestamp with the literal CURRENT_DATETIME value from your spawn prompt; do not write placeholder text.
+
    ```
    📌 Team update (<CURRENT_DATETIME value>): {summary} — decided by {Name}
    ```
