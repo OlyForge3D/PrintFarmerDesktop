@@ -112,6 +112,9 @@ function applyRowMajorMatrix(
   matrix: THREE.Matrix4,
   rowMajorValues: readonly number[],
 ): void {
+  // The sidecar already transposes 3MF's row-vector transforms into the
+  // row-major argument order Matrix4.set() expects, so this can pass them
+  // straight through without reinterpretation.
   matrix.set(
     rowMajorValues[0] ?? 1,
     rowMajorValues[1] ?? 0,

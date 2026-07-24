@@ -124,8 +124,9 @@ export type SceneObjectMesh = z.infer<typeof SceneObjectMesh>;
 /**
  * One scene-graph node from the sidecar. `id` is the stable instance identity;
  * `sourceId` identifies the reusable source object definition that instance came
- * from. `transform.matrix` is a local 4×4 row-major affine matrix relative to
- * `parentId`; root objects use the scene root / plate root as their parent.
+ * from. `transform.matrix` is a local 4×4 affine matrix already laid out in the
+ * row-major argument order that `THREE.Matrix4.set()` expects (translation at
+ * entries 3/7/11); root objects use the scene root / plate root as their parent.
  */
 export const SceneObject = z.object({
   id: z.string().min(1),

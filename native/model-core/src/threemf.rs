@@ -33,6 +33,10 @@ pub const MAX_OBJECTS: usize = 1_000_000;
 pub const MAX_COMPONENTS: usize = 1_000_000;
 pub const MAX_MODEL_PARTS: usize = 10_000;
 pub const MAX_EXPANSION_STEPS: usize = 1_000_000;
+/// Renderer GPU budget: each mesh-bearing object becomes a live
+/// Group+BufferGeometry+Material+Mesh on the renderer side, so cap them well
+/// below the parser's structural safety ceiling.
+pub const MAX_RENDERABLE_SCENE_OBJECTS: usize = 5_000;
 const MAX_ARCHIVE_PARTS: usize = 100_000;
 pub const MAX_MODEL_XML_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_TOTAL_MODEL_XML_BYTES: u64 = 1024 * 1024 * 1024;
@@ -68,6 +72,13 @@ pub enum ThreeMfError {
     Malformed(String),
     #[error("model exceeds the maximum supported size")]
     TooLarge,
+    #[error(
+        "model expands to {mesh_objects} mesh-bearing scene objects, exceeding the renderer budget of {max_mesh_objects}"
+    )]
+    RenderBudgetExceeded {
+        mesh_objects: usize,
+        max_mesh_objects: usize,
+    },
 }
 
 /// An affine transform stored as four rows of three: rows 0..2 are the linear
@@ -161,20 +172,20 @@ impl Transform {
     pub fn to_row_major_4x4(&self) -> [f32; 16] {
         [
             self.rows[0][0],
-            self.rows[0][1],
-            self.rows[0][2],
-            0.0,
             self.rows[1][0],
-            self.rows[1][1],
-            self.rows[1][2],
-            0.0,
             self.rows[2][0],
-            self.rows[2][1],
-            self.rows[2][2],
-            0.0,
             self.rows[3][0],
+            self.rows[0][1],
+            self.rows[1][1],
+            self.rows[2][1],
             self.rows[3][1],
+            self.rows[0][2],
+            self.rows[1][2],
+            self.rows[2][2],
             self.rows[3][2],
+            0.0,
+            0.0,
+            0.0,
             1.0,
         ]
     }
@@ -1451,6 +1462,16 @@ fn flatten(package: &RawPackage) -> Result<ThreeMfMesh, ThreeMfError> {
     for v in &output.vertices {
         bounds.expand(*v);
     }
+    let mesh_object_count = objects
+        .iter()
+        .filter(|object| object.mesh.is_some())
+        .count();
+    if mesh_object_count > MAX_RENDERABLE_SCENE_OBJECTS {
+        return Err(ThreeMfError::RenderBudgetExceeded {
+            mesh_objects: mesh_object_count,
+            max_mesh_objects: MAX_RENDERABLE_SCENE_OBJECTS,
+        });
+    }
 
     Ok(ThreeMfMesh {
         vertices: output.vertices,
@@ -1482,6 +1503,7 @@ fn part_name(package: &RawPackage, model_part: &str, object_id: u32) -> String {
 }
 
 /// Recursively bake an object under `transform` into the output buffers.
+#[allow(clippy::too_many_arguments)]
 fn expand(
     package: &RawPackage,
     model_part: &str,
@@ -2473,5 +2495,60 @@ mod tests {
         let composed = a.compose(&b);
         let p = [1.0, 1.0, 1.0];
         assert_eq!(composed.apply(p), b.apply(a.apply(p)));
+    }
+
+    #[test]
+    fn transform_to_row_major_4x4_matches_three_matrix_layout() {
+        let transform = Transform::parse("0 1 0 -1 0 0 0 0 1 10 20 30").unwrap();
+        assert_eq!(
+            transform.to_row_major_4x4(),
+            [0.0, -1.0, 0.0, 10.0, 1.0, 0.0, 0.0, 20.0, 0.0, 0.0, 1.0, 30.0, 0.0, 0.0, 0.0, 1.0,]
+        );
+    }
+
+    #[test]
+    fn rejects_models_that_exceed_renderer_mesh_object_budget() {
+        let triangle_vertices = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let triangle_indices = vec![[0, 1, 2]];
+        let mut objects = HashMap::new();
+        let mut build = Vec::new();
+        for object_id in 1..=(MAX_RENDERABLE_SCENE_OBJECTS as u32 + 1) {
+            objects.insert(
+                object_id,
+                RawObject {
+                    geometry: ObjectGeometry::Mesh {
+                        vertices: triangle_vertices.clone(),
+                        triangles: triangle_indices.clone(),
+                    },
+                    name: None,
+                },
+            );
+            build.push(Component {
+                object_id,
+                model_part: None,
+                transform: Transform::identity(),
+            });
+        }
+
+        let mesh = flatten(&RawPackage {
+            models: HashMap::from([(
+                DEFAULT_MODEL_PART.to_string(),
+                RawModel {
+                    objects,
+                    build,
+                    unit: "millimeter".to_string(),
+                },
+            )]),
+            root_part: DEFAULT_MODEL_PART.to_string(),
+        });
+
+        assert!(matches!(
+            mesh,
+            Err(ThreeMfError::RenderBudgetExceeded {
+                mesh_objects,
+                max_mesh_objects,
+            }) if mesh_objects == MAX_RENDERABLE_SCENE_OBJECTS + 1
+                && max_mesh_objects == MAX_RENDERABLE_SCENE_OBJECTS
+        ));
     }
 }

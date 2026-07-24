@@ -70,6 +70,7 @@ export function PartTree({
                   byId={byId}
                   hidden={hidden}
                   ancestorHidden={false}
+                  visited={new Set()}
                   onToggle={onToggle}
                 />
               ))}
@@ -86,14 +87,23 @@ function SceneObjectNode({
   byId,
   hidden,
   ancestorHidden,
+  visited,
   onToggle,
 }: {
   object: SceneObject;
   byId: ReadonlyMap<string, SceneObject>;
   hidden: ReadonlySet<string>;
   ancestorHidden: boolean;
+  visited: Set<string>;
   onToggle: (id: string) => void;
 }): React.JSX.Element {
+  if (visited.has(object.id)) {
+    console.warn(
+      `[PartTree] Skipping cyclic or duplicated scene object reference for "${object.id}".`,
+    );
+    return <li className="part-item">⚠ Invalid scene node: {object.name}</li>;
+  }
+  visited.add(object.id);
   const directlyHidden = hidden.has(object.id);
   const effectivelyHidden = ancestorHidden || directlyHidden;
   const triangles = object.mesh
@@ -128,6 +138,7 @@ function SceneObjectNode({
               byId={byId}
               hidden={hidden}
               ancestorHidden={effectivelyHidden}
+              visited={new Set(visited)}
               onToggle={onToggle}
             />
           ))}

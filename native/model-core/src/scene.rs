@@ -46,9 +46,11 @@ pub struct ScenePart {
 
 /// A local transform matrix for one scene object instance.
 ///
-/// The matrix is a 4×4 row-major affine transform with the last row always
-/// `[0, 0, 0, 1]`. The viewer applies it to the object's local mesh after
-/// parenting it under `parent_id`.
+/// The matrix is serialized in the row-major argument order expected by
+/// `THREE.Matrix4.set(n11..n44)`: translation lives in slots 3/7/11 and the
+/// last row is always `[0, 0, 0, 1]`. For 3MF this is the transpose of the
+/// source format's row-vector `p' = p·R + T` transform, so the renderer can
+/// feed it straight into Three.js after parenting under `parent_id`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneTransform {
     pub matrix: [f32; 16],
@@ -438,7 +440,7 @@ mod tests {
                 name: "Widget".to_string(),
                 parent_id: None,
                 children: Vec::new(),
-                transform: threemf::Transform::identity(),
+                transform: threemf::Transform::parse("0 1 0 -1 0 0 0 0 1 10 20 30").unwrap(),
                 mesh: Some(threemf::ThreeMfObjectMesh {
                     positions: vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
                     indices: vec![0, 1, 2],
@@ -465,6 +467,10 @@ mod tests {
         assert_eq!(scene.parts[0].name, "Widget");
         assert_eq!(scene.parts[0].triangle_count, 1);
         assert_eq!(scene.objects.len(), 1);
+        assert_eq!(
+            scene.objects[0].transform.matrix,
+            [0.0, -1.0, 0.0, 10.0, 1.0, 0.0, 0.0, 20.0, 0.0, 0.0, 1.0, 30.0, 0.0, 0.0, 0.0, 1.0,]
+        );
         assert_eq!(scene.root_object_ids, vec!["plate-0/item-0/object-1"]);
         assert_eq!(
             scene.plates[0].root_object_ids,

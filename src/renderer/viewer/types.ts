@@ -24,7 +24,10 @@ export interface ScenePart {
 }
 
 export interface SceneTransform {
-  /** 4×4 row-major local transform relative to the scene root or `parentId`. */
+  /**
+   * 4×4 local transform relative to the scene root or `parentId`, already laid
+   * out in the row-major argument order that `THREE.Matrix4.set()` expects.
+   */
   readonly matrix: readonly number[];
 }
 
