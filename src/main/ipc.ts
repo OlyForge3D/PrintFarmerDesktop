@@ -99,6 +99,20 @@ export function registerIpcHandlers(
   );
 
   ipcMain.handle(
+    IpcChannel.ExtractVendorPlateThumbnails,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.ExtractVendorPlateThumbnails].request.parse(
+          rawRequest,
+        );
+      const raw = await sidecar.extractVendorPlateThumbnails(request.path);
+      return ipcSchemas[IpcChannel.ExtractVendorPlateThumbnails].response.parse(
+        raw,
+      );
+    },
+  );
+
+  ipcMain.handle(
     IpcChannel.RenderThumbnail,
     async (_event, rawRequest: unknown) => {
       const request =
@@ -139,6 +153,31 @@ export function registerIpcHandlers(
     const raw = await sidecar.listModels();
     return ipcSchemas[IpcChannel.ListModels].response.parse(raw);
   });
+
+  ipcMain.handle(IpcChannel.ListFavorites, async () => {
+    const raw = await sidecar.listFavorites();
+    return ipcSchemas[IpcChannel.ListFavorites].response.parse(raw);
+  });
+
+  ipcMain.handle(
+    IpcChannel.AddFavorite,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.AddFavorite].request.parse(rawRequest);
+      const raw = await sidecar.addFavorite(request.hash);
+      return ipcSchemas[IpcChannel.AddFavorite].response.parse(raw);
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.RemoveFavorite,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.RemoveFavorite].request.parse(rawRequest);
+      const raw = await sidecar.removeFavorite(request.hash);
+      return ipcSchemas[IpcChannel.RemoveFavorite].response.parse(raw);
+    },
+  );
 
   ipcMain.handle(IpcChannel.ListTags, async () => {
     const raw = await sidecar.listTags();

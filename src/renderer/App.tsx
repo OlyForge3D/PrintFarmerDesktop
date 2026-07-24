@@ -737,8 +737,12 @@ export function App(): React.JSX.Element {
                   value={sort}
                   onChange={(event) => setSort(event.target.value as SortKey)}
                 >
-                  <option value="name">Name</option>
-                  <option value="size">Size</option>
+                  <option value="name-asc">Name (A-Z)</option>
+                  <option value="name-desc">Name (Z-A)</option>
+                  <option value="size-asc">Size (smallest first)</option>
+                  <option value="size-desc">Size (largest first)</option>
+                  <option value="date-desc">Date (newest first)</option>
+                  <option value="date-asc">Date (oldest first)</option>
                 </select>
               </label>
               <button
@@ -791,7 +795,9 @@ export function App(): React.JSX.Element {
               onPreview={previewModel}
               previewDisabled={workspaceActionsDisabled}
               isFavorite={isFavorite}
-              onToggleFavorite={(model) => toggleFavorite(model.hash)}
+              onToggleFavorite={(model) => {
+                void toggleFavorite(model.hash);
+              }}
               emptyLabel={emptyState(
                 presentation.state,
                 query,
@@ -820,7 +826,7 @@ export function App(): React.JSX.Element {
           previewDisabled={workspaceActionsDisabled}
           onToggleFavorite={() => {
             if (selectedModel) {
-              toggleFavorite(selectedModel.hash);
+              void toggleFavorite(selectedModel.hash);
             }
           }}
           onPreview={() => {

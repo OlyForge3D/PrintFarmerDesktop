@@ -13,6 +13,7 @@ pub enum ModelFormat {
     Stl,
     ThreeMf,
     Obj,
+    Step,
 }
 
 impl ModelFormat {
@@ -24,6 +25,7 @@ impl ModelFormat {
             "stl" => Some(Self::Stl),
             "3mf" => Some(Self::ThreeMf),
             "obj" => Some(Self::Obj),
+            "step" | "stp" => Some(Self::Step),
             _ => None,
         }
     }
@@ -34,6 +36,7 @@ impl ModelFormat {
             Self::Stl => "stl",
             Self::ThreeMf => "3mf",
             Self::Obj => "obj",
+            Self::Step => "step",
         }
     }
 }
