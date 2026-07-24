@@ -1,0 +1,80 @@
+{
+  "agents": {
+    "ripley": {
+      "persistent_name": "Ripley",
+      "universe": "Alien",
+      "role": "Lead / Architecture",
+      "created_at": "2026-07-23T17:27:34-07:00",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "dallas": {
+      "persistent_name": "Dallas",
+      "universe": "Alien",
+      "role": "React/Electron UI",
+      "created_at": "2026-07-23T17:27:34-07:00",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "bishop": {
+      "persistent_name": "Bishop",
+      "universe": "Alien",
+      "role": "Rust, SQLite, integration",
+      "created_at": "2026-07-23T17:27:34-07:00",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "hicks": {
+      "persistent_name": "Hicks",
+      "universe": "Alien",
+      "role": "QA and contract testing",
+      "created_at": "2026-07-23T17:27:34-07:00",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "vasquez": {
+      "persistent_name": "Vasquez",
+      "universe": "Alien",
+      "role": "Security and concurrency review",
+      "created_at": "2026-07-23T17:27:34-07:00",
+      "legacy_named": false,
+      "status": "active"
+    },
+    "scribe": {
+      "persistent_name": "Scribe",
+      "universe": "n/a",
+      "role": "Session Logger",
+      "created_at": "2026-07-23T17:27:34-07:00",
+      "legacy_named": false,
+      "status": "active",
+      "exempt_from_casting": true
+    },
+    "ralph": {
+      "persistent_name": "Ralph",
+      "universe": "n/a",
+      "role": "Work Monitor",
+      "created_at": "2026-07-23T17:27:34-07:00",
+      "legacy_named": false,
+      "status": "active",
+      "exempt_from_casting": true
+    },
+    "rai": {
+      "persistent_name": "Rai",
+      "universe": "n/a",
+      "role": "RAI Reviewer",
+      "created_at": "2026-07-23T17:27:34-07:00",
+      "legacy_named": false,
+      "status": "active",
+      "exempt_from_casting": true
+    },
+    "fact-checker": {
+      "persistent_name": "Fact Checker",
+      "universe": "n/a",
+      "role": "Fact Checker / Devil's Advocate",
+      "created_at": "2026-07-23T17:27:34-07:00",
+      "legacy_named": false,
+      "status": "active",
+      "exempt_from_casting": true
+    }
+  }
+}

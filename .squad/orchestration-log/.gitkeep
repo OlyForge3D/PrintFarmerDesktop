@@ -1,0 +1,1 @@
+<!-- Per-spawn orchestration log entries land here, named `{timestamp}-{agent}.md`. Append-only. Keep this directory tracked in git even when empty. -->

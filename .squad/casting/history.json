@@ -1,0 +1,22 @@
+{
+  "universe_usage_history": [
+    {
+      "universe": "Alien",
+      "assignment_id": "printfarmerdesktop-init-2026-07-23",
+      "used_at": "2026-07-23T17:27:34-07:00"
+    }
+  ],
+  "assignment_cast_snapshots": {
+    "printfarmerdesktop-init-2026-07-23": {
+      "universe": "Alien",
+      "agents": {
+        "ripley": "Ripley",
+        "dallas": "Dallas",
+        "bishop": "Bishop",
+        "hicks": "Hicks",
+        "vasquez": "Vasquez"
+      },
+      "created_at": "2026-07-23T17:27:34-07:00"
+    }
+  }
+}

@@ -18,11 +18,15 @@ export const IpcChannel = {
   LoadScene: 'model:loadScene',
   OpenModelFile: 'dialog:openModelFile',
   ExtractVendorMetadata: 'model:extractVendorMetadata',
+  ExtractVendorPlateThumbnails: 'model:extractVendorPlateThumbnails',
   RenderThumbnail: 'model:renderThumbnail',
   ScanRoot: 'catalog:scanRoot',
   PreviewImport: 'catalog:previewImport',
   ImportRoot: 'catalog:importRoot',
   ListModels: 'catalog:listModels',
+  ListFavorites: 'catalog:listFavorites',
+  AddFavorite: 'catalog:addFavorite',
+  RemoveFavorite: 'catalog:removeFavorite',
   ListTags: 'catalog:listTags',
   TagsForModel: 'catalog:tagsForModel',
   AddModelTag: 'catalog:addModelTag',
@@ -205,6 +209,35 @@ export type ExtractVendorMetadataResponse = z.infer<
   typeof ExtractVendorMetadataResponse
 >;
 
+export const VendorPlateThumbnail = z.object({
+  partName: z.string().min(1),
+  plateIndex: z.number().int().nonnegative().optional(),
+  pngBase64: z.string().min(1),
+});
+export type VendorPlateThumbnail = z.infer<typeof VendorPlateThumbnail>;
+
+/**
+ * Embedded vendor plate thumbnails from the native sidecar. Each record names
+ * the 3MF ZIP part it came from and carries the PNG bytes as base64 so Dallas
+ * can render or upload them without touching the filesystem.
+ */
+export const VendorPlateThumbnails = z.object({
+  thumbnails: z.array(VendorPlateThumbnail).max(1024),
+});
+export type VendorPlateThumbnails = z.infer<typeof VendorPlateThumbnails>;
+
+export const ExtractVendorPlateThumbnailsRequest = z.object({
+  path: z.string().min(1).max(4096),
+});
+export type ExtractVendorPlateThumbnailsRequest = z.infer<
+  typeof ExtractVendorPlateThumbnailsRequest
+>;
+
+export const ExtractVendorPlateThumbnailsResponse = VendorPlateThumbnails;
+export type ExtractVendorPlateThumbnailsResponse = z.infer<
+  typeof ExtractVendorPlateThumbnailsResponse
+>;
+
 // --- model:renderThumbnail ------------------------------------------------
 
 export const RenderThumbnailRequest = z.object({
@@ -229,6 +262,7 @@ export const ModelLocation = z.object({
   path: z.string(),
   rootRelative: z.string(),
   size: z.number().int().nonnegative(),
+  modifiedUnixSeconds: z.number().int().nullable().optional(),
   available: z.boolean(),
 });
 export type ModelLocation = z.infer<typeof ModelLocation>;
@@ -338,6 +372,22 @@ export type ListModelsRequest = z.infer<typeof ListModelsRequest>;
 
 export const ListModelsResponse = z.array(LogicalModel);
 export type ListModelsResponse = z.infer<typeof ListModelsResponse>;
+
+// --- catalog favorites ----------------------------------------------------
+
+/** Content hashes the user has marked as local favorites in the catalog. */
+export const ListFavoritesRequest = z.void();
+export type ListFavoritesRequest = z.infer<typeof ListFavoritesRequest>;
+
+export const ListFavoritesResponse = z.array(z.string().min(1));
+export type ListFavoritesResponse = z.infer<typeof ListFavoritesResponse>;
+
+export const FavoriteModelRequest = z.object({ hash: z.string().min(1) });
+export type FavoriteModelRequest = z.infer<typeof FavoriteModelRequest>;
+
+/** All favorite hashes after the mutation is applied. */
+export const FavoriteModelResponse = z.array(z.string().min(1));
+export type FavoriteModelResponse = z.infer<typeof FavoriteModelResponse>;
 
 // --- catalog tags ---------------------------------------------------------
 
@@ -784,6 +834,10 @@ export const ipcSchemas = {
     request: ExtractVendorMetadataRequest,
     response: ExtractVendorMetadataResponse,
   },
+  [IpcChannel.ExtractVendorPlateThumbnails]: {
+    request: ExtractVendorPlateThumbnailsRequest,
+    response: ExtractVendorPlateThumbnailsResponse,
+  },
   [IpcChannel.RenderThumbnail]: {
     request: RenderThumbnailRequest,
     response: RenderThumbnailResponse,
@@ -803,6 +857,18 @@ export const ipcSchemas = {
   [IpcChannel.ListModels]: {
     request: ListModelsRequest,
     response: ListModelsResponse,
+  },
+  [IpcChannel.ListFavorites]: {
+    request: ListFavoritesRequest,
+    response: ListFavoritesResponse,
+  },
+  [IpcChannel.AddFavorite]: {
+    request: FavoriteModelRequest,
+    response: FavoriteModelResponse,
+  },
+  [IpcChannel.RemoveFavorite]: {
+    request: FavoriteModelRequest,
+    response: FavoriteModelResponse,
   },
   [IpcChannel.ListTags]: {
     request: ListTagsRequest,
@@ -921,6 +987,9 @@ export interface PrintFarmerApi {
   extractVendorMetadata(
     request: ExtractVendorMetadataRequest,
   ): Promise<ExtractVendorMetadataResponse>;
+  extractVendorPlateThumbnails(
+    request: ExtractVendorPlateThumbnailsRequest,
+  ): Promise<ExtractVendorPlateThumbnailsResponse>;
   renderThumbnail(
     request: RenderThumbnailRequest,
   ): Promise<RenderThumbnailResponse>;
@@ -928,6 +997,9 @@ export interface PrintFarmerApi {
   previewImport(request: ImportPreviewRequest): Promise<ImportPreviewResponse>;
   importRoot(request: ImportRootRequest): Promise<ImportRootResponse>;
   listModels(): Promise<ListModelsResponse>;
+  listFavorites(): Promise<ListFavoritesResponse>;
+  addFavorite(request: FavoriteModelRequest): Promise<FavoriteModelResponse>;
+  removeFavorite(request: FavoriteModelRequest): Promise<FavoriteModelResponse>;
   listTags(): Promise<ListTagsResponse>;
   tagsForModel(request: TagsForModelRequest): Promise<TagsForModelResponse>;
   addModelTag(request: AddModelTagRequest): Promise<AddModelTagResponse>;

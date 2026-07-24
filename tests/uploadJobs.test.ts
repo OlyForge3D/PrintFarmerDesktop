@@ -447,7 +447,11 @@ describe('UploadJobService', () => {
       profile: profile('legacyModelOnly'),
       transport: (request) =>
         Promise.resolve(
-          remote(request.clientUploadId, request.displayName, request.modelSize),
+          remote(
+            request.clientUploadId,
+            request.displayName,
+            request.modelSize,
+          ),
         ),
       store,
     });
@@ -551,7 +555,11 @@ describe('UploadJobService', () => {
       profile: profile('legacyModelOnly'),
       transport: (request) =>
         Promise.resolve(
-          remote(request.clientUploadId, request.displayName, request.modelSize),
+          remote(
+            request.clientUploadId,
+            request.displayName,
+            request.modelSize,
+          ),
         ),
       store,
     });
@@ -712,7 +720,11 @@ describe('UploadJobService', () => {
       transport: (request) => {
         transportModes.push(request.mode);
         return Promise.resolve(
-          remote(request.clientUploadId, request.displayName, request.modelSize),
+          remote(
+            request.clientUploadId,
+            request.displayName,
+            request.modelSize,
+          ),
         );
       },
       store,
@@ -816,7 +828,11 @@ describe('UploadJobService', () => {
       profile: profile('legacyModelOnly'),
       transport: (request) =>
         Promise.resolve(
-          remote(request.clientUploadId, request.displayName, request.modelSize),
+          remote(
+            request.clientUploadId,
+            request.displayName,
+            request.modelSize,
+          ),
         ),
       store,
     });

@@ -19,6 +19,7 @@ export function libraryPresentation(
   status: LibraryStatus,
   lastReport: ReconcileReport | null,
   view: LibraryView,
+  configuredRootCount = 0,
 ): LibraryPresentation {
   const visibleModels = selectLibraryView(models, view);
 
@@ -28,7 +29,8 @@ export function libraryPresentation(
 
   if (models.length === 0) {
     return {
-      state: lastReport ? 'empty-scan' : 'onboarding',
+      state:
+        lastReport || configuredRootCount > 0 ? 'empty-scan' : 'onboarding',
       visibleModels,
     };
   }

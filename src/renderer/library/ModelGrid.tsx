@@ -45,7 +45,7 @@ export function ModelGrid({
   }
 
   return (
-    <ul className="model-grid" aria-label="Model library">
+    <ul className="model-grid" aria-label="Model grid">
       {models.map((model) => (
         <ModelCard
           key={model.hash}

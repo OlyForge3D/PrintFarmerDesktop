@@ -18,6 +18,8 @@ pub mod serve;
 pub mod smart_import;
 #[cfg(feature = "sqlite")]
 pub mod sqlite_catalog;
+#[cfg(feature = "step")]
+pub mod step;
 pub mod stl;
 pub mod sync;
 pub mod threemf;

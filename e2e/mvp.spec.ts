@@ -33,6 +33,17 @@ let page: Page;
 let e2eStateRoot: string;
 const consoleErrors: string[] = [];
 
+async function dismissOnboardingIfVisible(page: Page): Promise<void> {
+  const onboarding = page.getByRole('dialog', {
+    name: 'Set up your model library',
+  });
+  if ((await onboarding.count()) === 0) {
+    return;
+  }
+  await page.getByRole('button', { name: 'Maybe later' }).click();
+  await expect(onboarding).toHaveCount(0);
+}
+
 test.beforeAll(async () => {
   for (const artifact of requiredArtifacts) {
     if (!existsSync(artifact)) {
@@ -112,7 +123,7 @@ test('loads the catalog from the sidecar', async () => {
   // The toolbar model count is populated by the sidecar's `listModels` RPC. A
   // fresh, isolated catalog is empty, but the control must still render, which
   // proves the sidecar spawned and answered without error.
-  await expect(page.getByLabel('Model library')).toBeVisible();
+  await expect(page.getByRole('main', { name: 'Model library' })).toBeVisible();
   await expect(page.getByText('0 of 0')).toBeVisible();
   await expect(page.getByLabel('Search models')).toBeVisible();
 });
@@ -154,6 +165,8 @@ test('uses reliable custom window chrome', async () => {
 });
 
 test('selects a model without mounting 3D, then previews explicitly', async () => {
+  await dismissOnboardingIfVisible(page);
+
   // The normal library surface must not spend GPU resources or show a sample
   // scene before the user requests a preview.
   await expect(page.getByRole('application')).toHaveCount(0);

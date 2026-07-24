@@ -17,6 +17,9 @@
 //! - `extractVendorMetadata` — params `{"path":<string>}`; returns a
 //!   [`crate::rpc::VendorMetadataDto`] (slicer identity, core metadata, per-plate
 //!   slice stats, embedded thumbnail part names).
+//! - `extractVendorPlateThumbnails` — params `{"path":<string>}`; returns
+//!   [`crate::rpc::VendorPlateThumbnailsDto`] (part-name enumeration plus
+//!   base64-encoded embedded PNG bytes).
 //! - `renderThumbnail` — params `{"path":<string>,"size":<u32?>}`; returns a
 //!   [`crate::rpc::ThumbnailDto`] (base64 PNG + pixel dimensions).
 //! - `scanRoot` — params `{"rootId":<string>,"path":<string>}`; scans the folder,
@@ -27,6 +30,9 @@
 //!   rules in one sidecar request.
 //! - `listModels` — params ignored; returns all catalogued logical models as
 //!   [`crate::rpc::LogicalModelDto`]s.
+//! - `listFavorites`/`addFavorite`/`removeFavorite` — persist local-only
+//!   favorite hashes in the catalog without exposing any filesystem or sync
+//!   primitive to the renderer.
 //! - Sync methods persist profile-scoped checkpoints, materialized revisions,
 //!   remote model links, leased outbound operations, and conflict records. They
 //!   never receive or store server locations or credentials.
@@ -45,11 +51,11 @@ use serde_json::Value;
 
 use crate::catalog::{reconcile_root, CatalogStore, InMemoryCatalog};
 use crate::rpc::{
-    extract_vendor_metadata_dto, load_scene_dto, render_thumbnail_dto, ApplyPullBatchDto,
-    CollectionDto, ConflictInputDto, ConflictResolution, DisposeFailedBatchDto,
-    EnqueueOutboundOperationDto, ImportPreviewDto, ImportResultDto, LogicalModelDto, OutboundState,
-    ReconcileReportDto, ReconcileUncertainBatchDto, RemoteModelLinkDto, SettleOutboundBatchDto,
-    SyncEntityType, TagDto,
+    extract_vendor_metadata_dto, extract_vendor_plate_thumbnails_dto, load_scene_dto,
+    render_thumbnail_dto, ApplyPullBatchDto, CollectionDto, ConflictInputDto, ConflictResolution,
+    DisposeFailedBatchDto, EnqueueOutboundOperationDto, ImportPreviewDto, ImportResultDto,
+    LogicalModelDto, OutboundState, ReconcileReportDto, ReconcileUncertainBatchDto,
+    RemoteModelLinkDto, SettleOutboundBatchDto, SyncEntityType, TagDto,
 };
 use crate::smart_import::{ImportPlan, ImportRuleKind};
 use crate::{sidecar_version, RPC_PROTOCOL_VERSION};
@@ -564,6 +570,14 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             serde_json::to_value(dto)
                 .map_err(|e| format!("failed to serialize vendor metadata: {e}"))
         }
+        "extractVendorPlateThumbnails" => {
+            let params: PathParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid extractVendorPlateThumbnails params: {e}"))?;
+            let dto = extract_vendor_plate_thumbnails_dto(&PathBuf::from(&params.path))
+                .map_err(|e| format!("failed to extract vendor plate thumbnails: {e}"))?;
+            serde_json::to_value(dto)
+                .map_err(|e| format!("failed to serialize vendor plate thumbnails: {e}"))
+        }
         "renderThumbnail" => {
             let params: ThumbnailParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid renderThumbnail params: {e}"))?;
@@ -615,6 +629,22 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
             let models: Vec<LogicalModelDto> =
                 store.models().iter().map(LogicalModelDto::from).collect();
             serde_json::to_value(models).map_err(|e| format!("failed to serialize models: {e}"))
+        }
+        "listFavorites" => serde_json::to_value(store.favorite_hashes())
+            .map_err(|e| format!("failed to serialize favorites: {e}")),
+        "addFavorite" => {
+            let params: HashParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid addFavorite params: {e}"))?;
+            store.add_favorite(&params.hash);
+            serde_json::to_value(store.favorite_hashes())
+                .map_err(|e| format!("failed to serialize favorites: {e}"))
+        }
+        "removeFavorite" => {
+            let params: HashParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid removeFavorite params: {e}"))?;
+            store.remove_favorite(&params.hash);
+            serde_json::to_value(store.favorite_hashes())
+                .map_err(|e| format!("failed to serialize favorites: {e}"))
         }
         "listTags" => {
             let tags: Vec<TagDto> = store.all_tags().iter().map(TagDto::from).collect();
@@ -938,6 +968,20 @@ mod tests {
     }
 
     #[test]
+    fn extract_vendor_plate_thumbnails_reports_missing_file_as_error() {
+        let out =
+            hl(r#"{"id":5,"method":"extractVendorPlateThumbnails","params":{"path":"nope.3mf"}}"#)
+                .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["id"], 5);
+        assert_eq!(v["ok"], false);
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("failed to extract vendor plate thumbnails"));
+    }
+
+    #[test]
     fn extract_vendor_metadata_over_the_wire() {
         use std::io::Write;
         use zip::write::{SimpleFileOptions, ZipWriter};
@@ -989,6 +1033,63 @@ mod tests {
         assert_eq!(v["result"]["slicer"], "bambuStudio");
         assert_eq!(v["result"]["core"]["title"], "Wire Widget");
         assert_eq!(v["result"]["thumbnails"][0], "Metadata/plate_1.png");
+    }
+
+    #[test]
+    fn extract_vendor_plate_thumbnails_over_the_wire() {
+        use std::io::Write;
+        use zip::write::{SimpleFileOptions, ZipWriter};
+        use zip::CompressionMethod;
+
+        let rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel" Target="/3D/3dmodel.model"/>
+</Relationships>"#;
+        let model = r#"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <metadata name="Title">Wire Widget</metadata>
+  <metadata name="Application">BambuStudio-01.08.00.55</metadata>
+  <resources><object id="1" type="model"><mesh>
+    <vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>
+    <triangles><triangle v1="0" v2="1" v3="2"/></triangles>
+  </mesh></object></resources>
+  <build><item objectid="1"/></build>
+</model>"#;
+
+        let mut buf = Vec::new();
+        {
+            let mut writer = ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+            for (name, bytes) in [
+                ("_rels/.rels", rels.as_bytes()),
+                ("3D/3dmodel.model", model.as_bytes()),
+                ("Metadata/plate_1.png", b"\x89PNG\r\n\x1a\nx" as &[u8]),
+            ] {
+                writer.start_file(name, opts).unwrap();
+                writer.write_all(bytes).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("project.3mf");
+        std::fs::write(&path, &buf).unwrap();
+
+        let request = serde_json::json!({
+            "id": 12,
+            "method": "extractVendorPlateThumbnails",
+            "params": { "path": path.to_string_lossy() },
+        });
+        let out = hl(&request.to_string()).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["id"], 12);
+        assert_eq!(v["ok"], true, "response was {v}");
+        assert_eq!(
+            v["result"]["thumbnails"][0]["partName"],
+            "Metadata/plate_1.png"
+        );
+        assert_eq!(v["result"]["thumbnails"][0]["plateIndex"], 1);
+        assert_eq!(v["result"]["thumbnails"][0]["pngBase64"], "iVBORw0KGgp4");
     }
 
     #[test]
@@ -1083,6 +1184,35 @@ mod tests {
         assert_eq!(models[0]["format"], "stl");
         assert_eq!(models[0]["locations"].as_array().unwrap().len(), 1);
         assert_eq!(models[0]["locations"][0]["available"], true);
+    }
+
+    #[test]
+    fn favorite_rpc_round_trips_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("part.stl"), b"stl").unwrap();
+        let mut store = InMemoryCatalog::new();
+        let scan_req = serde_json::json!({
+            "id": 1,
+            "method": "scanRoot",
+            "params": { "rootId": "root1", "path": dir.path().to_string_lossy() },
+        });
+        let _ = handle_line(&mut store, &scan_req.to_string()).unwrap();
+        let hash = store.models()[0].hash.clone();
+
+        let add_req = serde_json::json!({
+            "id": 2,
+            "method": "addFavorite",
+            "params": { "hash": hash },
+        });
+        let add_value: Value =
+            serde_json::from_str(&handle_line(&mut store, &add_req.to_string()).unwrap()).unwrap();
+        assert_eq!(add_value["ok"], true);
+        assert_eq!(add_value["result"][0], hash);
+
+        let list_req = serde_json::json!({ "id": 3, "method": "listFavorites" });
+        let list_value: Value =
+            serde_json::from_str(&handle_line(&mut store, &list_req.to_string()).unwrap()).unwrap();
+        assert_eq!(list_value["result"][0], hash);
     }
 
     #[test]

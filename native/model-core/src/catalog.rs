@@ -168,6 +168,19 @@ pub trait CatalogStore {
             .collect()
     }
 
+    /// Every favorited model hash, sorted. Default: none.
+    fn favorite_hashes(&self) -> Vec<ContentHash> {
+        Vec::new()
+    }
+
+    /// Mark a model as a local favorite. Returns whether the favorite now holds.
+    fn add_favorite(&mut self, _hash: &str) -> bool {
+        false
+    }
+
+    /// Remove a model from local favorites. Default: no-op.
+    fn remove_favorite(&mut self, _hash: &str) {}
+
     /// Every tag known to the catalog, sorted by display name. Default: none.
     fn all_tags(&self) -> Vec<Tag> {
         Vec::new()
@@ -508,6 +521,8 @@ pub struct InMemoryCatalog {
     models: HashMap<ContentHash, ModelRecord>,
     /// Maps a physical location to the content hash it currently belongs to.
     index: HashMap<(RootId, PathBuf), ContentHash>,
+    /// Favorited logical model hashes.
+    favorites: std::collections::BTreeSet<ContentHash>,
     /// Tag id -> display name.
     tags: HashMap<String, String>,
     /// Content hash -> assigned tag ids.
@@ -528,6 +543,29 @@ pub struct InMemoryCatalog {
 impl InMemoryCatalog {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn remove_model_metadata(&mut self, hash: &str) {
+        self.favorites.remove(hash);
+        self.model_tags.remove(hash);
+
+        let mut empty_collections = Vec::new();
+        for (collection_id, members) in &mut self.collection_members {
+            members.remove(hash);
+            if members.is_empty() {
+                empty_collections.push(collection_id.clone());
+            }
+        }
+        for collection_id in empty_collections {
+            self.collection_members.remove(&collection_id);
+        }
+
+        let used_tag_ids: std::collections::BTreeSet<_> = self
+            .model_tags
+            .values()
+            .flat_map(|ids| ids.iter().cloned())
+            .collect();
+        self.tags.retain(|id, _| used_tag_ids.contains(id));
     }
 
     fn build_model(&self, hash: &str, record: &ModelRecord) -> LogicalModel {
@@ -560,6 +598,7 @@ impl CatalogStore for InMemoryCatalog {
         let snapshot = Self {
             models: self.models.clone(),
             index: self.index.clone(),
+            favorites: self.favorites.clone(),
             tags: self.tags.clone(),
             model_tags: self.model_tags.clone(),
             collections: self.collections.clone(),
@@ -608,7 +647,9 @@ impl CatalogStore for InMemoryCatalog {
                 if let Some(prev) = self.models.get_mut(prev_hash) {
                     prev.locations.remove(&key);
                     if prev.locations.is_empty() {
+                        let removed_hash = prev_hash.clone();
                         self.models.remove(prev_hash);
+                        self.remove_model_metadata(&removed_hash);
                     }
                 }
             }
@@ -664,6 +705,22 @@ impl CatalogStore for InMemoryCatalog {
             .collect();
         out.sort_by(|a, b| a.hash.cmp(&b.hash));
         out
+    }
+
+    fn favorite_hashes(&self) -> Vec<ContentHash> {
+        self.favorites.iter().cloned().collect()
+    }
+
+    fn add_favorite(&mut self, hash: &str) -> bool {
+        if !self.models.contains_key(hash) {
+            return false;
+        }
+        self.favorites.insert(hash.to_string());
+        true
+    }
+
+    fn remove_favorite(&mut self, hash: &str) {
+        self.favorites.remove(hash);
     }
 
     fn all_tags(&self) -> Vec<Tag> {
@@ -2258,5 +2315,17 @@ mod tests {
 
         store.delete_collection(&coll.id);
         assert!(store.all_collections().is_empty());
+    }
+
+    #[test]
+    fn favorites_track_known_models_only() {
+        let (mut store, hash) = one_model_store();
+
+        assert!(store.add_favorite(&hash));
+        assert_eq!(store.favorite_hashes(), vec![hash.clone()]);
+        assert!(!store.add_favorite("nope"));
+
+        store.remove_favorite(&hash);
+        assert!(store.favorite_hashes().is_empty());
     }
 }

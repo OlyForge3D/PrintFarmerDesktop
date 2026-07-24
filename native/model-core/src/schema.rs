@@ -8,7 +8,7 @@
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -239,10 +239,18 @@ CREATE INDEX idx_sync_conflicts_incarnation
     ON sync_conflicts(profile_id, batch_id, batch_incarnation, resolved_at);
 "#;
 
-/// Additive v6 server binding for durable upload identity isolation. Existing
-/// links are deliberately unbound and must be resolved by the Desktop user.
+/// Additive v6 local-only library favorites keyed by logical model hash.
 pub const SCHEMA_V6: &str = r#"
-CREATE TABLE remote_model_links_v6 (
+CREATE TABLE favorite_models (
+    model_hash  TEXT PRIMARY KEY REFERENCES models(hash) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL
+);
+"#;
+
+/// Additive v7 server binding for durable upload identity isolation. Existing
+/// links are deliberately unbound and must be resolved by the Desktop user.
+pub const SCHEMA_V7: &str = r#"
+CREATE TABLE remote_model_links_v7 (
     profile_id       TEXT NOT NULL REFERENCES sync_profiles(profile_id) ON DELETE CASCADE,
     server_binding   TEXT NOT NULL DEFAULT 'legacy-unbound',
     local_model_hash TEXT NOT NULL,
@@ -258,7 +266,7 @@ CREATE TABLE remote_model_links_v6 (
     UNIQUE (profile_id, server_binding, client_upload_id)
 );
 
-INSERT INTO remote_model_links_v6(
+INSERT INTO remote_model_links_v7(
     profile_id, server_binding, local_model_hash, remote_model_id,
     client_upload_id, etag, upload_status, created_at, updated_at, uploaded_at)
 SELECT profile_id, 'legacy-unbound', local_model_hash, remote_model_id,
@@ -266,7 +274,7 @@ SELECT profile_id, 'legacy-unbound', local_model_hash, remote_model_id,
 FROM remote_model_links;
 
 DROP TABLE remote_model_links;
-ALTER TABLE remote_model_links_v6 RENAME TO remote_model_links;
+ALTER TABLE remote_model_links_v7 RENAME TO remote_model_links;
 "#;
 
 #[cfg(test)]
@@ -295,7 +303,8 @@ mod tests {
     #[test]
     fn sync_schema_contains_no_transport_or_secret_fields() {
         let sync_schema =
-            format!("{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}").to_lowercase();
+            format!("{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}\n{SCHEMA_V6}\n{SCHEMA_V7}")
+                .to_lowercase();
         for forbidden in ["server_url", "auth_token", "api_key", "password", "jwt"] {
             assert!(!sync_schema.contains(forbidden));
         }
@@ -308,5 +317,17 @@ mod tests {
         ] {
             assert!(SCHEMA_V2.contains(table), "schema missing table {table}");
         }
+    }
+
+    #[test]
+    fn favorites_schema_references_models() {
+        assert!(SCHEMA_V6.contains("favorite_models"));
+        assert!(SCHEMA_V6.contains("REFERENCES models"));
+    }
+
+    #[test]
+    fn upload_link_schema_adds_server_binding() {
+        assert!(SCHEMA_V7.contains("server_binding"));
+        assert!(SCHEMA_V7.contains("legacy-unbound"));
     }
 }

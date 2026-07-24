@@ -785,9 +785,11 @@ export class UploadJobService {
           identity = {
             profileId: job.profileId,
             hash: item.hash,
-            clientUploadId: legacyIdentity?.clientUploadId ?? item.clientUploadId,
+            clientUploadId:
+              legacyIdentity?.clientUploadId ?? item.clientUploadId,
             serverBinding: context.serverBinding,
-            remoteModelId: item.remote?.id ?? legacyIdentity?.remoteModelId ?? null,
+            remoteModelId:
+              item.remote?.id ?? legacyIdentity?.remoteModelId ?? null,
             etag: item.remote?.etag ?? legacyIdentity?.etag ?? null,
             updatedAt: this.isoNow(),
           };

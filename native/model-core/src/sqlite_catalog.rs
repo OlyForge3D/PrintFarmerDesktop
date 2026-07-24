@@ -23,7 +23,7 @@ use crate::catalog::{
 };
 use crate::model::{FileFingerprint, ModelFormat};
 use crate::schema::{
-    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_VERSION,
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_VERSION,
 };
 use crate::sync::{
     self, ApplyPullBatchDto, ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution,
@@ -86,6 +86,9 @@ impl SqliteCatalog {
                 }
                 if version < 6 {
                     conn.execute_batch(SCHEMA_V6)?;
+                }
+                if version < 7 {
+                    conn.execute_batch(SCHEMA_V7)?;
                 }
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 conn.execute_batch("COMMIT")
@@ -621,6 +624,49 @@ impl CatalogStore for SqliteCatalog {
             .into_iter()
             .filter_map(|h| self.build_model(&h))
             .collect()
+    }
+
+    fn favorite_hashes(&self) -> Vec<String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT model_hash FROM favorite_models ORDER BY model_hash")
+            .expect("catalog read failed: favorites prepare");
+        stmt.query_map([], |row| row.get(0))
+            .expect("catalog read failed: favorites query")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("catalog read failed: favorites collect")
+    }
+
+    fn add_favorite(&mut self, hash: &str) -> bool {
+        let known: bool = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM models WHERE hash = ?1",
+                params![hash],
+                |_| Ok(()),
+            )
+            .optional()
+            .expect("catalog read failed: favorite model exists")
+            .is_some();
+        if !known {
+            return false;
+        }
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO favorite_models(model_hash, created_at) VALUES(?1, ?2)",
+                params![hash, now_ts()],
+            )
+            .expect("catalog write failed: add favorite");
+        true
+    }
+
+    fn remove_favorite(&mut self, hash: &str) {
+        self.conn
+            .execute(
+                "DELETE FROM favorite_models WHERE model_hash = ?1",
+                params![hash],
+            )
+            .expect("catalog write failed: remove favorite");
     }
 
     fn all_tags(&self) -> Vec<Tag> {
@@ -2029,6 +2075,7 @@ fn format_to_db(format: ModelFormat) -> &'static str {
         ModelFormat::Stl => "stl",
         ModelFormat::ThreeMf => "threeMf",
         ModelFormat::Obj => "obj",
+        ModelFormat::Step => "step",
     }
 }
 
@@ -2036,6 +2083,7 @@ fn format_from_db(value: &str) -> ModelFormat {
     match value {
         "threeMf" => ModelFormat::ThreeMf,
         "obj" => ModelFormat::Obj,
+        "step" => ModelFormat::Step,
         _ => ModelFormat::Stl,
     }
 }
@@ -2457,6 +2505,159 @@ mod tests {
     }
 
     #[test]
+    fn upgrades_v5_adds_favorites_table_and_preserves_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("v5.sqlite3");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.execute_batch(SCHEMA_V2).unwrap();
+            conn.execute_batch(SCHEMA_V3).unwrap();
+            conn.execute_batch(SCHEMA_V4).unwrap();
+            conn.execute_batch(SCHEMA_V5).unwrap();
+            conn.execute(
+                "INSERT INTO source_roots(id, path, created_at, updated_at)
+                 VALUES('root', 'C:\\\\models', '1', '1')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO models(hash, format, size_bytes, scene_version, parse_status, created_at, updated_at)
+                 VALUES('hash-a', 'stl', 111, NULL, 'ready', '1', '1'),
+                       ('hash-b', 'obj', 222, NULL, 'ready', '1', '1')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO model_locations(
+                    root_id, path, root_relative, model_hash, size_bytes, modified_unix_secs, available, last_seen_at)
+                 VALUES
+                    ('root', 'C:\\\\models\\\\alpha.stl', 'alpha.stl', 'hash-a', 111, 11, 1, '1'),
+                    ('root', 'C:\\\\models\\\\beta.obj', 'beta.obj', 'hash-b', 222, 22, 1, '1')",
+                [],
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 5).unwrap();
+        }
+
+        let mut store = SqliteCatalog::open(&db).unwrap();
+        let models = store.models();
+        assert_eq!(models.len(), 2);
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.hash.as_str())
+                .collect::<Vec<_>>(),
+            vec!["hash-a", "hash-b"]
+        );
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.locations[0]
+                    .root_relative
+                    .to_string_lossy()
+                    .into_owned())
+                .collect::<Vec<_>>(),
+            vec!["alpha.stl".to_string(), "beta.obj".to_string()]
+        );
+
+        let favorites_table_exists: bool = store
+            .conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name = 'favorite_models')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(favorites_table_exists);
+
+        let favorite_columns = store
+            .conn
+            .prepare("PRAGMA table_info(favorite_models)")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i32>(3)?,
+                    row.get::<_, i32>(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            favorite_columns,
+            vec![
+                ("model_hash".to_string(), "TEXT".to_string(), 0, 1),
+                ("created_at".to_string(), "TEXT".to_string(), 1, 0),
+            ]
+        );
+
+        let favorite_foreign_keys = store
+            .conn
+            .prepare("PRAGMA foreign_key_list(favorite_models)")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            favorite_foreign_keys,
+            vec![(
+                "models".to_string(),
+                "model_hash".to_string(),
+                "hash".to_string(),
+                "NO ACTION".to_string(),
+                "CASCADE".to_string(),
+            )]
+        );
+
+        let foreign_keys_enabled: bool = store
+            .conn
+            .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+            .unwrap();
+        assert!(foreign_keys_enabled);
+
+        assert!(store.add_favorite("hash-a"));
+        assert_eq!(store.favorite_hashes(), vec!["hash-a".to_string()]);
+        assert!(!store.add_favorite("missing"));
+
+        let err = store
+            .conn
+            .execute(
+                "INSERT INTO favorite_models(model_hash, created_at) VALUES(?1, ?2)",
+                params!["missing", "2"],
+            )
+            .unwrap_err();
+        match err {
+            rusqlite::Error::SqliteFailure(sql_err, Some(message))
+                if sql_err.code == rusqlite::ErrorCode::ConstraintViolation
+                    && message.contains("FOREIGN KEY constraint failed") => {}
+            other => panic!("expected SQLite foreign key violation, got {other:?}"),
+        }
+
+        store.remove_favorite("hash-a");
+        assert!(store.favorite_hashes().is_empty());
+
+        let version: u32 = store
+            .conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
     fn rejects_unknown_future_schema_versions() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("future.sqlite3");
@@ -2524,9 +2725,9 @@ mod tests {
     }
 
     #[test]
-    fn v6_migrates_links_as_unbound_and_allows_binding_parity() {
+    fn v7_migrates_links_as_unbound_and_allows_binding_parity() {
         let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join("v5-links.sqlite3");
+        let db = dir.path().join("v6-links.sqlite3");
         let hash = "a".repeat(64);
         {
             let conn = Connection::open(&db).unwrap();
@@ -2536,8 +2737,20 @@ mod tests {
             conn.execute_batch(SCHEMA_V4).unwrap();
             conn.execute_batch(SCHEMA_V5).unwrap();
             migrate_v5_fencing(&conn).unwrap();
+            conn.execute_batch(SCHEMA_V6).unwrap();
             conn.execute("INSERT INTO sync_profiles(profile_id) VALUES('p')", [])
                 .unwrap();
+            conn.execute(
+                "INSERT INTO models(hash, format, size_bytes, parse_status, created_at, updated_at)
+                 VALUES(?1, 'stl', 1, 'ready', '1', '1')",
+                params![hash],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO favorite_models(model_hash, created_at) VALUES(?1, '1')",
+                params![hash],
+            )
+            .unwrap();
             conn.execute(
                 "INSERT INTO remote_model_links(
                         profile_id, local_model_hash, remote_model_id, client_upload_id,
@@ -2546,10 +2759,11 @@ mod tests {
                 params![hash],
             )
             .unwrap();
-            conn.pragma_update(None, "user_version", 5).unwrap();
+            conn.pragma_update(None, "user_version", 6).unwrap();
         }
 
         let mut store = SqliteCatalog::open(&db).unwrap();
+        assert_eq!(store.favorite_hashes(), vec![hash.clone()]);
         let legacy = store
             .remote_model_link("p", "legacy-unbound", &hash)
             .unwrap()
@@ -2719,6 +2933,24 @@ mod tests {
 
         store.delete_collection(&coll.id);
         assert!(store.all_collections().is_empty());
+    }
+
+    #[test]
+    fn favorites_persist_for_known_models_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("m.stl"), b"bytes");
+
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        reconcile_root(&mut store, "r", &scan(root));
+        let hash = store.models()[0].hash.clone();
+
+        assert!(store.add_favorite(&hash));
+        assert_eq!(store.favorite_hashes(), vec![hash.clone()]);
+        assert!(!store.add_favorite("missing"));
+
+        store.remove_favorite(&hash);
+        assert!(store.favorite_hashes().is_empty());
     }
 
     #[test]
