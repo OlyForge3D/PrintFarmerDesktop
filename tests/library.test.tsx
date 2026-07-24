@@ -896,6 +896,23 @@ describe('selectLibraryView', () => {
     const byName = selectLibraryView(models, defaultLibraryView);
     expect(byName.map((m) => modelDisplayName(m))[0]).toBe('alpha.stl');
 
+    const byNameDesc = selectLibraryView(models, {
+      ...defaultLibraryView,
+      sort: 'name-desc',
+    });
+    expect(byNameDesc.map((m) => modelDisplayName(m))[0]).toBe('gone.stl');
+
+    const bySizeAsc = selectLibraryView(models, {
+      ...defaultLibraryView,
+      sort: 'size-asc',
+    });
+    expect(bySizeAsc.map((m) => m.hash)).toEqual([
+      'h-dup',
+      'h-alpha.stl',
+      'h-gone.stl',
+      'h-beta.stl',
+    ]);
+
     const bySize = selectLibraryView(models, {
       ...defaultLibraryView,
       sort: 'size-desc',
@@ -958,6 +975,20 @@ describe('selectLibraryView', () => {
     expect(
       selectLibraryView(models, { ...defaultLibraryView, filter: 'favorites' }),
     ).toHaveLength(0);
+  });
+
+  it('filters to missing files and to duplicates', () => {
+    const missing = selectLibraryView(models, {
+      ...defaultLibraryView,
+      filter: 'missing',
+    });
+    expect(missing.map((m) => m.hash)).toEqual(['h-gone.stl']);
+
+    const duplicates = selectLibraryView(models, {
+      ...defaultLibraryView,
+      filter: 'duplicates',
+    });
+    expect(duplicates.map((m) => m.hash)).toEqual(['h-dup']);
   });
 
   it('filters by model format and searches physical paths', () => {

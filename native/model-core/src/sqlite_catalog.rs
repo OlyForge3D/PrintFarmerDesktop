@@ -2448,6 +2448,83 @@ mod tests {
     }
 
     #[test]
+    fn upgrades_v5_adds_favorites_table_and_preserves_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("v5.sqlite3");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.execute_batch(SCHEMA_V2).unwrap();
+            conn.execute_batch(SCHEMA_V3).unwrap();
+            conn.execute_batch(SCHEMA_V4).unwrap();
+            conn.execute_batch(SCHEMA_V5).unwrap();
+            conn.execute(
+                "INSERT INTO source_roots(id, path, created_at, updated_at)
+                 VALUES('root', 'C:\\\\models', '1', '1')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO models(hash, format, size_bytes, scene_version, parse_status, created_at, updated_at)
+                 VALUES('hash-a', 'stl', 111, NULL, 'ready', '1', '1'),
+                       ('hash-b', 'obj', 222, NULL, 'ready', '1', '1')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO model_locations(
+                    root_id, path, root_relative, model_hash, size_bytes, modified_unix_secs, available, last_seen_at)
+                 VALUES
+                    ('root', 'C:\\\\models\\\\alpha.stl', 'alpha.stl', 'hash-a', 111, 11, 1, '1'),
+                    ('root', 'C:\\\\models\\\\beta.obj', 'beta.obj', 'hash-b', 222, 22, 1, '1')",
+                [],
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 5).unwrap();
+        }
+
+        let mut store = SqliteCatalog::open(&db).unwrap();
+        let models = store.models();
+        assert_eq!(models.len(), 2);
+        assert_eq!(
+            models.iter().map(|model| model.hash.as_str()).collect::<Vec<_>>(),
+            vec!["hash-a", "hash-b"]
+        );
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.locations[0].root_relative.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["alpha.stl".to_string(), "beta.obj".to_string()]
+        );
+
+        let favorites_table_exists: bool = store
+            .conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name = 'favorite_models')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(favorites_table_exists);
+
+        assert!(store.add_favorite("hash-a"));
+        assert_eq!(store.favorite_hashes(), vec!["hash-a".to_string()]);
+        assert!(!store.add_favorite("missing"));
+
+        store.remove_favorite("hash-a");
+        assert!(store.favorite_hashes().is_empty());
+
+        let version: u32 = store
+            .conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 6);
+    }
+
+    #[test]
     fn rejects_unknown_future_schema_versions() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("future.sqlite3");
