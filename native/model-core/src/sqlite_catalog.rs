@@ -3478,6 +3478,239 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_remove_then_add_coalesces_a_pending_membership_delete_to_zero_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("m.stl"), b"bytes");
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        reconcile_root(&mut store, "r", &scan(root));
+        let hash = store.models()[0].hash.clone();
+        store
+            .bind_sync_profile("profile-a", "binding-a", 1)
+            .unwrap();
+        let collection = store
+            .create_collection_with_sync("Synced", "profile-a", "binding-a", 2)
+            .unwrap();
+        let collection_claim = store
+            .claim_outbound_operations("profile-a", 10, 3, 30)
+            .unwrap()
+            .unwrap();
+        let collection_remote_id = collection_claim.operations[0].payload["remoteId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "profile-a".to_string(),
+                batch_id: collection_claim.batch_id,
+                batch_incarnation: collection_claim.batch_incarnation,
+                lease_token: collection_claim.lease_token,
+                settled_at: 4,
+                server_revision: 1,
+                applied: vec![crate::sync::AppliedOutboundResultDto {
+                    operation_id: collection_claim.operations[0].operation_id.clone(),
+                    remote_id: collection_remote_id,
+                    revision: 1,
+                    concurrency_token: None,
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+        store
+            .link_remote_model(crate::sync::RemoteModelLinkDto {
+                profile_id: "profile-a".to_string(),
+                local_model_hash: hash.clone(),
+                remote_model_id: "remote-model".to_string(),
+                client_upload_id: "upload-a".to_string(),
+                etag: None,
+                upload_status: crate::sync::RemoteUploadStatus::Pending,
+                created_at: 5,
+                updated_at: 5,
+                uploaded_at: None,
+            })
+            .unwrap();
+        assert!(store
+            .add_model_to_collection_with_sync(&collection.id, &hash, "profile-a", "binding-a", 6)
+            .unwrap());
+        let membership_claim = store
+            .claim_outbound_operations("profile-a", 10, 7, 30)
+            .unwrap()
+            .unwrap();
+        let membership_remote_id = membership_claim.operations[0].payload["remoteId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "profile-a".to_string(),
+                batch_id: membership_claim.batch_id,
+                batch_incarnation: membership_claim.batch_incarnation,
+                lease_token: membership_claim.lease_token,
+                settled_at: 8,
+                server_revision: 2,
+                applied: vec![crate::sync::AppliedOutboundResultDto {
+                    operation_id: membership_claim.operations[0].operation_id.clone(),
+                    remote_id: membership_remote_id,
+                    revision: 1,
+                    concurrency_token: None,
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+
+        store
+            .remove_model_from_collection_with_sync(
+                &collection.id,
+                &hash,
+                "profile-a",
+                "binding-a",
+                9,
+            )
+            .unwrap();
+        let pending_delete = store
+            .outbound_operations("profile-a", &[OutboundState::Pending], 500)
+            .unwrap();
+        assert_eq!(pending_delete.len(), 1);
+        assert_eq!(
+            pending_delete[0].operation,
+            crate::sync::SyncOperationKind::Delete
+        );
+
+        assert!(store
+            .add_model_to_collection_with_sync(&collection.id, &hash, "profile-a", "binding-a", 10)
+            .unwrap());
+        let pending = store
+            .outbound_operations("profile-a", &[OutboundState::Pending], 500)
+            .unwrap();
+        assert!(
+            pending.is_empty(),
+            "re-adding before the delete is claimed should cancel the pending delete instead of queueing a compensating create"
+        );
+        assert!(store
+            .collections_for_model(&hash)
+            .iter()
+            .any(|value| value.id == collection.id));
+    }
+
+    #[test]
+    fn sqlite_remove_then_add_preserves_a_claimed_delete_and_queues_a_create() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("m.stl"), b"bytes");
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        reconcile_root(&mut store, "r", &scan(root));
+        let hash = store.models()[0].hash.clone();
+        store
+            .bind_sync_profile("profile-a", "binding-a", 1)
+            .unwrap();
+        let collection = store
+            .create_collection_with_sync("Synced", "profile-a", "binding-a", 2)
+            .unwrap();
+        let collection_claim = store
+            .claim_outbound_operations("profile-a", 10, 3, 30)
+            .unwrap()
+            .unwrap();
+        let collection_remote_id = collection_claim.operations[0].payload["remoteId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "profile-a".to_string(),
+                batch_id: collection_claim.batch_id,
+                batch_incarnation: collection_claim.batch_incarnation,
+                lease_token: collection_claim.lease_token,
+                settled_at: 4,
+                server_revision: 1,
+                applied: vec![crate::sync::AppliedOutboundResultDto {
+                    operation_id: collection_claim.operations[0].operation_id.clone(),
+                    remote_id: collection_remote_id,
+                    revision: 1,
+                    concurrency_token: None,
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+        store
+            .link_remote_model(crate::sync::RemoteModelLinkDto {
+                profile_id: "profile-a".to_string(),
+                local_model_hash: hash.clone(),
+                remote_model_id: "remote-model".to_string(),
+                client_upload_id: "upload-a".to_string(),
+                etag: None,
+                upload_status: crate::sync::RemoteUploadStatus::Pending,
+                created_at: 5,
+                updated_at: 5,
+                uploaded_at: None,
+            })
+            .unwrap();
+        assert!(store
+            .add_model_to_collection_with_sync(&collection.id, &hash, "profile-a", "binding-a", 6)
+            .unwrap());
+        let membership_claim = store
+            .claim_outbound_operations("profile-a", 10, 7, 30)
+            .unwrap()
+            .unwrap();
+        let membership_remote_id = membership_claim.operations[0].payload["remoteId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "profile-a".to_string(),
+                batch_id: membership_claim.batch_id,
+                batch_incarnation: membership_claim.batch_incarnation,
+                lease_token: membership_claim.lease_token,
+                settled_at: 8,
+                server_revision: 2,
+                applied: vec![crate::sync::AppliedOutboundResultDto {
+                    operation_id: membership_claim.operations[0].operation_id.clone(),
+                    remote_id: membership_remote_id,
+                    revision: 1,
+                    concurrency_token: None,
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+
+        store
+            .remove_model_from_collection_with_sync(
+                &collection.id,
+                &hash,
+                "profile-a",
+                "binding-a",
+                9,
+            )
+            .unwrap();
+        let delete_claim = store
+            .claim_outbound_operations("profile-a", 10, 10, 30)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            delete_claim.operations[0].operation,
+            crate::sync::SyncOperationKind::Delete
+        );
+
+        assert!(store
+            .add_model_to_collection_with_sync(&collection.id, &hash, "profile-a", "binding-a", 11)
+            .unwrap());
+        let inflight = store
+            .outbound_operations("profile-a", &[OutboundState::InFlight], 500)
+            .unwrap();
+        assert_eq!(inflight.len(), 1);
+        assert_eq!(inflight[0].operation, crate::sync::SyncOperationKind::Delete);
+        let pending = store
+            .outbound_operations("profile-a", &[OutboundState::Pending], 500)
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending[0].entity_type,
+            SyncEntityType::ModelCollectionMembership
+        );
+        assert_eq!(pending[0].operation, crate::sync::SyncOperationKind::Create);
+    }
+
+    #[test]
     fn replace_sync_profile_binding_replay_is_idempotent_and_does_not_rewipe() {
         let mut store = SqliteCatalog::open_in_memory().unwrap();
         store

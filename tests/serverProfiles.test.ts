@@ -809,6 +809,77 @@ describe('server profiles', () => {
     );
   });
 
+  it('non-destructively adopts a drifted /api/auth/me.id on save', async () => {
+    const fs = new MemoryFileSystem();
+    let currentUserId = 'operator-1';
+    const baseline = successfulFetch();
+    const fetchImpl: typeof globalThis.fetch = vi.fn(
+      (input: string | URL | Request, init?: RequestInit) => {
+        const url = requestUrl(input);
+        if (url.pathname === '/api/auth/me') {
+          return Promise.resolve(
+            json({ id: currentUserId, username: 'operator' }),
+          );
+        }
+        return baseline(input, init);
+      },
+    );
+    const profiles = service(fs, fetchImpl);
+    const invalidated = vi.fn();
+    profiles.subscribeInvalidation(invalidated);
+
+    const saved = await profiles.save(apiKeyDraft());
+    const initial = await profiles.getPersistedSyncBinding(saved.id);
+
+    currentUserId = 'operator-2';
+    await profiles.save(
+      apiKeyDraft({
+        id: saved.id,
+        displayName: 'Rebound farm',
+        credentials: { authMode: 'apiKey', apiKey: 'rotated-key' },
+      }),
+    );
+
+    const adopted = await profiles.getPersistedSyncBinding(saved.id);
+    expect(adopted.incarnation).not.toBe(initial.incarnation);
+    expect(adopted.revision).toBeGreaterThan(initial.revision);
+
+    const transitions = await profiles.pendingBindingTransitions();
+    expect(transitions).toHaveLength(1);
+    expect(transitions[0]).toMatchObject({
+      profileId: saved.id,
+      expectedBinding: initial.binding,
+      newBinding: adopted.binding,
+    });
+    expect(invalidated).toHaveBeenCalledTimes(1);
+
+    const listed = await profiles.list();
+    expect(listed.profiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: saved.id,
+          displayName: 'Rebound farm',
+          status: 'connected',
+        }),
+      ]),
+    );
+
+    await profiles.save(
+      apiKeyDraft({
+        id: saved.id,
+        displayName: 'Still rebound farm',
+        credentials: { authMode: 'apiKey', apiKey: 'rotated-again' },
+      }),
+    );
+    await expect(profiles.pendingBindingTransitions()).resolves.toHaveLength(
+      1,
+    );
+    await expect(profiles.getPersistedSyncBinding(saved.id)).resolves.toEqual(
+      adopted,
+    );
+    expect(invalidated).toHaveBeenCalledTimes(1);
+  });
+
   it('discards an older renewal after a forced saved-profile probe', async () => {
     const fs = new MemoryFileSystem();
     let currentTime = NOW;
