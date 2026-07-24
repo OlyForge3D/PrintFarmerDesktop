@@ -1267,7 +1267,12 @@ impl CatalogStore for InMemoryCatalog {
         // retried transition (expected_binding now stale because a prior
         // attempt already committed) is treated as already-applied instead
         // of failing CAS and re-running the destructive profile-scoped wipe.
-        if self.sync_profile_bindings.get(profile_id).map(String::as_str) == Some(new_binding) {
+        if self
+            .sync_profile_bindings
+            .get(profile_id)
+            .map(String::as_str)
+            == Some(new_binding)
+        {
             return Ok(self
                 .sync_statuses
                 .get(profile_id)
@@ -3734,7 +3739,10 @@ mod tests {
             .outbound_operations("profile-a", &[OutboundState::InFlight], 500)
             .unwrap();
         assert_eq!(inflight.len(), 1);
-        assert_eq!(inflight[0].operation, crate::sync::SyncOperationKind::Delete);
+        assert_eq!(
+            inflight[0].operation,
+            crate::sync::SyncOperationKind::Delete
+        );
         let pending = store
             .outbound_operations("profile-a", &[OutboundState::Pending], 500)
             .unwrap();

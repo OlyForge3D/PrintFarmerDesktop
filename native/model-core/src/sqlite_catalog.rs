@@ -323,7 +323,6 @@ impl SqliteCatalog {
             .map(|value| value.unwrap_or(0) as u64)
     }
 
-
     fn remove_materialized_membership(
         &self,
         profile_id: &str,
@@ -3420,11 +3419,7 @@ mod tests {
         // entity has never been pulled, so it must remain 0.
         assert_eq!(
             store
-                .existing_journal_revision(
-                    "profile-a",
-                    SyncEntityType::ModelCollection,
-                    &remote_id
-                )
+                .existing_journal_revision("profile-a", SyncEntityType::ModelCollection, &remote_id)
                 .unwrap(),
             0
         );
@@ -3698,7 +3693,10 @@ mod tests {
             .outbound_operations("profile-a", &[OutboundState::InFlight], 500)
             .unwrap();
         assert_eq!(inflight.len(), 1);
-        assert_eq!(inflight[0].operation, crate::sync::SyncOperationKind::Delete);
+        assert_eq!(
+            inflight[0].operation,
+            crate::sync::SyncOperationKind::Delete
+        );
         let pending = store
             .outbound_operations("profile-a", &[OutboundState::Pending], 500)
             .unwrap();
