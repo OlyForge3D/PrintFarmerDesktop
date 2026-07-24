@@ -12,7 +12,9 @@
 //
 // The build enables the `sqlite` feature so the shipped sidecar can persist the
 // model catalog on disk (the bundled SQLite driver needs a C toolchain, which CI
-// runners and developer machines with a platform C compiler already have).
+// runners and developer machines with a platform C compiler already have). This
+// script does not yet stage native `lib3mf` shared libraries, so packaged builds
+// must keep `--features lib3mf` disabled until a dedicated staging step exists.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, copyFileSync, rmSync } from 'node:fs';

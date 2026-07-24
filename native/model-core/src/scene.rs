@@ -420,9 +420,9 @@ pub fn load_scene(path: &Path) -> Result<SceneMesh, SceneError> {
         Some(ModelFormat::ThreeMf) => {
             #[cfg(feature = "lib3mf")]
             {
-                return Ok(SceneMesh::from_threemf(&threemf::parse_file_with_lib3mf(
+                Ok(SceneMesh::from_threemf(&threemf::parse_file_with_lib3mf(
                     path,
-                )?));
+                )?))
             }
             #[cfg(not(feature = "lib3mf"))]
             {
@@ -447,9 +447,9 @@ pub fn scene_from_stl_bytes(data: &[u8]) -> Result<SceneMesh, SceneError> {
 pub fn scene_from_threemf_bytes(data: &[u8]) -> Result<SceneMesh, SceneError> {
     #[cfg(feature = "lib3mf")]
     {
-        return Ok(SceneMesh::from_threemf(&threemf::parse_bytes_with_lib3mf(
+        Ok(SceneMesh::from_threemf(&threemf::parse_bytes_with_lib3mf(
             data,
-        )?));
+        )?))
     }
     #[cfg(not(feature = "lib3mf"))]
     {

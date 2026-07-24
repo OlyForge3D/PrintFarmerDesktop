@@ -17,19 +17,35 @@ use crate::threemf::{
 };
 
 pub fn parse_file(path: &Path) -> Result<ThreeMfMesh, ThreeMfError> {
-    let mut mesh = crate::threemf::parse_file(path)?;
-    let session = Lib3mfSession::new()?;
-    let validated = session.parse_file(path)?;
-    merge_validated_scene(&mut mesh, validated);
-    Ok(mesh)
+    let mesh = crate::threemf::parse_file(path)?;
+    Ok(match Lib3mfSession::new() {
+        Ok(session) => merge_or_fallback(
+            mesh,
+            session.parse_file(path),
+            NativeValidationFailureKind::ValidationFailed,
+        ),
+        Err(error) => merge_or_fallback(
+            mesh,
+            Err(error),
+            NativeValidationFailureKind::ValidatorUnavailable,
+        ),
+    })
 }
 
 pub fn parse_bytes(data: &[u8]) -> Result<ThreeMfMesh, ThreeMfError> {
-    let mut mesh = crate::threemf::parse_bytes(data)?;
-    let session = Lib3mfSession::new()?;
-    let validated = session.parse_bytes(data)?;
-    merge_validated_scene(&mut mesh, validated);
-    Ok(mesh)
+    let mesh = crate::threemf::parse_bytes(data)?;
+    Ok(match Lib3mfSession::new() {
+        Ok(session) => merge_or_fallback(
+            mesh,
+            session.parse_bytes(data),
+            NativeValidationFailureKind::ValidationFailed,
+        ),
+        Err(error) => merge_or_fallback(
+            mesh,
+            Err(error),
+            NativeValidationFailureKind::ValidatorUnavailable,
+        ),
+    })
 }
 
 struct Lib3mfSession {
@@ -183,6 +199,7 @@ impl Lib3mfSession {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn expand_object(
         &self,
         model: Lib3MF_Model,
@@ -1211,6 +1228,45 @@ impl Drop for OwnedHandle<'_> {
 
 type MaterialCatalog = HashMap<u32, HashMap<u32, String>>;
 
+#[derive(Clone, Copy)]
+enum NativeValidationFailureKind {
+    ValidatorUnavailable,
+    ValidationFailed,
+}
+
+fn merge_or_fallback(
+    mut mesh: ThreeMfMesh,
+    validated: Result<ThreeMfMesh, ThreeMfError>,
+    failure_kind: NativeValidationFailureKind,
+) -> ThreeMfMesh {
+    match validated {
+        Ok(validated) => {
+            merge_validated_scene(&mut mesh, validated);
+            mesh
+        }
+        Err(error) => {
+            mesh.status = mesh.status.combine(SceneLoadStatus::Unsupported);
+            let context = match failure_kind {
+                NativeValidationFailureKind::ValidatorUnavailable => {
+                    "native lib3mf validator unavailable, falling back to internal parser"
+                }
+                NativeValidationFailureKind::ValidationFailed => {
+                    "native lib3mf validation failed, falling back to internal parser"
+                }
+            };
+            let message = format!("{context}: {error}");
+            if !mesh
+                .status_messages
+                .iter()
+                .any(|existing| existing == &message)
+            {
+                mesh.status_messages.push(message);
+            }
+            mesh
+        }
+    }
+}
+
 fn merge_validated_scene(mesh: &mut ThreeMfMesh, validated: ThreeMfMesh) {
     mesh.unit = validated.unit;
     mesh.object_count = validated.object_count;
@@ -1218,7 +1274,7 @@ fn merge_validated_scene(mesh: &mut ThreeMfMesh, validated: ThreeMfMesh) {
     mesh.status = validated.status;
     mesh.status_messages = validated.status_messages;
 
-    for (part, validated_part) in mesh.parts.iter_mut().zip(validated.parts.into_iter()) {
+    for (part, validated_part) in mesh.parts.iter_mut().zip(validated.parts) {
         if !validated_part.name.is_empty() {
             part.name = validated_part.name;
         }
@@ -1249,35 +1305,6 @@ fn lib3mf_library_bases() -> Result<Vec<PathBuf>, ThreeMfError> {
         push_library_base(&mut bases, exe_dir.join("libraries").join("lib3mf"));
     }
 
-    if let Ok(current_dir) = std::env::current_dir() {
-        push_library_base(&mut bases, current_dir.join("lib3mf"));
-        push_library_base(&mut bases, current_dir.join("libraries").join("lib3mf"));
-    }
-
-    let cargo_home = std::env::var_os("CARGO_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("USERPROFILE").map(|profile| PathBuf::from(profile).join(".cargo"))
-        })
-        .ok_or_else(|| {
-            ThreeMfError::Lib3Mf("unable to determine Cargo home while locating lib3mf".to_string())
-        })?;
-
-    let git_checkouts = cargo_home.join("git").join("checkouts");
-    if let Ok(entries) = std::fs::read_dir(&git_checkouts) {
-        for entry in entries.flatten() {
-            let checkout_name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-            if !checkout_name.starts_with("lib3mf_rs-") {
-                continue;
-            }
-            if let Ok(revisions) = std::fs::read_dir(entry.path()) {
-                for revision in revisions.flatten() {
-                    push_library_base(&mut bases, revision.path().join("libraries").join("lib3mf"));
-                }
-            }
-        }
-    }
-
     Ok(bases)
 }
 
@@ -1290,6 +1317,7 @@ fn push_library_base(bases: &mut Vec<PathBuf>, base: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::OnceLock;
 
     #[test]
     fn affine_transform_converts_lib3mf_matrix() {
@@ -1301,5 +1329,147 @@ mod tests {
             ],
         });
         assert_eq!(transform.apply([1.0, 2.0, 3.0]), [6.0, 9.0, 12.0]);
+    }
+
+    #[test]
+    fn fallback_marks_mesh_unsupported_when_validator_is_unavailable() {
+        let mesh = sample_mesh();
+
+        let mesh = merge_or_fallback(
+            mesh,
+            Err(ThreeMfError::Lib3Mf(
+                "failed to locate lib3mf shared library".to_string(),
+            )),
+            NativeValidationFailureKind::ValidatorUnavailable,
+        );
+
+        assert_eq!(mesh.status, SceneLoadStatus::Unsupported);
+        assert_eq!(mesh.parts[0].status, SceneLoadStatus::Complete);
+        assert!(mesh.status_messages.iter().any(|message| {
+            message.contains("native lib3mf validator unavailable")
+                && message.contains("failed to locate lib3mf shared library")
+        }));
+    }
+
+    #[test]
+    fn fallback_marks_mesh_unsupported_when_validation_fails() {
+        let mesh = sample_mesh();
+
+        let mesh = merge_or_fallback(
+            mesh,
+            Err(ThreeMfError::Lib3Mf(
+                "ReadFromBuffer failed: invalid resource reference".to_string(),
+            )),
+            NativeValidationFailureKind::ValidationFailed,
+        );
+
+        assert_eq!(mesh.status, SceneLoadStatus::Unsupported);
+        assert!(mesh.status_messages.iter().any(|message| {
+            message.contains("native lib3mf validation failed")
+                && message.contains("invalid resource reference")
+        }));
+    }
+
+    #[test]
+    fn strict_native_parser_returns_lib3mf_error_for_invalid_namespace_fixture() {
+        stage_test_library().unwrap();
+
+        let session = Lib3mfSession::new().unwrap();
+        let path = fixture_path("lib3mf_invalid_namespace.3mf");
+        let error = session.parse_file(&path).unwrap_err();
+
+        assert!(matches!(error, ThreeMfError::Lib3Mf(_)), "{error:?}");
+        assert!(
+            !error.to_string().trim().is_empty(),
+            "lib3mf error should include a message"
+        );
+    }
+
+    fn sample_mesh() -> ThreeMfMesh {
+        ThreeMfMesh {
+            vertices: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            triangles: vec![[0, 1, 2]],
+            bounds: Aabb {
+                min: [0.0, 0.0, 0.0],
+                max: [1.0, 1.0, 0.0],
+            },
+            unit: "millimeter".to_string(),
+            object_count: 1,
+            build_item_count: 1,
+            status: SceneLoadStatus::Complete,
+            status_messages: Vec::new(),
+            parts: vec![ThreeMfPart {
+                name: "Object 1".to_string(),
+                triangle_start: 0,
+                triangle_count: 1,
+                status: SceneLoadStatus::Complete,
+                status_detail: None,
+                part_number: None,
+                material_label: None,
+            }],
+        }
+    }
+
+    fn fixture_path(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join(name)
+    }
+
+    fn stage_test_library() -> Result<(), String> {
+        static STAGED: OnceLock<Result<(), String>> = OnceLock::new();
+        STAGED.get_or_init(stage_test_library_once).clone()
+    }
+
+    fn stage_test_library_once() -> Result<(), String> {
+        let extension = if cfg!(windows) {
+            "dll"
+        } else if cfg!(target_os = "macos") {
+            "dylib"
+        } else {
+            "so"
+        };
+        let exe_dir = std::env::current_exe()
+            .map_err(|error| format!("unable to locate test executable: {error}"))?
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| "test executable has no parent directory".to_string())?;
+        let staged = exe_dir.join(format!("lib3mf.{extension}"));
+        if staged.exists() {
+            return Ok(());
+        }
+
+        let cargo_home = std::env::var_os("CARGO_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("USERPROFILE").map(|profile| PathBuf::from(profile).join(".cargo"))
+            })
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
+            .ok_or_else(|| "unable to determine Cargo home for lib3mf test staging".to_string())?;
+        let checkouts = cargo_home.join("git").join("checkouts");
+        let source = std::fs::read_dir(&checkouts)
+            .map_err(|error| format!("unable to read {checkouts:?}: {error}"))?
+            .filter_map(Result::ok)
+            .find_map(|entry| {
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                if !name.starts_with("lib3mf_rs-") {
+                    return None;
+                }
+                std::fs::read_dir(entry.path())
+                    .ok()?
+                    .filter_map(Result::ok)
+                    .map(|revision| {
+                        revision
+                            .path()
+                            .join("libraries")
+                            .join(format!("lib3mf.{extension}"))
+                    })
+                    .find(|candidate| candidate.is_file())
+            })
+            .ok_or_else(|| format!("unable to find lib3mf.{extension} under {checkouts:?}"))?;
+        std::fs::copy(&source, &staged)
+            .map_err(|error| format!("unable to stage {source:?} to {staged:?}: {error}"))?;
+        Ok(())
     }
 }

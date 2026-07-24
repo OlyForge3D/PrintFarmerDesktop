@@ -58,9 +58,17 @@ cargo build --features lib3mf
 cargo test --features lib3mf
 ```
 
-- **Verified in this environment:** the feature builds/tests against the official
-  ACT-generated `lib3mf` Rust bindings, which dynamically load the bundled
-  `lib3mf.dll` shipped in the upstream bindings checkout under Cargo's git cache.
+- **Current scope:** CI/dev builds only. `scripts/stage-sidecar.mjs` still stages
+  only the sidecar executable; it does **not** stage `lib3mf.dll` /
+  `lib3mf.dylib` / `lib3mf.so` into packaged app resources.
+- **Release warning:** do **not** enable `--features lib3mf` for a production or
+  packaged release build until `stage-sidecar.mjs` gains a real native-library
+  staging step. Today there is no production DLL/shared-library shipping path for
+  this feature.
+- **Runtime behavior today:** when the native library is absent, the app now falls
+  back to the internal pure-Rust parser and marks the scene as
+  `SceneLoadStatus::Unsupported` with an explanatory status message instead of
+  hard-failing 3MF loading.
 - **Not verified here:** rebuilding the native `lib3mf` C/C++ library from source.
   `cl`, `cmake`, and `ninja` were not available in this session, so CI/source
   builds still need Visual Studio Build Tools with the Desktop C++ workload (or an
