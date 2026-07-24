@@ -8,6 +8,7 @@ import {
   within,
 } from '@testing-library/react';
 import { App } from '../src/renderer/App.js';
+import { LibraryOnboarding } from '../src/renderer/library/LibraryOnboarding.js';
 import type {
   LoadSceneResponse,
   LogicalModel,
@@ -170,6 +171,41 @@ describe('<App />', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Add folder' })).toHaveFocus(),
     );
+  });
+
+  it('cycles Tab within library onboarding and snaps escaped focus back inside', () => {
+    render(
+      <>
+        <button type="button">Background action</button>
+        <LibraryOnboarding
+          busy={false}
+          onAddFolder={vi.fn()}
+          onClose={vi.fn()}
+        />
+      </>,
+    );
+
+    const close = screen.getByRole('button', { name: 'Close onboarding' });
+    const addFolder = screen.getByRole('button', {
+      name: 'Add your first folder',
+    });
+    const maybeLater = screen.getByRole('button', { name: 'Maybe later' });
+    const background = screen.getByRole('button', {
+      name: 'Background action',
+    });
+
+    expect(addFolder).toHaveFocus();
+
+    maybeLater.focus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(close).toHaveFocus();
+
+    close.focus();
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(maybeLater).toHaveFocus();
+
+    background.focus();
+    expect(addFolder).toHaveFocus();
   });
 
   it('opens server profiles from the sidebar and excludes the workspace', async () => {
@@ -344,6 +380,68 @@ describe('<App />', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Scan again' })).toBeVisible(),
     );
+  });
+
+  it('shows a scan error alert and clears scanning state after a rescan failure', async () => {
+    const models: LogicalModel[] = [
+      {
+        hash: 'deadbeef',
+        format: 'stl',
+        size: 2048,
+        locations: [
+          {
+            rootId: 'root-1',
+            path: 'C:\\models\\widget.stl',
+            rootRelative: 'widget.stl',
+            size: 2048,
+            available: true,
+          },
+        ],
+      },
+    ];
+    const listModels = vi.fn().mockResolvedValue(models);
+    const scanRoot = vi.fn().mockRejectedValue(new Error('scan failed hard'));
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 1,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels,
+      scanRoot,
+      renderThumbnail: vi.fn().mockResolvedValue({
+        width: 256,
+        height: 256,
+        pngBase64: 'AAAA',
+      }),
+    });
+
+    render(<App />);
+    const rescan = await screen.findByRole('button', { name: 'Scan again' });
+
+    fireEvent.click(rescan);
+
+    await waitFor(() =>
+      expect(scanRoot).toHaveBeenCalledWith({
+        rootId: 'root-1',
+        path: 'C:\\models',
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('scan failed hard'),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('progressbar', { name: 'Scan progress' }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole('progressbar', { name: 'Current scan progress' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add folder' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Scan again' })).toBeEnabled();
+    expect(listModels).toHaveBeenCalledTimes(2);
   });
 
   it('announces a selected server connection error in sidebar text', async () => {
