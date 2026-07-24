@@ -33,6 +33,17 @@ let app: ElectronApplication;
 let page: Page;
 const consoleErrors: string[] = [];
 
+async function dismissOnboardingIfVisible(page: Page): Promise<void> {
+  const onboarding = page.getByRole('dialog', {
+    name: 'Set up your model library',
+  });
+  if ((await onboarding.count()) === 0) {
+    return;
+  }
+  await page.getByRole('button', { name: 'Maybe later' }).click();
+  await expect(onboarding).toHaveCount(0);
+}
+
 test.beforeAll(async () => {
   for (const artifact of requiredArtifacts) {
     if (!existsSync(artifact)) {
@@ -147,6 +158,8 @@ test('uses reliable custom window chrome', async () => {
 });
 
 test('selects a model without mounting 3D, then previews explicitly', async () => {
+  await dismissOnboardingIfVisible(page);
+
   // The normal library surface must not spend GPU resources or show a sample
   // scene before the user requests a preview.
   await expect(page.getByRole('application')).toHaveCount(0);
