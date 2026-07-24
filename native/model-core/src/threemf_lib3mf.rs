@@ -54,24 +54,11 @@ struct Lib3mfSession {
 
 impl Lib3mfSession {
     fn new() -> Result<Self, ThreeMfError> {
-        let mut attempts = Vec::new();
-        match Wrapper::new(None) {
-            Ok(wrapper) => return Ok(Self { wrapper }),
-            Err(error) => attempts.push(format!("default loader: {}", error.message)),
-        }
-
-        for candidate in lib3mf_library_bases()? {
-            let candidate_str = candidate.to_string_lossy().into_owned();
-            match Wrapper::new(Some(&candidate_str)) {
-                Ok(wrapper) => return Ok(Self { wrapper }),
-                Err(error) => attempts.push(format!("{candidate_str}: {}", error.message)),
-            }
-        }
-
-        Err(ThreeMfError::Lib3Mf(format!(
-            "failed to locate lib3mf shared library; tried {}",
-            attempts.join(" | ")
-        )))
+        let bases = lib3mf_library_bases()?;
+        let wrapper = load_wrapper_from_library_bases(&bases, |candidate| {
+            Wrapper::new(Some(candidate)).map_err(|error| error.message)
+        })?;
+        Ok(Self { wrapper })
     }
 
     fn api(&self) -> &lib3mf_ffi::Api {
@@ -1295,17 +1282,74 @@ fn merge_validated_scene(mesh: &mut ThreeMfMesh, validated: ThreeMfMesh) {
 }
 
 fn lib3mf_library_bases() -> Result<Vec<PathBuf>, ThreeMfError> {
-    let mut bases = Vec::new();
+    let exe_path = std::env::current_exe().map_err(|error| {
+        ThreeMfError::Lib3Mf(format!(
+            "failed to determine current executable for lib3mf search: {error}"
+        ))
+    })?;
+    let exe_dir = canonical_exe_dir(&exe_path)?;
+    Ok(lib3mf_library_bases_from_exe_dir(&exe_dir))
+}
 
-    if let Some(exe_dir) = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-    {
-        push_library_base(&mut bases, exe_dir.join("lib3mf"));
-        push_library_base(&mut bases, exe_dir.join("libraries").join("lib3mf"));
+fn canonical_exe_dir(exe_path: &Path) -> Result<PathBuf, ThreeMfError> {
+    let canonical_exe = exe_path.canonicalize().map_err(|error| {
+        ThreeMfError::Lib3Mf(format!(
+            "failed to canonicalize current executable for lib3mf search: {error}"
+        ))
+    })?;
+    canonical_exe
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            ThreeMfError::Lib3Mf(format!(
+                "canonical executable path {:?} has no parent directory",
+                canonical_exe
+            ))
+        })
+}
+
+fn lib3mf_library_bases_from_exe_dir(exe_dir: &Path) -> Vec<PathBuf> {
+    let mut bases = Vec::new();
+    push_library_base(&mut bases, exe_dir.join("lib3mf"));
+    push_library_base(&mut bases, exe_dir.join("libraries").join("lib3mf"));
+    bases
+}
+
+fn load_wrapper_from_library_bases<T, F>(bases: &[PathBuf], mut load: F) -> Result<T, ThreeMfError>
+where
+    F: FnMut(&str) -> Result<T, String>,
+{
+    let mut attempts = Vec::new();
+    for candidate in bases {
+        if !candidate.is_absolute() {
+            return Err(ThreeMfError::Lib3Mf(format!(
+                "lib3mf search path must be absolute: {:?}",
+                candidate
+            )));
+        }
+
+        let candidate_str = candidate.to_str().ok_or_else(|| {
+            ThreeMfError::Lib3Mf(format!(
+                "lib3mf search path is not valid UTF-8: {:?}",
+                candidate
+            ))
+        })?;
+
+        match load(candidate_str) {
+            Ok(wrapper) => return Ok(wrapper),
+            Err(error) => attempts.push(format!("{candidate_str}: {error}")),
+        }
     }
 
-    Ok(bases)
+    let attempted_paths = if attempts.is_empty() {
+        "no curated absolute lib3mf search paths were available".to_string()
+    } else {
+        attempts.join(" | ")
+    };
+
+    Err(ThreeMfError::Lib3Mf(format!(
+        "failed to locate lib3mf shared library via curated absolute paths; tried {attempted_paths}"
+    )))
 }
 
 fn push_library_base(bases: &mut Vec<PathBuf>, base: PathBuf) {
@@ -1382,6 +1426,73 @@ mod tests {
         assert!(
             !error.to_string().trim().is_empty(),
             "lib3mf error should include a message"
+        );
+    }
+
+    #[test]
+    fn canonical_exe_dir_normalizes_noncanonical_executable_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let exe_dir = temp.path().join("bin");
+        std::fs::create_dir_all(exe_dir.join("nested")).unwrap();
+        let exe_path = exe_dir.join("model-core-test.exe");
+        std::fs::write(&exe_path, b"test").unwrap();
+
+        let noncanonical = exe_dir
+            .join("nested")
+            .join("..")
+            .join("model-core-test.exe");
+        let canonical_dir = canonical_exe_dir(&noncanonical).unwrap();
+
+        assert_eq!(canonical_dir, exe_dir.canonicalize().unwrap());
+        let bases = lib3mf_library_bases_from_exe_dir(&canonical_dir);
+        assert_eq!(
+            bases,
+            vec![
+                canonical_dir.join("lib3mf"),
+                canonical_dir.join("libraries").join("lib3mf"),
+            ]
+        );
+        assert!(bases.iter().all(|base| base.is_absolute()));
+    }
+
+    #[test]
+    fn curated_loader_tries_only_explicit_absolute_paths() {
+        let bases = vec![
+            PathBuf::from(r"C:\secure\lib3mf"),
+            PathBuf::from(r"C:\secure\libraries\lib3mf"),
+        ];
+        let mut seen = Vec::new();
+
+        let error = load_wrapper_from_library_bases::<(), _>(&bases, |candidate| {
+            seen.push(candidate.to_string());
+            Err("missing test library".to_string())
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            seen,
+            bases
+                .iter()
+                .map(|candidate| candidate.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        );
+        assert!(seen
+            .iter()
+            .all(|candidate| Path::new(candidate).is_absolute()));
+        assert!(
+            matches!(error, ThreeMfError::Lib3Mf(message) if message.contains("curated absolute paths"))
+        );
+        assert_eq!(seen.len(), bases.len());
+    }
+
+    #[test]
+    fn curated_loader_rejects_non_absolute_paths() {
+        let error =
+            load_wrapper_from_library_bases::<(), _>(&[PathBuf::from("lib3mf")], |_| Ok(()))
+                .unwrap_err();
+
+        assert!(
+            matches!(error, ThreeMfError::Lib3Mf(message) if message.contains("must be absolute"))
         );
     }
 
