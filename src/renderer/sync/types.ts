@@ -45,6 +45,19 @@ interface ConflictViewModelBase {
   reasonCode: ConflictReasonCode;
   createdAt: number;
   resolutionState: ConflictResolutionState;
+  /**
+   * Integrator contract: once a resolve attempt completes (success or
+   * failure), the caller MUST change `resolutionState` and/or
+   * `resolutionError` from the values in effect when `onResolve` fired for
+   * that attempt (e.g. transition through `'resolving'`, or attach a new
+   * `resolutionError` string). `ResolutionPanel` latches a synchronous
+   * local guard the instant a submission is emitted, to prevent duplicate
+   * requests racing ahead of this props round trip; that guard only
+   * releases when it observes a change here (or a new `attemptToken`,
+   * which remounts the panel). A caller that never changes either field
+   * after processing an attempt will leave the button permanently
+   * disabled for that conflict.
+   */
   resolutionError: string | null;
 }
 
