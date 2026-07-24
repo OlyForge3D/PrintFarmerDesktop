@@ -1,0 +1,1 @@
+<!-- Decision drop-box. Agents write proposed decisions here as `{agent}-{brief-slug}.md`; Scribe merges into ../decisions.md and deletes the file. Keep this directory tracked in git even when empty. -->
