@@ -192,6 +192,13 @@ export function ServerProfilesDialog({
     }
   };
 
+  const hasActiveConnection = profiles.profiles.some(
+    (profile) => profile.id === profiles.selectedProfileId,
+  );
+  const dialogTitle = hasActiveConnection
+    ? 'Manage PrintFarmer connection'
+    : 'Connect to PrintFarmer';
+
   return (
     <>
       <div className="profile-backdrop" aria-hidden="true" />
@@ -205,7 +212,7 @@ export function ServerProfilesDialog({
         <header className="profile-dialog-header">
           <div>
             <p className="pane-eyebrow">PrintFarmer connection</p>
-            <h2 id="server-profiles-title">Server profiles</h2>
+            <h2 id="server-profiles-title">{dialogTitle}</h2>
             <p>Credentials stay encrypted in this computer's OS vault.</p>
           </div>
           <button
@@ -296,6 +303,12 @@ export function ServerProfilesDialog({
             }}
           >
             <h3 id="add-profile-title">Add a server</h3>
+            <p className="profile-form-hint">
+              The server address below is editable and prefilled with{' '}
+              <code>10.0.0.20</code> for convenience &mdash; nothing connects
+              until you test and save. Authenticate with a desktop API key or a
+              username and password.
+            </p>
             <label>
               <span>Profile name</span>
               <input

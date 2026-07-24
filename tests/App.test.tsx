@@ -60,6 +60,13 @@ function deferred<T>(): {
   return { promise, resolve };
 }
 
+function findSidebarManageButton(name: string): Promise<HTMLElement> {
+  return within(screen.getByLabelText('Library navigation')).findByRole(
+    'button',
+    { name },
+  );
+}
+
 function serverProfile(id: string, displayName: string): ServerProfile {
   return {
     id,
@@ -155,14 +162,12 @@ describe('<App />', () => {
     });
     const { container } = render(<App />);
 
-    const manage = await screen.findByRole('button', {
-      name: /Not connected Manage profiles Status: Disconnected/,
-    });
-    expect(manage).toHaveAccessibleName(/Status: Disconnected/);
+    const manage = await findSidebarManageButton('Connect to PrintFarmer');
+    expect(manage).toHaveTextContent('Status: Disconnected');
     manage.focus();
     fireEvent.click(manage);
     expect(
-      screen.getByRole('dialog', { name: 'Server profiles' }),
+      screen.getByRole('dialog', { name: 'Connect to PrintFarmer' }),
     ).toBeVisible();
     const workspace = container.querySelector('.workspace');
     expect(workspace).toHaveAttribute('inert');
@@ -218,11 +223,12 @@ describe('<App />', () => {
     });
     render(<App />);
 
-    expect(
-      await screen.findByRole('button', {
-        name: /Broken farm Legacy server Status: Connection error/,
-      }),
-    ).toBeVisible();
+    const manage = await screen.findByRole('button', {
+      name: 'Manage connection',
+    });
+    expect(manage).toHaveTextContent('Broken farm');
+    expect(manage).toHaveTextContent('Legacy server');
+    expect(manage).toHaveTextContent('Status: Connection error');
   });
 
   it('reconciles a delete that commits after the profile dialog closes', async () => {
@@ -254,8 +260,10 @@ describe('<App />', () => {
     });
     render(<App />);
     const manage = await screen.findByRole('button', {
-      name: /Delete me Legacy server Status: Legacy fallback/,
+      name: 'Manage connection',
     });
+    expect(manage).toHaveTextContent('Delete me');
+    expect(manage).toHaveTextContent('Status: Legacy fallback');
 
     fireEvent.click(manage);
     fireEvent.click(
@@ -267,9 +275,9 @@ describe('<App />', () => {
     deleted = true;
     deletion.resolve({ profiles: [], selectedProfileId: null });
 
-    const disconnected = await screen.findByRole('button', {
-      name: /Not connected Manage profiles Status: Disconnected/,
-    });
+    const disconnected = await findSidebarManageButton(
+      'Connect to PrintFarmer',
+    );
     fireEvent.click(disconnected);
     expect(
       await screen.findByText('No server profiles saved yet.'),
@@ -314,8 +322,9 @@ describe('<App />', () => {
     });
     render(<App />);
     const manage = await screen.findByRole('button', {
-      name: /First farm Legacy server Status: Legacy fallback/,
+      name: 'Manage connection',
     });
+    expect(manage).toHaveTextContent('First farm');
 
     fireEvent.click(manage);
     fireEvent.click(await screen.findByRole('button', { name: 'Select' }));
@@ -326,8 +335,11 @@ describe('<App />', () => {
     selection.resolve(second);
 
     const selectedSecond = await screen.findByRole('button', {
-      name: /Second farm Legacy server Status: Legacy fallback/,
+      name: 'Manage connection',
     });
+    await waitFor(() =>
+      expect(selectedSecond).toHaveTextContent('Second farm'),
+    );
     staleOpenList.resolve({
       profiles: [first, second],
       selectedProfileId: first.id,
@@ -339,7 +351,7 @@ describe('<App />', () => {
 
     fireEvent.click(selectedSecond);
     const profilesDialog = await screen.findByRole('dialog', {
-      name: 'Server profiles',
+      name: 'Manage PrintFarmer connection',
     });
     const secondCard = within(profilesDialog)
       .getByText('Second farm')
@@ -380,16 +392,14 @@ describe('<App />', () => {
       listTags: vi.fn().mockResolvedValue([]),
     });
     const { container } = render(<App />);
-    const manage = await screen.findByRole('button', {
-      name: /Not connected Manage profiles Status: Disconnected/,
-    });
+    const manage = await findSidebarManageButton('Connect to PrintFarmer');
     await waitFor(() => expect(manage).toBeEnabled());
 
     fireEvent.click(screen.getByRole('button', { name: 'Add folder' }));
     expect(manage).toBeDisabled();
     fireEvent.click(manage);
     expect(
-      screen.queryByRole('dialog', { name: 'Server profiles' }),
+      screen.queryByRole('dialog', { name: 'Connect to PrintFarmer' }),
     ).not.toBeInTheDocument();
 
     preview.resolve({
@@ -409,7 +419,7 @@ describe('<App />', () => {
       }),
     ).toBeVisible();
     expect(
-      screen.queryByRole('dialog', { name: 'Server profiles' }),
+      screen.queryByRole('dialog', { name: 'Connect to PrintFarmer' }),
     ).not.toBeInTheDocument();
     expect(container.querySelectorAll('[role="dialog"]')).toHaveLength(1);
     const cancel = screen.getByRole('button', { name: 'Cancel import' });
@@ -460,9 +470,7 @@ describe('<App />', () => {
       loadScene,
     });
     render(<App />);
-    const manage = await screen.findByRole('button', {
-      name: /Not connected Manage profiles Status: Disconnected/,
-    });
+    const manage = await findSidebarManageButton('Connect to PrintFarmer');
     const preview = await screen.findByRole('button', {
       name: 'Preview part.stl in 3D',
     });
@@ -471,7 +479,7 @@ describe('<App />', () => {
     fireEvent.click(manage);
     fireEvent.click(preview);
     expect(
-      screen.getByRole('dialog', { name: 'Server profiles' }),
+      screen.getByRole('dialog', { name: 'Connect to PrintFarmer' }),
     ).toBeVisible();
     expect(loadScene).not.toHaveBeenCalled();
     fireEvent.click(
@@ -485,7 +493,7 @@ describe('<App />', () => {
       await screen.findByRole('dialog', { name: '3D preview of part.stl' }),
     ).toBeVisible();
     expect(
-      screen.queryByRole('dialog', { name: 'Server profiles' }),
+      screen.queryByRole('dialog', { name: 'Connect to PrintFarmer' }),
     ).not.toBeInTheDocument();
     expect(loadScene).toHaveBeenCalledOnce();
   });
@@ -509,9 +517,7 @@ describe('<App />', () => {
       openFolder,
     });
     render(<App />);
-    const manage = await screen.findByRole('button', {
-      name: /Not connected Manage profiles Status: Disconnected/,
-    });
+    const manage = await findSidebarManageButton('Connect to PrintFarmer');
     const addFolder = screen.getByRole('button', { name: 'Add folder' });
     const openFile = screen.getByRole('button', { name: 'Open file' });
     await waitFor(() => expect(openFile).toBeEnabled());
@@ -523,7 +529,7 @@ describe('<App />', () => {
     fireEvent.click(manage);
     fireEvent.click(addFolder);
     expect(
-      screen.queryByRole('dialog', { name: 'Server profiles' }),
+      screen.queryByRole('dialog', { name: 'Connect to PrintFarmer' }),
     ).not.toBeInTheDocument();
     expect(openFolder).not.toHaveBeenCalled();
 

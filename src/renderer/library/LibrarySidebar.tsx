@@ -18,6 +18,13 @@ export const FILTER_LABELS: Record<FilterKey, string> = {
 
 export type LibraryCounts = Record<FilterKey, number>;
 
+export function serverStatusLabel(profile: ServerProfile | null): string {
+  if (!profile) return 'Disconnected';
+  if (profile.status === 'error') return 'Connection error';
+  if (profile.status === 'legacy') return 'Legacy fallback';
+  return 'Connected';
+}
+
 export interface LibrarySidebarProps {
   query: string;
   filter: FilterKey;
@@ -149,32 +156,34 @@ export function LibrarySidebar({
         <p className="sidebar-section-label">PrintFarmer server</p>
         <button
           type="button"
-          className="server-profile-entry"
+          className={
+            serverProfile
+              ? 'server-profile-entry'
+              : 'server-profile-entry server-profile-entry--cta'
+          }
           disabled={serverProfilesDisabled}
+          aria-label={
+            serverProfile ? 'Manage connection' : 'Connect to PrintFarmer'
+          }
           onClick={onManageServerProfiles}
         >
           <span
             className={`server-status-dot ${serverProfile?.status ?? 'none'}`}
             aria-hidden="true"
           />
-          <span>
-            <strong>{serverProfile?.displayName ?? 'Not connected'}</strong>
+          <span aria-hidden="true">
+            <strong className={serverProfile ? undefined : 'server-cta-label'}>
+              {serverProfile?.displayName ?? 'Connect to PrintFarmer'}
+            </strong>
             <small>
               {serverProfile
                 ? (serverProfile.version?.version ?? 'Legacy server')
-                : 'Manage profiles'}
+                : 'No server selected yet'}
             </small>
             <small
               className={`server-accessible-status ${serverProfile?.status ?? 'none'}`}
             >
-              Status:{' '}
-              {serverProfile
-                ? serverProfile.status === 'error'
-                  ? 'Connection error'
-                  : serverProfile.status === 'legacy'
-                    ? 'Legacy fallback'
-                    : 'Connected'
-                : 'Disconnected'}
+              Status: {serverStatusLabel(serverProfile)}
             </small>
           </span>
         </button>
