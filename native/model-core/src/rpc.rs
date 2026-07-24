@@ -15,7 +15,10 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use crate::model::ModelFormat;
-use crate::scene::{self, SceneError, SceneMesh};
+use crate::scene::{
+    self, SceneError, SceneMaterial, SceneMesh, SceneObject, SceneObjectMesh, ScenePlate,
+    SceneTransform,
+};
 use crate::threemf::ThreeMfError;
 use crate::thumbnail::{self, ThumbnailError, DEFAULT_THUMBNAIL_SIZE};
 use crate::vendor;
@@ -46,11 +49,63 @@ pub struct ScenePartDto {
     pub triangle_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneTransformDto {
+    pub matrix: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneMaterialDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_color: Option<[u8; 3]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub face_colors: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneObjectMeshDto {
+    pub positions: Vec<f32>,
+    pub indices: Vec<u32>,
+    pub bounds: BoundsDto,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneObjectDto {
+    pub id: String,
+    pub source_id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    pub children: Vec<String>,
+    pub transform: SceneTransformDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<SceneObjectMeshDto>,
+    pub material: SceneMaterialDto,
+    pub plate_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_item_index: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScenePlateDto {
+    pub id: String,
+    pub name: String,
+    pub index: usize,
+    pub root_object_ids: Vec<String>,
+}
+
 /// The renderer-facing scene mesh: a normalized, flattened, indexed triangle
 /// mesh. Mirrors the `SceneMesh` Zod schema field-for-field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SceneMeshDto {
+    /// Independent schema version for the scene payload carried over JSON-RPC.
+    pub scene_version: u32,
     /// Vertex positions, xyz-interleaved (`len % 3 == 0`).
     pub positions: Vec<f32>,
     /// Triangle vertex indices, triple-packed (`len % 3 == 0`).
@@ -64,6 +119,13 @@ pub struct SceneMeshDto {
     pub face_colors: Option<Vec<u8>>,
     /// Named triangle ranges backing the viewer's part tree.
     pub parts: Vec<ScenePartDto>,
+    /// Hierarchical object instances. Each object owns its local transform and,
+    /// when renderable, its local mesh/material payload.
+    pub objects: Vec<SceneObjectDto>,
+    /// Stable ids of the scene graph roots, in display order.
+    pub root_object_ids: Vec<String>,
+    /// Plate groupings for root objects.
+    pub plates: Vec<ScenePlateDto>,
 }
 
 impl From<&SceneMesh> for SceneMeshDto {
@@ -83,7 +145,10 @@ impl From<&SceneMesh> for SceneMeshDto {
                 triangle_count: p.triangle_count,
             })
             .collect();
+        let objects = mesh.objects.iter().map(SceneObjectDto::from).collect();
+        let plates = mesh.plates.iter().map(ScenePlateDto::from).collect();
         Self {
+            scene_version: mesh.scene_version,
             positions,
             indices,
             bounds: BoundsDto {
@@ -93,6 +158,70 @@ impl From<&SceneMesh> for SceneMeshDto {
             source_format: mesh.source_format,
             face_colors,
             parts,
+            objects,
+            root_object_ids: mesh.root_object_ids.clone(),
+            plates,
+        }
+    }
+}
+
+impl From<&SceneTransform> for SceneTransformDto {
+    fn from(transform: &SceneTransform) -> Self {
+        Self {
+            matrix: transform.matrix.to_vec(),
+        }
+    }
+}
+
+impl From<&SceneMaterial> for SceneMaterialDto {
+    fn from(material: &SceneMaterial) -> Self {
+        Self {
+            base_color: material.base_color,
+            face_colors: material
+                .face_colors
+                .as_ref()
+                .map(|colors| colors.iter().flat_map(|rgb| *rgb).collect()),
+        }
+    }
+}
+
+impl From<&SceneObjectMesh> for SceneObjectMeshDto {
+    fn from(mesh: &SceneObjectMesh) -> Self {
+        Self {
+            positions: mesh.positions.iter().flat_map(|p| *p).collect(),
+            indices: mesh.indices.clone(),
+            bounds: BoundsDto {
+                min: mesh.bounds.min,
+                max: mesh.bounds.max,
+            },
+        }
+    }
+}
+
+impl From<&SceneObject> for SceneObjectDto {
+    fn from(object: &SceneObject) -> Self {
+        Self {
+            id: object.id.clone(),
+            source_id: object.source_id.clone(),
+            name: object.name.clone(),
+            parent_id: object.parent_id.clone(),
+            children: object.children.clone(),
+            transform: SceneTransformDto::from(&object.transform),
+            mesh: object.mesh.as_ref().map(SceneObjectMeshDto::from),
+            material: SceneMaterialDto::from(&object.material),
+            plate_id: object.plate_id.clone(),
+            build_item_index: object.build_item_index,
+        }
+    }
+}
+
+impl From<&ScenePlate> for ScenePlateDto {
+    fn from(plate: &ScenePlate) -> Self {
+        Self {
+            id: plate.id.clone(),
+            name: plate.name.clone(),
+            index: plate.index,
+            root_object_ids: plate.root_object_ids.clone(),
         }
     }
 }
@@ -497,7 +626,10 @@ impl From<&crate::smart_import::ImportResult> for ImportResultDto {
 mod tests {
     use super::*;
     use crate::geometry::Aabb;
-    use crate::scene::SceneMesh;
+    use crate::scene::{
+        SceneMaterial, SceneMesh, SceneObject, SceneObjectMesh, ScenePlate, SceneTransform,
+        SCENE_DTO_VERSION,
+    };
 
     fn sample_scene() -> SceneMesh {
         let mut bounds = Aabb::empty();
@@ -505,6 +637,7 @@ mod tests {
             bounds.expand(v);
         }
         SceneMesh {
+            scene_version: SCENE_DTO_VERSION,
             positions: vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0]],
             indices: vec![0, 1, 2],
             bounds,
@@ -514,6 +647,29 @@ mod tests {
                 name: "Object 1".to_string(),
                 triangle_start: 0,
                 triangle_count: 1,
+            }],
+            objects: vec![SceneObject {
+                id: "plate-0/item-0/object-1".to_string(),
+                source_id: "3d/3dmodel.model#object-1".to_string(),
+                name: "Object 1".to_string(),
+                parent_id: None,
+                children: Vec::new(),
+                transform: SceneTransform::identity(),
+                mesh: Some(SceneObjectMesh {
+                    positions: vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0]],
+                    indices: vec![0, 1, 2],
+                    bounds,
+                }),
+                material: SceneMaterial::default(),
+                plate_id: "plate-0".to_string(),
+                build_item_index: Some(0),
+            }],
+            root_object_ids: vec!["plate-0/item-0/object-1".to_string()],
+            plates: vec![ScenePlate {
+                id: "plate-0".to_string(),
+                name: "Plate 1".to_string(),
+                index: 0,
+                root_object_ids: vec!["plate-0/item-0/object-1".to_string()],
             }],
         }
     }
@@ -528,6 +684,9 @@ mod tests {
         assert_eq!(dto.indices, vec![0, 1, 2]);
         assert_eq!(dto.bounds.max, [2.0, 3.0, 0.0]);
         assert!(dto.face_colors.is_none());
+        assert_eq!(dto.scene_version, SCENE_DTO_VERSION);
+        assert_eq!(dto.objects.len(), 1);
+        assert_eq!(dto.root_object_ids, vec!["plate-0/item-0/object-1"]);
     }
 
     #[test]
@@ -547,6 +706,8 @@ mod tests {
         assert!(json.contains("\"positions\""));
         assert!(json.contains("\"indices\""));
         assert!(json.contains("\"parts\""));
+        assert!(json.contains("\"sceneVersion\":2"));
+        assert!(json.contains("\"objects\""));
         // Absent colors are omitted, not serialized as null.
         assert!(!json.contains("faceColors"));
     }

@@ -245,11 +245,15 @@ describe('ipc contract', () => {
 
   it('accepts a valid scene response', () => {
     const value = ipcSchemas[IpcChannel.LoadScene].response.parse({
+      sceneVersion: 2,
       positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
       indices: [0, 1, 2],
       bounds: { min: [0, 0, 0], max: [1, 1, 0] },
       sourceFormat: 'threeMf',
       faceColors: null,
+      objects: [],
+      rootObjectIds: [],
+      plates: [],
     });
     expect(value.indices).toEqual([0, 1, 2]);
     expect(value.sourceFormat).toBe('threeMf');
@@ -259,21 +263,29 @@ describe('ipc contract', () => {
 
   it('parses scene parts and rejects a negative triangle start', () => {
     const value = ipcSchemas[IpcChannel.LoadScene].response.parse({
+      sceneVersion: 2,
       positions: [0, 0, 0],
       indices: [0, 0, 0],
       bounds: { min: [0, 0, 0], max: [0, 0, 0] },
       sourceFormat: 'threeMf',
       parts: [{ name: 'Body', triangleStart: 0, triangleCount: 1 }],
+      objects: [],
+      rootObjectIds: [],
+      plates: [],
     });
     expect(value.parts[0]?.name).toBe('Body');
 
     expect(() =>
       ipcSchemas[IpcChannel.LoadScene].response.parse({
+        sceneVersion: 2,
         positions: [],
         indices: [],
         bounds: { min: [0, 0, 0], max: [0, 0, 0] },
         sourceFormat: 'stl',
         parts: [{ name: 'x', triangleStart: -1, triangleCount: 1 }],
+        objects: [],
+        rootObjectIds: [],
+        plates: [],
       }),
     ).toThrow();
   });
@@ -281,10 +293,14 @@ describe('ipc contract', () => {
   it('rejects a scene response with a negative index', () => {
     expect(() =>
       ipcSchemas[IpcChannel.LoadScene].response.parse({
+        sceneVersion: 2,
         positions: [0, 0, 0],
         indices: [-1],
         bounds: { min: [0, 0, 0], max: [0, 0, 0] },
         sourceFormat: 'stl',
+        objects: [],
+        rootObjectIds: [],
+        plates: [],
       }),
     ).toThrow();
   });
@@ -292,10 +308,14 @@ describe('ipc contract', () => {
   it('rejects a scene response with an unknown source format', () => {
     expect(() =>
       ipcSchemas[IpcChannel.LoadScene].response.parse({
+        sceneVersion: 2,
         positions: [],
         indices: [],
         bounds: { min: [0, 0, 0], max: [0, 0, 0] },
         sourceFormat: 'gltf',
+        objects: [],
+        rootObjectIds: [],
+        plates: [],
       }),
     ).toThrow();
   });
