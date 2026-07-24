@@ -183,6 +183,9 @@ impl Lib3mfSession {
             status,
             status_messages: output.messages.into_iter().collect(),
             parts,
+            objects: Vec::new(),
+            root_object_ids: Vec::new(),
+            plates: Vec::new(),
         })
     }
 

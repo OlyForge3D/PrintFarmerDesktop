@@ -14,9 +14,9 @@ use thiserror::Error;
 use crate::geometry::Aabb;
 use crate::model::ModelFormat;
 use crate::obj::{self, ObjError, ObjMesh};
+use crate::scene_status::SceneLoadStatus;
 #[cfg(feature = "step")]
 use crate::step::{self, StepError, StepMesh};
-use crate::scene_status::SceneLoadStatus;
 use crate::stl::{self, StlError, StlMesh};
 use crate::threemf::{self, ThreeMfError, ThreeMfMesh};
 
