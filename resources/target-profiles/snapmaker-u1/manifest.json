@@ -1,0 +1,811 @@
+{
+  "schemaVersion": 1,
+  "bundleId": "snapmaker-u1-orca-presets",
+  "targetPrinter": {
+    "vendor": "Snapmaker",
+    "model": "U1",
+    "preset": "Snapmaker U1 (0.4 nozzle)",
+    "variant": "0.4"
+  },
+  "upstream": {
+    "repository": "https://github.com/Snapmaker/Orca_Presets",
+    "commit": "0c2d17834b7820339c1cf4326fda7db9da4a766a",
+    "retrievedAt": "2026-07-24",
+    "sourceIndex": "Snapmaker.json"
+  },
+  "selectedPaths": [
+    "Snapmaker/filament/PolyLite PLA @U1 base.json",
+    "Snapmaker/filament/PolyLite PLA @U1.json",
+    "Snapmaker/filament/PolyTerra PLA @U1 base.json",
+    "Snapmaker/filament/PolyTerra PLA @U1.json",
+    "Snapmaker/filament/Snapmaker ABS @U1 base.json",
+    "Snapmaker/filament/Snapmaker ABS @U1.json",
+    "Snapmaker/filament/Snapmaker ABS Benchy @U1.json",
+    "Snapmaker/filament/Snapmaker ASA @U1 base.json",
+    "Snapmaker/filament/Snapmaker ASA @U1.json",
+    "Snapmaker/filament/Snapmaker Breakaway Support @base.json",
+    "Snapmaker/filament/Snapmaker Breakaway Support For PLA @U1.json",
+    "Snapmaker/filament/Snapmaker PA-CF @U1 base.json",
+    "Snapmaker/filament/Snapmaker PA-CF @U1.json",
+    "Snapmaker/filament/Snapmaker PET @U1 base.json",
+    "Snapmaker/filament/Snapmaker PET @U1.json",
+    "Snapmaker/filament/Snapmaker PETG @U1 base.json",
+    "Snapmaker/filament/Snapmaker PETG @U1.json",
+    "Snapmaker/filament/Snapmaker PETG-CF @U1 base.json",
+    "Snapmaker/filament/Snapmaker PETG-CF @U1.json",
+    "Snapmaker/filament/Snapmaker PLA @U1 base.json",
+    "Snapmaker/filament/Snapmaker PLA @U1.json",
+    "Snapmaker/filament/Snapmaker PLA Basic @U1 base.json",
+    "Snapmaker/filament/Snapmaker PLA Basic @U1.json",
+    "Snapmaker/filament/Snapmaker PLA Eco @U1 base.json",
+    "Snapmaker/filament/Snapmaker PLA Eco @U1.json",
+    "Snapmaker/filament/Snapmaker PLA Matte @U1.json",
+    "Snapmaker/filament/Snapmaker PLA Metal @U1 base.json",
+    "Snapmaker/filament/Snapmaker PLA Metal @U1.json",
+    "Snapmaker/filament/Snapmaker PLA Silk @U1 base.json",
+    "Snapmaker/filament/Snapmaker PLA Silk @U1.json",
+    "Snapmaker/filament/Snapmaker PLA SnapSpeed @U1 base.json",
+    "Snapmaker/filament/Snapmaker PLA SnapSpeed @U1.json",
+    "Snapmaker/filament/Snapmaker PLA-CF @U1 base.json",
+    "Snapmaker/filament/Snapmaker PLA-CF @U1.json",
+    "Snapmaker/filament/Snapmaker PVA @J1 base.json",
+    "Snapmaker/filament/Snapmaker PVA @J1.json",
+    "Snapmaker/filament/Snapmaker PVA @U1 base.json",
+    "Snapmaker/filament/Snapmaker PVA @U1.json",
+    "Snapmaker/filament/Snapmaker TPE @U1.json",
+    "Snapmaker/filament/Snapmaker TPU 95A @U1 base.json",
+    "Snapmaker/filament/Snapmaker TPU 95A @U1.json",
+    "Snapmaker/filament/Snapmaker TPU @U1 base.json",
+    "Snapmaker/filament/Snapmaker TPU @U1.json",
+    "Snapmaker/filament/Snapmaker TPU High-Flow @U1.json",
+    "Snapmaker/filament/fdm_filament_abs.json",
+    "Snapmaker/filament/fdm_filament_asa.json",
+    "Snapmaker/filament/fdm_filament_common.json",
+    "Snapmaker/filament/fdm_filament_pa.json",
+    "Snapmaker/filament/fdm_filament_pet.json",
+    "Snapmaker/filament/fdm_filament_petg.json",
+    "Snapmaker/filament/fdm_filament_pla.json",
+    "Snapmaker/filament/fdm_filament_pla_eco.json",
+    "Snapmaker/filament/fdm_filament_pva.json",
+    "Snapmaker/filament/fdm_filament_tpu.json",
+    "Snapmaker/machine/Snapmaker U1 (0.4 nozzle).json",
+    "Snapmaker/machine/Snapmaker U1.json",
+    "Snapmaker/machine/fdm_U1.json",
+    "Snapmaker/machine/fdm_klipper.json",
+    "Snapmaker/machine/fdm_toolchanger.json",
+    "Snapmaker/process/0.08 Extra Fine @Snapmaker U1 (0.4 nozzle).json",
+    "Snapmaker/process/0.08 High Quality @Snapmaker U1 (0.4 nozzle).json",
+    "Snapmaker/process/0.12 Fine @Snapmaker U1 (0.4 nozzle).json",
+    "Snapmaker/process/0.12 High Quality @Snapmaker U1 (0.4 nozzle).json",
+    "Snapmaker/process/0.16 High Quality @Snapmaker U1 (0.4 nozzle).json",
+    "Snapmaker/process/0.16 Optimal @Snapmaker U1 (0.4 nozzle).json",
+    "Snapmaker/process/0.20 Bambu Support W @Snapmaker U1 (0.4 nozzle).json",
+    "Snapmaker/process/0.20 Quality @Snapmaker U1 (0.4 nozzle).json",
+    "Snapmaker/process/0.20 Standard @Snapmaker U1 (0.4 nozzle).json",
+    "Snapmaker/process/0.20 Strength @Snapmaker U1 (0.4 nozzle).json",
+    "Snapmaker/process/0.20 Support @Snapmaker U1 (0.4 nozzle).json",
+    "Snapmaker/process/0.20 Support W @Snapmaker U1 (0.4 nozzle).json",
+    "Snapmaker/process/0.24 Draft @Snapmaker U1 (0.4 nozzle).json",
+    "Snapmaker/process/0.25 Benchy @Snapmaker U1 (0.4 nozzle).json",
+    "Snapmaker/process/0.28 Extra Draft @Snapmaker U1 (0.4 nozzle).json",
+    "Snapmaker/process/fdm_process_U1.json",
+    "Snapmaker/process/fdm_process_U1_0.08.json",
+    "Snapmaker/process/fdm_process_U1_0.12.json",
+    "Snapmaker/process/fdm_process_U1_0.16.json",
+    "Snapmaker/process/fdm_process_U1_0.20.json",
+    "Snapmaker/process/fdm_process_U1_0.24.json",
+    "Snapmaker/process/fdm_process_U1_0.28.json",
+    "Snapmaker/process/fdm_process_U1_common.json"
+  ],
+  "roots": [
+    "profiles/Snapmaker/filament/PolyLite PLA @U1.json",
+    "profiles/Snapmaker/filament/PolyTerra PLA @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker ABS @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker ABS Benchy @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker ASA @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker Breakaway Support For PLA @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker PA-CF @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker PET @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker PETG @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker PETG-CF @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker PLA @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker PLA Basic @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker PLA Eco @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker PLA Matte @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker PLA Metal @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker PLA Silk @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker PLA SnapSpeed @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker PLA-CF @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker PVA @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker TPE @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker TPU 95A @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker TPU @U1.json",
+    "profiles/Snapmaker/filament/Snapmaker TPU High-Flow @U1.json",
+    "profiles/Snapmaker/machine/Snapmaker U1 (0.4 nozzle).json",
+    "profiles/Snapmaker/machine/Snapmaker U1.json",
+    "profiles/Snapmaker/process/0.08 Extra Fine @Snapmaker U1 (0.4 nozzle).json",
+    "profiles/Snapmaker/process/0.08 High Quality @Snapmaker U1 (0.4 nozzle).json",
+    "profiles/Snapmaker/process/0.12 Fine @Snapmaker U1 (0.4 nozzle).json",
+    "profiles/Snapmaker/process/0.12 High Quality @Snapmaker U1 (0.4 nozzle).json",
+    "profiles/Snapmaker/process/0.16 High Quality @Snapmaker U1 (0.4 nozzle).json",
+    "profiles/Snapmaker/process/0.16 Optimal @Snapmaker U1 (0.4 nozzle).json",
+    "profiles/Snapmaker/process/0.20 Bambu Support W @Snapmaker U1 (0.4 nozzle).json",
+    "profiles/Snapmaker/process/0.20 Quality @Snapmaker U1 (0.4 nozzle).json",
+    "profiles/Snapmaker/process/0.20 Standard @Snapmaker U1 (0.4 nozzle).json",
+    "profiles/Snapmaker/process/0.20 Strength @Snapmaker U1 (0.4 nozzle).json",
+    "profiles/Snapmaker/process/0.20 Support @Snapmaker U1 (0.4 nozzle).json",
+    "profiles/Snapmaker/process/0.20 Support W @Snapmaker U1 (0.4 nozzle).json",
+    "profiles/Snapmaker/process/0.24 Draft @Snapmaker U1 (0.4 nozzle).json",
+    "profiles/Snapmaker/process/0.25 Benchy @Snapmaker U1 (0.4 nozzle).json",
+    "profiles/Snapmaker/process/0.28 Extra Draft @Snapmaker U1 (0.4 nozzle).json"
+  ],
+  "files": [
+    {
+      "path": "profiles/Snapmaker/filament/PolyLite PLA @U1 base.json",
+      "upstreamPath": "Snapmaker/filament/PolyLite PLA @U1 base.json",
+      "sha256": "6005f5aa64010bbde8d9c15ea812d14f97d35ff6e0aaca33946c7ed1130a2783",
+      "role": "dependency",
+      "type": "filament",
+      "name": "PolyLite PLA @U1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/PolyLite PLA @U1.json",
+      "upstreamPath": "Snapmaker/filament/PolyLite PLA @U1.json",
+      "sha256": "2b2a8e1c07a96a332927353e54d76acf788b51f0c5d0a9b00c0d2690fe1e16a9",
+      "role": "root",
+      "type": "filament",
+      "name": "PolyLite PLA @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/PolyTerra PLA @U1 base.json",
+      "upstreamPath": "Snapmaker/filament/PolyTerra PLA @U1 base.json",
+      "sha256": "e5f1c3ebb9a78ac8f8a715d8e115f4f9585914f736da66bdfc7988508eb1f4ed",
+      "role": "dependency",
+      "type": "filament",
+      "name": "PolyTerra PLA @U1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/PolyTerra PLA @U1.json",
+      "upstreamPath": "Snapmaker/filament/PolyTerra PLA @U1.json",
+      "sha256": "c876a1773be9e36f32d1eeb06aef979f9a36f0dfe5b5a2f2a53af12163ef3522",
+      "role": "root",
+      "type": "filament",
+      "name": "PolyTerra PLA @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker ABS @U1 base.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker ABS @U1 base.json",
+      "sha256": "0fec70823fb7bc3bbf10825e27f4da7e8d744db2d424a6768d1b493880097232",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker ABS @U1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker ABS @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker ABS @U1.json",
+      "sha256": "c9ed75c259d2824a0e9fb13dce529fedac0ee4a527d56afae5b912cf550457c8",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker ABS @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker ABS Benchy @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker ABS Benchy @U1.json",
+      "sha256": "a4cce67a9653fa117524b88ef40f38a952c31500404fc2e91c26243130eee6be",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker ABS Benchy @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker ASA @U1 base.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker ASA @U1 base.json",
+      "sha256": "ae72d949f10e5e36bdc04660b081e56e3525fde0c13a10fa05c2df89850c26c4",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker ASA @U1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker ASA @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker ASA @U1.json",
+      "sha256": "08fb3efb567d7e9209f1057d4270b46637233ef15c4c6f36ce9deceb8da4239c",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker ASA @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker Breakaway Support @base.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker Breakaway Support @base.json",
+      "sha256": "35194595ef0dae5ac2c1f351f4c69d8fc7696986127e07743d116f37a42160fa",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker Breakaway Support @base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker Breakaway Support For PLA @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker Breakaway Support For PLA @U1.json",
+      "sha256": "d75ab662750dc0c2002b36bc8d904fcc66802459a3d27ecd58c90ebc6bc63502",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker Breakaway Support For PLA @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PA-CF @U1 base.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PA-CF @U1 base.json",
+      "sha256": "4085f71a57977776ca9e0b78be6b2dd094e19108071a7ea91fea637ec28e78f4",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker PA-CF @U1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PA-CF @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PA-CF @U1.json",
+      "sha256": "e791e86239dd841b51d4b1ed05d248f6361a9cee94a74ce7c2c5e2e4f0233ee1",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker PA-CF @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PET @U1 base.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PET @U1 base.json",
+      "sha256": "eab7184af8509169111d2759d81c8fb3aee90646f79f922d5337cedaf6c7bfd5",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker PET @U1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PET @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PET @U1.json",
+      "sha256": "6bc955da8bdc7bea341ee96cc2054db09cc563445436e172bde46ee707ccb6a1",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker PET @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PETG @U1 base.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PETG @U1 base.json",
+      "sha256": "1bd3c7c49cd881acd699b8de8f025cbf899734bac69abc4d3a76098796f56172",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker PETG @U1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PETG @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PETG @U1.json",
+      "sha256": "b2ac5efe3ad988bffa1d2259e90cd2b307f4c796ccf4e0582af07234473495ec",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker PETG @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PETG-CF @U1 base.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PETG-CF @U1 base.json",
+      "sha256": "cc32b42642b799456f5fbbcb722c98363cb93b1d1e2871108df14d3227619f03",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker PETG-CF @U1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PETG-CF @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PETG-CF @U1.json",
+      "sha256": "938d98e1278148c3b4b6dc4255a7ef0c78897894a6594d897bf76154821a0db1",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker PETG-CF @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PLA @U1 base.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PLA @U1 base.json",
+      "sha256": "be29895d4196cfab4700ca987ffaced13530f50809090ed77f3e9e9c5ea1791e",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker PLA @U1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PLA @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PLA @U1.json",
+      "sha256": "863a15f499cf0a4892ad97056b814787f03d2129db37c5640632839e2904ff4a",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker PLA @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PLA Basic @U1 base.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PLA Basic @U1 base.json",
+      "sha256": "2673ec3925d776d2d4228e3d4fd9414a2db40ef36a56d5dd462bf1055a503567",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker PLA Basic @U1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PLA Basic @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PLA Basic @U1.json",
+      "sha256": "a8d3282ab1455bd3c0ddfca2117953d7f282630d6758a7f3a306c781cda22911",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker PLA Basic @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PLA Eco @U1 base.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PLA Eco @U1 base.json",
+      "sha256": "c4d2f3054057f08e256fe33c596f77f17d4bffaea8ea03a087391f70c39b6bad",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker PLA Eco @U1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PLA Eco @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PLA Eco @U1.json",
+      "sha256": "1bb83c6e5559fc8c93f8c18e86033c4b2d19c595f9c445157d3861c7ba3c3ed7",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker PLA Eco @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PLA Matte @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PLA Matte @U1.json",
+      "sha256": "6402d09abe60b0645fb907b0693f5099d89072ba9cc2fb0581ae5935feaae982",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker PLA Matte @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PLA Metal @U1 base.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PLA Metal @U1 base.json",
+      "sha256": "5cb6e694809cde31ae35d0bafdce5f2d534c8301f5560782c264772818cb8cbc",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker PLA Metal @U1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PLA Metal @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PLA Metal @U1.json",
+      "sha256": "a3d0b175646d4e78020474f74a1b585b706ab9c49200334a68bb90788983eda4",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker PLA Metal @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PLA Silk @U1 base.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PLA Silk @U1 base.json",
+      "sha256": "b8950f7f28cd5cf4cbf3f518311cb4c1b4c8229b67a5634ee0e9efca6957cea6",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker PLA Silk @U1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PLA Silk @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PLA Silk @U1.json",
+      "sha256": "3a58dcf85328200e39572f27b28f6418d4fca1e71c240c9c16b494e46cc47778",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker PLA Silk @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PLA SnapSpeed @U1 base.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PLA SnapSpeed @U1 base.json",
+      "sha256": "845752a17a57057505dde1264b6a30795e7388be998e777c993476e49faa9c11",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker PLA SnapSpeed @U1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PLA SnapSpeed @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PLA SnapSpeed @U1.json",
+      "sha256": "b117e3a7d5774620f6b192bbc98674f296092749c1792728fbd8bc7e0a7dc70c",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker PLA SnapSpeed @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PLA-CF @U1 base.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PLA-CF @U1 base.json",
+      "sha256": "171af104a2c8fefa8858328c7346d9e1dc843fe5c3578e347f859211516a2f6a",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker PLA-CF @U1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PLA-CF @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PLA-CF @U1.json",
+      "sha256": "386052c865fcb36ac74e1dafed24d1bf9a7810429d52a33f11bf51dfed186a33",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker PLA-CF @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PVA @J1 base.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PVA @J1 base.json",
+      "sha256": "8c8315942660607cfd25d3a3e9ffbb2a8b7c4956d48ec05a8dfb8d9f992b7539",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker PVA @J1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PVA @J1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PVA @J1.json",
+      "sha256": "a8b3dacce12a3dff9a64f071777706bcee63cb25f20af85e70b00499d33cf4ab",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker PVA @J1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PVA @U1 base.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PVA @U1 base.json",
+      "sha256": "ebd6d58be25dea18c43ac99a1fa7b0fd909cd642639dd2de07153fd5b5f4efe1",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker PVA @U1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker PVA @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker PVA @U1.json",
+      "sha256": "4a62f2ed82da6557ddcd2a39ea8fe9578250995cbe9ae1079e4ec5a2c984b69f",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker PVA @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker TPE @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker TPE @U1.json",
+      "sha256": "639c261cbe886f9b07f7580bea1435aa16168e61cee28d8e545b98aeec9d4cd8",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker TPE @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker TPU 95A @U1 base.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker TPU 95A @U1 base.json",
+      "sha256": "b6039900a1b2d344579b16b4d41c922c6497e517e948bc844f4b2a010b30c05b",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker TPU 95A @U1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker TPU 95A @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker TPU 95A @U1.json",
+      "sha256": "e08bb7b4a309e3d1c883266376274d485564379aa9fb4271f4c58bfac7a44b2d",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker TPU 95A @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker TPU @U1 base.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker TPU @U1 base.json",
+      "sha256": "c255da86bfabbb93363eb5aa3e232b63e3f9709e2a904891c6b1b2e980c1e58a",
+      "role": "dependency",
+      "type": "filament",
+      "name": "Snapmaker TPU @U1 base"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker TPU @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker TPU @U1.json",
+      "sha256": "2f11b7ec0cbc7651b3a7e1aa06ed2356c6704d8d17c777f93e7269f0813abc8d",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker TPU @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/Snapmaker TPU High-Flow @U1.json",
+      "upstreamPath": "Snapmaker/filament/Snapmaker TPU High-Flow @U1.json",
+      "sha256": "d44a5add25ad0a3f23d78144bc0e44592aff506f081b97bb0b6ed9bebd99d3ee",
+      "role": "root",
+      "type": "filament",
+      "name": "Snapmaker TPU High-Flow @U1"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/fdm_filament_abs.json",
+      "upstreamPath": "Snapmaker/filament/fdm_filament_abs.json",
+      "sha256": "2d82a571227975621138da8378bc8e9d9a78a2e71dfe21788de623fa3295e7b9",
+      "role": "dependency",
+      "type": "filament",
+      "name": "fdm_filament_abs"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/fdm_filament_asa.json",
+      "upstreamPath": "Snapmaker/filament/fdm_filament_asa.json",
+      "sha256": "f6e0cc9aa21146b5628b13a97dd38f464172ef5d7c0b8d3153c397012c10c40b",
+      "role": "dependency",
+      "type": "filament",
+      "name": "fdm_filament_asa"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/fdm_filament_common.json",
+      "upstreamPath": "Snapmaker/filament/fdm_filament_common.json",
+      "sha256": "45c3c99ed3820e3667b908d543162e2da832361da3302a19129ed40f52bbca50",
+      "role": "dependency",
+      "type": "filament",
+      "name": "fdm_filament_common"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/fdm_filament_pa.json",
+      "upstreamPath": "Snapmaker/filament/fdm_filament_pa.json",
+      "sha256": "7bb445bb494de9f1cd8a2be74e2873441317a5cf9adf4fd1d7ae9cd019373895",
+      "role": "dependency",
+      "type": "filament",
+      "name": "fdm_filament_pa"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/fdm_filament_pet.json",
+      "upstreamPath": "Snapmaker/filament/fdm_filament_pet.json",
+      "sha256": "635aa8ca44f4879837ded86eaa360564f71b3ed1242838357cbccc7bc2cee920",
+      "role": "dependency",
+      "type": "filament",
+      "name": "fdm_filament_pet"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/fdm_filament_petg.json",
+      "upstreamPath": "Snapmaker/filament/fdm_filament_petg.json",
+      "sha256": "4a28cba58096887c6dc3d9e78452f91cf010bddc7cfa990676782b3af7924526",
+      "role": "dependency",
+      "type": "filament",
+      "name": "fdm_filament_petg"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/fdm_filament_pla.json",
+      "upstreamPath": "Snapmaker/filament/fdm_filament_pla.json",
+      "sha256": "a4fd782803a3d4749f48adfd987a4bfad606d1636cb0b440bb1e39a5e162d7b7",
+      "role": "dependency",
+      "type": "filament",
+      "name": "fdm_filament_pla"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/fdm_filament_pla_eco.json",
+      "upstreamPath": "Snapmaker/filament/fdm_filament_pla_eco.json",
+      "sha256": "2e5235377bae712dcd950591892c29c24c03c8bb67cd5c60d89b46496817940e",
+      "role": "dependency",
+      "type": "filament",
+      "name": "fdm_filament_pla_eco"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/fdm_filament_pva.json",
+      "upstreamPath": "Snapmaker/filament/fdm_filament_pva.json",
+      "sha256": "c330162e2a58c78a1eea58abba441b6e542484ca87ee89a00b17bed1d13f7b15",
+      "role": "dependency",
+      "type": "filament",
+      "name": "fdm_filament_pva"
+    },
+    {
+      "path": "profiles/Snapmaker/filament/fdm_filament_tpu.json",
+      "upstreamPath": "Snapmaker/filament/fdm_filament_tpu.json",
+      "sha256": "dfc1422fefcb020c229f19dbad50140abc57c06b8c940768b0f1c44a9a1a5003",
+      "role": "dependency",
+      "type": "filament",
+      "name": "fdm_filament_tpu"
+    },
+    {
+      "path": "profiles/Snapmaker/machine/Snapmaker U1 (0.4 nozzle).json",
+      "upstreamPath": "Snapmaker/machine/Snapmaker U1 (0.4 nozzle).json",
+      "sha256": "3d24a2c88b5968a6ff53a7a090597dabacd3ceb939a1768d2d127e2ac5bc3eec",
+      "role": "root",
+      "type": "machine",
+      "name": "Snapmaker U1 (0.4 nozzle)"
+    },
+    {
+      "path": "profiles/Snapmaker/machine/Snapmaker U1.json",
+      "upstreamPath": "Snapmaker/machine/Snapmaker U1.json",
+      "sha256": "ec2d3afeccd0d1c970efe098756eac5fa5a25f01e5485198966d512916705034",
+      "role": "root",
+      "type": "machine_model",
+      "name": "Snapmaker U1"
+    },
+    {
+      "path": "profiles/Snapmaker/machine/fdm_U1.json",
+      "upstreamPath": "Snapmaker/machine/fdm_U1.json",
+      "sha256": "2a4519a10401c840b29538be37af253abac9ee95e9025b99d937523657ebc440",
+      "role": "dependency",
+      "type": "machine",
+      "name": "fdm_U1"
+    },
+    {
+      "path": "profiles/Snapmaker/machine/fdm_klipper.json",
+      "upstreamPath": "Snapmaker/machine/fdm_klipper.json",
+      "sha256": "78dd750211347543368a8a0f136441ef7e23b3a4a09a9e33a370c91dbda273b9",
+      "role": "dependency",
+      "type": "machine",
+      "name": "fdm_klipper"
+    },
+    {
+      "path": "profiles/Snapmaker/machine/fdm_toolchanger.json",
+      "upstreamPath": "Snapmaker/machine/fdm_toolchanger.json",
+      "sha256": "b2ee2d2c31a26ddee7b0c8bd84c58934d9c01e84e1b8f7ae45e14acfd1f7b52a",
+      "role": "dependency",
+      "type": "machine",
+      "name": "fdm_toolchanger"
+    },
+    {
+      "path": "profiles/Snapmaker/process/0.08 Extra Fine @Snapmaker U1 (0.4 nozzle).json",
+      "upstreamPath": "Snapmaker/process/0.08 Extra Fine @Snapmaker U1 (0.4 nozzle).json",
+      "sha256": "f222cefc49d7ef74a08bd4f05427ccd49bb6d5a8eebe976bc789be4442a449b6",
+      "role": "root",
+      "type": "process",
+      "name": "0.08 Extra Fine @Snapmaker U1 (0.4 nozzle)"
+    },
+    {
+      "path": "profiles/Snapmaker/process/0.08 High Quality @Snapmaker U1 (0.4 nozzle).json",
+      "upstreamPath": "Snapmaker/process/0.08 High Quality @Snapmaker U1 (0.4 nozzle).json",
+      "sha256": "94200cc7ac48ae0a599b931b40b16d0b80abbd950a65ce769d0e21877ecebb74",
+      "role": "root",
+      "type": "process",
+      "name": "0.08 High Quality @Snapmaker U1 (0.4 nozzle)"
+    },
+    {
+      "path": "profiles/Snapmaker/process/0.12 Fine @Snapmaker U1 (0.4 nozzle).json",
+      "upstreamPath": "Snapmaker/process/0.12 Fine @Snapmaker U1 (0.4 nozzle).json",
+      "sha256": "bca14d49086e581723a433f6cd9bbd1283a89a79a9df9f1b65ab0c0d0fab2b48",
+      "role": "root",
+      "type": "process",
+      "name": "0.12 Fine @Snapmaker U1 (0.4 nozzle)"
+    },
+    {
+      "path": "profiles/Snapmaker/process/0.12 High Quality @Snapmaker U1 (0.4 nozzle).json",
+      "upstreamPath": "Snapmaker/process/0.12 High Quality @Snapmaker U1 (0.4 nozzle).json",
+      "sha256": "6477478feb881fe6bcd08a718a792d60f8faf9553554cdf7dda459257bdb6b0a",
+      "role": "root",
+      "type": "process",
+      "name": "0.12 High Quality @Snapmaker U1 (0.4 nozzle)"
+    },
+    {
+      "path": "profiles/Snapmaker/process/0.16 High Quality @Snapmaker U1 (0.4 nozzle).json",
+      "upstreamPath": "Snapmaker/process/0.16 High Quality @Snapmaker U1 (0.4 nozzle).json",
+      "sha256": "954a7fa17bee5ad0acf9edd5e4ce35327ca68bb043893aa56d451886ebecd0d0",
+      "role": "root",
+      "type": "process",
+      "name": "0.16 High Quality @Snapmaker U1 (0.4 nozzle)"
+    },
+    {
+      "path": "profiles/Snapmaker/process/0.16 Optimal @Snapmaker U1 (0.4 nozzle).json",
+      "upstreamPath": "Snapmaker/process/0.16 Optimal @Snapmaker U1 (0.4 nozzle).json",
+      "sha256": "56af5304091e0d2842fe6679689d3aee7e55e3130284206c6a9eb43531574f89",
+      "role": "root",
+      "type": "process",
+      "name": "0.16 Optimal @Snapmaker U1 (0.4 nozzle)"
+    },
+    {
+      "path": "profiles/Snapmaker/process/0.20 Bambu Support W @Snapmaker U1 (0.4 nozzle).json",
+      "upstreamPath": "Snapmaker/process/0.20 Bambu Support W @Snapmaker U1 (0.4 nozzle).json",
+      "sha256": "13beb7ea805ca02cc1061396f2f540394dab569ba84b849e40793926ac197353",
+      "role": "root",
+      "type": "process",
+      "name": "0.20 Bambu Support W @Snapmaker U1 (0.4 nozzle)"
+    },
+    {
+      "path": "profiles/Snapmaker/process/0.20 Quality @Snapmaker U1 (0.4 nozzle).json",
+      "upstreamPath": "Snapmaker/process/0.20 Quality @Snapmaker U1 (0.4 nozzle).json",
+      "sha256": "c86591e837f8f2b0136a425efa6db7bbb84fd38ea41242eb43f4f3d73b65a3cb",
+      "role": "root",
+      "type": "process",
+      "name": "0.20 Quality @Snapmaker U1 (0.4 nozzle)"
+    },
+    {
+      "path": "profiles/Snapmaker/process/0.20 Standard @Snapmaker U1 (0.4 nozzle).json",
+      "upstreamPath": "Snapmaker/process/0.20 Standard @Snapmaker U1 (0.4 nozzle).json",
+      "sha256": "590e629321359cfc9f26eb07dcc632e2392cd6df6125ec3e43163e6d94760d91",
+      "role": "root",
+      "type": "process",
+      "name": "0.20 Standard @Snapmaker U1 (0.4 nozzle)"
+    },
+    {
+      "path": "profiles/Snapmaker/process/0.20 Strength @Snapmaker U1 (0.4 nozzle).json",
+      "upstreamPath": "Snapmaker/process/0.20 Strength @Snapmaker U1 (0.4 nozzle).json",
+      "sha256": "cafe7f67c7f75911e33d96da024b091575b1523cbf247b1b968825817b296100",
+      "role": "root",
+      "type": "process",
+      "name": "0.20 Strength @Snapmaker U1 (0.4 nozzle)"
+    },
+    {
+      "path": "profiles/Snapmaker/process/0.20 Support @Snapmaker U1 (0.4 nozzle).json",
+      "upstreamPath": "Snapmaker/process/0.20 Support @Snapmaker U1 (0.4 nozzle).json",
+      "sha256": "69d58ecb7dcd064ecef1b47dc6940d02f78c87d262f5b1776a1b1b2f7c4acaa0",
+      "role": "root",
+      "type": "process",
+      "name": "0.20 Support @Snapmaker U1 (0.4 nozzle)"
+    },
+    {
+      "path": "profiles/Snapmaker/process/0.20 Support W @Snapmaker U1 (0.4 nozzle).json",
+      "upstreamPath": "Snapmaker/process/0.20 Support W @Snapmaker U1 (0.4 nozzle).json",
+      "sha256": "5808a90113f494b2481d473cfc23543efe1b2a58bbc62292ce3e0bf4779f69d9",
+      "role": "root",
+      "type": "process",
+      "name": "0.20 Support W @Snapmaker U1 (0.4 nozzle)"
+    },
+    {
+      "path": "profiles/Snapmaker/process/0.24 Draft @Snapmaker U1 (0.4 nozzle).json",
+      "upstreamPath": "Snapmaker/process/0.24 Draft @Snapmaker U1 (0.4 nozzle).json",
+      "sha256": "5125e88b08d40faa8d70a73713ffc0fa789b92c14d8a466170624adf22240a9b",
+      "role": "root",
+      "type": "process",
+      "name": "0.24 Draft @Snapmaker U1 (0.4 nozzle)"
+    },
+    {
+      "path": "profiles/Snapmaker/process/0.25 Benchy @Snapmaker U1 (0.4 nozzle).json",
+      "upstreamPath": "Snapmaker/process/0.25 Benchy @Snapmaker U1 (0.4 nozzle).json",
+      "sha256": "ec197aefe4a8bf37c75a523ab70aa88dc2f2a373d5b69c3f0df9f7649937c461",
+      "role": "root",
+      "type": "process",
+      "name": "0.25 Benchy @Snapmaker U1 (0.4 nozzle)"
+    },
+    {
+      "path": "profiles/Snapmaker/process/0.28 Extra Draft @Snapmaker U1 (0.4 nozzle).json",
+      "upstreamPath": "Snapmaker/process/0.28 Extra Draft @Snapmaker U1 (0.4 nozzle).json",
+      "sha256": "dc016574e8b66b2f44e97d60e63023cd1b33c3beef3d3c976074e93560749025",
+      "role": "root",
+      "type": "process",
+      "name": "0.28 Extra Draft @Snapmaker U1 (0.4 nozzle)"
+    },
+    {
+      "path": "profiles/Snapmaker/process/fdm_process_U1.json",
+      "upstreamPath": "Snapmaker/process/fdm_process_U1.json",
+      "sha256": "66e9e51c4bd04cbbec49fa1a3a043bc3c6e329396c2b38a18db5a66b6e72b4e2",
+      "role": "dependency",
+      "type": "process",
+      "name": "fdm_process_U1"
+    },
+    {
+      "path": "profiles/Snapmaker/process/fdm_process_U1_0.08.json",
+      "upstreamPath": "Snapmaker/process/fdm_process_U1_0.08.json",
+      "sha256": "018d613040ac01d46e39914ee5638d2a0a42081de540b7d37a44315a6b187737",
+      "role": "dependency",
+      "type": "process",
+      "name": "fdm_process_U1_0.08"
+    },
+    {
+      "path": "profiles/Snapmaker/process/fdm_process_U1_0.12.json",
+      "upstreamPath": "Snapmaker/process/fdm_process_U1_0.12.json",
+      "sha256": "37b1969df3fc522389dfa5835ca52810a97c3ca52e385fc6c6dd110e79e32bfe",
+      "role": "dependency",
+      "type": "process",
+      "name": "fdm_process_U1_0.12"
+    },
+    {
+      "path": "profiles/Snapmaker/process/fdm_process_U1_0.16.json",
+      "upstreamPath": "Snapmaker/process/fdm_process_U1_0.16.json",
+      "sha256": "e1479969fe1fdbf7996097be0537b21946cf7c0a1e178995dac53cef6ef6888a",
+      "role": "dependency",
+      "type": "process",
+      "name": "fdm_process_U1_0.16"
+    },
+    {
+      "path": "profiles/Snapmaker/process/fdm_process_U1_0.20.json",
+      "upstreamPath": "Snapmaker/process/fdm_process_U1_0.20.json",
+      "sha256": "2df28dc2474b6aeb77d5416043b3a67e54ff7ea1cdf5a5daa9e97db7e5b034a6",
+      "role": "dependency",
+      "type": "process",
+      "name": "fdm_process_U1_0.20"
+    },
+    {
+      "path": "profiles/Snapmaker/process/fdm_process_U1_0.24.json",
+      "upstreamPath": "Snapmaker/process/fdm_process_U1_0.24.json",
+      "sha256": "9ea0f1b62fc339e99aff26159b9501c296360d81191616cc165b4ea03b15cd65",
+      "role": "dependency",
+      "type": "process",
+      "name": "fdm_process_U1_0.24"
+    },
+    {
+      "path": "profiles/Snapmaker/process/fdm_process_U1_0.28.json",
+      "upstreamPath": "Snapmaker/process/fdm_process_U1_0.28.json",
+      "sha256": "3d76eff29966cf349768e3fba4fa7d1c1cb08f50f4cf1fb3947cddbfdbe0aa94",
+      "role": "dependency",
+      "type": "process",
+      "name": "fdm_process_U1_0.28"
+    },
+    {
+      "path": "profiles/Snapmaker/process/fdm_process_U1_common.json",
+      "upstreamPath": "Snapmaker/process/fdm_process_U1_common.json",
+      "sha256": "43fba9fe359864b265ffa8682cf404c2b935d12164ffe3d0048e5dcb0691db74",
+      "role": "dependency",
+      "type": "process",
+      "name": "fdm_process_U1_common"
+    }
+  ],
+  "provenance": {
+    "authorization": "Bundled under explicit product-owner authorization to use official Snapmaker/Orca_Presets data.",
+    "licenseNotice": "The pinned upstream commit has no top-level license or notice file. This bundle records provenance and does not assert or invent upstream license terms.",
+    "transformation": "None. Every file under profiles/ is byte-for-byte identical to the selected upstream path at the pinned commit; this manifest is generated locally.",
+    "assetNotice": "Upstream U1 JSON names decorative bed model/texture assets that are not present in Snapmaker/Orca_Presets at the pinned commit; no substitute assets are bundled."
+  },
+  "updatePolicy": {
+    "exactCommitRequired": true,
+    "runtimeNetworkFetch": false,
+    "reviewedAllowlistRequired": true
+  }
+}

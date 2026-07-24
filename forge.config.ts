@@ -13,16 +13,15 @@ const repoRoot = path.dirname(fileURLToPath(import.meta.url));
 const iconBasePath = path.join(repoRoot, 'assets', 'icon');
 const windowsIconPath = `${iconBasePath}.ico`;
 
-/** Build and stage the Rust sidecar into `resources/sidecar/` before packaging. */
-function stageSidecar(): void {
-  const script = path.join(repoRoot, 'scripts', 'stage-sidecar.mjs');
+function runBuildScript(scriptName: string, description: string): void {
+  const script = path.join(repoRoot, 'scripts', scriptName);
   const result = spawnSync(process.execPath, [script], {
     cwd: repoRoot,
     stdio: 'inherit',
   });
   if (result.status !== 0) {
     throw new Error(
-      `staging the sidecar failed (exit code ${result.status ?? 'unknown'})`,
+      `${description} failed (exit code ${result.status ?? 'unknown'})`,
     );
   }
 }
@@ -34,14 +33,19 @@ const config: ForgeConfig = {
     icon: iconBasePath,
     // Ship the compiled sidecar next to the app so the packaged main process
     // resolves it via `resolveSidecarPath()` at `<resources>/sidecar/<binary>`.
-    extraResource: ['./resources/sidecar', './assets/icon.png'],
+    extraResource: [
+      './resources/sidecar',
+      './resources/target-profiles',
+      './assets/icon.png',
+    ],
   },
   rebuildConfig: {},
   hooks: {
     // Compile + stage the sidecar before the app is packaged, so the
     // `extraResource` directory above exists and is current.
     prePackage: () => {
-      stageSidecar();
+      runBuildScript('verify-target-profiles.mjs', 'verifying target profiles');
+      runBuildScript('stage-sidecar.mjs', 'staging the sidecar');
       return Promise.resolve();
     },
   },

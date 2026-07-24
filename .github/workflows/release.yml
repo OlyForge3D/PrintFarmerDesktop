@@ -50,7 +50,7 @@ jobs:
           PRINTFARMER_SKIP_SIDECAR_BUILD: '1'
         run: npm run make
 
-      - name: Verify the sidecar was bundled
+      - name: Verify packaged resources
         run: node scripts/verify-packaged-sidecar.mjs
 
       - name: Collect artifacts
