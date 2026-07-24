@@ -8,7 +8,7 @@
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -239,6 +239,14 @@ CREATE INDEX idx_sync_conflicts_incarnation
     ON sync_conflicts(profile_id, batch_id, batch_incarnation, resolved_at);
 "#;
 
+/// Additive v6 local-only library favorites keyed by logical model hash.
+pub const SCHEMA_V6: &str = r#"
+CREATE TABLE favorite_models (
+    model_hash  TEXT PRIMARY KEY REFERENCES models(hash) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL
+);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,7 +273,8 @@ mod tests {
     #[test]
     fn sync_schema_contains_no_transport_or_secret_fields() {
         let sync_schema =
-            format!("{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}").to_lowercase();
+            format!("{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}\n{SCHEMA_V6}")
+                .to_lowercase();
         for forbidden in ["server_url", "auth_token", "api_key", "password", "jwt"] {
             assert!(!sync_schema.contains(forbidden));
         }
@@ -278,5 +287,11 @@ mod tests {
         ] {
             assert!(SCHEMA_V2.contains(table), "schema missing table {table}");
         }
+    }
+
+    #[test]
+    fn favorites_schema_references_models() {
+        assert!(SCHEMA_V6.contains("favorite_models"));
+        assert!(SCHEMA_V6.contains("REFERENCES models"));
     }
 }

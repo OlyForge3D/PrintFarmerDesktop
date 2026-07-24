@@ -474,6 +474,39 @@ describe('SidecarClient', () => {
     expect(request.method).toBe('listModels');
   });
 
+  it('sends favorite catalog requests and resolves the updated hashes', async () => {
+    const { channel, sent } = makeFakeChannel((req, emit) => {
+      emit(
+        JSON.stringify({
+          id: req.id,
+          ok: true,
+          result: req.method === 'removeFavorite' ? [] : ['abc'],
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel);
+
+    await expect(client.addFavorite('abc')).resolves.toEqual(['abc']);
+    await expect(client.removeFavorite('abc')).resolves.toEqual([]);
+
+    const addRequest = JSON.parse(sent[0] ?? '{}') as {
+      method: string;
+      params: { hash: string };
+    };
+    const removeRequest = JSON.parse(sent[1] ?? '{}') as {
+      method: string;
+      params: { hash: string };
+    };
+    expect(addRequest).toMatchObject({
+      method: 'addFavorite',
+      params: { hash: 'abc' },
+    });
+    expect(removeRequest).toMatchObject({
+      method: 'removeFavorite',
+      params: { hash: 'abc' },
+    });
+  });
+
   it('rejects when the sidecar returns an error envelope', async () => {
     const { channel } = makeFakeChannel((req, emit) => {
       emit(
