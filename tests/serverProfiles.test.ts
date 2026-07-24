@@ -804,9 +804,7 @@ describe('server profiles', () => {
     // another binding transition.
     currentTime += 14 * 60_000 + 1;
     await expect(profiles.getToken(saved.id)).resolves.toBe('renewed-jwt');
-    await expect(profiles.pendingBindingTransitions()).resolves.toHaveLength(
-      1,
-    );
+    await expect(profiles.pendingBindingTransitions()).resolves.toHaveLength(1);
   });
 
   it('non-destructively adopts a drifted /api/auth/me.id on save', async () => {
@@ -871,9 +869,7 @@ describe('server profiles', () => {
         credentials: { authMode: 'apiKey', apiKey: 'rotated-again' },
       }),
     );
-    await expect(profiles.pendingBindingTransitions()).resolves.toHaveLength(
-      1,
-    );
+    await expect(profiles.pendingBindingTransitions()).resolves.toHaveLength(1);
     await expect(profiles.getPersistedSyncBinding(saved.id)).resolves.toEqual(
       adopted,
     );
