@@ -2531,19 +2531,25 @@ mod tests {
     #[test]
     fn rejects_models_that_exceed_renderer_mesh_object_budget() {
         let triangle_vertices = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let sentinel_vertices = vec![
+            [10_000.0, 0.0, 0.0],
+            [10_001.0, 0.0, 0.0],
+            [10_000.0, 1.0, 0.0],
+        ];
+        let sentinel_object_id = MAX_RENDERABLE_SCENE_OBJECTS as u32 + 1;
         let mut objects = HashMap::new();
         let mut build = Vec::new();
-        for object_id in 1..=(MAX_RENDERABLE_SCENE_OBJECTS as u32 + 1) {
+        for object_id in 1..=sentinel_object_id {
             objects.insert(
                 object_id,
                 RawObject {
                     geometry: ObjectGeometry::Mesh {
-                        vertices: triangle_vertices.clone(),
-                        triangles: if object_id <= MAX_RENDERABLE_SCENE_OBJECTS as u32 {
-                            vec![[0, 1, 2]]
+                        vertices: if object_id < sentinel_object_id {
+                            triangle_vertices.clone()
                         } else {
-                            vec![[0, 1, 3]]
+                            sentinel_vertices.clone()
                         },
+                        triangles: vec![[0, 1, 2]],
                     },
                     name: None,
                 },
@@ -2555,7 +2561,7 @@ mod tests {
             });
         }
 
-        let mesh = flatten(&RawPackage {
+        let package = RawPackage {
             models: HashMap::from([(
                 DEFAULT_MODEL_PART.to_string(),
                 RawModel {
@@ -2565,7 +2571,58 @@ mod tests {
                 },
             )]),
             root_part: DEFAULT_MODEL_PART.to_string(),
-        });
+        };
+        let root_model = package.models.get(DEFAULT_MODEL_PART).unwrap();
+        let mut output = FlattenOutput::default();
+        let mut scene_objects = Vec::new();
+        let plate_id = plate_id(0);
+
+        for (build_item_index, item) in root_model
+            .build
+            .iter()
+            .take(MAX_RENDERABLE_SCENE_OBJECTS)
+            .enumerate()
+        {
+            expand(
+                &package,
+                DEFAULT_MODEL_PART,
+                item.object_id,
+                item.transform,
+                item.transform,
+                scene_object_id(build_item_index, item.object_id),
+                None,
+                build_item_index,
+                &plate_id,
+                &mut output,
+                &mut scene_objects,
+                0,
+            )
+            .unwrap();
+        }
+
+        assert_eq!(output.vertices.len(), MAX_RENDERABLE_SCENE_OBJECTS * 3);
+        assert_eq!(output.triangles.len(), MAX_RENDERABLE_SCENE_OBJECTS);
+        assert_eq!(scene_objects.len(), MAX_RENDERABLE_SCENE_OBJECTS);
+        assert!(!output
+            .vertices
+            .iter()
+            .any(|vertex| sentinel_vertices.contains(vertex)));
+
+        let over_budget_item = &root_model.build[MAX_RENDERABLE_SCENE_OBJECTS];
+        let mesh = expand(
+            &package,
+            DEFAULT_MODEL_PART,
+            over_budget_item.object_id,
+            over_budget_item.transform,
+            over_budget_item.transform,
+            scene_object_id(MAX_RENDERABLE_SCENE_OBJECTS, over_budget_item.object_id),
+            None,
+            MAX_RENDERABLE_SCENE_OBJECTS,
+            &plate_id,
+            &mut output,
+            &mut scene_objects,
+            0,
+        );
 
         assert!(matches!(
             mesh,
@@ -2575,5 +2632,20 @@ mod tests {
             }) if mesh_objects == MAX_RENDERABLE_SCENE_OBJECTS + 1
                 && max_mesh_objects == MAX_RENDERABLE_SCENE_OBJECTS
         ));
+        assert_eq!(output.vertices.len(), MAX_RENDERABLE_SCENE_OBJECTS * 3);
+        assert_eq!(output.triangles.len(), MAX_RENDERABLE_SCENE_OBJECTS);
+        assert_eq!(scene_objects.len(), MAX_RENDERABLE_SCENE_OBJECTS);
+        assert!(!output
+            .vertices
+            .iter()
+            .any(|vertex| sentinel_vertices.contains(vertex)));
+        assert!(scene_objects
+            .iter()
+            .all(|object| object.id
+                != scene_object_id(MAX_RENDERABLE_SCENE_OBJECTS, sentinel_object_id)));
+        assert!(scene_objects
+            .iter()
+            .all(|object| object.source_id
+                != source_object_id(DEFAULT_MODEL_PART, sentinel_object_id)));
     }
 }

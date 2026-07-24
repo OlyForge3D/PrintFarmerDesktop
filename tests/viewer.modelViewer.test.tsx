@@ -107,8 +107,17 @@ describe('<ModelViewer />', () => {
     const { THREE, ModelViewer } = await loadHarness();
     const geometryDispose = vi.spyOn(THREE.BufferGeometry.prototype, 'dispose');
     const materialDispose = vi.spyOn(THREE.Material.prototype, 'dispose');
+    const mesh = simpleMesh('mesh-a');
 
-    const { unmount } = render(<ModelViewer mesh={simpleMesh('mesh-a')} />);
+    const { rerender, unmount } = render(<ModelViewer mesh={mesh} />);
+
+    expect(geometryDispose).not.toHaveBeenCalled();
+    expect(materialDispose).not.toHaveBeenCalled();
+
+    rerender(<ModelViewer mesh={mesh} />);
+    expect(geometryDispose).not.toHaveBeenCalled();
+    expect(materialDispose).not.toHaveBeenCalled();
+
     unmount();
 
     expect(geometryDispose).toHaveBeenCalledTimes(1);
@@ -119,8 +128,16 @@ describe('<ModelViewer />', () => {
     const { THREE, ModelViewer } = await loadHarness();
     const geometryDispose = vi.spyOn(THREE.BufferGeometry.prototype, 'dispose');
     const materialDispose = vi.spyOn(THREE.Material.prototype, 'dispose');
+    const meshA = simpleMesh('mesh-a');
 
-    const { rerender, unmount } = render(<ModelViewer mesh={simpleMesh('mesh-a')} />);
+    const { rerender, unmount } = render(<ModelViewer mesh={meshA} />);
+    expect(geometryDispose).not.toHaveBeenCalled();
+    expect(materialDispose).not.toHaveBeenCalled();
+
+    rerender(<ModelViewer mesh={meshA} />);
+    expect(geometryDispose).not.toHaveBeenCalled();
+    expect(materialDispose).not.toHaveBeenCalled();
+
     rerender(<ModelViewer mesh={simpleMesh('mesh-b')} />);
 
     expect(geometryDispose).toHaveBeenCalledTimes(1);
