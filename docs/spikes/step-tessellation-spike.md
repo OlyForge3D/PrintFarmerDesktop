@@ -91,7 +91,7 @@ Success rate on tested corpus: **2 / 2 fixtures (100%)**
 ## Known robustness issues found in review (fixed in follow-up)
 
 - **Hicks / empty DATA panic:** the original spike called `truck-stepio::Table::from_step`, which panics internally when `ruststep` parses a syntactically valid STEP file with zero `DATA` sections. The follow-up fix now parses through `ruststep` directly, checks `exchange.data.first()`, and returns a clean loader error instead of crashing the process.
-- **Vasquez / extreme-coordinate tessellation hang:** the original spike only enforced triangle/vertex caps *after* `robust_triangulation()` completed, so a tiny STEP file with `1.0E300`-scale coordinates could drive unbounded CPU/memory usage before any cap applied. The follow-up fix now rejects shells whose bounding-box diagonal is non-finite or exceeds a generous 1 km (`1_000_000 mm`) sanity ceiling before tessellation starts.
+- **Vasquez / extreme-coordinate tessellation hang:** the original spike only enforced triangle/vertex caps _after_ `robust_triangulation()` completed, so a tiny STEP file with `1.0E300`-scale coordinates could drive unbounded CPU/memory usage before any cap applied. The follow-up fix now rejects shells whose bounding-box diagonal is non-finite or exceeds a generous 1 km (`1_000_000 mm`) sanity ceiling before tessellation starts.
 
 These fixes harden the prototype, but they do **not** change the overall conclusion below. If anything, they reinforce that the current crates.io truck stack is still too brittle for default-on desktop STEP import.
 
