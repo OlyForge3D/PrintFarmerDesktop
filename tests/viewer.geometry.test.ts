@@ -145,6 +145,7 @@ describe('toBufferGeometry', () => {
       bounds: { min: [0, 0, 0], max: [1, 1, 0] },
       sourceFormat: 'threeMf',
     });
+
     const geometry = toBufferGeometry(mesh);
     expect(geometry.getAttribute('position').count).toBe(3);
     expect(geometry.getIndex()?.count).toBe(3);
@@ -160,6 +161,7 @@ describe('toBufferGeometry', () => {
       sourceFormat: 'stl',
       faceColors: [255, 0, 0],
     });
+
     const geometry = toBufferGeometry(mesh);
     const color = geometry.getAttribute('color');
     expect(color).toBeDefined();
@@ -176,6 +178,7 @@ describe('toBufferGeometry', () => {
       sourceFormat: 'threeMf',
       faceColors: [255, 0, 0, 0, 255, 0],
     });
+
     const geometry = toBufferGeometry(mesh);
     expect(geometry.getAttribute('color')).toBeUndefined();
   });

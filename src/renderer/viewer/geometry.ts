@@ -262,6 +262,8 @@ export function sampleCubeScene(size = 20): SceneMesh {
     indices,
     bounds: { min: [-h, -h, -h], max: [h, h, h] },
     sourceFormat: 'stl',
+    status: 'complete',
+    statusMessages: [],
     parts: [
       { name: 'Model', triangleStart: 0, triangleCount: indices.length / 3 },
     ],

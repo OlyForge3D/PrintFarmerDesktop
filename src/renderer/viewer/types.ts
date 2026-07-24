@@ -1,31 +1,33 @@
 /**
- * Renderer-side mirror of the sidecar's `scene::SceneMesh`. The Rust parser
- * produces this normalized, format-agnostic mesh; the viewer and thumbnail
- * renderer consume it without ever knowing whether it came from STL or 3MF.
- *
- * Positions and indices are kept as flat arrays (the shape the RPC layer will
- * deliver): `positions` is `[x, y, z, x, y, z, ...]` and `indices` references
- * vertices in triples. `faceColors`, when present, is one `[r, g, b]` triple of
- * 0–255 bytes per triangle (currently only STL supplies per-facet colors).
+ * Renderer-side type barrel for the normalized scene contract shared with the
+ * Electron IPC layer. Keeping the viewer on the same type source as
+ * `window.printFarmer.loadScene()` prevents contract drift under
+ * `exactOptionalPropertyTypes`.
  */
+import type {
+  Bounds as IpcBounds,
+  ModelFormat as IpcModelFormat,
+  SceneLoadStatus as IpcSceneLoadStatus,
+  SceneMesh as IpcSceneMesh,
+  ScenePart as IpcScenePart,
+} from '../../shared/ipc';
 
-export type ModelFormat = 'stl' | 'threeMf' | 'obj';
-export type SceneLoadStatus = 'complete' | 'partial' | 'unsupported';
+export type ModelFormat = IpcModelFormat;
+export type SceneLoadStatus = IpcSceneLoadStatus;
 
 export interface Bounds {
-  readonly min: readonly [number, number, number];
-  readonly max: readonly [number, number, number];
+  readonly min: Readonly<IpcBounds['min']>;
+  readonly max: Readonly<IpcBounds['max']>;
 }
 
-/** A named, selectable triangle range within a {@link SceneMesh}. */
 export interface ScenePart {
-  readonly name: string;
-  readonly triangleStart: number;
-  readonly triangleCount: number;
-  readonly status?: SceneLoadStatus;
-  readonly statusDetail?: string;
-  readonly partNumber?: string;
-  readonly materialLabel?: string;
+  readonly name: IpcScenePart['name'];
+  readonly triangleStart: IpcScenePart['triangleStart'];
+  readonly triangleCount: IpcScenePart['triangleCount'];
+  readonly status: IpcScenePart['status'];
+  readonly statusDetail?: IpcScenePart['statusDetail'];
+  readonly partNumber?: IpcScenePart['partNumber'];
+  readonly materialLabel?: IpcScenePart['materialLabel'];
 }
 
 export interface SceneTransform {
@@ -68,20 +70,15 @@ export interface ScenePlate {
 }
 
 export interface SceneMesh {
-  readonly sceneVersion: 2;
-  /** Flattened vertex positions; length is a multiple of three. */
-  readonly positions: readonly number[];
-  /** Triangle vertex indices; length is a multiple of three. */
-  readonly indices: readonly number[];
+  readonly sceneVersion: IpcSceneMesh['sceneVersion'];
+  readonly positions: Readonly<IpcSceneMesh['positions']>;
+  readonly indices: Readonly<IpcSceneMesh['indices']>;
   readonly bounds: Bounds;
-  readonly sourceFormat: ModelFormat;
-  /** One RGB (0–255) triple per triangle, or null/undefined when uncolored. */
+  readonly sourceFormat: IpcSceneMesh['sourceFormat'];
   readonly faceColors?: readonly number[] | null | undefined;
-  readonly status?: SceneLoadStatus;
-  readonly statusMessages?: readonly string[];
-  /** Named triangle ranges for the part tree; may be empty. */
-  readonly parts?: readonly ScenePart[];
-  /** Hierarchical object instances for the renderer-facing contract. */
+  readonly status: IpcSceneMesh['status'];
+  readonly statusMessages: Readonly<IpcSceneMesh['statusMessages']>;
+  readonly parts: readonly ScenePart[];
   readonly objects: readonly SceneObject[];
   readonly rootObjectIds: readonly string[];
   readonly plates: readonly ScenePlate[];

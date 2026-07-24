@@ -1394,6 +1394,8 @@ describe('<App />', () => {
         indices: [0, 1, 2],
         bounds: { min: [0, 0, 0], max: [1, 1, 0] },
         sourceFormat: 'obj',
+        status: 'complete',
+        statusMessages: [],
         parts: [],
         objects: [],
         rootObjectIds: [],

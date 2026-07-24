@@ -1492,9 +1492,11 @@ function partedMesh(): SceneMesh {
     indices: [0, 1, 2, 3, 4, 5],
     bounds: { min: [0, 0, 0], max: [1, 1, 1] },
     sourceFormat: 'threeMf',
+    status: 'complete',
+    statusMessages: [],
     parts: [
-      { name: 'A', triangleStart: 0, triangleCount: 1 },
-      { name: 'B', triangleStart: 1, triangleCount: 1 },
+      { name: 'A', triangleStart: 0, triangleCount: 1, status: 'complete' },
+      { name: 'B', triangleStart: 1, triangleCount: 1, status: 'complete' },
     ],
     objects: [
       {
@@ -1564,6 +1566,8 @@ describe('visibleIndices', () => {
       bounds: { min: [0, 0, 0], max: [1, 1, 0] },
       sourceFormat: 'stl',
       faceColors: null,
+      status: 'complete',
+      statusMessages: [],
       parts: [],
       objects: [],
       rootObjectIds: [],
