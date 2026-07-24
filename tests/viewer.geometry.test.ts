@@ -15,6 +15,22 @@ import {
 } from '../src/renderer/viewer/geometry';
 import type { SceneMesh } from '../src/renderer/viewer/types';
 
+function scene(overrides: Partial<SceneMesh>): SceneMesh {
+  return {
+    sceneVersion: 2,
+    positions: [],
+    indices: [],
+    bounds: { min: [0, 0, 0], max: [0, 0, 0] },
+    sourceFormat: 'stl',
+    faceColors: null,
+    parts: [],
+    objects: [],
+    rootObjectIds: [],
+    plates: [],
+    ...overrides,
+  };
+}
+
 describe('bounds math', () => {
   it('computes bounds from a flat position array', () => {
     const bounds = computeBounds([-1, 2, 0, 3, -4, 6, 0, 0, 0]);
@@ -123,12 +139,12 @@ describe('viewerKeyAction', () => {
 
 describe('toBufferGeometry', () => {
   it('builds position, index, and normal attributes', () => {
-    const mesh: SceneMesh = {
+    const mesh = scene({
       positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
       indices: [0, 1, 2],
       bounds: { min: [0, 0, 0], max: [1, 1, 0] },
       sourceFormat: 'threeMf',
-    };
+    });
     const geometry = toBufferGeometry(mesh);
     expect(geometry.getAttribute('position').count).toBe(3);
     expect(geometry.getIndex()?.count).toBe(3);
@@ -137,13 +153,13 @@ describe('toBufferGeometry', () => {
   });
 
   it('bakes per-facet colors for a triangle soup', () => {
-    const mesh: SceneMesh = {
+    const mesh = scene({
       positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
       indices: [0, 1, 2],
       bounds: { min: [0, 0, 0], max: [1, 1, 0] },
       sourceFormat: 'stl',
       faceColors: [255, 0, 0],
-    };
+    });
     const geometry = toBufferGeometry(mesh);
     const color = geometry.getAttribute('color');
     expect(color).toBeDefined();
@@ -153,13 +169,13 @@ describe('toBufferGeometry', () => {
   });
 
   it('ignores per-facet colors on shared-vertex meshes', () => {
-    const mesh: SceneMesh = {
+    const mesh = scene({
       positions: [0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0],
       indices: [0, 1, 2, 1, 3, 2],
       bounds: { min: [0, 0, 0], max: [1, 1, 0] },
       sourceFormat: 'threeMf',
       faceColors: [255, 0, 0, 0, 255, 0],
-    };
+    });
     const geometry = toBufferGeometry(mesh);
     expect(geometry.getAttribute('color')).toBeUndefined();
   });

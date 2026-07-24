@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use model_core::model::ModelFormat;
-use model_core::scene::load_scene;
+use model_core::scene::{load_scene, SCENE_DTO_VERSION};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -76,6 +76,20 @@ fn step_fixture_manifest_matches_tessellated_scenes() {
         );
         assert_eq!(
             scene.bounds.max, fixture.expected.bounds_max,
+            "{}",
+            fixture.label
+        );
+        assert_eq!(scene.scene_version, SCENE_DTO_VERSION, "{}", fixture.label);
+        assert_eq!(scene.objects.len(), 1, "{}", fixture.label);
+        assert_eq!(
+            scene.objects[0].source_id, "step:model",
+            "{}",
+            fixture.label
+        );
+        assert_eq!(scene.root_object_ids, vec!["object-0"], "{}", fixture.label);
+        assert_eq!(scene.plates.len(), 1, "{}", fixture.label);
+        assert_eq!(
+            scene.plates[0].root_object_ids, scene.root_object_ids,
             "{}",
             fixture.label
         );

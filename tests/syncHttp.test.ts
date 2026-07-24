@@ -21,7 +21,25 @@ describe('SyncHttpClient', () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(
-        json({ changes: [], hasMore: false, serverRevision: 0 }),
+        json({
+          changes: [
+            {
+              revision: 1,
+              entityType: 'ModelCollection',
+              entityId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+              operation: 'Update',
+              // `ownerUserId` is entirely omitted here (not `null`), which
+              // the deployed 10.0.0.20 contract does for some legacy/system
+              // owned entities -- the schema must accept a missing key, not
+              // just an explicit `null`.
+              visibility: 'Shared',
+              actorUserId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+              timestamp: new Date().toISOString(),
+            },
+          ],
+          hasMore: false,
+          serverRevision: 1,
+        }),
       )
       .mockResolvedValueOnce(
         json({
@@ -43,7 +61,10 @@ describe('SyncHttpClient', () => {
         500,
         new AbortController().signal,
       ),
-    ).resolves.toMatchObject({ nextCursor: null });
+    ).resolves.toMatchObject({
+      nextCursor: null,
+      changes: [{ ownerUserId: null }],
+    });
     await expect(
       client.getCollection(
         'profile',

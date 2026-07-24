@@ -23,8 +23,8 @@ use crate::catalog::{
 };
 use crate::model::{FileFingerprint, ModelFormat};
 use crate::schema::{
-    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
-    SCHEMA_V9, SCHEMA_VERSION,
+    SCHEMA_V1, SCHEMA_V10, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+    SCHEMA_V8, SCHEMA_V9, SCHEMA_VERSION,
 };
 use crate::sync::{
     self, ApplyPullBatchDto, ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution,
@@ -96,6 +96,9 @@ impl SqliteCatalog {
                 }
                 if version < 9 {
                     conn.execute_batch(SCHEMA_V9)?;
+                }
+                if version < 10 {
+                    conn.execute_batch(SCHEMA_V10)?;
                 }
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 conn.execute_batch("COMMIT")
@@ -295,6 +298,32 @@ impl SqliteCatalog {
             )
             .map(|_| ())
             .map_err(sql_error)
+    }
+
+    /// Reads the per-entity pull-journal watermark currently persisted for
+    /// `remote_id`, or `0` if the entity has never been observed via a pull.
+    /// Callers that are *not* applying a pull batch (e.g. push settlement)
+    /// must preserve this value rather than substituting an unrelated global
+    /// counter such as the journal head at settlement time: doing so would
+    /// advance the watermark past legitimate, not-yet-pulled changes from
+    /// other writers to the same entity, causing `apply_pull_batch` to
+    /// silently skip them once they do arrive.
+    fn existing_journal_revision(
+        &self,
+        profile_id: &str,
+        entity_type: SyncEntityType,
+        remote_id: &str,
+    ) -> Result<u64, String> {
+        self.conn
+            .query_row(
+                "SELECT journal_revision FROM sync_entities
+                 WHERE profile_id = ?1 AND entity_type = ?2 AND remote_id = ?3",
+                params![profile_id, entity_type.as_db(), remote_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(sql_error)
+            .map(|value| value.unwrap_or(0) as u64)
     }
 
     fn remove_materialized_membership(
@@ -1238,10 +1267,35 @@ impl CatalogStore for SqliteCatalog {
         new_binding: &str,
         now: i64,
     ) -> Result<SyncStatusDto, String> {
-        self.validate_sync_profile_binding(profile_id, expected_binding)?;
+        sync::validate_profile(profile_id)?;
+        sync::validate_identifier("expectedProfileBinding", expected_binding)?;
         sync::validate_identifier("newProfileBinding", new_binding)?;
         self.begin_batch()?;
         let result = (|| {
+            let current_binding: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT profile_binding FROM sync_profiles WHERE profile_id = ?1",
+                    params![profile_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(sql_error)?
+                .flatten();
+            // Idempotent replay: the scheduler tick recovery path replays
+            // every pending binding transition on every tick until it is
+            // acknowledged. If a prior attempt already committed this exact
+            // transition but crashed before acknowledging it, `expected_binding`
+            // is now stale by construction -- treat the already-applied state
+            // as success instead of re-running the destructive materialised
+            // data wipe below (which would otherwise retry forever, since a
+            // fresh CAS against the now-stale expectation can never succeed).
+            if current_binding.as_deref() == Some(new_binding) {
+                return self.sync_status(profile_id);
+            }
+            if current_binding.as_deref() != Some(expected_binding) {
+                return Err("sync profile binding replacement requires CAS".to_string());
+            }
             self.conn
                 .execute(
                     "DELETE FROM collections WHERE sync_profile_id = ?1",
@@ -1254,12 +1308,22 @@ impl CatalogStore for SqliteCatalog {
                     params![profile_id],
                 )
                 .map_err(sql_error)?;
-            self.conn
+            // CAS-conditioned: if an intervening writer already changed the
+            // binding since we read `current_binding` above (a concurrent
+            // SQLite connection racing us to this same row), this deletes
+            // zero rows. Checking the count closes that race instead of
+            // silently clobbering the intervening writer's binding with the
+            // unconditional UPDATE that used to follow unconditionally.
+            let deleted = self
+                .conn
                 .execute(
                     "DELETE FROM sync_profiles WHERE profile_id = ?1 AND profile_binding = ?2",
                     params![profile_id, expected_binding],
                 )
                 .map_err(sql_error)?;
+            if deleted == 0 {
+                return Err("sync profile binding replacement requires CAS".to_string());
+            }
             self.ensure_sync_profile(profile_id)?;
             self.conn
                 .execute(
@@ -1672,6 +1736,48 @@ impl CatalogStore for SqliteCatalog {
             )
             .optional()
             .map_err(sql_error)
+    }
+
+    fn pending_membership_delete(
+        &self,
+        profile_id: &str,
+        collection_local_id: &str,
+        model_hash: &str,
+    ) -> Result<Option<OutboundOperationDto>, String> {
+        self.conn
+            .query_row(
+                "SELECT profile_id, operation_id, entity_type, operation_kind, entity_id,
+                        payload_json, base_revision, concurrency_token, state, attempt_count,
+                        retry_eligible, retry_at, lease_until, last_error, created_at,
+                        updated_at, acked_at, sequence, batch_id, batch_ordinal, lease_token,
+                        batch_incarnation, attempt_token
+                 FROM sync_outbox
+                 WHERE profile_id = ?1 AND entity_type = 'ModelCollectionMembership'
+                   AND operation_kind = 'Delete' AND state <> 'acked'
+                   AND json_extract(payload_json, '$.collectionId') = ?2
+                   AND json_extract(payload_json, '$.modelHash') = ?3
+                 ORDER BY sequence LIMIT 1",
+                params![profile_id, collection_local_id, model_hash],
+                outbound_from_row,
+            )
+            .optional()
+            .map_err(sql_error)
+    }
+
+    fn cancel_pending_outbound_operation(
+        &mut self,
+        profile_id: &str,
+        operation_id: &str,
+    ) -> Result<bool, String> {
+        let deleted = self
+            .conn
+            .execute(
+                "DELETE FROM sync_outbox
+                 WHERE profile_id = ?1 AND operation_id = ?2 AND state = 'pending'",
+                params![profile_id, operation_id],
+            )
+            .map_err(sql_error)?;
+        Ok(deleted > 0)
     }
 
     fn enqueue_outbound_operations(
@@ -2285,7 +2391,19 @@ impl CatalogStore for SqliteCatalog {
                         .map_err(sql_error)?;
                 }
                 for mapping in &mapping_plan {
-                    self.upsert_entity_revision(mapping, settlement.server_revision)?;
+                    // Push settlement confirms the server accepted our local
+                    // state; it does not tell us where in the journal this
+                    // change landed. Preserve whatever watermark the pull
+                    // path already owns (0 for a first-time create) instead
+                    // of stamping the batch's global server_revision here --
+                    // see `existing_journal_revision` for why that would
+                    // hide legitimate intervening writes on the next pull.
+                    let journal_revision = self.existing_journal_revision(
+                        &mapping.profile_id,
+                        mapping.entity_type,
+                        &mapping.remote_id,
+                    )?;
+                    self.upsert_entity_revision(mapping, journal_revision)?;
                     if let Some(local_id) = mapping.local_id.as_deref() {
                         self.conn
                             .execute(
@@ -3261,9 +3379,9 @@ mod tests {
     }
 
     #[test]
-    fn v7_tag_migration_preserves_assignments_and_allows_duplicate_display_names() {
+    fn v7_tag_migration_preserves_favorites_assignments_and_duplicate_names() {
         let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join("v5-tags.sqlite3");
+        let db = dir.path().join("v6-tags.sqlite3");
         {
             let conn = Connection::open(&db).unwrap();
             conn.execute_batch(SCHEMA_V1).unwrap();
@@ -3271,6 +3389,7 @@ mod tests {
             conn.execute_batch(SCHEMA_V3).unwrap();
             conn.execute_batch(SCHEMA_V4).unwrap();
             conn.execute_batch(SCHEMA_V5).unwrap();
+            conn.execute_batch(SCHEMA_V6).unwrap();
             conn.execute(
                 "INSERT INTO models(hash, format, size_bytes, created_at, updated_at)
                  VALUES('hash', 'stl', 1, '1', '1')",
@@ -3284,7 +3403,12 @@ mod tests {
                 [],
             )
             .unwrap();
-            conn.pragma_update(None, "user_version", 5).unwrap();
+            conn.execute(
+                "INSERT INTO favorite_models(model_hash, created_at) VALUES('hash', '1')",
+                [],
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 6).unwrap();
         }
 
         let store = SqliteCatalog::open(&db).unwrap();
@@ -3297,6 +3421,86 @@ mod tests {
             .unwrap();
         assert_eq!(store.tags_for_model("hash")[0].id, "local");
         assert_eq!(store.all_tags().len(), 2);
+        assert_eq!(store.favorite_hashes(), vec!["hash".to_string()]);
+    }
+
+    #[test]
+    fn v10_upgrade_adds_binding_cas_revision_and_backfills_legacy_incarnation() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("v9-binding.sqlite3");
+        let legacy_binding = "a".repeat(64);
+        {
+            let conn = Connection::open(&db).unwrap();
+            for ddl in [
+                SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+                SCHEMA_V8, SCHEMA_V9,
+            ] {
+                conn.execute_batch(ddl).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO sync_profiles(profile_id, profile_binding) VALUES('p', ?1)",
+                params![legacy_binding],
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 9).unwrap();
+            // A genuine prior-V10 database must not yet carry the CAS column;
+            // V9 stays immutable so the column can only arrive via V10.
+            assert!(conn
+                .prepare("SELECT binding_cas_revision FROM sync_profiles")
+                .is_err());
+        }
+
+        // Prior-V10 upgrade: opening runs V10, adds the column, backfills the
+        // `:1` incarnation suffix, and stamps the current version.
+        let store = SqliteCatalog::open(&db).unwrap();
+        let version: u32 = store
+            .conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let (binding, cas_revision): (String, i64) = store
+            .conn
+            .query_row(
+                "SELECT profile_binding, binding_cas_revision
+                 FROM sync_profiles WHERE profile_id = 'p'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(binding, format!("{legacy_binding}:1"));
+        assert_eq!(cas_revision, 0);
+        drop(store);
+
+        // Repeat open is idempotent: the ALTER does not run twice and the
+        // length-gated backfill does not double-suffix an already-migrated row.
+        let store = SqliteCatalog::open(&db).unwrap();
+        let repeat_binding: String = store
+            .conn
+            .query_row(
+                "SELECT profile_binding FROM sync_profiles WHERE profile_id = 'p'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(repeat_binding, format!("{legacy_binding}:1"));
+    }
+
+    #[test]
+    fn fresh_open_reports_binding_cas_revision_column() {
+        let store = SqliteCatalog::open_in_memory().unwrap();
+        store
+            .conn
+            .execute("INSERT INTO sync_profiles(profile_id) VALUES('p')", [])
+            .unwrap();
+        let cas_revision: i64 = store
+            .conn
+            .query_row(
+                "SELECT binding_cas_revision FROM sync_profiles WHERE profile_id = 'p'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cas_revision, 0);
     }
 
     #[test]
@@ -3377,6 +3581,433 @@ mod tests {
         assert!(queued[0].payload["remoteId"]
             .as_str()
             .is_some_and(|value| value.len() == 36));
+    }
+
+    #[test]
+    fn settlement_preserves_journal_revision_so_intervening_pull_is_not_skipped() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        store
+            .bind_sync_profile("profile-a", "binding-a", 1)
+            .unwrap();
+        let collection = store
+            .create_collection_with_sync("Dragons", "profile-a", "binding-a", 2)
+            .unwrap();
+        let queued = store
+            .outbound_operations("profile-a", &[OutboundState::Pending], 500)
+            .unwrap();
+        let remote_id = queued[0].payload["remoteId"].as_str().unwrap().to_string();
+
+        // Settle the push at a very high global server_revision, simulating
+        // a batch that lands late in the server's overall journal.
+        let claim = store
+            .claim_outbound_operations("profile-a", 1, 100, 10)
+            .unwrap()
+            .unwrap();
+        let operation_id = claim.operations[0].operation_id.clone();
+        store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "profile-a".to_string(),
+                batch_id: claim.batch_id,
+                batch_incarnation: claim.batch_incarnation,
+                lease_token: claim.lease_token,
+                settled_at: 101,
+                server_revision: 500,
+                applied: vec![crate::sync::AppliedOutboundResultDto {
+                    operation_id,
+                    remote_id: remote_id.clone(),
+                    revision: 1,
+                    concurrency_token: None,
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+
+        // The settlement must not have stamped the per-entity pull-journal
+        // watermark with the batch's global server_revision (500) -- this
+        // entity has never been pulled, so it must remain 0.
+        assert_eq!(
+            store
+                .existing_journal_revision("profile-a", SyncEntityType::ModelCollection, &remote_id)
+                .unwrap(),
+            0
+        );
+
+        // An intervening writer's genuine update, arriving on the next pull
+        // with a journal_revision far below the settlement's server_revision,
+        // must still be applied instead of being silently skipped as
+        // "already seen" (which is what happens if settlement had wrongly
+        // advanced the watermark to 500).
+        store
+            .apply_pull_batch(ApplyPullBatchDto {
+                profile_id: "profile-a".to_string(),
+                expected_checkpoint_generation: 0,
+                expected_previous_cursor: None,
+                cursor: Some("cursor-1".to_string()),
+                server_revision: 500,
+                applied_at: 200,
+                entities: vec![crate::sync::PullEntityDto {
+                    entity_type: SyncEntityType::ModelCollection,
+                    local_id: Some(collection.id.clone()),
+                    remote_id: remote_id.clone(),
+                    revision: 2,
+                    journal_revision: 2,
+                    concurrency_token: Some("token-2".to_string()),
+                    tombstone: false,
+                    visibility: SyncVisibility::Private,
+                    snapshot: Some(serde_json::json!({
+                        "id": remote_id,
+                        "name": "Dragons Updated",
+                        "description": null,
+                        "ownerUserId": null,
+                        "isShared": false,
+                        "createdAt": "2026-01-01T00:00:00Z",
+                        "updatedAt": "2026-01-02T00:00:00Z",
+                        "memberCount": 0,
+                        "modelIds": [],
+                        "revision": 2,
+                        "concurrencyToken": "token-2"
+                    })),
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+
+        let entities = store.entity_revisions("profile-a", None, 500).unwrap();
+        let updated = entities
+            .iter()
+            .find(|entity| entity.remote_id == remote_id)
+            .expect("intervening pull update must not be skipped");
+        assert_eq!(updated.revision, 2);
+    }
+
+    #[test]
+    fn sqlite_remove_then_add_coalesces_a_pending_membership_delete_to_zero_operations() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("m.stl"), b"bytes");
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        reconcile_root(&mut store, "r", &scan(root));
+        let hash = store.models()[0].hash.clone();
+        store
+            .bind_sync_profile("profile-a", "binding-a", 1)
+            .unwrap();
+        let collection = store
+            .create_collection_with_sync("Synced", "profile-a", "binding-a", 2)
+            .unwrap();
+        let collection_claim = store
+            .claim_outbound_operations("profile-a", 10, 3, 30)
+            .unwrap()
+            .unwrap();
+        let collection_remote_id = collection_claim.operations[0].payload["remoteId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "profile-a".to_string(),
+                batch_id: collection_claim.batch_id,
+                batch_incarnation: collection_claim.batch_incarnation,
+                lease_token: collection_claim.lease_token,
+                settled_at: 4,
+                server_revision: 1,
+                applied: vec![crate::sync::AppliedOutboundResultDto {
+                    operation_id: collection_claim.operations[0].operation_id.clone(),
+                    remote_id: collection_remote_id,
+                    revision: 1,
+                    concurrency_token: None,
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+        store
+            .link_remote_model(crate::sync::RemoteModelLinkDto {
+                profile_id: "profile-a".to_string(),
+                local_model_hash: hash.clone(),
+                remote_model_id: "remote-model".to_string(),
+                client_upload_id: "upload-a".to_string(),
+                etag: None,
+                upload_status: crate::sync::RemoteUploadStatus::Pending,
+                created_at: 5,
+                updated_at: 5,
+                uploaded_at: None,
+            })
+            .unwrap();
+        assert!(store
+            .add_model_to_collection_with_sync(&collection.id, &hash, "profile-a", "binding-a", 6)
+            .unwrap());
+        let membership_claim = store
+            .claim_outbound_operations("profile-a", 10, 7, 30)
+            .unwrap()
+            .unwrap();
+        let membership_remote_id = membership_claim.operations[0].payload["remoteId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "profile-a".to_string(),
+                batch_id: membership_claim.batch_id,
+                batch_incarnation: membership_claim.batch_incarnation,
+                lease_token: membership_claim.lease_token,
+                settled_at: 8,
+                server_revision: 2,
+                applied: vec![crate::sync::AppliedOutboundResultDto {
+                    operation_id: membership_claim.operations[0].operation_id.clone(),
+                    remote_id: membership_remote_id,
+                    revision: 1,
+                    concurrency_token: None,
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+
+        store
+            .remove_model_from_collection_with_sync(
+                &collection.id,
+                &hash,
+                "profile-a",
+                "binding-a",
+                9,
+            )
+            .unwrap();
+        let pending_delete = store
+            .outbound_operations("profile-a", &[OutboundState::Pending], 500)
+            .unwrap();
+        assert_eq!(pending_delete.len(), 1);
+        assert_eq!(
+            pending_delete[0].operation,
+            crate::sync::SyncOperationKind::Delete
+        );
+
+        assert!(store
+            .add_model_to_collection_with_sync(&collection.id, &hash, "profile-a", "binding-a", 10)
+            .unwrap());
+        let pending = store
+            .outbound_operations("profile-a", &[OutboundState::Pending], 500)
+            .unwrap();
+        assert!(
+            pending.is_empty(),
+            "re-adding before the delete is claimed should cancel the pending delete instead of queueing a compensating create"
+        );
+        assert!(store
+            .collections_for_model(&hash)
+            .iter()
+            .any(|value| value.id == collection.id));
+    }
+
+    #[test]
+    fn sqlite_remove_then_add_preserves_a_claimed_delete_and_queues_a_create() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("m.stl"), b"bytes");
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        reconcile_root(&mut store, "r", &scan(root));
+        let hash = store.models()[0].hash.clone();
+        store
+            .bind_sync_profile("profile-a", "binding-a", 1)
+            .unwrap();
+        let collection = store
+            .create_collection_with_sync("Synced", "profile-a", "binding-a", 2)
+            .unwrap();
+        let collection_claim = store
+            .claim_outbound_operations("profile-a", 10, 3, 30)
+            .unwrap()
+            .unwrap();
+        let collection_remote_id = collection_claim.operations[0].payload["remoteId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "profile-a".to_string(),
+                batch_id: collection_claim.batch_id,
+                batch_incarnation: collection_claim.batch_incarnation,
+                lease_token: collection_claim.lease_token,
+                settled_at: 4,
+                server_revision: 1,
+                applied: vec![crate::sync::AppliedOutboundResultDto {
+                    operation_id: collection_claim.operations[0].operation_id.clone(),
+                    remote_id: collection_remote_id,
+                    revision: 1,
+                    concurrency_token: None,
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+        store
+            .link_remote_model(crate::sync::RemoteModelLinkDto {
+                profile_id: "profile-a".to_string(),
+                local_model_hash: hash.clone(),
+                remote_model_id: "remote-model".to_string(),
+                client_upload_id: "upload-a".to_string(),
+                etag: None,
+                upload_status: crate::sync::RemoteUploadStatus::Pending,
+                created_at: 5,
+                updated_at: 5,
+                uploaded_at: None,
+            })
+            .unwrap();
+        assert!(store
+            .add_model_to_collection_with_sync(&collection.id, &hash, "profile-a", "binding-a", 6)
+            .unwrap());
+        let membership_claim = store
+            .claim_outbound_operations("profile-a", 10, 7, 30)
+            .unwrap()
+            .unwrap();
+        let membership_remote_id = membership_claim.operations[0].payload["remoteId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "profile-a".to_string(),
+                batch_id: membership_claim.batch_id,
+                batch_incarnation: membership_claim.batch_incarnation,
+                lease_token: membership_claim.lease_token,
+                settled_at: 8,
+                server_revision: 2,
+                applied: vec![crate::sync::AppliedOutboundResultDto {
+                    operation_id: membership_claim.operations[0].operation_id.clone(),
+                    remote_id: membership_remote_id,
+                    revision: 1,
+                    concurrency_token: None,
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+
+        store
+            .remove_model_from_collection_with_sync(
+                &collection.id,
+                &hash,
+                "profile-a",
+                "binding-a",
+                9,
+            )
+            .unwrap();
+        let delete_claim = store
+            .claim_outbound_operations("profile-a", 10, 10, 30)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            delete_claim.operations[0].operation,
+            crate::sync::SyncOperationKind::Delete
+        );
+
+        assert!(store
+            .add_model_to_collection_with_sync(&collection.id, &hash, "profile-a", "binding-a", 11)
+            .unwrap());
+        let inflight = store
+            .outbound_operations("profile-a", &[OutboundState::InFlight], 500)
+            .unwrap();
+        assert_eq!(inflight.len(), 1);
+        assert_eq!(
+            inflight[0].operation,
+            crate::sync::SyncOperationKind::Delete
+        );
+        let pending = store
+            .outbound_operations("profile-a", &[OutboundState::Pending], 500)
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending[0].entity_type,
+            SyncEntityType::ModelCollectionMembership
+        );
+        assert_eq!(pending[0].operation, crate::sync::SyncOperationKind::Create);
+    }
+
+    #[test]
+    fn replace_sync_profile_binding_replay_is_idempotent_and_does_not_rewipe() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        store
+            .bind_sync_profile("profile-a", "old-binding", 1)
+            .unwrap();
+        store
+            .create_collection_with_sync("Stale", "profile-a", "old-binding", 2)
+            .unwrap();
+        // Settle the push so the collection is actually materialized under
+        // `old-binding` (an unsettled local create has no sync profile
+        // association yet, so rebinding would have nothing to purge).
+        let claim = store
+            .claim_outbound_operations("profile-a", 10, 3, 30)
+            .unwrap()
+            .unwrap();
+        // Settlement must confirm the same client-generated remote id
+        // provisioned at create time, or the local id would end up mapped
+        // to two different remote ids, which the settlement preflight
+        // correctly rejects as a sibling-mapping conflict.
+        let remote_id = claim.operations[0].payload["remoteId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "profile-a".to_string(),
+                batch_id: claim.batch_id,
+                batch_incarnation: claim.batch_incarnation,
+                lease_token: claim.lease_token,
+                settled_at: 4,
+                server_revision: 1,
+                applied: vec![crate::sync::AppliedOutboundResultDto {
+                    operation_id: claim.operations[0].operation_id.clone(),
+                    remote_id,
+                    revision: 1,
+                    concurrency_token: None,
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+
+        store
+            .replace_sync_profile_binding("profile-a", "old-binding", "new-binding", 5)
+            .unwrap();
+        assert!(
+            store.all_collections().is_empty(),
+            "stale binding's collections must be purged once"
+        );
+
+        let survivor = store
+            .create_collection_with_sync("Survivor", "profile-a", "new-binding", 4)
+            .unwrap();
+
+        // Replaying the exact same transition (e.g. a scheduler tick retry
+        // after a crash before the transition was acknowledged) must succeed
+        // as a no-op rather than treating the now-stale `expected_binding` as
+        // a CAS failure, and it must not re-run the destructive
+        // collection/tag wipe against data that already belongs to the new
+        // binding.
+        store
+            .replace_sync_profile_binding("profile-a", "old-binding", "new-binding", 5)
+            .unwrap();
+        assert!(store
+            .all_collections()
+            .iter()
+            .any(|collection| collection.id == survivor.id));
+    }
+
+    #[test]
+    fn replace_sync_profile_binding_rejects_stale_cas_without_wiping_data() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        store
+            .bind_sync_profile("profile-a", "binding-1", 1)
+            .unwrap();
+        store
+            .replace_sync_profile_binding("profile-a", "binding-1", "binding-2", 2)
+            .unwrap();
+        let survivor = store
+            .create_collection_with_sync("Survivor", "profile-a", "binding-2", 3)
+            .unwrap();
+
+        // A second writer, still racing off the original `binding-1`
+        // expectation, must be rejected by CAS now that an intervening
+        // writer already advanced the binding to `binding-2` -- and must not
+        // clobber `binding-2`'s already-materialized data in the process.
+        let result = store.replace_sync_profile_binding("profile-a", "binding-1", "binding-3", 4);
+        assert!(result.is_err());
+        assert!(store
+            .all_collections()
+            .iter()
+            .any(|collection| collection.id == survivor.id));
     }
 
     #[test]

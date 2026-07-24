@@ -16,14 +16,14 @@ export interface PreviewWorkspaceProps {
   wireframe: boolean;
   projection: Projection;
   resetToken: number;
-  hiddenParts: ReadonlySet<number>;
+  hiddenObjects: ReadonlySet<string>;
   onClose: () => void;
   onRetry: () => void;
   onToggleWireframe: () => void;
   onToggleProjection: () => void;
   onReset: () => void;
-  onTogglePart: (index: number) => void;
-  onToggleAllParts: (visible: boolean) => void;
+  onToggleObject: (id: string) => void;
+  onToggleAllObjects: (visible: boolean) => void;
 }
 
 export function PreviewWorkspace({
@@ -35,14 +35,14 @@ export function PreviewWorkspace({
   wireframe,
   projection,
   resetToken,
-  hiddenParts,
+  hiddenObjects,
   onClose,
   onRetry,
   onToggleWireframe,
   onToggleProjection,
   onReset,
-  onTogglePart,
-  onToggleAllParts,
+  onToggleObject,
+  onToggleAllObjects,
 }: PreviewWorkspaceProps): React.JSX.Element {
   const dialogRef = useRef<HTMLElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
@@ -172,7 +172,7 @@ export function PreviewWorkspace({
                 mesh={mesh}
                 wireframe={wireframe}
                 projection={projection}
-                hiddenParts={hiddenParts}
+                hiddenObjects={hiddenObjects}
                 resetToken={resetToken}
                 className="viewer-canvas"
                 background="#0b0e12"
@@ -186,14 +186,16 @@ export function PreviewWorkspace({
                 <h2>Geometry</h2>
                 <ModelStats mesh={mesh} />
               </section>
-              {(mesh.parts?.length ?? 0) > 1 ? (
+              {mesh.objects.length > 0 ? (
                 <section>
-                  <h2>Parts</h2>
+                  <h2>Scene</h2>
                   <PartTree
-                    parts={mesh.parts ?? []}
-                    hidden={hiddenParts}
-                    onToggle={onTogglePart}
-                    onToggleAll={onToggleAllParts}
+                    objects={mesh.objects}
+                    rootObjectIds={mesh.rootObjectIds}
+                    plates={mesh.plates}
+                    hidden={hiddenObjects}
+                    onToggle={onToggleObject}
+                    onToggleAll={onToggleAllObjects}
                   />
                 </section>
               ) : null}

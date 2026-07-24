@@ -95,7 +95,7 @@ describe('<ServerProfilesDialog />', () => {
     );
 
     expect(
-      screen.getByRole('dialog', { name: 'Server profiles' }),
+      screen.getByRole('dialog', { name: 'Connect to PrintFarmer' }),
     ).toHaveAttribute('aria-modal', 'true');
     fireEvent.change(screen.getByLabelText('Profile name'), {
       target: { value: 'Production farm' },

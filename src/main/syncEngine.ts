@@ -268,6 +268,7 @@ export class PrintFarmerSyncEngine {
   private timer: ReturnType<typeof setInterval> | null = null;
   private startPromise: Promise<void> | null = null;
   private disposed = false;
+  private disposePromise: Promise<void> | null = null;
   private schedulerTick: Promise<void> | null = null;
   private readonly unsubscribeInvalidation: (() => void) | null;
 
@@ -410,16 +411,21 @@ export class PrintFarmerSyncEngine {
   }
 
   async dispose(): Promise<void> {
-    if (this.disposed) return;
+    if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
-    this.stop();
-    for (const profileId of this.active.keys()) this.cancelProfile(profileId);
-    await Promise.allSettled(
-      [...this.active.values()].map(({ promise }) => promise),
-    );
-    if (this.schedulerTick) await this.schedulerTick;
-    this.unsubscribeInvalidation?.();
-    this.listeners.clear();
+    this.disposePromise = (async () => {
+      this.stop();
+      for (const profileId of this.active.keys()) this.cancelProfile(profileId);
+      await Promise.allSettled(
+        [...this.active.values()].map(({ promise }) => promise),
+      );
+      if (this.schedulerTick) {
+        await this.schedulerTick.catch(() => undefined);
+      }
+      this.unsubscribeInvalidation?.();
+      this.listeners.clear();
+    })();
+    return this.disposePromise;
   }
 
   private async runSchedulerTick(recover: boolean): Promise<void> {

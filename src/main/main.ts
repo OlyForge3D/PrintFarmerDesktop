@@ -230,21 +230,24 @@ if (!enforceSingleInstance()) {
     const engine = syncEngine;
     syncEngine = null;
     void (async () => {
-      const disposal = engine.dispose();
-      await Promise.race([
-        disposal,
-        new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
-      ]);
-      sharedSidecar?.dispose();
-      sharedSidecar = null;
-      await Promise.race([
-        disposal,
-        new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
-      ]);
-      sharedProfiles?.clearTokens();
-      sharedProfiles = null;
-      cleanupComplete = true;
-      app.quit();
+      try {
+        const disposal = engine.dispose();
+        await Promise.race([
+          disposal,
+          new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+        ]);
+        sharedSidecar?.dispose();
+        sharedSidecar = null;
+        await Promise.race([
+          disposal,
+          new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
+        ]);
+        sharedProfiles?.clearTokens();
+        sharedProfiles = null;
+      } finally {
+        cleanupComplete = true;
+        app.quit();
+      }
     })();
   });
 

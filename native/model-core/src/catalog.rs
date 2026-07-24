@@ -416,8 +416,21 @@ pub trait CatalogStore {
             .any(|collection| collection.id == id);
         self.begin_batch()?;
         let result = (|| {
+            let pending_delete = self.pending_membership_delete(profile_id, id, hash)?;
             let added = self.add_model_to_collection(id, hash);
-            if added && !already_present {
+            // Coalesce a rapid remove-then-add toggle: if the compensating
+            // Delete never left the outbox, the server was never told the
+            // membership went away, so cancelling it nets to zero outbound
+            // operations instead of sending a redundant Create. If the
+            // Delete already left `Pending` (claimed, in flight, or
+            // otherwise unsettled), cancellation is a safe no-op and we fall
+            // back to the original behaviour of queuing a fresh Create.
+            let cancelled_pending_delete = if let Some(pending) = &pending_delete {
+                self.cancel_pending_outbound_operation(profile_id, &pending.operation_id)?
+            } else {
+                false
+            };
+            if added && !already_present && !cancelled_pending_delete {
                 let remote_id = sync::new_remote_guid();
                 self.enqueue_outbound_operations(
                     profile_id,
@@ -478,7 +491,20 @@ pub trait CatalogStore {
             };
             let pending_membership = self.pending_membership_create(profile_id, id, hash)?;
             self.remove_model_from_collection(id, hash);
-            if existed && (membership.is_some() || pending_membership.is_some()) {
+            // Coalesce a rapid add-then-remove toggle: if the compensating
+            // Create never left the outbox, the server was never told about
+            // this membership, so cancelling it nets to zero outbound
+            // operations instead of queuing a Delete for something the
+            // server doesn't know exists. If the Create already left
+            // `Pending`, cancellation is a safe no-op and we fall back to
+            // the original behaviour below.
+            let cancelled_pending_create = if let Some(pending) = &pending_membership {
+                self.cancel_pending_outbound_operation(profile_id, &pending.operation_id)?
+            } else {
+                false
+            };
+            let still_pending = pending_membership.is_some() && !cancelled_pending_create;
+            if existed && (membership.is_some() || still_pending) {
                 let entity_id = membership
                     .as_ref()
                     .and_then(|value| value.local_id.clone())
@@ -573,6 +599,28 @@ pub trait CatalogStore {
         collection_local_id: &str,
         model_hash: &str,
     ) -> Result<Option<OutboundOperationDto>, String>;
+
+    /// Mirrors [`Self::pending_membership_create`] but looks for a still
+    /// unsettled Delete instead, used to coalesce a rapid remove-then-add
+    /// toggle back to zero outbound operations.
+    fn pending_membership_delete(
+        &self,
+        profile_id: &str,
+        collection_local_id: &str,
+        model_hash: &str,
+    ) -> Result<Option<OutboundOperationDto>, String>;
+
+    /// Cancels an outbound operation outright, but only while it is still in
+    /// `Pending` state (never claimed for an in-flight attempt). Returns
+    /// `true` if a pending row was removed, `false` if the operation no
+    /// longer exists or has already left `Pending` -- in which case it is
+    /// already in flight (or settled) and must be allowed to run to
+    /// completion rather than being torn out from under a live lease.
+    fn cancel_pending_outbound_operation(
+        &mut self,
+        profile_id: &str,
+        operation_id: &str,
+    ) -> Result<bool, String>;
 
     fn entity_revision_by_local(
         &self,
@@ -1269,8 +1317,26 @@ impl CatalogStore for InMemoryCatalog {
         new_binding: &str,
         now: i64,
     ) -> Result<SyncStatusDto, String> {
-        self.validate_sync_profile_binding(profile_id, expected_binding)?;
+        sync::validate_profile(profile_id)?;
+        sync::validate_identifier("expectedProfileBinding", expected_binding)?;
         sync::validate_identifier("newProfileBinding", new_binding)?;
+        // Idempotent replay: mirrors the SqliteCatalog short-circuit so a
+        // retried transition (expected_binding now stale because a prior
+        // attempt already committed) is treated as already-applied instead
+        // of failing CAS and re-running the destructive profile-scoped wipe.
+        if self
+            .sync_profile_bindings
+            .get(profile_id)
+            .map(String::as_str)
+            == Some(new_binding)
+        {
+            return Ok(self
+                .sync_statuses
+                .get(profile_id)
+                .cloned()
+                .unwrap_or_else(|| SyncStatusDto::empty(profile_id)));
+        }
+        self.validate_sync_profile_binding(profile_id, expected_binding)?;
         self.begin_batch()?;
         let result: Result<SyncStatusDto, String> = {
             let materialized: Vec<_> = self
@@ -1665,6 +1731,44 @@ impl CatalogStore for InMemoryCatalog {
                     && operation.payload["modelHash"].as_str() == Some(model_hash)
             })
             .cloned())
+    }
+
+    fn pending_membership_delete(
+        &self,
+        profile_id: &str,
+        collection_local_id: &str,
+        model_hash: &str,
+    ) -> Result<Option<OutboundOperationDto>, String> {
+        Ok(self
+            .sync_outbox
+            .values()
+            .find(|operation| {
+                operation.profile_id == profile_id
+                    && operation.entity_type == SyncEntityType::ModelCollectionMembership
+                    && operation.operation == sync::SyncOperationKind::Delete
+                    && operation.state != OutboundState::Acked
+                    && operation.payload["collectionId"].as_str() == Some(collection_local_id)
+                    && operation.payload["modelHash"].as_str() == Some(model_hash)
+            })
+            .cloned())
+    }
+
+    fn cancel_pending_outbound_operation(
+        &mut self,
+        profile_id: &str,
+        operation_id: &str,
+    ) -> Result<bool, String> {
+        let key = (profile_id.to_string(), operation_id.to_string());
+        if self
+            .sync_outbox
+            .get(&key)
+            .is_some_and(|operation| operation.state == OutboundState::Pending)
+        {
+            self.sync_outbox.remove(&key);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     fn enqueue_outbound_operations(
@@ -3420,6 +3524,433 @@ mod tests {
             .all_collections()
             .iter()
             .all(|value| value.name != "Rejected"));
+    }
+
+    #[test]
+    fn toggling_membership_rapidly_coalesces_to_zero_pending_operations() {
+        let (mut store, hash) = one_model_store();
+        store
+            .bind_sync_profile("profile-a", "binding-a", 1)
+            .unwrap();
+        let collection = store
+            .create_collection_with_sync("Synced", "profile-a", "binding-a", 2)
+            .unwrap();
+        let create = store
+            .outbound_operations("profile-a", &[OutboundState::Pending], 500)
+            .unwrap();
+        assert_eq!(create.len(), 1);
+
+        // Add then immediately remove, before either the collection create
+        // or the membership create ever left the outbox: the compensating
+        // Delete must cancel the still-pending Create instead of appending a
+        // redundant Delete the server was never told about.
+        assert!(store
+            .add_model_to_collection_with_sync(&collection.id, &hash, "profile-a", "binding-a", 3)
+            .unwrap());
+        store
+            .remove_model_from_collection_with_sync(
+                &collection.id,
+                &hash,
+                "profile-a",
+                "binding-a",
+                4,
+            )
+            .unwrap();
+        let after_add_remove = store
+            .outbound_operations("profile-a", &[OutboundState::Pending], 500)
+            .unwrap();
+        assert_eq!(
+            after_add_remove.len(),
+            1,
+            "only the unrelated collection create should remain queued"
+        );
+        assert!(store
+            .collections_for_model(&hash)
+            .iter()
+            .all(|value| value.id != collection.id));
+
+        // Add it back: this is a fresh Create toggle (the prior add/remove
+        // already coalesced away, so there is nothing pending to cancel) and
+        // must queue exactly one new membership Create.
+        assert!(store
+            .add_model_to_collection_with_sync(&collection.id, &hash, "profile-a", "binding-a", 5)
+            .unwrap());
+        let after_second_add = store
+            .outbound_operations("profile-a", &[OutboundState::Pending], 500)
+            .unwrap();
+        assert_eq!(after_second_add.len(), 2);
+        assert!(after_second_add.iter().any(|op| {
+            op.entity_type == SyncEntityType::ModelCollectionMembership
+                && op.operation == crate::sync::SyncOperationKind::Create
+        }));
+    }
+
+    #[test]
+    fn remove_then_add_coalesces_a_pending_membership_delete_to_zero_operations() {
+        let (mut store, hash) = one_model_store();
+        store
+            .bind_sync_profile("profile-a", "binding-a", 1)
+            .unwrap();
+        let collection = store
+            .create_collection_with_sync("Synced", "profile-a", "binding-a", 2)
+            .unwrap();
+        let collection_claim = store
+            .claim_outbound_operations("profile-a", 10, 3, 30)
+            .unwrap()
+            .unwrap();
+        let collection_remote_id = collection_claim.operations[0].payload["remoteId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "profile-a".to_string(),
+                batch_id: collection_claim.batch_id,
+                batch_incarnation: collection_claim.batch_incarnation,
+                lease_token: collection_claim.lease_token,
+                settled_at: 4,
+                server_revision: 1,
+                applied: vec![crate::sync::AppliedOutboundResultDto {
+                    operation_id: collection_claim.operations[0].operation_id.clone(),
+                    remote_id: collection_remote_id,
+                    revision: 1,
+                    concurrency_token: None,
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+        store
+            .link_remote_model(RemoteModelLinkDto {
+                profile_id: "profile-a".to_string(),
+                local_model_hash: hash.clone(),
+                remote_model_id: "remote-model".to_string(),
+                client_upload_id: "upload-a".to_string(),
+                etag: None,
+                upload_status: crate::sync::RemoteUploadStatus::Pending,
+                created_at: 5,
+                updated_at: 5,
+                uploaded_at: None,
+            })
+            .unwrap();
+        assert!(store
+            .add_model_to_collection_with_sync(&collection.id, &hash, "profile-a", "binding-a", 6)
+            .unwrap());
+        let membership_claim = store
+            .claim_outbound_operations("profile-a", 10, 7, 30)
+            .unwrap()
+            .unwrap();
+        let membership_remote_id = membership_claim.operations[0].payload["remoteId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "profile-a".to_string(),
+                batch_id: membership_claim.batch_id,
+                batch_incarnation: membership_claim.batch_incarnation,
+                lease_token: membership_claim.lease_token,
+                settled_at: 8,
+                server_revision: 2,
+                applied: vec![crate::sync::AppliedOutboundResultDto {
+                    operation_id: membership_claim.operations[0].operation_id.clone(),
+                    remote_id: membership_remote_id,
+                    revision: 1,
+                    concurrency_token: None,
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+
+        store
+            .remove_model_from_collection_with_sync(
+                &collection.id,
+                &hash,
+                "profile-a",
+                "binding-a",
+                9,
+            )
+            .unwrap();
+        let pending_delete = store
+            .outbound_operations("profile-a", &[OutboundState::Pending], 500)
+            .unwrap();
+        assert_eq!(pending_delete.len(), 1);
+        assert_eq!(
+            pending_delete[0].operation,
+            crate::sync::SyncOperationKind::Delete
+        );
+
+        assert!(store
+            .add_model_to_collection_with_sync(&collection.id, &hash, "profile-a", "binding-a", 10)
+            .unwrap());
+        let pending = store
+            .outbound_operations("profile-a", &[OutboundState::Pending], 500)
+            .unwrap();
+        assert!(
+            pending.is_empty(),
+            "re-adding before the delete is claimed should cancel the pending delete instead of queuing a compensating create"
+        );
+        assert!(store
+            .collections_for_model(&hash)
+            .iter()
+            .any(|value| value.id == collection.id));
+    }
+
+    #[test]
+    fn remove_then_add_falls_back_once_the_pending_delete_is_claimed() {
+        let (mut store, hash) = one_model_store();
+        store
+            .bind_sync_profile("profile-a", "binding-a", 1)
+            .unwrap();
+        let collection = store
+            .create_collection_with_sync("Synced", "profile-a", "binding-a", 2)
+            .unwrap();
+        let collection_claim = store
+            .claim_outbound_operations("profile-a", 10, 3, 30)
+            .unwrap()
+            .unwrap();
+        let collection_remote_id = collection_claim.operations[0].payload["remoteId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "profile-a".to_string(),
+                batch_id: collection_claim.batch_id,
+                batch_incarnation: collection_claim.batch_incarnation,
+                lease_token: collection_claim.lease_token,
+                settled_at: 4,
+                server_revision: 1,
+                applied: vec![crate::sync::AppliedOutboundResultDto {
+                    operation_id: collection_claim.operations[0].operation_id.clone(),
+                    remote_id: collection_remote_id,
+                    revision: 1,
+                    concurrency_token: None,
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+        store
+            .link_remote_model(RemoteModelLinkDto {
+                profile_id: "profile-a".to_string(),
+                local_model_hash: hash.clone(),
+                remote_model_id: "remote-model".to_string(),
+                client_upload_id: "upload-a".to_string(),
+                etag: None,
+                upload_status: crate::sync::RemoteUploadStatus::Pending,
+                created_at: 5,
+                updated_at: 5,
+                uploaded_at: None,
+            })
+            .unwrap();
+        assert!(store
+            .add_model_to_collection_with_sync(&collection.id, &hash, "profile-a", "binding-a", 6)
+            .unwrap());
+        let membership_claim = store
+            .claim_outbound_operations("profile-a", 10, 7, 30)
+            .unwrap()
+            .unwrap();
+        let membership_remote_id = membership_claim.operations[0].payload["remoteId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "profile-a".to_string(),
+                batch_id: membership_claim.batch_id,
+                batch_incarnation: membership_claim.batch_incarnation,
+                lease_token: membership_claim.lease_token,
+                settled_at: 8,
+                server_revision: 2,
+                applied: vec![crate::sync::AppliedOutboundResultDto {
+                    operation_id: membership_claim.operations[0].operation_id.clone(),
+                    remote_id: membership_remote_id,
+                    revision: 1,
+                    concurrency_token: None,
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+
+        store
+            .remove_model_from_collection_with_sync(
+                &collection.id,
+                &hash,
+                "profile-a",
+                "binding-a",
+                9,
+            )
+            .unwrap();
+        let delete_claim = store
+            .claim_outbound_operations("profile-a", 10, 10, 30)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            delete_claim.operations[0].operation,
+            crate::sync::SyncOperationKind::Delete
+        );
+
+        assert!(store
+            .add_model_to_collection_with_sync(&collection.id, &hash, "profile-a", "binding-a", 11)
+            .unwrap());
+        let inflight = store
+            .outbound_operations("profile-a", &[OutboundState::InFlight], 500)
+            .unwrap();
+        assert_eq!(inflight.len(), 1);
+        assert_eq!(
+            inflight[0].operation,
+            crate::sync::SyncOperationKind::Delete
+        );
+        let pending = store
+            .outbound_operations("profile-a", &[OutboundState::Pending], 500)
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending[0].entity_type,
+            SyncEntityType::ModelCollectionMembership
+        );
+        assert_eq!(pending[0].operation, crate::sync::SyncOperationKind::Create);
+    }
+
+    #[test]
+    fn toggle_coalescing_falls_back_once_the_opposing_operation_is_claimed() {
+        let (mut store, hash) = one_model_store();
+        store
+            .bind_sync_profile("profile-a", "binding-a", 1)
+            .unwrap();
+        let collection = store
+            .create_collection_with_sync("Synced", "profile-a", "binding-a", 2)
+            .unwrap();
+        // `create_collection_with_sync` and `add_model_to_collection_with_sync`
+        // each enqueue their own logical batch, and `claim_outbound_operations`
+        // only ever claims the single oldest still-open batch. Settle the
+        // collection-create batch first so the membership-create batch
+        // becomes claimable on its own.
+        let create_claim = store
+            .claim_outbound_operations("profile-a", 10, 2, 30)
+            .unwrap()
+            .unwrap();
+        // Settlement must confirm the same client-generated remote id that
+        // was optimistically provisioned at create time -- the server
+        // accepts the client-supplied guid rather than minting a new one --
+        // otherwise the same local id would end up mapped to two different
+        // remote ids, which `preflight_entity_revision_set` correctly
+        // rejects as a sibling-mapping conflict.
+        let remote_id = create_claim.operations[0].payload["remoteId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "profile-a".to_string(),
+                batch_id: create_claim.batch_id,
+                batch_incarnation: create_claim.batch_incarnation,
+                lease_token: create_claim.lease_token,
+                settled_at: 3,
+                server_revision: 1,
+                applied: vec![crate::sync::AppliedOutboundResultDto {
+                    operation_id: create_claim.operations[0].operation_id.clone(),
+                    remote_id,
+                    revision: 1,
+                    concurrency_token: None,
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+
+        assert!(store
+            .add_model_to_collection_with_sync(&collection.id, &hash, "profile-a", "binding-a", 4)
+            .unwrap());
+
+        // Claim the membership-create batch as if a scheduler tick already
+        // picked it up for delivery.
+        store
+            .claim_outbound_operations("profile-a", 10, 5, 30)
+            .unwrap();
+
+        // Removing now finds the compensating Create already `InFlight`
+        // (no longer `Pending`), so cancellation is a safe no-op and the
+        // original behaviour -- queuing a Delete -- must still apply.
+        store
+            .remove_model_from_collection_with_sync(
+                &collection.id,
+                &hash,
+                "profile-a",
+                "binding-a",
+                6,
+            )
+            .unwrap();
+        let pending = store
+            .outbound_operations("profile-a", &[OutboundState::Pending], 500)
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending[0].entity_type,
+            SyncEntityType::ModelCollectionMembership
+        );
+        assert_eq!(pending[0].operation, crate::sync::SyncOperationKind::Delete);
+    }
+
+    #[test]
+    fn replace_sync_profile_binding_replay_is_idempotent_in_memory() {
+        let mut store = InMemoryCatalog::new();
+        store
+            .bind_sync_profile("profile-a", "old-binding", 1)
+            .unwrap();
+        store
+            .create_collection_with_sync("Stale", "profile-a", "old-binding", 2)
+            .unwrap();
+        // Settle the push so the collection is actually materialized under
+        // `old-binding` (an unsettled local create has no sync profile
+        // association yet, so rebinding would have nothing to purge).
+        let claim = store
+            .claim_outbound_operations("profile-a", 10, 3, 30)
+            .unwrap()
+            .unwrap();
+        // Settlement must confirm the same client-generated remote id
+        // provisioned at create time, or the local id would end up mapped
+        // to two different remote ids.
+        let remote_id = claim.operations[0].payload["remoteId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        store
+            .settle_outbound_batch(SettleOutboundBatchDto {
+                profile_id: "profile-a".to_string(),
+                batch_id: claim.batch_id,
+                batch_incarnation: claim.batch_incarnation,
+                lease_token: claim.lease_token,
+                settled_at: 4,
+                server_revision: 1,
+                applied: vec![crate::sync::AppliedOutboundResultDto {
+                    operation_id: claim.operations[0].operation_id.clone(),
+                    remote_id,
+                    revision: 1,
+                    concurrency_token: None,
+                }],
+                conflicts: vec![],
+            })
+            .unwrap();
+
+        store
+            .replace_sync_profile_binding("profile-a", "old-binding", "new-binding", 5)
+            .unwrap();
+        assert!(store.all_collections().is_empty());
+
+        let survivor = store
+            .create_collection_with_sync("Survivor", "profile-a", "new-binding", 6)
+            .unwrap();
+
+        // Replaying the same transition after it already committed (e.g. a
+        // scheduler tick retry racing an unacknowledged prior attempt) must
+        // succeed as a no-op instead of failing CAS or re-wiping data that
+        // already belongs to the new binding.
+        store
+            .replace_sync_profile_binding("profile-a", "old-binding", "new-binding", 5)
+            .unwrap();
+        assert!(store
+            .all_collections()
+            .iter()
+            .any(|collection| collection.id == survivor.id));
     }
 
     #[test]

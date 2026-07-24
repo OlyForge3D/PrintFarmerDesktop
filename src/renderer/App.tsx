@@ -4,6 +4,7 @@ import type {
   LoadSceneResponse,
   ListServerProfilesResponse,
   LogicalModel,
+  ServerProfile,
   VendorMetadata,
 } from '@shared/ipc';
 import { useLibrary } from './library/useLibrary';
@@ -83,7 +84,7 @@ export function App(): React.JSX.Element {
   const [wireframe, setWireframe] = useState(false);
   const [projection, setProjection] = useState<Projection>('perspective');
   const [resetToken, setResetToken] = useState(0);
-  const [hiddenParts, setHiddenParts] = useState<ReadonlySet<number>>(
+  const [hiddenObjects, setHiddenObjects] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
   const previewReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -506,7 +507,7 @@ export function App(): React.JSX.Element {
       setPreviewOpen(true);
       setPreviewError(null);
       setLoadedMesh(null);
-      setHiddenParts(new Set());
+      setHiddenObjects(new Set());
       setLoading(true);
       try {
         const scene = await window.printFarmer.loadScene({ path: target.path });
@@ -649,24 +650,24 @@ export function App(): React.JSX.Element {
     }
   }, [loadPreview, previewTarget]);
 
-  const togglePart = useCallback((index: number) => {
-    setHiddenParts((current) => {
+  const toggleObject = useCallback((id: string) => {
+    setHiddenObjects((current) => {
       const next = new Set(current);
-      if (next.has(index)) {
-        next.delete(index);
+      if (next.has(id)) {
+        next.delete(id);
       } else {
-        next.add(index);
+        next.add(id);
       }
       return next;
     });
   }, []);
 
-  const toggleAllParts = useCallback(
+  const toggleAllObjects = useCallback(
     (visible: boolean) => {
-      setHiddenParts(
+      setHiddenObjects(
         visible
           ? new Set()
-          : new Set((loadedMesh?.parts ?? []).map((_, index) => index)),
+          : new Set((loadedMesh?.objects ?? []).map((object) => object.id)),
       );
     },
     [loadedMesh],
@@ -886,19 +887,22 @@ export function App(): React.JSX.Element {
               onToggleFavorite={(model) => {
                 void toggleFavorite(model.hash);
               }}
-              emptyLabel={emptyState(
-                presentation.state,
+              emptyLabel={emptyState({
+                state: presentation.state,
                 query,
-                workspaceActionsDisabled,
-                !onboardingOpen,
-                () => {
+                busy: workspaceActionsDisabled,
+                showOnboardingAction: !onboardingOpen,
+                onAddFolder: () => {
                   beginImport();
                 },
-                () => {
+                onClear: () => {
                   setQuery('');
                   setFilter('all');
                 },
-              )}
+                serverProfile: activeServer,
+                serverConnectDisabled: serverProfilesDisabled,
+                onConnectServer: openProfiles,
+              })}
             />
           </div>
         </main>
@@ -995,7 +999,7 @@ export function App(): React.JSX.Element {
           wireframe={wireframe}
           projection={projection}
           resetToken={resetToken}
-          hiddenParts={hiddenParts}
+          hiddenObjects={hiddenObjects}
           onClose={closePreview}
           onRetry={retryPreview}
           onToggleWireframe={() => setWireframe((value) => !value)}
@@ -1005,8 +1009,8 @@ export function App(): React.JSX.Element {
             )
           }
           onReset={() => setResetToken((value) => value + 1)}
-          onTogglePart={togglePart}
-          onToggleAllParts={toggleAllParts}
+          onToggleObject={toggleObject}
+          onToggleAllObjects={toggleAllObjects}
         />
       ) : null}
 
@@ -1021,15 +1025,30 @@ export function App(): React.JSX.Element {
   );
 }
 
-function emptyState(
+interface EmptyStateOptions {
   state:
-    'onboarding' | 'scanning' | 'empty-scan' | 'empty-filter' | 'populated',
-  query: string,
-  busy: boolean,
-  showOnboardingAction: boolean,
-  onAddFolder: () => void,
-  onClear: () => void,
-): React.ReactNode {
+    'onboarding' | 'scanning' | 'empty-scan' | 'empty-filter' | 'populated';
+  query: string;
+  busy: boolean;
+  showOnboardingAction: boolean;
+  onAddFolder: () => void;
+  onClear: () => void;
+  serverProfile: ServerProfile | null;
+  serverConnectDisabled: boolean;
+  onConnectServer: () => void;
+}
+
+function emptyState({
+  state,
+  query,
+  busy,
+  showOnboardingAction,
+  onAddFolder,
+  onClear,
+  serverProfile,
+  serverConnectDisabled,
+  onConnectServer,
+}: EmptyStateOptions): React.ReactNode {
   if (state === 'onboarding') {
     return (
       <div className="purposeful-empty-state">
@@ -1044,6 +1063,11 @@ function emptyState(
             Add your first folder
           </button>
         ) : null}
+        <OnboardingServerNudge
+          serverProfile={serverProfile}
+          disabled={serverConnectDisabled}
+          onConnect={onConnectServer}
+        />
       </div>
     );
   }
@@ -1081,4 +1105,38 @@ function emptyState(
     );
   }
   return undefined;
+}
+
+function OnboardingServerNudge({
+  serverProfile,
+  disabled,
+  onConnect,
+}: {
+  serverProfile: ServerProfile | null;
+  disabled: boolean;
+  onConnect: () => void;
+}): React.JSX.Element {
+  if (serverProfile) {
+    return (
+      <p className="onboarding-connect-confirmed">
+        <Icon name="collection" size={14} />
+        <span>
+          Connected to <strong>{serverProfile.displayName}</strong>. Upload and
+          sync tools will use this connection as they become available.
+        </span>
+      </p>
+    );
+  }
+  return (
+    <div className="onboarding-connect-nudge">
+      <p>
+        Connecting a PrintFarmer server sets this library up to upload selected
+        models and synchronize organization metadata as those tools arrive
+        &mdash; it only stores the connection now.
+      </p>
+      <button type="button" onClick={onConnect} disabled={disabled}>
+        Connect to PrintFarmer
+      </button>
+    </div>
+  );
 }

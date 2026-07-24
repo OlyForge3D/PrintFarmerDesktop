@@ -502,6 +502,25 @@ select:disabled {
   background: var(--surface-hover);
 }
 
+.server-profile-entry--cta {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.server-profile-entry--cta:hover {
+  border-color: var(--focus);
+  background: var(--accent-soft);
+}
+
+.server-profile-entry--cta .server-status-dot {
+  background: var(--accent);
+}
+
+.server-cta-label {
+  color: var(--accent);
+  font-weight: 700;
+}
+
 .server-profile-entry > span:nth-child(2) {
   display: flex;
   min-width: 0;
@@ -930,6 +949,39 @@ select:disabled {
   font-weight: 600;
 }
 
+.onboarding-connect-nudge {
+  display: flex;
+  width: 100%;
+  margin-top: 14px;
+  padding: 12px;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  border: 1px dashed var(--accent);
+  border-radius: var(--card-radius);
+  background: var(--accent-soft);
+  text-align: center;
+}
+
+.onboarding-connect-nudge p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.onboarding-connect-nudge button {
+  height: 30px;
+  margin-top: 0;
+  padding: 0 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--control-radius);
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 600;
+}
+
 .onboarding-backdrop {
   position: fixed;
   z-index: 24;
@@ -1023,6 +1075,25 @@ select:disabled {
   color: #071018;
   cursor: pointer;
   font-weight: 600;
+}
+
+.onboarding-connect-nudge button:hover:not(:disabled) {
+  background: var(--accent);
+  color: #071018;
+}
+
+.onboarding-connect-confirmed {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 0;
+  color: var(--success);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.onboarding-connect-confirmed svg {
+  flex: none;
 }
 
 .library-onboarding-secondary {
@@ -1151,6 +1222,18 @@ select:disabled {
 .profile-empty,
 .profile-security-note {
   color: var(--quiet);
+  font-size: 11px;
+}
+
+.profile-form-hint {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 16px;
+}
+
+.profile-form-hint code {
+  font-family: var(--mono);
   font-size: 11px;
 }
 
