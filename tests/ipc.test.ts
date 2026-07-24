@@ -210,6 +210,17 @@ describe('ipc contract', () => {
     );
   });
 
+  it('accepts favorite catalog responses', () => {
+    const favorites = ipcSchemas[IpcChannel.ListFavorites].response.parse([
+      'hash-a',
+      'hash-b',
+    ]);
+    expect(favorites).toEqual(['hash-a', 'hash-b']);
+    expect(() =>
+      ipcSchemas[IpcChannel.AddFavorite].request.parse({ hash: '' }),
+    ).toThrow();
+  });
+
   it('accepts a valid scene response', () => {
     const value = ipcSchemas[IpcChannel.LoadScene].response.parse({
       positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],

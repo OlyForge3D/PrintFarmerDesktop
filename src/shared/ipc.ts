@@ -23,6 +23,9 @@ export const IpcChannel = {
   PreviewImport: 'catalog:previewImport',
   ImportRoot: 'catalog:importRoot',
   ListModels: 'catalog:listModels',
+  ListFavorites: 'catalog:listFavorites',
+  AddFavorite: 'catalog:addFavorite',
+  RemoveFavorite: 'catalog:removeFavorite',
   ListTags: 'catalog:listTags',
   TagsForModel: 'catalog:tagsForModel',
   AddModelTag: 'catalog:addModelTag',
@@ -219,6 +222,7 @@ export const ModelLocation = z.object({
   path: z.string(),
   rootRelative: z.string(),
   size: z.number().int().nonnegative(),
+  modifiedUnixSeconds: z.number().int().nullable().optional(),
   available: z.boolean(),
 });
 export type ModelLocation = z.infer<typeof ModelLocation>;
@@ -324,6 +328,22 @@ export type ListModelsRequest = z.infer<typeof ListModelsRequest>;
 
 export const ListModelsResponse = z.array(LogicalModel);
 export type ListModelsResponse = z.infer<typeof ListModelsResponse>;
+
+// --- catalog favorites ----------------------------------------------------
+
+/** Content hashes the user has marked as local favorites in the catalog. */
+export const ListFavoritesRequest = z.void();
+export type ListFavoritesRequest = z.infer<typeof ListFavoritesRequest>;
+
+export const ListFavoritesResponse = z.array(z.string().min(1));
+export type ListFavoritesResponse = z.infer<typeof ListFavoritesResponse>;
+
+export const FavoriteModelRequest = z.object({ hash: z.string().min(1) });
+export type FavoriteModelRequest = z.infer<typeof FavoriteModelRequest>;
+
+/** All favorite hashes after the mutation is applied. */
+export const FavoriteModelResponse = z.array(z.string().min(1));
+export type FavoriteModelResponse = z.infer<typeof FavoriteModelResponse>;
 
 // --- catalog tags ---------------------------------------------------------
 
@@ -648,6 +668,18 @@ export const ipcSchemas = {
     request: ListModelsRequest,
     response: ListModelsResponse,
   },
+  [IpcChannel.ListFavorites]: {
+    request: ListFavoritesRequest,
+    response: ListFavoritesResponse,
+  },
+  [IpcChannel.AddFavorite]: {
+    request: FavoriteModelRequest,
+    response: FavoriteModelResponse,
+  },
+  [IpcChannel.RemoveFavorite]: {
+    request: FavoriteModelRequest,
+    response: FavoriteModelResponse,
+  },
   [IpcChannel.ListTags]: {
     request: ListTagsRequest,
     response: ListTagsResponse,
@@ -732,6 +764,9 @@ export interface PrintFarmerApi {
   previewImport(request: ImportPreviewRequest): Promise<ImportPreviewResponse>;
   importRoot(request: ImportRootRequest): Promise<ImportRootResponse>;
   listModels(): Promise<ListModelsResponse>;
+  listFavorites(): Promise<ListFavoritesResponse>;
+  addFavorite(request: FavoriteModelRequest): Promise<FavoriteModelResponse>;
+  removeFavorite(request: FavoriteModelRequest): Promise<FavoriteModelResponse>;
   listTags(): Promise<ListTagsResponse>;
   tagsForModel(request: TagsForModelRequest): Promise<TagsForModelResponse>;
   addModelTag(request: AddModelTagRequest): Promise<AddModelTagResponse>;

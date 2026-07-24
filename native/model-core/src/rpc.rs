@@ -238,6 +238,7 @@ pub struct ModelLocationDto {
     /// Path relative to its source root.
     pub root_relative: String,
     pub size: u64,
+    pub modified_unix_seconds: Option<i64>,
     /// Whether the file was present at the last reconciliation.
     pub available: bool,
 }
@@ -249,6 +250,7 @@ impl From<&crate::catalog::ModelLocation> for ModelLocationDto {
             path: loc.path.to_string_lossy().into_owned(),
             root_relative: loc.root_relative.to_string_lossy().into_owned(),
             size: loc.fingerprint.size,
+            modified_unix_seconds: loc.fingerprint.modified_unix_secs,
             available: loc.available,
         }
     }
@@ -588,7 +590,10 @@ mod tests {
                 root_id: "root1".to_string(),
                 path: PathBuf::from("/models/part.stl"),
                 root_relative: PathBuf::from("part.stl"),
-                fingerprint: FileFingerprint::new(2048, None),
+                fingerprint: FileFingerprint::new(
+                    2048,
+                    Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(42)),
+                ),
                 available: true,
             }],
         };
@@ -597,6 +602,7 @@ mod tests {
         assert!(json.contains("\"hash\":\"abc123\""));
         assert!(json.contains("\"format\":\"stl\""));
         assert!(json.contains("\"rootRelative\":\"part.stl\""));
+        assert!(json.contains("\"modifiedUnixSeconds\":42"));
         assert!(json.contains("\"available\":true"));
         let parsed: LogicalModelDto = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, dto);

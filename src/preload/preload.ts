@@ -18,6 +18,9 @@ import {
   type ImportRootRequest,
   type ImportRootResponse,
   type ListModelsResponse,
+  type ListFavoritesResponse,
+  type FavoriteModelRequest,
+  type FavoriteModelResponse,
   type ListTagsResponse,
   type TagsForModelRequest,
   type TagsForModelResponse,
@@ -102,6 +105,24 @@ const api: PrintFarmerApi = {
     ) as Promise<ImportRootResponse>,
   listModels: (): Promise<ListModelsResponse> =>
     ipcRenderer.invoke(IpcChannel.ListModels) as Promise<ListModelsResponse>,
+  listFavorites: (): Promise<ListFavoritesResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ListFavorites,
+    ) as Promise<ListFavoritesResponse>,
+  addFavorite: (
+    request: FavoriteModelRequest,
+  ): Promise<FavoriteModelResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.AddFavorite,
+      request,
+    ) as Promise<FavoriteModelResponse>,
+  removeFavorite: (
+    request: FavoriteModelRequest,
+  ): Promise<FavoriteModelResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.RemoveFavorite,
+      request,
+    ) as Promise<FavoriteModelResponse>,
   listTags: (): Promise<ListTagsResponse> =>
     ipcRenderer.invoke(IpcChannel.ListTags) as Promise<ListTagsResponse>,
   tagsForModel: (request: TagsForModelRequest): Promise<TagsForModelResponse> =>

@@ -831,7 +831,12 @@ describe('smart import', () => {
 });
 
 describe('selectLibraryView', () => {
-  const stl = (name: string, size: number, available = true): LogicalModel =>
+  const stl = (
+    name: string,
+    size: number,
+    available = true,
+    overrides: Partial<LogicalModel> = {},
+  ): LogicalModel =>
     model({
       hash: `h-${name}`,
       size,
@@ -844,6 +849,7 @@ describe('selectLibraryView', () => {
           available,
         },
       ],
+      ...overrides,
     });
 
   const dup = model({
@@ -892,9 +898,50 @@ describe('selectLibraryView', () => {
 
     const bySize = selectLibraryView(models, {
       ...defaultLibraryView,
-      sort: 'size',
+      sort: 'size-desc',
     });
     expect(bySize[0]?.size).toBe(300);
+  });
+
+  it('sorts by newest and oldest modified date when timestamps are present', () => {
+    const dated = [
+      stl('old.stl', 10, true, {
+        locations: [
+          {
+            rootId: 'r',
+            path: 'C:\\models\\old.stl',
+            rootRelative: 'old.stl',
+            size: 10,
+            modifiedUnixSeconds: 1,
+            available: true,
+          },
+        ],
+      }),
+      stl('new.stl', 10, true, {
+        locations: [
+          {
+            rootId: 'r',
+            path: 'C:\\models\\new.stl',
+            rootRelative: 'new.stl',
+            size: 10,
+            modifiedUnixSeconds: 10,
+            available: true,
+          },
+        ],
+      }),
+      stl('unknown.stl', 10, true),
+    ];
+
+    expect(
+      selectLibraryView(dated, { ...defaultLibraryView, sort: 'date-desc' }).map(
+        (item) => modelDisplayName(item),
+      ),
+    ).toEqual(['new.stl', 'old.stl', 'unknown.stl']);
+    expect(
+      selectLibraryView(dated, { ...defaultLibraryView, sort: 'date-asc' }).map(
+        (item) => modelDisplayName(item),
+      ),
+    ).toEqual(['old.stl', 'new.stl', 'unknown.stl']);
   });
 
   it('filters to favorites using the provided hash set', () => {
@@ -947,33 +994,47 @@ describe('selectLibraryView', () => {
 describe('useFavorites', () => {
   beforeEach(() => {
     globalThis.localStorage?.clear();
+    vi.restoreAllMocks();
   });
 
-  it('toggles favorites and persists them to localStorage', () => {
+  it('toggles favorites through the catalog bridge and mirrors them locally', async () => {
+    const listFavorites = vi.fn().mockResolvedValue(['seeded']);
+    const addFavorite = vi.fn().mockResolvedValue(['seeded', 'abc']);
+    const removeFavorite = vi.fn().mockResolvedValue(['seeded']);
+    installApi({ listFavorites, addFavorite, removeFavorite });
+
     const { result } = renderHook(() => useFavorites());
-    expect(result.current.isFavorite('abc')).toBe(false);
+    await waitFor(() => expect(result.current.isFavorite('seeded')).toBe(true));
 
-    act(() => {
-      result.current.toggle('abc');
+    await act(async () => {
+      await result.current.toggle('abc');
     });
+    expect(addFavorite).toHaveBeenCalledWith({ hash: 'abc' });
     expect(result.current.isFavorite('abc')).toBe(true);
-    expect(
-      globalThis.localStorage.getItem('printfarmer.favorites.v1'),
-    ).toContain('abc');
+    expect(globalThis.localStorage.getItem('printfarmer.favorites.v1')).toContain(
+      'abc',
+    );
 
-    act(() => {
-      result.current.toggle('abc');
+    await act(async () => {
+      await result.current.toggle('abc');
     });
+    expect(removeFavorite).toHaveBeenCalledWith({ hash: 'abc' });
     expect(result.current.isFavorite('abc')).toBe(false);
   });
 
-  it('rehydrates favorites from localStorage', () => {
+  it('falls back to localStorage when the catalog favorite IPC is unavailable', async () => {
+    installApi({});
     globalThis.localStorage.setItem(
       'printfarmer.favorites.v1',
       JSON.stringify(['seeded']),
     );
     const { result } = renderHook(() => useFavorites());
     expect(result.current.isFavorite('seeded')).toBe(true);
+
+    await act(async () => {
+      await result.current.toggle('added-locally');
+    });
+    expect(result.current.isFavorite('added-locally')).toBe(true);
   });
 });
 

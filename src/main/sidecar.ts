@@ -165,6 +165,21 @@ export class SidecarClient {
     return this.request('listModels', {});
   }
 
+  /** List every model hash marked as a local favorite. */
+  async listFavorites(): Promise<unknown> {
+    return this.request('listFavorites', {});
+  }
+
+  /** Favorite a model by content hash; returns all favorite hashes. */
+  async addFavorite(hash: string): Promise<unknown> {
+    return this.request('addFavorite', { hash });
+  }
+
+  /** Remove a model from favorites; returns all favorite hashes. */
+  async removeFavorite(hash: string): Promise<unknown> {
+    return this.request('removeFavorite', { hash });
+  }
+
   /** List every tag known to the catalog (raw wire array). */
   async listTags(): Promise<unknown> {
     return this.request('listTags', {});

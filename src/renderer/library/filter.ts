@@ -1,7 +1,13 @@
 import type { LogicalModel } from '@shared/ipc';
 import { isAvailable, modelDisplayName } from './model';
 
-export type SortKey = 'name' | 'size';
+export type SortKey =
+  | 'name-asc'
+  | 'name-desc'
+  | 'size-asc'
+  | 'size-desc'
+  | 'date-asc'
+  | 'date-desc';
 export type FilterKey =
   'all' | 'favorites' | 'stl' | 'threeMf' | 'obj' | 'duplicates' | 'missing';
 
@@ -16,8 +22,43 @@ export interface LibraryView {
 export const defaultLibraryView: LibraryView = {
   query: '',
   filter: 'all',
-  sort: 'name',
+  sort: 'name-asc',
 };
+
+function latestModifiedUnixSeconds(model: LogicalModel): number | null {
+  let latest: number | null = null;
+  for (const location of model.locations) {
+    const modified = location.modifiedUnixSeconds;
+    if (typeof modified === 'number' && (latest === null || modified > latest)) {
+      latest = modified;
+    }
+  }
+  return latest;
+}
+
+function compareNames(a: LogicalModel, b: LogicalModel): number {
+  return modelDisplayName(a).localeCompare(modelDisplayName(b), undefined, {
+    sensitivity: 'base',
+    numeric: true,
+  });
+}
+
+function compareNullableNumbers(
+  left: number | null,
+  right: number | null,
+  direction: 'asc' | 'desc',
+): number {
+  if (left === null && right === null) {
+    return 0;
+  }
+  if (left === null) {
+    return 1;
+  }
+  if (right === null) {
+    return -1;
+  }
+  return direction === 'asc' ? left - right : right - left;
+}
 
 function matchesFilter(
   model: LogicalModel,
@@ -73,15 +114,34 @@ export function selectLibraryView(
   });
 
   const sorted = [...filtered];
-  if (view.sort === 'size') {
-    sorted.sort((a, b) => b.size - a.size);
-  } else {
-    sorted.sort((a, b) =>
-      modelDisplayName(a).localeCompare(modelDisplayName(b), undefined, {
-        sensitivity: 'base',
-        numeric: true,
-      }),
-    );
-  }
+  sorted.sort((a, b) => {
+    switch (view.sort) {
+      case 'name-desc':
+        return compareNames(b, a);
+      case 'size-asc':
+        return a.size - b.size || compareNames(a, b);
+      case 'size-desc':
+        return b.size - a.size || compareNames(a, b);
+      case 'date-asc':
+        return (
+          compareNullableNumbers(
+            latestModifiedUnixSeconds(a),
+            latestModifiedUnixSeconds(b),
+            'asc',
+          ) || compareNames(a, b)
+        );
+      case 'date-desc':
+        return (
+          compareNullableNumbers(
+            latestModifiedUnixSeconds(a),
+            latestModifiedUnixSeconds(b),
+            'desc',
+          ) || compareNames(a, b)
+        );
+      case 'name-asc':
+      default:
+        return compareNames(a, b);
+    }
+  });
   return sorted;
 }

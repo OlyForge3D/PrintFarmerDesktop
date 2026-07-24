@@ -27,6 +27,9 @@
 //!   rules in one sidecar request.
 //! - `listModels` — params ignored; returns all catalogued logical models as
 //!   [`crate::rpc::LogicalModelDto`]s.
+//! - `listFavorites`/`addFavorite`/`removeFavorite` — persist local-only
+//!   favorite hashes in the catalog without exposing any filesystem or sync
+//!   primitive to the renderer.
 //! - Sync methods persist profile-scoped checkpoints, materialized revisions,
 //!   remote model links, leased outbound operations, and conflict records. They
 //!   never receive or store server locations or credentials.
@@ -583,6 +586,24 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
                 store.models().iter().map(LogicalModelDto::from).collect();
             serde_json::to_value(models).map_err(|e| format!("failed to serialize models: {e}"))
         }
+        "listFavorites" => {
+            serde_json::to_value(store.favorite_hashes())
+                .map_err(|e| format!("failed to serialize favorites: {e}"))
+        }
+        "addFavorite" => {
+            let params: HashParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid addFavorite params: {e}"))?;
+            store.add_favorite(&params.hash);
+            serde_json::to_value(store.favorite_hashes())
+                .map_err(|e| format!("failed to serialize favorites: {e}"))
+        }
+        "removeFavorite" => {
+            let params: HashParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid removeFavorite params: {e}"))?;
+            store.remove_favorite(&params.hash);
+            serde_json::to_value(store.favorite_hashes())
+                .map_err(|e| format!("failed to serialize favorites: {e}"))
+        }
         "listTags" => {
             let tags: Vec<TagDto> = store.all_tags().iter().map(TagDto::from).collect();
             serde_json::to_value(tags).map_err(|e| format!("failed to serialize tags: {e}"))
@@ -1050,6 +1071,37 @@ mod tests {
         assert_eq!(models[0]["format"], "stl");
         assert_eq!(models[0]["locations"].as_array().unwrap().len(), 1);
         assert_eq!(models[0]["locations"][0]["available"], true);
+    }
+
+    #[test]
+    fn favorite_rpc_round_trips_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("part.stl"), b"stl").unwrap();
+        let mut store = InMemoryCatalog::new();
+        let scan_req = serde_json::json!({
+            "id": 1,
+            "method": "scanRoot",
+            "params": { "rootId": "root1", "path": dir.path().to_string_lossy() },
+        });
+        let _ = handle_line(&mut store, &scan_req.to_string()).unwrap();
+        let hash = store.models()[0].hash.clone();
+
+        let add_req = serde_json::json!({
+            "id": 2,
+            "method": "addFavorite",
+            "params": { "hash": hash },
+        });
+        let add_value: Value =
+            serde_json::from_str(&handle_line(&mut store, &add_req.to_string()).unwrap()).unwrap();
+        assert_eq!(add_value["ok"], true);
+        assert_eq!(add_value["result"][0], hash);
+
+        let list_req = serde_json::json!({ "id": 3, "method": "listFavorites" });
+        let list_value: Value = serde_json::from_str(
+            &handle_line(&mut store, &list_req.to_string()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(list_value["result"][0], hash);
     }
 
     #[test]

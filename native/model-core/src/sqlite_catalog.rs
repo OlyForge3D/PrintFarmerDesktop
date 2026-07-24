@@ -22,7 +22,9 @@ use crate::catalog::{
     CatalogStore, Collection, LocationUpsert, LogicalModel, ModelLocation, StoredLocation, Tag,
 };
 use crate::model::{FileFingerprint, ModelFormat};
-use crate::schema::{SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_VERSION};
+use crate::schema::{
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_VERSION,
+};
 use crate::sync::{
     self, ApplyPullBatchDto, ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution,
     DisposeFailedBatchDto, EnqueueOutboundOperationDto, EntityRevisionDto, OutboundOperationDto,
@@ -81,6 +83,9 @@ impl SqliteCatalog {
                 if version < 5 {
                     conn.execute_batch(SCHEMA_V5)?;
                     migrate_v5_fencing(&conn)?;
+                }
+                if version < 6 {
+                    conn.execute_batch(SCHEMA_V6)?;
                 }
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 conn.execute_batch("COMMIT")
@@ -616,6 +621,49 @@ impl CatalogStore for SqliteCatalog {
             .into_iter()
             .filter_map(|h| self.build_model(&h))
             .collect()
+    }
+
+    fn favorite_hashes(&self) -> Vec<String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT model_hash FROM favorite_models ORDER BY model_hash")
+            .expect("catalog read failed: favorites prepare");
+        stmt.query_map([], |row| row.get(0))
+            .expect("catalog read failed: favorites query")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("catalog read failed: favorites collect")
+    }
+
+    fn add_favorite(&mut self, hash: &str) -> bool {
+        let known: bool = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM models WHERE hash = ?1",
+                params![hash],
+                |_| Ok(()),
+            )
+            .optional()
+            .expect("catalog read failed: favorite model exists")
+            .is_some();
+        if !known {
+            return false;
+        }
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO favorite_models(model_hash, created_at) VALUES(?1, ?2)",
+                params![hash, now_ts()],
+            )
+            .expect("catalog write failed: add favorite");
+        true
+    }
+
+    fn remove_favorite(&mut self, hash: &str) {
+        self.conn
+            .execute(
+                "DELETE FROM favorite_models WHERE model_hash = ?1",
+                params![hash],
+            )
+            .expect("catalog write failed: remove favorite");
     }
 
     fn all_tags(&self) -> Vec<Tag> {
@@ -2606,6 +2654,24 @@ mod tests {
 
         store.delete_collection(&coll.id);
         assert!(store.all_collections().is_empty());
+    }
+
+    #[test]
+    fn favorites_persist_for_known_models_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("m.stl"), b"bytes");
+
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        reconcile_root(&mut store, "r", &scan(root));
+        let hash = store.models()[0].hash.clone();
+
+        assert!(store.add_favorite(&hash));
+        assert_eq!(store.favorite_hashes(), vec![hash.clone()]);
+        assert!(!store.add_favorite("missing"));
+
+        store.remove_favorite(&hash);
+        assert!(store.favorite_hashes().is_empty());
     }
 
     #[test]
