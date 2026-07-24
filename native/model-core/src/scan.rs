@@ -1,7 +1,7 @@
 //! Recursive, cancellable folder scanning.
 //!
 //! A scan walks a source root in place and yields the model files it finds
-//! (STL/3MF/OBJ) together with a cheap fingerprint. It never opens or hashes file
+//! (STL/3MF/OBJ/STEP) together with a cheap fingerprint. It never opens or hashes file
 //! contents; hashing is a separate, more expensive step driven by
 //! reconciliation. Unreadable entries are skipped rather than aborting the
 //! whole scan, because network and removable roots routinely surface transient
@@ -107,6 +107,7 @@ mod tests {
         let root = dir.path();
         write(&root.join("a.stl"), b"solid");
         write(&root.join("nested/b.3mf"), b"zip");
+        write(&root.join("nested/c.step"), b"step");
         write(&root.join("nested/readme.txt"), b"ignore me");
         write(&root.join("c.STL"), b"upper ext");
 
@@ -118,7 +119,7 @@ mod tests {
             .map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         names.sort();
-        assert_eq!(names, vec!["a.stl", "b.3mf", "c.STL"]);
+        assert_eq!(names, vec!["a.stl", "b.3mf", "c.STL", "c.step"]);
         assert!(!result.cancelled);
     }
 

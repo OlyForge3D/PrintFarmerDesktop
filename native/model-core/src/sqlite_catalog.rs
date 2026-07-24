@@ -1973,6 +1973,7 @@ fn format_to_db(format: ModelFormat) -> &'static str {
         ModelFormat::Stl => "stl",
         ModelFormat::ThreeMf => "threeMf",
         ModelFormat::Obj => "obj",
+        ModelFormat::Step => "step",
     }
 }
 
@@ -1980,6 +1981,7 @@ fn format_from_db(value: &str) -> ModelFormat {
     match value {
         "threeMf" => ModelFormat::ThreeMf,
         "obj" => ModelFormat::Obj,
+        "step" => ModelFormat::Step,
         _ => ModelFormat::Stl,
     }
 }
