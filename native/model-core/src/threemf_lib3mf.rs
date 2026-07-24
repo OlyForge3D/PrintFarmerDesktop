@@ -1361,6 +1361,7 @@ fn push_library_base(bases: &mut Vec<PathBuf>, base: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::ErrorKind;
     use std::sync::OnceLock;
 
     #[test]
@@ -1456,6 +1457,39 @@ mod tests {
     }
 
     #[test]
+    fn canonical_exe_dir_resolves_symlinked_executable_to_target_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let target_dir = temp.path().join("target-bin");
+        let link_dir = temp.path().join("link-bin");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        std::fs::create_dir_all(&link_dir).unwrap();
+
+        let target_exe = target_dir.join("model-core-test.exe");
+        std::fs::write(&target_exe, b"test").unwrap();
+
+        let symlink_exe = link_dir.join("model-core-test.exe");
+        if let Err(error) = create_file_symlink(&target_exe, &symlink_exe) {
+            if should_skip_symlink_test(&error) {
+                eprintln!(
+                    "skipping symlink canonical_exe_dir test: insufficient privileges to create file symlink ({error})"
+                );
+                return;
+            }
+            panic!("failed to create symlinked executable fixture: {error}");
+        }
+
+        let canonical_dir = canonical_exe_dir(&symlink_exe).unwrap();
+        let expected_dir = target_dir.canonicalize().unwrap();
+        let symlink_parent = symlink_exe.parent().unwrap().canonicalize().unwrap();
+
+        assert_ne!(
+            expected_dir, symlink_parent,
+            "test fixture must place the symlink in a different directory than its target"
+        );
+        assert_eq!(canonical_dir, expected_dir);
+    }
+
+    #[test]
     fn curated_loader_tries_only_explicit_absolute_paths() {
         let bases = vec![
             PathBuf::from(r"C:\secure\lib3mf"),
@@ -1526,6 +1560,29 @@ mod tests {
             .join("tests")
             .join("fixtures")
             .join(name)
+    }
+
+    #[cfg(windows)]
+    fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+
+    #[cfg(unix)]
+    fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(not(any(windows, unix)))]
+    fn create_file_symlink(_target: &Path, _link: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            ErrorKind::Unsupported,
+            "file symlinks are not supported on this platform",
+        ))
+    }
+
+    fn should_skip_symlink_test(error: &std::io::Error) -> bool {
+        matches!(error.kind(), ErrorKind::PermissionDenied)
+            || cfg!(windows) && matches!(error.raw_os_error(), Some(1314))
     }
 
     fn stage_test_library() -> Result<(), String> {
