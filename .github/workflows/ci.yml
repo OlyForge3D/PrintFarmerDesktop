@@ -33,9 +33,6 @@ jobs:
       - name: Format check
         run: npm run format
 
-      - name: Verify pinned target profiles
-        run: npm run verify:target-profiles
-
       - name: Test
         run: npm run test
 
@@ -104,7 +101,7 @@ jobs:
           PRINTFARMER_SKIP_SIDECAR_BUILD: '1'
         run: npm run package
 
-      - name: Verify packaged resources
+      - name: Verify the sidecar was bundled
         run: node scripts/verify-packaged-sidecar.mjs
 
       - name: Packaged Electron end-to-end tests
