@@ -916,6 +916,20 @@ mod tests {
     }
 
     #[test]
+    fn extract_vendor_plate_thumbnails_reports_missing_file_as_error() {
+        let out =
+            hl(r#"{"id":5,"method":"extractVendorPlateThumbnails","params":{"path":"nope.3mf"}}"#)
+                .unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["id"], 5);
+        assert_eq!(v["ok"], false);
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("failed to extract vendor plate thumbnails"));
+    }
+
+    #[test]
     fn extract_vendor_metadata_over_the_wire() {
         use std::io::Write;
         use zip::write::{SimpleFileOptions, ZipWriter};
