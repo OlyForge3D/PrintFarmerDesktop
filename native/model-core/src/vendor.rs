@@ -539,13 +539,17 @@ mod tests {
     }
 
     fn patch_declared_uncompressed_size(zip: &mut [u8], part_name: &str, fake_size: u32) {
+        patch_local_uncompressed_size(zip, part_name, fake_size);
+        patch_central_uncompressed_size(zip, part_name, fake_size);
+    }
+
+    fn patch_local_uncompressed_size(zip: &mut [u8], part_name: &str, fake_size: u32) {
         fn overwrite_u32_le(bytes: &mut [u8], offset: usize, value: u32) {
             bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
         }
 
         let part_name = part_name.as_bytes();
         let mut patched_local = false;
-        let mut patched_central = false;
         let mut index = 0usize;
         while index + 30 + part_name.len() <= zip.len() {
             if &zip[index..index + 4] == b"PK\x03\x04" {
@@ -563,7 +567,18 @@ mod tests {
             index += 1;
         }
 
-        index = 0;
+        assert!(patched_local, "missing local header for {part_name:?}");
+    }
+
+    fn patch_central_uncompressed_size(zip: &mut [u8], part_name: &str, fake_size: u32) {
+        fn overwrite_u32_le(bytes: &mut [u8], offset: usize, value: u32) {
+            bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+
+        let part_name = part_name.as_bytes();
+        let mut patched_central = false;
+        let mut index = 0usize;
+
         while index + 46 + part_name.len() <= zip.len() {
             if &zip[index..index + 4] == b"PK\x01\x02" {
                 let name_len = u16::from_le_bytes([zip[index + 28], zip[index + 29]]) as usize;
@@ -583,7 +598,6 @@ mod tests {
             index += 1;
         }
 
-        assert!(patched_local, "missing local header for {part_name:?}");
         assert!(
             patched_central,
             "missing central directory header for {part_name:?}"
@@ -895,6 +909,86 @@ mod tests {
         ]);
         for index in 1..=5 {
             patch_declared_uncompressed_size(&mut zip, &format!("Metadata/plate_{index}.png"), 100);
+        }
+
+        let err = read_plate_thumbnails(&zip).unwrap_err();
+        assert!(matches!(
+            err,
+            ThreeMfError::DataTooLarge {
+                resource: "plate thumbnails",
+                limit: MAX_TOTAL_THUMBNAIL_BYTES,
+            }
+        ));
+    }
+
+    #[test]
+    fn read_plate_thumbnails_accepts_total_bytes_at_exact_limit() {
+        let exact_limit_png = vec![0x7A; MAX_THUMBNAIL_PART_BYTES as usize];
+        let zip = build_zip(&[
+            ("Metadata/plate_4.png", exact_limit_png.as_slice()),
+            ("Metadata/plate_2.png", exact_limit_png.as_slice()),
+            ("Metadata/plate_1.png", exact_limit_png.as_slice()),
+            ("Metadata/plate_3.png", exact_limit_png.as_slice()),
+        ]);
+
+        let thumbnails = read_plate_thumbnails(&zip).unwrap();
+        assert_eq!(thumbnails.len(), 4);
+        assert_eq!(
+            thumbnails
+                .iter()
+                .map(|thumbnail| thumbnail.png_bytes.len())
+                .sum::<usize>() as u64,
+            MAX_TOTAL_THUMBNAIL_BYTES
+        );
+    }
+
+    #[test]
+    fn read_plate_thumbnails_rejects_honest_total_bytes_exceeding_limit() {
+        let honest_png = vec![0x5C; (13 * 1024 * 1024) as usize];
+        let zip = build_zip(&[
+            ("Metadata/plate_1.png", honest_png.as_slice()),
+            ("Metadata/plate_2.png", honest_png.as_slice()),
+            ("Metadata/plate_3.png", honest_png.as_slice()),
+            ("Metadata/plate_4.png", honest_png.as_slice()),
+            ("Metadata/plate_5.png", honest_png.as_slice()),
+        ]);
+
+        let err = read_plate_thumbnails(&zip).unwrap_err();
+        assert!(matches!(
+            err,
+            ThreeMfError::DataTooLarge {
+                resource: "plate thumbnails",
+                limit: MAX_TOTAL_THUMBNAIL_BYTES,
+            }
+        ));
+    }
+
+    #[test]
+    fn read_plate_thumbnails_accepts_zero_byte_parts() {
+        let zip = build_zip(&[("Metadata/plate_2.png", b""), ("Metadata/plate_1.png", b"")]);
+
+        let thumbnails = read_plate_thumbnails(&zip).unwrap();
+        assert_eq!(thumbnails.len(), 2);
+        assert_eq!(thumbnails[0].part_name, "Metadata/plate_1.png");
+        assert!(thumbnails[0].png_bytes.is_empty());
+        assert_eq!(thumbnails[1].part_name, "Metadata/plate_2.png");
+        assert!(thumbnails[1].png_bytes.is_empty());
+    }
+
+    #[test]
+    fn read_plate_thumbnails_rejects_inconsistent_declared_sizes_using_actual_bytes() {
+        let large_png = vec![0xD4; MAX_THUMBNAIL_PART_BYTES as usize];
+        let mut zip = build_zip(&[
+            ("Metadata/plate_1.png", large_png.as_slice()),
+            ("Metadata/plate_2.png", large_png.as_slice()),
+            ("Metadata/plate_3.png", large_png.as_slice()),
+            ("Metadata/plate_4.png", large_png.as_slice()),
+            ("Metadata/plate_5.png", large_png.as_slice()),
+        ]);
+        for index in 1..=5 {
+            let part_name = format!("Metadata/plate_{index}.png");
+            patch_local_uncompressed_size(&mut zip, &part_name, MAX_THUMBNAIL_PART_BYTES as u32);
+            patch_central_uncompressed_size(&mut zip, &part_name, 100);
         }
 
         let err = read_plate_thumbnails(&zip).unwrap_err();
