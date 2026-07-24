@@ -19,8 +19,9 @@ Early development. See the implementation plan and the tracked work items.
 - **React + strict TypeScript + Vite** renderer with a virtualized library grid.
 - **Three.js (WebGL2)** for interactive viewing and deterministic thumbnails.
 - **Rust sidecar** (`native/model-core`) that owns SQLite (WAL), folder
-  scanning/watching, streaming SHA-256 hashing, pure-Rust STL, OBJ, standard 3MF
-  and Production Extension 3MF parsing, and a normalized scene cache.
+  scanning/watching, streaming SHA-256 hashing, pure-Rust STL/OBJ parsing, plus
+  standard 3MF validation through an optional native `lib3mf` feature layered on
+  top of the existing normalized scene cache and Production Extension parser.
 - Backward-compatible integration with the .NET 10 PrintFarmer server for
   authentication, model/thumbnail upload, collections, and metadata sync.
 
@@ -46,6 +47,24 @@ Prerequisites: Node.js 22+, Rust (stable), and a supported platform toolchain.
 npm install
 npm run dev
 ```
+
+### Optional native `lib3mf` validation
+
+`native/model-core` now has a feature-gated `lib3mf` path:
+
+```powershell
+cd native/model-core
+cargo build --features lib3mf
+cargo test --features lib3mf
+```
+
+- **Verified in this environment:** the feature builds/tests against the official
+  ACT-generated `lib3mf` Rust bindings, which dynamically load the bundled
+  `lib3mf.dll` shipped in the upstream bindings checkout under Cargo's git cache.
+- **Not verified here:** rebuilding the native `lib3mf` C/C++ library from source.
+  `cl`, `cmake`, and `ninja` were not available in this session, so CI/source
+  builds still need Visual Studio Build Tools with the Desktop C++ workload (or an
+  equivalent native toolchain) to prove the full native rebuild path.
 
 ## Releases (unsigned)
 

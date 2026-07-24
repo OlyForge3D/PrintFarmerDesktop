@@ -89,6 +89,8 @@ export type SidecarPingResponse = z.infer<typeof SidecarPingResponse>;
 /** Supported model formats, matching the sidecar's `ModelFormat` serde names. */
 export const ModelFormat = z.enum(['stl', 'threeMf', 'obj']);
 export type ModelFormat = z.infer<typeof ModelFormat>;
+export const SceneLoadStatus = z.enum(['complete', 'partial', 'unsupported']);
+export type SceneLoadStatus = z.infer<typeof SceneLoadStatus>;
 
 const Vec3 = z.tuple([z.number(), z.number(), z.number()]);
 const Mat4 = z.array(z.number()).length(16);
@@ -114,6 +116,10 @@ export const ScenePart = z.object({
   name: z.string(),
   triangleStart: z.number().int().nonnegative(),
   triangleCount: z.number().int().nonnegative(),
+  status: SceneLoadStatus.default('complete'),
+  statusDetail: z.string().optional(),
+  partNumber: z.string().optional(),
+  materialLabel: z.string().optional(),
 });
 export type ScenePart = z.infer<typeof ScenePart>;
 
@@ -177,6 +183,8 @@ export const SceneMesh = z.object({
   bounds: Bounds,
   sourceFormat: ModelFormat,
   faceColors: z.array(z.number().int().min(0).max(255)).nullable().optional(),
+  status: SceneLoadStatus.default('complete'),
+  statusMessages: z.array(z.string()).default([]),
   parts: z.array(ScenePart).default([]),
   objects: z.array(SceneObject).default([]),
   rootObjectIds: z.array(z.string().min(1)).default([]),

@@ -289,6 +289,7 @@ mod tests {
     use crate::geometry::Aabb;
     use crate::model::ModelFormat;
     use crate::scene::{SceneMaterial, SceneObject, SceneObjectMesh, ScenePlate, SceneTransform};
+    use crate::scene_status::SceneLoadStatus;
 
     /// A unit cube centered at the origin as an indexed triangle mesh.
     fn cube() -> SceneMesh {
@@ -322,6 +323,8 @@ mod tests {
             bounds,
             source_format: ModelFormat::Stl,
             face_colors: None,
+            status: SceneLoadStatus::Complete,
+            status_messages: Vec::new(),
             parts: Vec::new(),
             objects: vec![SceneObject {
                 id: "object-0".to_string(),

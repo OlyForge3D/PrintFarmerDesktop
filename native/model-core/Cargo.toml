@@ -37,6 +37,9 @@ rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 truck-meshalgo = { version = "0.4", optional = true }
 truck-stepio = { version = "0.3", optional = true }
 truck-topology = { version = "0.6", optional = true }
+# Official ACT-generated Rust bindings for the native lib3mf shared library.
+# Git dependency because the upstream bindings are not published on crates.io.
+lib3mf-ffi = { package = "lib3mf", git = "https://github.com/3MFConsortium/lib3mf_rs", rev = "0f12d3c25c861198f80a34abf3699102529b6e87", optional = true }
 
 [features]
 # Enables the persistent SQLite-backed catalog store (requires a C toolchain).
@@ -47,6 +50,8 @@ step = [
     "dep:truck-stepio",
     "dep:truck-topology",
 ]
+# Enables native lib3mf validation/loading for standard 3MF files.
+lib3mf = ["dep:lib3mf-ffi"]
 
 [dev-dependencies]
 tempfile = "3"

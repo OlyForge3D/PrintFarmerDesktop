@@ -10,6 +10,7 @@
  */
 
 export type ModelFormat = 'stl' | 'threeMf' | 'obj';
+export type SceneLoadStatus = 'complete' | 'partial' | 'unsupported';
 
 export interface Bounds {
   readonly min: readonly [number, number, number];
@@ -21,6 +22,10 @@ export interface ScenePart {
   readonly name: string;
   readonly triangleStart: number;
   readonly triangleCount: number;
+  readonly status?: SceneLoadStatus;
+  readonly statusDetail?: string;
+  readonly partNumber?: string;
+  readonly materialLabel?: string;
 }
 
 export interface SceneTransform {
@@ -72,6 +77,8 @@ export interface SceneMesh {
   readonly sourceFormat: ModelFormat;
   /** One RGB (0–255) triple per triangle, or null/undefined when uncolored. */
   readonly faceColors?: readonly number[] | null | undefined;
+  readonly status?: SceneLoadStatus;
+  readonly statusMessages?: readonly string[];
   /** Named triangle ranges for the part tree; may be empty. */
   readonly parts?: readonly ScenePart[];
   /** Hierarchical object instances for the renderer-facing contract. */

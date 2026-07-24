@@ -16,6 +16,7 @@ use crate::model::ModelFormat;
 use crate::obj::{self, ObjError, ObjMesh};
 #[cfg(feature = "step")]
 use crate::step::{self, StepError, StepMesh};
+use crate::scene_status::SceneLoadStatus;
 use crate::stl::{self, StlError, StlMesh};
 use crate::threemf::{self, ThreeMfError, ThreeMfMesh};
 
@@ -47,6 +48,10 @@ pub struct ScenePart {
     pub name: String,
     pub triangle_start: usize,
     pub triangle_count: usize,
+    pub status: SceneLoadStatus,
+    pub status_detail: Option<String>,
+    pub part_number: Option<String>,
+    pub material_label: Option<String>,
 }
 
 /// A local transform matrix for one scene object instance.
@@ -129,6 +134,8 @@ pub struct SceneMesh {
     pub bounds: Aabb,
     pub source_format: ModelFormat,
     pub face_colors: Option<Vec<[u8; 3]>>,
+    pub status: SceneLoadStatus,
+    pub status_messages: Vec<String>,
     /// Named triangle ranges for the part tree; always at least one entry when
     /// the mesh is non-empty.
     pub parts: Vec<ScenePart>,
@@ -175,6 +182,10 @@ impl SceneMesh {
                 name: "Model".to_string(),
                 triangle_start: 0,
                 triangle_count,
+                status: SceneLoadStatus::Complete,
+                status_detail: None,
+                part_number: None,
+                material_label: None,
             }]
         };
         let object_positions = positions.clone();
@@ -189,6 +200,8 @@ impl SceneMesh {
             bounds: mesh.bounds,
             source_format: ModelFormat::Stl,
             face_colors,
+            status: SceneLoadStatus::Complete,
+            status_messages: Vec::new(),
             parts,
             objects: vec![single_object(
                 "object-0",
@@ -218,6 +231,10 @@ impl SceneMesh {
                 name: "Model".to_string(),
                 triangle_start: 0,
                 triangle_count,
+                status: SceneLoadStatus::Complete,
+                status_detail: None,
+                part_number: None,
+                material_label: None,
             }]
         };
         Self {
@@ -227,6 +244,8 @@ impl SceneMesh {
             bounds: mesh.bounds,
             source_format: ModelFormat::Obj,
             face_colors: None,
+            status: SceneLoadStatus::Complete,
+            status_messages: Vec::new(),
             parts,
             objects: vec![single_object(
                 "object-0",
@@ -299,6 +318,10 @@ impl SceneMesh {
                 name: p.name.clone(),
                 triangle_start: p.triangle_start,
                 triangle_count: p.triangle_count,
+                status: p.status,
+                status_detail: p.status_detail.clone(),
+                part_number: p.part_number.clone(),
+                material_label: p.material_label.clone(),
             })
             .collect();
         Self {
@@ -308,6 +331,8 @@ impl SceneMesh {
             bounds: mesh.bounds,
             source_format: ModelFormat::ThreeMf,
             face_colors: None,
+            status: mesh.status,
+            status_messages: mesh.status_messages.clone(),
             parts,
             objects: mesh
                 .objects
@@ -392,7 +417,18 @@ fn default_plate(root_object_ids: Vec<String>) -> ScenePlate {
 pub fn load_scene(path: &Path) -> Result<SceneMesh, SceneError> {
     match ModelFormat::from_path(path) {
         Some(ModelFormat::Stl) => Ok(SceneMesh::from_stl(&stl::parse_file(path)?)),
-        Some(ModelFormat::ThreeMf) => Ok(SceneMesh::from_threemf(&threemf::parse_file(path)?)),
+        Some(ModelFormat::ThreeMf) => {
+            #[cfg(feature = "lib3mf")]
+            {
+                return Ok(SceneMesh::from_threemf(&threemf::parse_file_with_lib3mf(
+                    path,
+                )?));
+            }
+            #[cfg(not(feature = "lib3mf"))]
+            {
+                Ok(SceneMesh::from_threemf(&threemf::parse_file(path)?))
+            }
+        }
         Some(ModelFormat::Obj) => Ok(SceneMesh::from_obj(&obj::parse_file(path)?)),
         #[cfg(feature = "step")]
         Some(ModelFormat::Step) => Ok(SceneMesh::from_step(&step::parse_file(path)?)),
@@ -409,7 +445,16 @@ pub fn scene_from_stl_bytes(data: &[u8]) -> Result<SceneMesh, SceneError> {
 
 /// Normalize an already-parsed 3MF package into a scene (bytes path).
 pub fn scene_from_threemf_bytes(data: &[u8]) -> Result<SceneMesh, SceneError> {
-    Ok(SceneMesh::from_threemf(&threemf::parse_bytes(data)?))
+    #[cfg(feature = "lib3mf")]
+    {
+        return Ok(SceneMesh::from_threemf(&threemf::parse_bytes_with_lib3mf(
+            data,
+        )?));
+    }
+    #[cfg(not(feature = "lib3mf"))]
+    {
+        Ok(SceneMesh::from_threemf(&threemf::parse_bytes(data)?))
+    }
 }
 
 /// Normalize an already-parsed OBJ mesh into a scene (bytes path).
@@ -426,6 +471,7 @@ pub fn scene_from_step_bytes(data: &[u8]) -> Result<SceneMesh, SceneError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene_status::SceneLoadStatus;
     use crate::stl::Triangle;
     use std::fs;
 
@@ -500,10 +546,16 @@ mod tests {
             unit: "millimeter".to_string(),
             object_count: 1,
             build_item_count: 1,
+            status: SceneLoadStatus::Partial,
+            status_messages: vec!["multiple base materials".to_string()],
             parts: vec![threemf::ThreeMfPart {
                 name: "Widget".to_string(),
                 triangle_start: 0,
                 triangle_count: 1,
+                status: SceneLoadStatus::Partial,
+                status_detail: Some("multiple base materials".to_string()),
+                part_number: Some("W-01".to_string()),
+                material_label: Some("Mixed materials".to_string()),
             }],
             objects: vec![threemf::ThreeMfSceneObject {
                 id: "plate-0/item-0/object-1".to_string(),
@@ -538,6 +590,19 @@ mod tests {
         assert_eq!(scene.parts.len(), 1);
         assert_eq!(scene.parts[0].name, "Widget");
         assert_eq!(scene.parts[0].triangle_count, 1);
+        assert_eq!(scene.objects.len(), 1);
+        assert_eq!(scene.objects[0].transform.matrix, expected_matrix);
+        assert_eq!(scene.root_object_ids, vec!["plate-0/item-0/object-1"]);
+        assert_eq!(
+            scene.plates[0].root_object_ids,
+            vec!["plate-0/item-0/object-1"]
+        );
+        assert_eq!(scene.status, SceneLoadStatus::Partial);
+        assert_eq!(
+            scene.parts[0].status_detail.as_deref(),
+            Some("multiple base materials")
+        );
+        assert_eq!(scene.parts[0].part_number.as_deref(), Some("W-01"));
         assert_eq!(scene.objects.len(), 1);
         assert_eq!(scene.objects[0].transform.matrix, expected_matrix);
         assert_eq!(scene.root_object_ids, vec!["plate-0/item-0/object-1"]);
