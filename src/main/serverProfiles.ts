@@ -575,30 +575,18 @@ export class ServerProfileService {
       if (!this.authenticationIsCurrent(probed.authentication)) {
         throw authenticationSupersededError();
       }
-      const identity = serverIdentity(
+      const binding = applyPrincipalBinding(
+        current,
         tested.baseUrl,
         probed.authentication.principalId,
       );
-      const previousIdentity = current
-        ? (current.bindingIdentity ??
-          (current.principalId
-            ? serverIdentity(current.baseUrl, current.principalId)
-            : identity))
-        : null;
-      const identityChanged =
-        previousIdentity !== null && previousIdentity !== identity;
+      const identityChanged = binding.identityChanged;
       const stored: StoredProfile = {
         ...tested,
         encryptedSecret,
-        bindingIdentity: identity,
-        bindingIncarnation:
-          !identityChanged && current?.bindingIncarnation
-            ? current.bindingIncarnation
-            : identity,
-        bindingRevision:
-          !identityChanged && current?.bindingRevision
-            ? current.bindingRevision
-            : (current?.bindingRevision ?? 0) + 1,
+        bindingIdentity: binding.bindingIdentity,
+        bindingIncarnation: binding.bindingIncarnation,
+        bindingRevision: binding.bindingRevision,
         principalId: probed.authentication.principalId,
       };
       if (index < 0) {
@@ -723,9 +711,10 @@ export class ServerProfileService {
       snapshot.binding,
       snapshot.generation,
     );
-    return this.withMutationLock(async () => {
+    const result = await this.withMutationLock(async () => {
       const store = await this.readStore();
-      const current = store.profiles.find((profile) => profile.id === id);
+      const index = store.profiles.findIndex((profile) => profile.id === id);
+      const current = index < 0 ? null : store.profiles[index]!;
       if (!current) {
         this.discardTokenBinding(id, snapshot.binding, snapshot.generation);
         throw new ServerProfileError(
@@ -747,13 +736,54 @@ export class ServerProfileService {
       ) {
         throw authenticationSupersededError();
       }
+      // A renewed token authenticates against whatever principal the server
+      // currently resolves for these credentials. That principal can drift
+      // from the one this profile was last bound to (key reassignment,
+      // account remap, etc.) without ever going through saveProfile. Detect
+      // that drift here and adopt it the same non-destructive way saveProfile
+      // does: only advance the binding incarnation when the identity truly
+      // changed, and let the sync engine replay the resulting transition
+      // through the CAS-guarded catalog rather than silently trusting a
+      // mismatched principal for subsequent sync operations.
+      let transition: ProfileBindingTransition | null = null;
+      if (current.principalId && current.principalId !== issued.principalId) {
+        const binding = applyPrincipalBinding(
+          current,
+          current.baseUrl,
+          issued.principalId,
+        );
+        const stored: StoredProfile = {
+          ...current,
+          bindingIdentity: binding.bindingIdentity,
+          bindingIncarnation: binding.bindingIncarnation,
+          bindingRevision: binding.bindingRevision,
+          principalId: issued.principalId,
+        };
+        if (binding.identityChanged) {
+          transition = {
+            id: this.createId(),
+            profileId: id,
+            expectedBinding: persistedBinding(current).binding,
+            newBinding: persistedBinding(stored).binding,
+          };
+          store.pendingBindingTransitions.push(transition);
+        }
+        store.profiles[index] = stored;
+        await this.writeStore(store);
+      }
       this.tokens.set(id, {
         ...issued,
         binding: snapshot.binding,
         generation: snapshot.generation,
       });
-      return issued.token;
+      return { token: issued.token, transition };
     });
+    if (result.transition) {
+      await this.emitInvalidation(result.transition).catch(() => {
+        console.error('[profiles] binding transition deferred');
+      });
+    }
+    return result.token;
   }
 
   /** Invalidate a rejected cached JWT and issue a fresh profile-bound token. */
@@ -1609,6 +1639,50 @@ function serverIdentity(baseUrl: string, principalId: string): string {
     .update('\0')
     .update(principalId)
     .digest('hex');
+}
+
+/**
+ * Computes the binding fields a profile must carry to represent
+ * `principalId` as authoritatively resolved from `/api/auth/me`. Adoption is
+ * non-destructive: when the resolved identity matches the profile's previous
+ * identity, the existing incarnation/revision are preserved so no binding
+ * transition is required. Only a genuine identity change (a different
+ * `/api/auth/me.id`) advances the incarnation and reports `identityChanged`,
+ * which callers must translate into a `ProfileBindingTransition` so the
+ * durable sync catalog can safely detect and reject any intervening writer
+ * before adopting the new principal.
+ */
+function applyPrincipalBinding(
+  current: StoredProfile | null,
+  baseUrl: string,
+  principalId: string,
+): {
+  bindingIdentity: string;
+  bindingIncarnation: string;
+  bindingRevision: number;
+  identityChanged: boolean;
+} {
+  const identity = serverIdentity(baseUrl, principalId);
+  const previousIdentity = current
+    ? (current.bindingIdentity ??
+      (current.principalId
+        ? serverIdentity(baseUrl, current.principalId)
+        : identity))
+    : null;
+  const identityChanged =
+    previousIdentity !== null && previousIdentity !== identity;
+  return {
+    bindingIdentity: identity,
+    bindingIncarnation:
+      !identityChanged && current?.bindingIncarnation
+        ? current.bindingIncarnation
+        : identity,
+    bindingRevision:
+      !identityChanged && current?.bindingRevision
+        ? current.bindingRevision
+        : (current?.bindingRevision ?? 0) + 1,
+    identityChanged,
+  };
 }
 
 function persistedBinding(profile: StoredProfile): {

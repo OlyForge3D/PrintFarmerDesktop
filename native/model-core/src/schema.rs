@@ -8,7 +8,7 @@
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -290,11 +290,6 @@ CREATE UNIQUE INDEX idx_tags_sync_remote
 
 /// v8 backfills provenance for rows materialized before explicit provenance.
 pub const SCHEMA_V8: &str = r#"
-ALTER TABLE sync_profiles ADD COLUMN binding_cas_revision INTEGER NOT NULL DEFAULT 0;
-UPDATE sync_profiles
-SET profile_binding = profile_binding || ':1'
-WHERE profile_binding IS NOT NULL AND length(profile_binding) = 64;
-
 UPDATE collections
 SET sync_profile_id = (
         SELECT e.profile_id FROM sync_entities e
@@ -336,6 +331,19 @@ WHERE EXISTS (
     WHERE e.entity_type = 'Tag' AND e.local_id = tags.id);
 "#;
 
+/// v9 adds the binding CAS revision counter used to fence atomic binding
+/// replacement. Deployed databases at base commit already report
+/// `user_version = 8`, so this migration must remain separate from v8: adding
+/// the column to v8 would never run on those installations and leave the CAS
+/// column missing. The `:1` incarnation suffix backfill for legacy 64-char
+/// bindings also belongs here because it depends on the revision counter.
+pub const SCHEMA_V9: &str = r#"
+ALTER TABLE sync_profiles ADD COLUMN binding_cas_revision INTEGER NOT NULL DEFAULT 0;
+UPDATE sync_profiles
+SET profile_binding = profile_binding || ':1'
+WHERE profile_binding IS NOT NULL AND length(profile_binding) = 64;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,7 +370,7 @@ mod tests {
     #[test]
     fn sync_schema_contains_no_transport_or_secret_fields() {
         let sync_schema =
-            format!(            "{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}\n{SCHEMA_V6}\n{SCHEMA_V7}\n{SCHEMA_V8}")
+            format!(            "{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}\n{SCHEMA_V6}\n{SCHEMA_V7}\n{SCHEMA_V8}\n{SCHEMA_V9}")
                 .to_lowercase();
         for forbidden in ["server_url", "auth_token", "api_key", "password", "jwt"] {
             assert!(!sync_schema.contains(forbidden));

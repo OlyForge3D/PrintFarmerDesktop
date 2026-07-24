@@ -22,7 +22,7 @@ export const RemoteChange = z
     entityType: SyncEntityType,
     entityId: z.union([ServerGuid, EmptyGuid]),
     operation: SyncOperation,
-    ownerUserId: ServerGuid.nullable(),
+    ownerUserId: ServerGuid.nullish().transform((value) => value ?? null),
     visibility: SyncVisibility,
     actorUserId: ServerGuid,
     timestamp: z.string().datetime(),
