@@ -1,11 +1,13 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import type { BigIntStats } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   isWithinRoot,
   RootApprovalError,
   RootApprovalStore,
+  sameFileIdentity,
   type RootApprovalFileSystem,
 } from '../src/main/rootApprovals.js';
 
@@ -60,10 +62,32 @@ function fakeFileSystem(): RootApprovalFileSystem & {
             Object.assign(new Error('missing'), { code: 'ENOENT' }),
           );
     },
+    lstat(filePath) {
+      const exists = realpaths.has(filePath);
+      return exists
+        ? Promise.resolve({
+            dev: 1n,
+            ino: 2n,
+            isDirectory: () => true,
+            isFile: () => false,
+            isSymbolicLink: () => false,
+          } as BigIntStats)
+        : Promise.reject(
+            Object.assign(new Error('missing'), { code: 'ENOENT' }),
+          );
+    },
   };
 }
 
 describe('main-owned root approvals', () => {
+  it('compares Windows-sized file IDs losslessly as bigint', () => {
+    const first = 9_007_199_254_740_992n;
+    const second = 9_007_199_254_740_993n;
+    expect(Number(first)).toBe(Number(second));
+    expect(
+      sameFileIdentity({ dev: 1n, ino: first }, { dev: 1n, ino: second }),
+    ).toBe(false);
+  });
   it('only authorizes canonical roots recorded by the picker', async () => {
     const fileSystem = fakeFileSystem();
     const selected = path.resolve('approved');
@@ -82,6 +106,11 @@ describe('main-owned root approvals', () => {
     ).rejects.toBeInstanceOf(RootApprovalError);
     const approval = await store.approveFromPicker(selected);
     expect(await store.resolve(approval.id)).toBe(selected);
+    const persisted = [...fileSystem.files.values()]
+      .map((value) => Buffer.from(value).toString('utf8'))
+      .join('');
+    expect(persisted).toContain('"deviceId":"1"');
+    expect(persisted).toContain('"fileId":"2"');
     await expect(store.authorizeFile(model)).resolves.toEqual({
       sourcePath: model,
       canonicalPath: model,

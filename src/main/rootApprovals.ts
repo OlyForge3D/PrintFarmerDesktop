@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { constants as fsConstants, promises as fs } from 'node:fs';
-import type { Stats } from 'node:fs';
+import type { BigIntStats } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -18,6 +18,8 @@ const ApprovalStore = z
           .object({
             id: z.string().uuid(),
             canonicalPath: z.string().min(1).max(4096),
+            deviceId: z.string().regex(/^\d+$/).nullable().default(null),
+            fileId: z.string().regex(/^\d+$/).nullable().default(null),
             approvedAt: z.string().datetime(),
           })
           .strict(),
@@ -35,7 +37,7 @@ export interface RootApprovalFileSystem {
   mkdir(directory: string): Promise<void>;
   unlink(filePath: string): Promise<void>;
   realpath(filePath: string): Promise<string>;
-  lstat?(filePath: string): Promise<Stats>;
+  lstat?(filePath: string): Promise<BigIntStats>;
   open?(filePath: string, flags: number): Promise<FileHandle>;
 }
 
@@ -47,7 +49,7 @@ const nodeFileSystem: RootApprovalFileSystem = {
     fs.mkdir(directory, { recursive: true }).then(() => undefined),
   unlink: (filePath) => fs.unlink(filePath),
   realpath: (filePath) => fs.realpath(filePath),
-  lstat: (filePath) => fs.lstat(filePath),
+  lstat: (filePath) => fs.lstat(filePath, { bigint: true }),
   open: (filePath, flags) => fs.open(filePath, flags),
 };
 
@@ -101,12 +103,20 @@ export class RootApprovalStore {
   }> {
     return this.withLock(async () => {
       let canonicalPath: string;
+      let identity: BigIntStats;
       try {
         canonicalPath = await this.fileSystem.realpath(selectedPath);
+        identity = await this.lstatBigInt(canonicalPath);
       } catch {
         throw new RootApprovalError(
           'INVALID_ROOT',
           'The selected folder is no longer available.',
+        );
+      }
+      if (identity.isSymbolicLink() || !identity.isDirectory()) {
+        throw new RootApprovalError(
+          'INVALID_ROOT',
+          'The selected folder is a symbolic link or reparse point.',
         );
       }
       const store = await this.readStore();
@@ -114,6 +124,15 @@ export class RootApprovalStore {
         samePath(root.canonicalPath, canonicalPath),
       );
       if (existing) {
+        if (
+          existing.deviceId !== identity.dev.toString() ||
+          existing.fileId !== identity.ino.toString()
+        ) {
+          existing.deviceId = identity.dev.toString();
+          existing.fileId = identity.ino.toString();
+          existing.approvedAt = new Date(this.now()).toISOString();
+          await this.writeStore(store);
+        }
         return { id: existing.id, canonicalPath: existing.canonicalPath };
       }
       if (store.roots.length >= MAX_ROOTS) {
@@ -125,6 +144,8 @@ export class RootApprovalStore {
       const approval = {
         id: this.createId(),
         canonicalPath,
+        deviceId: identity.dev.toString(),
+        fileId: identity.ino.toString(),
         approvedAt: new Date(this.now()).toISOString(),
       };
       store.roots.push(approval);
@@ -143,15 +164,20 @@ export class RootApprovalStore {
       );
     }
     let current: string;
+    let identity: BigIntStats;
     try {
       current = await this.fileSystem.realpath(approval.canonicalPath);
+      identity = await this.lstatBigInt(current);
     } catch {
       throw new RootApprovalError(
         'APPROVAL_REQUIRED',
         'The approved catalog folder is no longer available. Reauthorize it.',
       );
     }
-    if (!samePath(current, approval.canonicalPath)) {
+    if (
+      !samePath(current, approval.canonicalPath) ||
+      !matchesStoredIdentity(approval, identity)
+    ) {
       throw new RootApprovalError(
         'APPROVAL_REQUIRED',
         'The approved catalog folder changed identity. Reauthorize it.',
@@ -179,6 +205,8 @@ export class RootApprovalStore {
       let currentRoot: string;
       try {
         currentRoot = await this.fileSystem.realpath(root.canonicalPath);
+        const identity = await this.lstatBigInt(currentRoot);
+        if (!matchesStoredIdentity(root, identity)) continue;
       } catch {
         continue;
       }
@@ -196,16 +224,14 @@ export class RootApprovalStore {
   }
 
   async openApprovedFile(filePath: string): Promise<ApprovedFile> {
-    const lstat = (candidate: string): Promise<Stats> =>
-      this.fileSystem.lstat
-        ? this.fileSystem.lstat(candidate)
-        : fs.lstat(candidate);
+    const lstat = (candidate: string): Promise<BigIntStats> =>
+      this.lstatBigInt(candidate);
     const open = (candidate: string, flags: number): Promise<FileHandle> =>
       this.fileSystem.open
         ? this.fileSystem.open(candidate, flags)
         : fs.open(candidate, flags);
     let beforePath: string;
-    let before: Stats;
+    let before: BigIntStats;
     try {
       [beforePath, before] = await Promise.all([
         this.fileSystem.realpath(filePath),
@@ -228,8 +254,10 @@ export class RootApprovalStore {
     for (const root of store.roots) {
       try {
         const currentRoot = await this.fileSystem.realpath(root.canonicalPath);
+        const rootIdentity = await lstat(currentRoot);
         if (
           samePath(currentRoot, root.canonicalPath) &&
+          matchesStoredIdentity(root, rootIdentity) &&
           isWithinRoot(currentRoot, beforePath)
         ) {
           approved = true;
@@ -254,22 +282,32 @@ export class RootApprovalStore {
       const [afterPath, after, opened] = await Promise.all([
         this.fileSystem.realpath(filePath),
         lstat(filePath),
-        handle.stat(),
+        handle.stat({ bigint: true }),
       ]);
       if (
         !samePath(beforePath, afterPath) ||
         after.isSymbolicLink() ||
         !after.isFile() ||
         !opened.isFile() ||
-        !sameIdentity(before, after) ||
-        !sameIdentity(after, opened)
+        !sameFileIdentity(before, after) ||
+        !sameFileIdentity(after, opened)
       ) {
         throw new RootApprovalError(
           'APPROVAL_REQUIRED',
           'The catalog source changed while its approved handle was opened.',
         );
       }
-      return { handle, canonicalPath: afterPath, size: opened.size };
+      if (opened.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new RootApprovalError(
+          'APPROVAL_REQUIRED',
+          'The approved catalog source size is unsupported.',
+        );
+      }
+      return {
+        handle,
+        canonicalPath: afterPath,
+        size: Number(opened.size),
+      };
     } catch (error) {
       await handle?.close().catch(() => undefined);
       if (error instanceof RootApprovalError) throw error;
@@ -289,6 +327,12 @@ export class RootApprovalStore {
         'The selected model file is no longer available.',
       );
     }
+  }
+
+  private lstatBigInt(filePath: string): Promise<BigIntStats> {
+    return this.fileSystem.lstat
+      ? this.fileSystem.lstat(filePath)
+      : fs.lstat(filePath, { bigint: true });
   }
 
   async reset(): Promise<void> {
@@ -387,8 +431,23 @@ function samePath(left: string, right: string): boolean {
   return path.normalize(left) === path.normalize(right);
 }
 
-function sameIdentity(left: Stats, right: Stats): boolean {
+export function sameFileIdentity(
+  left: Pick<BigIntStats, 'dev' | 'ino'>,
+  right: Pick<BigIntStats, 'dev' | 'ino'>,
+): boolean {
   return left.dev === right.dev && left.ino === right.ino;
+}
+
+function matchesStoredIdentity(
+  root: { deviceId: string | null; fileId: string | null },
+  current: BigIntStats,
+): boolean {
+  return (
+    root.deviceId !== null &&
+    root.fileId !== null &&
+    root.deviceId === current.dev.toString() &&
+    root.fileId === current.ino.toString()
+  );
 }
 
 function parseJson(value: string): unknown {

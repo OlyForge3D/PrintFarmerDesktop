@@ -593,6 +593,18 @@ function httpStatusError(
       'The model is too large for this server.',
       false,
     ],
+    415: [
+      'UNSUPPORTED_MEDIA_TYPE',
+      'The server does not support this model format.',
+      false,
+    ],
+    422: [
+      'UNPROCESSABLE_ENTITY',
+      'The server could not process this model.',
+      false,
+    ],
+    408: ['REQUEST_TIMEOUT', 'The server timed out this request.', true],
+    425: ['TOO_EARLY', 'The server asked the client to retry later.', true],
     429: ['RATE_LIMITED', 'The server is rate limiting uploads.', true],
   };
   const mapped =

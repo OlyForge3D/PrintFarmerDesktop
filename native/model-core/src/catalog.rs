@@ -230,22 +230,29 @@ pub trait CatalogStore {
     fn remote_model_link(
         &self,
         profile_id: &str,
+        server_binding: &str,
         local_model_hash: &str,
     ) -> Result<Option<RemoteModelLinkDto>, String>;
 
     fn remote_model_links(
         &self,
         profile_id: &str,
+        server_binding: &str,
         limit: usize,
     ) -> Result<Vec<RemoteModelLinkDto>, String>;
 
     fn remove_remote_model_link(
         &mut self,
         profile_id: &str,
+        server_binding: &str,
         local_model_hash: &str,
     ) -> Result<bool, String>;
 
-    fn purge_remote_model_links(&mut self, profile_id: &str) -> Result<usize, String>;
+    fn purge_remote_model_links(
+        &mut self,
+        profile_id: &str,
+        server_binding: &str,
+    ) -> Result<usize, String>;
 
     fn entity_revisions(
         &self,
@@ -510,7 +517,7 @@ pub struct InMemoryCatalog {
     /// Collection id -> member content hashes.
     collection_members: HashMap<String, std::collections::BTreeSet<ContentHash>>,
     sync_statuses: HashMap<String, SyncStatusDto>,
-    remote_model_links: HashMap<(String, ContentHash), RemoteModelLinkDto>,
+    remote_model_links: HashMap<(String, String, ContentHash), RemoteModelLinkDto>,
     sync_entities: HashMap<(String, SyncEntityType, String), EntityRevisionDto>,
     sync_outbox: HashMap<(String, String), OutboundOperationDto>,
     next_outbox_sequence: HashMap<String, u64>,
@@ -896,7 +903,11 @@ impl CatalogStore for InMemoryCatalog {
         link: RemoteModelLinkDto,
     ) -> Result<RemoteModelLinkDto, String> {
         sync::validate_remote_link(&link)?;
-        let key = (link.profile_id.clone(), link.local_model_hash.clone());
+        let key = (
+            link.profile_id.clone(),
+            link.server_binding.clone(),
+            link.local_model_hash.clone(),
+        );
         let link = self.remote_model_links.get(&key).map_or_else(
             || Ok(link.clone()),
             |existing| sync::merge_remote_link(existing, &link),
@@ -906,6 +917,7 @@ impl CatalogStore for InMemoryCatalog {
         }
         if self.remote_model_links.values().any(|existing| {
             existing.profile_id == link.profile_id
+                && existing.server_binding == link.server_binding
                 && existing.local_model_hash != link.local_model_hash
                 && (existing.remote_model_id == link.remote_model_id
                     || existing.client_upload_id == link.client_upload_id)
@@ -924,27 +936,35 @@ impl CatalogStore for InMemoryCatalog {
     fn remote_model_link(
         &self,
         profile_id: &str,
+        server_binding: &str,
         local_model_hash: &str,
     ) -> Result<Option<RemoteModelLinkDto>, String> {
         sync::validate_profile(profile_id)?;
+        sync::validate_identifier("serverBinding", server_binding)?;
         sync::validate_local_hash(local_model_hash)?;
         Ok(self
             .remote_model_links
-            .get(&(profile_id.to_string(), local_model_hash.to_string()))
+            .get(&(
+                profile_id.to_string(),
+                server_binding.to_string(),
+                local_model_hash.to_string(),
+            ))
             .cloned())
     }
 
     fn remote_model_links(
         &self,
         profile_id: &str,
+        server_binding: &str,
         limit: usize,
     ) -> Result<Vec<RemoteModelLinkDto>, String> {
         sync::validate_profile(profile_id)?;
+        sync::validate_identifier("serverBinding", server_binding)?;
         sync::validate_limit(limit)?;
         let mut links: Vec<_> = self
             .remote_model_links
             .values()
-            .filter(|link| link.profile_id == profile_id)
+            .filter(|link| link.profile_id == profile_id && link.server_binding == server_binding)
             .cloned()
             .collect();
         links.sort_by(|a, b| a.local_model_hash.cmp(&b.local_model_hash));
@@ -955,21 +975,34 @@ impl CatalogStore for InMemoryCatalog {
     fn remove_remote_model_link(
         &mut self,
         profile_id: &str,
+        server_binding: &str,
         local_model_hash: &str,
     ) -> Result<bool, String> {
         sync::validate_profile(profile_id)?;
+        sync::validate_identifier("serverBinding", server_binding)?;
         sync::validate_local_hash(local_model_hash)?;
         Ok(self
             .remote_model_links
-            .remove(&(profile_id.to_string(), local_model_hash.to_string()))
+            .remove(&(
+                profile_id.to_string(),
+                server_binding.to_string(),
+                local_model_hash.to_string(),
+            ))
             .is_some())
     }
 
-    fn purge_remote_model_links(&mut self, profile_id: &str) -> Result<usize, String> {
+    fn purge_remote_model_links(
+        &mut self,
+        profile_id: &str,
+        server_binding: &str,
+    ) -> Result<usize, String> {
         sync::validate_profile(profile_id)?;
+        sync::validate_identifier("serverBinding", server_binding)?;
         let before = self.remote_model_links.len();
         self.remote_model_links
-            .retain(|(stored_profile, _), _| stored_profile != profile_id);
+            .retain(|(stored_profile, stored_binding, _), _| {
+                stored_profile != profile_id || stored_binding != server_binding
+            });
         Ok(before - self.remote_model_links.len())
     }
 

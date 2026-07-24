@@ -21,8 +21,11 @@ import {
   type ServerProfileService,
 } from './serverProfiles.js';
 import type { SidecarClient } from './sidecar.js';
-import type { RootApprovalStore } from './rootApprovals.js';
-import type { ApprovedFile } from './rootApprovals.js';
+import {
+  RootApprovalError,
+  type ApprovedFile,
+  type RootApprovalStore,
+} from './rootApprovals.js';
 import {
   createNodeUploadTransport,
   makeUploadError,
@@ -46,9 +49,9 @@ const PROGRESS_CHECKPOINT_BYTES = 1024 * 1024;
 const UploadIdentity = z
   .object({
     profileId: z.string().uuid(),
+    serverBinding: z.string().min(1).max(128).default('legacy-unbound'),
     hash: z.string().regex(/^[a-f0-9]{64}$/),
     clientUploadId: z.string().uuid(),
-    serverBinding: z.string().min(1).max(128).default('legacy-unbound'),
     remoteModelId: z.string().min(1).max(256).nullable(),
     etag: z.string().min(1).max(1024).nullable(),
     updatedAt: z.string().datetime(),
@@ -183,6 +186,23 @@ export class UploadJobStore {
     let recovered = false;
     for (const job of state.jobs) {
       for (const item of job.items) {
+        if (
+          job.serverBinding === 'legacy-unbound' &&
+          item.state !== 'cancelled'
+        ) {
+          recovered = true;
+          item.state = 'uncertain';
+          item.updatedAt = timestamp;
+          item.error = {
+            code: 'UNBOUND_UPLOAD_IDENTITY',
+            message:
+              'This pre-migration upload identity is not bound to a verified server. Resolve the duplicate risk explicitly.',
+            retryable: false,
+            retryAfterSeconds: null,
+            duplicateRisk: true,
+          };
+          continue;
+        }
         if (item.state !== 'uploading') continue;
         recovered = true;
         item.state = 'uncertain';
@@ -245,7 +265,9 @@ export class UploadJobStore {
     await this.saveState({ jobs, identities: existing.identities });
   }
 
-  async reset(): Promise<{ backupCreated: boolean }> {
+  async reset(
+    preservedIdentities: UploadIdentity[] = [],
+  ): Promise<{ backupCreated: boolean }> {
     const backupPath = `${this.storePath}.backup-${this.now()}`;
     let backupCreated = false;
     try {
@@ -259,13 +281,17 @@ export class UploadJobStore {
         );
       }
     }
-    await this.saveState({ jobs: [], identities: [] });
+    await this.saveState({
+      jobs: [],
+      identities: structuredClone(preservedIdentities),
+    });
     return { backupCreated };
   }
 }
 
 export interface RemoteModelLink {
   profileId: string;
+  serverBinding: string;
   localModelHash: string;
   remoteModelId: string;
   clientUploadId: string;
@@ -277,11 +303,23 @@ export interface RemoteModelLink {
 export interface UploadSidecar {
   listModels(): Promise<unknown>;
   renderThumbnail(filePath: string, size?: number): Promise<unknown>;
-  getRemoteModelLink(profileId: string, hash: string): Promise<unknown>;
-  removeRemoteModelLink(profileId: string, hash: string): Promise<unknown>;
-  purgeRemoteModelLinks(profileId: string): Promise<unknown>;
+  getRemoteModelLink(
+    profileId: string,
+    serverBinding: string,
+    hash: string,
+  ): Promise<unknown>;
+  removeRemoteModelLink(
+    profileId: string,
+    serverBinding: string,
+    hash: string,
+  ): Promise<unknown>;
+  purgeRemoteModelLinks(
+    profileId: string,
+    serverBinding: string,
+  ): Promise<unknown>;
   linkRemoteModel(link: {
     profileId: string;
+    serverBinding: string;
     localModelHash: string;
     remoteModelId: string;
     clientUploadId: string;
@@ -404,12 +442,15 @@ export class UploadJobService {
 
   async reset(): Promise<{ reset: true; backupCreated: boolean }> {
     let generation = 0;
+    const resetState: { initializer: Promise<void> | null } = {
+      initializer: null,
+    };
     await this.withMutationLock(() => {
+      resetState.initializer = this.initializePromise;
       this.queueGeneration += 1;
       generation = this.queueGeneration;
       this.resetting = true;
       this.initialized = false;
-      this.initializePromise = null;
       this.pumpPending = false;
       return Promise.resolve();
     });
@@ -418,14 +459,20 @@ export class UploadJobService {
       return active.worker;
     });
     await Promise.allSettled(workers);
+    if (resetState.initializer) {
+      await Promise.allSettled([resetState.initializer]);
+    }
     let backupCreated = false;
     await this.withMutationLock(async () => {
       if (generation !== this.queueGeneration) {
         throw new StaleQueueGenerationError();
       }
-      const result = await this.options.store.reset();
+      const result = await this.options.store.reset(this.state.identities);
       backupCreated = result.backupCreated;
-      this.state = { jobs: [], identities: [] };
+      this.state = {
+        jobs: [],
+        identities: structuredClone(this.state.identities),
+      };
       this.active.clear();
       this.queueError = null;
       this.initialized = true;
@@ -437,11 +484,19 @@ export class UploadJobService {
 
   async start(request: StartUploadJobRequest): Promise<UploadJobDto> {
     await this.requireReady();
+    const startingGeneration = this.queueGeneration;
     const validatedRequest = StartUploadJobRequestSchema.parse(request);
     const [startingContext, rawModels] = await Promise.all([
       this.options.profiles.getAuthenticatedContext(validatedRequest.profileId),
       this.options.sidecar.listModels(),
     ]);
+    if (
+      startingGeneration !== this.queueGeneration ||
+      this.resetting ||
+      !this.initialized
+    ) {
+      throw new StaleQueueGenerationError();
+    }
     if (this.changingProfileBindings.has(validatedRequest.profileId)) {
       throw new Error('The server profile binding is still being updated.');
     }
@@ -467,6 +522,7 @@ export class UploadJobService {
       const duplicate = draft.jobs.some(
         (job) =>
           job.profileId === profile.id &&
+          job.serverBinding === startingContext.serverBinding &&
           job.items.some(
             (item) =>
               item.hash === hash &&
@@ -481,32 +537,42 @@ export class UploadJobService {
         );
       }
       let remoteLink = parseRemoteLink(
-        await this.options.sidecar.getRemoteModelLink(profile.id, hash),
+        await this.options.sidecar.getRemoteModelLink(
+          profile.id,
+          startingContext.serverBinding,
+          hash,
+        ),
       );
+      const unboundLink = remoteLink
+        ? null
+        : parseRemoteLink(
+            await this.options.sidecar.getRemoteModelLink(
+              profile.id,
+              'legacy-unbound',
+              hash,
+            ),
+          );
       let identity = draft.identities.find(
         (candidate) =>
-          candidate.profileId === profile.id && candidate.hash === hash,
+          candidate.profileId === profile.id &&
+          candidate.serverBinding === startingContext.serverBinding &&
+          candidate.hash === hash,
       );
-      if (
-        identity &&
-        identity.serverBinding !== startingContext.serverBinding
-      ) {
-        await this.options.sidecar.purgeRemoteModelLinks(profile.id);
-        draft.identities = draft.identities.filter(
-          (candidate) =>
-            candidate.profileId !== profile.id ||
-            candidate.serverBinding === startingContext.serverBinding,
-        );
-        identity = undefined;
-        remoteLink = null;
-      }
       const trustedRemoteLink =
         remoteLink?.uploadStatus === 'uploaded' &&
-        identity?.serverBinding === startingContext.serverBinding
+        remoteLink.serverBinding === startingContext.serverBinding
           ? remoteLink
           : null;
+      const durableClientUploadId =
+        trustedRemoteLink?.clientUploadId ??
+        remoteLink?.clientUploadId ??
+        unboundLink?.clientUploadId;
       if (remoteLink && !trustedRemoteLink) {
-        await this.options.sidecar.removeRemoteModelLink(profile.id, hash);
+        await this.options.sidecar.removeRemoteModelLink(
+          profile.id,
+          startingContext.serverBinding,
+          hash,
+        );
         remoteLink = null;
       } else {
         remoteLink = trustedRemoteLink;
@@ -515,20 +581,16 @@ export class UploadJobService {
         identity = {
           profileId: profile.id,
           hash,
-          clientUploadId: this.createId(),
+          clientUploadId: durableClientUploadId ?? this.createId(),
           serverBinding: startingContext.serverBinding,
           remoteModelId: remoteLink?.remoteModelId ?? null,
           etag: remoteLink?.etag ?? null,
           updatedAt: timestamp,
         };
         draft.identities.push(identity);
-      } else if (
-        remoteLink &&
-        identity.clientUploadId !== remoteLink.clientUploadId
-      ) {
-        throw new Error(
-          'The durable upload identity conflicts with the catalog remote link.',
-        );
+      } else if (durableClientUploadId) {
+        identity.clientUploadId = durableClientUploadId;
+        identity.updatedAt = timestamp;
       }
       if (remoteLink) {
         identity.remoteModelId = remoteLink.remoteModelId;
@@ -540,13 +602,22 @@ export class UploadJobService {
         clientUploadId: identity.clientUploadId,
         displayName: displayName(model),
         size: model.size,
-        state: remoteLink ? 'succeeded' : 'queued',
+        state: remoteLink ? 'succeeded' : unboundLink ? 'uncertain' : 'queued',
         bytesSent: remoteLink ? model.size : 0,
         attempts: 0,
         createdAt: timestamp,
         updatedAt: timestamp,
         remote: null,
-        error: null,
+        error: unboundLink
+          ? {
+              code: 'UNBOUND_REMOTE_LINK',
+              message:
+                'A pre-migration remote upload exists without a verified server binding. Resolve the duplicate risk explicitly.',
+              retryable: false,
+              retryAfterSeconds: null,
+              duplicateRisk: true,
+            }
+          : null,
       });
     }
     const job: UploadJobDto = {
@@ -567,7 +638,13 @@ export class UploadJobService {
     };
     refreshDerived(job);
     draft.jobs.push(job);
-    await this.commitDraft(draft, baseState);
+    await this.options.profiles.revalidateAuthenticatedContext(startingContext);
+    await this.commitDraft(
+      draft,
+      baseState,
+      startingGeneration,
+      startingContext.serverBinding,
+    );
     this.schedulePump();
     return UploadJob.parse(structuredClone(job));
   }
@@ -692,21 +769,32 @@ export class UploadJobService {
       await this.requireReady();
     } catch {
       try {
-        await this.options.sidecar.purgeRemoteModelLinks(profileId);
+        await this.options.sidecar.purgeRemoteModelLinks(
+          profileId,
+          previousBinding,
+        );
       } finally {
         this.changingProfileBindings.delete(profileId);
       }
       return;
     }
     try {
+      const workers: Promise<void>[] = [];
       for (const job of this.state.jobs) {
         if (
           job.profileId !== profileId ||
           job.serverBinding !== previousBinding
         )
           continue;
-        this.abortJob(job.id, 'cancel');
+        for (const item of job.items) {
+          const active = this.active.get(item.id);
+          if (!active) continue;
+          active.action = 'cancel';
+          active.controller.abort();
+          workers.push(active.worker);
+        }
       }
+      await Promise.allSettled(workers);
       await this.durableMutate((draft) => {
         for (const job of draft.jobs) {
           if (
@@ -715,7 +803,11 @@ export class UploadJobService {
           )
             continue;
           for (const item of job.items) {
-            if (item.state === 'queued') {
+            if (
+              item.state === 'queued' ||
+              item.state === 'uploading' ||
+              item.state === 'uncertain'
+            ) {
               setItemState(item, 'cancelled', this.isoNow(), {
                 code: 'PROFILE_CHANGED',
                 message:
@@ -733,7 +825,10 @@ export class UploadJobService {
             identity.serverBinding !== previousBinding,
         );
       });
-      await this.options.sidecar.purgeRemoteModelLinks(profileId);
+      await this.options.sidecar.purgeRemoteModelLinks(
+        profileId,
+        previousBinding,
+      );
     } finally {
       this.changingProfileBindings.delete(profileId);
     }
@@ -904,32 +999,33 @@ export class UploadJobService {
       const existingLink = parseRemoteLink(
         await this.options.sidecar.getRemoteModelLink(
           current.job.profileId,
+          current.job.serverBinding,
           current.item.hash,
         ),
       );
       const currentIdentity = requireIdentity(
         this.state.identities,
         current.job.profileId,
+        current.job.serverBinding,
         current.item.hash,
       );
       if (
         existingLink?.uploadStatus === 'uploaded' &&
+        existingLink.serverBinding === current.job.serverBinding &&
         currentIdentity.serverBinding === current.job.serverBinding
       ) {
-        if (existingLink.clientUploadId !== current.item.clientUploadId) {
-          throw new Error(
-            'The catalog remote link conflicts with the durable upload identity.',
-          );
-        }
         await this.durableMutate((draft) => {
           const item = requireItem(draft.jobs, jobId, itemId);
+          item.clientUploadId = existingLink.clientUploadId;
           item.bytesSent = item.size;
           setItemState(item, 'succeeded', this.isoNow(), null);
           const identity = requireIdentity(
             draft.identities,
             current.job.profileId,
+            current.job.serverBinding,
             current.item.hash,
           );
+          identity.clientUploadId = existingLink.clientUploadId;
           identity.remoteModelId = existingLink.remoteModelId;
           identity.etag = existingLink.etag ?? null;
           identity.updatedAt = this.isoNow();
@@ -938,6 +1034,7 @@ export class UploadJobService {
       } else if (existingLink) {
         await this.options.sidecar.removeRemoteModelLink(
           current.job.profileId,
+          current.job.serverBinding,
           current.item.hash,
         );
       }
@@ -952,9 +1049,8 @@ export class UploadJobService {
           false,
         );
       }
-      const approved = await this.openFirstApprovedLocation(model);
-      snapshot = await this.options.snapshots.create(
-        approved,
+      snapshot = await this.createSnapshotFromAvailableLocations(
+        model,
         current.item.hash,
         current.job.id,
         signal,
@@ -1019,7 +1115,13 @@ export class UploadJobService {
           throw error;
         }
       }
-      await this.linkRemote(current.job, current.item, remote);
+      await this.linkRemote(
+        current.job,
+        current.item,
+        remote,
+        context,
+        generation,
+      );
       await snapshot.cleanup();
       snapshot = null;
       await this.durableMutate((draft) => {
@@ -1030,6 +1132,7 @@ export class UploadJobService {
         const identity = requireIdentity(
           draft.identities,
           current.job.profileId,
+          current.job.serverBinding,
           current.item.hash,
         );
         identity.remoteModelId = remote.id;
@@ -1051,7 +1154,8 @@ export class UploadJobService {
         generation,
         legacyBytesCommitted ||
           (error instanceof ModelUploadError &&
-            error.bytesMayHaveReachedServer),
+            error.bytesMayHaveReachedServer &&
+            isLegacyAmbiguousError(error)),
       );
       if (cleanupError) throw cleanupError;
     }
@@ -1095,15 +1199,33 @@ export class UploadJobService {
     });
   }
 
-  private async openFirstApprovedLocation(
+  private async createSnapshotFromAvailableLocations(
     model: LogicalModel,
-  ): Promise<ApprovedFile> {
+    expectedHash: string,
+    jobId: string,
+    signal: AbortSignal,
+  ): Promise<UploadSnapshot> {
     let lastError: unknown = null;
     for (const location of model.locations) {
       if (!location.available) continue;
       try {
-        return await this.options.approvals.openApprovedFile(location.path);
+        const approved = await this.options.approvals.openApprovedFile(
+          location.path,
+        );
+        return await this.options.snapshots.create(
+          approved,
+          expectedHash,
+          jobId,
+          signal,
+        );
       } catch (error) {
+        if (signal.aborted) throw error;
+        if (
+          !(error instanceof RootApprovalError) &&
+          !(error instanceof SnapshotError && error.code !== 'SNAPSHOT_FAILED')
+        ) {
+          throw error;
+        }
         lastError = error;
       }
     }
@@ -1188,14 +1310,35 @@ export class UploadJobService {
     job: UploadJobDto,
     item: UploadJobItem,
     remote: RemoteUploadResultDto,
+    context: AuthenticatedProfileContext,
+    generation: number,
   ): Promise<void> {
+    await this.options.profiles.revalidateAuthenticatedContext(context);
+    if (generation !== this.queueGeneration || this.resetting) {
+      throw new StaleQueueGenerationError();
+    }
+    const live = this.currentItem(job.id, item.id);
+    if (
+      live.job.serverBinding !== context.serverBinding ||
+      live.item.state !== 'uploading'
+    ) {
+      throw profileChangedUploadError();
+    }
     const existing = parseRemoteLink(
-      await this.options.sidecar.getRemoteModelLink(job.profileId, item.hash),
+      await this.options.sidecar.getRemoteModelLink(
+        job.profileId,
+        job.serverBinding,
+        item.hash,
+      ),
     );
     if (existing) {
-      if (existing.uploadStatus !== 'uploaded') {
+      if (
+        existing.uploadStatus !== 'uploaded' ||
+        existing.serverBinding !== job.serverBinding
+      ) {
         await this.options.sidecar.removeRemoteModelLink(
           job.profileId,
+          job.serverBinding,
           item.hash,
         );
       } else {
@@ -1214,6 +1357,7 @@ export class UploadJobService {
     const uploadedAt = Math.floor(Date.parse(remote.uploadedAt) / 1000);
     await this.options.sidecar.linkRemoteModel({
       profileId: job.profileId,
+      serverBinding: job.serverBinding,
       localModelHash: item.hash,
       remoteModelId: remote.id,
       clientUploadId: item.clientUploadId,
@@ -1254,12 +1398,29 @@ export class UploadJobService {
   private async commitDraft(
     draft: UploadJobStoreState,
     expectedState?: UploadJobStoreState,
+    expectedGeneration = this.queueGeneration,
+    expectedBinding?: string,
   ): Promise<void> {
     await this.withMutationLock(async () => {
-      if (expectedState && this.state !== expectedState) {
+      if (
+        expectedGeneration !== this.queueGeneration ||
+        this.resetting ||
+        !this.initialized ||
+        (expectedState && this.state !== expectedState)
+      ) {
         throw new Error(
           'The upload queue changed concurrently. Retry creating the job.',
         );
+      }
+      if (
+        expectedBinding &&
+        draft.jobs.some(
+          (job) =>
+            job.serverBinding === expectedBinding &&
+            this.changingProfileBindings.has(job.profileId),
+        )
+      ) {
+        throw profileChangedUploadError();
       }
       for (const job of draft.jobs) refreshDerived(job);
       await this.options.store.saveState(draft);
@@ -1353,11 +1514,26 @@ function isProfileChanged(error: unknown): boolean {
   );
 }
 
+function isLegacyAmbiguousError(error: ModelUploadError): boolean {
+  return [
+    'ABORTED',
+    'UPLOAD_TIMEOUT',
+    'RESPONSE_TIMEOUT',
+    'TRANSPORT_ERROR',
+    'INVALID_RESPONSE',
+    'RESPONSE_TOO_LARGE',
+    'SERVER_ERROR',
+    'REQUEST_TIMEOUT',
+    'TOO_EARLY',
+  ].includes(error.detail.code);
+}
+
 function parseRemoteLink(raw: unknown): RemoteModelLink | null {
   if (raw === null || raw === undefined) return null;
   const parsed = z
     .object({
       profileId: z.string().uuid(),
+      serverBinding: z.string().min(1).max(128),
       localModelHash: z.string().regex(/^[a-f0-9]{64}$/),
       remoteModelId: z.string().min(1).max(256),
       clientUploadId: z.string().uuid(),
@@ -1371,6 +1547,7 @@ function parseRemoteLink(raw: unknown): RemoteModelLink | null {
     throw new Error('The catalog remote model link is invalid.');
   return {
     profileId: parsed.data.profileId,
+    serverBinding: parsed.data.serverBinding,
     localModelHash: parsed.data.localModelHash,
     remoteModelId: parsed.data.remoteModelId,
     clientUploadId: parsed.data.clientUploadId,
@@ -1463,10 +1640,14 @@ function requireItem(
 function requireIdentity(
   identities: UploadIdentity[],
   profileId: string,
+  serverBinding: string,
   hash: string,
 ): UploadIdentity {
   const identity = identities.find(
-    (candidate) => candidate.profileId === profileId && candidate.hash === hash,
+    (candidate) =>
+      candidate.profileId === profileId &&
+      candidate.serverBinding === serverBinding &&
+      candidate.hash === hash,
   );
   if (!identity) throw new Error('Durable upload identity not found.');
   return identity;
@@ -1527,7 +1708,7 @@ function identitiesFromJobs(jobs: UploadJobDto[]): UploadIdentity[] {
   const identities = new Map<string, UploadIdentity>();
   for (const job of jobs) {
     for (const item of job.items) {
-      const key = `${job.profileId}:${item.hash}`;
+      const key = `${job.profileId}:${job.serverBinding}:${item.hash}`;
       const existing = identities.get(key);
       if (existing && existing.clientUploadId !== item.clientUploadId) {
         throw new UploadJobStoreError(

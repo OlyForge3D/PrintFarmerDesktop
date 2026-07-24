@@ -97,7 +97,7 @@ export class PrivateSnapshotManager implements SnapshotManager {
     let source: FileHandle | null = approved.handle;
     let destination: FileHandle | null = null;
     try {
-      const opened = await source.stat();
+      const opened = await source.stat({ bigint: true });
       if (!opened.isFile()) {
         throw new SnapshotError(
           'SOURCE_UNAVAILABLE',
@@ -105,8 +105,8 @@ export class PrivateSnapshotManager implements SnapshotManager {
         );
       }
       if (
-        opened.size !== approved.size ||
-        opened.size > MAX_UPLOAD_REQUEST_BYTES
+        opened.size !== BigInt(approved.size) ||
+        opened.size > BigInt(MAX_UPLOAD_REQUEST_BYTES)
       ) {
         throw new SnapshotError(
           'SOURCE_TOO_LARGE',
@@ -155,7 +155,10 @@ export class PrivateSnapshotManager implements SnapshotManager {
           written += result.bytesWritten;
         }
       }
-      if (total !== opened.size || hash.digest('hex') !== expectedHash) {
+      if (
+        total !== Number(opened.size) ||
+        hash.digest('hex') !== expectedHash
+      ) {
         throw new SnapshotError(
           'SOURCE_CHANGED',
           'The catalog source bytes no longer match its catalog identity.',

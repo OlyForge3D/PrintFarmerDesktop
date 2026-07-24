@@ -131,7 +131,7 @@ describe('catalog multi-selection and upload queue UI', () => {
     ).not.toBeInTheDocument();
     fireEvent.click(
       screen.getByRole('button', {
-        name: 'I understand—retry legacy upload',
+        name: 'Confirm duplicate risk and upload',
       }),
     );
     expect(confirm).toHaveBeenCalledWith(job.id);
@@ -195,9 +195,49 @@ describe('catalog multi-selection and upload queue UI', () => {
     expect(retry).toHaveBeenCalledWith(job.id);
     expect(
       screen.queryByRole('button', {
-        name: 'I understand—retry legacy upload',
+        name: 'Confirm duplicate risk and upload',
       }),
     ).not.toBeInTheDocument();
+  });
+
+  it('offers removal, not retry, for a definitive legacy 413 rejection', () => {
+    const job = uploadJob();
+    job.items[0]!.state = 'failed';
+    job.items[0]!.error = {
+      code: 'PAYLOAD_TOO_LARGE',
+      message: 'The model is too large for this server.',
+      retryable: false,
+      retryAfterSeconds: null,
+      duplicateRisk: false,
+    };
+    job.state = 'partialFailure';
+    job.summary = {
+      queued: 0,
+      uploading: 0,
+      succeeded: 0,
+      failed: 1,
+      cancelled: 0,
+      uncertain: 0,
+    };
+    render(
+      <UploadQueueDialog
+        jobs={[job]}
+        busy={false}
+        error={null}
+        onPause={vi.fn()}
+        onResume={vi.fn()}
+        onCancel={vi.fn()}
+        onRetry={vi.fn()}
+        onConfirmLegacyRetry={vi.fn()}
+        onRemove={vi.fn()}
+        onReset={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(
+      screen.queryByRole('button', { name: 'Retry incomplete' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove' })).toBeVisible();
   });
 });
 

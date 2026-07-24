@@ -107,10 +107,13 @@ Queue reset is deliberate and retains the previous store as a backup.
 
 Upload source approval returns one verified file handle: main compares
 canonical paths and lstat/fstat identities before and after opening, without
-case folding, and snapshot hashing reads only that handle. Startup removes only
-well-formed stale snapshot directories. Queue generations fence initialization,
-scheduler claims, workers, progress, reset, and removal. Remote links suppress
-uploads only when their status is uploaded and their durable profile/endpoint
-binding still matches; profile endpoint changes abort old work and purge the
-old binding through the sidecar. Approval reset is a separate confirmed user
-action.
+case folding, using lossless bigint device/file IDs, and snapshot hashing reads
+only that handle. Startup removes only well-formed stale snapshot directories.
+Queue generations fence initialization, scheduler claims, long-running starts,
+workers, progress, reset, and removal. Reset preserves the separate durable
+modern upload identities. Remote links are keyed and persisted in Rust/SQLite
+by profile, immutable server binding, and local hash; only uploaded,
+exact-binding links suppress transfer. Pre-migration unbound links require
+explicit duplicate-risk resolution. Profile endpoint changes await old workers
+before purging only the old binding. Approval reset is a separate confirmed
+user action.

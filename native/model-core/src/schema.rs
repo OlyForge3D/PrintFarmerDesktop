@@ -8,7 +8,7 @@
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -237,6 +237,36 @@ CREATE INDEX idx_sync_outbox_incarnation
     ON sync_outbox(profile_id, batch_id, batch_incarnation, state, sequence);
 CREATE INDEX idx_sync_conflicts_incarnation
     ON sync_conflicts(profile_id, batch_id, batch_incarnation, resolved_at);
+"#;
+
+/// Additive v6 server binding for durable upload identity isolation. Existing
+/// links are deliberately unbound and must be resolved by the Desktop user.
+pub const SCHEMA_V6: &str = r#"
+CREATE TABLE remote_model_links_v6 (
+    profile_id       TEXT NOT NULL REFERENCES sync_profiles(profile_id) ON DELETE CASCADE,
+    server_binding   TEXT NOT NULL DEFAULT 'legacy-unbound',
+    local_model_hash TEXT NOT NULL,
+    remote_model_id  TEXT NOT NULL,
+    client_upload_id TEXT NOT NULL,
+    etag             TEXT,
+    upload_status    TEXT NOT NULL,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL,
+    uploaded_at      INTEGER,
+    PRIMARY KEY (profile_id, server_binding, local_model_hash),
+    UNIQUE (profile_id, server_binding, remote_model_id),
+    UNIQUE (profile_id, server_binding, client_upload_id)
+);
+
+INSERT INTO remote_model_links_v6(
+    profile_id, server_binding, local_model_hash, remote_model_id,
+    client_upload_id, etag, upload_status, created_at, updated_at, uploaded_at)
+SELECT profile_id, 'legacy-unbound', local_model_hash, remote_model_id,
+       client_upload_id, etag, upload_status, created_at, updated_at, uploaded_at
+FROM remote_model_links;
+
+DROP TABLE remote_model_links;
+ALTER TABLE remote_model_links_v6 RENAME TO remote_model_links;
 "#;
 
 #[cfg(test)]

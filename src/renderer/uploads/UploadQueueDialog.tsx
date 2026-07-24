@@ -222,7 +222,7 @@ export function UploadQueueDialog({
                         disabled={busy}
                         onClick={() => onConfirmLegacyRetry(job.id)}
                       >
-                        I understand—retry legacy upload
+                        Confirm duplicate risk and upload
                       </button>
                     ) : null}
                     {removable ? (

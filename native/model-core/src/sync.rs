@@ -261,6 +261,8 @@ impl SyncStatusDto {
 #[serde(rename_all = "camelCase")]
 pub struct RemoteModelLinkDto {
     pub profile_id: String,
+    #[serde(default = "legacy_unbound")]
+    pub server_binding: String,
     pub local_model_hash: String,
     pub remote_model_id: String,
     pub client_upload_id: String,
@@ -271,6 +273,10 @@ pub struct RemoteModelLinkDto {
     pub updated_at: i64,
     #[serde(default)]
     pub uploaded_at: Option<i64>,
+}
+
+fn legacy_unbound() -> String {
+    "legacy-unbound".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -593,6 +599,7 @@ pub(crate) fn validate_local_hash(hash: &str) -> Result<(), String> {
 
 pub(crate) fn validate_remote_link(link: &RemoteModelLinkDto) -> Result<(), String> {
     validate_profile(&link.profile_id)?;
+    validate_identifier("serverBinding", &link.server_binding)?;
     validate_local_hash(&link.local_model_hash)?;
     validate_identifier("remoteModelId", &link.remote_model_id)?;
     validate_identifier("clientUploadId", &link.client_upload_id)?;
@@ -617,6 +624,7 @@ pub(crate) fn merge_remote_link(
 ) -> Result<RemoteModelLinkDto, String> {
     if existing.profile_id != incoming.profile_id
         || existing.local_model_hash != incoming.local_model_hash
+        || existing.server_binding != incoming.server_binding
         || existing.remote_model_id != incoming.remote_model_id
         || existing.client_upload_id != incoming.client_upload_id
         || existing.created_at != incoming.created_at
@@ -1065,6 +1073,7 @@ mod tests {
     fn link(profile: &str, letter: char) -> RemoteModelLinkDto {
         RemoteModelLinkDto {
             profile_id: profile.to_string(),
+            server_binding: "binding-a".to_string(),
             local_model_hash: hash(letter),
             remote_model_id: format!("remote-{letter}"),
             client_upload_id: format!("upload-{letter}"),
@@ -1074,6 +1083,24 @@ mod tests {
             updated_at: 10,
             uploaded_at: None,
         }
+    }
+
+    #[test]
+    fn remote_links_are_isolated_by_server_binding_in_memory() {
+        let mut store = InMemoryCatalog::new();
+        let first = link("p", 'a');
+        store.link_remote_model(first.clone()).unwrap();
+        let mut second = first;
+        second.server_binding = "binding-b".to_string();
+        store.link_remote_model(second).unwrap();
+        assert!(store
+            .remote_model_link("p", "binding-a", &hash('a'))
+            .unwrap()
+            .is_some());
+        assert!(store
+            .remote_model_link("p", "binding-b", &hash('a'))
+            .unwrap()
+            .is_some());
     }
 
     fn collection_entity(remote_id: &str, local_id: Option<&str>, revision: u64) -> PullEntityDto {
@@ -1160,7 +1187,10 @@ mod tests {
         let mut mismatch = link("p1", 'a');
         mismatch.remote_model_id = "different".to_string();
         assert!(store.link_remote_model(mismatch).is_err());
-        assert!(store.remote_model_link("p2", &hash('a')).unwrap().is_none());
+        assert!(store
+            .remote_model_link("p2", "binding-a", &hash('a'))
+            .unwrap()
+            .is_none());
 
         let status = store
             .apply_pull_batch(ApplyPullBatchDto {
@@ -1357,7 +1387,10 @@ mod tests {
         mismatch.remote_model_id = "different".to_string();
         assert!(store.link_remote_model(mismatch).is_err());
         assert_eq!(
-            store.remote_model_link("p", &hash('a')).unwrap().unwrap(),
+            store
+                .remote_model_link("p", "binding-a", &hash('a'))
+                .unwrap()
+                .unwrap(),
             link("p", 'a')
         );
     }

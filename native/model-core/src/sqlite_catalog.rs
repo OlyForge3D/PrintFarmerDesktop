@@ -22,7 +22,9 @@ use crate::catalog::{
     CatalogStore, Collection, LocationUpsert, LogicalModel, ModelLocation, StoredLocation, Tag,
 };
 use crate::model::{FileFingerprint, ModelFormat};
-use crate::schema::{SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_VERSION};
+use crate::schema::{
+    SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_VERSION,
+};
 use crate::sync::{
     self, ApplyPullBatchDto, ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution,
     DisposeFailedBatchDto, EnqueueOutboundOperationDto, EntityRevisionDto, OutboundOperationDto,
@@ -81,6 +83,9 @@ impl SqliteCatalog {
                 if version < 5 {
                     conn.execute_batch(SCHEMA_V5)?;
                     migrate_v5_fencing(&conn)?;
+                }
+                if version < 6 {
+                    conn.execute_batch(SCHEMA_V6)?;
                 }
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 conn.execute_batch("COMMIT")
@@ -938,7 +943,11 @@ impl CatalogStore for SqliteCatalog {
         sync::validate_remote_link(&link)?;
         self.ensure_sync_profile(&link.profile_id)?;
         let link = self
-            .remote_model_link(&link.profile_id, &link.local_model_hash)?
+            .remote_model_link(
+                &link.profile_id,
+                &link.server_binding,
+                &link.local_model_hash,
+            )?
             .map_or_else(
                 || Ok(link.clone()),
                 |existing| sync::merge_remote_link(&existing, &link),
@@ -949,16 +958,17 @@ impl CatalogStore for SqliteCatalog {
         self.conn
             .execute(
                 "INSERT INTO remote_model_links(
-                    profile_id, local_model_hash, remote_model_id, client_upload_id,
-                    etag, upload_status, created_at, updated_at, uploaded_at)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                 ON CONFLICT(profile_id, local_model_hash) DO UPDATE SET
+                    profile_id, server_binding, local_model_hash, remote_model_id,
+                    client_upload_id, etag, upload_status, created_at, updated_at, uploaded_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT(profile_id, server_binding, local_model_hash) DO UPDATE SET
                     etag = excluded.etag,
                     upload_status = excluded.upload_status,
                     updated_at = excluded.updated_at,
                     uploaded_at = excluded.uploaded_at",
                 params![
                     link.profile_id,
+                    link.server_binding,
                     link.local_model_hash,
                     link.remote_model_id,
                     link.client_upload_id,
@@ -982,16 +992,20 @@ impl CatalogStore for SqliteCatalog {
     fn remote_model_link(
         &self,
         profile_id: &str,
+        server_binding: &str,
         local_model_hash: &str,
     ) -> Result<Option<RemoteModelLinkDto>, String> {
         sync::validate_profile(profile_id)?;
+        sync::validate_identifier("serverBinding", server_binding)?;
         sync::validate_local_hash(local_model_hash)?;
         self.conn
             .query_row(
                 "SELECT profile_id, local_model_hash, remote_model_id, client_upload_id,
-                        etag, upload_status, created_at, updated_at, uploaded_at
-                 FROM remote_model_links WHERE profile_id = ?1 AND local_model_hash = ?2",
-                params![profile_id, local_model_hash],
+                        etag, upload_status, created_at, updated_at, uploaded_at,
+                        server_binding
+                 FROM remote_model_links
+                 WHERE profile_id = ?1 AND server_binding = ?2 AND local_model_hash = ?3",
+                params![profile_id, server_binding, local_model_hash],
                 remote_link_from_row,
             )
             .optional()
@@ -1001,21 +1015,28 @@ impl CatalogStore for SqliteCatalog {
     fn remote_model_links(
         &self,
         profile_id: &str,
+        server_binding: &str,
         limit: usize,
     ) -> Result<Vec<RemoteModelLinkDto>, String> {
         sync::validate_profile(profile_id)?;
+        sync::validate_identifier("serverBinding", server_binding)?;
         sync::validate_limit(limit)?;
         let mut stmt = self
             .conn
             .prepare(
                 "SELECT profile_id, local_model_hash, remote_model_id, client_upload_id,
-                        etag, upload_status, created_at, updated_at, uploaded_at
-                 FROM remote_model_links WHERE profile_id = ?1
-                 ORDER BY local_model_hash LIMIT ?2",
+                        etag, upload_status, created_at, updated_at, uploaded_at,
+                        server_binding
+                 FROM remote_model_links
+                 WHERE profile_id = ?1 AND server_binding = ?2
+                 ORDER BY local_model_hash LIMIT ?3",
             )
             .map_err(sql_error)?;
         let links = stmt
-            .query_map(params![profile_id, limit as i64], remote_link_from_row)
+            .query_map(
+                params![profile_id, server_binding, limit as i64],
+                remote_link_from_row,
+            )
             .map_err(sql_error)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(sql_error)?;
@@ -1025,26 +1046,34 @@ impl CatalogStore for SqliteCatalog {
     fn remove_remote_model_link(
         &mut self,
         profile_id: &str,
+        server_binding: &str,
         local_model_hash: &str,
     ) -> Result<bool, String> {
         crate::sync::validate_profile(profile_id)?;
+        crate::sync::validate_identifier("serverBinding", server_binding)?;
         crate::sync::validate_local_hash(local_model_hash)?;
         self.conn
             .execute(
                 "DELETE FROM remote_model_links
-                 WHERE profile_id = ?1 AND local_model_hash = ?2",
-                params![profile_id, local_model_hash],
+                 WHERE profile_id = ?1 AND server_binding = ?2 AND local_model_hash = ?3",
+                params![profile_id, server_binding, local_model_hash],
             )
             .map(|changed| changed > 0)
             .map_err(sql_error)
     }
 
-    fn purge_remote_model_links(&mut self, profile_id: &str) -> Result<usize, String> {
+    fn purge_remote_model_links(
+        &mut self,
+        profile_id: &str,
+        server_binding: &str,
+    ) -> Result<usize, String> {
         crate::sync::validate_profile(profile_id)?;
+        crate::sync::validate_identifier("serverBinding", server_binding)?;
         self.conn
             .execute(
-                "DELETE FROM remote_model_links WHERE profile_id = ?1",
-                params![profile_id],
+                "DELETE FROM remote_model_links
+                 WHERE profile_id = ?1 AND server_binding = ?2",
+                params![profile_id, server_binding],
             )
             .map_err(sql_error)
     }
@@ -2121,6 +2150,7 @@ fn remote_link_from_row(row: &Row<'_>) -> rusqlite::Result<RemoteModelLinkDto> {
     let status: String = row.get(5)?;
     Ok(RemoteModelLinkDto {
         profile_id: row.get(0)?,
+        server_binding: row.get(9)?,
         local_model_hash: row.get(1)?,
         remote_model_id: row.get(2)?,
         client_upload_id: row.get(3)?,
@@ -2494,6 +2524,62 @@ mod tests {
     }
 
     #[test]
+    fn v6_migrates_links_as_unbound_and_allows_binding_parity() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("v5-links.sqlite3");
+        let hash = "a".repeat(64);
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.execute_batch(SCHEMA_V2).unwrap();
+            conn.execute_batch(SCHEMA_V3).unwrap();
+            conn.execute_batch(SCHEMA_V4).unwrap();
+            conn.execute_batch(SCHEMA_V5).unwrap();
+            migrate_v5_fencing(&conn).unwrap();
+            conn.execute("INSERT INTO sync_profiles(profile_id) VALUES('p')", [])
+                .unwrap();
+            conn.execute(
+                "INSERT INTO remote_model_links(
+                        profile_id, local_model_hash, remote_model_id, client_upload_id,
+                        upload_status, created_at, updated_at, uploaded_at)
+                     VALUES('p', ?1, 'remote-a', 'upload-a', 'uploaded', 1, 1, 1)",
+                params![hash],
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 5).unwrap();
+        }
+
+        let mut store = SqliteCatalog::open(&db).unwrap();
+        let legacy = store
+            .remote_model_link("p", "legacy-unbound", &hash)
+            .unwrap()
+            .unwrap();
+        assert_eq!(legacy.server_binding, "legacy-unbound");
+        store
+            .link_remote_model(RemoteModelLinkDto {
+                profile_id: "p".to_string(),
+                server_binding: "binding-new".to_string(),
+                local_model_hash: hash.clone(),
+                remote_model_id: "remote-a".to_string(),
+                client_upload_id: "upload-a".to_string(),
+                etag: None,
+                upload_status: RemoteUploadStatus::Uploaded,
+                created_at: 1,
+                updated_at: 1,
+                uploaded_at: Some(1),
+            })
+            .unwrap();
+        assert!(store
+            .remote_model_link("p", "binding-new", &hash)
+            .unwrap()
+            .is_some());
+        assert!(store
+            .remote_model_link("p", "legacy-unbound", &hash)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
     fn identical_bytes_across_paths_form_one_duplicate_group() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -2671,6 +2757,7 @@ mod tests {
             store
                 .link_remote_model(RemoteModelLinkDto {
                     profile_id: "p".to_string(),
+                    server_binding: "binding-a".to_string(),
                     local_model_hash: hash.clone(),
                     remote_model_id: "remote".to_string(),
                     client_upload_id: "upload".to_string(),
@@ -2684,7 +2771,10 @@ mod tests {
         }
 
         let store = SqliteCatalog::open(&database).unwrap();
-        assert!(store.remote_model_link("p", &hash).unwrap().is_none());
+        assert!(store
+            .remote_model_link("p", "binding-a", &hash)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

@@ -187,25 +187,38 @@ export class SidecarClient {
   }
 
   /** Return the durable profile/hash upload mapping, when one exists. */
-  async getRemoteModelLink(profileId: string, hash: string): Promise<unknown> {
+  async getRemoteModelLink(
+    profileId: string,
+    serverBinding: string,
+    hash: string,
+  ): Promise<unknown> {
     return this.request('getRemoteModelLink', {
       profileId,
+      serverBinding,
       localModelHash: hash,
     });
   }
 
   async removeRemoteModelLink(
     profileId: string,
+    serverBinding: string,
     hash: string,
   ): Promise<unknown> {
     return this.request('removeRemoteModelLink', {
       profileId,
+      serverBinding,
       localModelHash: hash,
     });
   }
 
-  async purgeRemoteModelLinks(profileId: string): Promise<unknown> {
-    return this.request('purgeRemoteModelLinks', { profileId });
+  async purgeRemoteModelLinks(
+    profileId: string,
+    serverBinding: string,
+  ): Promise<unknown> {
+    return this.request('purgeRemoteModelLinks', {
+      profileId,
+      serverBinding,
+    });
   }
 
   /** List every tag known to the catalog (raw wire array). */
