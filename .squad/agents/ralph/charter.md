@@ -41,6 +41,9 @@ Full behavior, triggers, and the check-cycle steps are documented in `.squad/tem
 
 **Active issues to watch:** #24, #25, #26, #27, #28 in `OlyForge3D/PrintFarmerDesktop`
 
+**Scope exclusions (2026-07-24, active until further notice):** Do NOT scan, triage, categorize, or act on epic **#42** (Printer Calibration — handled as a separate track, not part of this backlog) or epic **#44** (Snapmaker U1 — explicitly held out of sequencing per Jeff's direction) or any of their child issues/PRs. Filter these out at Step 1 (scan) before categorizing. Everything else in the repo — including epics #4, #5, #6, #7, #8 and any newly-triaged `squad`-labeled issue not under #42/#44 — is in scope.
+
 ## Learnings
 
 Initial setup complete (2026-07-23). Ready to scan #24-#28 for triage state on next activation.
+Activated 2026-07-24 by Jeff via Ripley: drive all epics except #42 and #44.
