@@ -402,6 +402,102 @@ describe('<ConflictResolutionCenter /> resolution contract', () => {
     });
   });
 
+  it('guards against firing duplicate resolve requests from rapid repeated submissions', () => {
+    const onResolve = vi.fn<ConflictResolutionCenterProps['onResolve']>();
+    render(<ConflictResolutionCenter {...centerProps({ onResolve })} />);
+
+    fireEvent.click(
+      screen.getByRole('checkbox', {
+        name: /I have reviewed the comparison/,
+      }),
+    );
+    const resolve = screen.getByRole('button', { name: 'Resolve conflict' });
+
+    // Simulates two submissions racing ahead of the parent's re-render (a
+    // fast double-click, or a mouse click immediately followed by a second
+    // click) while `conflict.resolutionState` is still 'ready' in props --
+    // the window before React commits the parent's own state update.
+    fireEvent.click(resolve);
+    fireEvent.click(resolve);
+
+    expect(onResolve).toHaveBeenCalledOnce();
+    expect(onResolve).toHaveBeenCalledWith({
+      profileId: PROFILE_ID,
+      conflictId: 'conflict-collection',
+      conflictVersion: 7,
+      expectedUnresolvedToken: 'unresolved-collection-7',
+      batchIncarnation: 'batch-incarnation-3',
+      expectedAttemptToken: 'attempt-token-5',
+      actionInput: { kind: 'acceptServer' },
+    });
+  });
+
+  it('guards against a duplicate submission triggered via keyboard form submit racing a pointer click', () => {
+    const onResolve = vi.fn<ConflictResolutionCenterProps['onResolve']>();
+    const { container } = render(
+      <ConflictResolutionCenter {...centerProps({ onResolve })} />,
+    );
+
+    fireEvent.click(
+      screen.getByRole('checkbox', {
+        name: /I have reviewed the comparison/,
+      }),
+    );
+    const resolve = screen.getByRole('button', { name: 'Resolve conflict' });
+    const form = container.querySelector('form.conflict-center-resolution');
+    expect(form).not.toBeNull();
+
+    // A pointer click and a keyboard-triggered form submit (e.g. Enter) can
+    // both reach `submit()` before props reflect the first attempt.
+    fireEvent.click(resolve);
+    fireEvent.submit(form!);
+
+    expect(onResolve).toHaveBeenCalledOnce();
+  });
+
+  it('releases the duplicate-submission guard once the parent reports a new outcome, allowing a legitimate retry', () => {
+    const onResolve = vi.fn<ConflictResolutionCenterProps['onResolve']>();
+    const { rerender } = render(
+      <ConflictResolutionCenter {...centerProps({ onResolve })} />,
+    );
+
+    fireEvent.click(
+      screen.getByRole('checkbox', {
+        name: /I have reviewed the comparison/,
+      }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve conflict' }));
+    expect(onResolve).toHaveBeenCalledOnce();
+
+    // Parent acknowledges the attempt and moves the conflict into resolving...
+    rerender(
+      <ConflictResolutionCenter
+        {...centerProps({
+          conflicts: [collectionConflict({ resolutionState: 'resolving' })],
+          onResolve,
+        })}
+      />,
+    );
+    // ...then the attempt fails and control returns to the desktop with an
+    // error, at the same conflictVersion/unresolvedToken/attemptToken.
+    rerender(
+      <ConflictResolutionCenter
+        {...centerProps({
+          conflicts: [
+            collectionConflict({
+              resolutionState: 'ready',
+              resolutionError: 'Another window resolved this conflict first.',
+            }),
+          ],
+          onResolve,
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Resolve conflict' }));
+    expect(onResolve).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     ['resolving', 'The parent is resolving this conflict'],
     ['stale', 'This conflict changed'],

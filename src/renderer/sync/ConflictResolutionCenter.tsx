@@ -453,6 +453,28 @@ function ResolutionPanel({
   const unavailable = conflict.resolutionState !== 'ready';
   const disabled = refreshInProgress || unavailable;
 
+  // Guards against a double-submission race: `disabled` only reflects the
+  // parent's resolutionState once its props flow back down through React,
+  // which is asynchronous relative to the click/Enter that fires `submit`.
+  // Two rapid submits (double-click, double Enter, or click+Enter) before
+  // that round trip commits would otherwise both pass the `disabled` check
+  // above and fire `onResolve` twice for the same attempt. `inFlightRef` is
+  // mutated synchronously, closing that window regardless of render timing.
+  // It is released once the parent actually reflects an outcome for this
+  // attempt (resolutionState or resolutionError changes), so a legitimate
+  // retry after a failed resolution is never permanently locked out.
+  const inFlightRef = useRef(false);
+  const lastOutcomeRef = useRef(
+    `${conflict.resolutionState}|${conflict.resolutionError ?? ''}`,
+  );
+  useEffect(() => {
+    const outcome = `${conflict.resolutionState}|${conflict.resolutionError ?? ''}`;
+    if (outcome !== lastOutcomeRef.current) {
+      lastOutcomeRef.current = outcome;
+      inFlightRef.current = false;
+    }
+  }, [conflict.resolutionState, conflict.resolutionError]);
+
   const changeChoice = (next: ResolutionKind): void => {
     setChoice(next);
     setConfirmed(false);
@@ -466,6 +488,8 @@ function ResolutionPanel({
 
   const submit = (): void => {
     if (disabled || !confirmed || hasValidationError) return;
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     let actionInput: ConflictResolutionActionInput;
     if (choice === 'manualMerge') {
       if (conflict.entityType !== 'ModelCollection') return;
