@@ -72,6 +72,18 @@ describe('libraryPresentation', () => {
     expect(presentation.state).toBe('empty-scan');
   });
 
+  it('treats a configured empty root as post-onboarding even before a scan report', () => {
+    const presentation = libraryPresentation(
+      [],
+      'idle',
+      null,
+      defaultLibraryView,
+      1,
+    );
+
+    expect(presentation.state).toBe('empty-scan');
+  });
+
   it('distinguishes a filter miss from an empty catalog', () => {
     const presentation = libraryPresentation(
       [model('abc', 'benchy.stl')],

@@ -134,6 +134,7 @@ describe('library model helpers', () => {
 describe('useLibrary', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    window.localStorage.clear();
   });
 
   it('loads the persisted catalog on mount', async () => {
@@ -466,6 +467,67 @@ describe('useLibrary', () => {
 
     expect(previewImport).not.toHaveBeenCalled();
     expect(importRoot).not.toHaveBeenCalled();
+  });
+
+  it('tracks source root status and reconnects a missing root', async () => {
+    const missingModel = model({
+      locations: [
+        {
+          rootId: 'root-1',
+          path: 'C:\\models\\widget.stl',
+          rootRelative: 'widget.stl',
+          size: 2048,
+          available: false,
+        },
+      ],
+    });
+    const availableModel = model();
+    const listModels = vi
+      .fn()
+      .mockResolvedValueOnce([missingModel])
+      .mockResolvedValueOnce([availableModel]);
+    const scanRoot = vi.fn().mockResolvedValue({
+      added: 0,
+      changed: 0,
+      unchanged: 1,
+      missing: 0,
+      hashErrors: 0,
+    });
+    installApi({ listModels, scanRoot });
+
+    const { result } = renderHook(() => useLibrary());
+    await waitFor(() => expect(result.current.sourceRoots).toHaveLength(1));
+
+    expect(result.current.sourceRoots[0]).toMatchObject({
+      path: 'C:\\models',
+      status: 'missing',
+      totalModels: 1,
+    });
+
+    await act(async () => {
+      await result.current.rescanRoot('root-1');
+    });
+
+    expect(scanRoot).toHaveBeenCalledWith({
+      rootId: 'root-1',
+      path: 'C:\\models',
+    });
+    expect(result.current.lastReport?.unchanged).toBe(1);
+    expect(result.current.sourceRoots[0]?.status).toBe('available');
+  });
+
+  it('hides removed source roots locally from the library surface', async () => {
+    installApi({ listModels: vi.fn().mockResolvedValue([model()]) });
+
+    const { result } = renderHook(() => useLibrary());
+    await waitFor(() => expect(result.current.models).toHaveLength(1));
+
+    act(() => {
+      result.current.removeRoot('root-1');
+    });
+
+    expect(result.current.models).toEqual([]);
+    expect(result.current.sourceRoots).toEqual([]);
   });
 
   it('surfaces an error when the catalog cannot be read', async () => {

@@ -27,6 +27,7 @@ import { folderBasename, libraryPresentation } from './library/presentation';
 import { useVendorMetadata } from './library/useVendorMetadata';
 import { computeSceneStats, type SceneStats } from './library/sceneStats';
 import { ImportWizard } from './library/ImportWizard';
+import { LibraryOnboarding } from './library/LibraryOnboarding';
 import {
   forgetImportPlan,
   rememberImportPlan,
@@ -57,6 +58,7 @@ export function App(): React.JSX.Element {
     });
   const [profilesOpen, setProfilesOpen] = useState(false);
   const [importPreparing, setImportPreparing] = useState(false);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
   const [modalOwner, setModalOwnerState] = useState<ModalOwner>('none');
   const [query, setQuery] = useState(defaultLibraryView.query);
   const [filter, setFilter] = useState<FilterKey>(defaultLibraryView.filter);
@@ -87,6 +89,7 @@ export function App(): React.JSX.Element {
   const previewReturnFocusRef = useRef<HTMLElement | null>(null);
   const importReturnFocusRef = useRef<HTMLElement | null>(null);
   const profileReturnFocusRef = useRef<HTMLElement | null>(null);
+  const onboardingReturnFocusRef = useRef<HTMLElement | null>(null);
   const restoreProfileFocusRef = useRef(false);
   const importPreparationRef = useRef(false);
   const modalOwnerRef = useRef<ModalOwner>('none');
@@ -158,7 +161,18 @@ export function App(): React.JSX.Element {
     },
     [releaseModal],
   );
-  const modalOpen = previewOpen || library.importDraft !== null || profilesOpen;
+  const onboardingOpen =
+    !onboardingDismissed &&
+    library.status !== 'loading' &&
+    !profilesOpen &&
+    !previewOpen &&
+    !library.importDraft &&
+    !importPreparing &&
+    library.sourceRoots.length === 0;
+  const modalOpen =
+    onboardingOpen || previewOpen || library.importDraft !== null || profilesOpen;
+  const backgroundExcluded =
+    previewOpen || library.importDraft !== null || profilesOpen;
   const prepareFolderImport = library.addFolder;
   const dismissFolderImport = library.cancelImport;
   const commitFolderImport = library.confirmImport;
@@ -229,8 +243,15 @@ export function App(): React.JSX.Element {
         library.status,
         library.lastReport,
         libraryView,
+        library.sourceRoots.length,
       ),
-    [library.models, library.status, library.lastReport, libraryView],
+    [
+      library.lastReport,
+      library.models,
+      library.sourceRoots.length,
+      library.status,
+      libraryView,
+    ],
   );
   const counts = useMemo<LibraryCounts>(
     () => ({
@@ -269,6 +290,12 @@ export function App(): React.JSX.Element {
         }
       });
   }, []);
+
+  useEffect(() => {
+    if (library.sourceRoots.length > 0) {
+      setOnboardingDismissed(false);
+    }
+  }, [library.sourceRoots.length]);
 
   useEffect(() => {
     if (isScanning && !wasScanningRef.current) {
@@ -312,19 +339,22 @@ export function App(): React.JSX.Element {
       workspaceRef.current,
       statusbarRef.current,
     ]) {
-      if (modalOpen) {
+      if (backgroundExcluded) {
         element?.setAttribute('inert', '');
       } else {
         element?.removeAttribute('inert');
       }
     }
-  }, [modalOpen]);
+  }, [backgroundExcluded]);
 
   useEffect(() => {
     if (profilesOpen || !restoreProfileFocusRef.current) return;
     restoreProfileFocusRef.current = false;
     const timeout = setTimeout(() => {
-      profileReturnFocusRef.current?.focus();
+      const previous = profileReturnFocusRef.current;
+      const fallback =
+        document.querySelector<HTMLElement>('.server-profile-entry');
+      (previous?.isConnected ? previous : fallback)?.focus();
     }, 0);
     return () => clearTimeout(timeout);
   }, [profilesOpen]);
@@ -662,6 +692,9 @@ export function App(): React.JSX.Element {
   const openProfiles = (): void => {
     if (serverProfilesDisabled) return;
     if (reserveModal('profiles') === null) return;
+    if (onboardingOpen) {
+      setOnboardingDismissed(true);
+    }
     refreshServerProfiles();
     profileReturnFocusRef.current =
       document.activeElement instanceof HTMLElement
@@ -674,13 +707,31 @@ export function App(): React.JSX.Element {
     setProfilesOpen(false);
     releaseModal('profiles');
   };
+  const dismissOnboarding = useCallback(() => {
+    setOnboardingDismissed(true);
+    setTimeout(() => {
+      const previous = onboardingReturnFocusRef.current;
+      const fallback = document.querySelector<HTMLElement>(
+        '.sidebar-primary-action',
+      );
+      (previous?.isConnected ? previous : fallback)?.focus();
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!onboardingOpen) return;
+    onboardingReturnFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+  }, [onboardingOpen]);
 
   return (
     <div className={`app-root${info ? ` platform-${info.platform}` : ''}`}>
       <header
         ref={titlebarRef}
         className="window-titlebar"
-        aria-hidden={modalOpen ? 'true' : undefined}
+        aria-hidden={backgroundExcluded ? 'true' : undefined}
       >
         <div className="product-identity">
           <img
@@ -699,7 +750,7 @@ export function App(): React.JSX.Element {
       <div
         ref={workspaceRef}
         className="workspace"
-        aria-hidden={modalOpen ? 'true' : undefined}
+        aria-hidden={backgroundExcluded ? 'true' : undefined}
       >
         <LibrarySidebar
           query={query}
@@ -709,12 +760,18 @@ export function App(): React.JSX.Element {
           lastReport={library.lastReport}
           lastImport={library.lastImport}
           busy={workspaceActionsDisabled}
+          sourceRoots={library.sourceRoots}
+          scanActivity={library.scanActivity}
           onQueryChange={setQuery}
           onFilterChange={setFilter}
           onAddFolder={beginImport}
           onRefresh={() => {
             void library.refresh();
           }}
+          onRescanRoot={(rootId) => {
+            void library.rescanRoot(rootId);
+          }}
+          onRemoveRoot={library.removeRoot}
           serverProfile={activeServer}
           serverProfilesDisabled={serverProfilesDisabled}
           onManageServerProfiles={openProfiles}
@@ -755,7 +812,7 @@ export function App(): React.JSX.Element {
             </div>
           </header>
 
-          <p
+          <div
             ref={scanStatusRef}
             tabIndex={-1}
             className="library-live-status"
@@ -763,10 +820,35 @@ export function App(): React.JSX.Element {
             aria-live="polite"
             aria-busy={isScanning}
           >
-            {isScanning
-              ? `Scanning ${scanningFolder ?? 'selected folder'}...`
-              : ''}
-          </p>
+            {isScanning ? (
+              <>
+                <strong>
+                  {library.scanActivity.label ??
+                    `Scanning ${scanningFolder ?? 'selected folder'}`}
+                </strong>
+                <span>
+                  {library.scanActivity.estimatedTotal !== null
+                    ? `${library.scanActivity.estimatedTotal} known models queued`
+                    : 'Progress will update when the scan completes'}
+                </span>
+                <progress aria-label="Current scan progress" />
+              </>
+            ) : library.lastReport ? (
+              <>
+                <strong>
+                  {library.lastReport.missing > 0
+                    ? `${library.lastReport.missing} files missing`
+                    : library.lastReport.added > 0 || library.lastReport.changed > 0
+                      ? 'Library updated'
+                      : 'Library is up to date'}
+                </strong>
+                <span>
+                  {library.lastReport.added} added • {library.lastReport.changed}{' '}
+                  changed • {library.lastReport.missing} missing
+                </span>
+              </>
+            ) : null}
+          </div>
 
           {library.error ? (
             <div className="library-alert" role="alert">
@@ -796,6 +878,7 @@ export function App(): React.JSX.Element {
                 presentation.state,
                 query,
                 workspaceActionsDisabled,
+                !onboardingOpen,
                 () => {
                   beginImport();
                 },
@@ -847,7 +930,7 @@ export function App(): React.JSX.Element {
         ref={statusbarRef}
         className="app-statusbar"
         aria-label="Application status"
-        aria-hidden={modalOpen ? 'true' : undefined}
+        aria-hidden={backgroundExcluded ? 'true' : undefined}
       >
         <span>
           {library.status === 'loading'
@@ -879,6 +962,14 @@ export function App(): React.JSX.Element {
           error={library.error}
           onCancel={cancelImport}
           onConfirm={confirmImport}
+        />
+      ) : null}
+
+      {onboardingOpen ? (
+        <LibraryOnboarding
+          busy={importPreparing}
+          onAddFolder={beginImport}
+          onClose={dismissOnboarding}
         />
       ) : null}
 
@@ -923,6 +1014,7 @@ function emptyState(
     'onboarding' | 'scanning' | 'empty-scan' | 'empty-filter' | 'populated',
   query: string,
   busy: boolean,
+  showOnboardingAction: boolean,
   onAddFolder: () => void,
   onClear: () => void,
 ): React.ReactNode {
@@ -935,9 +1027,11 @@ function emptyState(
           Add a folder containing STL, 3MF, or OBJ files. Your catalog stays
           local to this computer.
         </p>
-        <button type="button" onClick={onAddFolder} disabled={busy}>
-          Add your first folder
-        </button>
+        {showOnboardingAction ? (
+          <button type="button" onClick={onAddFolder} disabled={busy}>
+            Add your first folder
+          </button>
+        ) : null}
       </div>
     );
   }
