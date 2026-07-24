@@ -363,6 +363,28 @@ describe('SidecarClient', () => {
     }
   });
 
+  it('uses confirmed termination for stuck mutating sync RPCs', async () => {
+    vi.useFakeTimers();
+    try {
+      const { channel } = makeFakeChannel(() => undefined);
+      const close = vi.spyOn(channel, 'close');
+      const client = new SidecarClient(() => channel, {
+        requestTimeoutMs: 10,
+        mutationTimeoutMs: 100,
+      });
+      const pending = client.bindSyncProfile('profile', 'binding', 1);
+      const rejection = expect(pending).rejects.toThrow(
+        "sidecar request 'bindSyncProfile' timed out; the sidecar was terminated",
+      );
+
+      await vi.advanceTimersByTimeAsync(100);
+      await rejection;
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('blocks replacement channels until timed-out sidecar shutdown is confirmed', async () => {
     vi.useFakeTimers();
     try {

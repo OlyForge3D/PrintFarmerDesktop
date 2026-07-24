@@ -24,6 +24,33 @@ export const FILTER_LABELS: Record<FilterKey, string> = {
 
 export type LibraryCounts = Record<FilterKey, number>;
 
+export function serverStatusLabel(profile: ServerProfile | null): string {
+  if (!profile) return 'Disconnected';
+  if (profile.status === 'error') return 'Connection error';
+  if (profile.status === 'legacy') return 'Legacy fallback';
+  return 'Connected';
+}
+
+function serverProfileVersionLabel(profile: ServerProfile | null): string {
+  if (!profile) return 'No server selected yet';
+  return profile.version?.version ?? 'Legacy server';
+}
+
+function serverProfileAccessibleLabel(profile: ServerProfile | null): string {
+  const actionLabel = profile ? 'Manage connection' : 'Connect to PrintFarmer';
+  const detailLabels = profile
+    ? [
+        profile.displayName,
+        serverProfileVersionLabel(profile),
+        `Status: ${serverStatusLabel(profile)}`,
+      ]
+    : [
+        serverProfileVersionLabel(profile),
+        `Status: ${serverStatusLabel(profile)}`,
+      ];
+  return `${actionLabel}: ${detailLabels.join(', ')}`;
+}
+
 export interface LibrarySidebarProps {
   query: string;
   filter: FilterKey;
@@ -170,32 +197,28 @@ export function LibrarySidebar({
         <p className="sidebar-section-label">PrintFarmer server</p>
         <button
           type="button"
-          className="server-profile-entry"
+          className={
+            serverProfile
+              ? 'server-profile-entry'
+              : 'server-profile-entry server-profile-entry--cta'
+          }
           disabled={serverProfilesDisabled}
+          aria-label={serverProfileAccessibleLabel(serverProfile)}
           onClick={onManageServerProfiles}
         >
           <span
             className={`server-status-dot ${serverProfile?.status ?? 'none'}`}
             aria-hidden="true"
           />
-          <span>
-            <strong>{serverProfile?.displayName ?? 'Not connected'}</strong>
-            <small>
-              {serverProfile
-                ? (serverProfile.version?.version ?? 'Legacy server')
-                : 'Manage profiles'}
-            </small>
+          <span aria-hidden="true">
+            <strong className={serverProfile ? undefined : 'server-cta-label'}>
+              {serverProfile?.displayName ?? 'Connect to PrintFarmer'}
+            </strong>
+            <small>{serverProfileVersionLabel(serverProfile)}</small>
             <small
               className={`server-accessible-status ${serverProfile?.status ?? 'none'}`}
             >
-              Status:{' '}
-              {serverProfile
-                ? serverProfile.status === 'error'
-                  ? 'Connection error'
-                  : serverProfile.status === 'legacy'
-                    ? 'Legacy fallback'
-                    : 'Connected'
-                : 'Disconnected'}
+              Status: {serverStatusLabel(serverProfile)}
             </small>
           </span>
         </button>

@@ -5,6 +5,7 @@ import type {
   ListServerProfilesResponse,
   LogicalModel,
   UploadJob,
+  ServerProfile,
   VendorMetadata,
 } from '@shared/ipc';
 import { useLibrary } from './library/useLibrary';
@@ -1174,19 +1175,22 @@ export function App(): React.JSX.Element {
               onToggleFavorite={(model) => {
                 void toggleFavorite(model.hash);
               }}
-              emptyLabel={emptyState(
-                presentation.state,
+              emptyLabel={emptyState({
+                state: presentation.state,
                 query,
-                workspaceActionsDisabled,
-                !onboardingOpen,
-                () => {
+                busy: workspaceActionsDisabled,
+                showOnboardingAction: !onboardingOpen,
+                onAddFolder: () => {
                   beginImport();
                 },
-                () => {
+                onClear: () => {
                   setQuery('');
                   setFilter('all');
                 },
-              )}
+                serverProfile: activeServer,
+                serverConnectDisabled: serverProfilesDisabled,
+                onConnectServer: openProfiles,
+              })}
             />
           </div>
         </main>
@@ -1369,15 +1373,30 @@ export function App(): React.JSX.Element {
   );
 }
 
-function emptyState(
+interface EmptyStateOptions {
   state:
-    'onboarding' | 'scanning' | 'empty-scan' | 'empty-filter' | 'populated',
-  query: string,
-  busy: boolean,
-  showOnboardingAction: boolean,
-  onAddFolder: () => void,
-  onClear: () => void,
-): React.ReactNode {
+    'onboarding' | 'scanning' | 'empty-scan' | 'empty-filter' | 'populated';
+  query: string;
+  busy: boolean;
+  showOnboardingAction: boolean;
+  onAddFolder: () => void;
+  onClear: () => void;
+  serverProfile: ServerProfile | null;
+  serverConnectDisabled: boolean;
+  onConnectServer: () => void;
+}
+
+function emptyState({
+  state,
+  query,
+  busy,
+  showOnboardingAction,
+  onAddFolder,
+  onClear,
+  serverProfile,
+  serverConnectDisabled,
+  onConnectServer,
+}: EmptyStateOptions): React.ReactNode {
   if (state === 'onboarding') {
     return (
       <div className="purposeful-empty-state">
@@ -1392,6 +1411,11 @@ function emptyState(
             Add your first folder
           </button>
         ) : null}
+        <OnboardingServerNudge
+          serverProfile={serverProfile}
+          disabled={serverConnectDisabled}
+          onConnect={onConnectServer}
+        />
       </div>
     );
   }
@@ -1429,4 +1453,38 @@ function emptyState(
     );
   }
   return undefined;
+}
+
+function OnboardingServerNudge({
+  serverProfile,
+  disabled,
+  onConnect,
+}: {
+  serverProfile: ServerProfile | null;
+  disabled: boolean;
+  onConnect: () => void;
+}): React.JSX.Element {
+  if (serverProfile) {
+    return (
+      <p className="onboarding-connect-confirmed">
+        <Icon name="collection" size={14} />
+        <span>
+          Connected to <strong>{serverProfile.displayName}</strong>. Upload and
+          sync tools will use this connection as they become available.
+        </span>
+      </p>
+    );
+  }
+  return (
+    <div className="onboarding-connect-nudge">
+      <p>
+        Connecting a PrintFarmer server sets this library up to upload selected
+        models and synchronize organization metadata as those tools arrive
+        &mdash; it only stores the connection now.
+      </p>
+      <button type="button" onClick={onConnect} disabled={disabled}>
+        Connect to PrintFarmer
+      </button>
+    </div>
+  );
 }
