@@ -83,7 +83,7 @@ export function App(): React.JSX.Element {
   const [wireframe, setWireframe] = useState(false);
   const [projection, setProjection] = useState<Projection>('perspective');
   const [resetToken, setResetToken] = useState(0);
-  const [hiddenParts, setHiddenParts] = useState<ReadonlySet<number>>(
+  const [hiddenObjects, setHiddenObjects] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
   const previewReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -506,7 +506,7 @@ export function App(): React.JSX.Element {
       setPreviewOpen(true);
       setPreviewError(null);
       setLoadedMesh(null);
-      setHiddenParts(new Set());
+      setHiddenObjects(new Set());
       setLoading(true);
       try {
         const scene = await window.printFarmer.loadScene({ path: target.path });
@@ -649,24 +649,24 @@ export function App(): React.JSX.Element {
     }
   }, [loadPreview, previewTarget]);
 
-  const togglePart = useCallback((index: number) => {
-    setHiddenParts((current) => {
+  const toggleObject = useCallback((id: string) => {
+    setHiddenObjects((current) => {
       const next = new Set(current);
-      if (next.has(index)) {
-        next.delete(index);
+      if (next.has(id)) {
+        next.delete(id);
       } else {
-        next.add(index);
+        next.add(id);
       }
       return next;
     });
   }, []);
 
-  const toggleAllParts = useCallback(
+  const toggleAllObjects = useCallback(
     (visible: boolean) => {
-      setHiddenParts(
+      setHiddenObjects(
         visible
           ? new Set()
-          : new Set((loadedMesh?.parts ?? []).map((_, index) => index)),
+          : new Set((loadedMesh?.objects ?? []).map((object) => object.id)),
       );
     },
     [loadedMesh],
@@ -995,7 +995,7 @@ export function App(): React.JSX.Element {
           wireframe={wireframe}
           projection={projection}
           resetToken={resetToken}
-          hiddenParts={hiddenParts}
+          hiddenObjects={hiddenObjects}
           onClose={closePreview}
           onRetry={retryPreview}
           onToggleWireframe={() => setWireframe((value) => !value)}
@@ -1005,8 +1005,8 @@ export function App(): React.JSX.Element {
             )
           }
           onReset={() => setResetToken((value) => value + 1)}
-          onTogglePart={togglePart}
-          onToggleAllParts={toggleAllParts}
+          onToggleObject={toggleObject}
+          onToggleAllObjects={toggleAllObjects}
         />
       ) : null}
 

@@ -33,6 +33,10 @@ pub const MAX_OBJECTS: usize = 1_000_000;
 pub const MAX_COMPONENTS: usize = 1_000_000;
 pub const MAX_MODEL_PARTS: usize = 10_000;
 pub const MAX_EXPANSION_STEPS: usize = 1_000_000;
+/// Renderer GPU budget: each mesh-bearing object becomes a live
+/// Group+BufferGeometry+Material+Mesh on the renderer side, so cap them well
+/// below the parser's structural safety ceiling.
+pub const MAX_RENDERABLE_SCENE_OBJECTS: usize = 5_000;
 const MAX_ARCHIVE_PARTS: usize = 100_000;
 pub const MAX_MODEL_XML_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_TOTAL_MODEL_XML_BYTES: u64 = 1024 * 1024 * 1024;
@@ -68,6 +72,13 @@ pub enum ThreeMfError {
     Malformed(String),
     #[error("model exceeds the maximum supported size")]
     TooLarge,
+    #[error(
+        "model expands to {mesh_objects} mesh-bearing scene objects, exceeding the renderer budget of {max_mesh_objects}"
+    )]
+    RenderBudgetExceeded {
+        mesh_objects: usize,
+        max_mesh_objects: usize,
+    },
     #[error("{resource} exceeds the maximum supported size of {limit} bytes")]
     DataTooLarge { resource: &'static str, limit: u64 },
     #[error("{resource} exceeds the maximum supported count of {limit}")]
@@ -163,6 +174,27 @@ impl Transform {
         for coordinate in &mut self.rows[3] {
             *coordinate *= factor;
         }
+    }
+
+    pub fn to_row_major_4x4(&self) -> [f32; 16] {
+        [
+            self.rows[0][0],
+            self.rows[1][0],
+            self.rows[2][0],
+            self.rows[3][0],
+            self.rows[0][1],
+            self.rows[1][1],
+            self.rows[2][1],
+            self.rows[3][1],
+            self.rows[0][2],
+            self.rows[1][2],
+            self.rows[2][2],
+            self.rows[3][2],
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ]
     }
 }
 
@@ -314,6 +346,41 @@ pub struct ThreeMfPart {
     pub triangle_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ThreeMfMaterial {
+    pub base_color: Option<[u8; 3]>,
+    pub face_colors: Option<Vec<[u8; 3]>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThreeMfObjectMesh {
+    pub positions: Vec<[f32; 3]>,
+    pub indices: Vec<u32>,
+    pub bounds: Aabb,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThreeMfSceneObject {
+    pub id: String,
+    pub source_id: String,
+    pub name: String,
+    pub parent_id: Option<String>,
+    pub children: Vec<String>,
+    pub transform: Transform,
+    pub mesh: Option<ThreeMfObjectMesh>,
+    pub material: ThreeMfMaterial,
+    pub plate_id: String,
+    pub build_item_index: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThreeMfPlate {
+    pub id: String,
+    pub name: String,
+    pub index: usize,
+    pub root_object_ids: Vec<String>,
+}
+
 /// A flattened 3MF model: one indexed triangle mesh with every build instance
 /// baked into world space, ready for rendering.
 #[derive(Debug, Clone, PartialEq)]
@@ -329,6 +396,10 @@ pub struct ThreeMfMesh {
     pub build_item_count: usize,
     /// One entry per build item, in build order, mapping to triangle ranges.
     pub parts: Vec<ThreeMfPart>,
+    /// Hierarchical object instances in build order.
+    pub objects: Vec<ThreeMfSceneObject>,
+    pub root_object_ids: Vec<String>,
+    pub plates: Vec<ThreeMfPlate>,
 }
 
 impl ThreeMfMesh {
@@ -1358,6 +1429,30 @@ struct FlattenOutput {
     vertices: Vec<[f32; 3]>,
     triangles: Vec<[u32; 3]>,
     expansion_steps: usize,
+    mesh_object_count: usize,
+    #[cfg(test)]
+    mesh_builds_started: usize,
+}
+
+impl FlattenOutput {
+    fn record_mesh_object(&mut self) -> Result<(), ThreeMfError> {
+        self.mesh_object_count = self
+            .mesh_object_count
+            .checked_add(1)
+            .ok_or(ThreeMfError::TooLarge)?;
+        if self.mesh_object_count > MAX_RENDERABLE_SCENE_OBJECTS {
+            return Err(ThreeMfError::RenderBudgetExceeded {
+                mesh_objects: self.mesh_object_count,
+                max_mesh_objects: MAX_RENDERABLE_SCENE_OBJECTS,
+            });
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn record_mesh_build_start(&mut self) {
+        self.mesh_builds_started += 1;
+    }
 }
 
 /// Expand the build into a single indexed mesh, baking every transform. Each
@@ -1368,18 +1463,36 @@ fn flatten(package: &RawPackage) -> Result<ThreeMfMesh, ThreeMfError> {
     })?;
     let mut output = FlattenOutput::default();
     let mut parts: Vec<ThreeMfPart> = Vec::with_capacity(root_model.build.len());
+    let mut objects: Vec<ThreeMfSceneObject> = Vec::new();
+    let mut root_object_ids = Vec::with_capacity(root_model.build.len());
+    let plate_id = plate_id(0);
+    let mut plates = vec![ThreeMfPlate {
+        id: plate_id.clone(),
+        name: "Plate 1".to_string(),
+        index: 0,
+        root_object_ids: Vec::with_capacity(root_model.build.len()),
+    }];
 
-    for item in &root_model.build {
+    for (build_item_index, item) in root_model.build.iter().enumerate() {
         let model_part = item.model_part.as_deref().unwrap_or(&package.root_part);
         let triangle_start = output.triangles.len();
+        let root_id = scene_object_id(build_item_index, item.object_id);
         expand(
             package,
             model_part,
             item.object_id,
             item.transform,
+            item.transform,
+            root_id.clone(),
+            None,
+            build_item_index,
+            &plate_id,
             &mut output,
+            &mut objects,
             0,
         )?;
+        root_object_ids.push(root_id.clone());
+        plates[0].root_object_ids.push(root_id);
         parts.push(ThreeMfPart {
             name: part_name(package, model_part, item.object_id),
             triangle_start,
@@ -1391,7 +1504,6 @@ fn flatten(package: &RawPackage) -> Result<ThreeMfMesh, ThreeMfError> {
     for v in &output.vertices {
         bounds.expand(*v);
     }
-
     Ok(ThreeMfMesh {
         vertices: output.vertices,
         triangles: output.triangles,
@@ -1404,6 +1516,9 @@ fn flatten(package: &RawPackage) -> Result<ThreeMfMesh, ThreeMfError> {
             .sum(),
         build_item_count: root_model.build.len(),
         parts,
+        objects,
+        root_object_ids,
+        plates,
     })
 }
 
@@ -1419,12 +1534,19 @@ fn part_name(package: &RawPackage, model_part: &str, object_id: u32) -> String {
 }
 
 /// Recursively bake an object under `transform` into the output buffers.
+#[allow(clippy::too_many_arguments)]
 fn expand(
     package: &RawPackage,
     model_part: &str,
     object_id: u32,
+    local_transform: Transform,
     transform: Transform,
+    instance_id: String,
+    parent_id: Option<String>,
+    build_item_index: usize,
+    plate_id: &str,
     output: &mut FlattenOutput,
+    scene_objects: &mut Vec<ThreeMfSceneObject>,
     depth: usize,
 ) -> Result<(), ThreeMfError> {
     output.expansion_steps = output
@@ -1448,6 +1570,41 @@ fn expand(
             "reference to unknown object {object_id} in model part '/{model_part}'"
         ))
     })?;
+
+    let name = part_name(package, model_part, object_id);
+    let mesh = match &object.geometry {
+        ObjectGeometry::Mesh {
+            vertices,
+            triangles,
+        } => {
+            output.record_mesh_object()?;
+            #[cfg(test)]
+            output.record_mesh_build_start();
+            let mut bounds = Aabb::empty();
+            for vertex in vertices {
+                bounds.expand(*vertex);
+            }
+            Some(ThreeMfObjectMesh {
+                positions: vertices.clone(),
+                indices: triangles.iter().flat_map(|triangle| *triangle).collect(),
+                bounds,
+            })
+        }
+        ObjectGeometry::Components(_) => None,
+    };
+    let scene_object_index = scene_objects.len();
+    scene_objects.push(ThreeMfSceneObject {
+        id: instance_id.clone(),
+        source_id: source_object_id(model_part, object_id),
+        name,
+        parent_id: parent_id.clone(),
+        children: Vec::new(),
+        transform: local_transform,
+        mesh,
+        material: ThreeMfMaterial::default(),
+        plate_id: plate_id.to_string(),
+        build_item_index,
+    });
 
     match &object.geometry {
         ObjectGeometry::Mesh {
@@ -1479,22 +1636,48 @@ fn expand(
             Ok(())
         }
         ObjectGeometry::Components(components) => {
+            let mut child_ids = Vec::with_capacity(components.len());
             for component in components {
                 // Apply the component's local transform, then the accumulated one.
                 let composed = component.transform.compose(&transform);
                 let component_part = component.model_part.as_deref().unwrap_or(model_part);
+                let component_index = child_ids.len();
+                let child_id = format!(
+                    "{instance_id}/component-{component_index}/object-{}",
+                    component.object_id
+                );
                 expand(
                     package,
                     component_part,
                     component.object_id,
+                    component.transform,
                     composed,
+                    child_id.clone(),
+                    Some(instance_id.clone()),
+                    build_item_index,
+                    plate_id,
                     output,
+                    scene_objects,
                     depth + 1,
                 )?;
+                child_ids.push(child_id);
             }
+            scene_objects[scene_object_index].children = child_ids;
             Ok(())
         }
     }
+}
+
+fn source_object_id(model_part: &str, object_id: u32) -> String {
+    format!("{model_part}#object-{object_id}")
+}
+
+fn scene_object_id(build_item_index: usize, object_id: u32) -> String {
+    format!("plate-0/item-{build_item_index}/object-{object_id}")
+}
+
+fn plate_id(index: usize) -> String {
+    format!("plate-{index}")
 }
 
 /// Fetch an attribute's raw string value by name.
@@ -1614,6 +1797,21 @@ fn optional_transform(e: &BytesStart) -> Result<Transform, ThreeMfError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn expected_three_row_major_matrix(transform: &Transform) -> [f32; 16] {
+        let origin = transform.apply([0.0, 0.0, 0.0]);
+        let x_axis = subtract(transform.apply([1.0, 0.0, 0.0]), origin);
+        let y_axis = subtract(transform.apply([0.0, 1.0, 0.0]), origin);
+        let z_axis = subtract(transform.apply([0.0, 0.0, 1.0]), origin);
+        [
+            x_axis[0], y_axis[0], z_axis[0], origin[0], x_axis[1], y_axis[1], z_axis[1], origin[1],
+            x_axis[2], y_axis[2], z_axis[2], origin[2], 0.0, 0.0, 0.0, 1.0,
+        ]
+    }
+
+    fn subtract(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    }
     use base64::engine::general_purpose::STANDARD as BASE64;
     use base64::Engine as _;
     use std::io::Write;
@@ -1802,6 +2000,10 @@ mod tests {
         assert_eq!(mesh.parts[1].name, "Object 2");
         assert_eq!(mesh.parts[1].triangle_start, 1);
         assert_eq!(mesh.parts[1].triangle_count, 2);
+        assert_eq!(mesh.root_object_ids.len(), 2);
+        assert_eq!(mesh.plates[0].root_object_ids, mesh.root_object_ids);
+        assert_eq!(mesh.objects.len(), 2);
+        assert!(mesh.objects.iter().all(|object| object.parent_id.is_none()));
     }
 
     #[test]
@@ -1895,6 +2097,15 @@ mod tests {
         // Vertex (0,0,0) -> component +x5 -> build +y7 = (5,7,0).
         assert_eq!(mesh.bounds.min, [5.0, 7.0, 0.0]);
         assert_eq!(mesh.bounds.max, [6.0, 8.0, 0.0]);
+        assert_eq!(mesh.objects.len(), 2);
+        assert_eq!(
+            mesh.objects[0].children,
+            vec!["plate-0/item-0/object-1/component-0/object-2"]
+        );
+        assert_eq!(
+            mesh.objects[1].parent_id.as_deref(),
+            Some("plate-0/item-0/object-1")
+        );
     }
 
     #[test]
@@ -2306,7 +2517,7 @@ mod tests {
             ));
         }
         model.push_str(&format!(
-            "<object id=\"{}\"><mesh><vertices/><triangles/></mesh></object>\
+            "<object id=\"{}\"><components/></object>\
              </resources><build><item objectid=\"1\"/></build></model>",
             levels + 1
         ));
@@ -2333,5 +2544,137 @@ mod tests {
         let composed = a.compose(&b);
         let p = [1.0, 1.0, 1.0];
         assert_eq!(composed.apply(p), b.apply(a.apply(p)));
+    }
+
+    #[test]
+    fn transform_to_row_major_4x4_matches_three_matrix_layout() {
+        let transform = Transform::parse("0 1 0 -1 0 0 0 0 1 10 20 30").unwrap();
+        assert_eq!(
+            transform.to_row_major_4x4(),
+            expected_three_row_major_matrix(&transform)
+        );
+    }
+
+    #[test]
+    fn rejects_models_that_exceed_renderer_mesh_object_budget() {
+        let triangle_vertices = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let sentinel_vertices = vec![
+            [10_000.0, 0.0, 0.0],
+            [10_001.0, 0.0, 0.0],
+            [10_000.0, 1.0, 0.0],
+        ];
+        let sentinel_object_id = MAX_RENDERABLE_SCENE_OBJECTS as u32 + 1;
+        let mut objects = HashMap::new();
+        let mut build = Vec::new();
+        for object_id in 1..=sentinel_object_id {
+            objects.insert(
+                object_id,
+                RawObject {
+                    geometry: ObjectGeometry::Mesh {
+                        vertices: if object_id < sentinel_object_id {
+                            triangle_vertices.clone()
+                        } else {
+                            sentinel_vertices.clone()
+                        },
+                        triangles: vec![[0, 1, 2]],
+                    },
+                    name: None,
+                },
+            );
+            build.push(Component {
+                object_id,
+                model_part: None,
+                transform: Transform::identity(),
+            });
+        }
+
+        let package = RawPackage {
+            models: HashMap::from([(
+                DEFAULT_MODEL_PART.to_string(),
+                RawModel {
+                    objects,
+                    build,
+                    unit: "millimeter".to_string(),
+                },
+            )]),
+            root_part: DEFAULT_MODEL_PART.to_string(),
+        };
+        let root_model = package.models.get(DEFAULT_MODEL_PART).unwrap();
+        let mut output = FlattenOutput::default();
+        let mut scene_objects = Vec::new();
+        let plate_id = plate_id(0);
+
+        for (build_item_index, item) in root_model
+            .build
+            .iter()
+            .take(MAX_RENDERABLE_SCENE_OBJECTS)
+            .enumerate()
+        {
+            expand(
+                &package,
+                DEFAULT_MODEL_PART,
+                item.object_id,
+                item.transform,
+                item.transform,
+                scene_object_id(build_item_index, item.object_id),
+                None,
+                build_item_index,
+                &plate_id,
+                &mut output,
+                &mut scene_objects,
+                0,
+            )
+            .unwrap();
+        }
+
+        assert_eq!(output.vertices.len(), MAX_RENDERABLE_SCENE_OBJECTS * 3);
+        assert_eq!(output.triangles.len(), MAX_RENDERABLE_SCENE_OBJECTS);
+        assert_eq!(scene_objects.len(), MAX_RENDERABLE_SCENE_OBJECTS);
+        assert_eq!(output.mesh_builds_started, MAX_RENDERABLE_SCENE_OBJECTS);
+        assert!(!output
+            .vertices
+            .iter()
+            .any(|vertex| sentinel_vertices.contains(vertex)));
+
+        let over_budget_item = &root_model.build[MAX_RENDERABLE_SCENE_OBJECTS];
+        let mesh = expand(
+            &package,
+            DEFAULT_MODEL_PART,
+            over_budget_item.object_id,
+            over_budget_item.transform,
+            over_budget_item.transform,
+            scene_object_id(MAX_RENDERABLE_SCENE_OBJECTS, over_budget_item.object_id),
+            None,
+            MAX_RENDERABLE_SCENE_OBJECTS,
+            &plate_id,
+            &mut output,
+            &mut scene_objects,
+            0,
+        );
+
+        assert!(matches!(
+            mesh,
+            Err(ThreeMfError::RenderBudgetExceeded {
+                mesh_objects,
+                max_mesh_objects,
+            }) if mesh_objects == MAX_RENDERABLE_SCENE_OBJECTS + 1
+                && max_mesh_objects == MAX_RENDERABLE_SCENE_OBJECTS
+        ));
+        assert_eq!(output.vertices.len(), MAX_RENDERABLE_SCENE_OBJECTS * 3);
+        assert_eq!(output.triangles.len(), MAX_RENDERABLE_SCENE_OBJECTS);
+        assert_eq!(scene_objects.len(), MAX_RENDERABLE_SCENE_OBJECTS);
+        assert_eq!(output.mesh_builds_started, MAX_RENDERABLE_SCENE_OBJECTS);
+        assert!(!output
+            .vertices
+            .iter()
+            .any(|vertex| sentinel_vertices.contains(vertex)));
+        assert!(scene_objects
+            .iter()
+            .all(|object| object.id
+                != scene_object_id(MAX_RENDERABLE_SCENE_OBJECTS, sentinel_object_id)));
+        assert!(scene_objects
+            .iter()
+            .all(|object| object.source_id
+                != source_object_id(DEFAULT_MODEL_PART, sentinel_object_id)));
     }
 }

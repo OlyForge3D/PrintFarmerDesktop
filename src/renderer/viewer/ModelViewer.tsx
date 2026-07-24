@@ -16,11 +16,10 @@ import {
   boundsCenter,
   boundsRadius,
   defaultCameraPosition,
-  toBufferGeometry,
   viewerKeyAction,
-  visibleIndices,
 } from './geometry';
 import type { SceneMesh } from './types';
+import { buildViewerSceneGraph, type ViewerSceneGraph } from './sceneGraph';
 
 export type Projection = 'perspective' | 'orthographic';
 
@@ -29,7 +28,7 @@ export interface ModelViewerProps {
   wireframe?: boolean;
   projection?: Projection;
   background?: string;
-  hiddenParts?: ReadonlySet<number>;
+  hiddenObjects?: ReadonlySet<string>;
   className?: string;
   /**
    * Changing this value reframes the camera to its default fit. The App
@@ -40,19 +39,22 @@ export interface ModelViewerProps {
 }
 
 const PERSPECTIVE_FOV = 45;
+type ViewerMesh = THREE.Mesh<
+  THREE.BufferGeometry,
+  THREE.Material | THREE.Material[]
+>;
 
 export function ModelViewer({
   mesh,
   wireframe = false,
   projection = 'perspective',
   background = '#14151a',
-  hiddenParts,
+  hiddenObjects,
   className,
   resetToken = 0,
 }: ModelViewerProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const materialRef = useRef<THREE.MeshStandardMaterial | null>(null);
-  const geometryRef = useRef<THREE.BufferGeometry | null>(null);
+  const sceneGraphRef = useRef<ViewerSceneGraph | null>(null);
   const cameraRef = useRef<
     THREE.PerspectiveCamera | THREE.OrthographicCamera | null
   >(null);
@@ -63,8 +65,8 @@ export function ModelViewer({
   } | null>(null);
   const wireframeRef = useRef(wireframe);
   wireframeRef.current = wireframe;
-  const hiddenPartsRef = useRef(hiddenParts);
-  hiddenPartsRef.current = hiddenParts;
+  const hiddenObjectsRef = useRef(hiddenObjects);
+  hiddenObjectsRef.current = hiddenObjects;
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -86,20 +88,12 @@ export function ModelViewer({
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(background);
 
-    const geometry = toBufferGeometry(mesh, hiddenPartsRef.current);
-    geometryRef.current = geometry;
-    const hasVertexColors = geometry.getAttribute('color') !== undefined;
-    const material = new THREE.MeshStandardMaterial({
-      color: hasVertexColors ? 0xffffff : 0xb9c0cc,
-      vertexColors: hasVertexColors,
-      metalness: 0.1,
-      roughness: 0.75,
-      flatShading: mesh.sourceFormat === 'stl',
-      wireframe: wireframeRef.current,
+    const sceneGraph = buildViewerSceneGraph(mesh, hiddenObjectsRef.current);
+    sceneGraph.root.traverse((object) => {
+      applyWireframe(object, wireframeRef.current);
     });
-    materialRef.current = material;
-    const model = new THREE.Mesh(geometry, material);
-    scene.add(model);
+    sceneGraphRef.current = sceneGraph;
+    scene.add(sceneGraph.root);
 
     scene.add(new THREE.AmbientLight(0xffffff, 0.55));
     const key = new THREE.DirectionalLight(0xffffff, 0.9);
@@ -193,26 +187,22 @@ export function ModelViewer({
       controls.dispose();
       controlsRef.current = null;
       cameraRef.current = null;
-      geometry.dispose();
-      geometryRef.current = null;
-      material.dispose();
-      materialRef.current = null;
+      sceneGraph.dispose();
+      sceneGraphRef.current = null;
       renderer.dispose();
       renderer.domElement.remove();
     };
   }, [mesh, projection, background]);
 
   useEffect(() => {
-    if (materialRef.current) {
-      materialRef.current.wireframe = wireframe;
-    }
+    sceneGraphRef.current?.root.traverse((object) => {
+      applyWireframe(object, wireframe);
+    });
   }, [wireframe]);
 
   useEffect(() => {
-    const geometry = geometryRef.current;
-    if (!geometry) return;
-    geometry.setIndex(visibleIndices(mesh, hiddenParts));
-  }, [mesh, hiddenParts]);
+    sceneGraphRef.current?.setHidden(hiddenObjects);
+  }, [hiddenObjects]);
 
   // Reframe to the default fit whenever the reset token changes. The initial
   // mount already frames the model, so the token===0 first run is a no-op fit.
@@ -254,6 +244,26 @@ function aspectOf(container: HTMLElement): number {
   const width = container.clientWidth || 1;
   const height = container.clientHeight || 1;
   return width / height;
+}
+
+function isViewerMesh(object: THREE.Object3D): object is ViewerMesh {
+  return object instanceof THREE.Mesh;
+}
+
+function applyWireframe(object: THREE.Object3D, wireframe: boolean): void {
+  if (!isViewerMesh(object)) return;
+  const { material } = object;
+  if (Array.isArray(material)) {
+    material.forEach((entry) => {
+      if (entry instanceof THREE.MeshStandardMaterial) {
+        entry.wireframe = wireframe;
+      }
+    });
+    return;
+  }
+  if (material instanceof THREE.MeshStandardMaterial) {
+    material.wireframe = wireframe;
+  }
 }
 
 function createCamera(
