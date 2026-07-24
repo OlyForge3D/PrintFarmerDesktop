@@ -769,32 +769,35 @@ export class UploadJobService {
       }
       let changed = false;
       for (const item of job.items) {
+        const legacyIdentity = draft.identities.find(
+          (candidate) =>
+            candidate.profileId === job.profileId &&
+            candidate.serverBinding === 'legacy-unbound' &&
+            candidate.hash === item.hash,
+        );
+        let identity = draft.identities.find(
+          (candidate) =>
+            candidate.profileId === job.profileId &&
+            candidate.serverBinding === context.serverBinding &&
+            candidate.hash === item.hash,
+        );
+        if (!identity) {
+          identity = {
+            profileId: job.profileId,
+            hash: item.hash,
+            clientUploadId: legacyIdentity?.clientUploadId ?? item.clientUploadId,
+            serverBinding: context.serverBinding,
+            remoteModelId: item.remote?.id ?? legacyIdentity?.remoteModelId ?? null,
+            etag: item.remote?.etag ?? legacyIdentity?.etag ?? null,
+            updatedAt: this.isoNow(),
+          };
+          draft.identities.push(identity);
+        } else if (item.remote) {
+          identity.remoteModelId = item.remote.id;
+          identity.etag = item.remote.etag;
+          identity.updatedAt = this.isoNow();
+        }
         if (item.state === 'uncertain' && item.error?.duplicateRisk === true) {
-          const legacyIdentity = draft.identities.find(
-            (candidate) =>
-              candidate.profileId === job.profileId &&
-              candidate.serverBinding === 'legacy-unbound' &&
-              candidate.hash === item.hash,
-          );
-          let identity = draft.identities.find(
-            (candidate) =>
-              candidate.profileId === job.profileId &&
-              candidate.serverBinding === context.serverBinding &&
-              candidate.hash === item.hash,
-          );
-          if (!identity) {
-            identity = {
-              profileId: job.profileId,
-              hash: item.hash,
-              clientUploadId:
-                legacyIdentity?.clientUploadId ?? item.clientUploadId,
-              serverBinding: context.serverBinding,
-              remoteModelId: null,
-              etag: null,
-              updatedAt: this.isoNow(),
-            };
-            draft.identities.push(identity);
-          }
           item.clientUploadId = identity.clientUploadId;
           item.state = 'queued';
           item.bytesSent = 0;
