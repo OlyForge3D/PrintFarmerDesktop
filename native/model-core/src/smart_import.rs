@@ -23,6 +23,7 @@ pub struct ImportFormatCounts {
     pub stl: usize,
     pub three_mf: usize,
     pub obj: usize,
+    pub step: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +60,7 @@ pub fn preview_scan(scan: &ScanResult) -> ImportPreview {
             ModelFormat::Stl => preview.formats.stl += 1,
             ModelFormat::ThreeMf => preview.formats.three_mf += 1,
             ModelFormat::Obj => preview.formats.obj += 1,
+            ModelFormat::Step => preview.formats.step += 1,
         }
 
         let mut current = file.root_relative.parent();
@@ -511,15 +513,17 @@ mod tests {
         write(&dir.path().join("Animals/Cats/a.stl"), b"a");
         write(&dir.path().join("Animals/Dogs/b.3mf"), b"bb");
         write(&dir.path().join("Loose.obj"), b"ccc");
+        write(&dir.path().join("CAD/widget.step"), b"dddd");
 
         let scan = scan_root(dir.path(), &AtomicBool::new(false));
         let preview = preview_scan(&scan);
 
-        assert_eq!(preview.model_count, 3);
-        assert_eq!(preview.total_bytes, 6);
+        assert_eq!(preview.model_count, 4);
+        assert_eq!(preview.total_bytes, 10);
         assert_eq!(preview.formats.stl, 1);
         assert_eq!(preview.formats.three_mf, 1);
         assert_eq!(preview.formats.obj, 1);
+        assert_eq!(preview.formats.step, 1);
         assert!(preview.complete);
         assert_eq!(
             preview
@@ -534,6 +538,7 @@ mod tests {
                 ("Animals".to_string(), 2),
                 ("Animals/Cats".to_string(), 1),
                 ("Animals/Dogs".to_string(), 1),
+                ("CAD".to_string(), 1),
             ]
         );
     }

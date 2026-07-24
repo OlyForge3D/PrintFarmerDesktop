@@ -68,6 +68,13 @@ pub enum ThreeMfError {
     Malformed(String),
     #[error("model exceeds the maximum supported size")]
     TooLarge,
+    #[error("{resource} exceeds the maximum supported size of {limit} bytes")]
+    DataTooLarge { resource: &'static str, limit: u64 },
+    #[error("{resource} exceeds the maximum supported count of {limit}")]
+    TooManyParts {
+        resource: &'static str,
+        limit: usize,
+    },
 }
 
 /// An affine transform stored as four rows of three: rows 0..2 are the linear
@@ -754,15 +761,26 @@ fn read_u64(data: &[u8], offset: usize) -> Option<u64> {
     Some(u64::from_le_bytes(data.get(offset..end)?.try_into().ok()?))
 }
 
-/// Read a named entry to raw bytes, returning `None` if it is absent.
-pub(crate) fn read_entry_bytes<R: Read + Seek>(
+/// Read a named binary entry to raw bytes, returning `None` if it is absent.
+pub(crate) fn read_entry_bytes<R: Read + Seek, F: Fn() -> ThreeMfError>(
     archive: &mut ZipArchive<R>,
     name: &str,
+    max_bytes: u64,
+    too_large: F,
 ) -> Result<Option<Vec<u8>>, ThreeMfError> {
     match archive.by_name(name) {
         Ok(mut file) => {
-            let mut contents = Vec::new();
-            file.read_to_end(&mut contents)?;
+            if file.size() > max_bytes {
+                return Err(too_large());
+            }
+            let capacity = usize::try_from(file.size()).map_err(|_| too_large())?;
+            let mut contents = Vec::with_capacity(capacity);
+            file.by_ref()
+                .take(max_bytes.saturating_add(1))
+                .read_to_end(&mut contents)?;
+            if contents.len() as u64 > max_bytes {
+                return Err(too_large());
+            }
             Ok(Some(contents))
         }
         Err(ZipError::FileNotFound) => Ok(None),
