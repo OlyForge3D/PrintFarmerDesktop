@@ -114,6 +114,11 @@ export class SidecarClient {
     return this.request('extractVendorMetadata', { path: filePath });
   }
 
+  /** Extract embedded vendor plate thumbnails (part names + base64 PNGs). */
+  async extractVendorPlateThumbnails(filePath: string): Promise<unknown> {
+    return this.request('extractVendorPlateThumbnails', { path: filePath });
+  }
+
   /** Render a deterministic PNG thumbnail for a model (raw wire object). */
   async renderThumbnail(filePath: string, size?: number): Promise<unknown> {
     const params: { path: string; size?: number } = { path: filePath };

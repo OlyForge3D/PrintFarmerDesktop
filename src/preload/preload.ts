@@ -4,6 +4,8 @@ import {
   type AppInfoResponse,
   type ExtractVendorMetadataRequest,
   type ExtractVendorMetadataResponse,
+  type ExtractVendorPlateThumbnailsRequest,
+  type ExtractVendorPlateThumbnailsResponse,
   type LoadSceneRequest,
   type LoadSceneResponse,
   type OpenModelFileResponse,
@@ -76,6 +78,13 @@ const api: PrintFarmerApi = {
       IpcChannel.ExtractVendorMetadata,
       request,
     ) as Promise<ExtractVendorMetadataResponse>,
+  extractVendorPlateThumbnails: (
+    request: ExtractVendorPlateThumbnailsRequest,
+  ): Promise<ExtractVendorPlateThumbnailsResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ExtractVendorPlateThumbnails,
+      request,
+    ) as Promise<ExtractVendorPlateThumbnailsResponse>,
   renderThumbnail: (
     request: RenderThumbnailRequest,
   ): Promise<RenderThumbnailResponse> =>

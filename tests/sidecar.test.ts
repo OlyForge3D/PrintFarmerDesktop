@@ -126,6 +126,39 @@ describe('SidecarClient', () => {
     expect(request.params.path).toBe('C:/models/project.3mf');
   });
 
+  it('sends a well-formed extractVendorPlateThumbnails request and resolves the result', async () => {
+    const { channel, sent } = makeFakeChannel((req, emit) => {
+      emit(
+        JSON.stringify({
+          id: req.id,
+          ok: true,
+          result: {
+            thumbnails: [
+              {
+                partName: 'Metadata/plate_1.png',
+                plateIndex: 1,
+                pngBase64: 'iVBORw0KGgo=',
+              },
+            ],
+          },
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel);
+    const result = await client.extractVendorPlateThumbnails(
+      'C:/models/project.3mf',
+    );
+    expect(result).toMatchObject({
+      thumbnails: [{ partName: 'Metadata/plate_1.png', plateIndex: 1 }],
+    });
+    const request = JSON.parse(sent[0] ?? '{}') as {
+      method: string;
+      params: { path: string };
+    };
+    expect(request.method).toBe('extractVendorPlateThumbnails');
+    expect(request.params.path).toBe('C:/models/project.3mf');
+  });
+
   it('sends a well-formed renderThumbnail request and resolves the result', async () => {
     const { channel, sent } = makeFakeChannel((req, emit) => {
       emit(

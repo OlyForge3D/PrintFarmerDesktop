@@ -192,6 +192,49 @@ pub fn extract_vendor_metadata_dto(path: &Path) -> Result<VendorMetadataDto, Thr
     Ok(VendorMetadataDto::from(&vendor::extract_file(path)?))
 }
 
+/// One embedded vendor plate thumbnail in wire form.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VendorPlateThumbnailDto {
+    /// ZIP part name inside the 3MF package, e.g. `Metadata/plate_1.png`.
+    pub part_name: String,
+    /// Parsed from the conventional `plate_<n>.png` filename when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plate_index: Option<u32>,
+    /// Standard base64 (with padding) of the embedded PNG bytes.
+    pub png_base64: String,
+}
+
+impl From<&vendor::PlateThumbnail> for VendorPlateThumbnailDto {
+    fn from(thumbnail: &vendor::PlateThumbnail) -> Self {
+        Self {
+            part_name: thumbnail.part_name.clone(),
+            plate_index: thumbnail.plate_index,
+            png_base64: BASE64.encode(&thumbnail.png_bytes),
+        }
+    }
+}
+
+/// Embedded vendor plate thumbnails in renderer-facing wire form.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VendorPlateThumbnailsDto {
+    pub thumbnails: Vec<VendorPlateThumbnailDto>,
+}
+
+/// Extract embedded plate thumbnails from a vendor 3MF and return them as base64
+/// PNG wire DTOs suitable for the JSON-RPC boundary.
+pub fn extract_vendor_plate_thumbnails_dto(
+    path: &Path,
+) -> Result<VendorPlateThumbnailsDto, ThreeMfError> {
+    Ok(VendorPlateThumbnailsDto {
+        thumbnails: vendor::read_plate_thumbnails_file(path)?
+            .iter()
+            .map(VendorPlateThumbnailDto::from)
+            .collect(),
+    })
+}
+
 /// A rendered thumbnail in wire form: PNG bytes carried as base64 so they fit
 /// the JSON-RPC transport, plus the pixel dimensions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -536,6 +579,23 @@ mod tests {
         assert!(!json.contains("designer"));
         // Round-trips.
         let parsed: VendorMetadataDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, dto);
+    }
+
+    #[test]
+    fn vendor_plate_thumbnails_dto_serializes_camel_case() {
+        let dto = VendorPlateThumbnailsDto {
+            thumbnails: vec![VendorPlateThumbnailDto {
+                part_name: "Metadata/plate_1.png".to_string(),
+                plate_index: Some(1),
+                png_base64: BASE64.encode(b"\x89PNG\r\n\x1a\nwire"),
+            }],
+        };
+        let json = serde_json::to_string(&dto).unwrap();
+        assert!(json.contains("\"partName\":\"Metadata/plate_1.png\""));
+        assert!(json.contains("\"plateIndex\":1"));
+        assert!(json.contains("\"pngBase64\""));
+        let parsed: VendorPlateThumbnailsDto = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, dto);
     }
 

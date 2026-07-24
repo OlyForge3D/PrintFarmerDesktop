@@ -18,6 +18,7 @@ export const IpcChannel = {
   LoadScene: 'model:loadScene',
   OpenModelFile: 'dialog:openModelFile',
   ExtractVendorMetadata: 'model:extractVendorMetadata',
+  ExtractVendorPlateThumbnails: 'model:extractVendorPlateThumbnails',
   RenderThumbnail: 'model:renderThumbnail',
   ScanRoot: 'catalog:scanRoot',
   PreviewImport: 'catalog:previewImport',
@@ -193,6 +194,35 @@ export type ExtractVendorMetadataRequest = z.infer<
 export const ExtractVendorMetadataResponse = VendorMetadata;
 export type ExtractVendorMetadataResponse = z.infer<
   typeof ExtractVendorMetadataResponse
+>;
+
+export const VendorPlateThumbnail = z.object({
+  partName: z.string().min(1),
+  plateIndex: z.number().int().nonnegative().optional(),
+  pngBase64: z.string().min(1),
+});
+export type VendorPlateThumbnail = z.infer<typeof VendorPlateThumbnail>;
+
+/**
+ * Embedded vendor plate thumbnails from the native sidecar. Each record names
+ * the 3MF ZIP part it came from and carries the PNG bytes as base64 so Dallas
+ * can render or upload them without touching the filesystem.
+ */
+export const VendorPlateThumbnails = z.object({
+  thumbnails: z.array(VendorPlateThumbnail).max(1024),
+});
+export type VendorPlateThumbnails = z.infer<typeof VendorPlateThumbnails>;
+
+export const ExtractVendorPlateThumbnailsRequest = z.object({
+  path: z.string().min(1).max(4096),
+});
+export type ExtractVendorPlateThumbnailsRequest = z.infer<
+  typeof ExtractVendorPlateThumbnailsRequest
+>;
+
+export const ExtractVendorPlateThumbnailsResponse = VendorPlateThumbnails;
+export type ExtractVendorPlateThumbnailsResponse = z.infer<
+  typeof ExtractVendorPlateThumbnailsResponse
 >;
 
 // --- model:renderThumbnail ------------------------------------------------
@@ -628,6 +658,10 @@ export const ipcSchemas = {
     request: ExtractVendorMetadataRequest,
     response: ExtractVendorMetadataResponse,
   },
+  [IpcChannel.ExtractVendorPlateThumbnails]: {
+    request: ExtractVendorPlateThumbnailsRequest,
+    response: ExtractVendorPlateThumbnailsResponse,
+  },
   [IpcChannel.RenderThumbnail]: {
     request: RenderThumbnailRequest,
     response: RenderThumbnailResponse,
@@ -725,6 +759,9 @@ export interface PrintFarmerApi {
   extractVendorMetadata(
     request: ExtractVendorMetadataRequest,
   ): Promise<ExtractVendorMetadataResponse>;
+  extractVendorPlateThumbnails(
+    request: ExtractVendorPlateThumbnailsRequest,
+  ): Promise<ExtractVendorPlateThumbnailsResponse>;
   renderThumbnail(
     request: RenderThumbnailRequest,
   ): Promise<RenderThumbnailResponse>;
