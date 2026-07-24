@@ -727,6 +727,8 @@ describe('<App />', () => {
       indices: [0, 0, 0],
       bounds: { min: [0, 0, 0], max: [0, 0, 0] },
       sourceFormat: 'stl',
+      status: 'complete',
+      statusMessages: [],
       parts: [],
       objects: [],
       rootObjectIds: [],
