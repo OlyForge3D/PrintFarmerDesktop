@@ -1227,7 +1227,10 @@ fn is_element_in_namespace(
         )
 }
 
-fn resolve_relationship_target(source_part: &str, target: &str) -> Result<String, ThreeMfError> {
+pub(crate) fn resolve_relationship_target(
+    source_part: &str,
+    target: &str,
+) -> Result<String, ThreeMfError> {
     let target = target.trim();
     if target.is_empty() || target.contains('\\') || target.contains('?') || target.contains('#') {
         return Err(ThreeMfError::Malformed(format!(

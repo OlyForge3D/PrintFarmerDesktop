@@ -24,6 +24,11 @@ use crate::threemf::ThreeMfError;
 use crate::thumbnail::{self, ThumbnailError, DEFAULT_THUMBNAIL_SIZE};
 use crate::vendor;
 
+pub use crate::retarget::{
+    BuildReport as RetargetBuildReportDto, ImportedTargetProfileDetails,
+    PreflightReport as RetargetPreflightReportDto, RetargetRpcOutcome, TargetProfileDetails,
+    TargetProfileSummary, ValidationReport as RetargetValidationReportDto,
+};
 pub use crate::sync::{
     AppliedOutboundResultDto, ApplyPullBatchDto, ClaimedOutboundBatchDto, CollectionSnapshotDto,
     ConflictInputDto, ConflictResolution, DisposeFailedBatchDto, EnqueueOutboundOperationDto,

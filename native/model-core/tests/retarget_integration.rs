@@ -1,0 +1,935 @@
+use std::fs;
+use std::io::{Cursor, Write};
+use std::path::{Path, PathBuf};
+
+use model_core::catalog::InMemoryCatalog;
+use model_core::hash::hash_file;
+use model_core::retarget::{IssueCode, RetargetEngine, RetargetLimits, RetargetOptions};
+use serde_json::{json, Value};
+use tempfile::TempDir;
+use zip::write::{SimpleFileOptions, ZipWriter};
+use zip::CompressionMethod;
+
+fn bundle_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("resources")
+        .join("target-profiles")
+        .join("snapmaker-u1")
+}
+
+fn engine() -> RetargetEngine {
+    RetargetEngine::open(bundle_root(), RetargetLimits::default()).unwrap()
+}
+
+fn target_id(engine: &RetargetEngine) -> String {
+    engine
+        .list_bundled_profiles()
+        .unwrap()
+        .into_iter()
+        .find(|profile| profile.display_name.starts_with("0.20 Standard"))
+        .unwrap()
+        .profile_id
+}
+
+fn editable_project(path: &Path, application: &str, stale: bool) {
+    let content_types = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+  <Override PartName="/Metadata/project_settings.config" ContentType="application/json"/>
+  <Override PartName="/Metadata/model_settings.config" ContentType="application/xml"/>
+  <Override PartName="/Metadata/plate_1.gcode" ContentType="text/plain"/>
+  <Override PartName="/Metadata/slice_info.config" ContentType="application/xml"/>
+  <Override PartName="/Metadata/custom_gcode_per_layer.xml" ContentType="application/xml"/>
+  <Override PartName="/_xmlsignatures/origin.sigs" ContentType="application/vnd.openxmlformats-package.digital-signature-origin"/>
+</Types>"#;
+    let rels = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel" Target="/3D/3dmodel.model"/>
+  <Relationship Id="slice" Type="urn:test:slice" Target="/Metadata/slice_info.config"/>
+  <Relationship Id="signature" Type="urn:test:signature" Target="/_xmlsignatures/origin.sigs"/>
+</Relationships>"#;
+    let model = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:p="urn:test:paint">
+  <metadata name="Application">{application}</metadata>
+  <resources>
+    <object id="1" name="Painted triangle" type="model"><mesh>
+      <vertices>
+        <vertex x="0" y="0" z="0"/><vertex x="20" y="0" z="0"/><vertex x="0" y="20" z="0"/>
+      </vertices>
+      <triangles><triangle v1="0" v2="1" v3="2" p:paint_color="1"/></triangles>
+    </mesh></object>
+    <object id="2" name="Assembly" type="model"><components>
+      <component objectid="1"/>
+      <component objectid="1" transform="1 0 0 0 1 0 0 0 1 30 0 0"/>
+    </components></object>
+  </resources>
+  <build><item objectid="2" transform="1 0 0 0 1 0 0 0 1 5 6 7"/></build>
+</model>"#
+    );
+    let settings = json!({
+        "printer_model": "Source Printer",
+        "printer_settings_id": "Source 0.4",
+        "print_settings_id": "0.20 Standard",
+        "layer_height": 0.2,
+        "filament_type": ["PLA", "PETG"],
+        "filament_colour": ["#112233", "#AABBCC"],
+        "wall_loops": "3",
+        "inner_wall_speed": "9999",
+        "default_acceleration": "99999",
+        "machine_start_gcode": "UNSAFE SOURCE SCRIPT",
+        "unknown_source_knob": "discard me"
+    })
+    .to_string();
+    let model_settings = r#"<?xml version="1.0" encoding="UTF-8"?>
+<config><object id="2" extruder="1"><part id="9"/></object><assembly><assemble_item object_id="1"/></assembly><plate/><plate/></config>"#;
+
+    let file = fs::File::create(path).unwrap();
+    let mut writer = ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let mut parts: Vec<(&str, &[u8])> = vec![
+        ("[Content_Types].xml", content_types.as_bytes()),
+        ("_rels/.rels", rels.as_bytes()),
+        ("3D/3dmodel.model", model.as_bytes()),
+        ("Metadata/project_settings.config", settings.as_bytes()),
+        ("Metadata/model_settings.config", model_settings.as_bytes()),
+        ("Metadata/unknown.bin", b"\x00\x01preserve me"),
+    ];
+    if stale {
+        parts.extend([
+            ("Metadata/plate_1.gcode", b"G28\n" as &[u8]),
+            ("Metadata/plate_1.gcode.md5", b"deadbeef"),
+            ("Metadata/slice_info.config", b"<config/>"),
+            ("Metadata/custom_gcode_per_layer.xml", b"<custom/>"),
+            ("_xmlsignatures/origin.sigs", b"signature"),
+        ]);
+    } else {
+        parts.retain(|(name, _)| {
+            !matches!(
+                *name,
+                "Metadata/plate_1.gcode"
+                    | "Metadata/slice_info.config"
+                    | "Metadata/custom_gcode_per_layer.xml"
+                    | "_xmlsignatures/origin.sigs"
+            )
+        });
+    }
+    for (name, bytes) in parts {
+        writer.start_file(name, options).unwrap();
+        writer.write_all(bytes).unwrap();
+    }
+    writer.finish().unwrap();
+}
+
+fn simple_archive(path: &Path, include_configs: bool) {
+    let content_types = r#"<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>"#;
+    let rels = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="m" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel" Target="/3D/3dmodel.model"/></Relationships>"#;
+    let model = r#"<?xml version="1.0"?><model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><metadata name="Application">BambuStudio</metadata><resources><object id="1" type="model"><mesh><vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices><triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object></resources><build><item objectid="1"/></build></model>"#;
+    let mut bytes = Vec::new();
+    {
+        let mut writer = ZipWriter::new(Cursor::new(&mut bytes));
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        for (name, data) in [
+            ("[Content_Types].xml", content_types.as_bytes()),
+            ("_rels/.rels", rels.as_bytes()),
+            ("3D/3dmodel.model", model.as_bytes()),
+        ] {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(data).unwrap();
+        }
+        if include_configs {
+            writer
+                .start_file("Metadata/project_settings.config", options)
+                .unwrap();
+            writer
+                .write_all(br#"{"printer_model":"x","layer_height":"0.2","filament_type":["PLA"]}"#)
+                .unwrap();
+            writer
+                .start_file("Metadata/model_settings.config", options)
+                .unwrap();
+            writer
+                .write_all(br#"<config><object id="1"/></config>"#)
+                .unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    fs::write(path, bytes).unwrap();
+}
+
+#[test]
+fn actual_bundle_has_verified_82_file_shape_and_15_targets() {
+    let engine = engine();
+    let profiles = engine.list_bundled_profiles().unwrap();
+    assert_eq!(profiles.len(), 15);
+    assert!(profiles.iter().all(|profile| {
+        profile
+            .profile_id
+            .starts_with("snapmaker-u1-orca-presets:profiles/Snapmaker/process/")
+    }));
+    for profile in profiles {
+        let details = engine.inspect_bundled_profile(&profile.profile_id).unwrap();
+        assert_eq!(details.compatible_filaments.len(), 23);
+        assert_eq!(details.machine.nozzle_count, 4);
+        assert_eq!(details.profile_hashes.len(), 25);
+    }
+}
+
+#[test]
+fn builds_deterministically_preserves_source_and_reopens_scene() {
+    let engine = engine();
+    let target = target_id(&engine);
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("source.3mf");
+    let first = temp.path().join("first.3mf");
+    let second = temp.path().join("second.3mf");
+    editable_project(&source, "OrcaSlicer-2.3", true);
+    let source_hash = hash_file(&source).unwrap();
+
+    let preflight = engine
+        .preflight(
+            &source,
+            RetargetOptions {
+                object_exclusion: true,
+            },
+        )
+        .unwrap();
+    assert!(preflight.accepted, "{:?}", preflight.blockers);
+    assert!(preflight
+        .warnings
+        .iter()
+        .any(|warning| warning.code == IssueCode::StaleSliceArtifactsRemoved));
+    assert!(preflight
+        .warnings
+        .iter()
+        .any(|warning| warning.code == IssueCode::PaintMetadataPreservedUnverified));
+
+    let report = engine
+        .build(
+            &source,
+            &first,
+            &target,
+            RetargetOptions {
+                object_exclusion: true,
+            },
+        )
+        .unwrap();
+    engine
+        .build(
+            &source,
+            &second,
+            &target,
+            RetargetOptions {
+                object_exclusion: true,
+            },
+        )
+        .unwrap();
+    assert!(report.validation.valid);
+    assert_eq!(fs::read(&first).unwrap(), fs::read(&second).unwrap());
+    assert_eq!(source_hash, hash_file(&source).unwrap());
+    let output_settings: Value =
+        serde_json::from_slice(&read_zip_part(&first, "Metadata/project_settings.config")).unwrap();
+    assert_eq!(
+        output_settings["printer_settings_id"],
+        "Snapmaker U1 (0.4 nozzle)"
+    );
+    assert_eq!(output_settings["exclude_object"], "1");
+    assert_ne!(
+        output_settings["machine_start_gcode"],
+        "UNSAFE SOURCE SCRIPT"
+    );
+    assert_eq!(
+        output_settings["filament_settings_id"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(output_settings.get("unknown_source_knob").is_none());
+    assert!(
+        output_settings["inner_wall_speed"]
+            .as_str()
+            .unwrap()
+            .parse::<f64>()
+            .unwrap()
+            < 9999.0
+    );
+    for removed in [
+        "Metadata/plate_1.gcode",
+        "Metadata/slice_info.config",
+        "Metadata/custom_gcode_per_layer.xml",
+        "_xmlsignatures/origin.sigs",
+    ] {
+        assert!(zip_part(&first, removed).is_none(), "{removed} survived");
+    }
+    assert_eq!(
+        read_zip_part(&source, "3D/3dmodel.model"),
+        read_zip_part(&first, "3D/3dmodel.model")
+    );
+    assert_eq!(
+        read_zip_part(&source, "Metadata/model_settings.config"),
+        read_zip_part(&first, "Metadata/model_settings.config")
+    );
+    assert_eq!(
+        read_zip_part(&source, "Metadata/unknown.bin"),
+        read_zip_part(&first, "Metadata/unknown.bin")
+    );
+    model_core::threemf::parse_file(&first).unwrap();
+    model_core::scene::load_scene(&first).unwrap();
+    model_core::vendor::extract_file(&first).unwrap();
+}
+
+#[test]
+fn rejects_geometry_only_presliced_and_unsafe_paths() {
+    let engine = engine();
+    let temp = TempDir::new().unwrap();
+    let geometry = temp.path().join("geometry.3mf");
+    simple_archive(&geometry, false);
+    let report = engine
+        .preflight(&geometry, RetargetOptions::default())
+        .unwrap();
+    assert!(report
+        .blockers
+        .iter()
+        .any(|blocker| blocker.code == IssueCode::GeometryOnly));
+
+    let gcode = temp.path().join("job.gcode.3mf");
+    let file = fs::File::create(&gcode).unwrap();
+    let mut writer = ZipWriter::new(file);
+    writer
+        .start_file("Metadata/plate_1.gcode", SimpleFileOptions::default())
+        .unwrap();
+    writer.write_all(b"G28\n").unwrap();
+    writer.finish().unwrap();
+    let report = engine
+        .preflight(&gcode, RetargetOptions::default())
+        .unwrap();
+    assert_eq!(report.blockers[0].code, IssueCode::PreSlicedOnly);
+
+    let traversal = temp.path().join("unsafe.3mf");
+    let file = fs::File::create(&traversal).unwrap();
+    let mut writer = ZipWriter::new(file);
+    writer
+        .start_file("../escape.model", SimpleFileOptions::default())
+        .unwrap();
+    writer.write_all(b"x").unwrap();
+    writer.finish().unwrap();
+    let error = engine
+        .preflight(&traversal, RetargetOptions::default())
+        .unwrap_err();
+    assert_eq!(error.code, IssueCode::UnsafeArchivePath);
+}
+
+#[test]
+fn classifies_slicers_and_blocks_invalid_material_configurations() {
+    let engine = engine();
+    let temp = TempDir::new().unwrap();
+    for (name, application, code) in [
+        ("prusa.3mf", "PrusaSlicer-2.8", IssueCode::UnsupportedPrusa),
+        ("cura.3mf", "Ultimaker Cura 5.7", IssueCode::UnsupportedCura),
+    ] {
+        let path = temp.path().join(name);
+        editable_project(&path, application, true);
+        let report = engine.preflight(&path, RetargetOptions::default()).unwrap();
+        assert!(report.blockers.iter().any(|blocker| blocker.code == code));
+    }
+
+    let unknown = temp.path().join("unknown.3mf");
+    editable_project(&unknown, "IndependentSlicer-1.0", true);
+    let report = engine
+        .preflight(&unknown, RetargetOptions::default())
+        .unwrap();
+    assert!(report.accepted);
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.code == IssueCode::UnknownOrcaFamilyProducer));
+
+    let unsupported = temp.path().join("unsupported-material.3mf");
+    editable_project(&unsupported, "OrcaSlicer", true);
+    replace_zip_part(
+        &unsupported,
+        "Metadata/project_settings.config",
+        br#"{"printer_model":"x","layer_height":"0.2","filament_type":["PC"]}"#,
+    );
+    let report = engine
+        .preflight(&unsupported, RetargetOptions::default())
+        .unwrap();
+    assert!(report
+        .blockers
+        .iter()
+        .any(|blocker| blocker.code == IssueCode::UnsupportedMaterial));
+
+    let five = temp.path().join("five-materials.3mf");
+    editable_project(&five, "OrcaSlicer", true);
+    replace_zip_part(
+        &five,
+        "Metadata/project_settings.config",
+        br#"{"printer_model":"x","layer_height":"0.2","filament_type":["PLA","PLA","PLA","PLA","PLA"]}"#,
+    );
+    let report = engine.preflight(&five, RetargetOptions::default()).unwrap();
+    assert!(report
+        .blockers
+        .iter()
+        .any(|blocker| blocker.code == IssueCode::TooManyFilamentSlots));
+
+    let truncated = temp.path().join("truncated-model-settings.3mf");
+    editable_project(&truncated, "OrcaSlicer", true);
+    replace_zip_part(
+        &truncated,
+        "Metadata/model_settings.config",
+        br#"<config><object id="2">"#,
+    );
+    let report = engine
+        .preflight(&truncated, RetargetOptions::default())
+        .unwrap();
+    assert!(report
+        .blockers
+        .iter()
+        .any(|blocker| blocker.code == IssueCode::InvalidModelSettings));
+
+    let invalid_extruder = temp.path().join("invalid-extruder-metadata.3mf");
+    editable_project(&invalid_extruder, "OrcaSlicer", true);
+    replace_zip_part(
+        &invalid_extruder,
+        "Metadata/model_settings.config",
+        br#"<config><object id="2"><metadata key="extruder" value="3"/></object></config>"#,
+    );
+    let report = engine
+        .preflight(&invalid_extruder, RetargetOptions::default())
+        .unwrap();
+    assert!(report
+        .blockers
+        .iter()
+        .any(|blocker| blocker.code == IssueCode::InvalidModelSettings));
+
+    let invalid_direct_extruder = temp.path().join("invalid-direct-extruder.3mf");
+    editable_project(&invalid_direct_extruder, "OrcaSlicer", true);
+    replace_zip_part(
+        &invalid_direct_extruder,
+        "Metadata/model_settings.config",
+        br#"<config><object id="2" extruder="invalid"/></config>"#,
+    );
+    let report = engine
+        .preflight(&invalid_direct_extruder, RetargetOptions::default())
+        .unwrap();
+    assert!(report
+        .blockers
+        .iter()
+        .any(|blocker| blocker.code == IssueCode::InvalidModelSettings));
+
+    let dangling_plate_object = temp.path().join("dangling-plate-object.3mf");
+    editable_project(&dangling_plate_object, "OrcaSlicer", true);
+    replace_zip_part(
+        &dangling_plate_object,
+        "Metadata/model_settings.config",
+        br#"<config><object id="2"/><plate><metadata key="object_id" value="999"/></plate></config>"#,
+    );
+    let report = engine
+        .preflight(&dangling_plate_object, RetargetOptions::default())
+        .unwrap();
+    assert!(report
+        .blockers
+        .iter()
+        .any(|blocker| blocker.code == IssueCode::InvalidModelSettings));
+
+    let duplicate_objects = temp.path().join("duplicate-object-records.3mf");
+    editable_project(&duplicate_objects, "OrcaSlicer", true);
+    replace_zip_part(
+        &duplicate_objects,
+        "Metadata/model_settings.config",
+        br#"<config><object id="2"/><object id="2"/></config>"#,
+    );
+    let report = engine
+        .preflight(&duplicate_objects, RetargetOptions::default())
+        .unwrap();
+    assert!(report
+        .blockers
+        .iter()
+        .any(|blocker| blocker.code == IssueCode::InvalidModelSettings));
+
+    let no_objects = temp.path().join("model-settings-without-objects.3mf");
+    editable_project(&no_objects, "OrcaSlicer", true);
+    replace_zip_part(
+        &no_objects,
+        "Metadata/model_settings.config",
+        br#"<config><assembly/></config>"#,
+    );
+    let report = engine
+        .preflight(&no_objects, RetargetOptions::default())
+        .unwrap();
+    assert!(report
+        .blockers
+        .iter()
+        .any(|blocker| blocker.code == IssueCode::InvalidModelSettings));
+
+    let qualified_metadata = temp.path().join("qualified-metadata.3mf");
+    editable_project(&qualified_metadata, "OrcaSlicer", true);
+    replace_zip_part(
+        &qualified_metadata,
+        "Metadata/model_settings.config",
+        br#"<config xmlns:x="urn:test"><object id="2"><metadata key="outer_wall_speed" x:key="ignored" value="9999"/></object></config>"#,
+    );
+    let report = engine
+        .preflight(&qualified_metadata, RetargetOptions::default())
+        .unwrap();
+    assert!(report
+        .blockers
+        .iter()
+        .any(|blocker| blocker.code == IssueCode::InvalidModelSettings));
+
+    let conflicting_aliases = temp.path().join("conflicting-object-aliases.3mf");
+    editable_project(&conflicting_aliases, "OrcaSlicer", true);
+    replace_zip_part(
+        &conflicting_aliases,
+        "Metadata/model_settings.config",
+        br#"<config><object id="2"/><assembly><assemble_item object_id="1" objectid="2"/></assembly></config>"#,
+    );
+    let report = engine
+        .preflight(&conflicting_aliases, RetargetOptions::default())
+        .unwrap();
+    assert!(report
+        .blockers
+        .iter()
+        .any(|blocker| blocker.code == IssueCode::InvalidModelSettings));
+}
+
+#[test]
+fn rejects_external_relationships_and_existing_output() {
+    let engine = engine();
+    let target = target_id(&engine);
+    let temp = TempDir::new().unwrap();
+    let external = temp.path().join("external.3mf");
+    simple_archive(&external, true);
+    replace_zip_part(
+        &external,
+        "_rels/.rels",
+        br#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="m" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel" Target="https://example.invalid/model" TargetMode="External"/></Relationships>"#,
+    );
+    let error = engine
+        .preflight(&external, RetargetOptions::default())
+        .unwrap_err();
+    assert_eq!(error.code, IssueCode::ExternalRelationship);
+
+    let qualified_external = temp.path().join("qualified-external.3mf");
+    simple_archive(&qualified_external, true);
+    replace_zip_part(
+        &qualified_external,
+        "_rels/.rels",
+        br#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships" xmlns:x="urn:test"><Relationship Id="m" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel" Target="https://example.invalid/model" x:TargetMode="Internal" TargetMode="External"/></Relationships>"#,
+    );
+    let error = engine
+        .preflight(&qualified_external, RetargetOptions::default())
+        .unwrap_err();
+    assert_eq!(error.code, IssueCode::InvalidArchive);
+
+    let source = temp.path().join("source.3mf");
+    let output = temp.path().join("existing.3mf");
+    editable_project(&source, "OrcaSlicer", true);
+    fs::write(&output, b"occupied").unwrap();
+    let error = engine
+        .build(&source, &output, &target, RetargetOptions::default())
+        .unwrap_err();
+    assert_eq!(error.code, IssueCode::OutputPathConflict);
+    assert_eq!(fs::read(&output).unwrap(), b"occupied");
+}
+
+#[test]
+fn missing_sources_use_stable_source_not_found_code() {
+    let engine = engine();
+    let target = target_id(&engine);
+    let temp = TempDir::new().unwrap();
+    let missing = temp.path().join("missing.3mf");
+
+    let build_error = engine
+        .build(
+            &missing,
+            temp.path().join("build-output.txt"),
+            &target,
+            RetargetOptions::default(),
+        )
+        .unwrap_err();
+    assert_eq!(build_error.code, IssueCode::SourceNotFound);
+
+    let validate_error = engine
+        .validate_output(
+            &missing,
+            temp.path().join("validate-output.3mf"),
+            &target,
+            RetargetOptions::default(),
+        )
+        .unwrap_err();
+    assert_eq!(validate_error.code, IssueCode::SourceNotFound);
+}
+
+#[test]
+fn preflight_blocks_inconsistent_per_filament_arrays() {
+    let engine = engine();
+    let target = target_id(&engine);
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("inconsistent-filaments.3mf");
+    editable_project(&source, "OrcaSlicer", true);
+    replace_zip_part(
+        &source,
+        "Metadata/project_settings.config",
+        br#"{"printer_model":"x","layer_height":"0.2","filament_type":["PLA","PETG"],"additional_cooling_fan_speed":["0","0","0"]}"#,
+    );
+
+    let report = engine
+        .preflight(&source, RetargetOptions::default())
+        .unwrap();
+    assert!(!report.accepted);
+    assert!(report.blockers.iter().any(|blocker| {
+        blocker.code == IssueCode::IncompleteProject
+            && blocker.setting.as_deref() == Some("additional_cooling_fan_speed")
+    }));
+
+    let request = json!({
+        "id": 1,
+        "method": "buildRetarget",
+        "params": {
+            "sourcePath": source,
+            "outputPath": temp.path().join("blocked-output.3mf"),
+            "targetProfileId": target,
+            "objectExclusion": false
+        }
+    });
+    let mut output = Vec::new();
+    let mut store = InMemoryCatalog::new();
+    model_core::serve::run_with_retarget(
+        &mut store,
+        Some(&engine),
+        format!("{request}\n").as_bytes(),
+        &mut output,
+    )
+    .unwrap();
+    let response: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(response["result"]["status"], "blocked");
+    assert_eq!(
+        response["result"]["blockers"][0]["code"],
+        "incompleteProject"
+    );
+
+    let empty_source = temp.path().join("empty-filament-array.3mf");
+    editable_project(&empty_source, "OrcaSlicer", true);
+    replace_zip_part(
+        &empty_source,
+        "Metadata/project_settings.config",
+        br#"{"printer_model":"x","layer_height":"0.2","filament_type":["PLA","PETG"],"pressure_advance":[]}"#,
+    );
+    let empty_report = engine
+        .preflight(&empty_source, RetargetOptions::default())
+        .unwrap();
+    assert!(empty_report.blockers.iter().any(|blocker| {
+        blocker.code == IssueCode::IncompleteProject
+            && blocker.setting.as_deref() == Some("pressure_advance")
+    }));
+
+    let scalar_source = temp.path().join("scalar-filament-setting.3mf");
+    editable_project(&scalar_source, "OrcaSlicer", true);
+    replace_zip_part(
+        &scalar_source,
+        "Metadata/project_settings.config",
+        br##"{"printer_model":"x","layer_height":"0.2","filament_type":["PLA","PETG"],"filament_colour":"#112233"}"##,
+    );
+    let scalar_report = engine
+        .preflight(&scalar_source, RetargetOptions::default())
+        .unwrap();
+    assert!(scalar_report.blockers.iter().any(|blocker| {
+        blocker.code == IssueCode::IncompleteProject
+            && blocker.setting.as_deref() == Some("filament_colour")
+    }));
+}
+
+#[test]
+fn build_accepts_explicit_start_end_content_type_overrides() {
+    let engine = engine();
+    let target = target_id(&engine);
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("expanded-content-types.3mf");
+    let output = temp.path().join("expanded-content-types-output.3mf");
+    editable_project(&source, "OrcaSlicer", true);
+    replace_zip_part(
+        &source,
+        "[Content_Types].xml",
+        br#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+  <Override PartName="/Metadata/project_settings.config" ContentType="application/json"></Override>
+  <Override PartName="/Metadata/model_settings.config" ContentType="application/xml"></Override>
+  <Override PartName="/Metadata/slice_info.config" ContentType="application/xml"></Override>
+</Types>"#,
+    );
+
+    engine
+        .build(&source, &output, &target, RetargetOptions::default())
+        .unwrap();
+    let content_types = String::from_utf8(read_zip_part(&output, "[Content_Types].xml")).unwrap();
+    assert!(content_types.contains("/Metadata/project_settings.config"));
+    assert!(!content_types.contains("/Metadata/slice_info.config"));
+}
+
+#[test]
+fn filament_profile_compatibility_metadata_is_not_slot_merged() {
+    let engine = engine();
+    let target = target_id(&engine);
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("four-filaments.3mf");
+    let output = temp.path().join("four-filaments-output.3mf");
+    editable_project(&source, "OrcaSlicer", true);
+    replace_zip_part(
+        &source,
+        "Metadata/project_settings.config",
+        br##"{"printer_model":"x","layer_height":"0.2","filament_type":["PLA","PETG","PLA","PETG"],"filament_colour":["#111111","#222222","#333333","#444444"],"compatible_printers":["Source Printer"]}"##,
+    );
+
+    let preflight = engine
+        .preflight(&source, RetargetOptions::default())
+        .unwrap();
+    assert!(preflight.accepted, "{:?}", preflight.blockers);
+    engine
+        .build(&source, &output, &target, RetargetOptions::default())
+        .unwrap();
+    let rebuilt: Value =
+        serde_json::from_slice(&read_zip_part(&output, "Metadata/project_settings.config"))
+            .unwrap();
+    assert_eq!(
+        rebuilt["compatible_printers"],
+        json!(["Snapmaker U1 (0.4 nozzle)"])
+    );
+    assert_eq!(rebuilt["filament_settings_id"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        rebuilt["additional_cooling_fan_speed"],
+        json!(["70", "0", "70", "0"])
+    );
+
+    let ambiguous = temp.path().join("ambiguous-filament-defaults.3mf");
+    editable_project(&ambiguous, "OrcaSlicer", true);
+    replace_zip_part(
+        &ambiguous,
+        "Metadata/project_settings.config",
+        br##"{"printer_model":"x","layer_height":"0.2","filament_type":["TPU","TPU-95A","PA-CF","PLA"],"filament_colour":["#111111","#222222","#333333","#444444"]}"##,
+    );
+    let preflight = engine
+        .preflight(&ambiguous, RetargetOptions::default())
+        .unwrap();
+    assert!(!preflight.accepted);
+    assert!(preflight
+        .blockers
+        .iter()
+        .any(|blocker| blocker.code == IssueCode::ProfileValueInvalid));
+}
+
+#[test]
+fn per_object_motion_overrides_are_clamped_and_validated() {
+    let engine = engine();
+    let target = target_id(&engine);
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("object-motion-override.3mf");
+    let output = temp.path().join("object-motion-override-output.3mf");
+    editable_project(&source, "OrcaSlicer", true);
+    replace_zip_part(
+        &source,
+        "Metadata/model_settings.config",
+        br#"<config><object id="2"><metadata key="outer_wall_speed" value="9999"/></object><plate><metadata key="object_id" value="2"/></plate></config>"#,
+    );
+
+    let report = engine
+        .build(&source, &output, &target, RetargetOptions::default())
+        .unwrap();
+    assert!(report
+        .applied_changes
+        .get("guardrails")
+        .unwrap()
+        .iter()
+        .any(|change| {
+            change.code == IssueCode::SettingClamped
+                && change.setting.as_deref() == Some("outer_wall_speed")
+        }));
+    let model_settings =
+        String::from_utf8(read_zip_part(&output, "Metadata/model_settings.config")).unwrap();
+    assert!(model_settings.contains("outer_wall_speed"));
+    assert!(!model_settings.contains("9999"));
+    assert!(report.validation.valid);
+}
+
+#[test]
+fn validation_rejects_json_type_and_relationship_tampering() {
+    let engine = engine();
+    let target = target_id(&engine);
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("validation-source.3mf");
+    let json_output = temp.path().join("json-tampered.3mf");
+    let rels_output = temp.path().join("rels-tampered.3mf");
+    editable_project(&source, "OrcaSlicer", true);
+    replace_zip_part(
+        &source,
+        "_rels/.rels",
+        br#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel" Target="/3D/3dmodel.model"/><Relationship Id="retained" Type="urn:test:retained" Target="/Metadata/unknown.bin"/><Relationship Id="slice" Type="urn:test:slice" Target="/Metadata/slice_info.config"/><Relationship Id="signature" Type="urn:test:signature" Target="/_xmlsignatures/origin.sigs"/></Relationships>"#,
+    );
+    engine
+        .build(&source, &json_output, &target, RetargetOptions::default())
+        .unwrap();
+    engine
+        .build(&source, &rels_output, &target, RetargetOptions::default())
+        .unwrap();
+
+    let mut settings: Value = serde_json::from_slice(&read_zip_part(
+        &json_output,
+        "Metadata/project_settings.config",
+    ))
+    .unwrap();
+    settings["exclude_object"] = Value::Bool(false);
+    replace_zip_part(
+        &json_output,
+        "Metadata/project_settings.config",
+        serde_json::to_string(&settings).unwrap().as_bytes(),
+    );
+    let validation = engine
+        .validate_output(&source, &json_output, &target, RetargetOptions::default())
+        .unwrap();
+    assert!(!validation.valid);
+    assert!(!validation.invariants["projectSettingsBytesExact"]);
+
+    replace_zip_part(
+        &rels_output,
+        "_rels/.rels",
+        br#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel" Target="/3D/3dmodel.model"/></Relationships>"#,
+    );
+    let validation = engine
+        .validate_output(&source, &rels_output, &target, RetargetOptions::default())
+        .unwrap();
+    assert!(!validation.valid);
+    assert!(!validation.invariants["opcControlPartsExact"]);
+}
+
+#[test]
+fn six_retarget_methods_use_typed_wire_outcomes() {
+    let engine = engine();
+    let target = target_id(&engine);
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("wire-source.3mf");
+    let built = temp.path().join("wire-built.3mf");
+    let rpc_built = temp.path().join("wire-rpc-built.3mf");
+    editable_project(&source, "BambuStudio-2.0", true);
+    engine
+        .build(&source, &built, &target, RetargetOptions::default())
+        .unwrap();
+
+    let requests = [
+        json!({"id":1,"method":"listRetargetProfiles","params":{}}),
+        json!({"id":2,"method":"inspectRetargetProfile","params":{"profileId":target}}),
+        json!({"id":3,"method":"inspectImportedRetargetProfile","params":{"path":built}}),
+        json!({"id":4,"method":"preflightRetarget","params":{"sourcePath":source,"objectExclusion":false}}),
+        json!({"id":5,"method":"buildRetarget","params":{"sourcePath":source,"outputPath":rpc_built,"targetProfileId":target,"objectExclusion":false}}),
+        json!({"id":6,"method":"validateRetargetOutput","params":{"sourcePath":source,"outputPath":built,"targetProfileId":target,"objectExclusion":false}}),
+    ];
+    let input = requests
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    let mut output = Vec::new();
+    let mut store = InMemoryCatalog::new();
+    model_core::serve::run_with_retarget(&mut store, Some(&engine), input.as_bytes(), &mut output)
+        .unwrap();
+    let responses: Vec<Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(responses.len(), 6);
+    assert!(responses.iter().all(|response| response["ok"] == true));
+    assert!(responses
+        .iter()
+        .all(|response| response["result"]["status"] == "ok"));
+    assert!(responses[0]["result"]["value"].as_array().unwrap().len() == 15);
+    assert!(responses[2]["result"]["value"]["profileId"]
+        .as_str()
+        .unwrap()
+        .starts_with("imported:"));
+}
+
+#[test]
+fn transport_keeps_outer_errors_and_stable_blocker_codes() {
+    let engine = engine();
+    let temp = TempDir::new().unwrap();
+    let geometry = temp.path().join("wire-geometry.3mf");
+    simple_archive(&geometry, false);
+    let requests = [
+        json!({"id":1,"method":"preflightRetarget","params":{}}),
+        json!({"id":2,"method":"preflightRetarget","params":{"sourcePath":geometry,"objectExclusion":false}}),
+    ];
+    let input = requests
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    let mut output = Vec::new();
+    let mut store = InMemoryCatalog::new();
+    model_core::serve::run_with_retarget(&mut store, Some(&engine), input.as_bytes(), &mut output)
+        .unwrap();
+    let responses: Vec<Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(responses[0]["ok"], false);
+    assert!(responses[0]["error"]
+        .as_str()
+        .unwrap()
+        .contains("invalid preflightRetarget params"));
+    assert_eq!(responses[1]["ok"], true);
+    assert_eq!(responses[1]["result"]["status"], "blocked");
+    assert_eq!(
+        responses[1]["result"]["blockers"][0]["code"],
+        "geometryOnly"
+    );
+}
+
+fn read_zip_part(path: &Path, name: &str) -> Vec<u8> {
+    let file = fs::File::open(path).unwrap();
+    let mut archive = zip::ZipArchive::new(file).unwrap();
+    let mut part = archive.by_name(name).unwrap();
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut part, &mut bytes).unwrap();
+    bytes
+}
+
+fn zip_part(path: &Path, name: &str) -> Option<PathBuf> {
+    let file = fs::File::open(path).unwrap();
+    let mut archive = zip::ZipArchive::new(file).unwrap();
+    archive.by_name(name).ok().map(|_| path.to_path_buf())
+}
+
+fn replace_zip_part(path: &Path, target: &str, replacement: &[u8]) {
+    let mut archive = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+    let mut parts = Vec::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).unwrap();
+        let name = entry.name().to_string();
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
+        if name.eq_ignore_ascii_case(target) {
+            bytes = replacement.to_vec();
+        }
+        parts.push((name, bytes));
+    }
+    drop(archive);
+    let mut output = Vec::new();
+    {
+        let mut writer = ZipWriter::new(Cursor::new(&mut output));
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        for (name, bytes) in parts {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(&bytes).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    fs::write(path, output).unwrap();
+}
