@@ -1,5 +1,5 @@
 import { render } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SceneMesh } from '../src/renderer/viewer/types';
 
@@ -60,10 +60,6 @@ async function loadHarness() {
     };
   });
 
-  vi.doMock('../src/renderer/viewer/sceneGraph.js', () => ({
-    buildViewerSceneGraph: vi.fn(),
-  }));
-
   vi.doMock('three/examples/jsm/controls/OrbitControls.js', async () => {
     const THREE = await import('three');
     return {
@@ -87,11 +83,9 @@ async function loadHarness() {
 
   const THREE = await import('three');
   const { ModelViewer } = await import('../src/renderer/viewer/ModelViewer.js');
-  const sceneGraphModule = await import('../src/renderer/viewer/sceneGraph.js');
   return {
     THREE,
     ModelViewer,
-    buildViewerSceneGraph: vi.mocked(sceneGraphModule.buildViewerSceneGraph),
   };
 }
 
@@ -104,44 +98,36 @@ describe('<ModelViewer />', () => {
     vi.stubGlobal('cancelAnimationFrame', vi.fn());
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
   it('disposes the scene graph when the viewer unmounts', async () => {
-    const { THREE, ModelViewer, buildViewerSceneGraph } = await loadHarness();
-    const sceneGraph = {
-      root: new THREE.Group(),
-      setHidden: vi.fn(),
-      dispose: vi.fn(),
-    };
-    buildViewerSceneGraph.mockReturnValue(sceneGraph);
+    const { THREE, ModelViewer } = await loadHarness();
+    const geometryDispose = vi.spyOn(THREE.BufferGeometry.prototype, 'dispose');
+    const materialDispose = vi.spyOn(THREE.Material.prototype, 'dispose');
 
     const { unmount } = render(<ModelViewer mesh={simpleMesh('mesh-a')} />);
     unmount();
 
-    expect(sceneGraph.dispose).toHaveBeenCalledTimes(1);
+    expect(geometryDispose).toHaveBeenCalledTimes(1);
+    expect(materialDispose).toHaveBeenCalledTimes(1);
   });
 
   it('disposes the previous scene graph when the mesh prop changes', async () => {
-    const { THREE, ModelViewer, buildViewerSceneGraph } = await loadHarness();
-    const firstSceneGraph = {
-      root: new THREE.Group(),
-      setHidden: vi.fn(),
-      dispose: vi.fn(),
-    };
-    const secondSceneGraph = {
-      root: new THREE.Group(),
-      setHidden: vi.fn(),
-      dispose: vi.fn(),
-    };
-    buildViewerSceneGraph
-      .mockReturnValueOnce(firstSceneGraph)
-      .mockReturnValueOnce(secondSceneGraph);
+    const { THREE, ModelViewer } = await loadHarness();
+    const geometryDispose = vi.spyOn(THREE.BufferGeometry.prototype, 'dispose');
+    const materialDispose = vi.spyOn(THREE.Material.prototype, 'dispose');
 
     const { rerender, unmount } = render(<ModelViewer mesh={simpleMesh('mesh-a')} />);
     rerender(<ModelViewer mesh={simpleMesh('mesh-b')} />);
 
-    expect(firstSceneGraph.dispose).toHaveBeenCalledTimes(1);
-    expect(secondSceneGraph.dispose).not.toHaveBeenCalled();
+    expect(geometryDispose).toHaveBeenCalledTimes(1);
+    expect(materialDispose).toHaveBeenCalledTimes(1);
 
     unmount();
-    expect(secondSceneGraph.dispose).toHaveBeenCalledTimes(1);
+    expect(geometryDispose).toHaveBeenCalledTimes(2);
+    expect(materialDispose).toHaveBeenCalledTimes(2);
   });
 });

@@ -1411,6 +1411,23 @@ struct FlattenOutput {
     vertices: Vec<[f32; 3]>,
     triangles: Vec<[u32; 3]>,
     expansion_steps: usize,
+    mesh_object_count: usize,
+}
+
+impl FlattenOutput {
+    fn record_mesh_object(&mut self) -> Result<(), ThreeMfError> {
+        self.mesh_object_count = self
+            .mesh_object_count
+            .checked_add(1)
+            .ok_or(ThreeMfError::TooLarge)?;
+        if self.mesh_object_count > MAX_RENDERABLE_SCENE_OBJECTS {
+            return Err(ThreeMfError::RenderBudgetExceeded {
+                mesh_objects: self.mesh_object_count,
+                max_mesh_objects: MAX_RENDERABLE_SCENE_OBJECTS,
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Expand the build into a single indexed mesh, baking every transform. Each
@@ -1462,17 +1479,6 @@ fn flatten(package: &RawPackage) -> Result<ThreeMfMesh, ThreeMfError> {
     for v in &output.vertices {
         bounds.expand(*v);
     }
-    let mesh_object_count = objects
-        .iter()
-        .filter(|object| object.mesh.is_some())
-        .count();
-    if mesh_object_count > MAX_RENDERABLE_SCENE_OBJECTS {
-        return Err(ThreeMfError::RenderBudgetExceeded {
-            mesh_objects: mesh_object_count,
-            max_mesh_objects: MAX_RENDERABLE_SCENE_OBJECTS,
-        });
-    }
-
     Ok(ThreeMfMesh {
         vertices: output.vertices,
         triangles: output.triangles,
@@ -1546,6 +1552,7 @@ fn expand(
             vertices,
             triangles,
         } => {
+            output.record_mesh_object()?;
             let mut bounds = Aabb::empty();
             for vertex in vertices {
                 bounds.expand(*vertex);
@@ -1763,6 +1770,21 @@ fn optional_transform(e: &BytesStart) -> Result<Transform, ThreeMfError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn expected_three_row_major_matrix(transform: &Transform) -> [f32; 16] {
+        let origin = transform.apply([0.0, 0.0, 0.0]);
+        let x_axis = subtract(transform.apply([1.0, 0.0, 0.0]), origin);
+        let y_axis = subtract(transform.apply([0.0, 1.0, 0.0]), origin);
+        let z_axis = subtract(transform.apply([0.0, 0.0, 1.0]), origin);
+        [
+            x_axis[0], y_axis[0], z_axis[0], origin[0], x_axis[1], y_axis[1], z_axis[1], origin[1],
+            x_axis[2], y_axis[2], z_axis[2], origin[2], 0.0, 0.0, 0.0, 1.0,
+        ]
+    }
+
+    fn subtract(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    }
     use base64::engine::general_purpose::STANDARD as BASE64;
     use base64::Engine as _;
     use std::io::Write;
@@ -2468,7 +2490,7 @@ mod tests {
             ));
         }
         model.push_str(&format!(
-            "<object id=\"{}\"><mesh><vertices/><triangles/></mesh></object>\
+            "<object id=\"{}\"><components/></object>\
              </resources><build><item objectid=\"1\"/></build></model>",
             levels + 1
         ));
@@ -2502,14 +2524,13 @@ mod tests {
         let transform = Transform::parse("0 1 0 -1 0 0 0 0 1 10 20 30").unwrap();
         assert_eq!(
             transform.to_row_major_4x4(),
-            [0.0, -1.0, 0.0, 10.0, 1.0, 0.0, 0.0, 20.0, 0.0, 0.0, 1.0, 30.0, 0.0, 0.0, 0.0, 1.0,]
+            expected_three_row_major_matrix(&transform)
         );
     }
 
     #[test]
     fn rejects_models_that_exceed_renderer_mesh_object_budget() {
         let triangle_vertices = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
-        let triangle_indices = vec![[0, 1, 2]];
         let mut objects = HashMap::new();
         let mut build = Vec::new();
         for object_id in 1..=(MAX_RENDERABLE_SCENE_OBJECTS as u32 + 1) {
@@ -2518,7 +2539,11 @@ mod tests {
                 RawObject {
                     geometry: ObjectGeometry::Mesh {
                         vertices: triangle_vertices.clone(),
-                        triangles: triangle_indices.clone(),
+                        triangles: if object_id <= MAX_RENDERABLE_SCENE_OBJECTS as u32 {
+                            vec![[0, 1, 2]]
+                        } else {
+                            vec![[0, 1, 3]]
+                        },
                     },
                     name: None,
                 },

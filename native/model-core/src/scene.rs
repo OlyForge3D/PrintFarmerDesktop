@@ -373,6 +373,21 @@ mod tests {
     use crate::stl::Triangle;
     use std::fs;
 
+    fn expected_three_row_major_matrix(transform: &threemf::Transform) -> [f32; 16] {
+        let origin = transform.apply([0.0, 0.0, 0.0]);
+        let x_axis = subtract(transform.apply([1.0, 0.0, 0.0]), origin);
+        let y_axis = subtract(transform.apply([0.0, 1.0, 0.0]), origin);
+        let z_axis = subtract(transform.apply([0.0, 0.0, 1.0]), origin);
+        [
+            x_axis[0], y_axis[0], z_axis[0], origin[0], x_axis[1], y_axis[1], z_axis[1], origin[1],
+            x_axis[2], y_axis[2], z_axis[2], origin[2], 0.0, 0.0, 0.0, 1.0,
+        ]
+    }
+
+    fn subtract(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    }
+
     fn stl_mesh_with_colors() -> StlMesh {
         let mut bounds = Aabb::empty();
         for v in [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]] {
@@ -459,6 +474,7 @@ mod tests {
             }],
         };
         let scene = SceneMesh::from_threemf(&mesh);
+        let expected_matrix = expected_three_row_major_matrix(&mesh.objects[0].transform);
         assert_eq!(scene.source_format, ModelFormat::ThreeMf);
         assert_eq!(scene.vertex_count(), 3);
         assert_eq!(scene.indices, vec![0, 1, 2]);
@@ -467,10 +483,7 @@ mod tests {
         assert_eq!(scene.parts[0].name, "Widget");
         assert_eq!(scene.parts[0].triangle_count, 1);
         assert_eq!(scene.objects.len(), 1);
-        assert_eq!(
-            scene.objects[0].transform.matrix,
-            [0.0, -1.0, 0.0, 10.0, 1.0, 0.0, 0.0, 20.0, 0.0, 0.0, 1.0, 30.0, 0.0, 0.0, 0.0, 1.0,]
-        );
+        assert_eq!(scene.objects[0].transform.matrix, expected_matrix);
         assert_eq!(scene.root_object_ids, vec!["plate-0/item-0/object-1"]);
         assert_eq!(
             scene.plates[0].root_object_ids,
