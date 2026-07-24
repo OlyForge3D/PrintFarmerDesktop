@@ -55,8 +55,8 @@ interface ConflictViewModelBase {
    * requests racing ahead of this props round trip; that guard only
    * releases when it observes a change here (or a new `attemptToken`,
    * which remounts the panel). A caller that never changes either field
-   * after processing an attempt will leave the button permanently
-   * disabled for that conflict.
+   * after processing an attempt will leave the button clickable but its
+   * submit silently no-op indefinitely for that conflict.
    */
   resolutionError: string | null;
 }
