@@ -1412,6 +1412,8 @@ struct FlattenOutput {
     triangles: Vec<[u32; 3]>,
     expansion_steps: usize,
     mesh_object_count: usize,
+    #[cfg(test)]
+    mesh_builds_started: usize,
 }
 
 impl FlattenOutput {
@@ -1427,6 +1429,11 @@ impl FlattenOutput {
             });
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn record_mesh_build_start(&mut self) {
+        self.mesh_builds_started += 1;
     }
 }
 
@@ -1553,6 +1560,8 @@ fn expand(
             triangles,
         } => {
             output.record_mesh_object()?;
+            #[cfg(test)]
+            output.record_mesh_build_start();
             let mut bounds = Aabb::empty();
             for vertex in vertices {
                 bounds.expand(*vertex);
@@ -2603,6 +2612,7 @@ mod tests {
         assert_eq!(output.vertices.len(), MAX_RENDERABLE_SCENE_OBJECTS * 3);
         assert_eq!(output.triangles.len(), MAX_RENDERABLE_SCENE_OBJECTS);
         assert_eq!(scene_objects.len(), MAX_RENDERABLE_SCENE_OBJECTS);
+        assert_eq!(output.mesh_builds_started, MAX_RENDERABLE_SCENE_OBJECTS);
         assert!(!output
             .vertices
             .iter()
@@ -2635,6 +2645,7 @@ mod tests {
         assert_eq!(output.vertices.len(), MAX_RENDERABLE_SCENE_OBJECTS * 3);
         assert_eq!(output.triangles.len(), MAX_RENDERABLE_SCENE_OBJECTS);
         assert_eq!(scene_objects.len(), MAX_RENDERABLE_SCENE_OBJECTS);
+        assert_eq!(output.mesh_builds_started, MAX_RENDERABLE_SCENE_OBJECTS);
         assert!(!output
             .vertices
             .iter()
