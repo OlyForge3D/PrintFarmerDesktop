@@ -14,6 +14,8 @@ use thiserror::Error;
 use crate::geometry::Aabb;
 use crate::model::ModelFormat;
 use crate::obj::{self, ObjError, ObjMesh};
+#[cfg(feature = "step")]
+use crate::step::{self, StepError, StepMesh};
 use crate::stl::{self, StlError, StlMesh};
 use crate::threemf::{self, ThreeMfError, ThreeMfMesh};
 
@@ -27,6 +29,9 @@ pub enum SceneError {
     ThreeMf(#[from] ThreeMfError),
     #[error("obj parse error: {0}")]
     Obj(#[from] ObjError),
+    #[cfg(feature = "step")]
+    #[error("step parse error: {0}")]
+    Step(#[from] StepError),
 }
 
 /// A named, selectable region of the flattened scene. `triangle_start` and
@@ -134,6 +139,32 @@ impl SceneMesh {
         }
     }
 
+    /// Build a scene from a tessellated STEP mesh.
+    #[cfg(feature = "step")]
+    pub fn from_step(mesh: &StepMesh) -> Self {
+        let mut indices = Vec::with_capacity(mesh.triangles.len() * 3);
+        for triangle in &mesh.triangles {
+            indices.extend_from_slice(triangle);
+        }
+        let parts = mesh
+            .parts
+            .iter()
+            .map(|p| ScenePart {
+                name: p.name.clone(),
+                triangle_start: p.triangle_start,
+                triangle_count: p.triangle_count,
+            })
+            .collect();
+        Self {
+            positions: mesh.vertices.clone(),
+            indices,
+            bounds: mesh.bounds,
+            source_format: ModelFormat::Step,
+            face_colors: None,
+            parts,
+        }
+    }
+
     /// Build a scene from a flattened 3MF mesh, which is already indexed.
     pub fn from_threemf(mesh: &ThreeMfMesh) -> Self {
         let mut indices = Vec::with_capacity(mesh.triangles.len() * 3);
@@ -166,6 +197,10 @@ pub fn load_scene(path: &Path) -> Result<SceneMesh, SceneError> {
         Some(ModelFormat::Stl) => Ok(SceneMesh::from_stl(&stl::parse_file(path)?)),
         Some(ModelFormat::ThreeMf) => Ok(SceneMesh::from_threemf(&threemf::parse_file(path)?)),
         Some(ModelFormat::Obj) => Ok(SceneMesh::from_obj(&obj::parse_file(path)?)),
+        #[cfg(feature = "step")]
+        Some(ModelFormat::Step) => Ok(SceneMesh::from_step(&step::parse_file(path)?)),
+        #[cfg(not(feature = "step"))]
+        Some(ModelFormat::Step) => Err(SceneError::UnsupportedFormat),
         None => Err(SceneError::UnsupportedFormat),
     }
 }
@@ -183,6 +218,12 @@ pub fn scene_from_threemf_bytes(data: &[u8]) -> Result<SceneMesh, SceneError> {
 /// Normalize an already-parsed OBJ mesh into a scene (bytes path).
 pub fn scene_from_obj_bytes(data: &[u8]) -> Result<SceneMesh, SceneError> {
     Ok(SceneMesh::from_obj(&obj::parse_bytes(data)?))
+}
+
+/// Normalize an already-parsed STEP model into a scene (bytes path).
+#[cfg(feature = "step")]
+pub fn scene_from_step_bytes(data: &[u8]) -> Result<SceneMesh, SceneError> {
+    Ok(SceneMesh::from_step(&step::parse_bytes(data)?))
 }
 
 #[cfg(test)]

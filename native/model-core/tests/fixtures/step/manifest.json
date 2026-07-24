@@ -1,0 +1,28 @@
+{
+  "fixtures": [
+    {
+      "file": "cube.step",
+      "label": "generated-cube",
+      "notes": "Unit cube generated locally with truck-modeling tsweep operations and exported through truck-stepio.",
+      "expected": {
+        "vertexCount": 8,
+        "triangleCount": 12,
+        "partCount": 1,
+        "boundsMin": [-0.5, -0.5, -0.5],
+        "boundsMax": [0.5, 0.5, 0.5]
+      }
+    },
+    {
+      "file": "cylinder.step",
+      "label": "generated-cylinder",
+      "notes": "1x1 cylinder generated locally with truck-modeling rsweep/tsweep operations and exported through truck-stepio.",
+      "expected": {
+        "vertexCount": 771,
+        "triangleCount": 1538,
+        "partCount": 1,
+        "boundsMin": [-0.49963003, -0.5, -0.5],
+        "boundsMax": [0.49963003, 0.5, 0.5]
+      }
+    }
+  ]
+}

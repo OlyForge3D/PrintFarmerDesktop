@@ -8,7 +8,7 @@
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -239,9 +239,17 @@ CREATE INDEX idx_sync_conflicts_incarnation
     ON sync_conflicts(profile_id, batch_id, batch_incarnation, resolved_at);
 "#;
 
-/// Additive v6 removes the global tag-name uniqueness constraint. Remote tags
-/// keep stable profile-scoped ids, so equal display names must remain distinct.
+/// Additive v6 local-only library favorites keyed by logical model hash.
 pub const SCHEMA_V6: &str = r#"
+CREATE TABLE favorite_models (
+    model_hash  TEXT PRIMARY KEY REFERENCES models(hash) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL
+);
+"#;
+
+/// Additive v7 removes the global tag-name uniqueness constraint. Remote tags
+/// keep stable profile-scoped ids, so equal display names must remain distinct.
+pub const SCHEMA_V7: &str = r#"
 CREATE TABLE tags_v6 (
     id   TEXT PRIMARY KEY,
     name TEXT NOT NULL
@@ -262,9 +270,9 @@ ALTER TABLE tags_v6 RENAME TO tags;
 ALTER TABLE model_tags_v6 RENAME TO model_tags;
 "#;
 
-/// v7 binds durable sync state to one authenticated server incarnation and
+/// v8 binds durable sync state to one authenticated server incarnation and
 /// records explicit provenance for materialized remote catalog rows.
-pub const SCHEMA_V7: &str = r#"
+pub const SCHEMA_V8: &str = r#"
 ALTER TABLE sync_profiles ADD COLUMN profile_binding TEXT;
 ALTER TABLE sync_entities ADD COLUMN journal_revision INTEGER NOT NULL DEFAULT 0;
 
@@ -288,8 +296,8 @@ CREATE UNIQUE INDEX idx_tags_sync_remote
     WHERE sync_profile_id IS NOT NULL;
 "#;
 
-/// v8 backfills provenance for rows materialized before explicit provenance.
-pub const SCHEMA_V8: &str = r#"
+/// v9 backfills provenance for rows materialized before explicit provenance.
+pub const SCHEMA_V9: &str = r#"
 ALTER TABLE sync_profiles ADD COLUMN binding_cas_revision INTEGER NOT NULL DEFAULT 0;
 UPDATE sync_profiles
 SET profile_binding = profile_binding || ':1'
@@ -361,9 +369,10 @@ mod tests {
 
     #[test]
     fn sync_schema_contains_no_transport_or_secret_fields() {
-        let sync_schema =
-            format!(            "{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}\n{SCHEMA_V6}\n{SCHEMA_V7}\n{SCHEMA_V8}")
-                .to_lowercase();
+        let sync_schema = format!(
+            "{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}\n{SCHEMA_V6}\n{SCHEMA_V7}\n{SCHEMA_V8}\n{SCHEMA_V9}"
+        )
+        .to_lowercase();
         for forbidden in ["server_url", "auth_token", "api_key", "password", "jwt"] {
             assert!(!sync_schema.contains(forbidden));
         }
@@ -376,5 +385,11 @@ mod tests {
         ] {
             assert!(SCHEMA_V2.contains(table), "schema missing table {table}");
         }
+    }
+
+    #[test]
+    fn favorites_schema_references_models() {
+        assert!(SCHEMA_V6.contains("favorite_models"));
+        assert!(SCHEMA_V6.contains("REFERENCES models"));
     }
 }

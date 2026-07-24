@@ -210,6 +210,17 @@ describe('ipc contract', () => {
     );
   });
 
+  it('accepts favorite catalog responses', () => {
+    const favorites = ipcSchemas[IpcChannel.ListFavorites].response.parse([
+      'hash-a',
+      'hash-b',
+    ]);
+    expect(favorites).toEqual(['hash-a', 'hash-b']);
+    expect(() =>
+      ipcSchemas[IpcChannel.AddFavorite].request.parse({ hash: '' }),
+    ).toThrow();
+  });
+
   it('accepts a valid scene response', () => {
     const value = ipcSchemas[IpcChannel.LoadScene].response.parse({
       positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
@@ -336,6 +347,46 @@ describe('ipc contract', () => {
         core: {},
         plates: [],
         thumbnails: [],
+      }),
+    ).toThrow();
+  });
+
+  it('accepts a valid extract-vendor-plate-thumbnails request', () => {
+    const value = ipcSchemas[
+      IpcChannel.ExtractVendorPlateThumbnails
+    ].request.parse({
+      path: 'C:\\models\\project.3mf',
+    });
+    expect(value.path).toContain('project.3mf');
+  });
+
+  it('accepts a vendor plate thumbnails response', () => {
+    const value = ipcSchemas[
+      IpcChannel.ExtractVendorPlateThumbnails
+    ].response.parse({
+      thumbnails: [
+        {
+          partName: 'Metadata/plate_1.png',
+          plateIndex: 1,
+          pngBase64: 'iVBORw0KGgo=',
+        },
+      ],
+    });
+    expect(value.thumbnails[0]).toMatchObject({
+      partName: 'Metadata/plate_1.png',
+      plateIndex: 1,
+    });
+  });
+
+  it('rejects a vendor plate thumbnail response with an empty png', () => {
+    expect(() =>
+      ipcSchemas[IpcChannel.ExtractVendorPlateThumbnails].response.parse({
+        thumbnails: [
+          {
+            partName: 'Metadata/plate_1.png',
+            pngBase64: '',
+          },
+        ],
       }),
     ).toThrow();
   });

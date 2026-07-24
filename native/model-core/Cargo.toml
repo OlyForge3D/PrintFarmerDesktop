@@ -34,10 +34,19 @@ base64 = "0.22"
 # C-backed bundled SQLite, compiled only where a C toolchain is available.
 # Gated behind the `sqlite` feature so the default build stays pure-Rust.
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+truck-meshalgo = { version = "0.4", optional = true }
+truck-stepio = { version = "0.3", optional = true }
+truck-topology = { version = "0.6", optional = true }
 
 [features]
 # Enables the persistent SQLite-backed catalog store (requires a C toolchain).
 sqlite = ["dep:rusqlite"]
+# Enables experimental STEP tessellation via the pure-Rust truck CAD kernel.
+step = [
+    "dep:truck-meshalgo",
+    "dep:truck-stepio",
+    "dep:truck-topology",
+]
 
 [dev-dependencies]
 tempfile = "3"

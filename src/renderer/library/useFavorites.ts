@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 const STORAGE_KEY = 'printfarmer.favorites.v1';
 
@@ -10,7 +10,9 @@ function readStored(): Set<string> {
     }
     const parsed: unknown = JSON.parse(raw);
     if (Array.isArray(parsed)) {
-      return new Set(parsed.filter((v): v is string => typeof v === 'string'));
+      return new Set(
+        parsed.filter((value): value is string => typeof value === 'string'),
+      );
     }
   } catch {
     // Corrupt or unavailable storage falls back to an empty set.
@@ -29,29 +31,67 @@ function writeStored(hashes: Set<string>): void {
 export interface FavoritesState {
   favorites: ReadonlySet<string>;
   isFavorite: (hash: string) => boolean;
-  toggle: (hash: string) => void;
+  toggle: (hash: string) => Promise<void>;
 }
 
 /**
- * Client-persisted favorite models, keyed by content hash so a favorite
- * follows the model across renames, moves, and roots. Stored in localStorage
- * because favorites are presentation state, not catalog data.
+ * Favorites live in the catalog when the bridge exposes the catalog-backed IPC.
+ * For older binaries and isolated renderer tests, fall back to localStorage so
+ * the UI remains usable without direct Node access.
  */
 export function useFavorites(): FavoritesState {
   const [favorites, setFavorites] = useState<Set<string>>(() => readStored());
 
-  const toggle = useCallback((hash: string) => {
-    setFavorites((current) => {
-      const next = new Set(current);
-      if (next.has(hash)) {
-        next.delete(hash);
-      } else {
-        next.add(hash);
-      }
-      writeStored(next);
-      return next;
-    });
+  useEffect(() => {
+    if (typeof window.printFarmer.listFavorites !== 'function') {
+      return;
+    }
+    let cancelled = false;
+    void window.printFarmer
+      .listFavorites()
+      .then((hashes) => {
+        if (cancelled) {
+          return;
+        }
+        const next = new Set(hashes);
+        setFavorites(next);
+        writeStored(next);
+      })
+      .catch(() => {
+        // Keep the fallback state when the catalog is temporarily unavailable.
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  const toggle = useCallback(
+    async (hash: string) => {
+      if (
+        typeof window.printFarmer.addFavorite === 'function' &&
+        typeof window.printFarmer.removeFavorite === 'function'
+      ) {
+        const next = favorites.has(hash)
+          ? await window.printFarmer.removeFavorite({ hash })
+          : await window.printFarmer.addFavorite({ hash });
+        const set = new Set(next);
+        setFavorites(set);
+        writeStored(set);
+        return;
+      }
+      setFavorites((current) => {
+        const next = new Set(current);
+        if (next.has(hash)) {
+          next.delete(hash);
+        } else {
+          next.add(hash);
+        }
+        writeStored(next);
+        return next;
+      });
+    },
+    [favorites],
+  );
 
   const isFavorite = useCallback(
     (hash: string) => favorites.has(hash),
