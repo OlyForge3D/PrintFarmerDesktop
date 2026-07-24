@@ -16,6 +16,9 @@ const MAX_VERTICES: usize = 20_000_000;
 const MAX_TRIANGLES: usize = 40_000_000;
 const BASE_TESSELLATION_TOLERANCE: f64 = 0.01;
 const RELATIVE_TESSELLATION_TOLERANCE: f64 = 0.001;
+// One kilometer in millimeters is still wildly above any realistic desktop-printable part,
+// but bounded enough to reject pathological coordinates before adaptive tessellation spins.
+const MAX_GEOMETRY_DIAGONAL_MM: f64 = 1_000_000.0;
 
 type StepShell = CompressedShell<Point3, Curve3D, Surface>;
 
@@ -42,6 +45,8 @@ pub enum StepError {
     InvalidUtf8,
     #[error("STEP parse failed")]
     InvalidStep,
+    #[error("STEP file contains no DATA section")]
+    EmptyDataSection,
     #[error("STEP conversion failed: {0}")]
     Convert(String),
     #[error("STEP file contains no tessellatable geometry")]
@@ -54,6 +59,10 @@ pub enum StepError {
     NonTriangleFace,
     #[error("tessellated coordinate is not finite")]
     NonFiniteCoordinate,
+    #[error(
+        "STEP geometry extent is non-finite or exceeds the supported limit of {MAX_GEOMETRY_DIAGONAL_MM} mm"
+    )]
+    UnreasonableGeometryExtent,
 }
 
 #[derive(Debug, Clone)]
@@ -69,9 +78,16 @@ pub fn parse_file(path: &Path) -> StdResult<StepMesh, StepError> {
 
 pub fn parse_bytes(data: &[u8]) -> StdResult<StepMesh, StepError> {
     let text = std::str::from_utf8(data).map_err(|_| StepError::InvalidUtf8)?;
-    let table = Table::from_step(text).ok_or(StepError::InvalidStep)?;
+    let table = parse_step_table(text)?;
     let parts = collect_shell_parts(&table)?;
     tessellate_parts(parts)
+}
+
+fn parse_step_table(text: &str) -> StdResult<Table, StepError> {
+    let exchange =
+        truck_stepio::r#in::ruststep::parser::parse(text).map_err(|_| StepError::InvalidStep)?;
+    let data_section = exchange.data.first().ok_or(StepError::EmptyDataSection)?;
+    Ok(Table::from_data_section(data_section))
 }
 
 fn collect_shell_parts(table: &Table) -> StdResult<Vec<RawStepPart>, StepError> {
@@ -127,7 +143,7 @@ fn append_tessellated_shell(
     bounds: &mut Aabb,
     shell: StepShell,
 ) -> StdResult<(), StepError> {
-    let tolerance = shell_tessellation_tolerance(&shell);
+    let tolerance = shell_tessellation_tolerance(&shell)?;
     let mut polygon = shell.robust_triangulation(tolerance).to_polygon();
     polygon
         .put_together_same_attrs(TOLERANCE * 50.0)
@@ -179,10 +195,26 @@ fn append_tessellated_shell(
     Ok(())
 }
 
-fn shell_tessellation_tolerance(shell: &StepShell) -> f64 {
+fn shell_tessellation_tolerance(shell: &StepShell) -> StdResult<f64, StepError> {
+    let diagonal = shell_bounding_box_diagonal(shell)?;
+    Ok(if diagonal > 0.0 {
+        diagonal * RELATIVE_TESSELLATION_TOLERANCE
+    } else {
+        BASE_TESSELLATION_TOLERANCE
+    })
+}
+
+fn shell_bounding_box_diagonal(shell: &StepShell) -> StdResult<f64, StepError> {
+    if shell.vertices.is_empty() {
+        return Ok(0.0);
+    }
+
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];
     for vertex in &shell.vertices {
+        if !vertex.x.is_finite() || !vertex.y.is_finite() || !vertex.z.is_finite() {
+            return Err(StepError::UnreasonableGeometryExtent);
+        }
         min[0] = min[0].min(vertex.x);
         min[1] = min[1].min(vertex.y);
         min[2] = min[2].min(vertex.z);
@@ -195,10 +227,10 @@ fn shell_tessellation_tolerance(shell: &StepShell) -> f64 {
     let dy = max[1] - min[1];
     let dz = max[2] - min[2];
     let diagonal = (dx * dx + dy * dy + dz * dz).sqrt();
-    if diagonal.is_finite() && diagonal > 0.0 {
-        diagonal * RELATIVE_TESSELLATION_TOLERANCE
+    if !diagonal.is_finite() || diagonal > MAX_GEOMETRY_DIAGONAL_MM {
+        Err(StepError::UnreasonableGeometryExtent)
     } else {
-        BASE_TESSELLATION_TOLERANCE
+        Ok(diagonal)
     }
 }
 
@@ -219,5 +251,57 @@ fn part_name(raw: &str, index: usize) -> String {
         format!("Part {}", index + 1)
     } else {
         trimmed.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::{parse_bytes, StepError};
+
+    const CUBE_STEP: &str = include_str!("../tests/fixtures/step/cube.step");
+    const HEADER_ONLY_STEP: &str = "ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('header only STEP regression'), '2;1');
+FILE_NAME('header-only.step', '2026-07-24 00:00:00', (('')), (('')), 'test', 'PrintFarmerDesktop regression', '');
+FILE_SCHEMA(('ISO-10303-042'));
+ENDSEC;
+END-ISO-10303-21;
+";
+
+    #[test]
+    fn parse_bytes_rejects_missing_data_section_without_panicking() {
+        assert!(matches!(
+            parse_bytes(HEADER_ONLY_STEP.as_bytes()),
+            Err(StepError::EmptyDataSection)
+        ));
+    }
+
+    #[test]
+    fn parse_bytes_rejects_extreme_coordinate_fixture_before_tessellation() {
+        let started = Instant::now();
+        let error = parse_bytes(&scaled_cube_fixture("1.0E300")).unwrap_err();
+        let elapsed = started.elapsed();
+
+        assert!(matches!(error, StepError::UnreasonableGeometryExtent));
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "extreme-coordinate rejection took too long: {elapsed:?}"
+        );
+    }
+
+    fn scaled_cube_fixture(scale: &str) -> Vec<u8> {
+        let negative_scale = format!("-{scale}");
+        let mut scaled = String::with_capacity(CUBE_STEP.len());
+        for line in CUBE_STEP.lines() {
+            if line.contains("CARTESIAN_POINT('', (") {
+                scaled.push_str(&line.replace("-0.5", &negative_scale).replace("0.5", scale));
+            } else {
+                scaled.push_str(line);
+            }
+            scaled.push('\n');
+        }
+        scaled.into_bytes()
     }
 }
