@@ -29,7 +29,10 @@ function latestModifiedUnixSeconds(model: LogicalModel): number | null {
   let latest: number | null = null;
   for (const location of model.locations) {
     const modified = location.modifiedUnixSeconds;
-    if (typeof modified === 'number' && (latest === null || modified > latest)) {
+    if (
+      typeof modified === 'number' &&
+      (latest === null || modified > latest)
+    ) {
       latest = modified;
     }
   }

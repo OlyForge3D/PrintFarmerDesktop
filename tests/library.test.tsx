@@ -950,9 +950,10 @@ describe('selectLibraryView', () => {
     ];
 
     expect(
-      selectLibraryView(dated, { ...defaultLibraryView, sort: 'date-desc' }).map(
-        (item) => modelDisplayName(item),
-      ),
+      selectLibraryView(dated, {
+        ...defaultLibraryView,
+        sort: 'date-desc',
+      }).map((item) => modelDisplayName(item)),
     ).toEqual(['new.stl', 'old.stl', 'unknown.stl']);
     expect(
       selectLibraryView(dated, { ...defaultLibraryView, sort: 'date-asc' }).map(
@@ -1042,9 +1043,9 @@ describe('useFavorites', () => {
     });
     expect(addFavorite).toHaveBeenCalledWith({ hash: 'abc' });
     expect(result.current.isFavorite('abc')).toBe(true);
-    expect(globalThis.localStorage.getItem('printfarmer.favorites.v1')).toContain(
-      'abc',
-    );
+    expect(
+      globalThis.localStorage.getItem('printfarmer.favorites.v1'),
+    ).toContain('abc');
 
     await act(async () => {
       await result.current.toggle('abc');

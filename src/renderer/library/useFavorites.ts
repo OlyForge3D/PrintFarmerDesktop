@@ -10,7 +10,9 @@ function readStored(): Set<string> {
     }
     const parsed: unknown = JSON.parse(raw);
     if (Array.isArray(parsed)) {
-      return new Set(parsed.filter((value): value is string => typeof value === 'string'));
+      return new Set(
+        parsed.filter((value): value is string => typeof value === 'string'),
+      );
     }
   } catch {
     // Corrupt or unavailable storage falls back to an empty set.
@@ -63,30 +65,33 @@ export function useFavorites(): FavoritesState {
     };
   }, []);
 
-  const toggle = useCallback(async (hash: string) => {
-    if (
-      typeof window.printFarmer.addFavorite === 'function' &&
-      typeof window.printFarmer.removeFavorite === 'function'
-    ) {
-      const next = favorites.has(hash)
-        ? await window.printFarmer.removeFavorite({ hash })
-        : await window.printFarmer.addFavorite({ hash });
-      const set = new Set(next);
-      setFavorites(set);
-      writeStored(set);
-      return;
-    }
-    setFavorites((current) => {
-      const next = new Set(current);
-      if (next.has(hash)) {
-        next.delete(hash);
-      } else {
-        next.add(hash);
+  const toggle = useCallback(
+    async (hash: string) => {
+      if (
+        typeof window.printFarmer.addFavorite === 'function' &&
+        typeof window.printFarmer.removeFavorite === 'function'
+      ) {
+        const next = favorites.has(hash)
+          ? await window.printFarmer.removeFavorite({ hash })
+          : await window.printFarmer.addFavorite({ hash });
+        const set = new Set(next);
+        setFavorites(set);
+        writeStored(set);
+        return;
       }
-      writeStored(next);
-      return next;
-    });
-  }, [favorites]);
+      setFavorites((current) => {
+        const next = new Set(current);
+        if (next.has(hash)) {
+          next.delete(hash);
+        } else {
+          next.add(hash);
+        }
+        writeStored(next);
+        return next;
+      });
+    },
+    [favorites],
+  );
 
   const isFavorite = useCallback(
     (hash: string) => favorites.has(hash),
