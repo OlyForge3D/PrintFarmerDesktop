@@ -94,7 +94,10 @@ describe('<ModelViewer />', () => {
     vi.resetModules();
     vi.clearAllMocks();
     vi.stubGlobal('ResizeObserver', MockResizeObserver);
-    vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1));
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn(() => 1),
+    );
     vi.stubGlobal('cancelAnimationFrame', vi.fn());
   });
 

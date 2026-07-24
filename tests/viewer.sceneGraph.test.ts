@@ -143,7 +143,9 @@ describe('buildViewerSceneGraph', () => {
           parentId: null,
           children: ['child'],
           transform: {
-            matrix: matrixFromThreeMfTransform([1, 0, 0, 0, 1, 0, 0, 0, 1, 10, 0, 0]),
+            matrix: matrixFromThreeMfTransform([
+              1, 0, 0, 0, 1, 0, 0, 0, 1, 10, 0, 0,
+            ]),
           },
           mesh: null,
           material: {},
@@ -157,7 +159,9 @@ describe('buildViewerSceneGraph', () => {
           parentId: 'root',
           children: [],
           transform: {
-            matrix: matrixFromThreeMfTransform([0, 1, 0, -1, 0, 0, 0, 0, 1, 0, 5, 0]),
+            matrix: matrixFromThreeMfTransform([
+              0, 1, 0, -1, 0, 0, 0, 0, 1, 0, 5, 0,
+            ]),
           },
           mesh: {
             positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
