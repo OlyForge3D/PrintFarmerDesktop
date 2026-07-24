@@ -25,6 +25,26 @@ export function serverStatusLabel(profile: ServerProfile | null): string {
   return 'Connected';
 }
 
+function serverProfileVersionLabel(profile: ServerProfile | null): string {
+  if (!profile) return 'No server selected yet';
+  return profile.version?.version ?? 'Legacy server';
+}
+
+function serverProfileAccessibleLabel(profile: ServerProfile | null): string {
+  const actionLabel = profile ? 'Manage connection' : 'Connect to PrintFarmer';
+  const detailLabels = profile
+    ? [
+        profile.displayName,
+        serverProfileVersionLabel(profile),
+        `Status: ${serverStatusLabel(profile)}`,
+      ]
+    : [
+        serverProfileVersionLabel(profile),
+        `Status: ${serverStatusLabel(profile)}`,
+      ];
+  return `${actionLabel}: ${detailLabels.join(', ')}`;
+}
+
 export interface LibrarySidebarProps {
   query: string;
   filter: FilterKey;
@@ -162,9 +182,7 @@ export function LibrarySidebar({
               : 'server-profile-entry server-profile-entry--cta'
           }
           disabled={serverProfilesDisabled}
-          aria-label={
-            serverProfile ? 'Manage connection' : 'Connect to PrintFarmer'
-          }
+          aria-label={serverProfileAccessibleLabel(serverProfile)}
           onClick={onManageServerProfiles}
         >
           <span
@@ -175,11 +193,7 @@ export function LibrarySidebar({
             <strong className={serverProfile ? undefined : 'server-cta-label'}>
               {serverProfile?.displayName ?? 'Connect to PrintFarmer'}
             </strong>
-            <small>
-              {serverProfile
-                ? (serverProfile.version?.version ?? 'Legacy server')
-                : 'No server selected yet'}
-            </small>
+            <small>{serverProfileVersionLabel(serverProfile)}</small>
             <small
               className={`server-accessible-status ${serverProfile?.status ?? 'none'}`}
             >
