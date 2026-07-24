@@ -586,10 +586,8 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
                 store.models().iter().map(LogicalModelDto::from).collect();
             serde_json::to_value(models).map_err(|e| format!("failed to serialize models: {e}"))
         }
-        "listFavorites" => {
-            serde_json::to_value(store.favorite_hashes())
-                .map_err(|e| format!("failed to serialize favorites: {e}"))
-        }
+        "listFavorites" => serde_json::to_value(store.favorite_hashes())
+            .map_err(|e| format!("failed to serialize favorites: {e}")),
         "addFavorite" => {
             let params: HashParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid addFavorite params: {e}"))?;
@@ -1097,10 +1095,8 @@ mod tests {
         assert_eq!(add_value["result"][0], hash);
 
         let list_req = serde_json::json!({ "id": 3, "method": "listFavorites" });
-        let list_value: Value = serde_json::from_str(
-            &handle_line(&mut store, &list_req.to_string()).unwrap(),
-        )
-        .unwrap();
+        let list_value: Value =
+            serde_json::from_str(&handle_line(&mut store, &list_req.to_string()).unwrap()).unwrap();
         assert_eq!(list_value["result"][0], hash);
     }
 

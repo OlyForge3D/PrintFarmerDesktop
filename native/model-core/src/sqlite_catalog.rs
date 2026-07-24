@@ -2487,13 +2487,19 @@ mod tests {
         let models = store.models();
         assert_eq!(models.len(), 2);
         assert_eq!(
-            models.iter().map(|model| model.hash.as_str()).collect::<Vec<_>>(),
+            models
+                .iter()
+                .map(|model| model.hash.as_str())
+                .collect::<Vec<_>>(),
             vec!["hash-a", "hash-b"]
         );
         assert_eq!(
             models
                 .iter()
-                .map(|model| model.locations[0].root_relative.to_string_lossy().into_owned())
+                .map(|model| model.locations[0]
+                    .root_relative
+                    .to_string_lossy()
+                    .into_owned())
                 .collect::<Vec<_>>(),
             vec!["alpha.stl".to_string(), "beta.obj".to_string()]
         );
@@ -2510,9 +2516,79 @@ mod tests {
             .unwrap();
         assert!(favorites_table_exists);
 
+        let favorite_columns = store
+            .conn
+            .prepare("PRAGMA table_info(favorite_models)")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i32>(3)?,
+                    row.get::<_, i32>(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            favorite_columns,
+            vec![
+                ("model_hash".to_string(), "TEXT".to_string(), 0, 1),
+                ("created_at".to_string(), "TEXT".to_string(), 1, 0),
+            ]
+        );
+
+        let favorite_foreign_keys = store
+            .conn
+            .prepare("PRAGMA foreign_key_list(favorite_models)")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            favorite_foreign_keys,
+            vec![(
+                "models".to_string(),
+                "model_hash".to_string(),
+                "hash".to_string(),
+                "NO ACTION".to_string(),
+                "CASCADE".to_string(),
+            )]
+        );
+
+        let foreign_keys_enabled: bool = store
+            .conn
+            .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+            .unwrap();
+        assert!(foreign_keys_enabled);
+
         assert!(store.add_favorite("hash-a"));
         assert_eq!(store.favorite_hashes(), vec!["hash-a".to_string()]);
         assert!(!store.add_favorite("missing"));
+
+        let err = store
+            .conn
+            .execute(
+                "INSERT INTO favorite_models(model_hash, created_at) VALUES(?1, ?2)",
+                params!["missing", "2"],
+            )
+            .unwrap_err();
+        match err {
+            rusqlite::Error::SqliteFailure(sql_err, Some(message))
+                if sql_err.code == rusqlite::ErrorCode::ConstraintViolation
+                    && message.contains("FOREIGN KEY constraint failed") => {}
+            other => panic!("expected SQLite foreign key violation, got {other:?}"),
+        }
 
         store.remove_favorite("hash-a");
         assert!(store.favorite_hashes().is_empty());
