@@ -230,6 +230,7 @@ struct ReplaceProfileBindingParams {
 #[serde(rename_all = "camelCase")]
 struct RemoteModelParams {
     profile_id: String,
+    server_binding: String,
     local_model_hash: String,
 }
 
@@ -237,8 +238,16 @@ struct RemoteModelParams {
 #[serde(rename_all = "camelCase")]
 struct ListRemoteModelsParams {
     profile_id: String,
+    server_binding: String,
     #[serde(default = "default_sync_limit")]
     limit: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BoundProfileParams {
+    profile_id: String,
+    server_binding: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -431,16 +440,40 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
         "getRemoteModelLink" => {
             let params: RemoteModelParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid getRemoteModelLink params: {e}"))?;
-            serde_json::to_value(
-                store.remote_model_link(&params.profile_id, &params.local_model_hash)?,
-            )
+            serde_json::to_value(store.remote_model_link(
+                &params.profile_id,
+                &params.server_binding,
+                &params.local_model_hash,
+            )?)
             .map_err(|e| format!("failed to serialize remote model link: {e}"))
         }
         "listRemoteModelLinks" => {
             let params: ListRemoteModelsParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid listRemoteModelLinks params: {e}"))?;
-            serde_json::to_value(store.remote_model_links(&params.profile_id, params.limit)?)
-                .map_err(|e| format!("failed to serialize remote model links: {e}"))
+            serde_json::to_value(store.remote_model_links(
+                &params.profile_id,
+                &params.server_binding,
+                params.limit,
+            )?)
+            .map_err(|e| format!("failed to serialize remote model links: {e}"))
+        }
+        "removeRemoteModelLink" => {
+            let params: RemoteModelParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid removeRemoteModelLink params: {e}"))?;
+            serde_json::to_value(store.remove_remote_model_link(
+                &params.profile_id,
+                &params.server_binding,
+                &params.local_model_hash,
+            )?)
+            .map_err(|e| format!("failed to serialize remote model link removal: {e}"))
+        }
+        "purgeRemoteModelLinks" => {
+            let params: BoundProfileParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid purgeRemoteModelLinks params: {e}"))?;
+            serde_json::to_value(
+                store.purge_remote_model_links(&params.profile_id, &params.server_binding)?,
+            )
+            .map_err(|e| format!("failed to serialize remote model link purge: {e}"))
         }
         "listEntityRevisions" => {
             let params: ListEntityRevisionsParams = serde_json::from_value(params)

@@ -58,7 +58,7 @@ export interface SyncHttpClientOptions {
 export interface SyncTokenProvider {
   getToken(profileId: string): Promise<string>;
   refreshToken(profileId: string): Promise<string>;
-  getAuthenticatedContext?(
+  getAuthenticatedServerContext?(
     profileId: string,
     expectedBaseUrl?: string,
     forceRefresh?: boolean,
@@ -383,8 +383,8 @@ export class SyncHttpClient {
     baseUrl: string,
     forceRefresh: boolean,
   ): Promise<string> {
-    if (this.tokens.getAuthenticatedContext) {
-      const context = await this.tokens.getAuthenticatedContext(
+    if (this.tokens.getAuthenticatedServerContext) {
+      const context = await this.tokens.getAuthenticatedServerContext(
         profileId,
         baseUrl,
         forceRefresh,

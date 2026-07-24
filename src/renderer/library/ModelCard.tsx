@@ -11,7 +11,10 @@ import { Icon } from '../ui/Icon';
 export interface ModelCardProps {
   model: LogicalModel;
   selected: boolean;
-  onSelect: (model: LogicalModel) => void;
+  onSelect: (
+    model: LogicalModel,
+    modifiers?: { toggle: boolean; range: boolean },
+  ) => void;
   onPreview?: (model: LogicalModel) => void;
   previewDisabled?: boolean;
   favorite?: boolean;
@@ -53,8 +56,13 @@ export function ModelCard({
           selected ? 'model-card-button selected' : 'model-card-button'
         }
         aria-pressed={selected}
-        aria-label={`Select ${name}`}
-        onClick={() => onSelect(model)}
+        aria-label={`${selected ? 'Deselect' : 'Select'} ${name}`}
+        onClick={(event) => {
+          const toggle = event.ctrlKey || event.metaKey;
+          const range = event.shiftKey;
+          if (toggle || range) onSelect(model, { toggle, range });
+          else onSelect(model);
+        }}
         onDoubleClick={() => {
           if (available && !previewDisabled) {
             onPreview?.(model);

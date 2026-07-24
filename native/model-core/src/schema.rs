@@ -8,7 +8,7 @@
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 10;
+pub const SCHEMA_VERSION: u32 = 11;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -351,6 +351,36 @@ SET profile_binding = profile_binding || ':1'
 WHERE profile_binding IS NOT NULL AND length(profile_binding) = 64;
 "#;
 
+/// Additive v11 server binding for durable upload identity isolation. Existing
+/// links are deliberately unbound and must be resolved by the Desktop user.
+pub const SCHEMA_V11: &str = r#"
+CREATE TABLE remote_model_links_v11 (
+    profile_id       TEXT NOT NULL REFERENCES sync_profiles(profile_id) ON DELETE CASCADE,
+    server_binding   TEXT NOT NULL DEFAULT 'legacy-unbound',
+    local_model_hash TEXT NOT NULL,
+    remote_model_id  TEXT NOT NULL,
+    client_upload_id TEXT NOT NULL,
+    etag             TEXT,
+    upload_status    TEXT NOT NULL,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL,
+    uploaded_at      INTEGER,
+    PRIMARY KEY (profile_id, server_binding, local_model_hash),
+    UNIQUE (profile_id, server_binding, remote_model_id),
+    UNIQUE (profile_id, server_binding, client_upload_id)
+);
+
+INSERT INTO remote_model_links_v11(
+    profile_id, server_binding, local_model_hash, remote_model_id,
+    client_upload_id, etag, upload_status, created_at, updated_at, uploaded_at)
+SELECT profile_id, 'legacy-unbound', local_model_hash, remote_model_id,
+       client_upload_id, etag, upload_status, created_at, updated_at, uploaded_at
+FROM remote_model_links;
+
+DROP TABLE remote_model_links;
+ALTER TABLE remote_model_links_v11 RENAME TO remote_model_links;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,7 +407,7 @@ mod tests {
     #[test]
     fn sync_schema_contains_no_transport_or_secret_fields() {
         let sync_schema = format!(
-            "{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}\n{SCHEMA_V7}\n{SCHEMA_V8}\n{SCHEMA_V9}\n{SCHEMA_V10}"
+            "{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}\n{SCHEMA_V6}\n{SCHEMA_V7}\n{SCHEMA_V8}\n{SCHEMA_V9}\n{SCHEMA_V10}\n{SCHEMA_V11}"
         )
         .to_lowercase();
         for forbidden in ["server_url", "auth_token", "api_key", "password", "jwt"] {
@@ -398,5 +428,11 @@ mod tests {
     fn favorites_schema_references_models() {
         assert!(SCHEMA_V6.contains("favorite_models"));
         assert!(SCHEMA_V6.contains("REFERENCES models"));
+    }
+
+    #[test]
+    fn upload_link_schema_adds_server_binding() {
+        assert!(SCHEMA_V11.contains("server_binding"));
+        assert!(SCHEMA_V11.contains("legacy-unbound"));
     }
 }

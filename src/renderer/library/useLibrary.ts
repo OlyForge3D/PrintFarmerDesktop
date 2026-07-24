@@ -33,6 +33,7 @@ export interface LibraryScanActivity {
 
 export interface ImportDraft {
   rootId: string;
+  approvalId: string;
   path: string;
   preview: ImportPreviewResponse;
   collections: Collection[];
@@ -127,6 +128,7 @@ export function useLibrary(): Library {
     (
       rootId: string,
       path: string,
+      approvalId: string | null,
       report: ReconcileReport | null = null,
       scannedAt = new Date().toISOString(),
     ) => {
@@ -134,6 +136,7 @@ export function useLibrary(): Library {
         upsertStoredSourceRoot(current, {
           rootId,
           path,
+          approvalId,
           removed: false,
           lastReport: report,
           lastScannedAt: scannedAt,
@@ -193,7 +196,7 @@ export function useLibrary(): Library {
         return false;
       }
       const [preview, collections, tags] = await Promise.all([
-        window.printFarmer.previewImport({ path: selection.path }),
+        window.printFarmer.previewImport({ approvalId: selection.approvalId }),
         window.printFarmer.listCollections(),
         window.printFarmer.listTags(),
       ]);
@@ -205,6 +208,7 @@ export function useLibrary(): Library {
       }
       setImportDraft({
         rootId: rootIdForPath(selection.path),
+        approvalId: selection.approvalId,
         path: selection.path,
         preview,
         collections,
@@ -253,12 +257,17 @@ export function useLibrary(): Library {
       try {
         const result = await window.printFarmer.importRoot({
           rootId: importDraft.rootId,
-          path: importDraft.path,
+          approvalId: importDraft.approvalId,
           ...plan,
         });
         setLastImport(result);
         setLastReport(result.report);
-        rememberRoot(importDraft.rootId, importDraft.path, result.report);
+        rememberRoot(
+          importDraft.rootId,
+          importDraft.path,
+          importDraft.approvalId,
+          result.report,
+        );
         try {
           await loadCatalog({ preserveStatus: true, throwOnError: true });
         } catch (refreshError: unknown) {
@@ -310,26 +319,46 @@ export function useLibrary(): Library {
       }
       importInFlightRef.current = true;
       setError(null);
-      setStatus('scanning');
-      setScanningPath(root.path);
-      setScanActivity({
-        phase: 'scanning',
-        path: root.path,
-        label:
-          root.status === 'available'
-            ? `Scanning ${root.path}`
-            : `Reconnecting ${root.path}`,
-        estimatedTotal: root.totalModels > 0 ? root.totalModels : null,
-        backendProgressAvailable: false,
-      });
       try {
+        let approvalId = root.approvalId;
+        if (!approvalId) {
+          setStatus('preparing');
+          setScanActivity({
+            phase: 'preparing',
+            path: root.path,
+            label: `Reauthorize ${root.path}`,
+            estimatedTotal: null,
+            backendProgressAvailable: false,
+          });
+          const selection = await window.printFarmer.openFolder();
+          if (!selection) {
+            return null;
+          }
+          if (selection.path !== root.path) {
+            setError(`Select ${root.path} to reconnect this source.`);
+            return null;
+          }
+          approvalId = selection.approvalId;
+        }
+        setStatus('scanning');
+        setScanningPath(root.path);
+        setScanActivity({
+          phase: 'scanning',
+          path: root.path,
+          label:
+            root.status === 'available'
+              ? `Scanning ${root.path}`
+              : `Reconnecting ${root.path}`,
+          estimatedTotal: root.totalModels > 0 ? root.totalModels : null,
+          backendProgressAvailable: false,
+        });
         const report = await window.printFarmer.scanRoot({
           rootId: root.rootId,
-          path: root.path,
+          approvalId,
         });
         setLastImport(null);
         setLastReport(report);
-        rememberRoot(root.rootId, root.path, report);
+        rememberRoot(root.rootId, root.path, approvalId, report);
         await loadCatalog({ preserveStatus: true, throwOnError: true });
         return report;
       } catch (err: unknown) {

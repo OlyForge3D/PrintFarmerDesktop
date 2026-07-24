@@ -259,7 +259,7 @@ describe('PrintFarmerSyncEngine pull', () => {
           profiles: [profile()],
           selectedProfileId: PROFILE_ID,
         }),
-      getAuthenticatedContext: () =>
+      getAuthenticatedServerContext: () =>
         Promise.resolve({
           baseUrl: profile().baseUrl,
           binding,
