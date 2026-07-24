@@ -183,14 +183,18 @@ export function reconcileHeadline(report: ReconcileReport | null): string {
   return 'Library is up to date';
 }
 
-export function reconcileDetails(report: ReconcileReport | null): string | null {
+export function reconcileDetails(
+  report: ReconcileReport | null,
+): string | null {
   if (!report) {
     return null;
   }
   return `${report.added} added • ${report.changed} changed • ${report.missing} missing`;
 }
 
-function deriveSourceRoots(models: LogicalModel[]): Map<string, DerivedSourceRoot> {
+function deriveSourceRoots(
+  models: LogicalModel[],
+): Map<string, DerivedSourceRoot> {
   const roots = new Map<string, DerivedSourceRoot>();
   for (const model of models) {
     const perRoot = new Map<
@@ -239,10 +243,15 @@ function rootPathFromLocation(location: ModelLocation): string | null {
   }
   const normalizedPath = normalize(trimmedPath);
   const normalizedRelative = normalize(trimmedRelative);
-  if (!normalizedPath.toLowerCase().endsWith(normalizedRelative.toLowerCase())) {
+  if (
+    !normalizedPath.toLowerCase().endsWith(normalizedRelative.toLowerCase())
+  ) {
     return dirname(trimmedPath);
   }
-  const root = normalizedPath.slice(0, normalizedPath.length - normalizedRelative.length);
+  const root = normalizedPath.slice(
+    0,
+    normalizedPath.length - normalizedRelative.length,
+  );
   const normalizedRoot = root.replace(/\/$/, '');
   if (!normalizedRoot) {
     return dirname(trimmedPath);

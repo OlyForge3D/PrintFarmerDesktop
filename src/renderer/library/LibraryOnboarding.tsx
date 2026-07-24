@@ -92,21 +92,29 @@ export function LibraryOnboarding({
               <Icon name="folder" />
               <div>
                 <strong>Pick a folder</strong>
-                <span>Reuse the existing folder picker to choose your first source root.</span>
+                <span>
+                  Reuse the existing folder picker to choose your first source
+                  root.
+                </span>
               </div>
             </li>
             <li>
               <Icon name="collection" />
               <div>
                 <strong>Review import rules</strong>
-                <span>Confirm how folders should become collections and tags before scanning.</span>
+                <span>
+                  Confirm how folders should become collections and tags before
+                  scanning.
+                </span>
               </div>
             </li>
             <li>
               <Icon name="refresh" />
               <div>
                 <strong>Keep roots healthy</strong>
-                <span>Rescan, reconnect, or remove roots later from the sidebar.</span>
+                <span>
+                  Rescan, reconnect, or remove roots later from the sidebar.
+                </span>
               </div>
             </li>
           </ol>

@@ -170,7 +170,10 @@ export function App(): React.JSX.Element {
     !importPreparing &&
     library.sourceRoots.length === 0;
   const modalOpen =
-    onboardingOpen || previewOpen || library.importDraft !== null || profilesOpen;
+    onboardingOpen ||
+    previewOpen ||
+    library.importDraft !== null ||
+    profilesOpen;
   const backgroundExcluded =
     previewOpen || library.importDraft !== null || profilesOpen;
   const prepareFolderImport = library.addFolder;
@@ -352,8 +355,9 @@ export function App(): React.JSX.Element {
     restoreProfileFocusRef.current = false;
     const timeout = setTimeout(() => {
       const previous = profileReturnFocusRef.current;
-      const fallback =
-        document.querySelector<HTMLElement>('.server-profile-entry');
+      const fallback = document.querySelector<HTMLElement>(
+        '.server-profile-entry',
+      );
       (previous?.isConnected ? previous : fallback)?.focus();
     }, 0);
     return () => clearTimeout(timeout);
@@ -838,13 +842,15 @@ export function App(): React.JSX.Element {
                 <strong>
                   {library.lastReport.missing > 0
                     ? `${library.lastReport.missing} files missing`
-                    : library.lastReport.added > 0 || library.lastReport.changed > 0
+                    : library.lastReport.added > 0 ||
+                        library.lastReport.changed > 0
                       ? 'Library updated'
                       : 'Library is up to date'}
                 </strong>
                 <span>
-                  {library.lastReport.added} added • {library.lastReport.changed}{' '}
-                  changed • {library.lastReport.missing} missing
+                  {library.lastReport.added} added •{' '}
+                  {library.lastReport.changed} changed •{' '}
+                  {library.lastReport.missing} missing
                 </span>
               </>
             ) : null}

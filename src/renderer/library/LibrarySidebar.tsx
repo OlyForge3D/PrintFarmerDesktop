@@ -263,9 +263,17 @@ function SidebarStatus({
   const report = lastImport?.report ?? lastReport;
   if (scanActivity.phase !== 'idle') {
     return (
-      <div className="sidebar-status sidebar-progress" role="status" aria-live="polite">
+      <div
+        className="sidebar-status sidebar-progress"
+        role="status"
+        aria-live="polite"
+      >
         <div className="sidebar-progress-header">
-          <strong>{scanActivity.phase === 'preparing' ? 'Preparing source' : 'Scanning library'}</strong>
+          <strong>
+            {scanActivity.phase === 'preparing'
+              ? 'Preparing source'
+              : 'Scanning library'}
+          </strong>
           <span>
             {scanActivity.estimatedTotal !== null
               ? `${scanActivity.estimatedTotal} known models`
@@ -274,7 +282,8 @@ function SidebarStatus({
         </div>
         <progress aria-label="Scan progress" />
         <p>
-          {scanActivity.label ?? `Scanning ${scanningFolder ?? 'selected folder'}`}
+          {scanActivity.label ??
+            `Scanning ${scanningFolder ?? 'selected folder'}`}
         </p>
       </div>
     );
@@ -284,7 +293,8 @@ function SidebarStatus({
       <div className="sidebar-status" role="status" aria-live="polite">
         <strong>Last import</strong>
         <span>
-          {lastImport.modelsOrganized} organized • {lastImport.report.added} added
+          {lastImport.modelsOrganized} organized • {lastImport.report.added}{' '}
+          added
         </span>
       </div>
     );
@@ -292,7 +302,9 @@ function SidebarStatus({
   return (
     <div className="sidebar-status" role="status" aria-live="polite">
       <strong>{reconcileHeadline(report)}</strong>
-      <span>{reconcileDetails(report) ?? 'Catalog is local to this computer.'}</span>
+      <span>
+        {reconcileDetails(report) ?? 'Catalog is local to this computer.'}
+      </span>
     </div>
   );
 }
@@ -308,7 +320,8 @@ function SourceRootList({
   if (roots.length === 0) {
     return (
       <p className="sidebar-root-empty">
-        No source folders yet. Add one to start indexing STL, 3MF, and OBJ files.
+        No source folders yet. Add one to start indexing STL, 3MF, and OBJ
+        files.
       </p>
     );
   }
@@ -355,8 +368,8 @@ function SourceRootList({
         ))}
       </ul>
       <p className="sidebar-root-footnote">
-        Source availability is estimated from indexed file paths until the sidecar
-        exposes root-level health and delete APIs.
+        Source availability is estimated from indexed file paths until the
+        sidecar exposes root-level health and delete APIs.
       </p>
     </>
   );

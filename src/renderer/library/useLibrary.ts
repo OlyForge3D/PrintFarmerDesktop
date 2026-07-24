@@ -83,8 +83,8 @@ function messageOf(err: unknown): string {
  */
 export function useLibrary(): Library {
   const [catalogModels, setCatalogModels] = useState<LogicalModel[]>([]);
-  const [storedRoots, setStoredRoots] = useState<StoredSourceRoot[]>(
-    () => loadStoredSourceRoots(),
+  const [storedRoots, setStoredRoots] = useState<StoredSourceRoot[]>(() =>
+    loadStoredSourceRoots(),
   );
   const [status, setStatus] = useState<LibraryStatus>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -108,9 +108,7 @@ export function useLibrary(): Library {
   const removedRootIds = useMemo(
     () =>
       new Set(
-        storedRoots
-          .filter((root) => root.removed)
-          .map((root) => root.rootId),
+        storedRoots.filter((root) => root.removed).map((root) => root.rootId),
       ),
     [storedRoots],
   );
@@ -303,7 +301,9 @@ export function useLibrary(): Library {
         setError('A library scan is already in progress.');
         return null;
       }
-      const root = sourceRootsRef.current.find((entry) => entry.rootId === rootId);
+      const root = sourceRootsRef.current.find(
+        (entry) => entry.rootId === rootId,
+      );
       if (!root) {
         setError('That source root is no longer available in the library.');
         return null;
@@ -361,7 +361,9 @@ export function useLibrary(): Library {
     setStoredRoots((current) => {
       const existing = current.find((root) => root.rootId === rootId);
       if (!existing) {
-        const derived = sourceRootsRef.current.find((root) => root.rootId === rootId);
+        const derived = sourceRootsRef.current.find(
+          (root) => root.rootId === rootId,
+        );
         if (!derived) {
           return current;
         }

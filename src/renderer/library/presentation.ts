@@ -29,7 +29,8 @@ export function libraryPresentation(
 
   if (models.length === 0) {
     return {
-      state: lastReport || configuredRootCount > 0 ? 'empty-scan' : 'onboarding',
+      state:
+        lastReport || configuredRootCount > 0 ? 'empty-scan' : 'onboarding',
       visibleModels,
     };
   }

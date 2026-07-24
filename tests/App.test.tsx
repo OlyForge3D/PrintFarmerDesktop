@@ -357,7 +357,9 @@ describe('<App />', () => {
     const reconnect = await screen.findByRole('button', { name: 'Reconnect' });
     fireEvent.click(reconnect);
 
-    expect(screen.getByRole('progressbar', { name: 'Scan progress' })).toBeVisible();
+    expect(
+      screen.getByRole('progressbar', { name: 'Scan progress' }),
+    ).toBeVisible();
     expect(screen.getAllByText('Reconnecting C:\\models')).toHaveLength(2);
 
     await act(async () => {
