@@ -26,6 +26,19 @@ fn parse_catalog_db(args: &[String]) -> Option<PathBuf> {
     None
 }
 
+fn parse_target_profiles_dir(args: &[String]) -> Option<PathBuf> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if let Some(rest) = arg.strip_prefix("--target-profiles-dir=") {
+            return Some(PathBuf::from(rest));
+        }
+        if arg == "--target-profiles-dir" {
+            return iter.next().map(PathBuf::from);
+        }
+    }
+    None
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
 
@@ -44,9 +57,10 @@ fn main() -> ExitCode {
             model_core::sidecar_version(),
             model_core::RPC_PROTOCOL_VERSION
         );
-        eprintln!("usage: model-core [--serve | --handshake | --help] [--catalog-db <path>]");
+        eprintln!("usage: model-core [--serve | --handshake | --help] [--catalog-db <path>] [--target-profiles-dir <path>]");
         eprintln!("  with no arguments, serves JSON-RPC over stdin/stdout");
         eprintln!("  --catalog-db <path>  persist the model catalog at <path> (requires sqlite)");
+        eprintln!("  --target-profiles-dir <path>  enable native U1 retarget methods");
         return ExitCode::SUCCESS;
     }
 
@@ -54,7 +68,8 @@ fn main() -> ExitCode {
     // closes. A transport I/O error is reported and exits non-zero so the main
     // process supervisor can restart the sidecar.
     let db_path = parse_catalog_db(&args);
-    match model_core::serve::run_stdio(db_path) {
+    let target_profiles_dir = parse_target_profiles_dir(&args);
+    match model_core::serve::run_stdio_with_retarget(db_path, target_profiles_dir) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("model-core: sidecar transport error: {e}");

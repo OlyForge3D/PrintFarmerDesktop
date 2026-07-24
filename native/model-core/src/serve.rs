@@ -50,6 +50,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::catalog::{reconcile_root, CatalogStore, InMemoryCatalog};
+use crate::retarget::{
+    PreflightReport, RetargetEngine, RetargetError, RetargetOptions, RetargetRpcOutcome,
+};
 use crate::rpc::{
     extract_vendor_metadata_dto, extract_vendor_plate_thumbnails_dto, load_scene_dto,
     render_thumbnail_dto, ApplyPullBatchDto, CollectionDto, ConflictInputDto, ConflictResolution,
@@ -103,6 +106,30 @@ impl Response {
 #[derive(Debug, Deserialize)]
 struct PathParams {
     path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RetargetProfileParams {
+    profile_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RetargetPreflightParams {
+    source_path: String,
+    #[serde(default)]
+    object_exclusion: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RetargetBuildParams {
+    source_path: String,
+    output_path: String,
+    target_profile_id: String,
+    #[serde(default)]
+    object_exclusion: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -381,12 +408,117 @@ fn validate_profile_binding_param(store: &dyn CatalogStore, params: &Value) -> R
 
 /// Handle one decoded request, producing the response value or an error message.
 /// `store` backs the stateful catalog methods; stateless methods ignore it.
-fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result<Value, String> {
+fn dispatch(
+    store: &mut dyn CatalogStore,
+    retarget: Option<&RetargetEngine>,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
     match method {
         "handshake" => Ok(serde_json::json!({
             "protocolVersion": RPC_PROTOCOL_VERSION,
             "sidecarVersion": sidecar_version(),
         })),
+        "listRetargetProfiles" => serialize_retarget_outcome(match retarget {
+            Some(engine) => match engine.list_bundled_profiles() {
+                Ok(value) => RetargetRpcOutcome::ok(value),
+                Err(error) => RetargetRpcOutcome::error(error),
+            },
+            None => RetargetRpcOutcome::error(retarget_not_configured()),
+        }),
+        "inspectRetargetProfile" => {
+            let params: RetargetProfileParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid inspectRetargetProfile params: {e}"))?;
+            serialize_retarget_outcome(match retarget {
+                Some(engine) => match engine.inspect_bundled_profile(&params.profile_id) {
+                    Ok(value) => RetargetRpcOutcome::ok(value),
+                    Err(error) => RetargetRpcOutcome::error(error),
+                },
+                None => RetargetRpcOutcome::error(retarget_not_configured()),
+            })
+        }
+        "inspectImportedRetargetProfile" => {
+            let params: PathParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid inspectImportedRetargetProfile params: {e}"))?;
+            serialize_retarget_outcome(match retarget {
+                Some(engine) => match engine.inspect_imported_profile(PathBuf::from(params.path)) {
+                    Ok(value) => RetargetRpcOutcome::ok(value),
+                    Err(error) => RetargetRpcOutcome::error(error),
+                },
+                None => RetargetRpcOutcome::error(retarget_not_configured()),
+            })
+        }
+        "preflightRetarget" => {
+            let params: RetargetPreflightParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid preflightRetarget params: {e}"))?;
+            let outcome = match retarget {
+                Some(engine) => match engine.preflight(
+                    PathBuf::from(params.source_path),
+                    RetargetOptions {
+                        object_exclusion: params.object_exclusion,
+                    },
+                ) {
+                    Ok(report) => preflight_outcome(report),
+                    Err(error) => RetargetRpcOutcome::error(error),
+                },
+                None => RetargetRpcOutcome::error(retarget_not_configured()),
+            };
+            serialize_retarget_outcome(outcome)
+        }
+        "buildRetarget" => {
+            let params: RetargetBuildParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid buildRetarget params: {e}"))?;
+            let outcome = match retarget {
+                Some(engine) => {
+                    let options = RetargetOptions {
+                        object_exclusion: params.object_exclusion,
+                    };
+                    match engine.preflight(&params.source_path, options.clone()) {
+                        Ok(report) if !report.blockers.is_empty() => RetargetRpcOutcome::Blocked {
+                            blockers: report.blockers.clone(),
+                            warnings: report.warnings.clone(),
+                            value: None,
+                        },
+                        Ok(_) => match engine.build(
+                            params.source_path,
+                            params.output_path,
+                            &params.target_profile_id,
+                            options,
+                        ) {
+                            Ok(value) => RetargetRpcOutcome::ok(value),
+                            Err(error) => RetargetRpcOutcome::error(error),
+                        },
+                        Err(error) => RetargetRpcOutcome::error(error),
+                    }
+                }
+                None => RetargetRpcOutcome::error(retarget_not_configured()),
+            };
+            serialize_retarget_outcome(outcome)
+        }
+        "validateRetargetOutput" => {
+            let params: RetargetBuildParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid validateRetargetOutput params: {e}"))?;
+            let outcome = match retarget {
+                Some(engine) => match engine.validate_output(
+                    params.source_path,
+                    params.output_path,
+                    &params.target_profile_id,
+                    RetargetOptions {
+                        object_exclusion: params.object_exclusion,
+                    },
+                ) {
+                    Ok(report) if !report.valid => RetargetRpcOutcome::Blocked {
+                        blockers: report.errors.clone(),
+                        warnings: report.warnings.clone(),
+                        value: Some(report),
+                    },
+                    Ok(value) => RetargetRpcOutcome::ok(value),
+                    Err(error) => RetargetRpcOutcome::error(error),
+                },
+                None => RetargetRpcOutcome::error(retarget_not_configured()),
+            };
+            serialize_retarget_outcome(outcome)
+        }
         "getSyncStatus" => {
             let params: ProfileParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid getSyncStatus params: {e}"))?;
@@ -932,14 +1064,23 @@ fn dispatch(store: &mut dyn CatalogStore, method: &str, params: Value) -> Result
 /// Turn one raw request line into a serialized response line. Returns `None` for
 /// blank lines (which are ignored). Malformed envelopes yield a best-effort error
 /// response with `id` 0 so the client can surface a protocol fault.
+#[cfg(test)]
 fn handle_line(store: &mut dyn CatalogStore, line: &str) -> Option<String> {
+    handle_line_with_retarget(store, None, line)
+}
+
+fn handle_line_with_retarget(
+    store: &mut dyn CatalogStore,
+    retarget: Option<&RetargetEngine>,
+    line: &str,
+) -> Option<String> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return None;
     }
 
     let response = match serde_json::from_str::<Request>(trimmed) {
-        Ok(request) => match dispatch(store, &request.method, request.params) {
+        Ok(request) => match dispatch(store, retarget, &request.method, request.params) {
             Ok(result) => Response::ok(request.id, result),
             Err(message) => Response::err(request.id, message),
         },
@@ -964,11 +1105,20 @@ fn handle_line(store: &mut dyn CatalogStore, line: &str) -> Option<String> {
 pub fn run<R: BufRead, W: Write>(
     store: &mut dyn CatalogStore,
     input: R,
+    output: W,
+) -> std::io::Result<()> {
+    run_with_retarget(store, None, input, output)
+}
+
+pub fn run_with_retarget<R: BufRead, W: Write>(
+    store: &mut dyn CatalogStore,
+    retarget: Option<&RetargetEngine>,
+    input: R,
     mut output: W,
 ) -> std::io::Result<()> {
     for line in input.lines() {
         let line = line?;
-        if let Some(response) = handle_line(store, &line) {
+        if let Some(response) = handle_line_with_retarget(store, retarget, &line) {
             output.write_all(response.as_bytes())?;
             output.write_all(b"\n")?;
             output.flush()?;
@@ -1013,10 +1163,59 @@ fn build_store(db_path: Option<PathBuf>) -> std::io::Result<Box<dyn CatalogStore
 /// `db_path` selects the persistent SQLite catalog (when the `sqlite` feature is
 /// compiled in); `None` uses an ephemeral in-memory catalog.
 pub fn run_stdio(db_path: Option<PathBuf>) -> std::io::Result<()> {
+    run_stdio_with_retarget(db_path, None)
+}
+
+pub fn run_stdio_with_retarget(
+    db_path: Option<PathBuf>,
+    target_profiles_dir: Option<PathBuf>,
+) -> std::io::Result<()> {
     let mut store = build_store(db_path)?;
+    let retarget = target_profiles_dir
+        .map(|path| {
+            RetargetEngine::open(&path, Default::default()).map_err(|error| {
+                std::io::Error::other(format!(
+                    "failed to open retarget profiles at {}: {error}",
+                    path.display()
+                ))
+            })
+        })
+        .transpose()?;
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    run(store.as_mut(), stdin.lock(), stdout.lock())
+    run_with_retarget(
+        store.as_mut(),
+        retarget.as_ref(),
+        stdin.lock(),
+        stdout.lock(),
+    )
+}
+
+fn serialize_retarget_outcome<T: Serialize>(
+    outcome: RetargetRpcOutcome<T>,
+) -> Result<Value, String> {
+    serde_json::to_value(outcome)
+        .map_err(|error| format!("failed to serialize retarget outcome: {error}"))
+}
+
+fn preflight_outcome(report: PreflightReport) -> RetargetRpcOutcome<PreflightReport> {
+    if report.blockers.is_empty() {
+        RetargetRpcOutcome::ok(report)
+    } else {
+        RetargetRpcOutcome::Blocked {
+            blockers: report.blockers.clone(),
+            warnings: report.warnings.clone(),
+            value: Some(report),
+        }
+    }
+}
+
+fn retarget_not_configured() -> RetargetError {
+    RetargetError::new(
+        crate::retarget::IssueCode::ProfileManifestInvalid,
+        "retarget profile bundle was not configured at startup",
+        "Launch the sidecar with --target-profiles-dir <bundle-root>.",
+    )
 }
 
 #[cfg(test)]
