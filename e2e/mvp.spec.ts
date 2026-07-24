@@ -105,7 +105,7 @@ test('loads the catalog from the sidecar', async () => {
   // The toolbar model count is populated by the sidecar's `listModels` RPC. A
   // fresh, isolated catalog is empty, but the control must still render, which
   // proves the sidecar spawned and answered without error.
-  await expect(page.getByLabel('Model library')).toBeVisible();
+  await expect(page.getByRole('main', { name: 'Model library' })).toBeVisible();
   await expect(page.getByText('0 of 0')).toBeVisible();
   await expect(page.getByLabel('Search models')).toBeVisible();
 });

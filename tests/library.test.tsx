@@ -1064,6 +1064,7 @@ describe('<ModelGrid />', () => {
     );
 
     const button = screen.getByRole('button', { name: 'Select widget.stl' });
+    expect(screen.getByRole('list', { name: 'Model grid' })).toBeVisible();
     fireEvent.click(button);
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(onSelect).toHaveBeenCalledWith(
