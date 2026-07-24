@@ -359,7 +359,7 @@ fn collect_parts<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<VendorPa
 /// `None` if the part is absent. Callers use this to upload plate PNGs.
 pub fn read_part_bytes(data: &[u8], part_name: &str) -> Result<Option<Vec<u8>>, ThreeMfError> {
     let mut archive = ZipArchive::new(Cursor::new(data))?;
-    threemf::read_entry_bytes(&mut archive, part_name, MAX_THUMBNAIL_PART_BYTES, || {
+    read_part_bytes_limited(&mut archive, part_name, MAX_THUMBNAIL_PART_BYTES, || {
         ThreeMfError::DataTooLarge {
             resource: "plate thumbnail",
             limit: MAX_THUMBNAIL_PART_BYTES,
@@ -367,9 +367,13 @@ pub fn read_part_bytes(data: &[u8], part_name: &str) -> Result<Option<Vec<u8>>, 
     })
 }
 
-fn enumerate_thumbnail_parts(data: &[u8]) -> Result<Vec<String>, ThreeMfError> {
-    let mut archive = ZipArchive::new(Cursor::new(data))?;
-    collect_thumbnail_part_names(&mut archive)
+fn read_part_bytes_limited<R: Read + Seek, F: Fn() -> ThreeMfError>(
+    archive: &mut ZipArchive<R>,
+    part_name: &str,
+    max_bytes: u64,
+    too_large: F,
+) -> Result<Option<Vec<u8>>, ThreeMfError> {
+    threemf::read_entry_bytes(archive, part_name, max_bytes, too_large)
 }
 
 fn collect_thumbnail_part_names<R: Read + Seek>(
@@ -416,6 +420,42 @@ fn collect_thumbnail_part_names<R: Read + Seek>(
     Ok(thumbnails)
 }
 
+fn read_thumbnail_part<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    part_name: &str,
+    total_thumbnail_bytes: &mut u64,
+) -> Result<Option<Vec<u8>>, ThreeMfError> {
+    let remaining = MAX_TOTAL_THUMBNAIL_BYTES
+        .checked_sub(*total_thumbnail_bytes)
+        .ok_or(ThreeMfError::DataTooLarge {
+            resource: "plate thumbnails",
+            limit: MAX_TOTAL_THUMBNAIL_BYTES,
+        })?;
+    let limit = remaining.min(MAX_THUMBNAIL_PART_BYTES);
+    let png_bytes = read_part_bytes_limited(archive, part_name, limit, || {
+        if remaining < MAX_THUMBNAIL_PART_BYTES {
+            ThreeMfError::DataTooLarge {
+                resource: "plate thumbnails",
+                limit: MAX_TOTAL_THUMBNAIL_BYTES,
+            }
+        } else {
+            ThreeMfError::DataTooLarge {
+                resource: "plate thumbnail",
+                limit: MAX_THUMBNAIL_PART_BYTES,
+            }
+        }
+    })?;
+    if let Some(png_bytes) = &png_bytes {
+        *total_thumbnail_bytes = total_thumbnail_bytes
+            .checked_add(png_bytes.len() as u64)
+            .ok_or(ThreeMfError::DataTooLarge {
+                resource: "plate thumbnails",
+                limit: MAX_TOTAL_THUMBNAIL_BYTES,
+            })?;
+    }
+    Ok(png_bytes)
+}
+
 fn plate_index_from_part_name(part_name: &str) -> Option<u32> {
     let file_name = Path::new(part_name).file_name()?.to_string_lossy();
     let lower = file_name.to_ascii_lowercase();
@@ -427,12 +467,17 @@ fn plate_index_from_part_name(part_name: &str) -> Option<u32> {
 /// Enumerate all embedded PNG thumbnails and return each one's ZIP part name,
 /// inferred plate index (when the part follows `plate_<n>.png`), and PNG bytes.
 ///
-/// Extraction intentionally reuses [`read_part_bytes`] for each enumerated part
-/// so the public one-shot reader remains the single ZIP-entry byte path.
+/// Extraction enforces both per-entry and aggregate limits against the actual
+/// decompressed bytes returned from the ZIP reader.
 pub fn read_plate_thumbnails(data: &[u8]) -> Result<Vec<PlateThumbnail>, ThreeMfError> {
+    let mut archive = ZipArchive::new(Cursor::new(data))?;
+    let part_names = collect_thumbnail_part_names(&mut archive)?;
     let mut thumbnails = Vec::new();
-    for part_name in enumerate_thumbnail_parts(data)? {
-        let Some(png_bytes) = read_part_bytes(data, &part_name)? else {
+    let mut total_thumbnail_bytes = 0u64;
+    for part_name in part_names {
+        let Some(png_bytes) =
+            read_thumbnail_part(&mut archive, &part_name, &mut total_thumbnail_bytes)?
+        else {
             return Err(ThreeMfError::Malformed(format!(
                 "enumerated thumbnail part '{part_name}' could not be re-read"
             )));
@@ -491,6 +536,58 @@ mod tests {
             writer.finish().unwrap();
         }
         buf
+    }
+
+    fn patch_declared_uncompressed_size(zip: &mut [u8], part_name: &str, fake_size: u32) {
+        fn overwrite_u32_le(bytes: &mut [u8], offset: usize, value: u32) {
+            bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+
+        let part_name = part_name.as_bytes();
+        let mut patched_local = false;
+        let mut patched_central = false;
+        let mut index = 0usize;
+        while index + 30 + part_name.len() <= zip.len() {
+            if &zip[index..index + 4] == b"PK\x03\x04" {
+                let name_len = u16::from_le_bytes([zip[index + 26], zip[index + 27]]) as usize;
+                let extra_len = u16::from_le_bytes([zip[index + 28], zip[index + 29]]) as usize;
+                let name_start = index + 30;
+                let name_end = name_start + name_len;
+                if name_len == part_name.len() && &zip[name_start..name_end] == part_name {
+                    overwrite_u32_le(zip, index + 22, fake_size);
+                    patched_local = true;
+                }
+                index = name_end.saturating_add(extra_len);
+                continue;
+            }
+            index += 1;
+        }
+
+        index = 0;
+        while index + 46 + part_name.len() <= zip.len() {
+            if &zip[index..index + 4] == b"PK\x01\x02" {
+                let name_len = u16::from_le_bytes([zip[index + 28], zip[index + 29]]) as usize;
+                let extra_len = u16::from_le_bytes([zip[index + 30], zip[index + 31]]) as usize;
+                let comment_len = u16::from_le_bytes([zip[index + 32], zip[index + 33]]) as usize;
+                let name_start = index + 46;
+                let name_end = name_start + name_len;
+                if name_len == part_name.len() && &zip[name_start..name_end] == part_name {
+                    overwrite_u32_le(zip, index + 24, fake_size);
+                    patched_central = true;
+                }
+                index = name_end
+                    .saturating_add(extra_len)
+                    .saturating_add(comment_len);
+                continue;
+            }
+            index += 1;
+        }
+
+        assert!(patched_local, "missing local header for {part_name:?}");
+        assert!(
+            patched_central,
+            "missing central directory header for {part_name:?}"
+        );
     }
 
     const RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -702,6 +799,24 @@ mod tests {
     }
 
     #[test]
+    fn read_plate_thumbnails_accepts_small_honest_total_bytes() {
+        let png_a = b"\x89PNG\r\n\x1a\nA".to_vec();
+        let png_b = b"\x89PNG\r\n\x1a\nBB".to_vec();
+        let png_c = b"\x89PNG\r\n\x1a\nCCC".to_vec();
+        let zip = build_zip(&[
+            ("Metadata/plate_3.png", &png_c),
+            ("Metadata/plate_1.png", &png_a),
+            ("Metadata/plate_2.png", &png_b),
+        ]);
+
+        let thumbnails = read_plate_thumbnails(&zip).unwrap();
+        assert_eq!(thumbnails.len(), 3);
+        assert_eq!(thumbnails[0].png_bytes, png_a);
+        assert_eq!(thumbnails[1].png_bytes, png_b);
+        assert_eq!(thumbnails[2].png_bytes, png_c);
+    }
+
+    #[test]
     fn read_plate_thumbnails_returns_empty_when_archive_has_no_png_parts() {
         let zip = build_zip(&[
             ("_rels/.rels", RELS.as_bytes()),
@@ -763,6 +878,31 @@ mod tests {
             ThreeMfError::DataTooLarge {
                 resource: "plate thumbnail",
                 limit: MAX_THUMBNAIL_PART_BYTES,
+            }
+        ));
+    }
+
+    #[test]
+    fn read_plate_thumbnails_rejects_real_total_bytes_exceeding_limit_with_spoofed_declared_sizes()
+    {
+        let large_png = vec![0xAB; MAX_THUMBNAIL_PART_BYTES as usize];
+        let mut zip = build_zip(&[
+            ("Metadata/plate_1.png", large_png.as_slice()),
+            ("Metadata/plate_2.png", large_png.as_slice()),
+            ("Metadata/plate_3.png", large_png.as_slice()),
+            ("Metadata/plate_4.png", large_png.as_slice()),
+            ("Metadata/plate_5.png", large_png.as_slice()),
+        ]);
+        for index in 1..=5 {
+            patch_declared_uncompressed_size(&mut zip, &format!("Metadata/plate_{index}.png"), 100);
+        }
+
+        let err = read_plate_thumbnails(&zip).unwrap_err();
+        assert!(matches!(
+            err,
+            ThreeMfError::DataTooLarge {
+                resource: "plate thumbnails",
+                limit: MAX_TOTAL_THUMBNAIL_BYTES,
             }
         ));
     }
