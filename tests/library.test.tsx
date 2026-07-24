@@ -1302,6 +1302,7 @@ describe('<CollectionEditor />', () => {
 
 function partedMesh(): SceneMesh {
   return {
+    sceneVersion: 2,
     positions: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1],
     indices: [0, 1, 2, 3, 4, 5],
     bounds: { min: [0, 0, 0], max: [1, 1, 1] },
@@ -1309,6 +1310,49 @@ function partedMesh(): SceneMesh {
     parts: [
       { name: 'A', triangleStart: 0, triangleCount: 1 },
       { name: 'B', triangleStart: 1, triangleCount: 1 },
+    ],
+    objects: [
+      {
+        id: 'plate-0/item-0/object-1',
+        sourceId: '3d/3dmodel.model#object-1',
+        name: 'A',
+        parentId: null,
+        children: [],
+        transform: { matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] },
+        mesh: {
+          positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+          indices: [0, 1, 2],
+          bounds: { min: [0, 0, 0], max: [1, 1, 0] },
+        },
+        material: {},
+        plateId: 'plate-0',
+        buildItemIndex: 0,
+      },
+      {
+        id: 'plate-0/item-1/object-2',
+        sourceId: '3d/3dmodel.model#object-2',
+        name: 'B',
+        parentId: null,
+        children: [],
+        transform: { matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] },
+        mesh: {
+          positions: [0, 0, 1, 1, 0, 1, 0, 1, 1],
+          indices: [0, 1, 2],
+          bounds: { min: [0, 0, 1], max: [1, 1, 1] },
+        },
+        material: {},
+        plateId: 'plate-0',
+        buildItemIndex: 1,
+      },
+    ],
+    rootObjectIds: ['plate-0/item-0/object-1', 'plate-0/item-1/object-2'],
+    plates: [
+      {
+        id: 'plate-0',
+        name: 'Plate 1',
+        index: 0,
+        rootObjectIds: ['plate-0/item-0/object-1', 'plate-0/item-1/object-2'],
+      },
     ],
   };
 }
@@ -1329,20 +1373,28 @@ describe('visibleIndices', () => {
 
   it('ignores hidden parts on a mesh without a part table', () => {
     const mesh: SceneMesh = {
+      sceneVersion: 2,
       positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
       indices: [0, 1, 2],
       bounds: { min: [0, 0, 0], max: [1, 1, 0] },
       sourceFormat: 'stl',
+      faceColors: null,
+      parts: [],
+      objects: [],
+      rootObjectIds: [],
+      plates: [],
     };
     expect(visibleIndices(mesh, new Set([0]))).toEqual([0, 1, 2]);
   });
 });
 
 describe('<PartTree />', () => {
-  it('renders nothing when there are no parts', () => {
+  it('renders nothing when there are no objects', () => {
     const { container } = render(
       <PartTree
-        parts={[]}
+        objects={[]}
+        rootObjectIds={[]}
+        plates={[]}
         hidden={new Set()}
         onToggle={vi.fn()}
         onToggleAll={vi.fn()}
@@ -1351,16 +1403,55 @@ describe('<PartTree />', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('lists parts and reports visibility toggles', () => {
+  it('lists hierarchical objects and reports visibility toggles', () => {
     const onToggle = vi.fn();
     const onToggleAll = vi.fn();
     render(
       <PartTree
-        parts={[
-          { name: 'Body', triangleStart: 0, triangleCount: 12 },
-          { name: 'Lid', triangleStart: 12, triangleCount: 6 },
+        objects={[
+          {
+            id: 'root',
+            sourceId: 'object-1',
+            name: 'Body',
+            parentId: null,
+            children: ['child'],
+            transform: {
+              matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+            },
+            mesh: null,
+            material: {},
+            plateId: 'plate-0',
+            buildItemIndex: 0,
+          },
+          {
+            id: 'child',
+            sourceId: 'object-2',
+            name: 'Lid',
+            parentId: 'root',
+            children: [],
+            transform: {
+              matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+            },
+            mesh: {
+              positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+              indices: [0, 1, 2],
+              bounds: { min: [0, 0, 0], max: [1, 1, 0] },
+            },
+            material: {},
+            plateId: 'plate-0',
+            buildItemIndex: 0,
+          },
         ]}
-        hidden={new Set([1])}
+        rootObjectIds={['root']}
+        plates={[
+          {
+            id: 'plate-0',
+            name: 'Plate 1',
+            index: 0,
+            rootObjectIds: ['root'],
+          },
+        ]}
+        hidden={new Set(['child'])}
         onToggle={onToggle}
         onToggleAll={onToggleAll}
       />,
@@ -1372,7 +1463,7 @@ describe('<PartTree />', () => {
     expect(lid).not.toBeChecked();
 
     fireEvent.click(lid);
-    expect(onToggle).toHaveBeenCalledWith(1);
+    expect(onToggle).toHaveBeenCalledWith('child');
 
     // Some parts are hidden, so the control offers to show all.
     fireEvent.click(screen.getByRole('button', { name: /Show all/i }));

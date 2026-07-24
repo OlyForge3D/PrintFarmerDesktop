@@ -17,14 +17,14 @@ describe('<PreviewWorkspace />', () => {
       wireframe: false,
       projection: 'perspective',
       resetToken: 0,
-      hiddenParts: new Set(),
+      hiddenObjects: new Set(),
       onClose,
       onRetry: vi.fn(),
       onToggleWireframe: vi.fn(),
       onToggleProjection: vi.fn(),
       onReset: vi.fn(),
-      onTogglePart: vi.fn(),
-      onToggleAllParts: vi.fn(),
+      onToggleObject: vi.fn(),
+      onToggleAllObjects: vi.fn(),
     };
     const { rerender } = render(
       <>

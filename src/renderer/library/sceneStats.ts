@@ -13,6 +13,12 @@ export interface SceneStats {
 export function computeSceneStats(mesh: SceneMesh): SceneStats {
   const [minX, minY, minZ] = mesh.bounds.min;
   const [maxX, maxY, maxZ] = mesh.bounds.max;
+  const partCount =
+    mesh.objects.filter(
+      (object) => object.mesh !== undefined && object.mesh !== null,
+    ).length ||
+    mesh.parts?.length ||
+    0;
   return {
     triangles: Math.floor(mesh.indices.length / 3),
     vertices: Math.floor(mesh.positions.length / 3),
@@ -21,7 +27,7 @@ export function computeSceneStats(mesh: SceneMesh): SceneStats {
       Math.max(0, maxY - minY),
       Math.max(0, maxZ - minZ),
     ],
-    parts: mesh.parts?.length ?? 0,
+    parts: partCount,
     format: mesh.sourceFormat,
   };
 }

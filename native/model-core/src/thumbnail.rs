@@ -288,6 +288,7 @@ mod tests {
     use super::*;
     use crate::geometry::Aabb;
     use crate::model::ModelFormat;
+    use crate::scene::{SceneMaterial, SceneObject, SceneObjectMesh, ScenePlate, SceneTransform};
 
     /// A unit cube centered at the origin as an indexed triangle mesh.
     fn cube() -> SceneMesh {
@@ -315,12 +316,48 @@ mod tests {
             bounds.expand(*p);
         }
         SceneMesh {
+            scene_version: crate::scene::SCENE_DTO_VERSION,
             positions,
             indices,
             bounds,
             source_format: ModelFormat::Stl,
             face_colors: None,
             parts: Vec::new(),
+            objects: vec![SceneObject {
+                id: "object-0".to_string(),
+                source_id: "thumbnail:cube".to_string(),
+                name: "Cube".to_string(),
+                parent_id: None,
+                children: Vec::new(),
+                transform: SceneTransform::identity(),
+                mesh: Some(SceneObjectMesh {
+                    positions: vec![
+                        [-1.0, -1.0, -1.0],
+                        [1.0, -1.0, -1.0],
+                        [1.0, 1.0, -1.0],
+                        [-1.0, 1.0, -1.0],
+                        [-1.0, -1.0, 1.0],
+                        [1.0, -1.0, 1.0],
+                        [1.0, 1.0, 1.0],
+                        [-1.0, 1.0, 1.0],
+                    ],
+                    indices: vec![
+                        0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 0, 4, 5, 0, 5, 1, 1, 5, 6, 1, 6, 2, 2,
+                        6, 7, 2, 7, 3, 3, 7, 4, 3, 4, 0,
+                    ],
+                    bounds,
+                }),
+                material: SceneMaterial::default(),
+                plate_id: "plate-0".to_string(),
+                build_item_index: Some(0),
+            }],
+            root_object_ids: vec!["object-0".to_string()],
+            plates: vec![ScenePlate {
+                id: "plate-0".to_string(),
+                name: "Plate 1".to_string(),
+                index: 0,
+                root_object_ids: vec!["object-0".to_string()],
+            }],
         }
     }
 

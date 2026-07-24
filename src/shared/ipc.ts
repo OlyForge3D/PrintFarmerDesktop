@@ -77,6 +77,12 @@ export const ModelFormat = z.enum(['stl', 'threeMf', 'obj']);
 export type ModelFormat = z.infer<typeof ModelFormat>;
 
 const Vec3 = z.tuple([z.number(), z.number(), z.number()]);
+const Mat4 = z.array(z.number()).length(16);
+const Rgb = z.tuple([
+  z.number().int().min(0).max(255),
+  z.number().int().min(0).max(255),
+  z.number().int().min(0).max(255),
+]);
 
 export const Bounds = z.object({
   min: Vec3,
@@ -97,19 +103,69 @@ export const ScenePart = z.object({
 });
 export type ScenePart = z.infer<typeof ScenePart>;
 
+export const SceneTransform = z.object({
+  matrix: Mat4,
+});
+export type SceneTransform = z.infer<typeof SceneTransform>;
+
+export const SceneMaterial = z.object({
+  baseColor: Rgb.nullable().optional(),
+  faceColors: z.array(z.number().int().min(0).max(255)).nullable().optional(),
+});
+export type SceneMaterial = z.infer<typeof SceneMaterial>;
+
+export const SceneObjectMesh = z.object({
+  positions: z.array(z.number()),
+  indices: z.array(z.number().int().nonnegative()),
+  bounds: Bounds,
+});
+export type SceneObjectMesh = z.infer<typeof SceneObjectMesh>;
+
 /**
- * The normalized, format-agnostic mesh the sidecar produces from an STL, 3MF, or OBJ
- * file. Positions and indices are flat arrays (`positions` is xyz-interleaved;
- * `indices` references vertices in triples). `faceColors`, when present, is one
- * RGB (0–255) triple per triangle. `parts` names selectable triangle ranges.
+ * One scene-graph node from the sidecar. `id` is the stable instance identity;
+ * `sourceId` identifies the reusable source object definition that instance came
+ * from. `transform.matrix` is a local 4×4 row-major affine matrix relative to
+ * `parentId`; root objects use the scene root / plate root as their parent.
+ */
+export const SceneObject = z.object({
+  id: z.string().min(1),
+  sourceId: z.string().min(1),
+  name: z.string(),
+  parentId: z.string().min(1).nullable().optional(),
+  children: z.array(z.string().min(1)).default([]),
+  transform: SceneTransform,
+  mesh: SceneObjectMesh.nullable().optional(),
+  material: SceneMaterial.default({}),
+  plateId: z.string().min(1),
+  buildItemIndex: z.number().int().nonnegative().nullable().optional(),
+});
+export type SceneObject = z.infer<typeof SceneObject>;
+
+export const ScenePlate = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  index: z.number().int().nonnegative(),
+  rootObjectIds: z.array(z.string().min(1)).default([]),
+});
+export type ScenePlate = z.infer<typeof ScenePlate>;
+
+/**
+ * Scene DTO v2. The sidecar still provides a legacy flattened aggregate mesh for
+ * thumbnails/stats (`positions`, `indices`, `bounds`, `faceColors`, `parts`),
+ * but the renderer should consume `objects` + `rootObjectIds` + `plates` as the
+ * explicit Rust↔renderer contract for multi-object rendering.
  */
 export const SceneMesh = z.object({
+  sceneVersion: z.literal(2),
   positions: z.array(z.number()),
   indices: z.array(z.number().int().nonnegative()),
   bounds: Bounds,
   sourceFormat: ModelFormat,
   faceColors: z.array(z.number().int().min(0).max(255)).nullable().optional(),
   parts: z.array(ScenePart).default([]),
+  objects: z.array(SceneObject).default([]),
+  rootObjectIds: z.array(z.string().min(1)).default([]),
+  plates: z.array(ScenePlate).default([]),
 });
 export type SceneMesh = z.infer<typeof SceneMesh>;
 

@@ -434,11 +434,15 @@ describe('<App />', () => {
       ],
     };
     const loadScene = vi.fn().mockResolvedValue({
+      sceneVersion: 2,
       positions: [0, 0, 0],
       indices: [0, 0, 0],
       bounds: { min: [0, 0, 0], max: [0, 0, 0] },
       sourceFormat: 'stl',
       parts: [],
+      objects: [],
+      rootObjectIds: [],
+      plates: [],
     });
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
@@ -1072,11 +1076,15 @@ describe('<App />', () => {
 
     await act(async () => {
       resolveBeta({
+        sceneVersion: 2,
         positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
         indices: [0, 1, 2],
         bounds: { min: [0, 0, 0], max: [1, 1, 0] },
         sourceFormat: 'obj',
         parts: [],
+        objects: [],
+        rootObjectIds: [],
+        plates: [],
       });
       await Promise.resolve();
     });

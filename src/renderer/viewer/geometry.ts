@@ -257,9 +257,37 @@ export function sampleCubeScene(size = 20): SceneMesh {
   }
 
   return {
+    sceneVersion: 2,
     positions,
     indices,
     bounds: { min: [-h, -h, -h], max: [h, h, h] },
     sourceFormat: 'stl',
+    parts: [
+      { name: 'Model', triangleStart: 0, triangleCount: indices.length / 3 },
+    ],
+    objects: [
+      {
+        id: 'object-0',
+        sourceId: 'sample:cube',
+        name: 'Model',
+        parentId: null,
+        children: [],
+        transform: {
+          matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+        },
+        mesh: {
+          positions,
+          indices,
+          bounds: { min: [-h, -h, -h], max: [h, h, h] },
+        },
+        material: {},
+        plateId: 'plate-0',
+        buildItemIndex: 0,
+      },
+    ],
+    rootObjectIds: ['object-0'],
+    plates: [
+      { id: 'plate-0', name: 'Plate 1', index: 0, rootObjectIds: ['object-0'] },
+    ],
   };
 }

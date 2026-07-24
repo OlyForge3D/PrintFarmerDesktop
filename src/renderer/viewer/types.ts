@@ -23,7 +23,44 @@ export interface ScenePart {
   readonly triangleCount: number;
 }
 
+export interface SceneTransform {
+  /** 4×4 row-major local transform relative to the scene root or `parentId`. */
+  readonly matrix: readonly number[];
+}
+
+export interface SceneMaterial {
+  readonly baseColor?: readonly [number, number, number] | null | undefined;
+  readonly faceColors?: readonly number[] | null | undefined;
+}
+
+export interface SceneObjectMesh {
+  readonly positions: readonly number[];
+  readonly indices: readonly number[];
+  readonly bounds: Bounds;
+}
+
+export interface SceneObject {
+  readonly id: string;
+  readonly sourceId: string;
+  readonly name: string;
+  readonly parentId?: string | null | undefined;
+  readonly children: readonly string[];
+  readonly transform: SceneTransform;
+  readonly mesh?: SceneObjectMesh | null | undefined;
+  readonly material: SceneMaterial;
+  readonly plateId: string;
+  readonly buildItemIndex?: number | null | undefined;
+}
+
+export interface ScenePlate {
+  readonly id: string;
+  readonly name: string;
+  readonly index: number;
+  readonly rootObjectIds: readonly string[];
+}
+
 export interface SceneMesh {
+  readonly sceneVersion: 2;
   /** Flattened vertex positions; length is a multiple of three. */
   readonly positions: readonly number[];
   /** Triangle vertex indices; length is a multiple of three. */
@@ -34,4 +71,8 @@ export interface SceneMesh {
   readonly faceColors?: readonly number[] | null | undefined;
   /** Named triangle ranges for the part tree; may be empty. */
   readonly parts?: readonly ScenePart[];
+  /** Hierarchical object instances for the renderer-facing contract. */
+  readonly objects: readonly SceneObject[];
+  readonly rootObjectIds: readonly string[];
+  readonly plates: readonly ScenePlate[];
 }

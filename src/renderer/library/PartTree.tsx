@@ -1,33 +1,55 @@
-import type { ScenePart } from '../viewer/types';
+import type { SceneObject, ScenePlate } from '../viewer/types';
 
 export interface PartTreeProps {
-  parts: readonly ScenePart[];
-  hidden: ReadonlySet<number>;
-  onToggle: (index: number) => void;
+  objects: readonly SceneObject[];
+  rootObjectIds: readonly string[];
+  plates: readonly ScenePlate[];
+  hidden: ReadonlySet<string>;
+  onToggle: (id: string) => void;
   onToggleAll: (visible: boolean) => void;
 }
 
 /**
- * Lists the scene's parts (one per 3MF build item; one for an STL) with a
- * visibility checkbox each. Toggling a part hides its triangles in the viewer
- * without a re-parse. Renders nothing meaningful for single-part scenes beyond
- * the one row, which keeps the panel honest about model structure.
+ * Lists the scene graph shipped by the sidecar. Objects are grouped by plate and
+ * nested by `parentId`, so the renderer can expose the Rust-side hierarchy
+ * without reverse-engineering a flat triangle range table.
  */
 export function PartTree({
-  parts,
+  objects,
+  rootObjectIds,
+  plates,
   hidden,
   onToggle,
   onToggleAll,
 }: PartTreeProps): React.JSX.Element | null {
-  if (parts.length === 0) {
+  if (objects.length === 0) {
     return null;
   }
+
+  const byId = new Map(objects.map((object) => [object.id, object]));
   const allVisible = hidden.size === 0;
+
+  const groupedRoots =
+    plates.length > 0
+      ? plates.map((plate) => ({
+          plate,
+          roots: plate.rootObjectIds
+            .map((id) => byId.get(id))
+            .filter((object): object is SceneObject => Boolean(object)),
+        }))
+      : [
+          {
+            plate: null,
+            roots: rootObjectIds
+              .map((id) => byId.get(id))
+              .filter((object): object is SceneObject => Boolean(object)),
+          },
+        ];
 
   return (
     <div className="part-tree">
       <div className="part-tree-header">
-        <h2 className="viewer-tags-title">Parts</h2>
+        <h2 className="viewer-tags-title">Objects</h2>
         <button
           type="button"
           className="part-tree-toggle-all"
@@ -36,24 +58,81 @@ export function PartTree({
           {allVisible ? 'Hide all' : 'Show all'}
         </button>
       </div>
-      <ul className="part-list" aria-label="Model parts">
-        {parts.map((part, index) => {
-          const visible = !hidden.has(index);
-          return (
-            <li key={`${part.name}-${index}`} className="part-item">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={visible}
-                  onChange={() => onToggle(index)}
+      <div className="part-list" aria-label="Scene objects">
+        {groupedRoots.map(({ plate, roots }) => (
+          <section key={plate?.id ?? 'scene-root'} className="part-plate">
+            {plate ? <h3 className="part-plate-title">{plate.name}</h3> : null}
+            <ul>
+              {roots.map((object) => (
+                <SceneObjectNode
+                  key={object.id}
+                  object={object}
+                  byId={byId}
+                  hidden={hidden}
+                  ancestorHidden={false}
+                  onToggle={onToggle}
                 />
-                <span className="part-name">{part.name}</span>
-                <span className="part-count">{part.triangleCount}△</span>
-              </label>
-            </li>
-          );
-        })}
-      </ul>
+              ))}
+            </ul>
+          </section>
+        ))}
+      </div>
     </div>
+  );
+}
+
+function SceneObjectNode({
+  object,
+  byId,
+  hidden,
+  ancestorHidden,
+  onToggle,
+}: {
+  object: SceneObject;
+  byId: ReadonlyMap<string, SceneObject>;
+  hidden: ReadonlySet<string>;
+  ancestorHidden: boolean;
+  onToggle: (id: string) => void;
+}): React.JSX.Element {
+  const directlyHidden = hidden.has(object.id);
+  const effectivelyHidden = ancestorHidden || directlyHidden;
+  const triangles = object.mesh
+    ? Math.floor(object.mesh.indices.length / 3)
+    : 0;
+  const children = object.children
+    .map((id) => byId.get(id))
+    .filter((entry): entry is SceneObject => Boolean(entry));
+
+  return (
+    <li key={object.id} className="part-item">
+      <label>
+        <input
+          type="checkbox"
+          checked={!effectivelyHidden}
+          disabled={ancestorHidden}
+          onChange={() => onToggle(object.id)}
+        />
+        <span className="part-name">{object.name}</span>
+        <span className="part-count">
+          {object.mesh
+            ? `${triangles}△`
+            : `${children.length.toLocaleString()} child${children.length === 1 ? '' : 'ren'}`}
+        </span>
+      </label>
+      {children.length > 0 ? (
+        <ul>
+          {children.map((child) => (
+            <SceneObjectNode
+              key={child.id}
+              object={child}
+              byId={byId}
+              hidden={hidden}
+              ancestorHidden={effectivelyHidden}
+              onToggle={onToggle}
+            />
+          ))}
+        </ul>
+      ) : null}
+    </li>
   );
 }
