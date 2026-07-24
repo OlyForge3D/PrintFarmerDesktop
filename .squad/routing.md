@@ -4,26 +4,26 @@ How to decide who handles what.
 
 ## Routing Table
 
-| Work Type | Route To | Examples |
-|-----------|----------|----------|
-| Architecture & scope | Ripley | System design, module boundaries, PrintFarmer integration contracts, cross-cutting decisions |
-| React/Electron UI | Dallas | Renderer components, Three.js viewer, Electron main/preload wiring, IPC surfaces, UI state |
-| Rust / SQLite / integration | Bishop | `native/model-core`, SQLite schema & queries, Rust↔Electron bridge, PrintFarmer API integration |
-| Testing & contracts | Hicks | Vitest unit tests, Playwright e2e, IPC/API contract tests, edge cases, regression coverage |
-| Security & concurrency | Vasquez | Electron sandboxing, IPC trust boundaries, SQLite concurrency/locking, dependency/security review |
-| Code review | Ripley | Review PRs, check quality, suggest improvements |
-| Testing | Hicks | Write tests, find edge cases, verify fixes |
-| Scope & priorities | Ripley | What to build next, trade-offs, decisions |
-| Session logging | Scribe | Automatic — never needs routing |
-| RAI review | Rai | Content safety, bias checks, credential detection, ethical review |
-| Verification / devil's advocate | Fact Checker | Claim verification, hallucination checks, pre-mortem / counter-arguments |
+| Work Type                       | Route To     | Examples                                                                                          |
+| ------------------------------- | ------------ | ------------------------------------------------------------------------------------------------- |
+| Architecture & scope            | Ripley       | System design, module boundaries, PrintFarmer integration contracts, cross-cutting decisions      |
+| React/Electron UI               | Dallas       | Renderer components, Three.js viewer, Electron main/preload wiring, IPC surfaces, UI state        |
+| Rust / SQLite / integration     | Bishop       | `native/model-core`, SQLite schema & queries, Rust↔Electron bridge, PrintFarmer API integration   |
+| Testing & contracts             | Hicks        | Vitest unit tests, Playwright e2e, IPC/API contract tests, edge cases, regression coverage        |
+| Security & concurrency          | Vasquez      | Electron sandboxing, IPC trust boundaries, SQLite concurrency/locking, dependency/security review |
+| Code review                     | Ripley       | Review PRs, check quality, suggest improvements                                                   |
+| Testing                         | Hicks        | Write tests, find edge cases, verify fixes                                                        |
+| Scope & priorities              | Ripley       | What to build next, trade-offs, decisions                                                         |
+| Session logging                 | Scribe       | Automatic — never needs routing                                                                   |
+| RAI review                      | Rai          | Content safety, bias checks, credential detection, ethical review                                 |
+| Verification / devil's advocate | Fact Checker | Claim verification, hallucination checks, pre-mortem / counter-arguments                          |
 
 ## Issue Routing
 
-| Label | Action | Who |
-|-------|--------|-----|
-| `squad` | Triage: analyze issue, assign `squad:{member}` label | Ripley (Lead) |
-| `squad:{name}` | Pick up issue and complete the work | Named member |
+| Label          | Action                                               | Who           |
+| -------------- | ---------------------------------------------------- | ------------- |
+| `squad`        | Triage: analyze issue, assign `squad:{member}` label | Ripley (Lead) |
+| `squad:{name}` | Pick up issue and complete the work                  | Named member  |
 
 ### How Issue Assignment Works
 
