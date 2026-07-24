@@ -39,6 +39,10 @@ export interface ModelViewerProps {
 }
 
 const PERSPECTIVE_FOV = 45;
+type ViewerMesh = THREE.Mesh<
+  THREE.BufferGeometry,
+  THREE.Material | THREE.Material[]
+>;
 
 export function ModelViewer({
   mesh,
@@ -86,16 +90,7 @@ export function ModelViewer({
 
     const sceneGraph = buildViewerSceneGraph(mesh, hiddenObjectsRef.current);
     sceneGraph.root.traverse((object) => {
-      if (object instanceof THREE.Mesh) {
-        const material = object.material;
-        if (Array.isArray(material)) {
-          material.forEach((entry) => {
-            entry.wireframe = wireframeRef.current;
-          });
-        } else {
-          material.wireframe = wireframeRef.current;
-        }
-      }
+      applyWireframe(object, wireframeRef.current);
     });
     sceneGraphRef.current = sceneGraph;
     scene.add(sceneGraph.root);
@@ -201,15 +196,7 @@ export function ModelViewer({
 
   useEffect(() => {
     sceneGraphRef.current?.root.traverse((object) => {
-      if (!(object instanceof THREE.Mesh)) return;
-      const material = object.material;
-      if (Array.isArray(material)) {
-        material.forEach((entry) => {
-          entry.wireframe = wireframe;
-        });
-      } else {
-        material.wireframe = wireframe;
-      }
+      applyWireframe(object, wireframe);
     });
   }, [wireframe]);
 
@@ -257,6 +244,26 @@ function aspectOf(container: HTMLElement): number {
   const width = container.clientWidth || 1;
   const height = container.clientHeight || 1;
   return width / height;
+}
+
+function isViewerMesh(object: THREE.Object3D): object is ViewerMesh {
+  return object instanceof THREE.Mesh;
+}
+
+function applyWireframe(object: THREE.Object3D, wireframe: boolean): void {
+  if (!isViewerMesh(object)) return;
+  const { material } = object;
+  if (Array.isArray(material)) {
+    material.forEach((entry) => {
+      if (entry instanceof THREE.MeshStandardMaterial) {
+        entry.wireframe = wireframe;
+      }
+    });
+    return;
+  }
+  if (material instanceof THREE.MeshStandardMaterial) {
+    material.wireframe = wireframe;
+  }
 }
 
 function createCamera(

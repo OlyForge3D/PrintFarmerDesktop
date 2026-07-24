@@ -214,15 +214,19 @@ function isObjectVisible(
 }
 
 function disposeMaterial(material: THREE.Material): void {
-  for (const value of Object.values(material)) {
-    if (
-      value &&
-      typeof value === 'object' &&
-      'dispose' in value &&
-      typeof value.dispose === 'function'
-    ) {
+  for (const value of Object.values(
+    material as unknown as Record<string, unknown>,
+  )) {
+    if (hasDisposeMethod(value)) {
       value.dispose();
     }
   }
   material.dispose();
+}
+
+function hasDisposeMethod(value: unknown): value is { dispose(): void } {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  return typeof Reflect.get(value, 'dispose') === 'function';
 }
