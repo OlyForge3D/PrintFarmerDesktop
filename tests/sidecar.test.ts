@@ -122,6 +122,50 @@ describe('SidecarClient', () => {
     expect(request.params.path).toBe('C:/models/part.stl');
   });
 
+  it('sends server_binding in getRemoteModelLink requests and returns the response', async () => {
+    const mockLink = {
+      profileId: 'profile-a',
+      localModelHash: 'hash-a',
+      remoteModelId: 'remote-a',
+      clientUploadId: 'upload-a',
+      etag: 'etag-a',
+      uploadStatus: 'uploaded' as const,
+      createdAt: 1,
+      updatedAt: 2,
+      uploadedAt: 3,
+    };
+    const { channel, sent } = makeFakeChannel((req, emit) => {
+      emit(
+        JSON.stringify({
+          id: req.id,
+          ok: true,
+          result: mockLink,
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel);
+    const result = await client.getRemoteModelLink(
+      'profile-a',
+      'binding-a',
+      'hash-a',
+    );
+    expect(result).toEqual(mockLink);
+    const request = JSON.parse(sent[0] ?? '{}') as {
+      method: string;
+      params: {
+        profileId: string;
+        serverBinding: string;
+        localModelHash: string;
+      };
+    };
+    expect(request.method).toBe('getRemoteModelLink');
+    expect(request.params).toEqual({
+      profileId: 'profile-a',
+      serverBinding: 'binding-a',
+      localModelHash: 'hash-a',
+    });
+  });
+
   it('sends a well-formed extractVendorMetadata request and resolves the result', async () => {
     const { channel, sent } = makeFakeChannel((req, emit) => {
       emit(

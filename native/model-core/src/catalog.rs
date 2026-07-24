@@ -2371,18 +2371,26 @@ impl CatalogStore for InMemoryCatalog {
                                     })
                                 })
                                 .map(|mapping| mapping.remote_id.clone());
-                            let model_id =
-                                operation.payload["modelHash"].as_str().and_then(|hash| {
+                            let profile_binding = self
+                                .sync_profile_bindings
+                                .get(&settlement.profile_id)
+                                .map(String::as_str)
+                                .unwrap_or("legacy-unbound");
+                            let model_id = operation.payload["modelHash"]
+                                .as_str()
+                                .and_then(|hash| {
                                     self.remote_model_links.values().find(|link| {
                                         link.profile_id == settlement.profile_id
+                                            && link.server_binding == profile_binding
                                             && link.local_model_hash == hash
                                     })
-                                });
+                                })
+                                .map(|link| link.remote_model_id.clone());
                             match (collection_id, model_id) {
-                                (Some(collection_id), Some(link)) => Some(serde_json::json!({
+                                (Some(collection_id), Some(model_id)) => Some(serde_json::json!({
                                     "id": applied.remote_id,
                                     "collectionId": collection_id,
-                                    "modelId": link.remote_model_id,
+                                    "modelId": model_id,
                                     "createdAt": "1970-01-01T00:00:00Z",
                                     "updatedAt": "1970-01-01T00:00:00Z",
                                     "revision": applied.revision
@@ -3953,6 +3961,122 @@ mod tests {
             SyncEntityType::ModelCollectionMembership
         );
         assert_eq!(pending[0].operation, crate::sync::SyncOperationKind::Delete);
+    }
+
+    #[test]
+    fn settle_outbound_batch_uses_the_current_profile_binding_for_membership_snapshots() {
+        // InMemoryCatalog stores links in a randomized HashMap; exercise fresh
+        // stores so an unfiltered lookup cannot accidentally keep choosing the
+        // current binding's row by chance.
+        for _ in 0..32 {
+            let (mut store, hash) = one_model_store();
+            store
+                .bind_sync_profile("profile-a", "binding-current", 1)
+                .unwrap();
+            let collection = store
+                .create_collection_with_sync("Synced", "profile-a", "binding-current", 2)
+                .unwrap();
+            let collection_claim = store
+                .claim_outbound_operations("profile-a", 10, 3, 30)
+                .unwrap()
+                .unwrap();
+            let collection_remote_id = collection_claim.operations[0].payload["remoteId"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            store
+                .settle_outbound_batch(SettleOutboundBatchDto {
+                    profile_id: "profile-a".to_string(),
+                    batch_id: collection_claim.batch_id,
+                    batch_incarnation: collection_claim.batch_incarnation,
+                    lease_token: collection_claim.lease_token,
+                    settled_at: 4,
+                    server_revision: 1,
+                    applied: vec![crate::sync::AppliedOutboundResultDto {
+                        operation_id: collection_claim.operations[0].operation_id.clone(),
+                        remote_id: collection_remote_id,
+                        revision: 1,
+                        concurrency_token: None,
+                    }],
+                    conflicts: vec![],
+                })
+                .unwrap();
+            store
+                .link_remote_model(RemoteModelLinkDto {
+                    profile_id: "profile-a".to_string(),
+                    server_binding: "binding-stale".to_string(),
+                    local_model_hash: hash.clone(),
+                    remote_model_id: "remote-model-stale".to_string(),
+                    client_upload_id: "upload-stale".to_string(),
+                    etag: None,
+                    upload_status: crate::sync::RemoteUploadStatus::Pending,
+                    created_at: 5,
+                    updated_at: 5,
+                    uploaded_at: None,
+                })
+                .unwrap();
+            store
+                .link_remote_model(RemoteModelLinkDto {
+                    profile_id: "profile-a".to_string(),
+                    server_binding: "binding-current".to_string(),
+                    local_model_hash: hash.clone(),
+                    remote_model_id: "remote-model-current".to_string(),
+                    client_upload_id: "upload-current".to_string(),
+                    etag: None,
+                    upload_status: crate::sync::RemoteUploadStatus::Pending,
+                    created_at: 6,
+                    updated_at: 6,
+                    uploaded_at: None,
+                })
+                .unwrap();
+            assert!(store
+                .add_model_to_collection_with_sync(
+                    &collection.id,
+                    &hash,
+                    "profile-a",
+                    "binding-current",
+                    7,
+                )
+                .unwrap());
+            let membership_claim = store
+                .claim_outbound_operations("profile-a", 10, 8, 30)
+                .unwrap()
+                .unwrap();
+            let membership_remote_id = membership_claim.operations[0].payload["remoteId"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            let membership_local_id = membership_claim.operations[0].entity_id.clone();
+            store
+                .settle_outbound_batch(SettleOutboundBatchDto {
+                    profile_id: "profile-a".to_string(),
+                    batch_id: membership_claim.batch_id,
+                    batch_incarnation: membership_claim.batch_incarnation,
+                    lease_token: membership_claim.lease_token,
+                    settled_at: 9,
+                    server_revision: 2,
+                    applied: vec![crate::sync::AppliedOutboundResultDto {
+                        operation_id: membership_claim.operations[0].operation_id.clone(),
+                        remote_id: membership_remote_id,
+                        revision: 1,
+                        concurrency_token: None,
+                    }],
+                    conflicts: vec![],
+                })
+                .unwrap();
+
+            let snapshot = store
+                .entity_revision_by_local(
+                    "profile-a",
+                    SyncEntityType::ModelCollectionMembership,
+                    &membership_local_id,
+                )
+                .unwrap()
+                .unwrap()
+                .snapshot
+                .unwrap();
+            assert_eq!(snapshot["modelId"].as_str(), Some("remote-model-current"));
+        }
     }
 
     #[test]
