@@ -203,4 +203,60 @@ describe('main-owned root approvals', () => {
     await store.reset();
     expect(fileSystem.files.has(storePath)).toBe(false);
   });
+
+  it('requires explicit native-picker reauthorization for roots approved before BigInt identity tracking', async () => {
+    const fileSystem = fakeFileSystem();
+    const userData = path.resolve('legacy-user-data');
+    const storePath = path.join(userData, 'approved-roots.v1.json');
+    const legacyRootId = '55555555-5555-4555-8555-555555555555';
+    const selected = path.resolve('legacy-approved');
+    const model = path.join(selected, 'part.stl');
+    fileSystem.realpaths.set(selected, selected);
+    fileSystem.realpaths.set(model, model);
+    // Pre-migration store contents: no deviceId/fileId fields at all,
+    // as written by the version before BigInt identity tracking existed.
+    fileSystem.files.set(
+      storePath,
+      Buffer.from(
+        JSON.stringify({
+          version: 1,
+          roots: [
+            {
+              id: legacyRootId,
+              canonicalPath: selected,
+              approvedAt: new Date(0).toISOString(),
+            },
+          ],
+        }),
+      ),
+    );
+    const store = new RootApprovalStore({
+      userDataPath: userData,
+      fileSystem,
+      createId: () => '66666666-6666-4666-8666-666666666666',
+      now: () => 1000,
+    });
+
+    await expect(store.resolve(legacyRootId)).rejects.toMatchObject({
+      code: 'APPROVAL_REQUIRED',
+    });
+    await expect(store.authorizeFile(model)).rejects.toMatchObject({
+      code: 'APPROVAL_REQUIRED',
+    });
+
+    // Reauthorizing the same folder through the native picker upgrades
+    // the existing entry in place instead of minting a duplicate.
+    const reauthorized = await store.approveFromPicker(selected);
+    expect(reauthorized.id).toBe(legacyRootId);
+    expect(await store.resolve(legacyRootId)).toBe(selected);
+    await expect(store.authorizeFile(model)).resolves.toEqual({
+      sourcePath: model,
+      canonicalPath: model,
+    });
+    const persisted = [...fileSystem.files.values()]
+      .map((value) => Buffer.from(value).toString('utf8'))
+      .join('');
+    expect(persisted).toContain('"deviceId":"1"');
+    expect(persisted).toContain('"fileId":"2"');
+  });
 });

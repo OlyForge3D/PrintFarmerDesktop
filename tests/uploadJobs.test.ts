@@ -167,6 +167,98 @@ describe('UploadJobStore', () => {
       error: { retryable: false, duplicateRisk: true },
     });
   });
+
+  it('does not reflag an already-succeeded legacy-unbound upload as duplicate risk on restart', async () => {
+    const now = Date.parse('2026-07-23T20:00:00.000Z');
+    const legacyJob = {
+      id: '00000000-0000-4000-8000-000000000010',
+      profileId: '00000000-0000-4000-8000-000000000011',
+      profileName: 'Farm',
+      // No profileRevision/serverBinding: pre-migration data defaults both
+      // to the 'legacy-unbound' placeholder.
+      mode: 'legacyModelOnly',
+      state: 'partialFailure',
+      paused: false,
+      createdAt: '2026-07-23T18:00:00.000Z',
+      updatedAt: '2026-07-23T18:00:00.000Z',
+      items: [
+        {
+          id: '00000000-0000-4000-8000-000000000012',
+          hash: 'a'.repeat(64),
+          clientUploadId: '00000000-0000-4000-8000-000000000013',
+          displayName: 'succeeded.stl',
+          size: 4,
+          state: 'succeeded',
+          bytesSent: 4,
+          attempts: 1,
+          createdAt: '2026-07-23T18:00:00.000Z',
+          updatedAt: '2026-07-23T18:00:00.000Z',
+          remote: {
+            id: 'remote-1',
+            name: 'succeeded.stl',
+            fileName: 'succeeded.stl',
+            fileSize: 4,
+            fileType: 'stl',
+            uploadedAt: '2026-07-23T18:00:00.000Z',
+            url: '/models/1',
+            thumbnailUrl: null,
+            wasExisting: false,
+            clientUploadId: '00000000-0000-4000-8000-000000000013',
+            etag: '"etag"',
+          },
+          error: null,
+        },
+        {
+          id: '00000000-0000-4000-8000-000000000014',
+          hash: 'b'.repeat(64),
+          clientUploadId: '00000000-0000-4000-8000-000000000015',
+          displayName: 'pending.stl',
+          size: 4,
+          state: 'queued',
+          bytesSent: 0,
+          attempts: 0,
+          createdAt: '2026-07-23T18:00:00.000Z',
+          updatedAt: '2026-07-23T18:00:00.000Z',
+          remote: null,
+          error: null,
+        },
+      ],
+      totalBytes: 8,
+      bytesSent: 4,
+      summary: {
+        queued: 1,
+        uploading: 0,
+        succeeded: 1,
+        failed: 0,
+        cancelled: 0,
+        uncertain: 0,
+      },
+    };
+    const fileSystem = memoryFileSystem(
+      JSON.stringify({ version: 1, jobs: [legacyJob] }),
+    );
+    const store = new UploadJobStore({
+      userDataPath: 'data',
+      fileSystem,
+      now: () => now,
+    });
+    const jobs = await store.load();
+    expect(jobs[0]?.items[0]).toMatchObject({
+      state: 'succeeded',
+      error: null,
+    });
+    expect(jobs[0]?.items[1]).toMatchObject({
+      state: 'uncertain',
+      error: { code: 'UNBOUND_UPLOAD_IDENTITY', duplicateRisk: true },
+    });
+
+    // A second restart must not disturb the already-succeeded item either.
+    const jobsAgain = await store.load();
+    expect(jobsAgain[0]?.items[0]).toMatchObject({
+      state: 'succeeded',
+      error: null,
+    });
+  });
 });
 
 describe('UploadJobService', () => {
@@ -278,6 +370,99 @@ describe('UploadJobService', () => {
       }
       transportEntered = false;
     }
+  });
+
+  it('confirming a legacy-unbound retry adopts the current server binding instead of self-cancelling', async () => {
+    const bytes = await fs.readFile(MODEL_PATH);
+    const hash = createHash('sha256').update(bytes).digest('hex');
+    const jobId = '00000000-0000-4000-8000-000000000020';
+    const itemId = '00000000-0000-4000-8000-000000000021';
+    const clientUploadId = '00000000-0000-4000-8000-000000000022';
+    const fileSystem = memoryFileSystem(
+      JSON.stringify({
+        version: 2,
+        jobs: [
+          {
+            id: jobId,
+            profileId: PROFILE.id,
+            profileName: PROFILE.displayName,
+            profileRevision: 'legacy-unbound',
+            serverBinding: 'legacy-unbound',
+            mode: 'legacyModelOnly',
+            state: 'attention',
+            paused: false,
+            createdAt: '2026-07-23T18:00:00.000Z',
+            updatedAt: '2026-07-23T18:00:00.000Z',
+            items: [
+              {
+                id: itemId,
+                hash,
+                clientUploadId,
+                displayName: 'part.stl',
+                size: bytes.length,
+                state: 'uncertain',
+                bytesSent: 0,
+                attempts: 1,
+                createdAt: '2026-07-23T18:00:00.000Z',
+                updatedAt: '2026-07-23T18:00:00.000Z',
+                remote: null,
+                error: {
+                  code: 'UNBOUND_UPLOAD_IDENTITY',
+                  message:
+                    'This pre-migration upload identity is not bound to a verified server. Resolve the duplicate risk explicitly.',
+                  retryable: false,
+                  retryAfterSeconds: null,
+                  duplicateRisk: true,
+                },
+              },
+            ],
+            totalBytes: bytes.length,
+            bytesSent: 0,
+            summary: {
+              queued: 0,
+              uploading: 0,
+              succeeded: 0,
+              failed: 0,
+              cancelled: 0,
+              uncertain: 1,
+            },
+          },
+        ],
+        identities: [
+          {
+            profileId: PROFILE.id,
+            serverBinding: 'legacy-unbound',
+            hash,
+            clientUploadId,
+            remoteModelId: null,
+            etag: null,
+            updatedAt: '2026-07-23T18:00:00.000Z',
+          },
+        ],
+      }),
+    );
+    const store = new UploadJobStore({ userDataPath: 'data', fileSystem });
+    const service = await serviceFixture({
+      hashes: [hash],
+      profile: profile('legacyModelOnly'),
+      transport: (request) =>
+        Promise.resolve(
+          remote(request.clientUploadId, request.displayName, request.modelSize),
+        ),
+      store,
+    });
+
+    const confirmed = await service.confirmLegacyRetry(jobId);
+    expect(confirmed.serverBinding).toBe('binding-1');
+    expect(confirmed.items[0]?.state).toBe('queued');
+
+    const jobs = await waitFor(
+      () => service.list(),
+      (value) => value[0]?.items[0]?.state === 'succeeded',
+    );
+    expect(jobs[0]?.serverBinding).toBe('binding-1');
+    expect(jobs[0]?.items[0]?.error).toBeNull();
+    expect(jobs[0]?.items[0]?.clientUploadId).toBe(clientUploadId);
   });
 
   it('retains the modern client upload ID across retry', async () => {

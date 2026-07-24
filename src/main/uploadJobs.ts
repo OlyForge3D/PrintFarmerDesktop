@@ -188,7 +188,8 @@ export class UploadJobStore {
       for (const item of job.items) {
         if (
           job.serverBinding === 'legacy-unbound' &&
-          item.state !== 'cancelled'
+          item.state !== 'cancelled' &&
+          item.state !== 'succeeded'
         ) {
           recovered = true;
           item.state = 'uncertain';
@@ -710,10 +711,91 @@ export class UploadJobService {
   }
 
   async confirmLegacyRetry(jobId: string): Promise<UploadJobDto> {
-    const result = await this.control(jobId, (job) => {
+    await this.requireReady();
+    const existingJob = requireJob(this.state.jobs, jobId);
+    if (existingJob.serverBinding !== 'legacy-unbound') {
+      const result = await this.control(jobId, (job) => {
+        let changed = false;
+        for (const item of job.items) {
+          if (
+            item.state === 'uncertain' &&
+            item.error?.duplicateRisk === true
+          ) {
+            item.state = 'queued';
+            item.bytesSent = 0;
+            item.error = null;
+            item.updatedAt = this.isoNow();
+            changed = true;
+          }
+        }
+        if (!changed) {
+          throw new Error(
+            'This job has no legacy-risk retry awaiting confirmation.',
+          );
+        }
+        job.paused = false;
+      });
+      this.schedulePump();
+      return result;
+    }
+
+    // The job predates server-binding tracking. Confirming it must adopt
+    // the current, authenticated binding for this profile instead of
+    // leaving `serverBinding` pinned to the placeholder: retrying with
+    // the placeholder still in place would immediately mismatch the live
+    // authenticated context and self-cancel with PROFILE_CHANGED.
+    const startingGeneration = this.queueGeneration;
+    const context = await this.options.profiles.getAuthenticatedContext(
+      existingJob.profileId,
+    );
+    if (
+      startingGeneration !== this.queueGeneration ||
+      this.resetting ||
+      !this.initialized
+    ) {
+      throw new StaleQueueGenerationError();
+    }
+    if (this.changingProfileBindings.has(existingJob.profileId)) {
+      throw new Error('The server profile binding is still being updated.');
+    }
+    const mode = modeForProfile(context.profile);
+    let result: UploadJobDto | null = null;
+    await this.durableMutate((draft) => {
+      const job = requireJob(draft.jobs, jobId);
+      if (job.serverBinding !== 'legacy-unbound') {
+        throw new Error(
+          'This job has no legacy-risk retry awaiting confirmation.',
+        );
+      }
       let changed = false;
       for (const item of job.items) {
         if (item.state === 'uncertain' && item.error?.duplicateRisk === true) {
+          const legacyIdentity = draft.identities.find(
+            (candidate) =>
+              candidate.profileId === job.profileId &&
+              candidate.serverBinding === 'legacy-unbound' &&
+              candidate.hash === item.hash,
+          );
+          let identity = draft.identities.find(
+            (candidate) =>
+              candidate.profileId === job.profileId &&
+              candidate.serverBinding === context.serverBinding &&
+              candidate.hash === item.hash,
+          );
+          if (!identity) {
+            identity = {
+              profileId: job.profileId,
+              hash: item.hash,
+              clientUploadId:
+                legacyIdentity?.clientUploadId ?? item.clientUploadId,
+              serverBinding: context.serverBinding,
+              remoteModelId: null,
+              etag: null,
+              updatedAt: this.isoNow(),
+            };
+            draft.identities.push(identity);
+          }
+          item.clientUploadId = identity.clientUploadId;
           item.state = 'queued';
           item.bytesSent = 0;
           item.error = null;
@@ -726,10 +808,15 @@ export class UploadJobService {
           'This job has no legacy-risk retry awaiting confirmation.',
         );
       }
+      job.serverBinding = context.serverBinding;
+      job.profileRevision = context.revision;
+      job.mode = mode;
       job.paused = false;
-    });
+      refreshDerived(job);
+      result = UploadJob.parse(structuredClone(job));
+    }, startingGeneration);
     this.schedulePump();
-    return result;
+    return result!;
   }
 
   async remove(jobId: string): Promise<{ removed: true }> {

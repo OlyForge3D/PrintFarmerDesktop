@@ -114,6 +114,9 @@ workers, progress, reset, and removal. Reset preserves the separate durable
 modern upload identities. Remote links are keyed and persisted in Rust/SQLite
 by profile, immutable server binding, and local hash; only uploaded,
 exact-binding links suppress transfer. Pre-migration unbound links require
-explicit duplicate-risk resolution. Profile endpoint changes await old workers
+explicit duplicate-risk resolution; confirming one adopts the current
+authenticated server binding for the whole job rather than retrying against
+the placeholder binding, and already-succeeded items are never re-flagged as
+duplicate risk on a later restart. Profile endpoint changes await old workers
 before purging only the old binding. Approval reset is a separate confirmed
 user action.
