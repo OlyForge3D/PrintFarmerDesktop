@@ -191,7 +191,8 @@ pub struct CollectionSnapshotDto {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
-    pub owner_user_id: String,
+    #[serde(default)]
+    pub owner_user_id: Option<String>,
     pub is_shared: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -300,6 +301,8 @@ pub struct PullEntityDto {
     pub remote_id: String,
     pub revision: u64,
     #[serde(default)]
+    pub journal_revision: u64,
+    #[serde(default)]
     pub concurrency_token: Option<String>,
     pub tombstone: bool,
     pub visibility: SyncVisibility,
@@ -402,6 +405,28 @@ pub struct ClaimedOutboundBatchDto {
     pub attempt_token: String,
     pub lease_until: i64,
     pub operations: Vec<OutboundOperationDto>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OutboundFailureOutcome {
+    DefiniteTransient,
+    DefinitePermanent,
+    Ambiguous,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailOutboundBatchDto {
+    pub profile_id: String,
+    pub batch_id: String,
+    pub batch_incarnation: String,
+    pub lease_token: String,
+    pub outcome: OutboundFailureOutcome,
+    pub error: String,
+    pub failed_at: i64,
+    #[serde(default)]
+    pub retry_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -687,7 +712,7 @@ fn validate_snapshot(entity: &PullEntityDto) -> Result<(), String> {
             let value: CollectionSnapshotDto = serde_json::from_value(snapshot.clone())
                 .map_err(|error| format!("invalid collection snapshot: {error}"))?;
             validate_identifier("snapshot.id", &value.id)?;
-            validate_identifier("snapshot.ownerUserId", &value.owner_user_id)?;
+            validate_optional_identifier("snapshot.ownerUserId", value.owner_user_id.as_deref())?;
             validate_identifier("snapshot.concurrencyToken", &value.concurrency_token)?;
             validate_wire_timestamp("snapshot.createdAt", &value.created_at)?;
             validate_wire_timestamp("snapshot.updatedAt", &value.updated_at)?;
@@ -761,6 +786,7 @@ pub(crate) fn validate_pull_batch(batch: &ApplyPullBatchDto) -> Result<(), Strin
         validate_optional_identifier("localId", entity.local_id.as_deref())?;
         validate_optional_identifier("concurrencyToken", entity.concurrency_token.as_deref())?;
         validate_revision("entity.revision", entity.revision)?;
+        validate_revision("entity.journalRevision", entity.journal_revision)?;
         if !remote_keys.insert((entity.entity_type, entity.remote_id.as_str())) {
             return Err("pull batch contains a duplicate entity".to_string());
         }
@@ -848,6 +874,7 @@ pub(crate) fn validate_settlement(settlement: &SettleOutboundBatchDto) -> Result
             "settlement batches are limited to {MAX_SYNC_BATCH} items"
         ));
     }
+
     if !settlement.applied.is_empty() && !settlement.conflicts.is_empty() {
         return Err("a server batch cannot be both applied and conflicted".to_string());
     }
@@ -867,6 +894,37 @@ pub(crate) fn validate_settlement(settlement: &SettleOutboundBatchDto) -> Result
         if !ids.insert(conflict.operation_id.as_str()) {
             return Err("settlement contains duplicate operationId".to_string());
         }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_batch_failure(failure: &FailOutboundBatchDto) -> Result<(), String> {
+    validate_profile(&failure.profile_id)?;
+    validate_identifier("batchId", &failure.batch_id)?;
+    validate_identifier("batchIncarnation", &failure.batch_incarnation)?;
+    validate_identifier("leaseToken", &failure.lease_token)?;
+    validate_timestamp("failedAt", failure.failed_at)?;
+    if failure.error.is_empty() || failure.error.len() > MAX_ERROR_BYTES {
+        return Err(format!("error must be 1..={MAX_ERROR_BYTES} bytes"));
+    }
+    match (failure.outcome, failure.retry_at) {
+        (OutboundFailureOutcome::DefiniteTransient, Some(retry_at)) => {
+            validate_timestamp("retryAt", retry_at)?;
+            if retry_at < failure.failed_at {
+                return Err("retryAt must not precede failedAt".to_string());
+            }
+        }
+        (OutboundFailureOutcome::DefiniteTransient, None) => {
+            return Err("definite transient failures require retryAt".to_string());
+        }
+        (OutboundFailureOutcome::DefinitePermanent, Some(_)) => {
+            return Err("definite permanent failures cannot have retryAt".to_string());
+        }
+        (OutboundFailureOutcome::DefinitePermanent, None) => {}
+        (OutboundFailureOutcome::Ambiguous, Some(_)) => {
+            return Err("ambiguous failures cannot have retryAt".to_string());
+        }
+        (OutboundFailureOutcome::Ambiguous, None) => {}
     }
     Ok(())
 }
@@ -1039,6 +1097,34 @@ pub(crate) fn new_batch_incarnation() -> String {
     new_collision_resistant_token("batch")
 }
 
+pub(crate) fn new_operation_token(prefix: &str) -> String {
+    new_collision_resistant_token(prefix)
+}
+
+pub(crate) fn new_remote_guid() -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(new_collision_resistant_token("remote").as_bytes());
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-4{:x}{:02x}-{:x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        digest[0],
+        digest[1],
+        digest[2],
+        digest[3],
+        digest[4],
+        digest[5],
+        digest[6] & 0x0f,
+        digest[7],
+        (digest[8] & 0x3f) | 0x80,
+        digest[9],
+        digest[10],
+        digest[11],
+        digest[12],
+        digest[13],
+        digest[14],
+        digest[15]
+    )
+}
+
 fn new_collision_resistant_token(prefix: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1082,6 +1168,7 @@ mod tests {
             local_id: local_id.map(str::to_string),
             remote_id: remote_id.to_string(),
             revision,
+            journal_revision: revision,
             concurrency_token: Some(format!("token-{revision}")),
             tombstone: false,
             visibility: SyncVisibility::Private,
@@ -1139,6 +1226,7 @@ mod tests {
             local_id: Some(local_id.to_string()),
             remote_id: remote_id.to_string(),
             revision,
+            journal_revision: revision,
             concurrency_token: None,
             tombstone: true,
             visibility: SyncVisibility::Private,
@@ -1190,6 +1278,7 @@ mod tests {
                     local_id: Some(local_collection.id.clone()),
                     remote_id: "remote-c".to_string(),
                     revision: 8,
+                    journal_revision: 8,
                     concurrency_token: None,
                     tombstone: true,
                     visibility: SyncVisibility::Private,
@@ -1411,6 +1500,7 @@ mod tests {
                     local_id: Some(local.id.clone()),
                     remote_id: "deleted-remote".to_string(),
                     revision: 11,
+                    journal_revision: 11,
                     concurrency_token: None,
                     tombstone: true,
                     visibility: SyncVisibility::Private,
@@ -1572,6 +1662,7 @@ mod tests {
             local_id: Some("local-c".to_string()),
             remote_id: "remote-c".to_string(),
             revision: 1,
+            journal_revision: 1,
             concurrency_token: Some("ct".to_string()),
             tombstone: false,
             visibility: SyncVisibility::Private,
@@ -1594,6 +1685,7 @@ mod tests {
             local_id: Some("local-tag".to_string()),
             remote_id: "remote-tag".to_string(),
             revision: 1,
+            journal_revision: 1,
             concurrency_token: Some("tt".to_string()),
             tombstone: false,
             visibility: SyncVisibility::Private,

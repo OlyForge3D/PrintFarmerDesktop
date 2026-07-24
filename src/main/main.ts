@@ -2,6 +2,7 @@ import {
   app,
   BrowserWindow,
   Menu,
+  safeStorage,
   session,
   type MenuItemConstructorOptions,
 } from 'electron';
@@ -13,6 +14,16 @@ import {
 } from './security.js';
 import { registerIpcHandlers } from './ipc.js';
 import { resolveAppIconPath } from './appIcon.js';
+import { ServerProfileService } from './serverProfiles.js';
+import { SidecarClient, spawnSidecarChannel } from './sidecar.js';
+import { SyncHttpClient } from './syncHttp.js';
+import { PrintFarmerSyncEngine } from './syncEngine.js';
+
+let syncEngine: PrintFarmerSyncEngine | null = null;
+let sharedSidecar: SidecarClient | null = null;
+let sharedProfiles: ServerProfileService | null = null;
+let shutdownStarted = false;
+let cleanupComplete = false;
 
 const createMainWindow = (): void => {
   const iconPath = resolveAppIconPath(
@@ -182,7 +193,20 @@ if (!enforceSingleInstance()) {
         'catalog.sqlite3',
       );
     }
-    registerIpcHandlers();
+    sharedSidecar = new SidecarClient(spawnSidecarChannel);
+    sharedProfiles = new ServerProfileService({
+      userDataPath: app.getPath('userData'),
+      secretStorage: safeStorage,
+    });
+    registerIpcHandlers(undefined, sharedProfiles, sharedSidecar);
+    syncEngine = new PrintFarmerSyncEngine(
+      sharedProfiles,
+      sharedSidecar,
+      new SyncHttpClient(sharedProfiles),
+    );
+    void syncEngine.start().catch(() => {
+      console.error('[sync] scheduler startup failed');
+    });
     createMainWindow();
 
     app.on('activate', () => {
@@ -196,6 +220,35 @@ if (!enforceSingleInstance()) {
     if (process.platform !== 'darwin') {
       app.quit();
     }
+  });
+
+  app.on('before-quit', (event) => {
+    if (cleanupComplete || !syncEngine) return;
+    event.preventDefault();
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    const engine = syncEngine;
+    syncEngine = null;
+    void (async () => {
+      try {
+        const disposal = engine.dispose();
+        await Promise.race([
+          disposal,
+          new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+        ]);
+        sharedSidecar?.dispose();
+        sharedSidecar = null;
+        await Promise.race([
+          disposal,
+          new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
+        ]);
+        sharedProfiles?.clearTokens();
+        sharedProfiles = null;
+      } finally {
+        cleanupComplete = true;
+        app.quit();
+      }
+    })();
   });
 
   // Refuse to attach webviews or open arbitrary windows from any web contents.

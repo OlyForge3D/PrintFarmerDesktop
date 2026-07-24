@@ -8,7 +8,7 @@
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 10;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -247,6 +247,110 @@ CREATE TABLE favorite_models (
 );
 "#;
 
+/// Additive v7 removes the global tag-name uniqueness constraint. Remote tags
+/// keep stable profile-scoped ids, so equal display names must remain distinct.
+pub const SCHEMA_V7: &str = r#"
+CREATE TABLE tags_v7 (
+    id   TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+);
+INSERT INTO tags_v7(id, name) SELECT id, name FROM tags;
+
+CREATE TABLE model_tags_v7 (
+    model_hash TEXT NOT NULL REFERENCES models(hash) ON DELETE CASCADE,
+    tag_id     TEXT NOT NULL REFERENCES tags_v7(id) ON DELETE CASCADE,
+    PRIMARY KEY (model_hash, tag_id)
+);
+INSERT INTO model_tags_v7(model_hash, tag_id)
+SELECT model_hash, tag_id FROM model_tags;
+
+DROP TABLE model_tags;
+DROP TABLE tags;
+ALTER TABLE tags_v7 RENAME TO tags;
+ALTER TABLE model_tags_v7 RENAME TO model_tags;
+"#;
+
+/// v8 binds durable sync state to one authenticated server incarnation and
+/// records explicit provenance for materialized remote catalog rows.
+pub const SCHEMA_V8: &str = r#"
+ALTER TABLE sync_profiles ADD COLUMN profile_binding TEXT;
+ALTER TABLE sync_entities ADD COLUMN journal_revision INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE collections ADD COLUMN sync_profile_id TEXT;
+ALTER TABLE collections ADD COLUMN sync_remote_id TEXT;
+ALTER TABLE collections ADD COLUMN sync_owner_user_id TEXT;
+ALTER TABLE collections ADD COLUMN sync_visibility TEXT;
+ALTER TABLE collections ADD COLUMN sync_read_only INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE tags ADD COLUMN sync_profile_id TEXT;
+ALTER TABLE tags ADD COLUMN sync_remote_id TEXT;
+ALTER TABLE tags ADD COLUMN sync_owner_user_id TEXT;
+ALTER TABLE tags ADD COLUMN sync_visibility TEXT;
+ALTER TABLE tags ADD COLUMN sync_read_only INTEGER NOT NULL DEFAULT 0;
+
+CREATE UNIQUE INDEX idx_collections_sync_remote
+    ON collections(sync_profile_id, sync_remote_id)
+    WHERE sync_profile_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_tags_sync_remote
+    ON tags(sync_profile_id, sync_remote_id)
+    WHERE sync_profile_id IS NOT NULL;
+"#;
+
+/// v9 backfills provenance for rows materialized before explicit provenance.
+pub const SCHEMA_V9: &str = r#"
+UPDATE collections
+SET sync_profile_id = (
+        SELECT e.profile_id FROM sync_entities e
+        WHERE e.entity_type = 'ModelCollection' AND e.local_id = collections.id
+        LIMIT 1),
+    sync_remote_id = (
+        SELECT e.remote_id FROM sync_entities e
+        WHERE e.entity_type = 'ModelCollection' AND e.local_id = collections.id
+        LIMIT 1),
+    sync_visibility = (
+        SELECT e.visibility FROM sync_entities e
+        WHERE e.entity_type = 'ModelCollection' AND e.local_id = collections.id
+        LIMIT 1),
+    sync_read_only = COALESCE((
+        SELECT CASE WHEN e.visibility = 'Shared' THEN 1 ELSE 0 END
+        FROM sync_entities e
+        WHERE e.entity_type = 'ModelCollection' AND e.local_id = collections.id
+        LIMIT 1), 0)
+WHERE EXISTS (
+    SELECT 1 FROM sync_entities e
+    WHERE e.entity_type = 'ModelCollection' AND e.local_id = collections.id);
+
+UPDATE tags
+SET sync_profile_id = (
+        SELECT e.profile_id FROM sync_entities e
+        WHERE e.entity_type = 'Tag' AND e.local_id = tags.id LIMIT 1),
+    sync_remote_id = (
+        SELECT e.remote_id FROM sync_entities e
+        WHERE e.entity_type = 'Tag' AND e.local_id = tags.id LIMIT 1),
+    sync_visibility = (
+        SELECT e.visibility FROM sync_entities e
+        WHERE e.entity_type = 'Tag' AND e.local_id = tags.id LIMIT 1),
+    sync_read_only = COALESCE((
+        SELECT CASE WHEN e.visibility = 'Shared' THEN 1 ELSE 0 END
+        FROM sync_entities e
+        WHERE e.entity_type = 'Tag' AND e.local_id = tags.id LIMIT 1), 0)
+WHERE EXISTS (
+    SELECT 1 FROM sync_entities e
+    WHERE e.entity_type = 'Tag' AND e.local_id = tags.id);
+"#;
+
+/// v10 adds the binding CAS revision counter used to fence atomic binding
+/// replacement. Databases that completed the provenance backfill already report
+/// `user_version = 9`, so this migration must remain separate from v9. The `:1`
+/// incarnation suffix backfill for legacy 64-char bindings also belongs here
+/// because it depends on the revision counter.
+pub const SCHEMA_V10: &str = r#"
+ALTER TABLE sync_profiles ADD COLUMN binding_cas_revision INTEGER NOT NULL DEFAULT 0;
+UPDATE sync_profiles
+SET profile_binding = profile_binding || ':1'
+WHERE profile_binding IS NOT NULL AND length(profile_binding) = 64;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,9 +376,10 @@ mod tests {
 
     #[test]
     fn sync_schema_contains_no_transport_or_secret_fields() {
-        let sync_schema =
-            format!("{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}\n{SCHEMA_V6}")
-                .to_lowercase();
+        let sync_schema = format!(
+            "{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}\n{SCHEMA_V7}\n{SCHEMA_V8}\n{SCHEMA_V9}\n{SCHEMA_V10}"
+        )
+        .to_lowercase();
         for forbidden in ["server_url", "auth_token", "api_key", "password", "jwt"] {
             assert!(!sync_schema.contains(forbidden));
         }
