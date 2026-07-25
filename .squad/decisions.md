@@ -85,7 +85,11 @@
 
 **What:** Two delegated sessions (Dallas on issue #15, Bishop on issue #20) were created and then showed **zero turns, zero commits, and no pushed branch for roughly 20 minutes**, and did not respond to a re-kick message. I concluded both were dead and started parallel background implementations of the same issues **inside those sessions' own worktrees** to unblock the board. Both sessions were in fact alive — merely slow to register activity — and subsequently completed the work themselves. The result was **two concurrent writers in a single git worktree** for each issue.
 
-Both cases converged on a coherent outcome (one PR each, #68 and #69, with identical or compatible content, clean working trees, and green CI), but that was **luck, not design**. Concurrent writers in one worktree can trivially produce a garbled interleaved commit, a half-staged index, or a lost-update force-push. A side effect that did land: PR #69's commit carries the wrong author identity and the other instance's `Copilot-Session` trailer. It was deliberately **not** amended, because rewriting the SHA would have invalidated two in-flight reviews for a cosmetic attribution fix.
+Both cases converged on a coherent outcome (one PR each, #68 and #69, with identical or compatible content, clean working trees, and green CI), but that was **luck, not design**. Concurrent writers in one worktree can trivially produce a garbled interleaved commit, a half-staged index, or a lost-update force-push.
+
+**Correction (filed by Bishop, verified against the repository):** an earlier version of this entry claimed that "PR #69's commit carries the wrong author identity and the other instance's `Copilot-Session` trailer." **That was false, and it was my error.** Both commits on that branch (`10a3078` and `4042e61`) carry the _same_ trailer, `Copilot-Session: 2659ecbd-…` — Bishop's own — and neither carries the trailer of the parallel writer I launched. Identical trailers on both commits are positive evidence of a **single** author, and `Jeff Papiez <jpapiez@live.com>` is simply the repo's local git identity, which every commit made in that worktree carries regardless of which agent authored it. So it was never evidence of a second writer at all.
+
+The corrected finding is narrower and worth stating precisely: **the parallel writer I launched never landed a commit.** The danger was real and the rule below stands on its own — I did start a second writer inside a live session's worktree, and that could have corrupted the branch — but no damage actually reached the history, and I should not have asserted forensic detail I had not verified. Recording the correction rather than quietly editing it, because a decision log that silently rewrites its own evidence is worth less than one that shows where it was wrong.
 
 **New rule:** **Never start work inside a worktree owned by another live session.** A session that looks idle may simply be slow to report — absence of turns/commits is not proof of death. If a session appears stalled: wait, ask again, or create a **new, separate** worktree. Never write into theirs. Before delegating, check for an existing owner (`list_sessions_and_chats`). If a takeover has already happened, verify the worktree is clean and the branch history coherent before trusting anything in it.
 
@@ -104,3 +108,22 @@ Bishop caught this while working issue #20 and correctly fell back to `.squad/de
 **Resolution:** rather than delete the references, the skills were **actually written**, at `.squad/skills/{git-workflow,test-discipline,testing,agent-collaboration}/SKILL.md`, capturing the conventions this squad has been operating by — most of them learned from incidents already recorded in this file (stacked-PR breakage, the merge race, missing `Closes #N`, `prettier --check` CI failures, mocks concealing missing production code, reviewer evidence standards, and the worktree-takeover incident above). Assignment briefs should now point at `.squad/skills/`, not `.github/skills/`.
 
 **Why:** Recorded because the failure mode is more general than the specific paths: delegates were told to read documentation that did not exist and none reported it. If an instruction cannot be followed, **say so** rather than quietly working around it.
+
+## 2026-07-25: Review verdicts must live on the pull request; blocked PRs are converted to draft
+
+**By:** Ripley
+
+**What:** Two PRs (#68 and #69) were independently reviewed and **rejected**, yet on GitHub both showed `reviewDecision: ""`, **zero reviews, zero comments**, `isDraft: false`, and **6/6 green CI**. The verdicts existed only inside the lead's chat session. Ralph — the hourly autonomous backlog driver — is instructed to merge PRs that are "green and approved". Nothing in the repository distinguished these two rejected PRs from genuinely mergeable ones, so the next scheduled run could have merged code carrying a reproduced two-tab-stop accessibility defect and a reproduced archive-limits bypass. This was caught before it happened; it was luck of timing, not a control.
+
+**Root cause:** review state was held in volatile session memory rather than on the artifact being gated. Compounding it, cross-session messages were repeatedly lost or delivered late — Dallas twice never received the rejection and pinged asking why #68 had no reviews after 25 minutes, while the fix list sat undelivered in a chat channel.
+
+**New rules:**
+
+1. **Every review verdict is posted as a comment on the pull request**, naming the exact head SHA it was pinned to, before it is communicated anywhere else. A verdict that is not on the PR does not exist.
+2. **A PR blocked by review is converted to draft** (`gh pr ready <n> --undo`). Draft is a mechanical merge block that no automation can bypass, and it is reversible when the fixes land. Draft here means "blocked by review", not "unfinished work".
+3. **Green CI is necessary but never sufficient to merge.** Automation must read `isDraft`, `reviewDecision`, `reviews` and `comments` before merging, and must treat a PR with no recorded verdict as **unreviewed** regardless of CI colour.
+4. **Verdicts are pinned to a SHA.** An approval recorded against an older head does not authorize merging a newer one.
+
+Ralph's standing prompt was amended with a "merge evidence rule" encoding all four.
+
+**Why:** Recorded because the failure was not in anyone's reasoning — the reviews were correct and both defects were real — but in where the conclusion was _stored_. Gating state belongs on the artifact being gated, in a form that survives the session that produced it. The PR is also a delivery channel that does not drop messages, which the chat channel demonstrably did.
