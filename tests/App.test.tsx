@@ -16,7 +16,10 @@ import type {
   ServerProfile,
 } from '@shared/ipc';
 import { rootIdForPath } from '../src/renderer/library/model.js';
-import type { SceneMesh } from '../src/renderer/viewer/types.js';
+import { ALL_PLATES } from '../src/renderer/viewer/plateSelection.js';
+// Typing the mock from the real props means a signature change here is a
+// typecheck error rather than a runtime failure in an unrelated assertion.
+import type { PreviewWorkspaceProps } from '../src/renderer/viewer/PreviewWorkspace.js';
 
 vi.mock('../src/renderer/viewer/PreviewWorkspace.js', () => ({
   PreviewWorkspace: ({
@@ -32,20 +35,7 @@ vi.mock('../src/renderer/viewer/PreviewWorkspace.js', () => ({
     onTogglePlate,
     onSelectPlate,
     onIsolateObject,
-  }: {
-    name: string;
-    loading: boolean;
-    error: string | null;
-    mesh: SceneMesh | null;
-    hiddenObjects: ReadonlySet<string>;
-    isolatedObject: string | null;
-    onClose: () => void;
-    onToggleObject: (id: string) => void;
-    onToggleAllObjects: (visible: boolean) => void;
-    onTogglePlate: (plateId: string, visible: boolean) => void;
-    onSelectPlate: (plateId: string) => void;
-    onIsolateObject: (id: string | null) => void;
-  }) => (
+  }: PreviewWorkspaceProps) => (
     <section role="dialog" aria-label={`3D preview of ${name}`}>
       <span>{loading ? `Loading ${name}` : null}</span>
       <span>{error}</span>
@@ -72,10 +62,13 @@ vi.mock('../src/renderer/viewer/PreviewWorkspace.js', () => ({
       <button type="button" onClick={() => onTogglePlate('plate-1', false)}>
         Hide plate 2
       </button>
-      <button type="button" onClick={() => onSelectPlate('plate-1')}>
+      <button
+        type="button"
+        onClick={() => onSelectPlate({ kind: 'plate', plateId: 'plate-1' })}
+      >
         Select plate 2
       </button>
-      <button type="button" onClick={() => onSelectPlate('all')}>
+      <button type="button" onClick={() => onSelectPlate(ALL_PLATES)}>
         Select all plates
       </button>
       <button type="button" onClick={() => onToggleAllObjects(false)}>

@@ -11,13 +11,14 @@
 import { useId, useMemo } from 'react';
 
 import { ALL_PLATES, activePlateId } from './plateSelection';
+import type { PlateSelection } from './plateSelection';
 import type { SceneObject, ScenePlate } from './types';
 
 export interface PlateSelectorProps {
   plates: readonly ScenePlate[];
   objects: readonly SceneObject[];
   hidden: ReadonlySet<string>;
-  onSelect: (plateId: string) => void;
+  onSelect: (selection: PlateSelection) => void;
 }
 
 export function PlateSelector({
@@ -27,38 +28,60 @@ export function PlateSelector({
   onSelect,
 }: PlateSelectorProps): React.JSX.Element | null {
   const groupName = useId();
-  // Resolving effective visibility walks ancestors per object, so keep it off
-  // the path of unrelated re-renders.
+  // Two plates sharing an id are indistinguishable downstream - selecting
+  // either produces the same hidden set - so they get one radio. Rendering both
+  // would only duplicate a React key and check two radios at once.
+  const options = useMemo(() => {
+    const seen = new Set<string>();
+    const unique: ScenePlate[] = [];
+    for (const plate of plates) {
+      if (seen.has(plate.id)) continue;
+      seen.add(plate.id);
+      unique.push(plate);
+    }
+    return unique;
+  }, [plates]);
+  // A single plate is the ordinary case and needs no control. The guard has to
+  // sit inside the memo, not below it: the rules of hooks would otherwise run
+  // the whole scene-wide resolve before an early return threw the answer away,
+  // making every single-plate scene pay for a control it never renders.
   const active = useMemo(
-    () => activePlateId(plates, objects, hidden),
-    [plates, objects, hidden],
+    () =>
+      options.length < 2 ? ALL_PLATES : activePlateId(options, objects, hidden),
+    [options, objects, hidden],
   );
-  // A single plate is the ordinary case and needs no control.
-  if (plates.length < 2) return null;
+  if (options.length < 2) return null;
 
-  const options = [
-    { id: ALL_PLATES, label: 'All plates' },
-    ...plates.map((plate) => ({ id: plate.id, label: plate.name })),
-  ];
+  const selected = active.kind === 'plate' ? active.plateId : null;
 
   return (
     <fieldset className="plate-selector">
       <legend>Plate</legend>
       <div className="plate-selector-options">
-        {options.map((option) => (
-          <label className="plate-selector-option" key={option.id}>
+        <label className="plate-selector-option">
+          <input
+            type="radio"
+            name={groupName}
+            value="all"
+            checked={active.kind === 'all'}
+            onChange={() => onSelect(ALL_PLATES)}
+          />
+          <span>All plates</span>
+        </label>
+        {options.map((plate) => (
+          <label className="plate-selector-option" key={plate.id}>
             <input
               type="radio"
               name={groupName}
-              value={option.id}
-              checked={active === option.id}
-              onChange={() => onSelect(option.id)}
+              value={plate.id}
+              checked={selected === plate.id}
+              onChange={() => onSelect({ kind: 'plate', plateId: plate.id })}
             />
-            <span>{option.label}</span>
+            <span>{plate.name}</span>
           </label>
         ))}
       </div>
-      {active === null ? (
+      {active.kind === 'custom' ? (
         <p className="plate-selector-status" role="status">
           Custom visibility
         </p>

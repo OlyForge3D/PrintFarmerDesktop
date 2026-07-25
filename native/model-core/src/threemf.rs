@@ -76,6 +76,15 @@ const MODEL_SETTINGS_PART: &str = "Metadata/model_settings.config";
 /// the per-instance assignment map is instead bounded by
 /// `MAX_METADATA_XML_BYTES`, since each entry needs its own XML element.
 const MAX_SCENE_PLATES: usize = 1_000;
+
+// The vendor parser caps the plate list it builds and this module caps the
+// names it retains from that list; if the two ever disagreed, one of the caps
+// would be dead code and the surviving one would silently become the real
+// limit. Asserting it here costs nothing at runtime and cannot rot.
+const _: () = assert!(MAX_SCENE_PLATES == crate::vendor::MAX_PLATES);
+// `src/shared/ipc.ts` gates `scene.plates` at the same 1,000 and would reject
+// the whole scene if we emitted more. That one cannot be linked from Rust
+// without codegen, so it is named here instead: change one, change both.
 const MODEL_CONTENT_TYPE: &str = "application/vnd.ms-package.3dmanufacturing-3dmodel+xml";
 const MODEL_RELATIONSHIP_TYPE: &str =
     "http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel";
@@ -2027,6 +2036,30 @@ fn assign_build_items_to_plates(root_model: &RawModel, layout: &PlateLayout) -> 
         .collect()
 }
 
+/// Whether the vendor plate layout can be applied to this build without
+/// ambiguity.
+///
+/// The layout keys on `object_id` alone, and so does the instance counter that
+/// replays it. But 3MF object ids are scoped to each model part (see
+/// [`RawPackage`]), so two build items referencing id `1` in different parts
+/// share a counter and one of them can be assigned the other's plate - geometry
+/// that renders on the wrong plate, looks plausible, and reports no error.
+///
+/// No shipping slicer is known to emit Production Extension `p:path` build items
+/// alongside `model_settings.config`, and in that combination the vendor's own
+/// key space is ambiguous anyway, so there is no correct assignment to compute.
+/// Rather than rest correctness on a negative claim about input we do not
+/// control, the layout is discarded whenever any build item names a model part.
+/// The scene then degrades to the implicit single plate - the same fallback the
+/// vendor file being absent already produces - which makes the collision
+/// unreachable by construction rather than by assumption.
+fn plate_layout_is_unambiguous(root_model: &RawModel) -> bool {
+    root_model
+        .build
+        .iter()
+        .all(|item| item.model_part.is_none())
+}
+
 /// Expand the build into a single indexed mesh, baking every transform. Each
 /// build item is recorded as a [`ThreeMfPart`] spanning the triangles it added.
 fn flatten(package: &RawPackage, guard: &mut ParseGuard) -> Result<ThreeMfMesh, ThreeMfError> {
@@ -2040,7 +2073,16 @@ fn flatten(package: &RawPackage, guard: &mut ParseGuard) -> Result<ThreeMfMesh, 
 
     // Resolve plate membership up front: the plate index is baked into every
     // scene object id, so it has to be known before the first id is minted.
-    let item_plates = assign_build_items_to_plates(root_model, &package.plate_layout);
+    // Discarding the layout wholesale - rather than only its assignments - is
+    // what keeps a degraded scene from being labelled with the vendor's first
+    // plate name while actually holding every build item.
+    let no_layout = PlateLayout::default();
+    let plate_layout = if plate_layout_is_unambiguous(root_model) {
+        &package.plate_layout
+    } else {
+        &no_layout
+    };
+    let item_plates = assign_build_items_to_plates(root_model, plate_layout);
     let mut used_plates = item_plates.clone();
     used_plates.sort_unstable();
     used_plates.dedup();
@@ -2061,8 +2103,7 @@ fn flatten(package: &RawPackage, guard: &mut ParseGuard) -> Result<ThreeMfMesh, 
         .enumerate()
         .map(|(slot, declared)| ThreeMfPlate {
             id: plate_id(slot),
-            name: package
-                .plate_layout
+            name: plate_layout
                 .names
                 .get(*declared)
                 .filter(|name| !name.is_empty())
@@ -3737,8 +3778,10 @@ mod tests {
             parse_plate_layout(&model_settings(&plates), &mut test_guard()).unwrap();
 
         assert_eq!(layout.names.len(), MAX_SCENE_PLATES);
-        // Instances declared on plates beyond the cap are dropped rather than
-        // being folded onto the last plate we kept.
+        // Instances declared on plates beyond the cap are absent from
+        // `assignments`, so `assign_build_items_to_plates` falls back to plate 0
+        // for them - they are not folded onto the last plate we kept, and they
+        // are not dropped from the scene either.
         assert!(layout
             .assignments
             .values()
@@ -3973,5 +4016,242 @@ mod tests {
         assert!(second_plate
             .iter()
             .all(|object| object.id.starts_with("plate-1/item-1/object-2")));
+    }
+
+    /// A production-extension package that also carries the vendor plate layout.
+    fn production_package_with_model_settings(
+        root_xml: &str,
+        model_parts: &[(&str, &str)],
+        settings_xml: &str,
+    ) -> Vec<u8> {
+        let mut buf = production_package(root_xml, model_parts);
+        // Re-open the archive to append the vendor part, so this helper stays a
+        // thin wrapper over the one the production-extension tests already use.
+        let mut rebuilt = Vec::new();
+        {
+            let mut source = zip::ZipArchive::new(Cursor::new(&mut buf)).unwrap();
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut rebuilt));
+            let options =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            for index in 0..source.len() {
+                let mut entry = source.by_index(index).unwrap();
+                let name = entry.name().to_string();
+                let mut contents = Vec::new();
+                entry.read_to_end(&mut contents).unwrap();
+                writer.start_file(name, options).unwrap();
+                writer.write_all(&contents).unwrap();
+            }
+            writer.start_file(MODEL_SETTINGS_PART, options).unwrap();
+            writer.write_all(settings_xml.as_bytes()).unwrap();
+            writer.finish().unwrap();
+        }
+        rebuilt
+    }
+
+    /// Two build items on the root part and one on an external part, all naming
+    /// object id 1 - the shape where the vendor's `object_id` key is ambiguous.
+    fn cross_part_root_model() -> &'static str {
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06">
+  <resources>
+    <object id="1" type="model">
+      <mesh>
+        <vertices>
+          <vertex x="0" y="0" z="0"/>
+          <vertex x="1" y="0" z="0"/>
+          <vertex x="0" y="1" z="0"/>
+        </vertices>
+        <triangles><triangle v1="0" v2="1" v3="2"/></triangles>
+      </mesh>
+    </object>
+  </resources>
+  <build>
+    <item objectid="1"/>
+    <item p:path="/3D/Objects/body.model" objectid="1"/>
+    <item objectid="1"/>
+  </build>
+</model>"#
+    }
+
+    #[test]
+    fn flatten_discards_the_vendor_layout_when_a_build_item_names_a_model_part() {
+        // Object ids are scoped per model part, but the vendor layout keys on
+        // the id alone. Here the external item takes instance 1 of the shared
+        // counter, so the local object's second instance would be assigned the
+        // "Other" plate. Rather than resolve an ambiguity the vendor's own key
+        // space cannot express, the layout is dropped entirely.
+        let bytes = production_package_with_model_settings(
+            cross_part_root_model(),
+            &[("3D/Objects/body.model", &single_triangle_model())],
+            &model_settings(&[
+                plate_block(1, Some("Local pair"), &[(1, 0), (1, 1)]),
+                plate_block(2, Some("Other"), &[(1, 2)]),
+            ]),
+        );
+        let mesh = parse_bytes(&bytes).unwrap();
+
+        assert_eq!(mesh.plates.len(), 1);
+        assert_eq!(mesh.plates[0].root_object_ids.len(), 3);
+        // The name degrades too: labelling the implicit plate "Local pair" would
+        // claim a vendor plate that is not what is actually on screen.
+        assert_eq!(mesh.plates[0].name, "Plate 1");
+        assert!(mesh
+            .objects
+            .iter()
+            .all(|object| object.plate_id == "plate-0"));
+    }
+
+    #[test]
+    fn flatten_applies_the_vendor_layout_when_no_build_item_names_a_model_part() {
+        // The control for the test above. Without it, that test would pass
+        // against a build that never applied the layout at all.
+        let local_only = cross_part_root_model().replace(
+            r#"<item p:path="/3D/Objects/body.model" objectid="1"/>"#,
+            r#"<item objectid="1"/>"#,
+        );
+        let bytes = package_with_model_settings(
+            &local_only,
+            &model_settings(&[
+                plate_block(1, Some("Local pair"), &[(1, 0), (1, 1)]),
+                plate_block(2, Some("Other"), &[(1, 2)]),
+            ]),
+        );
+        let mesh = parse_bytes(&bytes).unwrap();
+
+        assert_eq!(mesh.plates.len(), 2);
+        assert_eq!(mesh.plates[0].name, "Local pair");
+        assert_eq!(mesh.plates[0].root_object_ids.len(), 2);
+        assert_eq!(mesh.plates[1].name, "Other");
+        assert_eq!(mesh.plates[1].root_object_ids.len(), 1);
+    }
+
+    #[test]
+    fn parse_bytes_caps_declared_plates_and_folds_the_surplus_onto_plate_zero() {
+        // The cap is also asserted against `parse_plate_layout` directly, but a
+        // unit test cannot see whether the 8 MB metadata limit rejects the
+        // document first - which would pass for the wrong reason and would hide
+        // a future tightening of that limit shadowing this cap entirely.
+        let surplus = 5;
+        let declared = MAX_SCENE_PLATES + surplus;
+        let objects: String = (1..=declared)
+            .map(|id| {
+                format!(
+                    r#"    <object id="{id}" type="model"><mesh>
+      <vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>
+      <triangles><triangle v1="0" v2="1" v3="2"/></triangles>
+    </mesh></object>
+"#
+                )
+            })
+            .collect();
+        let items: String = (1..=declared)
+            .map(|id| format!("    <item objectid=\"{id}\"/>\n"))
+            .collect();
+        let model = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <resources>
+{objects}  </resources>
+  <build>
+{items}  </build>
+</model>"#
+        );
+        let plates: Vec<String> = (0..declared)
+            .map(|index| plate_block(index as u32 + 1, None, &[(index as u32 + 1, 0)]))
+            .collect();
+        let settings = model_settings(&plates);
+        assert!(
+            (settings.len() as u64) < MAX_METADATA_XML_BYTES,
+            "the fixture must stay under the metadata limit or the cap is untested"
+        );
+
+        let mesh = parse_bytes(&package_with_model_settings(&model, &settings)).unwrap();
+
+        assert_eq!(mesh.plates.len(), MAX_SCENE_PLATES);
+        assert_eq!(mesh.plates[MAX_SCENE_PLATES - 1].id, "plate-999");
+        // Over-cap instances are absent from the assignment map, so they fall
+        // back to plate 0 rather than being dropped from the scene.
+        assert_eq!(mesh.plates[0].root_object_ids.len(), 1 + surplus);
+        for plate in mesh.plates.iter().skip(1) {
+            assert_eq!(plate.root_object_ids.len(), 1);
+        }
+    }
+
+    #[test]
+    fn flatten_degrades_when_the_vendor_part_exceeds_the_metadata_limit() {
+        // One of the five advertised degradation modes. Padding is XML comment
+        // text so the document stays well-formed - the point is the size limit,
+        // not a parse failure.
+        let mut settings = String::from("<?xml version=\"1.0\"?>\n<config>\n<!--");
+        settings.push_str(&"x".repeat(MAX_METADATA_XML_BYTES as usize + 1));
+        settings.push_str("-->\n");
+        settings.push_str(&plate_block(1, Some("Left"), &[(1, 0), (2, 0)]));
+        settings.push_str(&plate_block(2, Some("Right"), &[(1, 1), (2, 1)]));
+        settings.push_str("</config>");
+        assert!((settings.len() as u64) > MAX_METADATA_XML_BYTES);
+
+        // Control: the same layout under the limit does split the scene, so a
+        // pass below cannot come from a fixture that never had two plates.
+        let control = parse_bytes(&package_with_model_settings(
+            &four_instance_model(),
+            &two_plates(),
+        ))
+        .unwrap();
+        assert_eq!(control.plates.len(), 2);
+
+        let mesh = parse_bytes(&package_with_model_settings(
+            &four_instance_model(),
+            &settings,
+        ))
+        .unwrap();
+
+        assert_eq!(mesh.plates.len(), 1);
+        assert_eq!(mesh.plates[0].name, "Plate 1");
+        assert_eq!(mesh.plates[0].root_object_ids.len(), 4);
+    }
+
+    #[test]
+    fn flatten_degrades_when_the_vendor_part_is_not_utf8() {
+        // The remaining advertised degradation mode. A lone 0xFF byte cannot
+        // begin a UTF-8 sequence, so the decode fails before any XML parsing.
+        let mut settings = two_plates().into_bytes();
+        settings.insert(0, 0xFF);
+        assert!(String::from_utf8(settings.clone()).is_err());
+
+        let control = parse_bytes(&package_with_model_settings(
+            &four_instance_model(),
+            &two_plates(),
+        ))
+        .unwrap();
+        assert_eq!(control.plates.len(), 2);
+
+        let mut buf = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut buf));
+            let options =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            writer.start_file(RELATIONSHIPS_PART, options).unwrap();
+            writer.write_all(RELS_XML.as_bytes()).unwrap();
+            writer.start_file(DEFAULT_MODEL_PART, options).unwrap();
+            writer.write_all(four_instance_model().as_bytes()).unwrap();
+            writer.start_file(MODEL_SETTINGS_PART, options).unwrap();
+            writer.write_all(&settings).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let mesh = parse_bytes(&buf).unwrap();
+
+        assert_eq!(mesh.plates.len(), 1);
+        assert_eq!(mesh.plates[0].name, "Plate 1");
+        assert_eq!(mesh.plates[0].root_object_ids.len(), 4);
+    }
+
+    /// The known-good two-plate layout for `four_instance_model`, used as the
+    /// control in the degradation tests.
+    fn two_plates() -> String {
+        model_settings(&[
+            plate_block(1, Some("Left"), &[(1, 0), (2, 0)]),
+            plate_block(2, Some("Right"), &[(1, 1), (2, 1)]),
+        ])
     }
 }

@@ -221,6 +221,47 @@ describe('<PreviewWorkspace />', () => {
     ).toEqual(['all', 'plate-0', 'plate-1']);
 
     fireEvent.click(within(selector).getByRole('radio', { name: 'Plate 2' }));
-    expect(props.onSelectPlate).toHaveBeenCalledWith('plate-1');
+    expect(props.onSelectPlate).toHaveBeenCalledWith({
+      kind: 'plate',
+      plateId: 'plate-1',
+    });
+  });
+
+  it('keeps a single Tab cycle once the plate selector appears', () => {
+    // The single-plate case above renders no selector, so it cannot catch a
+    // regression in the focus trap's bounds. The radios sit between the
+    // toolbar and the part tree, so `first` and `last` must be unchanged and
+    // Shift+Tab off the first control must still wrap to the tree.
+    render(<PreviewWorkspace {...baseProps()} mesh={multiPlateSceneMesh()} />);
+
+    expect(screen.getByRole('radio', { name: 'All plates' })).toBeChecked();
+    expect(
+      screen.getByRole('button', { name: 'Back to library' }),
+    ).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+
+    expect(screen.getByRole('treeitem', { name: 'Plate 1' })).toHaveFocus();
+  });
+
+  it('keeps an unchecked radio group as one tab stop', () => {
+    // Custom visibility leaves no radio checked. A radio group with nothing
+    // checked is still exactly one tab stop - only the first radio is tabbable
+    // - so the trap's control list must not grow by one entry per plate.
+    const props = {
+      ...baseProps(),
+      mesh: multiPlateSceneMesh(),
+      hiddenObjects: new Set(['lid']),
+    };
+    render(<PreviewWorkspace {...props} />);
+
+    expect(screen.getByRole('status')).toHaveTextContent('Custom visibility');
+    for (const radio of screen.getAllByRole('radio')) {
+      expect(radio).not.toBeChecked();
+    }
+
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+
+    expect(screen.getByRole('treeitem', { name: 'Plate 1' })).toHaveFocus();
   });
 });

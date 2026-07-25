@@ -6,9 +6,11 @@ import { isolateHiddenObjectIds } from '../src/renderer/library/partTreeModel';
 import { PlateSelector } from '../src/renderer/viewer/PlateSelector';
 import {
   ALL_PLATES,
+  CUSTOM_PLATES,
   activePlateId,
   plateHiddenObjectIds,
 } from '../src/renderer/viewer/plateSelection';
+import type { PlateSelection } from '../src/renderer/viewer/plateSelection';
 import { buildViewerSceneGraph } from '../src/renderer/viewer/sceneGraph';
 import type {
   SceneMesh,
@@ -17,6 +19,10 @@ import type {
 } from '../src/renderer/viewer/types';
 
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+
+function onPlate(plateId: string): PlateSelection {
+  return { kind: 'plate', plateId };
+}
 
 function plate(index: number, roots: string[], name?: string): ScenePlate {
   return {
@@ -134,14 +140,14 @@ describe('plateHiddenObjectIds', () => {
   });
 
   it('hides only the roots of the other plates', () => {
-    const hidden = plateHiddenObjectIds(twoPlates(), 'plate-1');
+    const hidden = plateHiddenObjectIds(twoPlates(), onPlate('plate-1'));
 
     expect([...hidden]).toEqual(['plate-0/item-0/object-1']);
   });
 
   it('hides every plate when the requested plate does not exist', () => {
     // A stale selection must not silently degrade into "show everything".
-    const hidden = plateHiddenObjectIds(twoPlates(), 'plate-9');
+    const hidden = plateHiddenObjectIds(twoPlates(), onPlate('plate-9'));
 
     expect([...hidden].sort()).toEqual([
       'plate-0/item-0/object-1',
@@ -152,7 +158,9 @@ describe('plateHiddenObjectIds', () => {
   it('does not list descendants, because visibility cascades', () => {
     const { plates } = nestedPlates();
 
-    expect([...plateHiddenObjectIds(plates, 'plate-0')]).toEqual(['p1-root']);
+    expect([...plateHiddenObjectIds(plates, onPlate('plate-0'))]).toEqual([
+      'p1-root',
+    ]);
   });
 });
 
@@ -174,7 +182,7 @@ describe('activePlateId', () => {
         objectsFor(plates),
         new Set(['plate-0/item-0/object-1']),
       ),
-    ).toBe('plate-1');
+    ).toEqual(onPlate('plate-1'));
   });
 
   it('round-trips every plate through the hidden set', () => {
@@ -187,8 +195,12 @@ describe('activePlateId', () => {
 
     for (const entry of plates) {
       expect(
-        activePlateId(plates, objects, plateHiddenObjectIds(plates, entry.id)),
-      ).toBe(entry.id);
+        activePlateId(
+          plates,
+          objects,
+          plateHiddenObjectIds(plates, onPlate(entry.id)),
+        ),
+      ).toEqual(onPlate(entry.id));
     }
   });
 
@@ -198,7 +210,7 @@ describe('activePlateId', () => {
     // 'a2' still visible, so "plate 1 only" is not an honest description.
     expect(
       activePlateId(plates, objectsFor(plates), new Set(['a1', 'b1'])),
-    ).toBeNull();
+    ).toEqual(CUSTOM_PLATES);
   });
 
   it('reports no plate when a descendant of the visible plate is hidden', () => {
@@ -208,7 +220,7 @@ describe('activePlateId', () => {
     // clear; a root-only check would wrongly answer 'plate-0' here.
     expect(
       activePlateId(plates, objects, new Set(['p0-b', 'p1-root'])),
-    ).toBeNull();
+    ).toEqual(CUSTOM_PLATES);
   });
 
   it('reports no plate while a part inside a plate is isolated', () => {
@@ -221,7 +233,7 @@ describe('activePlateId', () => {
     expect(hidden.has('p0-root')).toBe(false);
     expect(hidden.has('p1-root')).toBe(true);
 
-    expect(activePlateId(plates, objects, hidden)).toBeNull();
+    expect(activePlateId(plates, objects, hidden)).toEqual(CUSTOM_PLATES);
   });
 
   it('still reports the plate when isolating leaves that plate whole', () => {
@@ -236,15 +248,15 @@ describe('activePlateId', () => {
     // plate really is what is on screen.
     expect(
       activePlateId(plates, objects, isolateHiddenObjectIds(objects, 'p0-a')),
-    ).toBe('plate-0');
+    ).toEqual(onPlate('plate-0'));
   });
 
   it('reports no plate when several plates are visible alongside a hidden one', () => {
     const plates = [plate(0, ['a1']), plate(1, ['b1']), plate(2, ['c1'])];
 
-    expect(
-      activePlateId(plates, objectsFor(plates), new Set(['c1'])),
-    ).toBeNull();
+    expect(activePlateId(plates, objectsFor(plates), new Set(['c1']))).toEqual(
+      CUSTOM_PLATES,
+    );
   });
 
   it('reports no plate when everything is hidden', () => {
@@ -256,15 +268,15 @@ describe('activePlateId', () => {
         objectsFor(plates),
         new Set(plates.flatMap((entry) => entry.rootObjectIds)),
       ),
-    ).toBeNull();
+    ).toEqual(CUSTOM_PLATES);
   });
 
   it('ignores plates that carry no objects', () => {
     const plates = [plate(0, []), plate(1, ['b1']), plate(2, ['c1'])];
 
     // The empty plate cannot be hidden, so it must not block the answer.
-    expect(activePlateId(plates, objectsFor(plates), new Set(['c1']))).toBe(
-      'plate-1',
+    expect(activePlateId(plates, objectsFor(plates), new Set(['c1']))).toEqual(
+      onPlate('plate-1'),
     );
   });
 
@@ -282,7 +294,9 @@ describe('activePlateId', () => {
     const plates = [plate(0, ['a1']), plate(1, ['b1'])];
     const objects = [...objectsFor(plates), object('orphan', 'plate-7')];
 
-    expect(activePlateId(plates, objects, new Set(['b1']))).toBe('plate-0');
+    expect(activePlateId(plates, objects, new Set(['b1']))).toEqual(
+      onPlate('plate-0'),
+    );
   });
 });
 
@@ -322,7 +336,7 @@ describe('<PlateSelector />', () => {
 
     expect(
       screen.getAllByRole('radio').map((radio) => radio.getAttribute('value')),
-    ).toEqual([ALL_PLATES, 'plate-0', 'plate-1']);
+    ).toEqual(['all', 'plate-0', 'plate-1']);
     expect(screen.getByRole('radio', { name: 'All plates' })).toBeChecked();
     expect(screen.getByRole('radio', { name: 'Left' })).not.toBeChecked();
     expect(screen.getByRole('radio', { name: 'Right' })).not.toBeChecked();
@@ -340,7 +354,7 @@ describe('<PlateSelector />', () => {
 
     fireEvent.click(screen.getByRole('radio', { name: 'Plate 2' }));
 
-    expect(onSelect).toHaveBeenCalledWith('plate-1');
+    expect(onSelect).toHaveBeenCalledWith(onPlate('plate-1'));
   });
 
   it('reports the sentinel when all plates are chosen', () => {
@@ -379,7 +393,7 @@ describe('<PlateSelector />', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Custom visibility');
     fireEvent.click(screen.getByRole('radio', { name: 'Plate 1' }));
 
-    expect(onSelect).toHaveBeenCalledWith('plate-0');
+    expect(onSelect).toHaveBeenCalledWith(onPlate('plate-0'));
   });
 
   it('hides the custom state once a plate is fully selected', () => {
@@ -435,7 +449,7 @@ describe('plate visibility in the scene graph', () => {
     const scene = twoPlateScene();
     const graph = buildViewerSceneGraph(
       scene,
-      plateHiddenObjectIds(scene.plates, 'plate-1'),
+      plateHiddenObjectIds(scene.plates, onPlate('plate-1')),
     );
 
     const visible = new Map<string, boolean>();
@@ -475,8 +489,8 @@ describe('plate visibility in the scene graph', () => {
     // to a shared default would be visible here.
     expect(new Set(beforeColors).size).toBeGreaterThan(1);
 
-    graph.setHidden(plateHiddenObjectIds(scene.plates, 'plate-1'));
-    graph.setHidden(plateHiddenObjectIds(scene.plates, 'plate-0'));
+    graph.setHidden(plateHiddenObjectIds(scene.plates, onPlate('plate-1')));
+    graph.setHidden(plateHiddenObjectIds(scene.plates, onPlate('plate-0')));
     graph.setHidden(new Set());
 
     // Switching plates only toggles `visible`, so the exact same material and

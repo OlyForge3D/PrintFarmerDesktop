@@ -6,6 +6,7 @@ import { PartTree } from '../library/PartTree';
 import { VendorPanel } from '../library/VendorPanel';
 import { ModelViewer, type Projection } from './ModelViewer';
 import { PlateSelector } from './PlateSelector';
+import type { PlateSelection } from './plateSelection';
 import type { SceneMesh } from './types';
 
 export interface PreviewWorkspaceProps {
@@ -27,7 +28,7 @@ export interface PreviewWorkspaceProps {
   onToggleObject: (id: string) => void;
   onToggleAllObjects: (visible: boolean) => void;
   onTogglePlate: (plateId: string, visible: boolean) => void;
-  onSelectPlate: (plateId: string) => void;
+  onSelectPlate: (selection: PlateSelection) => void;
   onIsolateObject: (id: string | null) => void;
   retargetEligible?: boolean;
   onRetarget?: () => void;

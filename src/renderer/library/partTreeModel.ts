@@ -408,6 +408,68 @@ export function isObjectHidden(
   return ancestorObjectIds(objects, objectId).some((id) => hidden.has(id));
 }
 
+/**
+ * Every object that renders as hidden, resolved for the whole scene in one
+ * pass: the ids in `hidden` plus everything descending from them.
+ *
+ * `isObjectHidden` answers the same question for a single object, but it walks
+ * ancestors through `ancestorObjectIds`, which rebuilds the object index on
+ * entry. Asking it about every object is therefore quadratic - measurably so:
+ * a 5,000-object scene with one plate selected took over a second. Callers that
+ * need the answer for more than a handful of objects should build this set once
+ * and use `.has()`.
+ *
+ * Cycle-safe, and agrees with `isObjectHidden` on every object for any hidden
+ * set - both properties are pinned in `tests/viewer.partTree.test.tsx`.
+ */
+export function effectiveHiddenObjectIds(
+  objects: readonly SceneObject[],
+  hidden: ReadonlySet<string>,
+): ReadonlySet<string> {
+  const resolved = new Set<string>();
+  if (hidden.size === 0) return resolved;
+
+  const byId = indexObjects(objects);
+  // Memoises both answers, so each object is settled once even when many
+  // objects share a deep ancestor chain.
+  const state = new Map<string, boolean>();
+
+  const isHidden = (startId: string): boolean => {
+    const cached = state.get(startId);
+    if (cached !== undefined) return cached;
+
+    // Walk up to the first ancestor with a known answer, remembering the path
+    // so the whole chain can be settled on the way back down.
+    const chain: string[] = [];
+    const seen = new Set<string>();
+    let currentId: string | null = startId;
+    let value = false;
+    while (currentId !== null && byId.has(currentId) && !seen.has(currentId)) {
+      const known = state.get(currentId);
+      if (known !== undefined) {
+        value = known;
+        break;
+      }
+      if (hidden.has(currentId)) {
+        value = true;
+        break;
+      }
+      seen.add(currentId);
+      chain.push(currentId);
+      currentId = byId.get(currentId)?.parentId ?? null;
+    }
+    // A cycle terminates the walk with `value` still false, matching
+    // `ancestorObjectIds`, which stops at the first repeated id.
+    for (const id of chain) state.set(id, value);
+    return value;
+  };
+
+  for (const object of objects) {
+    if (isHidden(object.id)) resolved.add(object.id);
+  }
+  return resolved;
+}
+
 export type PartTreeKeyAction =
   | { readonly type: 'move'; readonly key: string }
   | { readonly type: 'expand'; readonly key: string }

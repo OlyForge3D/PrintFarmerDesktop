@@ -29,6 +29,7 @@ import { useVendorMetadata } from './library/useVendorMetadata';
 import { computeSceneStats, type SceneStats } from './library/sceneStats';
 import { isolateHiddenObjectIds } from './library/partTreeModel';
 import { plateHiddenObjectIds } from './viewer/plateSelection';
+import type { PlateSelection } from './viewer/plateSelection';
 import { ImportWizard } from './library/ImportWizard';
 import { LibraryOnboarding } from './library/LibraryOnboarding';
 import {
@@ -881,9 +882,11 @@ export function App(): React.JSX.Element {
   );
 
   const selectPlate = useCallback(
-    (plateId: string) => {
+    (selection: PlateSelection) => {
       setIsolatedObject(null);
-      setHiddenObjects(plateHiddenObjectIds(loadedMesh?.plates ?? [], plateId));
+      setHiddenObjects(
+        plateHiddenObjectIds(loadedMesh?.plates ?? [], selection),
+      );
     },
     [loadedMesh],
   );
