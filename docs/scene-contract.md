@@ -114,13 +114,25 @@ pure functions over the DTO — no `THREE` renderer state — and
   least one object is ≥ 20,000**. A scene made of ten thousand tiny objects is
   draw-call bound, not triangle bound, so decimating it would cost time and buy
   nothing.
+- Within a qualifying scene the **per-object floor still applies**: only objects
+  ≥ 20,000 triangles get a proxy. `shouldSimplifyObject` is the single
+  definition of "dense enough" and both the scene test and the graph builder
+  call it. They drifted apart once — the builder gave a proxy to every object
+  with geometry, so sub-floor objects paid for a second geometry and a per-frame
+  level test, and the viewer's overlay counted them as "large parts drawn at
+  reduced detail". Nothing caught it: the fixture's control object was a single
+  triangle, which the decimator declines for having nothing to gain, so the
+  assertion held for a reason unrelated to the floor. A control object in an LOD
+  test has to be one the decimator _would_ accept, or it tests nothing.
 - Decimation is **vertex clustering**: quantise every vertex to a fixed grid
   over the object's bounds, keep the first vertex that lands in each cell, and
-  drop triangles that collapse to a degenerate. It is a single O(n) pass with no
-  connectivity structure, and it is deterministic — the same mesh always yields
-  a byte-identical proxy. Keeping a real input vertex rather than the cell
-  average means every proxy vertex lies on the original surface, which is what
-  makes reusing the source `bounds` sound.
+  drop triangles that collapse to a degenerate. Cells are half-open, so a vertex
+  exactly on the far bound belongs to the last cell rather than opening one past
+  the end of the grid. It is a single O(n) pass with no connectivity structure,
+  and it is deterministic — the same mesh always yields a byte-identical proxy.
+  Keeping a real input vertex rather than the cell average means every proxy
+  vertex lies on the original surface, which is what makes reusing the source
+  `bounds` sound.
 - The proxy **shares the full-detail material instance**. A second material
   would make a wireframe toggle or colour change apply to only one level, so the
   object would visibly change as it crossed the switch distance. Only the proxy

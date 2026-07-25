@@ -5,6 +5,7 @@ import { boundsCenter } from './geometry';
 import {
   boundsRadius,
   shouldBuildLod,
+  shouldSimplifyObject,
   shouldUseLodProxy,
   simplifyMesh,
 } from './lod';
@@ -110,9 +111,10 @@ export function buildViewerSceneGraph(
       geometries.push(geometry);
       materials.push(material);
 
-      const proxy = useLod
-        ? createLodProxy(object.mesh, geometry, material)
-        : null;
+      const proxy =
+        useLod && shouldSimplifyObject(object.mesh)
+          ? createLodProxy(object.mesh, geometry, material)
+          : null;
       if (proxy) {
         const lod = new THREE.LOD();
         lod.name = `${object.name}:lod`;

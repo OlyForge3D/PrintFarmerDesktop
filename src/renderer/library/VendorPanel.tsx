@@ -46,6 +46,13 @@ export function formatMetadataDate(value: string): string {
  * Read-only slicer-project details for a vendor 3MF: authoring slicer, core
  * metadata, and per-plate print-time/weight/filament stats. Standard 3MF with
  * no vendor payload renders a short "no vendor data" note instead.
+ *
+ * `VendorMetadata.thumbnails` is deliberately not rendered here. It carries ZIP
+ * part *names* rather than image data, so this panel has nothing to show for
+ * them; `VendorPlateThumbnails` is the surface that resolves and displays the
+ * actual images. Stating that explicitly because the rest of this panel exists
+ * to stop extracted fields being silently dropped at the last step, and an
+ * unrendered field is otherwise indistinguishable from that bug.
  */
 export function VendorPanel({ metadata }: VendorPanelProps): React.JSX.Element {
   const { slicer, core, plates } = metadata;

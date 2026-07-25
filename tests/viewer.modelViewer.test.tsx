@@ -2,6 +2,13 @@ import { render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SceneMesh } from '../src/renderer/viewer/types';
+// Safe to import statically despite the `three` mock below: `lod.ts` is pure
+// and GPU-free, with no runtime dependency on three.js.
+import {
+  LOD_MIN_TRIANGLES,
+  simplifyMesh,
+  triangleCount,
+} from '../src/renderer/viewer/lod';
 // Type-only: the runtime import is dynamic so the `three` mock can be hoisted
 // into place first, but the level assertions still need the real types.
 import type * as ThreeNs from 'three';
@@ -363,6 +370,24 @@ describe('<ModelViewer />', () => {
       unmount();
     });
 
+    it('counts only the parts over the floor, not every part in a heavy scene', async () => {
+      // The note names "large parts". A scene qualifying for LOD used to give
+      // every object with geometry a proxy, so a modest part sitting well under
+      // the per-object floor was counted and described to the user as large.
+      const { ModelViewer } = await loadHarness();
+      const mesh = heavyMeshWithModestPart();
+      const modest = mesh.objects.find((object) => object.id === 'modest')!;
+      expect(triangleCount(modest.mesh!)).toBeLessThan(LOD_MIN_TRIANGLES);
+      expect(simplifyMesh(modest.mesh!)).not.toBeNull();
+
+      const { container, unmount } = render(<ModelViewer mesh={mesh} />);
+
+      expect(container.querySelector('.viewer-lod-note')?.textContent).toBe(
+        '1 large part is drawn at reduced detail when zoomed out.',
+      );
+      unmount();
+    });
+
     it('clears the note when a lighter mesh replaces the heavy one', async () => {
       const { ModelViewer } = await loadHarness();
       const { container, rerender, unmount } = render(
@@ -434,8 +459,11 @@ describe('<ModelViewer />', () => {
 });
 
 /** Above both LOD thresholds, so exactly one object gets a proxy. */
-function heavyMesh(): SceneMesh {
-  const steps = 420;
+function gridGeometry(steps: number): {
+  positions: number[];
+  indices: number[];
+  bounds: { min: [number, number, number]; max: [number, number, number] };
+} {
   const positions: number[] = [];
   const indices: number[] = [];
   const step = 1 / steps;
@@ -451,17 +479,53 @@ function heavyMesh(): SceneMesh {
       indices.push(a, a + 1, a + stride, a + 1, a + stride + 1, a + stride);
     }
   }
+  return {
+    positions,
+    indices,
+    bounds: { min: [0, 0, -step], max: [1, 1, step] },
+  };
+}
 
+function heavyMesh(): SceneMesh {
+  const dense = gridGeometry(420);
   const base = simpleMesh('dense');
   return {
     ...base,
-    objects: base.objects.map((object) => ({
-      ...object,
-      mesh: {
-        positions,
-        indices,
-        bounds: { min: [0, 0, -step], max: [1, 1, step] },
+    objects: base.objects.map((object) => ({ ...object, mesh: dense })),
+  };
+}
+
+/**
+ * One object over the per-object floor and one well under it, both compressible.
+ *
+ * `heavyMesh()` carries a single object, so its "1 large part" note is 1 no
+ * matter what the policy does. Only a second, sub-floor object can show whether
+ * the count describes large parts or merely all of them.
+ */
+function heavyMeshWithModestPart(): SceneMesh {
+  const heavy = heavyMesh();
+  const modest = gridGeometry(60);
+  const [dense] = heavy.objects;
+  return {
+    ...heavy,
+    objects: [
+      dense!,
+      {
+        ...dense!,
+        id: 'modest',
+        sourceId: 'modest-source',
+        name: 'modest',
+        mesh: modest,
       },
-    })),
+    ],
+    rootObjectIds: ['dense', 'modest'],
+    plates: [
+      {
+        id: 'plate-0',
+        name: 'Plate 1',
+        index: 0,
+        rootObjectIds: ['dense', 'modest'],
+      },
+    ],
   };
 }

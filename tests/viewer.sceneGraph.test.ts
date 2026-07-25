@@ -7,6 +7,11 @@ import {
   toHex,
 } from '../src/renderer/library/sceneMaterials';
 import {
+  LOD_MIN_TRIANGLES,
+  simplifyMesh,
+  triangleCount,
+} from '../src/renderer/viewer/lod';
+import {
   boundsCenter,
   boundsRadius,
   defaultCameraPosition,
@@ -297,6 +302,12 @@ describe('buildViewerSceneGraph level of detail', () => {
     const scene = heavyScene();
     const graph = buildViewerSceneGraph(scene);
     const lods = findLods(graph.root);
+
+    // Both objects are compressible; only one is over the floor. Asserting the
+    // counts here is what stops this passing for the wrong reason again.
+    const small = scene.objects.find((entry) => entry.id === 'small')!;
+    expect(triangleCount(small.mesh!)).toBeLessThan(LOD_MIN_TRIANGLES);
+    expect(simplifyMesh(small.mesh!)).not.toBeNull();
 
     expect([...graph.lodObjectIds]).toEqual(['dense']);
     expect(lods).toHaveLength(1);
@@ -614,11 +625,12 @@ function findLods(root: THREE.Object3D): THREE.LOD[] {
  */
 function heavyScene(): SceneMesh {
   const dense = denseGrid(420);
-  const small = {
-    positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
-    indices: [0, 1, 2],
-    bounds: { min: [0, 0, 0] as const, max: [1, 1, 0] as const },
-  };
+  // Deliberately compressible and deliberately under the object floor: 7,200
+  // triangles over a 61x61 grid welds heavily at 48 cells, so `simplifyMesh`
+  // would happily return a cheaper mesh for it. A one-triangle control made the
+  // `['dense']` assertion below pass because clustering had nothing to gain,
+  // which held whether or not the floor was enforced - and it was not.
+  const small = denseGrid(60);
   return {
     sceneVersion: 2,
     positions: [],

@@ -174,6 +174,25 @@ describe('shouldBuildLod', () => {
     expect(shouldBuildLod(mesh)).toBe(true);
   });
 
+  it('accepts a heavy scene whose largest object is exactly at the object floor', () => {
+    // The passing side of the object clause, pinned adjacent to the bound. The
+    // other three directions were covered; this one was not, which let `>=`
+    // become `>` with the whole suite green. Eight objects so the scene total
+    // is comfortably over its own threshold and cannot be what decides this.
+    const objects = Array.from({ length: 8 }, (_, i) =>
+      object(`o${i}`, fakeMeshOfSize(LOD_MIN_TRIANGLES)),
+    );
+    const mesh = scene(objects);
+    expect(sceneTriangleCount(mesh)).toBeGreaterThanOrEqual(
+      LOD_MIN_SCENE_TRIANGLES,
+    );
+    expect(
+      Math.max(...objects.map((entry) => triangleCount(entry.mesh!))),
+    ).toBe(LOD_MIN_TRIANGLES);
+
+    expect(shouldBuildLod(mesh)).toBe(true);
+  });
+
   it('declines a heavy scene made only of small objects', () => {
     // Draw-call bound, not triangle bound: decimation would not help, so the
     // scene total alone must not be enough to trigger it.
@@ -499,19 +518,61 @@ describe('simplifyMesh', () => {
   it('treats a fractional or zero resolution as at least one cell', () => {
     const dense = grid(60);
 
-    // One cell per axis leaves only the bucket boundaries, so the proxy
-    // collapses to at most the eight corners of the bounding box. It must clamp
-    // rather than divide by zero or produce a negative cell size.
+    // Clamping to one cell has to mean one cell: with half-open buckets the
+    // whole object falls in it and collapses to a single point, so there is no
+    // usable proxy and `null` is the honest answer. What this pins is that a
+    // degenerate resolution is handled arithmetically - no divide-by-zero, no
+    // negative cell size, no NaN escaping into a geometry - rather than that
+    // some mesh comes back.
     for (const resolution of [0, 0.5, -4]) {
-      const simplified = simplifyMesh(dense, resolution);
-      expect(simplified).not.toBeNull();
-      expect(Math.floor(simplified!.positions.length / 3)).toBeLessThanOrEqual(
-        8,
-      );
-      for (const value of simplified!.positions) {
-        expect(Number.isFinite(value)).toBe(true);
+      expect(() => simplifyMesh(dense, resolution)).not.toThrow();
+      expect(simplifyMesh(dense, resolution)).toBeNull();
+    }
+  });
+
+  it('collapses to at most the corners of the bounds at the coarsest usable grid', () => {
+    const dense = grid(60);
+
+    // Two cells along the longest axis is the coarsest grid that can still
+    // return something: cell indices run 0..1 per axis, so at most the eight
+    // corners of the bounding box survive.
+    const simplified = simplifyMesh(dense, 2);
+
+    expect(simplified).not.toBeNull();
+    expect(Math.floor(simplified!.positions.length / 3)).toBeLessThanOrEqual(8);
+    for (const value of simplified!.positions) {
+      expect(Number.isFinite(value)).toBe(true);
+    }
+  });
+
+  it('keeps a vertex on the far bound inside the last cell, not in a slab of its own', () => {
+    // `floor((max - min) / cellSize)` lands exactly on the cell count for a
+    // vertex at `max`, so an unclamped grid opens a 49th bucket along the
+    // longest axis where the resolution says 48 - and an extra one along every
+    // other axis too. Counted rather than reasoned about: this flat 5x5 grid
+    // samples each axis at 0, .25, .5, .75 and 1 with a 4-cell grid, so the
+    // bound-sharing cells are 4x4x1 = 16. Unclamped it would be 5x5x1 = 25.
+    const positions: number[] = [];
+    const indices: number[] = [];
+    const steps = 4;
+    for (let y = 0; y <= steps; y += 1) {
+      for (let x = 0; x <= steps; x += 1)
+        positions.push(x / steps, y / steps, 0);
+    }
+    const stride = steps + 1;
+    for (let y = 0; y < steps; y += 1) {
+      for (let x = 0; x < steps; x += 1) {
+        const a = y * stride + x;
+        indices.push(a, a + 1, a + stride, a + 1, a + stride + 1, a + stride);
       }
     }
+    const flat = meshOf(positions, indices);
+    expect(Math.floor(flat.positions.length / 3)).toBe(25);
+
+    const simplified = simplifyMesh(flat, steps);
+
+    expect(simplified).not.toBeNull();
+    expect(Math.floor(simplified!.positions.length / 3)).toBe(16);
   });
 
   it('defaults to the documented grid resolution', () => {

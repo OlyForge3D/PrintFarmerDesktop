@@ -105,12 +105,21 @@ export function sceneTriangleCount(sceneMesh: SceneMesh): number {
  */
 export function shouldBuildLod(sceneMesh: SceneMesh): boolean {
   if (sceneTriangleCount(sceneMesh) < LOD_MIN_SCENE_TRIANGLES) return false;
-  return sceneMesh.objects.some(
-    (object) => object.mesh && triangleCount(object.mesh) >= LOD_MIN_TRIANGLES,
+  return sceneMesh.objects.some((object) =>
+    object.mesh ? shouldSimplifyObject(object.mesh) : false,
   );
 }
 
-/** Whether one object is dense enough to be given a proxy. */
+/**
+ * Whether one object is dense enough to be given a proxy.
+ *
+ * Called both by {@link shouldBuildLod}, to decide whether any object in a
+ * scene qualifies, and by the scene graph builder, to decide which ones do.
+ * Those have to be the same rule: when the builder ignored it and gave a proxy
+ * to every object in a qualifying scene, sub-floor objects paid for a second
+ * geometry and a per-frame level test, and the viewer's overlay counted them as
+ * "large parts drawn at reduced detail".
+ */
 export function shouldSimplifyObject(mesh: SceneObjectMesh): boolean {
   return triangleCount(mesh) >= LOD_MIN_TRIANGLES;
 }
@@ -186,6 +195,20 @@ export function shouldUseLodProxy(
  * Returns `null` when nothing was gained, so callers can skip allocating a
  * proxy that is no cheaper than the original.
  */
+/**
+ * Index of the last cell along one axis.
+ *
+ * The count is capped at the grid resolution in use because no axis is longer
+ * than the one `cellSize` was derived from, so a ratio above it can only be
+ * float error. Only the upper end is clamped: a vertex below `min` is outside
+ * the bounds the sidecar reported, which is a malformed input rather than a
+ * boundary case.
+ */
+function axisLastCell(extent: number, cellSize: number, cells: number): number {
+  if (!(extent > 0) || !(cellSize > 0)) return 0;
+  return Math.min(cells, Math.max(1, Math.ceil(extent / cellSize))) - 1;
+}
+
 export function simplifyMesh(
   mesh: SceneObjectMesh,
   resolution: number = LOD_GRID_RESOLUTION,
@@ -201,6 +224,14 @@ export function simplifyMesh(
   // would collapse it to a single vertex and erase it.
   if (!Number.isFinite(longest) || longest <= 0) return null;
   const cellSize = longest / cells;
+  // A vertex exactly at `max` divides to exactly the cell count, so a plain
+  // floor puts it in a slab of its own beyond the last real one - 49 buckets
+  // along the longest axis where the resolution says 48, and one extra along
+  // every other axis too. Clamping folds that boundary vertex into the last
+  // real cell, which is where the grid says it belongs.
+  const lastCellX = axisLastCell(sizeX, cellSize, cells);
+  const lastCellY = axisLastCell(sizeY, cellSize, cells);
+  const lastCellZ = axisLastCell(sizeZ, cellSize, cells);
 
   const vertexCount = Math.floor(mesh.positions.length / 3);
   // Cell coordinates are per-axis, so an index has to be built from all three.
@@ -218,9 +249,9 @@ export function simplifyMesh(
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
       continue;
     }
-    const cellX = Math.floor((x - minX) / cellSize);
-    const cellY = Math.floor((y - minY) / cellSize);
-    const cellZ = Math.floor((z - minZ) / cellSize);
+    const cellX = Math.min(Math.floor((x - minX) / cellSize), lastCellX);
+    const cellY = Math.min(Math.floor((y - minY) / cellSize), lastCellY);
+    const cellZ = Math.min(Math.floor((z - minZ) / cellSize), lastCellZ);
     const key = `${cellX},${cellY},${cellZ}`;
     const existing = cellToVertex.get(key);
     if (existing !== undefined) {
