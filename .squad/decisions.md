@@ -39,3 +39,11 @@
 **What:** The rejection-lockout convention used during PR #33 and PR #39 review cycles — where a rejected commit's original author was barred from personally authoring the fix, and a different squad member had to revise it instead — is **dismissed, effective immediately**. Going forward, when Hicks or Vasquez (or any reviewer) rejects a commit, the **original author of that commit fixes it themselves**. Do not rotate to a different author. This applies to all in-flight and future review cycles (e.g. PR #39's round-3 review currently in progress: if Vasquez rejects Bishop's `53f962b`, Bishop fixes it directly, not a different member).
 
 **Why:** Requested by Jeff Papiez: "Dismiss the lockout rule. Original owners are required to fix their own code changes." Unanimous-approval + green-CI still gates merge; only the "different author must revise a rejection" mechanic is removed.
+
+## 2026-07-25: PR CI-gate monitoring expanded to ALL open PRs, regardless of epic
+
+**By:** Ripley (on Jeff's direct instruction)
+
+**What:** The standing "when PRs are all green in CI tasks, complete the PRs and close the associated issues" directive now applies to **every open PR** in the repo, including PRs on epics #42/#44 that are otherwise out of active sequencing scope, and PRs authored directly by Jeff (not just squad-delegated work). Squad sessions (Ripley/Ralph) should include these in routine CI-gate monitoring and merge them once green, without waiting for a separate ask each time.
+
+**Why:** Jeff asked "are we not monitoring PRs for CI gate completion and closing them when they are?" after PRs #59/#60/#62 (his own direct commits on epics #42/#44) sat unmonitored because those epics are excluded from active *sequencing/triage* scope. Clarified: epic-sequencing exclusion (#42/#44) is about not scheduling new *squad* work there, not about withholding routine CI-gate merge monitoring from PRs that already exist.
