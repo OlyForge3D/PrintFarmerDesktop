@@ -26,6 +26,15 @@ let activeRecipe: string | null = null;
 
 const UNVERSIONED = '\u0000unversioned';
 
+/**
+ * The separator is NUL rather than a printable character on purpose. A joined
+ * key is only unambiguous while neither field can contain the separator: with
+ * `/`, `('a/b', 'c')` and `('a', 'b/c')` collapse onto the same entry and two
+ * models silently share pixels. Recipes are built sidecar-side from
+ * compile-time constants and a range-validated size, and hashes are hex, so
+ * neither field can carry a NUL — the precondition holds by construction and
+ * not by convention.
+ */
 function cacheKey(recipe: string | null, hash: string): string {
   return `${recipe ?? UNVERSIONED}\u0000${hash}`;
 }

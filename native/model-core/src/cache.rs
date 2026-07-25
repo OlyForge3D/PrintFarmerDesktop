@@ -16,6 +16,7 @@
 //! * [`crate::thumbnail`] render inputs, for thumbnail recipes.
 
 use crate::scene::SCENE_DTO_VERSION;
+use sha2::{Digest, Sha256};
 
 /// Bumped whenever the parsers or the scene normalizer change the values they
 /// produce for unchanged input bytes.
@@ -57,8 +58,20 @@ pub fn thumbnail_cache_recipe(size: u32) -> String {
 }
 
 /// Full cache key for a derived artifact belonging to `model_hash`.
+///
+/// Both fields are length-prefixed and hashed rather than interpolated.
+/// `format!("{recipe}/{model_hash}")` is unambiguous only while neither field
+/// can contain the separator — a precondition nothing enforces. The moment a
+/// recipe grows a `/`-bearing component, `("a/b", "c")` and `("a", "b/c")`
+/// collapse to the same key, and two different artifacts silently share a cache
+/// entry. Length-prefixing removes the precondition instead of documenting it.
 pub fn cache_key(model_hash: &str, recipe: &str) -> String {
-    format!("{recipe}/{model_hash}")
+    let mut hasher = Sha256::new();
+    for field in [recipe, model_hash] {
+        hasher.update((field.len() as u64).to_le_bytes());
+        hasher.update(field.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(test)]
@@ -121,9 +134,37 @@ mod tests {
     fn cache_key_is_namespaced_by_recipe() {
         let hash = "a".repeat(64);
         let key = cache_key(&hash, &scene_cache_recipe());
-        assert!(key.ends_with(&hash));
-        assert!(key.starts_with("scene/v"));
+        // The key is a digest now, so it no longer contains its inputs
+        // literally. The property that matters is unchanged: both inputs are
+        // incorporated, and it is deterministic.
+        assert_eq!(key, cache_key(&hash, &scene_cache_recipe()));
+        assert_ne!(key, cache_key(&"b".repeat(64), &scene_cache_recipe()));
         assert_ne!(key, cache_key(&hash, &thumbnail_cache_recipe(512)));
+    }
+
+    #[test]
+    fn no_two_distinct_recipe_and_hash_pairs_share_a_key() {
+        // The old key was `format!("{recipe}/{model_hash}")`, which is only
+        // unambiguous while neither field can contain the separator. Nothing
+        // enforced that, so a recipe that ever grew a `/`-bearing component
+        // would silently serve one artifact's pixels for another's key.
+        let colliding = [
+            (("a/b", "c"), ("a", "b/c")),
+            (("scene/v1.2", "ab/cd"), ("scene/v1.2/ab", "cd")),
+            (("p/q/r", "s"), ("p", "q/r/s")),
+        ];
+        for ((recipe_a, hash_a), (recipe_b, hash_b)) in colliding {
+            assert_eq!(
+                format!("{recipe_a}/{hash_a}"),
+                format!("{recipe_b}/{hash_b}"),
+                "fixture must actually collide under plain interpolation"
+            );
+            assert_ne!(
+                cache_key(hash_a, recipe_a),
+                cache_key(hash_b, recipe_b),
+                "({recipe_a:?}, {hash_a:?}) must not share a key with ({recipe_b:?}, {hash_b:?})"
+            );
+        }
     }
 
     #[test]

@@ -273,7 +273,21 @@ fn self_closing_elements_do_not_accumulate_depth() {
 
 #[test]
 fn rejects_non_finite_vertex_coordinates() {
-    for poison in ["NaN", "inf", "-inf", "Infinity", "-Infinity"] {
+    // `1e999` and friends carry none of the literal spellings below, yet
+    // `f32::from_str` returns `Ok(inf)` for them. A guard that blocklisted the
+    // spellings instead of checking `is_finite` would pass every other case
+    // here and still let an overflowing decimal poison the bounds.
+    for poison in [
+        "NaN",
+        "inf",
+        "-inf",
+        "Infinity",
+        "-Infinity",
+        "1e999",
+        "-1e999",
+        "1E+400",
+        "340282400000000000000000000000000000000000",
+    ] {
         let resources = format!(
             r#"<object id="1" type="model"><mesh><vertices>
                  <vertex x="0" y="0" z="0"/>
@@ -648,6 +662,12 @@ fn vendor_entry_points_still_accept_a_benign_project() {
 fn rejects_an_archive_whose_declared_expansion_blows_the_budget_in_aggregate() {
     // End-to-end companion to the unit-level accumulator test: every entry sits
     // under the ratio floor, so only aggregate accounting can catch this.
+    //
+    // Note this trips the *declared* preflight, not the running accumulator:
+    // the preflight sums every entry while the accumulator counts only entries
+    // actually read, so for an honest archive declared >= charged and the
+    // preflight always wins. The accumulator's own path is covered by
+    // `an_entry_that_lies_about_its_size_is_charged_what_it_actually_produced`.
     let limits = ParseLimits {
         max_total_decompressed_bytes: 4 * 1024 * 1024,
         ..ParseLimits::default().without_timeout()
@@ -660,6 +680,99 @@ fn rejects_an_archive_whose_declared_expansion_blows_the_budget_in_aggregate() {
     let error = threemf::parse_bytes_with_limits(&data, limits)
         .expect_err("the aggregate declared expansion must be rejected");
     assert_eq!(error.code(), "limit.total_decompressed_bytes", "{error}");
+}
+
+/// Rewrite the declared uncompressed size of `part`, in both the central
+/// directory and the local header, leaving the compressed stream untouched.
+///
+/// Models the case the declared-size preflight cannot catch: an archive that
+/// under-declares what it will produce. Declared sizes are attacker-controlled,
+/// so a package can promise a kilobyte and deliver megabytes.
+fn forge_declared_size(data: &[u8], part: &str, declared: u32) -> Vec<u8> {
+    let mut out = data.to_vec();
+    let name = part.as_bytes();
+    let mut patched = false;
+    for i in 0..out.len().saturating_sub(46) {
+        if &out[i..i + 4] != b"PK\x01\x02" {
+            continue;
+        }
+        let name_len = u16::from_le_bytes([out[i + 28], out[i + 29]]) as usize;
+        if out.get(i + 46..i + 46 + name_len) != Some(name) {
+            continue;
+        }
+        let local_offset =
+            u32::from_le_bytes([out[i + 42], out[i + 43], out[i + 44], out[i + 45]]) as usize;
+        out[i + 24..i + 28].copy_from_slice(&declared.to_le_bytes());
+        out[local_offset + 22..local_offset + 26].copy_from_slice(&declared.to_le_bytes());
+        patched = true;
+    }
+    assert!(patched, "forged fixture must actually contain {part}");
+    out
+}
+
+#[test]
+fn an_entry_that_lies_about_its_size_is_charged_what_it_actually_produced() {
+    // The declared-size preflight is only as honest as the archive. This entry
+    // declares a kilobyte and delivers megabytes, so the preflight waves it
+    // through and only the running accumulator can catch it.
+    let mut vertices = String::new();
+    for i in 0..48_000 {
+        vertices.push_str(&format!(
+            "          <vertex x=\"{i}.5\" y=\"0\" z=\"0\"/>\n"
+        ));
+    }
+    let model = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <resources>
+    <object id="1" type="model">
+      <mesh>
+        <vertices>
+{vertices}        </vertices>
+        <triangles>
+          <triangle v1="0" v2="1" v3="2"/>
+        </triangles>
+      </mesh>
+    </object>
+  </resources>
+  <build><item objectid="1"/></build>
+</model>"#
+    );
+    let honest = package(&model, Vec::new());
+    let declared = 1024;
+    let forged = forge_declared_size(&honest, "3D/3dmodel.model", declared);
+
+    let limits = ParseLimits {
+        max_total_decompressed_bytes: 1024 * 1024,
+        ..ParseLimits::default().without_timeout()
+    };
+    // The lie is what makes this reachable: honestly declared, the preflight
+    // would reject it before a byte was read.
+    assert!(
+        model.len() as u64 > limits.max_total_decompressed_bytes,
+        "the entry must actually produce more than the whole budget"
+    );
+    // And this is why the rejection below can only come from the accumulator:
+    // the declared total the preflight sees is orders of magnitude under the
+    // budget, so the preflight necessarily passes.
+    assert!(
+        u64::from(declared) * 64 < limits.max_total_decompressed_bytes,
+        "the forged declaration must leave the preflight no reason to object"
+    );
+    let error = threemf::parse_bytes_with_limits(&forged, limits.clone())
+        .expect_err("an under-declared entry must still be caught while it is read");
+    assert_eq!(error.code(), "limit.total_decompressed_bytes", "{error}");
+
+    // And the same package parses when the budget genuinely accommodates it,
+    // so the guard is charging real overflow rather than rejecting any lie.
+    threemf::parse_bytes_with_limits(
+        &forged,
+        ParseLimits {
+            max_total_decompressed_bytes: 64 * 1024 * 1024,
+            ..limits
+        },
+    )
+    .expect("a generous budget must still accept the same package");
 }
 
 // --- ratio cap boundary -----------------------------------------------------
@@ -815,6 +928,46 @@ fn rejects_an_oversized_material_name() {
     );
     let data = model_with_resources(&resources, r#" pid="10" pindex="0""#, "");
     assert_eq!(parse_error(&data).code(), "too_large");
+}
+
+#[test]
+fn an_out_of_range_per_triangle_index_does_not_mis_index() {
+    // The case that matters most: the resource group is real and non-empty, so
+    // a per-face index is genuinely used to index it. An out-of-range `p1` must
+    // yield no colour — never a panic, and never the wrong entry silently.
+    let resources = r##"    <m:colorgroup xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02" id="11">
+      <m:color color="#112233"/>
+      <m:color color="#445566"/>
+    </m:colorgroup>"##;
+    for index in ["2", "99", "4294967295"] {
+        let attrs = format!(r#" pid="11" p1="{index}""#);
+        let data = model_with_resources(resources, "", &attrs);
+        let mesh = threemf::parse_bytes(&data)
+            .unwrap_or_else(|e| panic!("p1={index} must not be fatal: {e}"));
+        if let Some(face) = mesh.objects[0].material.face_colors.as_ref() {
+            assert_ne!(
+                face[0],
+                [0x11, 0x22, 0x33],
+                "p1={index} must not reach a group entry it does not address"
+            );
+            assert_ne!(
+                face[0],
+                [0x44, 0x55, 0x66],
+                "p1={index} must not reach a group entry it does not address"
+            );
+        }
+    }
+
+    // ...and the same markup with an in-range index still resolves, so the
+    // assertion above is not passing merely because nothing is ever resolved.
+    let data = model_with_resources(resources, "", r#" pid="11" p1="1""#);
+    let mesh = threemf::parse_bytes(&data).expect("an in-range index must resolve");
+    let face = mesh.objects[0]
+        .material
+        .face_colors
+        .as_ref()
+        .expect("an in-range per-face index must produce face colours");
+    assert_eq!(face[0], [0x44, 0x55, 0x66]);
 }
 
 // --- the availability half of the limits ------------------------------------

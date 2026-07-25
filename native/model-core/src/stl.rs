@@ -338,7 +338,9 @@ mod tests {
 
     #[test]
     fn rejects_non_finite_ascii_coordinates() {
-        for poison in ["NaN", "inf", "-inf"] {
+        // `1e999` parses to `Ok(inf)` rather than failing, so it must be caught
+        // by the finiteness check and not by rejecting known spellings.
+        for poison in ["NaN", "inf", "-inf", "1e999", "-1e999", "1E+400"] {
             let ascii = format!(
                 "solid s\nfacet normal 0 0 1\nouter loop\nvertex {poison} 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid s\n"
             );
