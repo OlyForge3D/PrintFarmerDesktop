@@ -166,9 +166,11 @@ describe('<App />', () => {
       name: 'Set up your model library',
     });
     expect(dialog).toBeVisible();
-    expect(
-      screen.getByRole('button', { name: 'Add your first folder' }),
-    ).toHaveFocus();
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Add your first folder' }),
+      ).toHaveFocus(),
+    );
 
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() =>
