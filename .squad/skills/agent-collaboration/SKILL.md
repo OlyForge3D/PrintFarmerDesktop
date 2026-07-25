@@ -20,6 +20,20 @@ A PR merges only with **unanimous reviewer approval** plus **green CI**. The aut
 
 Reviews are run as independent agents against an **exact commit SHA**, not "the PR". Always pin the SHA in the review request and require the reviewer to confirm it.
 
+## Record the verdict on the pull request
+
+**A verdict that is not on the PR does not exist.** Post every review outcome as a comment on the pull request, naming the exact head SHA it was pinned to, before communicating it anywhere else.
+
+This is not bookkeeping. Two rejected PRs once sat at `reviewDecision: ""`, zero reviews, zero comments, **6/6 green CI** — indistinguishable, to any automation, from mergeable work. The hourly backlog driver is told to merge "green and approved" PRs, and nothing in the repository marked those two as rejected. Both carried reproduced defects.
+
+So, when a review blocks a PR:
+
+- **Convert it to draft** — `gh pr ready <n> --undo`. Draft is a mechanical merge block no automation can bypass, and it is reversible when the fix lands. Here draft means "blocked by review", not "unfinished".
+- **Green CI is necessary but never sufficient.** Before merging anything, read `isDraft`, `reviewDecision`, `reviews` and `comments`. A PR with no recorded verdict is **unreviewed**, whatever colour CI is.
+- **Verdicts are pinned to a SHA.** An approval recorded against an older head does not authorize merging a newer one.
+
+The PR is also a delivery channel that does not drop messages. Cross-session chat demonstrably does — a fix list once sat undelivered while its author pinged asking why the PR had no reviews. Put the durable copy where the work is.
+
 ## Freeze the branch during review
 
 Once a review is dispatched, the branch is frozen. Any push invalidates the verdict, because the reviewer's conclusions no longer describe the commit that would be merged. Push your fix, report the new SHA, then stop until released.

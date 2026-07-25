@@ -104,3 +104,22 @@ Bishop caught this while working issue #20 and correctly fell back to `.squad/de
 **Resolution:** rather than delete the references, the skills were **actually written**, at `.squad/skills/{git-workflow,test-discipline,testing,agent-collaboration}/SKILL.md`, capturing the conventions this squad has been operating by — most of them learned from incidents already recorded in this file (stacked-PR breakage, the merge race, missing `Closes #N`, `prettier --check` CI failures, mocks concealing missing production code, reviewer evidence standards, and the worktree-takeover incident above). Assignment briefs should now point at `.squad/skills/`, not `.github/skills/`.
 
 **Why:** Recorded because the failure mode is more general than the specific paths: delegates were told to read documentation that did not exist and none reported it. If an instruction cannot be followed, **say so** rather than quietly working around it.
+
+## 2026-07-25: Review verdicts must live on the pull request; blocked PRs are converted to draft
+
+**By:** Ripley
+
+**What:** Two PRs (#68 and #69) were independently reviewed and **rejected**, yet on GitHub both showed `reviewDecision: ""`, **zero reviews, zero comments**, `isDraft: false`, and **6/6 green CI**. The verdicts existed only inside the lead's chat session. Ralph — the hourly autonomous backlog driver — is instructed to merge PRs that are "green and approved". Nothing in the repository distinguished these two rejected PRs from genuinely mergeable ones, so the next scheduled run could have merged code carrying a reproduced two-tab-stop accessibility defect and a reproduced archive-limits bypass. This was caught before it happened; it was luck of timing, not a control.
+
+**Root cause:** review state was held in volatile session memory rather than on the artifact being gated. Compounding it, cross-session messages were repeatedly lost or delivered late — Dallas twice never received the rejection and pinged asking why #68 had no reviews after 25 minutes, while the fix list sat undelivered in a chat channel.
+
+**New rules:**
+
+1. **Every review verdict is posted as a comment on the pull request**, naming the exact head SHA it was pinned to, before it is communicated anywhere else. A verdict that is not on the PR does not exist.
+2. **A PR blocked by review is converted to draft** (`gh pr ready <n> --undo`). Draft is a mechanical merge block that no automation can bypass, and it is reversible when the fixes land. Draft here means "blocked by review", not "unfinished work".
+3. **Green CI is necessary but never sufficient to merge.** Automation must read `isDraft`, `reviewDecision`, `reviews` and `comments` before merging, and must treat a PR with no recorded verdict as **unreviewed** regardless of CI colour.
+4. **Verdicts are pinned to a SHA.** An approval recorded against an older head does not authorize merging a newer one.
+
+Ralph's standing prompt was amended with a "merge evidence rule" encoding all four.
+
+**Why:** Recorded because the failure was not in anyone's reasoning — the reviews were correct and both defects were real — but in where the conclusion was _stored_. Gating state belongs on the artifact being gated, in a form that survives the session that produced it. The PR is also a delivery channel that does not drop messages, which the chat channel demonstrably did.
