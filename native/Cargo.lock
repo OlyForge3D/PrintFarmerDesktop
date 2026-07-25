@@ -736,6 +736,7 @@ dependencies = [
  "png",
  "quick-xml 0.36.2",
  "rusqlite",
+ "same-file",
  "serde",
  "serde_json",
  "sha2",
