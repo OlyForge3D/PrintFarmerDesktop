@@ -957,7 +957,12 @@ fn alpha_is_accepted_and_discarded() {
 }
 
 #[test]
-fn rejects_an_unbounded_appearance_table() {
+fn rejects_an_unbounded_appearance_entry_count() {
+    // Covers the *entry* dimension only — see
+    // `rejects_an_unbounded_appearance_group_count` for the other axis. The
+    // original name said "appearance table", which read as covering both and
+    // is how the group dimension stayed uncapped behind a passing test.
+    //
     // Each entry carries an owned name, so an unbounded table is cheap
     // memory amplification from a small compressed payload. Colours are
     // distinct so the archive does not compress well enough to trip the
@@ -972,8 +977,60 @@ fn rejects_an_unbounded_appearance_table() {
         ));
     }
     resources.push_str("    </m:colorgroup>");
+    // The mirror of the isolating property below: one group, so the group cap
+    // cannot be what rejects this.
+    assert_eq!(resources.matches("<m:colorgroup").count(), 1);
     let data = model_with_resources(&resources, "", "");
     assert_eq!(parse_error(&data).code(), "too_large");
+}
+
+/// `count` appearance groups carrying no `<base>`/`<color>` children at all.
+///
+/// The absence of entries is the whole point. Both appearance caps surface as
+/// `too_large`, so an assertion on the code cannot say which one fired — the
+/// same ambiguity the declared-size preflight and the decompression accumulator
+/// have. An input that charges the entry budget exactly zero times can only be
+/// rejected by the group cap, which makes the isolation structural rather than
+/// a claim in a comment.
+fn empty_appearance_groups(count: usize) -> String {
+    let mut resources = String::with_capacity(count * 40 + 64);
+    for index in 0..count {
+        resources.push_str("    <colorgroup id=\"");
+        resources.push_str(&(index + 100).to_string());
+        // Terminated rather than self-closing: this is the shape that actually
+        // reaches the insert and retains a map entry, so the fixture is the
+        // real amplification primitive and not just a counter exercise.
+        resources.push_str("\"></colorgroup>\n");
+    }
+    assert!(
+        !resources.contains("<color ") && !resources.contains("<base "),
+        "the isolating property is that this charges the entry budget zero times"
+    );
+    resources
+}
+
+#[test]
+fn rejects_an_unbounded_appearance_group_count() {
+    // Capping entries does not cap groups. An empty group charges nothing
+    // against MAX_APPEARANCE_ENTRIES while still costing a retained map entry,
+    // so until this cap existed the group dimension was bounded only by the
+    // XML size caps — three orders of magnitude looser than the stated
+    // aggregate memory ceiling.
+    let resources = empty_appearance_groups(model_core::threemf::MAX_APPEARANCE_GROUPS + 1);
+    let data = model_with_resources(&resources, "", "");
+    let error = parse_error(&data);
+    assert_eq!(error.code(), "too_large", "{error}");
+}
+
+#[test]
+fn the_documented_maximum_appearance_group_count_still_parses() {
+    // The other side of the boundary, at the documented maximum rather than a
+    // convenient number: a cap that degrades into blanket rejection is an
+    // availability bug wearing a security hat.
+    let resources = empty_appearance_groups(model_core::threemf::MAX_APPEARANCE_GROUPS);
+    let data = model_with_resources(&resources, "", "");
+    let mesh = threemf::parse_bytes(&data).expect("the documented maximum must still parse");
+    assert_eq!(mesh.triangle_count(), 1);
 }
 
 #[test]

@@ -44,10 +44,20 @@ pub const MAX_MODEL_XML_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_TOTAL_MODEL_XML_BYTES: u64 = 1024 * 1024 * 1024;
 /// Maximum component nesting depth; also breaks any reference cycle.
 pub const MAX_COMPONENT_DEPTH: usize = 50;
-/// Ceiling on `<base>`/`<color>` entries across every appearance resource in a
-/// model part. Each entry is attacker-controlled and carries an owned name, so
+/// Ceiling on `<base>`/`<color>` entries across every appearance resource in
+/// the package. Each entry is attacker-controlled and carries an owned name, so
 /// an unbounded table is a cheap memory-amplification primitive.
+///
+/// This caps the entries *inside* groups. The number of groups is capped
+/// separately by [`MAX_APPEARANCE_GROUPS`]; neither bounds the other.
 pub const MAX_APPEARANCE_ENTRIES: usize = 1_000_000;
+/// Ceiling on `<basematerials>`/`<colorgroup>` resources across the package.
+///
+/// A group with no children charges nothing against [`MAX_APPEARANCE_ENTRIES`]
+/// while still costing a retained map entry, so capping entries alone leaves
+/// the group dimension bounded only by the XML size caps — three orders of
+/// magnitude looser, and enough for a hostile package to retain gigabytes.
+pub const MAX_APPEARANCE_GROUPS: usize = 1_000_000;
 /// Longest accepted `<base name="...">`. Material labels are display strings,
 /// not payloads.
 const MAX_MATERIAL_NAME_BYTES: usize = 256;
@@ -360,6 +370,7 @@ struct ParseBudget {
     objects: usize,
     components: usize,
     appearances: usize,
+    appearance_groups: usize,
 }
 
 impl ParseBudget {
@@ -389,6 +400,10 @@ impl ParseBudget {
 
     fn add_appearance(&mut self) -> Result<(), ThreeMfError> {
         Self::add(&mut self.appearances, MAX_APPEARANCE_ENTRIES)
+    }
+
+    fn add_appearance_group(&mut self) -> Result<(), ThreeMfError> {
+        Self::add(&mut self.appearance_groups, MAX_APPEARANCE_GROUPS)
     }
 }
 
@@ -1651,6 +1666,11 @@ fn parse_model_xml(
                 }
                 _ => match e.local_name().as_ref() {
                     b"basematerials" | b"colorgroup" => {
+                        // Charged where the group opens, not where it is
+                        // inserted: a flood of unterminated or self-closing
+                        // groups never reaches the insert at all, so charging
+                        // there would leave the commonest shape uncharged.
+                        budget.add_appearance_group()?;
                         current_group = Some((attr_u32(&e, b"id")?, AppearanceGroup::default()));
                     }
                     b"base" => {
