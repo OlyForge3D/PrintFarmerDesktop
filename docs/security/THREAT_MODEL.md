@@ -129,9 +129,20 @@ method unchanged and the next omission just as likely, so the list below is inst
 from the dependency graph, which is what makes it closed rather than merely long.
 
 **The argument.** Code cannot decode bytes without a decoder. The set of decoders available to
-this product is bounded by its dependency manifests, so enumerating decoder _crates_ first and
-their call sites second yields a list whose completeness rests on something checkable, rather
-than on how carefully someone read the tree.
+this product is bounded by its dependency graph, so enumerating decoder _crates_ first and their
+call sites second yields a list whose completeness rests on something checkable, rather than on
+how carefully someone read the tree.
+
+**The manifests bound the _direct_ set; the lockfiles bound the transitive one, and the
+distinction matters.** The enumeration below starts from `Cargo.toml` and `package.json`, so it
+is only sound if no transitive dependency introduces a decoder the direct set does not imply.
+Checked against `native/Cargo.lock`: the decoder-bearing transitive crates are `miniz_oxide`,
+`fdeflate`, `flate2` and `libsqlite3-sys`, and each is reachable only through a direct
+dependency already modelled here (`zip` and `png` → deflate, `rusqlite` → SQLite). `bzip2`,
+`zstd`, `aes`, `image`, `jpeg-decoder`, `tiff` and `xml-rs` are all **absent**, which
+independently confirms that `zip`'s `default-features = false` is doing its job. §8 covers both
+lockfiles as supply-chain surface; §10's re-read trigger names the lockfiles for this reason,
+since a transitive decoder can arrive through a version bump that touches no manifest.
 
 1. **Rust decoders, from `native/model-core/Cargo.toml`.** The shipped build is
    `--features sqlite` (`scripts/stage-sidecar.mjs:38`, `.github/workflows/release.yml:47`),
@@ -141,35 +152,50 @@ than on how carefully someone read the tree.
    `libloading` — either does not decode untrusted bytes or, in `libloading`'s case, belongs to
    the unshipped `lib3mf` path (T2.3).
 2. **Call sites for each**, excluding `#[cfg(test)]` modules.
-3. **Node decoders, from `package.json`.** The runtime dependencies are `react`, `react-dom`,
-   `three`, and `zod` — **no archive, compression, or image library at all**. So on the Node
-   side the only ways bytes become structure are `JSON.parse`, `Buffer.from(…, 'base64')`, and
-   `three`'s geometry consumption in the renderer.
+3. **Node decoders, from `package.json`.** The _application's own_ runtime dependencies are
+   `react`, `react-dom`, `three`, and `zod` — **no archive, compression, or image library among
+   them**. So in application code the only ways bytes become structure are `JSON.parse`,
+   `Buffer.from(…, 'base64')`, and `three`'s geometry consumption in the renderer.
+
+**That third bullet is scoped to the application's dependencies on purpose, because the platform
+is not covered by it.** `electron` sits in `devDependencies` but is the shipped runtime, and it
+bundles Chromium with a full complement of media decoders. The product uses one deliberately:
+`src/renderer/library/useThumbnail.ts:114` builds `data:image/png;base64,${result.pngBase64}`
+for an `<img>`, and the CSP was written to permit exactly that (`img-src 'self' data: blob:`,
+`src/main/security.ts:71`, and `:107` in the development variant). So "the product never decodes
+a PNG" is false at the platform level even though it is true of `native/model-core`.
+
+The reachability is narrow — those bytes come from the sidecar, not from a model file, so an
+attacker needs the sidecar already subverted through B3. But that makes this **a third egress
+from a subverted sidecar**, alongside the JSON-RPC response path at `src/main/sidecar.ts:940`:
+`pngBase64` → `data:` URL → Chromium's PNG decoder. Chromium's own hardening is outside this
+document's control and is treated as part of the platform, like V8 and the sandbox.
 
 **One negative result worth recording, because it is the question a reader will ask.** `png` is
 a dependency, but there is no `png::Decoder` anywhere in production code — the only use is
 `png::Encoder` at `native/model-core/src/thumbnail.rs:145`. The sidecar _writes_ PNGs and never
 parses them. On the Node side, thumbnail bytes are checked by magic number and `IHDR` rather
 than decoded (`src/main/uploadTransport.ts:687-698`), with dimensions read from header offsets.
-There is no image-decoding attack surface in this product. That is a real finding, not an
-omission.
+**No code this project wrote decodes an image**, which is the useful form of the claim — the
+platform-level exception is the Chromium path noted above, and it is reachable only from an
+already-subverted sidecar.
 
 ### 2.2 Ingestion inventory
 
-| Door                                                    | Decoder      | Boundary | Adversary | Guard                           | Coverage             |
-| ------------------------------------------------------- | ------------ | -------- | --------- | ------------------------------- | -------------------- |
-| `threemf::open_package` (`threemf.rs:906`)              | `zip`        | B3       | A1        | `ParseGuard` + `limits.rs`      | Good (T2.1)          |
-| 3MF/vendor XML (`threemf.rs`, `vendor.rs`)              | `quick-xml`  | B3       | A1        | `ParseGuard` depth/event caps   | Good (T2.1)          |
-| `stl` / `obj` `parse_bytes`                             | hand-written | B3       | A1        | `ParseGuard`                    | Example-based (T2.2) |
-| `ArchivePackage::from_bytes` (`archive.rs:106`)         | `zip`        | B3       | A1        | `RetargetLimits` only           | **None (T2.5)**      |
-| Retarget XML (6 sites, T2.5)                            | `quick-xml`  | B3       | A1        | **No depth, event or deadline** | **None (T2.5)**      |
-| Retarget JSON (`project.rs:298`, `profile.rs:1304`)     | `serde_json` | B3       | A1        | Per-part size caps only         | **None (T2.5)**      |
-| Catalog file (`SqliteCatalog::open`)                    | `rusqlite`   | B5       | A4, A3    | Version check + tx rollback     | Partial (T2.6)       |
-| Catalog JSON columns (`sqlite_catalog.rs:390`, `:2963`) | `serde_json` | B5       | A4, A3    | Fails closed on parse error     | Partial (T2.6)       |
-| JSON-RPC requests (`serve.rs:1135`)                     | `serde_json` | B2       | A2 via B1 | Typed params + §5 authorization | Partial (T2.3)       |
-| JSON-RPC responses (`sidecar.ts:940`)                   | `JSON.parse` | B2       | A1 via B3 | Ignores corrupt lines           | Partial (T2.3)       |
-| Persisted main-process stores (5 files)                 | `JSON.parse` | B6       | A4        | Varies — see T1.7               | **None (T1.7)**      |
-| Server responses (`syncHttp.ts:443`)                    | `JSON.parse` | B4       | A3        | Tolerant-then-transform DTOs    | Good (T3.2)          |
+| Door                                                           | Decoder      | Boundary | Adversary | Guard                           | Coverage             |
+| -------------------------------------------------------------- | ------------ | -------- | --------- | ------------------------------- | -------------------- |
+| `threemf::open_package` (`threemf.rs:906`)                     | `zip`        | B3       | A1        | `ParseGuard` + `limits.rs`      | Good (T2.1)          |
+| 3MF/vendor XML (`threemf.rs`, `vendor.rs`)                     | `quick-xml`  | B3       | A1        | `ParseGuard` depth/event caps   | Good (T2.1)          |
+| `stl` / `obj` `parse_bytes`                                    | hand-written | B3       | A1        | `ParseGuard`                    | Example-based (T2.2) |
+| `ArchivePackage::from_bytes` (`archive.rs:106`)                | `zip`        | B3       | A1        | `RetargetLimits` only           | 2 of 12 (T2.5)       |
+| Retarget XML (6 sites, T2.5)                                   | `quick-xml`  | B3       | A1        | **No depth, event or deadline** | **None (T2.5)**      |
+| Retarget JSON (`project.rs:298`, `profile.rs:1304`)            | `serde_json` | B3       | A1        | Per-part size caps only         | **None (T2.5)**      |
+| Catalog file (`SqliteCatalog::open`)                           | `rusqlite`   | B5       | A4, A3    | Version check + tx rollback     | Partial (T2.6)       |
+| Catalog JSON columns (`sqlite_catalog.rs:390`, `:2963`)        | `serde_json` | B5       | A4, A3    | Fails closed on parse error     | Partial (T2.6)       |
+| JSON-RPC requests (`serve.rs:1135`)                            | `serde_json` | B2       | A2 via B1 | Typed params + §5 authorization | Partial (T2.3)       |
+| JSON-RPC responses (`sidecar.ts:940`)                          | `JSON.parse` | B2       | A1 via B3 | Ignores corrupt lines           | Partial (T2.3)       |
+| Persisted main-process stores (5 files)                        | `JSON.parse` | B6       | A4        | Varies — see T1.7               | **None (T1.7)**      |
+| Server responses (`syncHttp.ts:443`, `uploadTransport.ts:439`) | `JSON.parse` | B4       | A3        | Tolerant-then-transform DTOs    | Good (T3.2)          |
 
 One boundary in that table is not drawn in the §2 diagram because it is a direction rather than
 a new participant: **B2 carries responses back from the sidecar to main**, so a sidecar
@@ -177,16 +203,17 @@ subverted through B3 reaches main through it.
 
 ## 3. Assets
 
-| Asset                              | Where it lives                                                        | Loss means                                                                                  |
-| ---------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| PrintFarmer API key / password     | `safeStorage`-encrypted envelope under `userData`                     | Full account takeover on the server                                                         |
-| Short-lived JWT                    | Main-process memory only (`src/main/serverProfiles.ts:394`)           | Account access for the token's lifetime                                                     |
-| The user's model library           | Arbitrary user-chosen folders on disk                                 | Exfiltration of unreleased or commercially sensitive designs                                |
-| Approved-root grants               | `approved-roots.v1.json` under `userData`                             | Widening the filesystem authority the app will exercise. Also an _input_ surface — see T1.7 |
-| Server profile + upload job stores | JSON under `userData` (`serverProfiles.ts`, `uploadJobs.ts`)          | Endpoint substitution and misdirected uploads. Also an _input_ surface — see T1.7           |
-| Catalog database                   | SQLite under `userData`, path overridable by `PRINTFARMER_CATALOG_DB` | Metadata disclosure; corruption breaks the library. Also an _input_ surface — see T2.6      |
-| Retarget artifacts                 | Mode-`0700` per-instance directory under the OS temp directory        | Disclosure or substitution of a project mid-workflow                                        |
-| Release integrity                  | The CI pipeline and the dependency graph                              | Supply-chain compromise of every user                                                       |
+| Asset                              | Where it lives                                                                                | Loss means                                                                                  |
+| ---------------------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| PrintFarmer API key / password     | `safeStorage`-encrypted envelope under `userData`                                             | Full account takeover on the server                                                         |
+| Short-lived JWT                    | Main-process memory only (`src/main/serverProfiles.ts:394`)                                   | Account access for the token's lifetime                                                     |
+| The user's model library           | Arbitrary user-chosen folders on disk                                                         | Exfiltration of unreleased or commercially sensitive designs                                |
+| Approved-root grants               | `approved-roots.v1.json` under `userData`                                                     | Widening the filesystem authority the app will exercise. Also an _input_ surface — see T1.7 |
+| Server profile + upload job stores | JSON under `userData` (`serverProfiles.ts`, `uploadJobs.ts`)                                  | Endpoint substitution and misdirected uploads. Also an _input_ surface — see T1.7           |
+| Catalog database                   | SQLite under `userData`, path overridable by `PRINTFARMER_CATALOG_DB`                         | Metadata disclosure; corruption breaks the library. Also an _input_ surface — see T2.6      |
+| Retarget artifacts                 | Mode-`0700` per-instance directory under the OS temp directory                                | Disclosure or substitution of a project mid-workflow                                        |
+| Upload snapshot copies             | `upload-snapshots/` under `userData`, mode `0700` (`src/main/uploadSnapshot.ts:52`, `:56-57`) | Disclosure of the model library — these are byte-for-byte copies of user models. See T1.7   |
+| Release integrity                  | The CI pipeline and the dependency graph                                                      | Supply-chain compromise of every user                                                       |
 
 ## 4. Adversaries
 
@@ -235,6 +262,25 @@ sibling-prefix escape, renderer-invented approvals, and ancestor swaps. But **no
 repository invokes `registerIpcHandlers`**, so nothing proves the _handlers_ consult the store
 at all. A handler that called `fs.readFile(request.path)` directly would pass the entire
 existing suite. → PR C.
+
+**A control on this threat that §1 obliges me to record, and which was missing until round 4.**
+`retargetDialogs()` (`src/main/ipc.ts:55-88`) reads `PRINTFARMER_E2E_SAVE_DIALOGS` and
+`PRINTFARMER_E2E_OPEN_DIALOGS` from the environment and pre-seeds file-dialog results from them.
+If reachable in a release build it would hand A4 — credited in §4 with setting environment
+variables — the ability to make the app "choose" files without the user, which is precisely the
+consent grant this threat depends on.
+
+It is double-gated, and both gates are real. `__PRINTFARMER_E2E_BUILD__` is a build-time define
+(`vite.main.config.ts:12-14`, set from `PRINTFARMER_BUILD_E2E === '1'`), so in a release bundle
+the branch is constant-folded out and the environment variables are never read at all; and
+`process.env.PRINTFARMER_E2E !== '1'` guards it again at runtime (`ipc.ts:59`). The build-time
+gate is the load-bearing one, because it removes the code rather than skipping it.
+
+**Coverage. None, and this is the kind that regresses invisibly** — one build script exporting
+`PRINTFARMER_BUILD_E2E` and the fold stops happening, with no test failing and nothing in a diff
+to notice. → PR C: assert that a production-configured bundle contains no reference to
+`PRINTFARMER_E2E_OPEN_DIALOGS`. That is a build-output assertion rather than a unit test, which
+makes it unusual for this repo, but it is the only place the guarantee actually lives.
 
 ### T1.2 — Renderer steals another window's retarget artifact (A2)
 
@@ -372,6 +418,21 @@ readers a malformed, truncated, or type-confused JSON document. The fail-closed 
 silently becomes a `throw` during a refactor. → PR C, and it is cheap: these are pure functions
 over file contents, requiring none of the Electron harness the rest of PR C needs.
 
+**One non-JSON store belongs here too: the upload snapshot directory.** `upload-snapshots/`
+under `userData` (`src/main/uploadSnapshot.ts:52`) holds byte-for-byte `${id}.model` copies of
+the user's models (`:96`), staged for upload. It is the same asset class as the retarget temp
+directory and is defended the same way — `0o700` on the root (`:56-57`) and per job (`:116-117`),
+with files opened `O_EXCL` at `0o600` (`:118-123`). It reads no JSON, so it is not one of the
+five above; it is listed because §1 requires that a control the code implements against A4 be
+recorded with what it defends and whether anything tests it.
+
+Its coverage is **behavioural yes, control no** — a distinction worth stating precisely, because
+"untested" would be false. `tests/uploadSnapshot.test.ts` covers snapshot lifecycle thoroughly:
+cleanup after upload, retention when an equal-metadata pathname is replaced, cleanup on cancel,
+stale-directory sweeping, and cleanup retry. But **no test in the repository asserts any file
+mode at all** — `0o700` and `0o600` appear in no test file. The modes are the control, and they
+are the part nothing pins. → PR C, alongside the same gap on retarget artifacts.
+
 ## 6. Threats at B3 and B2 — hostile model files and the sidecar
 
 The parsers are the deepest exposure to A1. They are written in safe Rust, so the realistic
@@ -483,14 +544,15 @@ are inside `#[cfg(test)]` modules in `threemf.rs`.
 `:49-50`, and `retarget/profile.rs:758`. The bytes are A1's, in full.
 
 **Controls, and they are thorough.** `RetargetLimits` (`native/model-core/src/retarget/mod.rs:30`)
-is a genuinely careful control set, independently written: a 512 MiB source cap (`archive.rs:103`),
-a 10,000-part cap (`:107`), per-part caps (`:147-152`), a 1 GiB aggregate uncompressed cap
-(`:153-160`), and rejection of encrypted entries (`:117-123`), directory entries (`:124-128`),
-non-regular and symlink modes (`:129-136`), compression methods other than Stored and Deflate
-(`:137-146`), and case-equivalent duplicate part names (`:161-166`). It also catches
-declared-versus-streamed size disagreement in **both** directions — a short read at `:177-183`
-and trailing extra bytes at `:186-193` — which is the exact class #20 hardened on the catalog
-path. This reader is not sloppy work.
+is a genuinely careful control set, independently written: part-name validation as the first
+per-entry check (`validate_part_name`, called at `archive.rs:116`, defined at `:430`), a 512 MiB
+source cap (`archive.rs:103`), a 10,000-part cap (`:107`), per-part caps (`:147-152`), a 1 GiB
+aggregate uncompressed cap (`:153-160`), and rejection of encrypted entries (`:117-123`),
+directory entries (`:124-128`), non-regular and symlink modes (`:129-136`), compression methods
+other than Stored and Deflate (`:137-146`), and case-equivalent duplicate part names
+(`:161-166`). It also catches declared-versus-streamed size disagreement in **both** directions
+— a short read at `:177-183` and trailing extra bytes at `:186-193` — which is the exact class
+#20 hardened on the catalog path. This reader is not sloppy work.
 
 **The problem is that it is a _second_ implementation, and nothing holds the two together.** It
 never reads `limits.rs`, so the two limit sets can drift with nothing comparing them. They have
@@ -530,10 +592,34 @@ pathologically nested XML costs unacceptable time or stack in these specific han
 the question fuzzing answers and inspection does not. T2.1's statement that XML nesting attacks
 are handled is true of the catalog path and **false of this one**.
 
-**Coverage. None — the sharpest gap in this document.** `archive.rs` contains no `#[test]` at
-all, and no test under `native/model-core/tests/` references any `RetargetLimits` field. Every
-control listed above is unproven: deleting any one of those checks today breaks no test. This
-is the inverse of T2.1, where the controls are stronger _and_ genuinely pinned.
+**Coverage. Two controls incidentally pinned, the rest unproven — and this verdict was
+measured, not read off the source.** `archive.rs` has no unit tests of its own (zero `#[test]`,
+zero `#[cfg(test)]`), but two of its controls are pinned from the integration suite:
+
+- **Part-name traversal rejection** (`archive.rs:116`), by the `../escape.model` case in
+  `rejects_geometry_only_presliced_and_unsafe_paths`
+  (`native/model-core/tests/retarget_integration.rs:509-520`) — the same test T2.4 cites.
+- **The per-part cap** (`archive.rs:147-152`), by
+  `rejects_oversized_control_parts_during_archive_loading`
+  (`native/model-core/tests/retarget_integration.rs:767-782`), which builds
+  `RetargetLimits { max_project_settings_bytes: 64, .. }` and asserts `ArchiveLimitExceeded`.
+
+**Everything else is unproven**: the source cap, the part-count cap, the aggregate uncompressed
+cap, encrypted/directory/special-mode/compression-method rejection, case-duplicate rejection,
+both directions of the declared-versus-streamed size check — **and all six XML sites and both
+JSON sites**, which have no controls to test in the first place.
+
+The split above was established by mutation rather than by reading: disabling each of the two
+pinned controls individually fails exactly the test named beside it, and **disabling all ten
+remaining controls simultaneously leaves the entire 368-test suite green**. Because these are
+early-return rejections, removing them only makes the reader more permissive — so if disabling
+all ten breaks no test, disabling any subset breaks none either. Method recorded because an
+earlier version of this paragraph asserted a coverage verdict that was false in both directions;
+a coverage claim is exactly the kind that must be measured.
+
+This is still the sharpest gap in the document, and the true version is **stronger** than the
+false one it replaces: two ZIP-layer controls hold, while the XML and JSON layers behind them
+have neither controls nor tests.
 
 → PR D must fuzz `ArchivePackage::from_bytes` **and reach the XML and JSON layers behind it**,
 not just the ZIP door, and should add the differential check no test currently makes: that the
@@ -547,7 +633,15 @@ not something to settle inside a test PR.
 `src/main/main.ts:197` sets `PRINTFARMER_CATALOG_DB` only `if (!process.env.PRINTFARMER_CATALOG_DB)`,
 so an inherited environment variable redirects it, and the sidecar reads that variable directly
 (`src/main/sidecar.ts:1081`). A4 can also simply rewrite the file at its default location under
-`userData`. Opening it runs `PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON`, reads
+`userData`.
+
+**This row carries more weight than the others for a reason worth stating: `libsqlite3-sys` is
+the only C code in the shipped sidecar.** The manifest goes to visible lengths to stay pure-Rust
+— `zip` with `default-features = false`, a pure-Rust PNG encoder, pure-Rust base64, each
+commented as such — and SQLite (bundled) is the single deliberate exception. So this is the one
+door where attacker-influenced bytes reach a memory-unsafe parser, which changes the realistic
+outcome from denial of service to genuine memory corruption. Nothing else in T2.1 through T2.5
+has that property. Opening it runs `PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON`, reads
 `user_version`, and may run an 11-step migration chain over attacker-chosen contents
 (`SqliteCatalog::init`, `native/model-core/src/sqlite_catalog.rs:56-115`;
 `SCHEMA_VERSION = 11`, `native/model-core/src/schema.rs:11`).
@@ -661,20 +755,22 @@ someone with administrative rights. → PR B.
 
 ## 9. Open work derived from this model
 
-| Threat           | Gap                                                                                  | Where      |
-| ---------------- | ------------------------------------------------------------------------------------ | ---------- |
-| T4.1, T4.2       | No SBOM, licence, or vulnerability gate                                              | PR B (#21) |
-| T1.1, T1.2, T1.5 | No test ever invokes an IPC handler; `src/main/security.ts` untested                 | PR C (#21) |
-| T1.3, T3.3       | Credential non-egress asserted nowhere                                               | PR C (#21) |
-| T1.4             | One-line assertion that `nodeIntegrationInSubFrames` is falsy, under either ruling   | PR C (#21) |
-| T2.2             | No fuzzing; parser coverage is example-based                                         | PR D (#21) |
-| T1.7             | Five persisted JSON stores; malformed-input handling untested                        | PR C (#21) |
-| T2.5             | Retarget ZIP, XML and JSON layers unguarded and unproven; nothing tracks `limits.rs` | PR D (#21) |
-| T2.6             | Malformed catalog bytes and `PRINTFARMER_CATALOG_DB` redirection untested            | PR D (#21) |
-| T1.4             | Full sender validation — awaiting a ruling                                           | undecided  |
-| T2.5             | Whether `retarget` should adopt `ParseGuard` — a design change, not a test           | not in #21 |
-| T2.6             | Catalog concurrency invariant unstated and untested                                  | not in #21 |
-| Out of scope     | No signing, notarization, or update integrity                                        | #22        |
+| Threat           | Gap                                                                                | Where      |
+| ---------------- | ---------------------------------------------------------------------------------- | ---------- |
+| T4.1, T4.2       | No SBOM, licence, or vulnerability gate                                            | PR B (#21) |
+| T1.1, T1.2, T1.5 | No test ever invokes an IPC handler; `src/main/security.ts` untested               | PR C (#21) |
+| T1.3, T3.3       | Credential non-egress asserted nowhere                                             | PR C (#21) |
+| T1.4             | One-line assertion that `nodeIntegrationInSubFrames` is falsy, under either ruling | PR C (#21) |
+| T2.2             | No fuzzing; parser coverage is example-based                                       | PR D (#21) |
+| T1.7             | Five persisted JSON stores; malformed-input handling untested                      | PR C (#21) |
+| T1.1             | E2E dialog seeding: nothing asserts the branch is absent from a release bundle     | PR C (#21) |
+| T1.7             | `0o700`/`0o600` modes are a control no test asserts, on any store                  | PR C (#21) |
+| T2.5             | Retarget: 10 of 12 ZIP controls unproven; XML and JSON layers wholly unguarded     | PR D (#21) |
+| T2.6             | Malformed catalog bytes and `PRINTFARMER_CATALOG_DB` redirection untested          | PR D (#21) |
+| T1.4             | Full sender validation — awaiting a ruling                                         | undecided  |
+| T2.5             | Whether `retarget` should adopt `ParseGuard` — a design change, not a test         | not in #21 |
+| T2.6             | Catalog concurrency invariant unstated and untested                                | not in #21 |
+| Out of scope     | No signing, notarization, or update integrity                                      | #22        |
 
 Three rows change PR D's shape rather than merely adding to it. **T2.5 is the big one**: a
 harness scoped from T2.2 alone would fuzz the catalog parsers and never reach an
@@ -711,10 +807,12 @@ changes:
   first in importance and was missing from the first draft of this list: #78 landed 966 lines of
   new hand-written plate-layout parsing in `threemf.rs` one commit after the SHA the first
   version of this document was pinned to, and nothing here would have called for a re-read.
-- **Any new dependency that can decode bytes**, in either manifest. This is the trigger that
-  keeps 2.2 closed: the inventory is derived from the decoder set, so a new decoder crate is the
-  event that can invalidate it. Adding one means re-running 2.1's enumeration, not appending a
-  row by inspection.
+- **Any new dependency that can decode bytes**, in either manifest **or either lockfile**. This
+  is the trigger that keeps 2.2 closed: the inventory is derived from the decoder set, so a new
+  decoder is the event that can invalidate it. The lockfiles matter independently of the
+  manifests, because a transitive decoder can arrive through a version bump that changes no
+  manifest line. Adding one means re-running 2.1's enumeration, not appending a row by
+  inspection.
 - **A new persisted store, or a new reader of an existing one** (T1.7), and any change to the
   `0o700`/`0o600` modes or their platform exceptions.
 - **`RetargetLimits` or `limits.rs` moving further apart** (T2.5), or the catalog schema version
