@@ -47,10 +47,24 @@ pub(crate) struct WriteSummary {
 }
 
 impl ArchivePackage {
-    pub(crate) fn open(path: &Path, limits: &RetargetLimits) -> Result<Self, RetargetError> {
-        let metadata =
+    pub(crate) fn read_bounded(
+        path: &Path,
+        limits: &RetargetLimits,
+    ) -> Result<Vec<u8>, RetargetError> {
+        let path_metadata =
             fs::symlink_metadata(path).map_err(|error| RetargetError::source_io(path, error))?;
-        if !metadata.file_type().is_file() {
+        if !path_metadata.file_type().is_file() {
+            return Err(RetargetError::new(
+                IssueCode::SourceNotFound,
+                "source path is not a regular file",
+                "Choose a regular editable 3MF file.",
+            ));
+        }
+        let file = File::open(path).map_err(|error| RetargetError::source_io(path, error))?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| RetargetError::source_io(path, error))?;
+        if !metadata.is_file() {
             return Err(RetargetError::new(
                 IssueCode::SourceNotFound,
                 "source path is not a regular file",
@@ -60,7 +74,21 @@ impl ArchivePackage {
         if metadata.len() > limits.max_source_bytes {
             return Err(limit_error("compressed archive exceeds 512 MiB"));
         }
-        let data = fs::read(path).map_err(|error| RetargetError::source_io(path, error))?;
+        let capacity = usize::try_from(metadata.len()).unwrap_or_default();
+        let mut data = Vec::with_capacity(capacity);
+        file.take(limits.max_source_bytes.saturating_add(1))
+            .read_to_end(&mut data)
+            .map_err(|error| RetargetError::source_io(path, error))?;
+        if data.len() as u64 > limits.max_source_bytes {
+            return Err(limit_error("compressed archive exceeds 512 MiB"));
+        }
+        Ok(data)
+    }
+
+    pub(crate) fn from_bytes(data: &[u8], limits: &RetargetLimits) -> Result<Self, RetargetError> {
+        if data.len() as u64 > limits.max_source_bytes {
+            return Err(limit_error("compressed archive exceeds 512 MiB"));
+        }
         let mut archive = ZipArchive::new(Cursor::new(&data)).map_err(zip_error)?;
         if archive.len() > limits.max_archive_parts {
             return Err(limit_error("archive contains too many parts"));
@@ -135,7 +163,7 @@ impl ArchivePackage {
         }
         let package = Self {
             parts,
-            compressed_size: metadata.len(),
+            compressed_size: data.len() as u64,
         };
         package.validate_relationships()?;
         Ok(package)

@@ -31,10 +31,11 @@ pub(crate) struct ProjectInspection {
 }
 
 impl ProjectInspection {
-    pub(crate) fn inspect(
+    pub(crate) fn inspect_snapshot(
         path: &Path,
         archive: &ArchivePackage,
         limits: &RetargetLimits,
+        snapshot: &[u8],
     ) -> Result<Self, RetargetError> {
         if !archive.has_single_root_model_relationship()? {
             return Err(RetargetError::new(
@@ -50,8 +51,8 @@ impl ProjectInspection {
                 "Re-export a complete OPC/3MF project.",
             ));
         }
-        let mesh = threemf::parse_file(path).map_err(map_threemf_error)?;
-        let metadata = vendor::extract_file(path).map_err(map_threemf_error)?;
+        let mesh = threemf::parse_bytes(snapshot).map_err(map_threemf_error)?;
+        let metadata = vendor::extract_bytes(snapshot).map_err(map_threemf_error)?;
         let application = metadata.core.application.clone();
         let mut blockers = Vec::new();
         let mut warnings = Vec::new();

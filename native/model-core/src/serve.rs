@@ -52,6 +52,7 @@ use serde_json::Value;
 use crate::catalog::{reconcile_root, CatalogStore, InMemoryCatalog};
 use crate::retarget::{
     PreflightReport, RetargetEngine, RetargetError, RetargetOptions, RetargetRpcOutcome,
+    TargetReference,
 };
 use crate::rpc::{
     extract_vendor_metadata_dto, extract_vendor_plate_thumbnails_dto, load_scene_dto,
@@ -118,6 +119,7 @@ struct RetargetProfileParams {
 #[serde(rename_all = "camelCase")]
 struct RetargetPreflightParams {
     source_path: String,
+    target: TargetReference,
     #[serde(default)]
     object_exclusion: bool,
 }
@@ -127,7 +129,7 @@ struct RetargetPreflightParams {
 struct RetargetBuildParams {
     source_path: String,
     output_path: String,
-    target_profile_id: String,
+    target: TargetReference,
     #[serde(default)]
     object_exclusion: bool,
 }
@@ -452,8 +454,9 @@ fn dispatch(
             let params: RetargetPreflightParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid preflightRetarget params: {e}"))?;
             let outcome = match retarget {
-                Some(engine) => match engine.preflight(
+                Some(engine) => match engine.preflight_target(
                     PathBuf::from(params.source_path),
+                    params.target,
                     RetargetOptions {
                         object_exclusion: params.object_exclusion,
                     },
@@ -473,7 +476,11 @@ fn dispatch(
                     let options = RetargetOptions {
                         object_exclusion: params.object_exclusion,
                     };
-                    match engine.preflight(&params.source_path, options.clone()) {
+                    match engine.preflight_target(
+                        &params.source_path,
+                        params.target.clone(),
+                        options.clone(),
+                    ) {
                         Ok(report) if !report.blockers.is_empty() => RetargetRpcOutcome::Blocked {
                             blockers: report.blockers.clone(),
                             warnings: report.warnings.clone(),
@@ -482,7 +489,7 @@ fn dispatch(
                         Ok(_) => match engine.build(
                             params.source_path,
                             params.output_path,
-                            &params.target_profile_id,
+                            params.target,
                             options,
                         ) {
                             Ok(value) => RetargetRpcOutcome::ok(value),
@@ -502,7 +509,7 @@ fn dispatch(
                 Some(engine) => match engine.validate_output(
                     params.source_path,
                     params.output_path,
-                    &params.target_profile_id,
+                    params.target,
                     RetargetOptions {
                         object_exclusion: params.object_exclusion,
                     },

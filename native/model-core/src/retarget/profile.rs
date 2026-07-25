@@ -6,10 +6,10 @@ use std::path::{Component, Path};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use super::guardrails;
 use super::project::ProjectInspection;
 use super::report::{IssueCode, RankedTarget, TargetRecommendation};
 use super::{RetargetError, RetargetLimits};
-use crate::hash::hash_file;
 
 pub(crate) const BUNDLE_ID: &str = "snapmaker-u1-orca-presets";
 pub(crate) const BUNDLE_COMMIT: &str = "0c2d17834b7820339c1cf4326fda7db9da4a766a";
@@ -185,6 +185,16 @@ pub struct ImportedTargetProfileDetails {
     pub filament_names: Vec<String>,
     pub layer_height: f64,
     pub setting_count: usize,
+    pub capabilities: ImportedTargetCapabilities,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedTargetCapabilities {
+    pub nozzle_count: usize,
+    pub max_filament_slots: usize,
+    pub object_exclusion: bool,
+    pub motion_guardrails: bool,
 }
 
 #[derive(Debug)]
@@ -194,6 +204,101 @@ pub(crate) struct Bundle {
     filaments: Vec<ResolvedProfile>,
     filament_defaults: BTreeMap<String, SettingValue>,
     summaries: Vec<TargetProfileSummary>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedTarget {
+    pub profile_id: String,
+    pub display_name: String,
+    pub machine: ResolvedProfile,
+    pub process: ResolvedProfile,
+    pub filaments: Vec<ResolvedProfile>,
+    pub filament_defaults: BTreeMap<String, SettingValue>,
+    imported: bool,
+}
+
+impl ResolvedTarget {
+    pub(crate) fn map_materials(
+        &self,
+        materials: &[String],
+    ) -> Result<Vec<&ResolvedProfile>, RetargetError> {
+        if !self.imported {
+            return map_bundled_materials(&self.filaments, &self.filament_defaults, materials);
+        }
+        let mut mapped = Vec::with_capacity(materials.len());
+        for material in materials {
+            let canonical = material_root_name(material).ok_or_else(|| {
+                RetargetError::new(
+                    IssueCode::UnsupportedMaterial,
+                    format!("source material '{material}' is unsupported"),
+                    "Use a supported U1 filament material.",
+                )
+                .with_setting("filament_type")
+            })?;
+            let matches = self
+                .filaments
+                .iter()
+                .filter(|profile| {
+                    profile
+                        .settings
+                        .get("filament_type")
+                        .and_then(SettingValue::first)
+                        .is_some_and(|value| material_root_name(value) == Some(canonical))
+                })
+                .collect::<Vec<_>>();
+            match matches.as_slice() {
+                [profile] => mapped.push(*profile),
+                [] => {
+                    return Err(RetargetError::new(
+                        IssueCode::UnsupportedMaterial,
+                        format!(
+                        "imported target has no filament profile for source material '{material}'"
+                    ),
+                        "Choose an imported U1 reference containing every source material.",
+                    ))
+                }
+                _ => {
+                    return Err(RetargetError::new(
+                        IssueCode::ProfileValueInvalid,
+                        format!("imported target has ambiguous profiles for material '{material}'"),
+                        "Use an imported U1 reference with one profile per material type.",
+                    )
+                    .with_setting("filament_type"))
+                }
+            }
+        }
+        validate_material_defaults(&mapped, &self.filament_defaults)?;
+        Ok(mapped)
+    }
+
+    pub(crate) fn is_filament_setting_key(&self, key: &str) -> bool {
+        is_filament_identity_key(key)
+            || self
+                .filaments
+                .iter()
+                .any(|profile| is_filament_profile_setting(key, profile))
+    }
+
+    pub(crate) fn recommendation(&self, source_layer_height: f64) -> TargetRecommendation {
+        let target_height = self
+            .process
+            .settings
+            .get("layer_height")
+            .and_then(SettingValue::finite_positive)
+            .unwrap_or(source_layer_height);
+        TargetRecommendation {
+            recommended: RankedTarget {
+                profile_id: self.profile_id.clone(),
+                display_name: self.display_name.clone(),
+                score: 1.0 / (1.0 + (source_layer_height - target_height).abs()),
+                rationale: format!(
+                    "Explicit target differs by {:.3} mm from the source layer height.",
+                    (source_layer_height - target_height).abs()
+                ),
+            },
+            alternatives: Vec::new(),
+        }
+    }
 }
 
 impl Bundle {
@@ -383,12 +488,17 @@ impl Bundle {
         })
     }
 
-    pub(crate) fn filament_defaults(&self) -> &BTreeMap<String, SettingValue> {
-        &self.filament_defaults
-    }
-
-    pub(crate) fn machine(&self) -> &ResolvedProfile {
-        &self.machine
+    pub(crate) fn resolve_bundled(&self, id: &str) -> Result<ResolvedTarget, RetargetError> {
+        let process = self.process(id)?.clone();
+        Ok(ResolvedTarget {
+            profile_id: id.to_string(),
+            display_name: process.name.clone(),
+            machine: self.machine.clone(),
+            process,
+            filaments: self.filaments.clone(),
+            filament_defaults: self.filament_defaults.clone(),
+            imported: false,
+        })
     }
 
     pub(crate) fn inspect(&self, id: &str) -> Result<TargetProfileDetails, RetargetError> {
@@ -461,54 +571,7 @@ impl Bundle {
         &self,
         materials: &[String],
     ) -> Result<Vec<&ResolvedProfile>, RetargetError> {
-        let mapped = materials
-            .iter()
-            .map(|material| {
-                let expected = material_root_name(material).ok_or_else(|| {
-                    RetargetError::new(
-                        IssueCode::UnsupportedMaterial,
-                        format!("material '{material}' has no verified Snapmaker U1 mapping"),
-                        "Choose a supported material profile or change the source material.",
-                    )
-                })?;
-                self.filaments
-                    .iter()
-                    .find(|profile| profile.name == expected)
-                    .ok_or_else(|| {
-                        manifest_error(format!(
-                            "verified material root '{expected}' is absent from the bundle"
-                        ))
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let keys: HashSet<_> = mapped
-            .iter()
-            .flat_map(|profile| {
-                profile
-                    .settings
-                    .keys()
-                    .filter(|key| is_filament_profile_setting(key, profile))
-            })
-            .collect();
-        for key in keys {
-            for profile in &mapped {
-                if !profile.settings.contains_key(key)
-                    && !self.filament_defaults.contains_key(key)
-                    && safe_filament_default(key).is_none()
-                {
-                    return Err(RetargetError::new(
-                        IssueCode::ProfileValueInvalid,
-                        format!(
-                            "filament combination has no verified default for '{key}' in '{}'",
-                            profile.name
-                        ),
-                        "Choose a filament combination with complete compatible settings.",
-                    )
-                    .with_setting(key));
-                }
-            }
-        }
-        Ok(mapped)
+        map_bundled_materials(&self.filaments, &self.filament_defaults, materials)
     }
 
     pub(crate) fn is_filament_setting_key(&self, key: &str) -> bool {
@@ -575,8 +638,81 @@ impl Bundle {
         path: &Path,
         limits: &RetargetLimits,
     ) -> Result<ImportedTargetProfileDetails, RetargetError> {
-        let archive = super::archive::ArchivePackage::open(path, limits)?;
-        let project = ProjectInspection::inspect(path, &archive, limits)?;
+        self.resolve_imported(path, None, limits)
+            .map(|(_, details)| details)
+    }
+
+    pub(crate) fn resolve_imported(
+        &self,
+        path: &Path,
+        expected_sha256: Option<&str>,
+        limits: &RetargetLimits,
+    ) -> Result<(ResolvedTarget, ImportedTargetProfileDetails), RetargetError> {
+        if let Some(expected) = expected_sha256 {
+            if expected.len() != 64
+                || !expected
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(RetargetError::new(
+                    IssueCode::ProfileHashMismatch,
+                    "imported target expectedSha256 must be 64 lowercase hexadecimal characters",
+                    "Inspect the imported target again and use its exact sha256.",
+                ));
+            }
+        }
+        let path_metadata =
+            fs::symlink_metadata(path).map_err(|error| RetargetError::target_io(path, error))?;
+        if !path_metadata.file_type().is_file() {
+            return Err(RetargetError::new(
+                IssueCode::TargetNotFound,
+                "imported target path is not a regular file",
+                "Choose a regular editable Snapmaker U1 3MF reference.",
+            ));
+        }
+        let mut file =
+            fs::File::open(path).map_err(|error| RetargetError::target_io(path, error))?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| RetargetError::target_io(path, error))?;
+        if !metadata.is_file() {
+            return Err(RetargetError::new(
+                IssueCode::TargetNotFound,
+                "imported target path is not a regular file",
+                "Choose a regular editable Snapmaker U1 3MF reference.",
+            ));
+        }
+        if metadata.len() > limits.max_source_bytes {
+            return Err(RetargetError::new(
+                IssueCode::ArchiveLimitExceeded,
+                "imported target exceeds the compressed archive limit",
+                "Choose a U1 reference smaller than 512 MiB.",
+            ));
+        }
+        let capacity = usize::try_from(metadata.len()).unwrap_or_default();
+        let mut snapshot = Vec::with_capacity(capacity);
+        file.by_ref()
+            .take(limits.max_source_bytes.saturating_add(1))
+            .read_to_end(&mut snapshot)
+            .map_err(|error| RetargetError::target_io(path, error))?;
+        if snapshot.len() as u64 > limits.max_source_bytes {
+            return Err(RetargetError::new(
+                IssueCode::ArchiveLimitExceeded,
+                "imported target exceeds the compressed archive limit",
+                "Choose a U1 reference smaller than 512 MiB.",
+            ));
+        }
+        let sha256_before = crate::hash::hash_reader(snapshot.as_slice())
+            .map_err(|error| RetargetError::target_io(path, error))?;
+        if expected_sha256.is_some_and(|expected| expected != sha256_before) {
+            return Err(RetargetError::new(
+                IssueCode::ProfileHashMismatch,
+                "imported target hash does not match expectedSha256",
+                "Inspect the imported target again and discard stale metadata.",
+            ));
+        }
+        let archive = super::archive::ArchivePackage::from_bytes(&snapshot, limits)?;
+        let project = ProjectInspection::inspect_snapshot(path, &archive, limits, &snapshot)?;
         if !project.blockers.is_empty() {
             return Err(RetargetError::new(
                 IssueCode::IncompleteProject,
@@ -584,39 +720,187 @@ impl Bundle {
                 "Export a complete editable Snapmaker U1 Orca/Bambu 3MF.",
             ));
         }
-        let machine_name = project
-            .settings
-            .get("printer_settings_id")
-            .and_then(SettingValue::first)
-            .unwrap_or_default();
-        if machine_name != MACHINE_NAME
-            || project
-                .settings
-                .get("printer_model")
-                .and_then(SettingValue::first)
-                != Some(MACHINE_MODEL_NAME)
-        {
-            return Err(RetargetError::new(
-                IssueCode::ProfileTypeMismatch,
-                "imported reference is not flattened for Snapmaker U1 (0.4 nozzle)",
-                "Use an editable U1 project with exact machine identity.",
-            ));
-        }
-        for key in [
-            "machine_start_gcode",
-            "machine_end_gcode",
-            "printable_area",
-            "nozzle_diameter",
-            "print_settings_id",
-            "filament_settings_id",
-            "filament_type",
-        ] {
-            if !project.settings.contains_key(key) {
+        super::transform::validate_source_array_lengths(&project, |key| {
+            self.is_filament_setting_key(key)
+        })?;
+        for key in super::transform::MACHINE_OWNED_KEYS.iter().chain(
+            [
+                "print_settings_id",
+                "compatible_printers",
+                "compatible_printers_condition",
+                "layer_height",
+                "initial_layer_print_height",
+                "filament_settings_id",
+                "filament_type",
+            ]
+            .iter(),
+        ) {
+            if !project.settings.contains_key(*key) {
                 return Err(RetargetError::new(
                     IssueCode::IncompleteProject,
-                    format!("imported reference lacks flattened setting '{key}'"),
+                    format!("imported reference lacks flattened target setting '{key}'"),
                     "Re-export the project with complete machine, process, and filament settings.",
-                ));
+                )
+                .with_setting(*key));
+            }
+        }
+        for key in super::transform::MACHINE_OWNED_KEYS {
+            if let Some(expected) = self.machine.settings.get(*key) {
+                require_imported_setting_shape(&project.settings, key, expected)?;
+            }
+        }
+        for key in super::transform::PROCESS_OWNED_KEYS {
+            if project.settings.contains_key(*key) {
+                if let Some(expected) = self
+                    .processes
+                    .values()
+                    .find_map(|process| process.settings.get(*key))
+                {
+                    require_imported_setting_shape(&project.settings, key, expected)?;
+                }
+            }
+        }
+        let machine_name =
+            require_imported_scalar_exact(&project.settings, "printer_settings_id", MACHINE_NAME)?;
+        require_imported_scalar_exact(&project.settings, "printer_model", MACHINE_MODEL_NAME)?;
+        require_imported_scalar_exact(&project.settings, "printer_variant", "0.4")?;
+        require_imported_scalar_exact(&project.settings, "printer_technology", "FFF")?;
+        for key in [
+            "gcode_flavor",
+            "machine_start_gcode",
+            "machine_end_gcode",
+            "change_filament_gcode",
+            "machine_pause_gcode",
+            "before_layer_change_gcode",
+            "layer_change_gcode",
+            "bed_model",
+            "bed_texture",
+            "nozzle_type",
+            "single_extruder_multi_material",
+            "print_settings_id",
+            "layer_height",
+            "initial_layer_print_height",
+        ] {
+            require_imported_scalar(&project.settings, key)?;
+        }
+        for key in ["layer_height", "initial_layer_print_height"] {
+            if project
+                .settings
+                .get(key)
+                .and_then(SettingValue::finite_positive)
+                .is_none()
+            {
+                return Err(RetargetError::new(
+                    IssueCode::ProfileValueInvalid,
+                    format!("imported reference setting '{key}' must be positive"),
+                    "Use a complete sliced-settings reference with positive layer heights.",
+                )
+                .with_setting(key));
+            }
+        }
+        let slot_count = project.materials.len();
+        for (key, count) in [
+            ("nozzle_diameter", 4),
+            ("extruder_offset", 4),
+            ("max_layer_height", 4),
+            ("min_layer_height", 4),
+            ("filament_settings_id", slot_count),
+            ("filament_type", slot_count),
+        ] {
+            require_imported_list(&project.settings, key, count)?;
+        }
+        for key in [
+            "deretraction_speed",
+            "long_retractions_when_cut",
+            "retract_before_wipe",
+            "retract_length_toolchange",
+            "retract_lift_above",
+            "retract_lift_below",
+            "retract_lift_enforce",
+            "retract_restart_extra",
+            "retract_restart_extra_toolchange",
+            "retract_when_changing_layer",
+            "retraction_distances_when_cut",
+            "retraction_length",
+            "retraction_minimum_travel",
+            "retraction_speed",
+            "travel_slope",
+            "wipe",
+            "wipe_distance",
+            "z_hop",
+            "z_hop_types",
+            "z_hop_when_prime",
+        ] {
+            require_imported_list_shape(&project.settings, key, 4)?;
+        }
+        for key in [
+            "printable_height",
+            "nozzle_diameter",
+            "machine_max_speed_x",
+            "machine_max_speed_y",
+            "machine_max_speed_z",
+            "machine_max_speed_e",
+            "machine_max_acceleration_extruding",
+            "machine_max_acceleration_retracting",
+            "machine_max_acceleration_travel",
+            "machine_max_acceleration_x",
+            "machine_max_acceleration_y",
+            "machine_max_acceleration_z",
+            "machine_max_acceleration_e",
+            "machine_max_jerk_x",
+            "machine_max_jerk_y",
+            "machine_max_jerk_z",
+            "machine_max_jerk_e",
+            "max_layer_height",
+            "min_layer_height",
+        ] {
+            require_imported_numeric_values(&project.settings, key, false)?;
+        }
+        for key in ["machine_min_extruding_rate", "machine_min_travel_rate"] {
+            require_imported_numeric_values(&project.settings, key, true)?;
+        }
+        require_imported_bed_polygon(&project.settings)?;
+        for key in [
+            "filament_vendor",
+            "filament_diameter",
+            "filament_density",
+            "filament_max_volumetric_speed",
+            "nozzle_temperature",
+            "nozzle_temperature_initial_layer",
+            "hot_plate_temp",
+            "hot_plate_temp_initial_layer",
+        ] {
+            require_imported_list(&project.settings, key, slot_count)?;
+        }
+        for key in ["filament_start_gcode", "filament_end_gcode"] {
+            require_imported_list_shape(&project.settings, key, slot_count)?;
+        }
+        for key in [
+            "filament_diameter",
+            "filament_density",
+            "filament_max_volumetric_speed",
+            "nozzle_temperature",
+            "nozzle_temperature_initial_layer",
+            "hot_plate_temp",
+            "hot_plate_temp_initial_layer",
+        ] {
+            require_imported_numeric_values(&project.settings, key, false)?;
+        }
+        for (key, value) in &project.settings {
+            if let SettingValue::List(values) = value {
+                if values.len() == slot_count
+                    && !self.is_filament_setting_key(key)
+                    && !is_imported_shared_array_key(key)
+                {
+                    return Err(RetargetError::new(
+                        IssueCode::ProfileValueInvalid,
+                        format!(
+                            "imported reference array '{key}' is ambiguous across {slot_count} filament slots"
+                        ),
+                        "Remove imported-only slot arrays or use a normalized supported U1 reference.",
+                    )
+                    .with_setting(key));
+                }
             }
         }
         let filament_names = project
@@ -634,21 +918,124 @@ impl Bundle {
                 "Re-export a flattened editable U1 project.",
             ));
         }
-        let sha256 = hash_file(path).map_err(RetargetError::io)?;
-        Ok(ImportedTargetProfileDetails {
-            profile_id: format!("imported:{sha256}"),
-            sha256,
+        let mut filaments = Vec::with_capacity(project.materials.len());
+        let mut material_types = HashSet::new();
+        for (slot, (name, material)) in filament_names
+            .iter()
+            .zip(project.materials.iter())
+            .enumerate()
+        {
+            if name.trim().is_empty() || material.trim().is_empty() {
+                return Err(RetargetError::new(
+                    IssueCode::IncompleteProject,
+                    "imported reference contains an empty filament identity",
+                    "Assign one complete U1 filament profile per reference slot.",
+                ));
+            }
+            let canonical_material = material_root_name(material).ok_or_else(|| {
+                RetargetError::new(
+                    IssueCode::UnsupportedMaterial,
+                    format!("imported reference material '{material}' is unsupported"),
+                    "Use a supported Snapmaker U1 filament material.",
+                )
+                .with_setting("filament_type")
+            })?;
+            if !material_types.insert(canonical_material) {
+                return Err(RetargetError::new(
+                    IssueCode::ProfileValueInvalid,
+                    format!(
+                        "imported reference has ambiguous duplicate material type '{material}'"
+                    ),
+                    "Use one imported filament profile per material type.",
+                )
+                .with_setting("filament_type"));
+            }
+            let mut settings = BTreeMap::new();
+            for (key, value) in &project.settings {
+                if !self.is_filament_setting_key(key) {
+                    continue;
+                }
+                if let SettingValue::List(values) = value {
+                    if values.len() == project.materials.len() {
+                        settings.insert(key.clone(), SettingValue::Scalar(values[slot].clone()));
+                    }
+                }
+            }
+            settings.insert(
+                "filament_settings_id".to_string(),
+                SettingValue::Scalar(name.clone()),
+            );
+            settings.insert(
+                "filament_type".to_string(),
+                SettingValue::Scalar(material.clone()),
+            );
+            filaments.push(ResolvedProfile {
+                name: name.clone(),
+                path: path.display().to_string(),
+                sha256: sha256_before.clone(),
+                settings,
+            });
+        }
+        let shared_settings = project
+            .settings
+            .iter()
+            .filter(|(key, _)| !self.is_filament_setting_key(key))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let process_name = project
+            .settings
+            .get("print_settings_id")
+            .and_then(SettingValue::first)
+            .unwrap_or_default()
+            .to_string();
+        let machine = ResolvedProfile {
+            name: machine_name.to_string(),
+            path: path.display().to_string(),
+            sha256: sha256_before.clone(),
+            settings: shared_settings.clone(),
+        };
+        let process = ResolvedProfile {
+            name: process_name.clone(),
+            path: path.display().to_string(),
+            sha256: sha256_before.clone(),
+            settings: shared_settings,
+        };
+        guardrails::validate(&project.settings, &machine, &process)?;
+        let profile_id = format!("imported:{sha256_before}");
+        let details = ImportedTargetProfileDetails {
+            profile_id: profile_id.clone(),
+            sha256: sha256_before.clone(),
             machine_name: machine_name.to_string(),
-            process_name: project
-                .settings
-                .get("print_settings_id")
-                .and_then(SettingValue::first)
-                .unwrap_or_default()
-                .to_string(),
+            process_name: process_name.clone(),
             filament_names,
             layer_height: project.layer_height.unwrap_or_default(),
             setting_count: project.settings.len(),
-        })
+            capabilities: ImportedTargetCapabilities {
+                nozzle_count: project
+                    .settings
+                    .get("nozzle_diameter")
+                    .map(|value| value.as_list().len())
+                    .unwrap_or_default(),
+                max_filament_slots: project.materials.len(),
+                object_exclusion: project.settings.contains_key("exclude_object"),
+                motion_guardrails: guardrails::SPEED_KEYS
+                    .iter()
+                    .chain(guardrails::ACCELERATION_KEYS.iter())
+                    .any(|key| project.settings.contains_key(*key)),
+            },
+        };
+        Ok((
+            ResolvedTarget {
+                profile_id,
+                display_name: format!("{process_name} (Imported U1)"),
+                machine,
+                process,
+                filaments,
+                filament_defaults: BTreeMap::new(),
+                imported: true,
+            },
+            details,
+        ))
     }
 }
 
@@ -843,6 +1230,204 @@ pub(crate) fn safe_filament_default(key: &str) -> Option<&'static str> {
     }
 }
 
+fn is_imported_shared_array_key(key: &str) -> bool {
+    super::transform::MACHINE_OWNED_KEYS.contains(&key)
+        || super::transform::PROCESS_OWNED_KEYS.contains(&key)
+        || matches!(
+            key,
+            "compatible_prints"
+                | "extruder_colour"
+                | "flush_volumes_matrix"
+                | "flush_volumes_vector"
+        )
+}
+
+fn require_imported_scalar<'a>(
+    settings: &'a BTreeMap<String, SettingValue>,
+    key: &str,
+) -> Result<&'a str, RetargetError> {
+    let Some(SettingValue::Scalar(value)) = settings.get(key) else {
+        return Err(RetargetError::new(
+            IssueCode::ProfileValueInvalid,
+            format!("imported reference setting '{key}' must be a scalar"),
+            "Use a complete flattened Snapmaker U1 reference project.",
+        )
+        .with_setting(key));
+    };
+    if value.trim().is_empty() {
+        return Err(RetargetError::new(
+            IssueCode::ProfileValueInvalid,
+            format!("imported reference setting '{key}' must not be empty"),
+            "Use a complete flattened Snapmaker U1 reference project.",
+        )
+        .with_setting(key));
+    }
+
+    Ok(value)
+}
+
+fn require_imported_setting_shape(
+    settings: &BTreeMap<String, SettingValue>,
+    key: &str,
+    expected: &SettingValue,
+) -> Result<(), RetargetError> {
+    let valid = match (settings.get(key), expected) {
+        (Some(SettingValue::Scalar(_)), SettingValue::Scalar(_)) => true,
+        (Some(SettingValue::List(actual)), SettingValue::List(expected)) => {
+            actual.len() == expected.len()
+        }
+        _ => false,
+    };
+    if !valid {
+        let expected_shape = match expected {
+            SettingValue::Scalar(_) => "a scalar".to_string(),
+            SettingValue::List(values) => format!("an array of {} values", values.len()),
+        };
+        return Err(RetargetError::new(
+            IssueCode::ProfileValueInvalid,
+            format!("imported reference setting '{key}' must be {expected_shape}"),
+            "Use setting shapes from a complete official Snapmaker U1 reference.",
+        )
+        .with_setting(key));
+    }
+    Ok(())
+}
+
+fn require_imported_scalar_exact<'a>(
+    settings: &'a BTreeMap<String, SettingValue>,
+    key: &str,
+    expected: &str,
+) -> Result<&'a str, RetargetError> {
+    let value = require_imported_scalar(settings, key)?;
+    if value != expected {
+        return Err(RetargetError::new(
+            IssueCode::ProfileTypeMismatch,
+            format!("imported reference setting '{key}' is not exactly '{expected}'"),
+            "Use a complete Snapmaker U1 0.4 nozzle reference project.",
+        )
+        .with_setting(key));
+    }
+    Ok(value)
+}
+
+fn require_imported_list(
+    settings: &BTreeMap<String, SettingValue>,
+    key: &str,
+    expected_len: usize,
+) -> Result<(), RetargetError> {
+    let Some(SettingValue::List(values)) = settings.get(key) else {
+        return Err(RetargetError::new(
+            IssueCode::ProfileValueInvalid,
+            format!("imported reference setting '{key}' must be an array"),
+            "Use a complete flattened Snapmaker U1 reference project.",
+        )
+        .with_setting(key));
+    };
+    if values.len() != expected_len || values.iter().any(|value| value.trim().is_empty()) {
+        return Err(RetargetError::new(
+            IssueCode::ProfileValueInvalid,
+            format!(
+                "imported reference setting '{key}' must contain {expected_len} non-empty values"
+            ),
+            "Use a complete flattened Snapmaker U1 reference project.",
+        )
+        .with_setting(key));
+    }
+    Ok(())
+}
+
+fn require_imported_list_shape(
+    settings: &BTreeMap<String, SettingValue>,
+    key: &str,
+    expected_len: usize,
+) -> Result<(), RetargetError> {
+    let Some(SettingValue::List(values)) = settings.get(key) else {
+        return Err(RetargetError::new(
+            IssueCode::ProfileValueInvalid,
+            format!("imported reference setting '{key}' must be an array"),
+            "Use a complete flattened Snapmaker U1 reference project.",
+        )
+        .with_setting(key));
+    };
+    if values.len() != expected_len {
+        return Err(RetargetError::new(
+            IssueCode::ProfileValueInvalid,
+            format!("imported reference setting '{key}' must contain {expected_len} values"),
+            "Use a complete flattened Snapmaker U1 reference project.",
+        )
+        .with_setting(key));
+    }
+    Ok(())
+}
+
+fn require_imported_numeric_values(
+    settings: &BTreeMap<String, SettingValue>,
+    key: &str,
+    allow_zero: bool,
+) -> Result<(), RetargetError> {
+    let Some(value) = settings.get(key) else {
+        return Err(RetargetError::new(
+            IssueCode::IncompleteProject,
+            format!("imported reference lacks numeric setting '{key}'"),
+            "Use a complete flattened Snapmaker U1 reference project.",
+        )
+        .with_setting(key));
+    };
+    if value.as_list().iter().any(|value| {
+        value.trim().parse::<f64>().map_or(true, |value| {
+            !value.is_finite()
+                || if allow_zero {
+                    value < 0.0
+                } else {
+                    value <= 0.0
+                }
+        })
+    }) {
+        return Err(RetargetError::new(
+            IssueCode::ProfileValueInvalid,
+            format!("imported reference setting '{key}' contains an invalid numeric value"),
+            "Use finite target limits and dimensions from a complete U1 reference.",
+        )
+        .with_setting(key));
+    }
+    Ok(())
+}
+
+fn require_imported_bed_polygon(
+    settings: &BTreeMap<String, SettingValue>,
+) -> Result<(), RetargetError> {
+    let key = "printable_area";
+    let Some(SettingValue::List(points)) = settings.get(key) else {
+        return Err(RetargetError::new(
+            IssueCode::ProfileValueInvalid,
+            "imported reference printable_area must be a polygon array",
+            "Use a complete Snapmaker U1 reference with printable bed geometry.",
+        )
+        .with_setting(key));
+    };
+    let valid = points.len() >= 3
+        && points.iter().all(|point| {
+            let Some((x, y)) = point.split_once('x') else {
+                return false;
+            };
+            [x, y].iter().all(|value| {
+                value
+                    .trim()
+                    .parse::<f64>()
+                    .is_ok_and(|value| value.is_finite())
+            })
+        });
+    if !valid {
+        return Err(RetargetError::new(
+            IssueCode::ProfileValueInvalid,
+            "imported reference printable_area contains invalid bed coordinates",
+            "Use a complete Snapmaker U1 reference with finite printable bed geometry.",
+        )
+        .with_setting(key));
+    }
+    Ok(())
+}
+
 fn validate_inheritance(profiles: &HashMap<String, Profile>) -> Result<(), RetargetError> {
     for profile in profiles.values() {
         if let Some(parent_name) = &profile.inherits {
@@ -1009,12 +1594,79 @@ fn filament_summary(profile: &ResolvedProfile) -> Result<FilamentProfileSummary,
     })
 }
 
-fn material_root_name(material: &str) -> Option<&'static str> {
-    let normalized: String = material
+fn map_bundled_materials<'a>(
+    filaments: &'a [ResolvedProfile],
+    defaults: &BTreeMap<String, SettingValue>,
+    materials: &[String],
+) -> Result<Vec<&'a ResolvedProfile>, RetargetError> {
+    let mapped = materials
+        .iter()
+        .map(|material| {
+            let expected = material_root_name(material).ok_or_else(|| {
+                RetargetError::new(
+                    IssueCode::UnsupportedMaterial,
+                    format!("material '{material}' has no verified Snapmaker U1 mapping"),
+                    "Choose a supported material profile or change the source material.",
+                )
+            })?;
+            filaments
+                .iter()
+                .find(|profile| profile.name == expected)
+                .ok_or_else(|| {
+                    manifest_error(format!(
+                        "verified material root '{expected}' is absent from the bundle"
+                    ))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_material_defaults(&mapped, defaults)?;
+    Ok(mapped)
+}
+
+fn validate_material_defaults(
+    mapped: &[&ResolvedProfile],
+    defaults: &BTreeMap<String, SettingValue>,
+) -> Result<(), RetargetError> {
+    let keys: HashSet<_> = mapped
+        .iter()
+        .flat_map(|profile| {
+            profile
+                .settings
+                .keys()
+                .filter(|key| is_filament_profile_setting(key, profile))
+        })
+        .collect();
+    for key in keys {
+        for profile in mapped {
+            if !profile.settings.contains_key(key)
+                && !defaults.contains_key(key)
+                && safe_filament_default(key).is_none()
+            {
+                return Err(RetargetError::new(
+                    IssueCode::ProfileValueInvalid,
+                    format!(
+                        "filament combination has no verified default for '{key}' in '{}'",
+                        profile.name
+                    ),
+                    "Choose a filament combination with complete compatible settings.",
+                )
+                .with_setting(key));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn normalize_material(material: &str) -> String {
+    material
         .chars()
         .filter(|character| character.is_ascii_alphanumeric())
         .flat_map(char::to_lowercase)
-        .collect();
+        .collect()
+}
+
+fn material_root_name(material: &str) -> Option<&'static str> {
+    let normalized = normalize_material(material);
     match normalized.as_str() {
         "pla" | "polylacticacid" => Some("Snapmaker PLA @U1"),
         "placf" | "carbonfiberpla" => Some("Snapmaker PLA-CF @U1"),
