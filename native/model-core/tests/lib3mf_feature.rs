@@ -1,12 +1,11 @@
 #![cfg(feature = "lib3mf")]
 
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::path::PathBuf;
 
 use model_core::model::ModelFormat;
 use model_core::scene::load_scene;
 use model_core::scene_status::SceneLoadStatus;
-use model_core::threemf::parse_file_with_lib3mf;
+use model_core::threemf::{parse_file_with_lib3mf, stage_lib3mf_test_library};
 
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -16,62 +15,11 @@ fn fixture_path(name: &str) -> PathBuf {
 }
 
 fn stage_test_library() {
-    static STAGED: OnceLock<Result<(), String>> = OnceLock::new();
+    static STAGED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
     STAGED
-        .get_or_init(stage_test_library_once)
+        .get_or_init(stage_lib3mf_test_library)
         .as_ref()
         .unwrap_or_else(|error| panic!("failed to stage lib3mf test library: {error}"));
-}
-
-fn stage_test_library_once() -> Result<(), String> {
-    let extension = if cfg!(windows) {
-        "dll"
-    } else if cfg!(target_os = "macos") {
-        "dylib"
-    } else {
-        "so"
-    };
-    let exe_dir = std::env::current_exe()
-        .map_err(|error| format!("unable to locate test executable: {error}"))?
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| "test executable has no parent directory".to_string())?;
-    let staged = exe_dir.join(format!("lib3mf.{extension}"));
-    if staged.exists() {
-        return Ok(());
-    }
-
-    let cargo_home = std::env::var_os("CARGO_HOME")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("USERPROFILE").map(|profile| PathBuf::from(profile).join(".cargo"))
-        })
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
-        .ok_or_else(|| "unable to determine Cargo home for lib3mf test staging".to_string())?;
-    let checkouts = cargo_home.join("git").join("checkouts");
-    let source = std::fs::read_dir(&checkouts)
-        .map_err(|error| format!("unable to read {checkouts:?}: {error}"))?
-        .filter_map(Result::ok)
-        .find_map(|entry| {
-            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-            if !name.starts_with("lib3mf_rs-") {
-                return None;
-            }
-            std::fs::read_dir(entry.path())
-                .ok()?
-                .filter_map(Result::ok)
-                .map(|revision| {
-                    revision
-                        .path()
-                        .join("libraries")
-                        .join(format!("lib3mf.{extension}"))
-                })
-                .find(|candidate| candidate.is_file())
-        })
-        .ok_or_else(|| format!("unable to find lib3mf.{extension} under {checkouts:?}"))?;
-    std::fs::copy(&source, &staged)
-        .map_err(|error| format!("unable to stage {source:?} to {staged:?}: {error}"))?;
-    Ok(())
 }
 
 #[test]

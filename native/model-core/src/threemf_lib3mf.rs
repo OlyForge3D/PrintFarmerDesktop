@@ -2,7 +2,9 @@ use std::collections::{BTreeSet, HashMap};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::ptr;
+use std::sync::OnceLock;
 
 use lib3mf_ffi::{
     eModelUnit, eObjectType, sColor, sPosition, sTransform, sTriangle, sTriangleProperties, CBool,
@@ -55,9 +57,7 @@ struct Lib3mfSession {
 impl Lib3mfSession {
     fn new() -> Result<Self, ThreeMfError> {
         let bases = lib3mf_library_bases()?;
-        let wrapper = load_wrapper_from_library_bases(&bases, |candidate| {
-            Wrapper::new(Some(candidate)).map_err(|error| error.message)
-        })?;
+        let wrapper = load_wrapper_from_library_bases(&bases, load_wrapper_from_library_base)?;
         Ok(Self { wrapper })
     }
 
@@ -1320,7 +1320,7 @@ fn lib3mf_library_bases_from_exe_dir(exe_dir: &Path) -> Vec<PathBuf> {
 
 fn load_wrapper_from_library_bases<T, F>(bases: &[PathBuf], mut load: F) -> Result<T, ThreeMfError>
 where
-    F: FnMut(&str) -> Result<T, String>,
+    F: FnMut(&Path) -> Result<T, String>,
 {
     let mut attempts = Vec::new();
     for candidate in bases {
@@ -1331,16 +1331,9 @@ where
             )));
         }
 
-        let candidate_str = candidate.to_str().ok_or_else(|| {
-            ThreeMfError::Lib3Mf(format!(
-                "lib3mf search path is not valid UTF-8: {:?}",
-                candidate
-            ))
-        })?;
-
-        match load(candidate_str) {
+        match load(candidate) {
             Ok(wrapper) => return Ok(wrapper),
-            Err(error) => attempts.push(format!("{candidate_str}: {error}")),
+            Err(error) => attempts.push(format!("{}: {error}", candidate.display())),
         }
     }
 
@@ -1361,11 +1354,311 @@ fn push_library_base(bases: &mut Vec<PathBuf>, base: PathBuf) {
     }
 }
 
+fn lib3mf_library_extension() -> &'static str {
+    if cfg!(windows) {
+        "dll"
+    } else if cfg!(target_os = "macos") {
+        "dylib"
+    } else {
+        "so"
+    }
+}
+
+fn lib3mf_library_path(base: &Path) -> PathBuf {
+    let mut path = base.to_path_buf();
+    path.set_extension(lib3mf_library_extension());
+    path
+}
+
+fn load_wrapper_from_library_base(base: &Path) -> Result<Wrapper, String> {
+    let library_path = lib3mf_library_path(base);
+    if !library_path.is_absolute() {
+        return Err(format!(
+            "lib3mf shared library path must be absolute: {}",
+            library_path.display()
+        ));
+    }
+    let base_str = base
+        .to_str()
+        .ok_or_else(|| format!("lib3mf search path is not valid UTF-8: {}", base.display()))?;
+
+    #[cfg(windows)]
+    {
+        let library_dir = library_path.parent().ok_or_else(|| {
+            format!(
+                "lib3mf shared library path has no parent directory: {}",
+                library_path.display()
+            )
+        })?;
+        ensure_hardened_windows_dll_search()?;
+        with_windows_added_dll_directory(
+            library_dir,
+            add_windows_dll_directory,
+            remove_windows_dll_directory,
+            || Wrapper::new(Some(base_str)).map_err(|error| error.message),
+        )
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = library_path;
+        Wrapper::new(Some(base_str)).map_err(|error| error.message)
+    }
+}
+
+#[cfg(windows)]
+const LOAD_LIBRARY_SEARCH_APPLICATION_DIR: u32 = 0x0000_0200;
+#[cfg(windows)]
+const LOAD_LIBRARY_SEARCH_USER_DIRS: u32 = 0x0000_0400;
+#[cfg(windows)]
+const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
+
+#[cfg(windows)]
+type DllDirectoryCookie = *mut std::ffi::c_void;
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn AddDllDirectory(new_directory: *const u16) -> DllDirectoryCookie;
+    fn GetLastError() -> u32;
+    fn RemoveDllDirectory(cookie: DllDirectoryCookie) -> i32;
+    fn SetDefaultDllDirectories(directory_flags: u32) -> i32;
+}
+
+#[cfg(windows)]
+fn hardened_windows_dll_search_flags() -> u32 {
+    LOAD_LIBRARY_SEARCH_APPLICATION_DIR
+        | LOAD_LIBRARY_SEARCH_SYSTEM32
+        | LOAD_LIBRARY_SEARCH_USER_DIRS
+}
+
+#[cfg(windows)]
+fn ensure_hardened_windows_dll_search() -> Result<(), String> {
+    static INITIALIZED: OnceLock<Result<(), String>> = OnceLock::new();
+    INITIALIZED
+        .get_or_init(|| {
+            let success = unsafe { SetDefaultDllDirectories(hardened_windows_dll_search_flags()) };
+            if success == 0 {
+                Err(format!(
+                    "SetDefaultDllDirectories failed with Win32 error {}",
+                    unsafe { GetLastError() }
+                ))
+            } else {
+                Ok(())
+            }
+        })
+        .clone()
+}
+
+#[cfg(windows)]
+fn add_windows_dll_directory(directory: &Path) -> Result<DllDirectoryCookie, String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut wide = directory.as_os_str().encode_wide().collect::<Vec<_>>();
+    wide.push(0);
+    let cookie = unsafe { AddDllDirectory(wide.as_ptr()) };
+    if cookie.is_null() {
+        Err(format!(
+            "AddDllDirectory failed for {} with Win32 error {}",
+            directory.display(),
+            unsafe { GetLastError() }
+        ))
+    } else {
+        Ok(cookie)
+    }
+}
+
+#[cfg(windows)]
+fn remove_windows_dll_directory(cookie: DllDirectoryCookie) -> Result<(), String> {
+    let success = unsafe { RemoveDllDirectory(cookie) };
+    if success == 0 {
+        Err(format!(
+            "RemoveDllDirectory failed with Win32 error {}",
+            unsafe { GetLastError() }
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn with_windows_added_dll_directory<T, AddDir, RemoveDir, Load>(
+    directory: &Path,
+    mut add_directory: AddDir,
+    mut remove_directory: RemoveDir,
+    load: Load,
+) -> Result<T, String>
+where
+    AddDir: FnMut(&Path) -> Result<DllDirectoryCookie, String>,
+    RemoveDir: FnMut(DllDirectoryCookie) -> Result<(), String>,
+    Load: FnOnce() -> Result<T, String>,
+{
+    let cookie = add_directory(directory)?;
+    let load_result = load();
+    let remove_result = remove_directory(cookie);
+
+    match (load_result, remove_result) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(load_error), Err(remove_error)) => Err(format!(
+            "{load_error}; additionally failed to remove hardened DLL directory: {remove_error}"
+        )),
+    }
+}
+
+const MODEL_CORE_CARGO_TOML: &str = include_str!("../Cargo.toml");
+
+fn pinned_lib3mf_revision() -> &'static str {
+    extract_pinned_lib3mf_revision(MODEL_CORE_CARGO_TOML)
+        .expect("native/model-core/Cargo.toml must pin lib3mf-ffi to an exact rev")
+}
+
+fn extract_pinned_lib3mf_revision(manifest: &str) -> Result<&str, String> {
+    manifest
+        .lines()
+        .find(|line| line.trim_start().starts_with("lib3mf-ffi = "))
+        .and_then(|line| line.split("rev = \"").nth(1))
+        .and_then(|rev| rev.split('"').next())
+        .filter(|rev| !rev.is_empty())
+        .ok_or_else(|| {
+            "unable to extract lib3mf-ffi rev from native/model-core/Cargo.toml".to_string()
+        })
+}
+
+pub(crate) fn stage_test_library_for_current_exe() -> Result<(), String> {
+    static STAGED: OnceLock<Result<(), String>> = OnceLock::new();
+    STAGED
+        .get_or_init(stage_test_library_for_current_exe_once)
+        .clone()
+}
+
+fn stage_test_library_for_current_exe_once() -> Result<(), String> {
+    let extension = lib3mf_library_extension();
+    let exe_dir = std::env::current_exe()
+        .map_err(|error| format!("unable to locate test executable: {error}"))?
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "test executable has no parent directory".to_string())?;
+    let staged = exe_dir.join(format!("lib3mf.{extension}"));
+
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("USERPROFILE").map(|profile| PathBuf::from(profile).join(".cargo"))
+        })
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
+        .ok_or_else(|| "unable to determine Cargo home for lib3mf test staging".to_string())?;
+    let checkouts = cargo_home.join("git").join("checkouts");
+    let source = select_pinned_lib3mf_library(&checkouts, extension, verify_checkout_revision)?;
+    std::fs::copy(&source, &staged)
+        .map_err(|error| format!("unable to stage {source:?} to {staged:?}: {error}"))?;
+    Ok(())
+}
+
+fn select_pinned_lib3mf_library<F>(
+    checkouts: &Path,
+    extension: &str,
+    mut verify_revision: F,
+) -> Result<PathBuf, String>
+where
+    F: FnMut(&Path) -> Result<String, String>,
+{
+    let mut mismatches = Vec::new();
+    let mut repo_entries = std::fs::read_dir(checkouts)
+        .map_err(|error| format!("unable to read {checkouts:?}: {error}"))?
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+    repo_entries.sort_by_key(|entry| entry.file_name());
+
+    let pinned_revision = pinned_lib3mf_revision();
+    for entry in repo_entries {
+        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        if !name.starts_with("lib3mf_rs-") {
+            continue;
+        }
+
+        let mut revision_entries = std::fs::read_dir(entry.path())
+            .map_err(|error| format!("unable to inspect {:?}: {error}", entry.path()))?
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        revision_entries.sort_by_key(|revision| revision.file_name());
+
+        for revision in revision_entries {
+            let revision_path = revision.path();
+            let candidate = revision_path
+                .join("libraries")
+                .join(format!("lib3mf.{extension}"));
+            if !candidate.is_file() {
+                continue;
+            }
+
+            let actual_revision = verify_revision(&revision_path)?;
+            if actual_revision == pinned_revision {
+                return Ok(candidate);
+            }
+
+            mismatches.push(format!(
+                "{} resolved to {actual_revision} (expected {pinned_revision})",
+                revision_path.display()
+            ));
+        }
+    }
+
+    if mismatches.is_empty() {
+        Err(format!(
+            "unable to find lib3mf.{} for pinned revision {} under {:?}",
+            extension, pinned_revision, checkouts
+        ))
+    } else {
+        Err(format!(
+            "refusing to stage lib3mf.{} from cached checkouts because none matched pinned revision {}: {}",
+            extension,
+            pinned_revision,
+            mismatches.join(" | ")
+        ))
+    }
+}
+
+fn verify_checkout_revision(revision_path: &Path) -> Result<String, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(revision_path)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .map_err(|error| {
+            format!(
+                "unable to verify lib3mf checkout revision at {}: {error}",
+                revision_path.display()
+            )
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!(
+            "git rev-parse HEAD failed for {}: {}",
+            revision_path.display(),
+            if stderr.is_empty() {
+                format!("exit status {}", output.status)
+            } else {
+                stderr
+            }
+        ));
+    }
+
+    let revision = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if revision.is_empty() {
+        return Err(format!(
+            "git rev-parse HEAD returned an empty revision for {}",
+            revision_path.display()
+        ));
+    }
+    Ok(revision)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::ErrorKind;
-    use std::sync::OnceLock;
 
     #[test]
     fn affine_transform_converts_lib3mf_matrix() {
@@ -1420,7 +1713,7 @@ mod tests {
 
     #[test]
     fn strict_native_parser_returns_lib3mf_error_for_invalid_namespace_fixture() {
-        stage_test_library().unwrap();
+        stage_test_library_for_current_exe().unwrap();
 
         let session = Lib3mfSession::new().unwrap();
         let path = fixture_path("lib3mf_invalid_namespace.3mf");
@@ -1501,21 +1794,13 @@ mod tests {
         let mut seen = Vec::new();
 
         let error = load_wrapper_from_library_bases::<(), _>(&bases, |candidate| {
-            seen.push(candidate.to_string());
+            seen.push(candidate.to_path_buf());
             Err("missing test library".to_string())
         })
         .unwrap_err();
 
-        assert_eq!(
-            seen,
-            bases
-                .iter()
-                .map(|candidate| candidate.to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-        );
-        assert!(seen
-            .iter()
-            .all(|candidate| Path::new(candidate).is_absolute()));
+        assert_eq!(seen, bases);
+        assert!(seen.iter().all(|candidate| candidate.is_absolute()));
         assert!(
             matches!(error, ThreeMfError::Lib3Mf(message) if message.contains("curated absolute paths"))
         );
@@ -1530,6 +1815,86 @@ mod tests {
 
         assert!(
             matches!(error, ThreeMfError::Lib3Mf(message) if message.contains("must be absolute"))
+        );
+    }
+
+    #[test]
+    fn pinned_lib3mf_revision_matches_manifest_pin() {
+        let revision = pinned_lib3mf_revision();
+        assert_eq!(
+            extract_pinned_lib3mf_revision(MODEL_CORE_CARGO_TOML).unwrap(),
+            revision
+        );
+        assert_eq!(revision.len(), 40);
+        assert!(revision.chars().all(|ch| ch.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn stage_library_selection_rejects_mismatched_cached_checkout() {
+        let temp = tempfile::tempdir().unwrap();
+        let checkouts = temp.path().join("git").join("checkouts");
+        let revision_dir = checkouts.join("lib3mf_rs-test").join("deadbee");
+        std::fs::create_dir_all(revision_dir.join("libraries")).unwrap();
+        std::fs::write(
+            revision_dir
+                .join("libraries")
+                .join(format!("lib3mf.{}", lib3mf_library_extension())),
+            b"fake",
+        )
+        .unwrap();
+
+        let error = select_pinned_lib3mf_library(&checkouts, lib3mf_library_extension(), |_| {
+            Ok("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string())
+        })
+        .unwrap_err();
+
+        assert!(error.contains("refusing to stage"));
+        assert!(error.contains(pinned_lib3mf_revision()));
+        assert!(error.contains("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hardened_windows_loader_sets_default_dirs_and_removes_added_directory() {
+        use std::cell::RefCell;
+
+        let directory = Path::new(r"C:\secure\libraries");
+        let events = RefCell::new(Vec::new());
+
+        let result = with_windows_added_dll_directory(
+            directory,
+            |path| {
+                events.borrow_mut().push(format!("add:{}", path.display()));
+                Ok(1usize as DllDirectoryCookie)
+            },
+            |cookie| {
+                events.borrow_mut().push(format!("remove:{cookie:p}"));
+                Ok(())
+            },
+            || {
+                events.borrow_mut().push(format!(
+                    "load-flags:{:#x}",
+                    hardened_windows_dll_search_flags()
+                ));
+                Ok::<_, String>("loaded")
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result, "loaded");
+        assert_eq!(
+            events.into_inner(),
+            vec![
+                format!("add:{}", directory.display()),
+                format!("load-flags:{:#x}", hardened_windows_dll_search_flags()),
+                format!("remove:{:p}", 1usize as DllDirectoryCookie),
+            ]
+        );
+        assert_eq!(
+            hardened_windows_dll_search_flags(),
+            LOAD_LIBRARY_SEARCH_APPLICATION_DIR
+                | LOAD_LIBRARY_SEARCH_SYSTEM32
+                | LOAD_LIBRARY_SEARCH_USER_DIRS
         );
     }
 
@@ -1589,61 +1954,5 @@ mod tests {
     fn should_skip_symlink_test(error: &std::io::Error) -> bool {
         matches!(error.kind(), ErrorKind::PermissionDenied)
             || cfg!(windows) && matches!(error.raw_os_error(), Some(1314))
-    }
-
-    fn stage_test_library() -> Result<(), String> {
-        static STAGED: OnceLock<Result<(), String>> = OnceLock::new();
-        STAGED.get_or_init(stage_test_library_once).clone()
-    }
-
-    fn stage_test_library_once() -> Result<(), String> {
-        let extension = if cfg!(windows) {
-            "dll"
-        } else if cfg!(target_os = "macos") {
-            "dylib"
-        } else {
-            "so"
-        };
-        let exe_dir = std::env::current_exe()
-            .map_err(|error| format!("unable to locate test executable: {error}"))?
-            .parent()
-            .map(Path::to_path_buf)
-            .ok_or_else(|| "test executable has no parent directory".to_string())?;
-        let staged = exe_dir.join(format!("lib3mf.{extension}"));
-        if staged.exists() {
-            return Ok(());
-        }
-
-        let cargo_home = std::env::var_os("CARGO_HOME")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("USERPROFILE").map(|profile| PathBuf::from(profile).join(".cargo"))
-            })
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
-            .ok_or_else(|| "unable to determine Cargo home for lib3mf test staging".to_string())?;
-        let checkouts = cargo_home.join("git").join("checkouts");
-        let source = std::fs::read_dir(&checkouts)
-            .map_err(|error| format!("unable to read {checkouts:?}: {error}"))?
-            .filter_map(Result::ok)
-            .find_map(|entry| {
-                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-                if !name.starts_with("lib3mf_rs-") {
-                    return None;
-                }
-                std::fs::read_dir(entry.path())
-                    .ok()?
-                    .filter_map(Result::ok)
-                    .map(|revision| {
-                        revision
-                            .path()
-                            .join("libraries")
-                            .join(format!("lib3mf.{extension}"))
-                    })
-                    .find(|candidate| candidate.is_file())
-            })
-            .ok_or_else(|| format!("unable to find lib3mf.{extension} under {checkouts:?}"))?;
-        std::fs::copy(&source, &staged)
-            .map_err(|error| format!("unable to stage {source:?} to {staged:?}: {error}"))?;
-        Ok(())
     }
 }

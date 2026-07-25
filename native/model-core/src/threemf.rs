@@ -436,6 +436,13 @@ pub fn parse_file_with_lib3mf(path: &Path) -> Result<ThreeMfMesh, ThreeMfError> 
     crate::threemf_lib3mf::parse_file(path)
 }
 
+/// Stage the pinned lib3mf shared library next to the current test executable.
+#[cfg(feature = "lib3mf")]
+#[doc(hidden)]
+pub fn stage_lib3mf_test_library() -> Result<(), String> {
+    crate::threemf_lib3mf::stage_test_library_for_current_exe()
+}
+
 /// Parse a 3MF package from an in-memory byte buffer.
 pub fn parse_bytes(data: &[u8]) -> Result<ThreeMfMesh, ThreeMfError> {
     let package_index = package_index_from_zip(data)?;
