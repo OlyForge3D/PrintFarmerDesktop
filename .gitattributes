@@ -10,6 +10,9 @@
 *.stl binary
 *.3mf binary
 
+# Vendored presets preserve exact upstream bytes, including whitespace.
+resources/target-profiles/**/profiles/** -text -whitespace
+
 # Squad: union merge for append-only team state files
 .squad/decisions.md merge=union
 .squad/agents/*/history.md merge=union

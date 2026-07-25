@@ -59,6 +59,9 @@ describe('application icon packaging', () => {
     expect(forgeConfig.packagerConfig?.extraResource).toContain(
       './assets/icon.png',
     );
+    expect(forgeConfig.packagerConfig?.extraResource).toContain(
+      './resources/target-profiles',
+    );
     const squirrel = forgeConfig.makers
       ?.filter(isForgeMaker)
       .find((maker) => maker.name === 'squirrel');
