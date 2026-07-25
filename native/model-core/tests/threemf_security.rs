@@ -500,6 +500,31 @@ fn total_decompressed_budget_is_enforced_across_entries() {
     assert_eq!(error.code(), "limit.total_decompressed_bytes", "{error}");
 }
 
+#[test]
+fn the_declared_preflight_and_the_running_accumulator_report_different_codes() {
+    // Pinned as a property rather than left implied by two tests that each
+    // assert their own string. "This archive honestly declares more than we
+    // permit" and "this entry lied about its size" are different events - the
+    // second is a far stronger hostility signal - and the caller has to be able
+    // to tell them apart. Two separate equality assertions would survive
+    // someone merging the codes back together, because whoever did it would
+    // update both; asserting that they *differ* does not.
+    let mut guard = ParseGuard::new(ParseLimits {
+        max_total_decompressed_bytes: 1_000,
+        ..ParseLimits::default().without_timeout()
+    });
+    let declared = guard
+        .check_declared_archive_total(2_000)
+        .expect_err("a declared total over budget must be rejected");
+    let charged = guard
+        .charge_decompressed(2_000)
+        .expect_err("an actual total over budget must be rejected");
+    assert_ne!(
+        declared.code(),
+        charged.code(),
+        "the preflight and the accumulator must stay distinguishable"
+    );
+}
 // --- diagnostics -----------------------------------------------------------
 
 #[test]
@@ -684,11 +709,12 @@ fn rejects_an_archive_whose_declared_expansion_blows_the_budget_in_aggregate() {
     // End-to-end companion to the unit-level accumulator test: every entry sits
     // under the ratio floor, so only aggregate accounting can catch this.
     //
-    // Note this trips the *declared* preflight, not the running accumulator:
-    // the preflight sums every entry while the accumulator counts only entries
-    // actually read, so for an honest archive declared >= charged and the
-    // preflight always wins. The accumulator's own path is covered by
-    // `an_entry_that_lies_about_its_size_is_charged_what_it_actually_produced`.
+    // This trips the *declared* preflight, not the running accumulator: the
+    // preflight sums every entry while the accumulator counts only overflow
+    // beyond a declaration, so for an honest archive the preflight always wins.
+    // The accumulator's own path is covered by
+    // `an_entry_that_lies_about_its_size_is_charged_what_it_actually_produced`,
+    // and the two now report distinct codes so each test names its own control.
     let limits = ParseLimits {
         max_total_decompressed_bytes: 4 * 1024 * 1024,
         ..ParseLimits::default().without_timeout()
@@ -700,7 +726,7 @@ fn rejects_an_archive_whose_declared_expansion_blows_the_budget_in_aggregate() {
     let data = package_with(parts);
     let error = threemf::parse_bytes_with_limits(&data, limits)
         .expect_err("the aggregate declared expansion must be rejected");
-    assert_eq!(error.code(), "limit.total_decompressed_bytes", "{error}");
+    assert_eq!(error.code(), "limit.declared_decompressed_bytes", "{error}");
 }
 
 /// Rewrite the declared uncompressed size of `part`, in both the central
@@ -782,15 +808,19 @@ fn an_entry_that_lies_about_its_size_is_charged_what_it_actually_produced() {
     );
     let error = threemf::parse_bytes_with_limits(&forged, limits.clone())
         .expect_err("an under-declared entry must still be caught while it is read");
+    // The accumulator's own code, not one shared with the preflight. This is
+    // the direct assertion; the twin below is the independent one.
     assert_eq!(error.code(), "limit.total_decompressed_bytes", "{error}");
 
-    // Evidence unique to the accumulator, rather than an assertion on an error
-    // code both aggregate defenses happen to share.
+    // Second, independent line of evidence, held deliberately alongside the
+    // code assertion rather than replaced by it. The code proves which control
+    // fired *given* the codes stay distinct; the twin proves it even if they
+    // are ever merged back. Each covers the other's failure mode.
     //
     // This twin declares *exactly* what the rejected package declares - the
     // preflight sums declared sizes and reads nothing else, so the two archives
-    // are byte-for-byte identical from where it stands. They differ only in what
-    // they actually deliver. So if the twin parses under the same budget that
+    // are indistinguishable from where it stands. They differ only in what they
+    // actually deliver. So if the twin parses under the same budget that
     // rejected the other, the rejection cannot have come from the preflight: no
     // control that sees only declarations can separate these two inputs.
     let small = package(

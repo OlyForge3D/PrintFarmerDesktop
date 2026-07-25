@@ -73,7 +73,9 @@ pub enum LimitViolation {
         uncompressed_bytes: u64,
         limit: u64,
     },
-    #[error("package decompresses to more than the maximum of {limit} bytes")]
+    #[error("package declares a total expansion of more than the maximum of {limit} bytes")]
+    DeclaredTotalDecompressedBytes { limit: u64 },
+    #[error("package decompressed more than the maximum of {limit} bytes while being read")]
     TotalDecompressedBytes { limit: u64 },
     #[error("XML nesting reached depth {depth}, exceeding the maximum of {limit}")]
     XmlDepth { depth: usize, limit: usize },
@@ -93,6 +95,7 @@ impl LimitViolation {
             Self::Timeout { .. } => "limit.timeout",
             Self::Cancelled => "limit.cancelled",
             Self::CompressionRatio { .. } => "limit.compression_ratio",
+            Self::DeclaredTotalDecompressedBytes { .. } => "limit.declared_decompressed_bytes",
             Self::TotalDecompressedBytes { .. } => "limit.total_decompressed_bytes",
             Self::XmlDepth { .. } => "limit.xml_depth",
             Self::XmlEvents { .. } => "limit.xml_events",
@@ -294,9 +297,15 @@ impl ParseGuard {
     /// [`Self::charge_decompressed`], which tracks bytes actually produced:
     /// this catches an archive assembled from many entries that each sit under
     /// the ratio floor but together promise far more than we will ever allow.
+    ///
+    /// Reports a *different* code from the accumulator on purpose. "This archive
+    /// honestly declares more than we permit" and "this entry lied about its
+    /// size" are different events — the second is a far stronger hostility
+    /// signal — and a shared code leaves the caller unable to tell them apart.
+    /// It also leaves a test unable to say which control it reached.
     pub fn check_declared_archive_total(&self, declared_bytes: u64) -> Result<(), LimitViolation> {
         if declared_bytes > self.limits.max_total_decompressed_bytes {
-            return Err(LimitViolation::TotalDecompressedBytes {
+            return Err(LimitViolation::DeclaredTotalDecompressedBytes {
                 limit: self.limits.max_total_decompressed_bytes,
             });
         }
@@ -304,6 +313,10 @@ impl ParseGuard {
     }
 
     /// Charge bytes against the package-wide decompression budget.
+    ///
+    /// Reached only when an entry produces more than it declared, because
+    /// [`Self::check_declared_archive_total`] has already rejected anything an
+    /// honest archive admits to.
     pub fn charge_decompressed(&mut self, bytes: u64) -> Result<(), LimitViolation> {
         let total = self.decompressed_bytes.saturating_add(bytes);
         if total > self.limits.max_total_decompressed_bytes {
@@ -580,6 +593,7 @@ mod tests {
                 uncompressed_bytes: 1,
                 limit: 1,
             },
+            LimitViolation::DeclaredTotalDecompressedBytes { limit: 1 },
             LimitViolation::TotalDecompressedBytes { limit: 1 },
             LimitViolation::XmlDepth { depth: 1, limit: 1 },
             LimitViolation::XmlEvents { limit: 1 },
