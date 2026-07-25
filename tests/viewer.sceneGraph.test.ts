@@ -16,6 +16,10 @@ import {
   boundsRadius,
   defaultCameraPosition,
 } from '../src/renderer/viewer/geometry';
+import {
+  ORTHO_FRUSTUM_MULTIPLIER,
+  PERSPECTIVE_FOV,
+} from '../src/renderer/viewer/ModelViewer';
 import type { SceneMesh, SceneObject } from '../src/renderer/viewer/types';
 
 function multiObjectScene(): SceneMesh {
@@ -439,12 +443,12 @@ function framedCamera(
   const far = radius * 100 + 1000;
   const camera =
     projection === 'perspective'
-      ? new THREE.PerspectiveCamera(45, aspect, 0.01, far)
+      ? new THREE.PerspectiveCamera(PERSPECTIVE_FOV, aspect, 0.01, far)
       : new THREE.OrthographicCamera(
-          -radius * 1.2 * aspect,
-          radius * 1.2 * aspect,
-          radius * 1.2,
-          -radius * 1.2,
+          -radius * ORTHO_FRUSTUM_MULTIPLIER * aspect,
+          radius * ORTHO_FRUSTUM_MULTIPLIER * aspect,
+          radius * ORTHO_FRUSTUM_MULTIPLIER,
+          -radius * ORTHO_FRUSTUM_MULTIPLIER,
           0.01,
           far,
         );
