@@ -3,6 +3,10 @@ import * as THREE from 'three';
 
 import { buildViewerSceneGraph } from '../src/renderer/viewer/sceneGraph';
 import {
+  summarizeSceneMaterials,
+  toHex,
+} from '../src/renderer/library/sceneMaterials';
+import {
   boundsCenter,
   boundsRadius,
   defaultCameraPosition,
@@ -131,6 +135,30 @@ describe('buildViewerSceneGraph', () => {
 
     geometryDispose.mockRestore();
     materialDispose.mockRestore();
+  });
+
+  it('paints unauthored objects the colour the materials panel advertises', () => {
+    // Deliberately names no literal. The panel's fallback swatch and the pixels
+    // the viewer actually draws are two ends of one claim, and asserting either
+    // against a constant only proves that end agrees with itself: a viewer
+    // holding its own copy of the grey would pass while showing the user a
+    // colour the model is not drawn in.
+    const scene = multiObjectScene(); // every object here has `material: {}`
+    const graph = buildViewerSceneGraph(scene);
+    const painted: string[] = [];
+    graph.root.traverse((node) => {
+      if (!(node instanceof THREE.Mesh)) return;
+      const { color } = node.material as THREE.MeshStandardMaterial;
+      painted.push(toHex([color.r * 255, color.g * 255, color.b * 255]));
+    });
+
+    const fallback = summarizeSceneMaterials(scene).groups.find(
+      (group) => group.isDefault,
+    );
+
+    expect(painted.length).toBeGreaterThan(0);
+    expect(fallback).toBeDefined();
+    expect(new Set(painted)).toEqual(new Set([fallback!.hex]));
   });
 
   it('applies DTO matrices with translated and rotated child world transforms', () => {

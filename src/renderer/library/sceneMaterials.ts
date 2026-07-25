@@ -1,7 +1,9 @@
 import type { SceneMesh, SceneObject } from '../viewer/types';
 
-/** Colour shown for objects the sidecar gave no base colour, matching the
- * viewer's own fallback in `sceneGraph.createObjectMaterial`. */
+/** Colour the viewer paints objects the sidecar gave no base colour. Imported by
+ * `sceneGraph.createObjectMaterial` so the swatch and the pixels cannot drift:
+ * a second copy of this literal would let the panel report a colour the model is
+ * not drawn in. */
 export const DEFAULT_BASE_COLOR: readonly [number, number, number] = [
   185, 192, 204,
 ];

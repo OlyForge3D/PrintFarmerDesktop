@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 
+import { DEFAULT_BASE_COLOR } from '../library/sceneMaterials';
 import { boundsCenter } from './geometry';
 import {
   boundsRadius,
@@ -304,7 +305,7 @@ function createObjectMaterial(
   geometry: THREE.BufferGeometry,
 ): THREE.MeshStandardMaterial {
   const hasVertexColors = geometry.getAttribute('color') !== undefined;
-  const baseColor = material.baseColor ?? [185, 192, 204];
+  const baseColor = material.baseColor ?? DEFAULT_BASE_COLOR;
   return new THREE.MeshStandardMaterial({
     color: new THREE.Color(
       baseColor[0] / 255,

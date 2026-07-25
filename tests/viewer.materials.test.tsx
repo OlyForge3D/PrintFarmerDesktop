@@ -7,7 +7,10 @@ import {
   summarizeSceneMaterials,
   toHex,
 } from '../src/renderer/library/sceneMaterials';
-import { VendorPanel } from '../src/renderer/library/VendorPanel';
+import {
+  formatMetadataDate,
+  VendorPanel,
+} from '../src/renderer/library/VendorPanel';
 import type {
   SceneMaterial,
   SceneMesh,
@@ -140,6 +143,21 @@ describe('summarizeSceneMaterials', () => {
       scene([
         object('unauthored', 1, {}),
         object('authored', 1, { baseColor: [...DEFAULT_BASE_COLOR] }),
+      ]),
+    );
+
+    expect(summary.groups).toHaveLength(1);
+    expect(summary.groups[0]?.isDefault).toBe(false);
+  });
+
+  it('does not call a group default when the authored object comes first', () => {
+    // The rule is "authored anywhere wins", which a last-object-wins assignment
+    // also satisfies whenever the authored object happens to be last. Only the
+    // reverse order distinguishes the two.
+    const summary = summarizeSceneMaterials(
+      scene([
+        object('authored', 1, { baseColor: [...DEFAULT_BASE_COLOR] }),
+        object('unauthored', 1, {}),
       ]),
     );
 
@@ -310,10 +328,23 @@ describe('<VendorPanel /> attribution fields', () => {
         metadata={vendor({ core: { creationDate: '2026-03-04T05:06:07Z' } })}
       />,
     );
-    const created = screen.getByText('Created').parentElement;
+    const value =
+      screen.getByText('Created').parentElement?.querySelector('dd')
+        ?.textContent ?? '';
 
-    expect(created).not.toHaveTextContent('2026-03-04T05:06:07Z');
-    expect(created?.textContent).toMatch(/2026/);
+    // "Not the raw string" is a consequence of formatting, not formatting: a
+    // bare `value.slice(0, 10)` satisfies it too, and that is the first thing
+    // anyone reaches for. Excluding the ISO *shape* kills that. The day is
+    // deliberately not asserted — the value is UTC and renders in local time,
+    // so the calendar day legitimately differs by timezone — and neither is a
+    // Latin month name, which would pin CI to an English locale. Instead the
+    // day is shown to reach the output by formatting two adjacent days, which
+    // rules out a year- or month-only rendering without assuming a locale.
+    expect(value).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    expect(value).toContain('2026');
+    expect(formatMetadataDate('2026-03-04T05:06:07Z')).not.toBe(
+      formatMetadataDate('2026-03-05T05:06:07Z'),
+    );
   });
 
   it('shows an unparseable date verbatim instead of "Invalid Date"', () => {
@@ -348,6 +379,31 @@ describe('<VendorPanel /> attribution fields', () => {
     );
 
     expect(screen.getByText('Notes.')).toBeInTheDocument();
+    expect(
+      screen.queryByText('No slicer/vendor metadata in this file.'),
+    ).toBeNull();
+  });
+
+  // One field standing in for eight only shows the gate can open, not that each
+  // field opens it. Dropping any single field from the `hasCore` chain sends a
+  // file carrying only that field to the empty note — the very regression this
+  // panel change exists to fix — and every other case here would stay green.
+  it.each([
+    ['title', 'A title'],
+    ['designer', 'A designer'],
+    ['description', 'A description'],
+    ['application', 'An application'],
+    ['licenseTerms', 'A license'],
+    ['copyright', 'A copyright'],
+    ['creationDate', '2026-03-04T05:06:07Z'],
+    ['modificationDate', '2026-03-05T05:06:07Z'],
+  ] as const)('shows a payload carrying only %s', (field, value) => {
+    render(
+      <VendorPanel
+        metadata={vendor({ slicer: 'unknown', core: { [field]: value } })}
+      />,
+    );
+
     expect(
       screen.queryByText('No slicer/vendor metadata in this file.'),
     ).toBeNull();
