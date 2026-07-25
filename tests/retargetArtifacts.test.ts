@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   writeFile,
 } from 'node:fs/promises';
@@ -252,7 +253,7 @@ describe('RetargetArtifactService', () => {
       error: { code: 'saveSourceConflict' },
     });
     expect(sidecar.buildRetarget).toHaveBeenCalledWith(
-      source,
+      await realpath(source),
       expect.any(String),
       { kind: 'bundled', targetProfileId: profileId },
       false,
