@@ -5,9 +5,11 @@
 //! with the Electron main process over a framed, versioned RPC protocol on a
 //! private transport. Only the version/handshake surface exists so far.
 
+pub mod cache;
 pub mod catalog;
 pub mod geometry;
 pub mod hash;
+pub mod limits;
 pub mod model;
 pub mod obj;
 pub mod retarget;

@@ -217,10 +217,16 @@ export class SidecarClient {
   async handshake(): Promise<{
     protocolVersion: number;
     sidecarVersion: string;
+    sceneDtoVersion?: number;
+    parserSemanticsVersion?: number;
+    sceneCacheRecipe?: string;
   }> {
     const result = (await this.request('handshake', {})) as {
       protocolVersion: number;
       sidecarVersion: string;
+      sceneDtoVersion?: number;
+      parserSemanticsVersion?: number;
+      sceneCacheRecipe?: string;
     };
     validateHandshake(result);
     return result;

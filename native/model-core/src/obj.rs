@@ -38,6 +38,20 @@ pub enum ObjError {
     },
 }
 
+impl ObjError {
+    /// A stable machine-readable code for the Electron layer's diagnostics.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Io(_) => "io",
+            Self::NoGeometry => "no_geometry",
+            Self::TooManyVertices => "too_many_vertices",
+            Self::TooManyFaces => "too_many_faces",
+            Self::MalformedVertex { .. } | Self::MalformedFace { .. } => "malformed",
+            Self::IndexOutOfRange { .. } => "index_out_of_range",
+        }
+    }
+}
+
 /// A parsed Wavefront OBJ mesh in indexed triangle form.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObjMesh {

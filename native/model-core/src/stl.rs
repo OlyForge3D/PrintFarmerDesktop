@@ -35,6 +35,33 @@ pub enum StlError {
     LengthMismatch,
     #[error("malformed ASCII STL: {0}")]
     MalformedAscii(String),
+    #[error("{context} contains a non-finite number")]
+    NonFiniteNumber { context: &'static str },
+}
+
+impl StlError {
+    /// A stable machine-readable code for the Electron layer's diagnostics.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Io(_) => "io",
+            Self::TooSmall => "too_small",
+            Self::TooManyTriangles(_) => "too_many_triangles",
+            Self::LengthMismatch => "length_mismatch",
+            Self::MalformedAscii(_) => "malformed",
+            Self::NonFiniteNumber { .. } => "non_finite_number",
+        }
+    }
+}
+
+/// Reject `NaN` and `±inf` coordinates. A non-finite vertex poisons the bounds,
+/// serializes as JSON `null` over the RPC transport, and makes the viewer's
+/// camera framing degenerate, so it never reaches a scene.
+fn finite_vec3(v: [f32; 3], context: &'static str) -> Result<[f32; 3], StlError> {
+    if v.iter().all(|c| c.is_finite()) {
+        Ok(v)
+    } else {
+        Err(StlError::NonFiniteNumber { context })
+    }
 }
 
 /// A single triangle: a facet normal and three vertices, plus an optional
@@ -118,10 +145,10 @@ fn parse_binary(data: &[u8]) -> Result<StlMesh, StlError> {
     let mut has_colors = false;
 
     for chunk in body.chunks_exact(BINARY_TRIANGLE_LEN) {
-        let normal = read_vec3(&chunk[0..12]);
-        let v0 = read_vec3(&chunk[12..24]);
-        let v1 = read_vec3(&chunk[24..36]);
-        let v2 = read_vec3(&chunk[36..48]);
+        let normal = finite_vec3(read_vec3(&chunk[0..12]), "binary STL facet normal")?;
+        let v0 = finite_vec3(read_vec3(&chunk[12..24]), "binary STL vertex")?;
+        let v1 = finite_vec3(read_vec3(&chunk[24..36]), "binary STL vertex")?;
+        let v2 = finite_vec3(read_vec3(&chunk[36..48]), "binary STL vertex")?;
         let attr = u16::from_le_bytes([chunk[48], chunk[49]]);
         let color = decode_attribute_color(attr);
         if color.is_some() {
@@ -246,6 +273,11 @@ fn parse_vec3<'a, I: Iterator<Item = &'a str>>(
                 line_no + 1
             ))
         })?;
+        if !slot.is_finite() {
+            return Err(StlError::NonFiniteNumber {
+                context: "ASCII STL coordinate",
+            });
+        }
     }
     Ok(out)
 }
@@ -272,6 +304,52 @@ mod tests {
             out.extend_from_slice(&attr.to_le_bytes());
         }
         out
+    }
+
+    #[test]
+    fn rejects_non_finite_binary_vertices() {
+        let data = binary_stl(&[(
+            [0.0, 0.0, 1.0],
+            [[0.0, 0.0, 0.0], [f32::NAN, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            0,
+        )]);
+        assert!(matches!(
+            parse_bytes(&data),
+            Err(StlError::NonFiniteNumber {
+                context: "binary STL vertex"
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_non_finite_binary_normals() {
+        let data = binary_stl(&[(
+            [f32::INFINITY, 0.0, 1.0],
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            0,
+        )]);
+        assert!(matches!(
+            parse_bytes(&data),
+            Err(StlError::NonFiniteNumber {
+                context: "binary STL facet normal"
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_non_finite_ascii_coordinates() {
+        for poison in ["NaN", "inf", "-inf"] {
+            let ascii = format!(
+                "solid s\nfacet normal 0 0 1\nouter loop\nvertex {poison} 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid s\n"
+            );
+            assert!(
+                matches!(
+                    parse_bytes(ascii.as_bytes()),
+                    Err(StlError::NonFiniteNumber { .. })
+                ),
+                "'{poison}' must be rejected"
+            );
+        }
     }
 
     #[test]

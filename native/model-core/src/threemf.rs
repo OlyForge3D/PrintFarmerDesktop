@@ -25,6 +25,7 @@ use zip::result::ZipError;
 use zip::ZipArchive;
 
 use crate::geometry::Aabb;
+use crate::limits::{LimitViolation, ParseGuard, ParseLimits};
 use crate::scene_status::SceneLoadStatus;
 
 /// Upper bounds so a malformed or hostile package cannot exhaust memory.
@@ -89,6 +90,50 @@ pub enum ThreeMfError {
         resource: &'static str,
         limit: usize,
     },
+    #[error("{0}")]
+    Limit(#[from] LimitViolation),
+    #[error("{context} contains a non-finite number ('{value}')")]
+    NonFiniteNumber {
+        context: &'static str,
+        value: String,
+    },
+}
+
+impl ThreeMfError {
+    /// A stable machine-readable code for the Electron layer's diagnostics. All
+    /// structural corruption collapses to `malformed`; security-budget
+    /// rejections keep their specific [`LimitViolation`] code so a hostile
+    /// package can be distinguished from a merely broken one.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Io(_) => "io",
+            Self::Zip(_) => "zip",
+            Self::Xml(_) => "xml",
+            Self::MissingModelPart => "missing_model_part",
+            Self::Malformed(_) => "malformed",
+            Self::Lib3Mf(_) => "lib3mf",
+            Self::TooLarge => "too_large",
+            Self::RenderBudgetExceeded { .. } => "render_budget_exceeded",
+            Self::DataTooLarge { .. } => "data_too_large",
+            Self::TooManyParts { .. } => "too_many_parts",
+            Self::Limit(violation) => violation.code(),
+            Self::NonFiniteNumber { .. } => "non_finite_number",
+        }
+    }
+}
+
+/// Reject `NaN` and `±inf`. Non-finite coordinates poison every downstream
+/// bound, serialize as JSON `null` over the RPC transport, and make the
+/// renderer's camera framing degenerate, so they never reach a scene.
+fn finite(value: f32, context: &'static str, raw: &str) -> Result<f32, ThreeMfError> {
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(ThreeMfError::NonFiniteNumber {
+            context,
+            value: raw.to_string(),
+        })
+    }
 }
 
 /// An affine transform stored as four rows of three: rows 0..2 are the linear
@@ -125,6 +170,7 @@ impl Transform {
             values[count] = token.parse::<f32>().map_err(|_| {
                 ThreeMfError::Malformed(format!("invalid transform value '{token}'"))
             })?;
+            values[count] = finite(values[count], "transform", token)?;
             count += 1;
         }
         if count != 12 {
@@ -443,19 +489,30 @@ pub fn stage_lib3mf_test_library() -> Result<(), String> {
     crate::threemf_lib3mf::stage_test_library_for_current_exe()
 }
 
-/// Parse a 3MF package from an in-memory byte buffer.
+/// Parse a 3MF package from an in-memory byte buffer using the default
+/// security budget ([`ParseLimits::default`]).
 pub fn parse_bytes(data: &[u8]) -> Result<ThreeMfMesh, ThreeMfError> {
+    parse_bytes_with_limits(data, ParseLimits::default())
+}
+
+/// Parse a 3MF package under an explicit security budget, so a caller can
+/// impose a tighter deadline or supply a cancellation token.
+pub fn parse_bytes_with_limits(
+    data: &[u8],
+    limits: ParseLimits,
+) -> Result<ThreeMfMesh, ThreeMfError> {
+    let mut guard = ParseGuard::new(limits);
     let package_index = package_index_from_zip(data)?;
     let mut archive = ZipArchive::new(Cursor::new(data))?;
-    validate_archive_parts(&mut archive, &package_index)?;
+    validate_archive_parts(&mut archive, &package_index, &mut guard)?;
 
     let mut model_xml_bytes = 0u64;
     let mut parse_budget = ParseBudget::default();
-    let root_part = locate_model_part_indexed(&mut archive, &package_index)?;
+    let root_part = locate_model_part_indexed(&mut archive, &package_index, &mut guard)?;
     let root_part_key = opc_part_key(&root_part);
-    let root_xml = read_model_entry(&mut archive, &root_part, &mut model_xml_bytes)?
+    let root_xml = read_model_entry(&mut archive, &root_part, &mut model_xml_bytes, &mut guard)?
         .ok_or(ThreeMfError::MissingModelPart)?;
-    let root_model = parse_model_xml(&root_xml, true, &mut parse_budget)?;
+    let root_model = parse_model_xml(&root_xml, true, &mut parse_budget, &mut guard)?;
     let root_unit = root_model.unit.clone();
     let root_unit_scale = unit_scale_millimeters(&root_unit)?;
 
@@ -466,27 +523,38 @@ pub fn parse_bytes(data: &[u8]) -> Result<ThreeMfMesh, ThreeMfError> {
     }
     let mut external_parts: Vec<String> = referenced_parts.into_iter().collect();
     external_parts.sort();
-    validate_external_model_parts(&mut archive, &package_index, &root_part, &external_parts)?;
+    validate_external_model_parts(
+        &mut archive,
+        &package_index,
+        &root_part,
+        &external_parts,
+        &mut guard,
+    )?;
 
     let mut models = HashMap::with_capacity(external_parts.len() + 1);
     for model_part in external_parts {
+        guard.check_now()?;
         let actual_name = package_index.actual_name(&model_part).ok_or_else(|| {
             ThreeMfError::Malformed(format!("referenced model part '/{model_part}' is missing"))
         })?;
-        let xml = read_model_entry(&mut archive, actual_name, &mut model_xml_bytes)?.ok_or_else(
-            || ThreeMfError::Malformed(format!("referenced model part '/{model_part}' is missing")),
-        )?;
-        let mut model = parse_model_xml(&xml, false, &mut parse_budget)?;
+        let xml = read_model_entry(&mut archive, actual_name, &mut model_xml_bytes, &mut guard)?
+            .ok_or_else(|| {
+                ThreeMfError::Malformed(format!("referenced model part '/{model_part}' is missing"))
+            })?;
+        let mut model = parse_model_xml(&xml, false, &mut parse_budget, &mut guard)?;
         let model_unit_scale = unit_scale_millimeters(&model.unit)?;
         model.scale_to_unit(model_unit_scale / root_unit_scale, &root_unit);
         models.insert(model_part, model);
     }
     models.insert(root_part_key.clone(), root_model);
 
-    flatten(&RawPackage {
-        models,
-        root_part: root_part_key,
-    })
+    flatten(
+        &RawPackage {
+            models,
+            root_part: root_part_key,
+        },
+        &mut guard,
+    )
 }
 
 /// Parse a 3MF package with the native lib3mf validator/reader when the feature
@@ -500,12 +568,13 @@ pub fn parse_bytes_with_lib3mf(data: &[u8]) -> Result<ThreeMfMesh, ThreeMfError>
 /// falling back to the conventional `3D/3dmodel.model`.
 pub(crate) fn locate_model_part<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
+    guard: &mut ParseGuard,
 ) -> Result<String, ThreeMfError> {
     if let Some(relationships_name) = archive_part_name(archive, RELATIONSHIPS_PART)? {
         if let Some(relationships) =
-            read_text_entry_limited(archive, &relationships_name, MAX_METADATA_XML_BYTES)?
+            read_text_entry_limited(archive, &relationships_name, MAX_METADATA_XML_BYTES, guard)?
         {
-            if let Some(target) = model_target_from_rels(&relationships)? {
+            if let Some(target) = model_target_from_rels(&relationships, guard)? {
                 if let Some(actual_name) = archive_part_name(archive, &target)? {
                     return Ok(actual_name);
                 }
@@ -537,12 +606,14 @@ fn archive_part_name<R: Read + Seek>(
 fn locate_model_part_indexed<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     package_index: &PackageIndex,
+    guard: &mut ParseGuard,
 ) -> Result<String, ThreeMfError> {
     if let Some(relationships_name) = package_index.actual_name(RELATIONSHIPS_PART) {
+        let relationships_name = relationships_name.to_string();
         if let Some(relationships) =
-            read_text_entry_limited(archive, relationships_name, MAX_METADATA_XML_BYTES)?
+            read_text_entry_limited(archive, &relationships_name, MAX_METADATA_XML_BYTES, guard)?
         {
-            if let Some(target) = model_target_from_rels(&relationships)? {
+            if let Some(target) = model_target_from_rels(&relationships, guard)? {
                 if let Some(actual_name) = package_index.actual_name(&target) {
                     return Ok(actual_name.to_string());
                 }
@@ -559,20 +630,22 @@ fn locate_model_part_indexed<R: Read + Seek>(
 pub(crate) fn read_entry<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     name: &str,
+    guard: &mut ParseGuard,
 ) -> Result<Option<String>, ThreeMfError> {
-    read_text_entry_limited(archive, name, MAX_MODEL_XML_BYTES)
+    read_text_entry_limited(archive, name, MAX_MODEL_XML_BYTES, guard)
 }
 
 fn read_model_entry<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     name: &str,
     total_bytes: &mut u64,
+    guard: &mut ParseGuard,
 ) -> Result<Option<String>, ThreeMfError> {
     let remaining = MAX_TOTAL_MODEL_XML_BYTES
         .checked_sub(*total_bytes)
         .ok_or(ThreeMfError::TooLarge)?;
     let limit = remaining.min(MAX_MODEL_XML_BYTES);
-    let contents = read_text_entry_limited(archive, name, limit)?;
+    let contents = read_text_entry_limited(archive, name, limit, guard)?;
     if let Some(contents) = &contents {
         *total_bytes = total_bytes
             .checked_add(contents.len() as u64)
@@ -585,12 +658,15 @@ fn read_text_entry_limited<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     name: &str,
     max_bytes: u64,
+    guard: &mut ParseGuard,
 ) -> Result<Option<String>, ThreeMfError> {
+    guard.check_now()?;
     match archive.by_name(name) {
         Ok(mut file) => {
             if file.size() > max_bytes {
                 return Err(ThreeMfError::TooLarge);
             }
+            guard.charge_entry(name, file.compressed_size(), file.size())?;
             let mut contents = String::new();
             file.by_ref()
                 .take(max_bytes.saturating_add(1))
@@ -598,6 +674,10 @@ fn read_text_entry_limited<R: Read + Seek>(
             if contents.len() as u64 > max_bytes {
                 return Err(ThreeMfError::TooLarge);
             }
+            // The declared size is attacker-controlled, so charge whatever the
+            // entry actually produced beyond what was already budgeted.
+            let actual = contents.len() as u64;
+            guard.charge_decompressed(actual.saturating_sub(file.size()))?;
             Ok(Some(contents))
         }
         Err(ZipError::FileNotFound) => Ok(None),
@@ -608,6 +688,7 @@ fn read_text_entry_limited<R: Read + Seek>(
 fn validate_archive_parts<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     package_index: &PackageIndex,
+    guard: &mut ParseGuard,
 ) -> Result<(), ThreeMfError> {
     if archive.len() != package_index.len() {
         return Err(ThreeMfError::Malformed(
@@ -617,6 +698,7 @@ fn validate_archive_parts<R: Read + Seek>(
 
     let mut seen = HashSet::with_capacity(archive.len());
     for index in 0..archive.len() {
+        guard.checkpoint()?;
         let file = archive.by_index(index)?;
         let name = file.name();
         let key = opc_part_key(name);
@@ -627,6 +709,10 @@ fn validate_archive_parts<R: Read + Seek>(
                 "ZIP reader and central directory disagree on package parts".to_string(),
             ));
         }
+        // Reject decompression bombs from the central directory before any
+        // entry is opened, so a bomb parked in an unread part still fails the
+        // package rather than lying in wait for a later feature to read it.
+        guard.check_ratio(name, file.compressed_size(), file.size())?;
     }
     Ok(())
 }
@@ -870,13 +956,22 @@ pub(crate) fn read_entry_bytes<R: Read + Seek, F: Fn() -> ThreeMfError>(
     name: &str,
     max_bytes: u64,
     too_large: F,
+    guard: &mut ParseGuard,
 ) -> Result<Option<Vec<u8>>, ThreeMfError> {
+    guard.check_now()?;
     match archive.by_name(name) {
         Ok(mut file) => {
             if file.size() > max_bytes {
                 return Err(too_large());
             }
-            let capacity = usize::try_from(file.size()).map_err(|_| too_large())?;
+            guard.charge_entry(name, file.compressed_size(), file.size())?;
+            // Preallocate from the *declared* size only up to a modest cap: the
+            // declaration is attacker-controlled, so trusting it would let a
+            // few hundred bytes of archive reserve gigabytes. Beyond the cap the
+            // Vec grows against real bytes, which `take` already bounds.
+            const MAX_PREALLOCATED_BYTES: u64 = 1024 * 1024;
+            let capacity = usize::try_from(file.size().min(MAX_PREALLOCATED_BYTES))
+                .map_err(|_| too_large())?;
             let mut contents = Vec::with_capacity(capacity);
             file.by_ref()
                 .take(max_bytes.saturating_add(1))
@@ -884,6 +979,8 @@ pub(crate) fn read_entry_bytes<R: Read + Seek, F: Fn() -> ThreeMfError>(
             if contents.len() as u64 > max_bytes {
                 return Err(too_large());
             }
+            let actual = contents.len() as u64;
+            guard.charge_decompressed(actual.saturating_sub(file.size()))?;
             Ok(Some(contents))
         }
         Err(ZipError::FileNotFound) => Ok(None),
@@ -892,8 +989,11 @@ pub(crate) fn read_entry_bytes<R: Read + Seek, F: Fn() -> ThreeMfError>(
 }
 
 /// Find the target of the relationship whose type marks the 3D model part.
-fn model_target_from_rels(xml: &str) -> Result<Option<String>, ThreeMfError> {
-    let mut targets = model_relationship_targets(xml, "")?;
+fn model_target_from_rels(
+    xml: &str,
+    guard: &mut ParseGuard,
+) -> Result<Option<String>, ThreeMfError> {
+    let mut targets = model_relationship_targets(xml, "", guard)?;
     if targets.len() > 1 {
         return Err(ThreeMfError::Malformed(
             "package declares more than one root 3D model relationship".to_string(),
@@ -902,16 +1002,24 @@ fn model_target_from_rels(xml: &str) -> Result<Option<String>, ThreeMfError> {
     Ok(targets.pop())
 }
 
-fn model_relationship_targets(xml: &str, source_part: &str) -> Result<Vec<String>, ThreeMfError> {
+fn model_relationship_targets(
+    xml: &str,
+    source_part: &str,
+    guard: &mut ParseGuard,
+) -> Result<Vec<String>, ThreeMfError> {
     let mut reader = NsReader::from_reader(xml.as_bytes());
     reader.config_mut().trim_text(true);
     let mut buffer = Vec::new();
     let mut targets = Vec::new();
     let mut depth = 0usize;
     let mut root_seen = false;
+    let mut xml_guard = guard.xml_guard();
 
     loop {
-        match reader.read_event_into(&mut buffer)? {
+        guard.checkpoint()?;
+        let event = reader.read_event_into(&mut buffer)?;
+        xml_guard.observe(&event)?;
+        match event {
             Event::Start(element) => {
                 if depth == 0 {
                     require_opc_root(
@@ -1017,6 +1125,7 @@ fn validate_external_model_parts<R: Read + Seek>(
     package_index: &PackageIndex,
     root_part: &str,
     model_parts: &[String],
+    guard: &mut ParseGuard,
 ) -> Result<(), ThreeMfError> {
     if model_parts.is_empty() {
         return Ok(());
@@ -1029,18 +1138,20 @@ fn validate_external_model_parts<R: Read + Seek>(
             ThreeMfError::Malformed(format!(
                 "root model part '/{root_part}' has Production Extension references but no relationship part"
             ))
-        })?;
+        })?
+        .to_string();
     let relationships = read_text_entry_limited(
         archive,
-        relationships_part,
+        &relationships_part,
         MAX_METADATA_XML_BYTES,
+        guard,
     )?
     .ok_or_else(|| {
         ThreeMfError::Malformed(format!(
             "root model part '/{root_part}' has Production Extension references but no relationship part"
         ))
     })?;
-    let relationship_targets = model_relationship_targets(&relationships, root_part)?;
+    let relationship_targets = model_relationship_targets(&relationships, root_part, guard)?;
 
     let content_types_part = package_index
         .actual_name(CONTENT_TYPES_PART)
@@ -1048,16 +1159,16 @@ fn validate_external_model_parts<R: Read + Seek>(
             ThreeMfError::Malformed(
                 "Production Extension package is missing [Content_Types].xml".to_string(),
             )
-        })?;
+        })?
+        .to_string();
     let content_types_xml =
-        read_text_entry_limited(archive, content_types_part, MAX_METADATA_XML_BYTES)?.ok_or_else(
-            || {
+        read_text_entry_limited(archive, &content_types_part, MAX_METADATA_XML_BYTES, guard)?
+            .ok_or_else(|| {
                 ThreeMfError::Malformed(
                     "Production Extension package is missing [Content_Types].xml".to_string(),
                 )
-            },
-        )?;
-    let content_types = parse_content_types(&content_types_xml)?;
+            })?;
+    let content_types = parse_content_types(&content_types_xml, guard)?;
 
     for model_part in model_parts {
         let relationship_count = relationship_targets
@@ -1085,16 +1196,20 @@ fn relationships_part_for(model_part: &str) -> String {
     }
 }
 
-fn parse_content_types(xml: &str) -> Result<ContentTypes, ThreeMfError> {
+fn parse_content_types(xml: &str, guard: &mut ParseGuard) -> Result<ContentTypes, ThreeMfError> {
     let mut reader = NsReader::from_reader(xml.as_bytes());
     reader.config_mut().trim_text(true);
     let mut buffer = Vec::new();
     let mut content_types = ContentTypes::default();
     let mut depth = 0usize;
     let mut root_seen = false;
+    let mut xml_guard = guard.xml_guard();
 
     loop {
-        match reader.read_event_into(&mut buffer)? {
+        guard.checkpoint()?;
+        let event = reader.read_event_into(&mut buffer)?;
+        xml_guard.observe(&event)?;
+        match event {
             Event::Start(element) => {
                 if depth == 0 {
                     require_opc_root(&reader, element.name(), b"Types", CONTENT_TYPES_NAMESPACE)?;
@@ -1310,6 +1425,7 @@ fn parse_model_xml(
     xml: &str,
     is_root_model: bool,
     budget: &mut ParseBudget,
+    guard: &mut ParseGuard,
 ) -> Result<RawModel, ThreeMfError> {
     let mut reader = NsReader::from_str(xml);
 
@@ -1321,9 +1437,13 @@ fn parse_model_xml(
     let mut current_geometry: Option<ObjectGeometry> = None;
     let mut current_name: Option<String> = None;
     let mut in_build = false;
+    let mut xml_guard = guard.xml_guard();
 
     loop {
-        match reader.read_event()? {
+        guard.checkpoint()?;
+        let event = reader.read_event()?;
+        xml_guard.observe(&event)?;
+        match event {
             Event::Start(e) | Event::Empty(e) => match e.name().as_ref() {
                 b"model" => {
                     if let Some(u) = decoded_attr(&reader, &e, b"unit")? {
@@ -1492,7 +1612,7 @@ impl FlattenOutput {
 
 /// Expand the build into a single indexed mesh, baking every transform. Each
 /// build item is recorded as a [`ThreeMfPart`] spanning the triangles it added.
-fn flatten(package: &RawPackage) -> Result<ThreeMfMesh, ThreeMfError> {
+fn flatten(package: &RawPackage, guard: &mut ParseGuard) -> Result<ThreeMfMesh, ThreeMfError> {
     let root_model = package.models.get(&package.root_part).ok_or_else(|| {
         ThreeMfError::Malformed("resolved root model part is missing".to_string())
     })?;
@@ -1525,6 +1645,7 @@ fn flatten(package: &RawPackage) -> Result<ThreeMfMesh, ThreeMfError> {
             &mut output,
             &mut objects,
             0,
+            guard,
         )?;
         root_object_ids.push(root_id.clone());
         plates[0].root_object_ids.push(root_id);
@@ -1589,7 +1710,9 @@ fn expand(
     output: &mut FlattenOutput,
     scene_objects: &mut Vec<ThreeMfSceneObject>,
     depth: usize,
+    guard: &mut ParseGuard,
 ) -> Result<(), ThreeMfError> {
+    guard.checkpoint()?;
     output.expansion_steps = output
         .expansion_steps
         .checked_add(1)
@@ -1660,9 +1783,17 @@ fn expand(
             let base = output.vertices.len() as u32;
             let local_count = vertices.len() as u32;
             for v in vertices {
-                output.vertices.push(transform.apply(*v));
+                guard.checkpoint()?;
+                let transformed = transform.apply(*v);
+                for coordinate in transformed {
+                    // A finite input can still overflow to infinity once a
+                    // hostile transform is applied.
+                    finite(coordinate, "transformed vertex", "overflow")?;
+                }
+                output.vertices.push(transformed);
             }
             for t in triangles {
+                guard.checkpoint()?;
                 for &index in t {
                     if index >= local_count {
                         return Err(ThreeMfError::Malformed(format!(
@@ -1700,6 +1831,7 @@ fn expand(
                     output,
                     scene_objects,
                     depth + 1,
+                    guard,
                 )?;
                 child_ids.push(child_id);
             }
@@ -1819,12 +1951,13 @@ fn attr_f32(e: &BytesStart, name: &[u8]) -> Result<f32, ThreeMfError> {
             String::from_utf8_lossy(name)
         ))
     })?;
-    raw.trim().parse::<f32>().map_err(|_| {
+    let value = raw.trim().parse::<f32>().map_err(|_| {
         ThreeMfError::Malformed(format!(
             "invalid '{}' value '{raw}'",
             String::from_utf8_lossy(name)
         ))
-    })
+    })?;
+    finite(value, "vertex coordinate", raw.trim())
 }
 
 /// Parse an optional `transform` attribute, defaulting to the identity.
@@ -1838,6 +1971,12 @@ fn optional_transform(e: &BytesStart) -> Result<Transform, ThreeMfError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A guard with the wall-clock deadline removed so unit tests never depend
+    /// on machine speed.
+    fn test_guard() -> ParseGuard {
+        ParseGuard::new(ParseLimits::default().without_timeout())
+    }
 
     fn expected_three_row_major_matrix(transform: &Transform) -> [f32; 16] {
         let origin = transform.apply([0.0, 0.0, 0.0]);
@@ -2350,14 +2489,16 @@ mod tests {
         let relationships = r#"<Relationships xmlns="urn:not-opc">
   <Relationship Target="/3D/3dmodel.model" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
 </Relationships>"#;
-        let relationship_error = model_relationship_targets(relationships, "")
+        let relationship_error = model_relationship_targets(relationships, "", &mut test_guard())
             .unwrap_err()
             .to_string();
         assert!(relationship_error.contains("invalid root element or namespace"));
 
         let content_types =
             r#"<Types xmlns="urn:not-opc"><Default Extension="model" ContentType="x"/></Types>"#;
-        let content_type_error = parse_content_types(content_types).unwrap_err().to_string();
+        let content_type_error = parse_content_types(content_types, &mut test_guard())
+            .unwrap_err()
+            .to_string();
         assert!(content_type_error.contains("invalid root element or namespace"));
     }
 
@@ -2368,7 +2509,7 @@ mod tests {
     Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
 </Relationships>"#;
 
-        let error = model_relationship_targets(relationships, "")
+        let error = model_relationship_targets(relationships, "", &mut test_guard())
             .unwrap_err()
             .to_string();
         assert!(error.contains("external OPC relationships"), "{error}");
@@ -2488,7 +2629,7 @@ mod tests {
         let data = package(&single_triangle_model(), true, DEFAULT_MODEL_PART);
         let mut archive = ZipArchive::new(Cursor::new(data)).unwrap();
         assert!(matches!(
-            read_text_entry_limited(&mut archive, DEFAULT_MODEL_PART, 8),
+            read_text_entry_limited(&mut archive, DEFAULT_MODEL_PART, 8, &mut test_guard()),
             Err(ThreeMfError::TooLarge)
         ));
 
@@ -2500,7 +2641,7 @@ mod tests {
   <vertex x="0" y="0" z="0"/>
 </vertices></mesh></object></resources></model>"#;
         assert!(matches!(
-            parse_model_xml(model, true, &mut budget),
+            parse_model_xml(model, true, &mut budget, &mut test_guard()),
             Err(ThreeMfError::TooLarge)
         ));
     }
@@ -2664,6 +2805,7 @@ mod tests {
                 &mut output,
                 &mut scene_objects,
                 0,
+                &mut test_guard(),
             )
             .unwrap();
         }
@@ -2691,6 +2833,7 @@ mod tests {
             &mut output,
             &mut scene_objects,
             0,
+            &mut test_guard(),
         );
 
         assert!(matches!(

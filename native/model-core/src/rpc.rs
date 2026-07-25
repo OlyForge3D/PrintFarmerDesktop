@@ -396,6 +396,10 @@ pub struct ThumbnailDto {
     pub height: u32,
     /// Standard base64 (with padding) of the encoded PNG.
     pub png_base64: String,
+    /// Cache recipe this thumbnail was produced under. Callers must key any
+    /// cache entry by it so a sidecar upgrade that changes parse or render
+    /// output invalidates rather than silently reuses stale pixels.
+    pub cache_recipe: String,
 }
 
 /// Errors from the load-then-render thumbnail pipeline.
@@ -405,6 +409,16 @@ pub enum ThumbnailPipelineError {
     Scene(#[from] SceneError),
     #[error(transparent)]
     Thumbnail(#[from] ThumbnailError),
+}
+
+impl ThumbnailPipelineError {
+    /// A stable machine-readable diagnostic; see [`SceneError::code`].
+    pub fn code(&self) -> String {
+        match self {
+            Self::Scene(e) => e.code(),
+            Self::Thumbnail(_) => "thumbnail.render_failed".to_string(),
+        }
+    }
 }
 
 /// Load a model file and render a square PNG thumbnail, returned as a base64
@@ -420,6 +434,7 @@ pub fn render_thumbnail_dto(
         width: edge,
         height: edge,
         png_base64: BASE64.encode(png),
+        cache_recipe: crate::cache::thumbnail_cache_recipe(edge),
     })
 }
 

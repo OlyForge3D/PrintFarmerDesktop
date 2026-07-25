@@ -1,0 +1,308 @@
+{
+  "generator": "cargo test --manifest-path native/Cargo.toml -p model-core --test threemf_fixtures -- --ignored regenerate_threemf_fixtures",
+  "provenance": "Authored by hand for PrintFarmer issue #20; no third-party model data. Each package is assembled from raw OPC parts by tests/threemf_fixtures.rs.",
+  "fixtures": [
+    {
+      "file": "multi_part.3mf",
+      "label": "multi-part",
+      "notes": "Three independently named box objects, each placed once by the build.",
+      "sha256": "e7ece8f17a32d3416145741d6ba7b7b7747a7f99ba28c8463230bf0f84251700",
+      "byteLen": 1240,
+      "expected": {
+        "unit": "millimeter",
+        "vertexCount": 24,
+        "triangleCount": 36,
+        "objectCount": 3,
+        "buildItemCount": 3,
+        "partCount": 3,
+        "partNames": [
+          "Bracket",
+          "Spacer",
+          "Cap"
+        ],
+        "sceneObjectCount": 3,
+        "rootObjectIds": [
+          "plate-0/item-0/object-1",
+          "plate-0/item-1/object-2",
+          "plate-0/item-2/object-3"
+        ],
+        "plateCount": 1,
+        "boundsMin": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "boundsMax": [
+          24.0,
+          36.0,
+          5.0
+        ]
+      }
+    },
+    {
+      "file": "transform_chain.3mf",
+      "label": "transform",
+      "notes": "Nested components with scale/translate composed under a rotating build-item transform.",
+      "sha256": "8a815678c3dfb9886f90b4436f758206e6407530d1438ee4b029de6218c1feeb",
+      "byteLen": 1200,
+      "expected": {
+        "unit": "millimeter",
+        "vertexCount": 16,
+        "triangleCount": 24,
+        "objectCount": 2,
+        "buildItemCount": 1,
+        "partCount": 1,
+        "partNames": [
+          "Assembly"
+        ],
+        "sceneObjectCount": 3,
+        "rootObjectIds": [
+          "plate-0/item-0/object-3"
+        ],
+        "plateCount": 1,
+        "boundsMin": [
+          96.0,
+          50.0,
+          0.0
+        ],
+        "boundsMax": [
+          100.0,
+          64.0,
+          4.0
+        ]
+      }
+    },
+    {
+      "file": "color_material.3mf",
+      "label": "color + material",
+      "notes": "basematerials, a material-extension colorgroup, object-level pid/pindex and per-triangle p1/p2/p3.",
+      "sha256": "9559ae86817dfc392bd8fdb2448549dcfe71ffcd9f001bae778760b8a5586512",
+      "byteLen": 1340,
+      "expected": {
+        "unit": "millimeter",
+        "vertexCount": 12,
+        "triangleCount": 16,
+        "objectCount": 2,
+        "buildItemCount": 2,
+        "partCount": 2,
+        "partNames": [
+          "Red body",
+          "Painted fin"
+        ],
+        "sceneObjectCount": 2,
+        "rootObjectIds": [
+          "plate-0/item-0/object-1",
+          "plate-0/item-1/object-2"
+        ],
+        "plateCount": 1,
+        "boundsMin": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "boundsMax": [
+          8.0,
+          8.0,
+          25.0
+        ]
+      }
+    },
+    {
+      "file": "multi_plate.3mf",
+      "label": "multi-plate",
+      "notes": "Bambu/Orca-style slice_info.config describing two plates plus one PNG thumbnail per plate.",
+      "sha256": "4cfa7fef78d055672107ce916c3885f739a41d50f780b426d5903a601707d9e4",
+      "byteLen": 1902,
+      "expected": {
+        "unit": "millimeter",
+        "vertexCount": 16,
+        "triangleCount": 24,
+        "objectCount": 2,
+        "buildItemCount": 2,
+        "partCount": 2,
+        "partNames": [
+          "Plate one body",
+          "Plate two body"
+        ],
+        "sceneObjectCount": 2,
+        "rootObjectIds": [
+          "plate-0/item-0/object-1",
+          "plate-0/item-1/object-2"
+        ],
+        "plateCount": 1,
+        "boundsMin": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "boundsMax": [
+          46.0,
+          10.0,
+          10.0
+        ]
+      },
+      "expectedVendor": {
+        "slicer": "Unknown",
+        "plateCount": 2,
+        "plateIndices": [
+          1,
+          2
+        ],
+        "filamentTypes": [
+          "PLA",
+          "PETG"
+        ],
+        "thumbnailParts": [
+          "Metadata/plate_1.png",
+          "Metadata/plate_2.png"
+        ]
+      }
+    },
+    {
+      "file": "unit_inch.3mf",
+      "label": "unit declaration",
+      "notes": "Root model declared in inches; the reader reports the declared unit and preserves model-space coordinates (only external model parts are rescaled to the root unit).",
+      "sha256": "5add82d781290b346499f5e056b3e49cae1af118789306915bb54c7008497c9f",
+      "byteLen": 1129,
+      "expected": {
+        "unit": "inch",
+        "vertexCount": 8,
+        "triangleCount": 12,
+        "objectCount": 1,
+        "buildItemCount": 1,
+        "partCount": 1,
+        "partNames": [
+          "Inch cube"
+        ],
+        "sceneObjectCount": 1,
+        "rootObjectIds": [
+          "plate-0/item-0/object-1"
+        ],
+        "plateCount": 1,
+        "boundsMin": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "boundsMax": [
+          1.0,
+          2.0,
+          0.5
+        ]
+      }
+    },
+    {
+      "file": "large_grid.3mf",
+      "label": "large",
+      "notes": "40x40 triangulated grid (1681 vertices / 3200 triangles).",
+      "sha256": "e59acf3468e8332656c110a4fe1e33a9b8bf449ba9c824fc3da08c71f9954529",
+      "byteLen": 21154,
+      "expected": {
+        "unit": "millimeter",
+        "vertexCount": 1681,
+        "triangleCount": 3200,
+        "objectCount": 1,
+        "buildItemCount": 1,
+        "partCount": 1,
+        "partNames": [
+          "Grid"
+        ],
+        "sceneObjectCount": 1,
+        "rootObjectIds": [
+          "plate-0/item-0/object-1"
+        ],
+        "plateCount": 1,
+        "boundsMin": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "boundsMax": [
+          40.0,
+          40.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "file": "malformed_not_a_zip.3mf",
+      "label": "malformed: not an archive",
+      "notes": "Plain text with a .3mf extension; must be rejected before any ZIP reader work, not panic.",
+      "sha256": "eee76e9194f3a66f7ca4c0c916d552d3855c0d6392d350851d82d79607fb4210",
+      "byteLen": 49,
+      "expectedError": "malformed"
+    },
+    {
+      "file": "malformed_missing_model.3mf",
+      "label": "malformed: no model part",
+      "notes": "Valid OPC container whose relationships point at a part that is not in the archive.",
+      "sha256": "f63d3049db093fa9287cfc068bd1e4507eb9e2b71cbff65dd80c5442b5ad12f1",
+      "byteLen": 760,
+      "expectedError": "missing_model_part"
+    },
+    {
+      "file": "malformed_triangle_index.3mf",
+      "label": "malformed: triangle index out of range",
+      "notes": "A triangle references vertex 9 of a 3-vertex mesh.",
+      "sha256": "6b772db005bba3c5d4f0d3680559f646f20dcd6cd6c4879739d4829e66bd5b03",
+      "byteLen": 1052,
+      "expectedError": "malformed"
+    },
+    {
+      "file": "malformed_component_cycle.3mf",
+      "label": "malformed: component cycle",
+      "notes": "Two objects reference each other; expansion must terminate instead of recursing forever.",
+      "sha256": "99983a5ca71451564838a8900f4bd6cdd1a11c014ed83c9cb2a4f246abce6b12",
+      "byteLen": 1007,
+      "expectedError": "malformed"
+    },
+    {
+      "file": "malformed_nan_vertex.3mf",
+      "label": "malformed: non-finite coordinates",
+      "notes": "NaN/Infinity vertex coordinates would poison the bounds and serialize as JSON null.",
+      "sha256": "af81a4bf30a9e609dee2c6ef4a895a1c19de8b89c4602a5475a9703e0243df30",
+      "byteLen": 1059,
+      "expectedError": "non_finite_number"
+    },
+    {
+      "file": "malformed_doctype_entity.3mf",
+      "label": "hostile: billion laughs",
+      "notes": "Recursive internal entity expansion inside a DOCTYPE.",
+      "sha256": "2809040b326531ca971dcb754f72f651956df664f9adc15a41e09d7ca5f714c4",
+      "byteLen": 1127,
+      "expectedError": "limit.xml_doctype"
+    },
+    {
+      "file": "malformed_external_entity.3mf",
+      "label": "hostile: XXE",
+      "notes": "External SYSTEM entity attempting local file disclosure.",
+      "sha256": "d855097315abd860a622f3f9f3d6604976ea649cbe9902ca55a25956858d05b2",
+      "byteLen": 1072,
+      "expectedError": "limit.xml_doctype"
+    },
+    {
+      "file": "malformed_deep_nesting.3mf",
+      "label": "hostile: XML depth",
+      "notes": "5,000 levels of nested elements inside <resources>.",
+      "sha256": "518b495905b6a62f3f1a9782dc324c34942e7edc02c01351c28bd9dc97adf191",
+      "byteLen": 1063,
+      "expectedError": "limit.xml_depth"
+    },
+    {
+      "file": "malformed_zip_bomb.3mf",
+      "label": "hostile: decompression bomb",
+      "notes": "An 8 MiB all-zero thumbnail part with a ~1000:1 compression ratio.",
+      "sha256": "1ac97f23a38abecd456fe29185a5338af2ee0067add8a70415b034f844a75b62",
+      "byteLen": 9320,
+      "expectedError": "limit.compression_ratio"
+    },
+    {
+      "file": "malformed_path_traversal.3mf",
+      "label": "hostile: path traversal",
+      "notes": "An archive entry named ../../evil.txt, which must never be treated as a package part.",
+      "sha256": "73f860cbfd1e6200151c85abe133fb97c2542c924402c2ffa6070d729ecea7db",
+      "byteLen": 1159,
+      "expectedError": "malformed"
+    }
+  ]
+}

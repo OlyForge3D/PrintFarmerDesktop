@@ -21,6 +21,7 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 use zip::ZipArchive;
 
+use crate::limits::ParseGuard;
 use crate::threemf::{self, ThreeMfError};
 
 /// Conventional locations of vendor parts inside a slicer 3MF project.
@@ -186,10 +187,11 @@ pub fn extract_file(path: &Path) -> Result<VendorMetadata, ThreeMfError> {
 /// Extract vendor metadata from an in-memory 3MF package.
 pub fn extract_bytes(data: &[u8]) -> Result<VendorMetadata, ThreeMfError> {
     let mut archive = ZipArchive::new(Cursor::new(data))?;
+    let mut guard = ParseGuard::default();
 
-    let core = extract_core(&mut archive)?;
-    let plates = extract_plates(&mut archive)?;
-    let parts = collect_parts(&mut archive)?;
+    let core = extract_core(&mut archive, &mut guard)?;
+    let plates = extract_plates(&mut archive, &mut guard)?;
+    let parts = collect_parts(&mut archive, &mut guard)?;
 
     let slicer = core
         .application
@@ -206,32 +208,39 @@ pub fn extract_bytes(data: &[u8]) -> Result<VendorMetadata, ThreeMfError> {
 }
 
 /// Read the model root `<metadata>` elements into [`CoreMetadata`].
-fn extract_core<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<CoreMetadata, ThreeMfError> {
-    let model_part = match threemf::locate_model_part(archive) {
+fn extract_core<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    guard: &mut ParseGuard,
+) -> Result<CoreMetadata, ThreeMfError> {
+    let model_part = match threemf::locate_model_part(archive, guard) {
         Ok(part) => part,
         // A vendor project without a resolvable model part still may carry
         // useful config parts; treat missing geometry as empty core metadata.
         Err(ThreeMfError::MissingModelPart) => return Ok(CoreMetadata::default()),
         Err(e) => return Err(e),
     };
-    let Some(xml) = threemf::read_entry(archive, &model_part)? else {
+    let Some(xml) = threemf::read_entry(archive, &model_part, guard)? else {
         return Ok(CoreMetadata::default());
     };
-    parse_core_metadata(&xml)
+    parse_core_metadata(&xml, guard)
 }
 
 /// Parse `<metadata name="…">value</metadata>` from the model XML. Only
 /// top-level model metadata is captured; object-scoped metadata is ignored so a
 /// nested `<metadata>` cannot overwrite a document-level field.
-fn parse_core_metadata(xml: &str) -> Result<CoreMetadata, ThreeMfError> {
+fn parse_core_metadata(xml: &str, guard: &mut ParseGuard) -> Result<CoreMetadata, ThreeMfError> {
     let mut reader = Reader::from_str(xml);
     let mut core = CoreMetadata::default();
     let mut depth: i32 = 0;
     let mut pending: Option<String> = None;
     let mut text = String::new();
+    let mut xml_guard = guard.xml_guard();
 
     loop {
-        match reader.read_event()? {
+        guard.checkpoint()?;
+        let event = reader.read_event()?;
+        xml_guard.observe(&event)?;
+        match event {
             Event::Start(e) => {
                 if e.name().as_ref() == b"metadata" && depth == 1 {
                     pending = threemf::get_attr(&e, b"name");
@@ -276,11 +285,12 @@ fn parse_core_metadata(xml: &str) -> Result<CoreMetadata, ThreeMfError> {
 /// PrusaSlicer projects and older exports; that yields an empty list.
 fn extract_plates<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
+    guard: &mut ParseGuard,
 ) -> Result<Vec<PlateSliceInfo>, ThreeMfError> {
-    let Some(xml) = threemf::read_entry(archive, SLICE_INFO_PART)? else {
+    let Some(xml) = threemf::read_entry(archive, SLICE_INFO_PART, guard)? else {
         return Ok(Vec::new());
     };
-    parse_slice_info(&xml)
+    parse_slice_info(&xml, guard)
 }
 
 /// Parse the Bambu/Orca `slice_info.config` XML. Its shape is:
@@ -295,13 +305,20 @@ fn extract_plates<R: Read + Seek>(
 ///   </plate>
 /// </config>
 /// ```
-fn parse_slice_info(xml: &str) -> Result<Vec<PlateSliceInfo>, ThreeMfError> {
+fn parse_slice_info(
+    xml: &str,
+    guard: &mut ParseGuard,
+) -> Result<Vec<PlateSliceInfo>, ThreeMfError> {
     let mut reader = Reader::from_str(xml);
     let mut plates: Vec<PlateSliceInfo> = Vec::new();
     let mut current: Option<PlateSliceInfo> = None;
+    let mut xml_guard = guard.xml_guard();
 
     loop {
-        match reader.read_event()? {
+        guard.checkpoint()?;
+        let event = reader.read_event()?;
+        xml_guard.observe(&event)?;
+        match event {
             Event::Start(e) if e.name().as_ref() == b"plate" => {
                 current = Some(PlateSliceInfo::default());
             }
@@ -349,9 +366,12 @@ fn parse_slice_info(xml: &str) -> Result<Vec<PlateSliceInfo>, ThreeMfError> {
 }
 
 /// Enumerate uploadable vendor parts (PNG thumbnails) from the archive index.
-fn collect_parts<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<VendorParts, ThreeMfError> {
+fn collect_parts<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    guard: &mut ParseGuard,
+) -> Result<VendorParts, ThreeMfError> {
     Ok(VendorParts {
-        thumbnails: collect_thumbnail_part_names(archive)?,
+        thumbnails: collect_thumbnail_part_names(archive, guard)?,
     })
 }
 
@@ -359,12 +379,17 @@ fn collect_parts<R: Read + Seek>(archive: &mut ZipArchive<R>) -> Result<VendorPa
 /// `None` if the part is absent. Callers use this to upload plate PNGs.
 pub fn read_part_bytes(data: &[u8], part_name: &str) -> Result<Option<Vec<u8>>, ThreeMfError> {
     let mut archive = ZipArchive::new(Cursor::new(data))?;
-    read_part_bytes_limited(&mut archive, part_name, MAX_THUMBNAIL_PART_BYTES, || {
-        ThreeMfError::DataTooLarge {
+    let mut guard = ParseGuard::default();
+    read_part_bytes_limited(
+        &mut archive,
+        part_name,
+        MAX_THUMBNAIL_PART_BYTES,
+        || ThreeMfError::DataTooLarge {
             resource: "plate thumbnail",
             limit: MAX_THUMBNAIL_PART_BYTES,
-        }
-    })
+        },
+        &mut guard,
+    )
 }
 
 fn read_part_bytes_limited<R: Read + Seek, F: Fn() -> ThreeMfError>(
@@ -372,17 +397,20 @@ fn read_part_bytes_limited<R: Read + Seek, F: Fn() -> ThreeMfError>(
     part_name: &str,
     max_bytes: u64,
     too_large: F,
+    guard: &mut ParseGuard,
 ) -> Result<Option<Vec<u8>>, ThreeMfError> {
-    threemf::read_entry_bytes(archive, part_name, max_bytes, too_large)
+    threemf::read_entry_bytes(archive, part_name, max_bytes, too_large, guard)
 }
 
 fn collect_thumbnail_part_names<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
+    guard: &mut ParseGuard,
 ) -> Result<Vec<String>, ThreeMfError> {
     let mut thumbnails = Vec::new();
     let mut total_thumbnail_bytes = 0u64;
 
     for index in 0..archive.len() {
+        guard.checkpoint()?;
         let file = archive.by_index(index)?;
         let part_name = file.name().to_string();
         if !part_name.to_ascii_lowercase().ends_with(".png") {
@@ -400,6 +428,9 @@ fn collect_thumbnail_part_names<R: Read + Seek>(
                 limit: MAX_THUMBNAIL_PART_BYTES,
             });
         }
+        // A PNG that claims an impossible expansion ratio is a decompression
+        // bomb aimed at the thumbnail RPC, not a plate preview.
+        guard.check_ratio(&part_name, file.compressed_size(), file.size())?;
         total_thumbnail_bytes =
             total_thumbnail_bytes
                 .checked_add(file.size())
@@ -424,6 +455,7 @@ fn read_thumbnail_part<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     part_name: &str,
     total_thumbnail_bytes: &mut u64,
+    guard: &mut ParseGuard,
 ) -> Result<Option<Vec<u8>>, ThreeMfError> {
     let remaining = MAX_TOTAL_THUMBNAIL_BYTES
         .checked_sub(*total_thumbnail_bytes)
@@ -432,19 +464,25 @@ fn read_thumbnail_part<R: Read + Seek>(
             limit: MAX_TOTAL_THUMBNAIL_BYTES,
         })?;
     let limit = remaining.min(MAX_THUMBNAIL_PART_BYTES);
-    let png_bytes = read_part_bytes_limited(archive, part_name, limit, || {
-        if remaining < MAX_THUMBNAIL_PART_BYTES {
-            ThreeMfError::DataTooLarge {
-                resource: "plate thumbnails",
-                limit: MAX_TOTAL_THUMBNAIL_BYTES,
+    let png_bytes = read_part_bytes_limited(
+        archive,
+        part_name,
+        limit,
+        || {
+            if remaining < MAX_THUMBNAIL_PART_BYTES {
+                ThreeMfError::DataTooLarge {
+                    resource: "plate thumbnails",
+                    limit: MAX_TOTAL_THUMBNAIL_BYTES,
+                }
+            } else {
+                ThreeMfError::DataTooLarge {
+                    resource: "plate thumbnail",
+                    limit: MAX_THUMBNAIL_PART_BYTES,
+                }
             }
-        } else {
-            ThreeMfError::DataTooLarge {
-                resource: "plate thumbnail",
-                limit: MAX_THUMBNAIL_PART_BYTES,
-            }
-        }
-    })?;
+        },
+        guard,
+    )?;
     if let Some(png_bytes) = &png_bytes {
         *total_thumbnail_bytes = total_thumbnail_bytes
             .checked_add(png_bytes.len() as u64)
@@ -471,12 +509,17 @@ fn plate_index_from_part_name(part_name: &str) -> Option<u32> {
 /// decompressed bytes returned from the ZIP reader.
 pub fn read_plate_thumbnails(data: &[u8]) -> Result<Vec<PlateThumbnail>, ThreeMfError> {
     let mut archive = ZipArchive::new(Cursor::new(data))?;
-    let part_names = collect_thumbnail_part_names(&mut archive)?;
+    let mut guard = ParseGuard::default();
+    let part_names = collect_thumbnail_part_names(&mut archive, &mut guard)?;
     let mut thumbnails = Vec::new();
     let mut total_thumbnail_bytes = 0u64;
     for part_name in part_names {
-        let Some(png_bytes) =
-            read_thumbnail_part(&mut archive, &part_name, &mut total_thumbnail_bytes)?
+        let Some(png_bytes) = read_thumbnail_part(
+            &mut archive,
+            &part_name,
+            &mut total_thumbnail_bytes,
+            &mut guard,
+        )?
         else {
             return Err(ThreeMfError::Malformed(format!(
                 "enumerated thumbnail part '{part_name}' could not be re-read"
