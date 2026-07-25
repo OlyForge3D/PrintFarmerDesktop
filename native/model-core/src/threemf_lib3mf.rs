@@ -1382,37 +1382,32 @@ fn load_wrapper_from_library_base(base: &Path) -> Result<Wrapper, String> {
             library_path.display()
         ));
     }
-    let base_str = base
-        .to_str()
-        .ok_or_else(|| format!("lib3mf search path is not valid UTF-8: {}", base.display()))?;
-    // Keep a verified handle alive across Wrapper::new. On Windows this handle is
-    // opened without FILE_SHARE_WRITE/DELETE, so the staged path cannot be
-    // rewritten or swapped after the hash check and before LoadLibrary resolves it.
-    let _verified_staged_library = expected_staged_test_library_hash(&library_path)
-        .map(|expected_hash| verify_staged_library_before_load(&library_path, &expected_hash))
-        .transpose()?;
-
-    #[cfg(windows)]
-    {
-        let library_dir = library_path.parent().ok_or_else(|| {
-            format!(
-                "lib3mf shared library path has no parent directory: {}",
-                library_path.display()
-            )
-        })?;
-        ensure_hardened_windows_dll_search()?;
-        with_windows_added_dll_directory(
-            library_dir,
-            add_windows_dll_directory,
-            remove_windows_dll_directory,
-            || Wrapper::new(Some(base_str)).map_err(|error| error.message),
-        )
-    }
-
-    #[cfg(not(windows))]
-    {
-        Wrapper::new(Some(base_str)).map_err(|error| error.message)
-    }
+    with_verified_staged_library_load_base(
+        base,
+        expected_staged_test_library_hash(&library_path).as_deref(),
+        |_load_base, load_base_str| {
+            #[cfg(windows)]
+            {
+                let library_dir = library_path.parent().ok_or_else(|| {
+                    format!(
+                        "lib3mf shared library path has no parent directory: {}",
+                        library_path.display()
+                    )
+                })?;
+                ensure_hardened_windows_dll_search()?;
+                with_windows_added_dll_directory(
+                    library_dir,
+                    add_windows_dll_directory,
+                    remove_windows_dll_directory,
+                    || Wrapper::new(Some(load_base_str)).map_err(|error| error.message),
+                )
+            }
+            #[cfg(not(windows))]
+            {
+                Wrapper::new(Some(load_base_str)).map_err(|error| error.message)
+            }
+        },
+    )
 }
 
 #[cfg(windows)]
@@ -1931,7 +1926,7 @@ fn verify_staged_library_contents(staged: &Path, expected_hash: &str) -> Result<
 fn verify_staged_library_before_load(
     library_path: &Path,
     expected_hash: &str,
-) -> Result<File, String> {
+) -> Result<VerifiedStagedLibraryLoadGuard, String> {
     let mut file = open_staged_library_for_load_verification(library_path).map_err(|error| {
         format!(
             "unable to open staged lib3mf library {} for immediate pre-load verification: {error}",
@@ -1945,7 +1940,7 @@ fn verify_staged_library_before_load(
         )
     })?;
     if actual_hash == expected_hash {
-        Ok(file)
+        VerifiedStagedLibraryLoadGuard::new(library_path, file)
     } else {
         Err(format!(
             "staged lib3mf library {} hash {} did not match expected vetted SHA-256 {} immediately before load",
@@ -1954,6 +1949,177 @@ fn verify_staged_library_before_load(
             expected_hash
         ))
     }
+}
+
+fn with_verified_staged_library_load_base<T, F>(
+    base: &Path,
+    expected_hash: Option<&str>,
+    load: F,
+) -> Result<T, String>
+where
+    F: FnOnce(&Path, &str) -> Result<T, String>,
+{
+    let library_path = lib3mf_library_path(base);
+    // Keep the final pre-load verification bound to the actual load path. Windows
+    // holds the staged file open without FILE_SHARE_WRITE/DELETE. Unix targets
+    // create a one-shot symlink to /dev/fd or /proc/self/fd for the already-open
+    // descriptor, so Wrapper::new reopens that descriptor rather than the staged
+    // pathname itself.
+    let verified_staged_library = expected_hash
+        .map(|expected_hash| verify_staged_library_before_load(&library_path, expected_hash))
+        .transpose()?;
+    let load_base = verified_staged_library
+        .as_ref()
+        .map_or(base, |guard| guard.load_base_path(base));
+    let load_base_str = load_base.to_str().ok_or_else(|| {
+        format!(
+            "lib3mf search path is not valid UTF-8: {}",
+            load_base.display()
+        )
+    })?;
+    load(load_base, load_base_str)
+}
+
+struct VerifiedStagedLibraryLoadGuard {
+    _file: File,
+    #[cfg(not(windows))]
+    load_base: PathBuf,
+    #[cfg(not(windows))]
+    load_path: PathBuf,
+}
+
+impl VerifiedStagedLibraryLoadGuard {
+    fn new(library_path: &Path, file: File) -> Result<Self, String> {
+        #[cfg(windows)]
+        {
+            let _ = library_path;
+            Ok(Self { _file: file })
+        }
+
+        #[cfg(not(windows))]
+        {
+            let (load_base, load_path) =
+                create_verified_staged_library_load_path(library_path, &file)?;
+            Ok(Self {
+                _file: file,
+                load_base,
+                load_path,
+            })
+        }
+    }
+
+    fn load_base_path<'a>(&'a self, default_base: &'a Path) -> &'a Path {
+        #[cfg(windows)]
+        {
+            let _ = self;
+            default_base
+        }
+
+        #[cfg(not(windows))]
+        {
+            let _ = default_base;
+            &self.load_base
+        }
+    }
+}
+
+#[cfg(not(windows))]
+impl Drop for VerifiedStagedLibraryLoadGuard {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_file(&self.load_path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "warning: failed to remove temporary verified lib3mf loader path {}: {error}",
+                    self.load_path.display()
+                );
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn create_verified_staged_library_load_path(
+    library_path: &Path,
+    file: &File,
+) -> Result<(PathBuf, PathBuf), String> {
+    use std::os::fd::AsRawFd;
+
+    // Point the loader at the already-open descriptor so the post-hash load never
+    // resolves the staged pathname again. This still assumes no hostile peer can
+    // replace the short-lived helper symlink before dlopen runs, which is an
+    // acceptable residual risk for this desktop app's bundled/pinned-library model.
+    let file_stem = library_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("lib3mf");
+    let parent = library_path.parent().ok_or_else(|| {
+        format!(
+            "staged lib3mf library path has no parent directory: {}",
+            library_path.display()
+        )
+    })?;
+    let fd_target = verified_library_fd_target(file);
+    let pid = std::process::id();
+    let raw_fd = file.as_raw_fd();
+
+    for attempt in 0..16 {
+        let suffix = if attempt == 0 {
+            format!("{pid}-{raw_fd}")
+        } else {
+            format!("{pid}-{raw_fd}-{attempt}")
+        };
+        let load_base = parent.join(format!(".{file_stem}.verified-load-{suffix}"));
+        let load_path = lib3mf_library_path(&load_base);
+        match create_file_symlink(&fd_target, &load_path) {
+            Ok(()) => return Ok((load_base, load_path)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "unable to create verified lib3mf loader path {} -> {}: {error}",
+                    load_path.display(),
+                    fd_target.display()
+                ))
+            }
+        }
+    }
+
+    Err(format!(
+        "unable to reserve a temporary verified lib3mf loader path beside {}",
+        library_path.display()
+    ))
+}
+
+#[cfg(not(windows))]
+fn verified_library_fd_target(file: &File) -> PathBuf {
+    use std::os::fd::AsRawFd;
+
+    #[cfg(target_os = "linux")]
+    {
+        PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        PathBuf::from(format!("/dev/fd/{}", file.as_raw_fd()))
+    }
+}
+
+#[cfg(all(windows, test))]
+fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(target, link)
+}
+
+#[cfg(unix)]
+fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(not(any(windows, unix)))]
+fn create_file_symlink(_target: &Path, _link: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "file symlinks are not supported on this platform",
+    ))
 }
 
 fn open_library_source_for_staging(path: &Path) -> std::io::Result<File> {
@@ -2503,6 +2669,51 @@ mod tests {
         std::fs::write(&staged, b"tampered\n").unwrap();
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn verified_staged_library_load_path_reads_original_bytes_after_swap() {
+        let temp = tempfile::tempdir().unwrap();
+        let staged = temp
+            .path()
+            .join(format!("lib3mf.{}", lib3mf_library_extension()));
+        let staged_base = staged.with_extension("");
+        let original_bytes = b"vetted\n";
+        let swapped_bytes = b"tampered\n";
+        std::fs::write(&staged, original_bytes).unwrap();
+        let expected_hash = crate::hash::hash_file(&staged).unwrap();
+        let swapped_out = temp
+            .path()
+            .join(format!("original.{}", lib3mf_library_extension()));
+        let mut verified_load_path = None;
+
+        let observed_bytes = with_verified_staged_library_load_base(
+            &staged_base,
+            Some(&expected_hash),
+            |load_base, _load_base_str| {
+                let load_path = lib3mf_library_path(load_base);
+                verified_load_path = Some(load_path.clone());
+                assert_ne!(
+                    load_path, staged,
+                    "non-Windows loads must not reopen the staged pathname after final verification"
+                );
+
+                std::fs::rename(&staged, &swapped_out).map_err(|error| error.to_string())?;
+                std::fs::write(&staged, swapped_bytes).map_err(|error| error.to_string())?;
+                std::fs::read(&load_path).map_err(|error| error.to_string())
+            },
+        )
+        .unwrap();
+
+        let verified_load_path = verified_load_path.unwrap();
+        assert_eq!(observed_bytes, original_bytes);
+        assert_eq!(std::fs::read(&staged).unwrap(), swapped_bytes);
+        assert_eq!(std::fs::read(&swapped_out).unwrap(), original_bytes);
+        assert!(
+            !verified_load_path.exists(),
+            "verified non-Windows loader path should be removed once the load guard drops"
+        );
+    }
+
     #[test]
     fn verify_checkout_revision_rejects_dirty_tracked_changes() {
         let temp = tempfile::tempdir().unwrap();
@@ -2651,24 +2862,6 @@ mod tests {
             .join("tests")
             .join("fixtures")
             .join(name)
-    }
-
-    #[cfg(windows)]
-    fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::windows::fs::symlink_file(target, link)
-    }
-
-    #[cfg(unix)]
-    fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
-        std::os::unix::fs::symlink(target, link)
-    }
-
-    #[cfg(not(any(windows, unix)))]
-    fn create_file_symlink(_target: &Path, _link: &Path) -> std::io::Result<()> {
-        Err(std::io::Error::new(
-            ErrorKind::Unsupported,
-            "file symlinks are not supported on this platform",
-        ))
     }
 
     fn should_skip_symlink_test(error: &std::io::Error) -> bool {
