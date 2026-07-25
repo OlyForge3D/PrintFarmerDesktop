@@ -19,6 +19,7 @@ use crate::scene::{
     self, SceneError, SceneMaterial, SceneMesh, SceneObject, SceneObjectMesh, ScenePlate,
     SceneTransform,
 };
+use crate::scene_status::SceneLoadStatus;
 use crate::threemf::ThreeMfError;
 use crate::thumbnail::{self, ThumbnailError, DEFAULT_THUMBNAIL_SIZE};
 use crate::vendor;
@@ -48,6 +49,13 @@ pub struct ScenePartDto {
     pub name: String,
     pub triangle_start: usize,
     pub triangle_count: usize,
+    pub status: SceneLoadStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub material_label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -118,6 +126,9 @@ pub struct SceneMeshDto {
     /// per-facet colors. Omitted from JSON when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub face_colors: Option<Vec<u8>>,
+    pub status: SceneLoadStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub status_messages: Vec<String>,
     /// Named triangle ranges backing the viewer's part tree.
     pub parts: Vec<ScenePartDto>,
     /// Hierarchical object instances. Each object owns its local transform and,
@@ -144,6 +155,10 @@ impl From<&SceneMesh> for SceneMeshDto {
                 name: p.name.clone(),
                 triangle_start: p.triangle_start,
                 triangle_count: p.triangle_count,
+                status: p.status,
+                status_detail: p.status_detail.clone(),
+                part_number: p.part_number.clone(),
+                material_label: p.material_label.clone(),
             })
             .collect();
         let objects = mesh.objects.iter().map(SceneObjectDto::from).collect();
@@ -158,6 +173,8 @@ impl From<&SceneMesh> for SceneMeshDto {
             },
             source_format: mesh.source_format,
             face_colors,
+            status: mesh.status,
+            status_messages: mesh.status_messages.clone(),
             parts,
             objects,
             root_object_ids: mesh.root_object_ids.clone(),
@@ -631,6 +648,7 @@ mod tests {
         SceneMaterial, SceneMesh, SceneObject, SceneObjectMesh, ScenePlate, SceneTransform,
         SCENE_DTO_VERSION,
     };
+    use crate::scene_status::SceneLoadStatus;
 
     fn sample_scene() -> SceneMesh {
         let mut bounds = Aabb::empty();
@@ -644,10 +662,16 @@ mod tests {
             bounds,
             source_format: ModelFormat::ThreeMf,
             face_colors: None,
+            status: SceneLoadStatus::Complete,
+            status_messages: Vec::new(),
             parts: vec![crate::scene::ScenePart {
                 name: "Object 1".to_string(),
                 triangle_start: 0,
                 triangle_count: 1,
+                status: SceneLoadStatus::Complete,
+                status_detail: None,
+                part_number: None,
+                material_label: None,
             }],
             objects: vec![SceneObject {
                 id: "plate-0/item-0/object-1".to_string(),

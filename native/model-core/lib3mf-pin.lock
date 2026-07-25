@@ -1,0 +1,5 @@
+# Vetted lib3mf shared-library hashes for the pinned lib3mf-ffi checkout.
+revision = "0f12d3c25c861198f80a34abf3699102529b6e87"
+dll = "1562b3a31904660248f9e6797cf2f737568e6fa6123bfeca3b7adf64db365a39"
+dylib = "e52a1cc287b1725ee3c4ab10d211f86d5b406efa686c13d5d4bf512f6fc3ac34"
+so = "6d2905faee1960a5f4a40032c73139696c64f63fee3230c279ed1e4086e97ac3"

@@ -619,10 +619,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
+name = "lib3mf"
+version = "2.5.0"
+source = "git+https://github.com/3MFConsortium/lib3mf_rs?rev=0f12d3c25c861198f80a34abf3699102529b6e87#0f12d3c25c861198f80a34abf3699102529b6e87"
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+
+[[package]]
+name = "libloading"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
 
 [[package]]
 name = "libsqlite3-sys"
@@ -732,6 +747,8 @@ name = "model-core"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "lib3mf",
+ "libloading",
  "notify",
  "png",
  "quick-xml 0.36.2",

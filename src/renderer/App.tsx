@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AppInfoResponse,
-  LoadSceneResponse,
   ListServerProfilesResponse,
   LogicalModel,
   UploadJob,
@@ -37,6 +36,7 @@ import {
 } from './library/importPlan';
 import { PreviewWorkspace } from './viewer/PreviewWorkspace';
 import type { Projection } from './viewer/ModelViewer';
+import { toViewerSceneMesh, type SceneMesh } from './viewer/types';
 import { Icon } from './ui/Icon';
 import appIconUrl from '../../assets/icon.png';
 import { ServerProfilesDialog } from './serverProfiles/ServerProfilesDialog';
@@ -89,7 +89,7 @@ export function App(): React.JSX.Element {
   );
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [loadedMesh, setLoadedMesh] = useState<LoadSceneResponse | null>(null);
+  const [loadedMesh, setLoadedMesh] = useState<SceneMesh | null>(null);
   const [cachedStats, setCachedStats] = useState<{
     hash: string;
     stats: SceneStats;
@@ -628,7 +628,9 @@ export function App(): React.JSX.Element {
       setHiddenObjects(new Set());
       setLoading(true);
       try {
-        const scene = await window.printFarmer.loadScene({ path: target.path });
+        const scene = toViewerSceneMesh(
+          await window.printFarmer.loadScene({ path: target.path }),
+        );
         if (previewRequestRef.current === requestId) {
           setLoadedMesh(scene);
           if (target.hash) {

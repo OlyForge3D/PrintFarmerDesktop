@@ -25,6 +25,7 @@ use zip::result::ZipError;
 use zip::ZipArchive;
 
 use crate::geometry::Aabb;
+use crate::scene_status::SceneLoadStatus;
 
 /// Upper bounds so a malformed or hostile package cannot exhaust memory.
 pub const MAX_VERTICES: usize = 20_000_000;
@@ -70,6 +71,8 @@ pub enum ThreeMfError {
     MissingModelPart,
     #[error("malformed 3MF model: {0}")]
     Malformed(String),
+    #[error("lib3mf error: {0}")]
+    Lib3Mf(String),
     #[error("model exceeds the maximum supported size")]
     TooLarge,
     #[error(
@@ -344,6 +347,10 @@ pub struct ThreeMfPart {
     pub name: String,
     pub triangle_start: usize,
     pub triangle_count: usize,
+    pub status: SceneLoadStatus,
+    pub status_detail: Option<String>,
+    pub part_number: Option<String>,
+    pub material_label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -394,6 +401,10 @@ pub struct ThreeMfMesh {
     pub object_count: usize,
     /// Instances placed by the build.
     pub build_item_count: usize,
+    /// Overall validation status for the normalized scene representation.
+    pub status: SceneLoadStatus,
+    /// Human-readable validation notes in deterministic order.
+    pub status_messages: Vec<String>,
     /// One entry per build item, in build order, mapping to triangle ranges.
     pub parts: Vec<ThreeMfPart>,
     /// Hierarchical object instances in build order.
@@ -416,6 +427,20 @@ impl ThreeMfMesh {
 pub fn parse_file(path: &Path) -> Result<ThreeMfMesh, ThreeMfError> {
     let data = std::fs::read(path)?;
     parse_bytes(&data)
+}
+
+/// Parse a 3MF file with the native lib3mf validator/reader when the feature is
+/// enabled.
+#[cfg(feature = "lib3mf")]
+pub fn parse_file_with_lib3mf(path: &Path) -> Result<ThreeMfMesh, ThreeMfError> {
+    crate::threemf_lib3mf::parse_file(path)
+}
+
+/// Stage the pinned lib3mf shared library next to the current test executable.
+#[cfg(feature = "lib3mf")]
+#[doc(hidden)]
+pub fn stage_lib3mf_test_library() -> Result<(), String> {
+    crate::threemf_lib3mf::stage_test_library_for_current_exe()
 }
 
 /// Parse a 3MF package from an in-memory byte buffer.
@@ -462,6 +487,13 @@ pub fn parse_bytes(data: &[u8]) -> Result<ThreeMfMesh, ThreeMfError> {
         models,
         root_part: root_part_key,
     })
+}
+
+/// Parse a 3MF package with the native lib3mf validator/reader when the feature
+/// is enabled.
+#[cfg(feature = "lib3mf")]
+pub fn parse_bytes_with_lib3mf(data: &[u8]) -> Result<ThreeMfMesh, ThreeMfError> {
+    crate::threemf_lib3mf::parse_bytes(data)
 }
 
 /// Resolve the model part path, preferring the package relationships and
@@ -1497,6 +1529,10 @@ fn flatten(package: &RawPackage) -> Result<ThreeMfMesh, ThreeMfError> {
             name: part_name(package, model_part, item.object_id),
             triangle_start,
             triangle_count: output.triangles.len() - triangle_start,
+            status: SceneLoadStatus::Complete,
+            status_detail: None,
+            part_number: None,
+            material_label: None,
         });
     }
 
@@ -1515,6 +1551,8 @@ fn flatten(package: &RawPackage) -> Result<ThreeMfMesh, ThreeMfError> {
             .map(|model| model.objects.len())
             .sum(),
         build_item_count: root_model.build.len(),
+        status: SceneLoadStatus::Complete,
+        status_messages: Vec::new(),
         parts,
         objects,
         root_object_ids,

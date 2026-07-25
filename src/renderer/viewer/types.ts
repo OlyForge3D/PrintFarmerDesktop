@@ -8,8 +8,13 @@
  * vertices in triples. `faceColors`, when present, is one `[r, g, b]` triple of
  * 0–255 bytes per triangle (currently only STL supplies per-facet colors).
  */
+import type {
+  SceneMesh as IpcSceneMesh,
+  ScenePart as IpcScenePart,
+} from '../../shared/ipc';
 
 export type ModelFormat = 'stl' | 'threeMf' | 'obj';
+export type SceneLoadStatus = 'complete' | 'partial' | 'unsupported';
 
 export interface Bounds {
   readonly min: readonly [number, number, number];
@@ -21,6 +26,10 @@ export interface ScenePart {
   readonly name: string;
   readonly triangleStart: number;
   readonly triangleCount: number;
+  readonly status?: SceneLoadStatus;
+  readonly statusDetail?: string;
+  readonly partNumber?: string;
+  readonly materialLabel?: string;
 }
 
 export interface SceneTransform {
@@ -63,19 +72,49 @@ export interface ScenePlate {
 }
 
 export interface SceneMesh {
-  readonly sceneVersion: 2;
-  /** Flattened vertex positions; length is a multiple of three. */
-  readonly positions: readonly number[];
-  /** Triangle vertex indices; length is a multiple of three. */
-  readonly indices: readonly number[];
+  readonly sceneVersion: IpcSceneMesh['sceneVersion'];
+  readonly positions: Readonly<IpcSceneMesh['positions']>;
+  readonly indices: Readonly<IpcSceneMesh['indices']>;
   readonly bounds: Bounds;
   readonly sourceFormat: ModelFormat;
-  /** One RGB (0–255) triple per triangle, or null/undefined when uncolored. */
   readonly faceColors?: readonly number[] | null | undefined;
-  /** Named triangle ranges for the part tree; may be empty. */
-  readonly parts?: readonly ScenePart[];
-  /** Hierarchical object instances for the renderer-facing contract. */
+  readonly status: IpcSceneMesh['status'];
+  readonly statusMessages: Readonly<IpcSceneMesh['statusMessages']>;
+  readonly parts: readonly ScenePart[];
   readonly objects: readonly SceneObject[];
   readonly rootObjectIds: readonly string[];
   readonly plates: readonly ScenePlate[];
+}
+
+export function toViewerScenePart(part: IpcScenePart): ScenePart {
+  return {
+    name: part.name,
+    triangleStart: part.triangleStart,
+    triangleCount: part.triangleCount,
+    status: part.status,
+    ...(part.statusDetail !== undefined
+      ? { statusDetail: part.statusDetail }
+      : {}),
+    ...(part.partNumber !== undefined ? { partNumber: part.partNumber } : {}),
+    ...(part.materialLabel !== undefined
+      ? { materialLabel: part.materialLabel }
+      : {}),
+  };
+}
+
+export function toViewerSceneMesh(mesh: IpcSceneMesh): SceneMesh {
+  return {
+    sceneVersion: mesh.sceneVersion,
+    positions: mesh.positions,
+    indices: mesh.indices,
+    bounds: mesh.bounds,
+    sourceFormat: mesh.sourceFormat,
+    ...(mesh.faceColors !== undefined ? { faceColors: mesh.faceColors } : {}),
+    status: mesh.status,
+    statusMessages: mesh.statusMessages,
+    parts: mesh.parts.map(toViewerScenePart),
+    objects: mesh.objects,
+    rootObjectIds: mesh.rootObjectIds,
+    plates: mesh.plates,
+  };
 }

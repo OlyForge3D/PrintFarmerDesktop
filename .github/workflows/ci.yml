@@ -72,6 +72,14 @@ jobs:
       - name: Test (sqlite feature)
         run: cargo test --features sqlite
 
+      - name: Build (lib3mf feature)
+        if: runner.os == 'Windows'
+        run: cargo build --features lib3mf
+
+      - name: Test (lib3mf feature)
+        if: runner.os == 'Windows'
+        run: cargo test --features lib3mf
+
   package:
     name: Package smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

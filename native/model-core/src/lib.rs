@@ -13,6 +13,7 @@ pub mod obj;
 pub mod rpc;
 pub mod scan;
 pub mod scene;
+pub mod scene_status;
 pub mod schema;
 pub mod serve;
 pub mod smart_import;
@@ -23,6 +24,8 @@ pub mod step;
 pub mod stl;
 pub mod sync;
 pub mod threemf;
+#[cfg(feature = "lib3mf")]
+mod threemf_lib3mf;
 pub mod thumbnail;
 pub mod vendor;
 pub mod watch;

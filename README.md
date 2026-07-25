@@ -19,8 +19,9 @@ Early development. See the implementation plan and the tracked work items.
 - **React + strict TypeScript + Vite** renderer with a virtualized library grid.
 - **Three.js (WebGL2)** for interactive viewing and deterministic thumbnails.
 - **Rust sidecar** (`native/model-core`) that owns SQLite (WAL), folder
-  scanning/watching, streaming SHA-256 hashing, pure-Rust STL, OBJ, standard 3MF
-  and Production Extension 3MF parsing, and a normalized scene cache.
+  scanning/watching, streaming SHA-256 hashing, pure-Rust STL/OBJ parsing, plus
+  standard 3MF validation through an optional native `lib3mf` feature layered on
+  top of the existing normalized scene cache and Production Extension parser.
 - Backward-compatible integration with the .NET 10 PrintFarmer server for
   authentication, model/thumbnail upload, collections, and metadata sync.
 
@@ -57,6 +58,32 @@ Prerequisites: Node.js 22+, Rust (stable), and a supported platform toolchain.
 npm install
 npm run dev
 ```
+
+### Optional native `lib3mf` validation
+
+`native/model-core` now has a feature-gated `lib3mf` path:
+
+```powershell
+cd native/model-core
+cargo build --features lib3mf
+cargo test --features lib3mf
+```
+
+- **Current scope:** CI/dev builds only. `scripts/stage-sidecar.mjs` still stages
+  only the sidecar executable; it does **not** stage `lib3mf.dll` /
+  `lib3mf.dylib` / `lib3mf.so` into packaged app resources.
+- **Release warning:** do **not** enable `--features lib3mf` for a production or
+  packaged release build until `stage-sidecar.mjs` gains a real native-library
+  staging step. Today there is no production DLL/shared-library shipping path for
+  this feature.
+- **Runtime behavior today:** when the native library is absent, the app now falls
+  back to the internal pure-Rust parser and marks the scene as
+  `SceneLoadStatus::Unsupported` with an explanatory status message instead of
+  hard-failing 3MF loading.
+- **Not verified here:** rebuilding the native `lib3mf` C/C++ library from source.
+  `cl`, `cmake`, and `ninja` were not available in this session, so CI/source
+  builds still need Visual Studio Build Tools with the Desktop C++ workload (or an
+  equivalent native toolchain) to prove the full native rebuild path.
 
 ## Releases (unsigned)
 

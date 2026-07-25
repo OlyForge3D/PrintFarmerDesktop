@@ -16,18 +16,29 @@ import {
 import type { SceneMesh } from '../src/renderer/viewer/types';
 
 function scene(overrides: Partial<SceneMesh>): SceneMesh {
-  return {
+  const base: SceneMesh = {
     sceneVersion: 2,
     positions: [],
     indices: [],
     bounds: { min: [0, 0, 0], max: [0, 0, 0] },
     sourceFormat: 'stl',
     faceColors: null,
+    status: 'complete',
+    statusMessages: [],
     parts: [],
     objects: [],
     rootObjectIds: [],
     plates: [],
+  };
+  return {
+    ...base,
     ...overrides,
+    status: overrides.status ?? base.status,
+    statusMessages: overrides.statusMessages ?? base.statusMessages,
+    parts: overrides.parts ?? base.parts,
+    objects: overrides.objects ?? base.objects,
+    rootObjectIds: overrides.rootObjectIds ?? base.rootObjectIds,
+    plates: overrides.plates ?? base.plates,
   };
 }
 
@@ -145,6 +156,7 @@ describe('toBufferGeometry', () => {
       bounds: { min: [0, 0, 0], max: [1, 1, 0] },
       sourceFormat: 'threeMf',
     });
+
     const geometry = toBufferGeometry(mesh);
     expect(geometry.getAttribute('position').count).toBe(3);
     expect(geometry.getIndex()?.count).toBe(3);
@@ -160,6 +172,7 @@ describe('toBufferGeometry', () => {
       sourceFormat: 'stl',
       faceColors: [255, 0, 0],
     });
+
     const geometry = toBufferGeometry(mesh);
     const color = geometry.getAttribute('color');
     expect(color).toBeDefined();
@@ -176,6 +189,7 @@ describe('toBufferGeometry', () => {
       sourceFormat: 'threeMf',
       faceColors: [255, 0, 0, 0, 255, 0],
     });
+
     const geometry = toBufferGeometry(mesh);
     expect(geometry.getAttribute('color')).toBeUndefined();
   });
