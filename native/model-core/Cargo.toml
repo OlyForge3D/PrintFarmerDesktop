@@ -20,6 +20,7 @@ walkdir = "2"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 notify = "8"
+libloading = "0.8"
 # ZIP with only the pure-Rust deflate (miniz_oxide) backend. Default features
 # (bzip2, zstd) pull in C libraries and must stay disabled so 3MF reading builds
 # without a C toolchain.

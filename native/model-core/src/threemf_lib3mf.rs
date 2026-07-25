@@ -8,12 +8,13 @@ use std::process::Command;
 use std::ptr;
 use std::sync::OnceLock;
 
+use libloading::Library;
 use sha2::Digest;
 
 use lib3mf_ffi::{
     eModelUnit, eObjectType, sColor, sPosition, sTransform, sTriangle, sTriangleProperties, CBool,
     Lib3MF_Base, Lib3MF_BuildItem, Lib3MF_ComponentsObject, Lib3MF_MeshObject, Lib3MF_Model,
-    Lib3MF_Object, Lib3MF_Reader, Wrapper,
+    Lib3MF_Object, Lib3MF_Reader,
 };
 
 use crate::geometry::Aabb;
@@ -54,8 +55,242 @@ pub fn parse_bytes(data: &[u8]) -> Result<ThreeMfMesh, ThreeMfError> {
     })
 }
 
+struct LoadedLib3mfApi {
+    lib3mf_basematerialgroup_getcount:
+        unsafe extern "C" fn(lib3mf_ffi::Lib3MF_BaseMaterialGroup, *mut u32) -> i32,
+    lib3mf_basematerialgroup_getdisplaycolor:
+        unsafe extern "C" fn(lib3mf_ffi::Lib3MF_BaseMaterialGroup, u32, *mut sColor) -> i32,
+    lib3mf_basematerialgroup_getname: unsafe extern "C" fn(
+        lib3mf_ffi::Lib3MF_BaseMaterialGroup,
+        u32,
+        u32,
+        *mut u32,
+        *mut c_char,
+    ) -> i32,
+    lib3mf_basematerialgroupiterator_getcurrentbasematerialgroup: unsafe extern "C" fn(
+        lib3mf_ffi::Lib3MF_BaseMaterialGroupIterator,
+        *mut lib3mf_ffi::Lib3MF_BaseMaterialGroup,
+    ) -> i32,
+    lib3mf_builditem_getobjectresource:
+        unsafe extern "C" fn(Lib3MF_BuildItem, *mut Lib3MF_Object) -> i32,
+    lib3mf_builditem_getobjecttransform:
+        unsafe extern "C" fn(Lib3MF_BuildItem, *mut sTransform) -> i32,
+    lib3mf_builditem_getpartnumber:
+        unsafe extern "C" fn(Lib3MF_BuildItem, u32, *mut u32, *mut c_char) -> i32,
+    lib3mf_builditem_hasobjecttransform: unsafe extern "C" fn(Lib3MF_BuildItem, *mut CBool) -> i32,
+    lib3mf_builditemiterator_getcurrent:
+        unsafe extern "C" fn(lib3mf_ffi::Lib3MF_BuildItemIterator, *mut Lib3MF_BuildItem) -> i32,
+    lib3mf_builditemiterator_movenext:
+        unsafe extern "C" fn(lib3mf_ffi::Lib3MF_BuildItemIterator, *mut CBool) -> i32,
+    lib3mf_component_getobjectresource:
+        unsafe extern "C" fn(lib3mf_ffi::Lib3MF_Component, *mut Lib3MF_Object) -> i32,
+    lib3mf_component_gettransform:
+        unsafe extern "C" fn(lib3mf_ffi::Lib3MF_Component, *mut sTransform) -> i32,
+    lib3mf_component_hastransform:
+        unsafe extern "C" fn(lib3mf_ffi::Lib3MF_Component, *mut CBool) -> i32,
+    lib3mf_componentsobject_getcomponent: unsafe extern "C" fn(
+        Lib3MF_ComponentsObject,
+        u32,
+        *mut lib3mf_ffi::Lib3MF_Component,
+    ) -> i32,
+    lib3mf_componentsobject_getcomponentcount:
+        unsafe extern "C" fn(Lib3MF_ComponentsObject, *mut u32) -> i32,
+    lib3mf_createmodel: unsafe extern "C" fn(*mut Lib3MF_Model) -> i32,
+    lib3mf_getlasterror:
+        unsafe extern "C" fn(Lib3MF_Base, u32, *mut u32, *mut c_char, *mut CBool) -> i32,
+    lib3mf_meshobject_getalltriangleproperties:
+        unsafe extern "C" fn(Lib3MF_MeshObject, u64, *mut u64, *mut sTriangleProperties) -> i32,
+    lib3mf_meshobject_gettrianglecount: unsafe extern "C" fn(Lib3MF_MeshObject, *mut u32) -> i32,
+    lib3mf_meshobject_gettriangleindices:
+        unsafe extern "C" fn(Lib3MF_MeshObject, u64, *mut u64, *mut sTriangle) -> i32,
+    lib3mf_meshobject_getvertexcount: unsafe extern "C" fn(Lib3MF_MeshObject, *mut u32) -> i32,
+    lib3mf_meshobject_getvertices:
+        unsafe extern "C" fn(Lib3MF_MeshObject, u64, *mut u64, *mut sPosition) -> i32,
+    lib3mf_model_getbasematerialgroups: unsafe extern "C" fn(
+        Lib3MF_Model,
+        *mut lib3mf_ffi::Lib3MF_BaseMaterialGroupIterator,
+    ) -> i32,
+    lib3mf_model_getbuilditems:
+        unsafe extern "C" fn(Lib3MF_Model, *mut lib3mf_ffi::Lib3MF_BuildItemIterator) -> i32,
+    lib3mf_model_getcomponentsobjectbyid:
+        unsafe extern "C" fn(Lib3MF_Model, u32, *mut Lib3MF_ComponentsObject) -> i32,
+    lib3mf_model_getmeshobjectbyid:
+        unsafe extern "C" fn(Lib3MF_Model, u32, *mut Lib3MF_MeshObject) -> i32,
+    lib3mf_model_getobjects:
+        unsafe extern "C" fn(Lib3MF_Model, *mut lib3mf_ffi::Lib3MF_ObjectIterator) -> i32,
+    lib3mf_model_getunit: unsafe extern "C" fn(Lib3MF_Model, *mut eModelUnit) -> i32,
+    lib3mf_model_queryreader:
+        unsafe extern "C" fn(Lib3MF_Model, *const c_char, *mut Lib3MF_Reader) -> i32,
+    lib3mf_object_getname: unsafe extern "C" fn(Lib3MF_Object, u32, *mut u32, *mut c_char) -> i32,
+    lib3mf_object_getpartnumber:
+        unsafe extern "C" fn(Lib3MF_Object, u32, *mut u32, *mut c_char) -> i32,
+    lib3mf_object_gettype: unsafe extern "C" fn(Lib3MF_Object, *mut eObjectType) -> i32,
+    lib3mf_object_iscomponentsobject: unsafe extern "C" fn(Lib3MF_Object, *mut CBool) -> i32,
+    lib3mf_object_islevelsetobject: unsafe extern "C" fn(Lib3MF_Object, *mut CBool) -> i32,
+    lib3mf_object_ismeshobject: unsafe extern "C" fn(Lib3MF_Object, *mut CBool) -> i32,
+    lib3mf_objectiterator_getcurrentobject:
+        unsafe extern "C" fn(lib3mf_ffi::Lib3MF_ObjectIterator, *mut Lib3MF_Object) -> i32,
+    lib3mf_reader_readfrombuffer: unsafe extern "C" fn(Lib3MF_Reader, u64, *const u8) -> i32,
+    lib3mf_reader_readfromfile: unsafe extern "C" fn(Lib3MF_Reader, *const c_char) -> i32,
+    lib3mf_release: unsafe extern "C" fn(Lib3MF_Base) -> i32,
+    lib3mf_resource_getresourceid:
+        unsafe extern "C" fn(lib3mf_ffi::Lib3MF_Resource, *mut u32) -> i32,
+    lib3mf_resourceiterator_movenext:
+        unsafe extern "C" fn(lib3mf_ffi::Lib3MF_ResourceIterator, *mut CBool) -> i32,
+}
+
+impl LoadedLib3mfApi {
+    unsafe fn load(library: &Library) -> Result<Self, String> {
+        unsafe fn load_symbol<T: Copy>(library: &Library, symbol: &[u8]) -> Result<T, String> {
+            Ok(*unsafe { library.get::<T>(symbol) }.map_err(|error| {
+                format!(
+                    "failed to load lib3mf export {}: {error}",
+                    String::from_utf8_lossy(&symbol[..symbol.len().saturating_sub(1)])
+                )
+            })?)
+        }
+
+        Ok(Self {
+            lib3mf_basematerialgroup_getcount: unsafe {
+                load_symbol(library, b"lib3mf_basematerialgroup_getcount\0")
+            }?,
+            lib3mf_basematerialgroup_getdisplaycolor: unsafe {
+                load_symbol(library, b"lib3mf_basematerialgroup_getdisplaycolor\0")
+            }?,
+            lib3mf_basematerialgroup_getname: unsafe {
+                load_symbol(library, b"lib3mf_basematerialgroup_getname\0")
+            }?,
+            lib3mf_basematerialgroupiterator_getcurrentbasematerialgroup: unsafe {
+                load_symbol(
+                    library,
+                    b"lib3mf_basematerialgroupiterator_getcurrentbasematerialgroup\0",
+                )
+            }?,
+            lib3mf_builditem_getobjectresource: unsafe {
+                load_symbol(library, b"lib3mf_builditem_getobjectresource\0")
+            }?,
+            lib3mf_builditem_getobjecttransform: unsafe {
+                load_symbol(library, b"lib3mf_builditem_getobjecttransform\0")
+            }?,
+            lib3mf_builditem_getpartnumber: unsafe {
+                load_symbol(library, b"lib3mf_builditem_getpartnumber\0")
+            }?,
+            lib3mf_builditem_hasobjecttransform: unsafe {
+                load_symbol(library, b"lib3mf_builditem_hasobjecttransform\0")
+            }?,
+            lib3mf_builditemiterator_getcurrent: unsafe {
+                load_symbol(library, b"lib3mf_builditemiterator_getcurrent\0")
+            }?,
+            lib3mf_builditemiterator_movenext: unsafe {
+                load_symbol(library, b"lib3mf_builditemiterator_movenext\0")
+            }?,
+            lib3mf_component_getobjectresource: unsafe {
+                load_symbol(library, b"lib3mf_component_getobjectresource\0")
+            }?,
+            lib3mf_component_gettransform: unsafe {
+                load_symbol(library, b"lib3mf_component_gettransform\0")
+            }?,
+            lib3mf_component_hastransform: unsafe {
+                load_symbol(library, b"lib3mf_component_hastransform\0")
+            }?,
+            lib3mf_componentsobject_getcomponent: unsafe {
+                load_symbol(library, b"lib3mf_componentsobject_getcomponent\0")
+            }?,
+            lib3mf_componentsobject_getcomponentcount: unsafe {
+                load_symbol(library, b"lib3mf_componentsobject_getcomponentcount\0")
+            }?,
+            lib3mf_createmodel: unsafe { load_symbol(library, b"lib3mf_createmodel\0") }?,
+            lib3mf_getlasterror: unsafe { load_symbol(library, b"lib3mf_getlasterror\0") }?,
+            lib3mf_meshobject_getalltriangleproperties: unsafe {
+                load_symbol(library, b"lib3mf_meshobject_getalltriangleproperties\0")
+            }?,
+            lib3mf_meshobject_gettrianglecount: unsafe {
+                load_symbol(library, b"lib3mf_meshobject_gettrianglecount\0")
+            }?,
+            lib3mf_meshobject_gettriangleindices: unsafe {
+                load_symbol(library, b"lib3mf_meshobject_gettriangleindices\0")
+            }?,
+            lib3mf_meshobject_getvertexcount: unsafe {
+                load_symbol(library, b"lib3mf_meshobject_getvertexcount\0")
+            }?,
+            lib3mf_meshobject_getvertices: unsafe {
+                load_symbol(library, b"lib3mf_meshobject_getvertices\0")
+            }?,
+            lib3mf_model_getbasematerialgroups: unsafe {
+                load_symbol(library, b"lib3mf_model_getbasematerialgroups\0")
+            }?,
+            lib3mf_model_getbuilditems: unsafe {
+                load_symbol(library, b"lib3mf_model_getbuilditems\0")
+            }?,
+            lib3mf_model_getcomponentsobjectbyid: unsafe {
+                load_symbol(library, b"lib3mf_model_getcomponentsobjectbyid\0")
+            }?,
+            lib3mf_model_getmeshobjectbyid: unsafe {
+                load_symbol(library, b"lib3mf_model_getmeshobjectbyid\0")
+            }?,
+            lib3mf_model_getobjects: unsafe { load_symbol(library, b"lib3mf_model_getobjects\0") }?,
+            lib3mf_model_getunit: unsafe { load_symbol(library, b"lib3mf_model_getunit\0") }?,
+            lib3mf_model_queryreader: unsafe {
+                load_symbol(library, b"lib3mf_model_queryreader\0")
+            }?,
+            lib3mf_object_getname: unsafe { load_symbol(library, b"lib3mf_object_getname\0") }?,
+            lib3mf_object_getpartnumber: unsafe {
+                load_symbol(library, b"lib3mf_object_getpartnumber\0")
+            }?,
+            lib3mf_object_gettype: unsafe { load_symbol(library, b"lib3mf_object_gettype\0") }?,
+            lib3mf_object_iscomponentsobject: unsafe {
+                load_symbol(library, b"lib3mf_object_iscomponentsobject\0")
+            }?,
+            lib3mf_object_islevelsetobject: unsafe {
+                load_symbol(library, b"lib3mf_object_islevelsetobject\0")
+            }?,
+            lib3mf_object_ismeshobject: unsafe {
+                load_symbol(library, b"lib3mf_object_ismeshobject\0")
+            }?,
+            lib3mf_objectiterator_getcurrentobject: unsafe {
+                load_symbol(library, b"lib3mf_objectiterator_getcurrentobject\0")
+            }?,
+            lib3mf_reader_readfrombuffer: unsafe {
+                load_symbol(library, b"lib3mf_reader_readfrombuffer\0")
+            }?,
+            lib3mf_reader_readfromfile: unsafe {
+                load_symbol(library, b"lib3mf_reader_readfromfile\0")
+            }?,
+            lib3mf_release: unsafe { load_symbol(library, b"lib3mf_release\0") }?,
+            lib3mf_resource_getresourceid: unsafe {
+                load_symbol(library, b"lib3mf_resource_getresourceid\0")
+            }?,
+            lib3mf_resourceiterator_movenext: unsafe {
+                load_symbol(library, b"lib3mf_resourceiterator_movenext\0")
+            }?,
+        })
+    }
+}
+
+struct LoadedLib3mf {
+    _library: Library,
+    api: LoadedLib3mfApi,
+}
+
+impl LoadedLib3mf {
+    fn new(library_path: &str) -> Result<Self, String> {
+        let library = unsafe { Library::new(library_path) }.map_err(|error| {
+            format!("failed to load lib3mf shared library {library_path}: {error}")
+        })?;
+        let api = unsafe { LoadedLib3mfApi::load(&library) }?;
+        Ok(Self {
+            _library: library,
+            api,
+        })
+    }
+
+    fn api(&self) -> &LoadedLib3mfApi {
+        &self.api
+    }
+}
+
 struct Lib3mfSession {
-    wrapper: Wrapper,
+    wrapper: LoadedLib3mf,
 }
 
 impl Lib3mfSession {
@@ -65,7 +300,7 @@ impl Lib3mfSession {
         Ok(Self { wrapper })
     }
 
-    fn api(&self) -> &lib3mf_ffi::Api {
+    fn api(&self) -> &LoadedLib3mfApi {
         self.wrapper.api()
     }
 
@@ -1158,12 +1393,12 @@ impl PartAccumulator {
 }
 
 struct OwnedHandle<'a> {
-    api: &'a lib3mf_ffi::Api,
+    api: &'a LoadedLib3mfApi,
     raw: Lib3MF_Base,
 }
 
 impl<'a> OwnedHandle<'a> {
-    fn new(api: &'a lib3mf_ffi::Api, raw: Lib3MF_Base) -> Self {
+    fn new(api: &'a LoadedLib3mfApi, raw: Lib3MF_Base) -> Self {
         Self { api, raw }
     }
 
@@ -1374,7 +1609,7 @@ fn lib3mf_library_path(base: &Path) -> PathBuf {
     path
 }
 
-fn load_wrapper_from_library_base(base: &Path) -> Result<Wrapper, String> {
+fn load_wrapper_from_library_base(base: &Path) -> Result<LoadedLib3mf, String> {
     let library_path = lib3mf_library_path(base);
     if !library_path.is_absolute() {
         return Err(format!(
@@ -1382,10 +1617,10 @@ fn load_wrapper_from_library_base(base: &Path) -> Result<Wrapper, String> {
             library_path.display()
         ));
     }
-    with_verified_staged_library_load_base(
-        base,
+    with_verified_staged_library_load_path(
+        &library_path,
         expected_staged_test_library_hash(&library_path).as_deref(),
-        |_load_base, load_base_str| {
+        |_load_path, load_path_str| {
             #[cfg(windows)]
             {
                 let library_dir = library_path.parent().ok_or_else(|| {
@@ -1399,12 +1634,12 @@ fn load_wrapper_from_library_base(base: &Path) -> Result<Wrapper, String> {
                     library_dir,
                     add_windows_dll_directory,
                     remove_windows_dll_directory,
-                    || Wrapper::new(Some(load_base_str)).map_err(|error| error.message),
+                    || LoadedLib3mf::new(load_path_str),
                 )
             }
             #[cfg(not(windows))]
             {
-                Wrapper::new(Some(load_base_str)).map_err(|error| error.message)
+                LoadedLib3mf::new(load_path_str)
             }
         },
     )
@@ -1940,7 +2175,7 @@ fn verify_staged_library_before_load(
         )
     })?;
     if actual_hash == expected_hash {
-        VerifiedStagedLibraryLoadGuard::new(library_path, file)
+        VerifiedStagedLibraryLoadGuard::new(file)
     } else {
         Err(format!(
             "staged lib3mf library {} hash {} did not match expected vetted SHA-256 {} immediately before load",
@@ -1951,156 +2186,100 @@ fn verify_staged_library_before_load(
     }
 }
 
-fn with_verified_staged_library_load_base<T, F>(
-    base: &Path,
+fn with_verified_staged_library_load_path<T, F>(
+    library_path: &Path,
     expected_hash: Option<&str>,
     load: F,
 ) -> Result<T, String>
 where
     F: FnOnce(&Path, &str) -> Result<T, String>,
 {
-    let library_path = lib3mf_library_path(base);
     // Keep the final pre-load verification bound to the actual load path. Windows
     // holds the staged file open without FILE_SHARE_WRITE/DELETE. Unix targets
-    // create a one-shot symlink to /dev/fd or /proc/self/fd for the already-open
-    // descriptor, so Wrapper::new reopens that descriptor rather than the staged
-    // pathname itself.
+    // pass /proc/self/fd/<fd> (Linux) or /dev/fd/<fd> (macOS/BSD) directly to
+    // dlopen/libloading while keeping the verified descriptor open, so the load
+    // never reopens the staged pathname or any helper filesystem object.
     let verified_staged_library = expected_hash
-        .map(|expected_hash| verify_staged_library_before_load(&library_path, expected_hash))
+        .map(|expected_hash| verify_staged_library_before_load(library_path, expected_hash))
         .transpose()?;
-    let load_base = verified_staged_library
+    let load_path = verified_staged_library
         .as_ref()
-        .map_or(base, |guard| guard.load_base_path(base));
-    let load_base_str = load_base.to_str().ok_or_else(|| {
+        .map_or(library_path, |guard| guard.load_path(library_path));
+    let load_path_str = load_path.to_str().ok_or_else(|| {
         format!(
             "lib3mf search path is not valid UTF-8: {}",
-            load_base.display()
+            load_path.display()
         )
     })?;
-    load(load_base, load_base_str)
+    load(load_path, load_path_str)
 }
 
 struct VerifiedStagedLibraryLoadGuard {
     _file: File,
     #[cfg(not(windows))]
-    load_base: PathBuf,
-    #[cfg(not(windows))]
     load_path: PathBuf,
 }
 
 impl VerifiedStagedLibraryLoadGuard {
-    fn new(library_path: &Path, file: File) -> Result<Self, String> {
+    fn new(file: File) -> Result<Self, String> {
         #[cfg(windows)]
         {
-            let _ = library_path;
             Ok(Self { _file: file })
         }
 
         #[cfg(not(windows))]
         {
-            let (load_base, load_path) =
-                create_verified_staged_library_load_path(library_path, &file)?;
             Ok(Self {
+                load_path: verified_library_fd_path(&file)?,
                 _file: file,
-                load_base,
-                load_path,
             })
         }
     }
 
-    fn load_base_path<'a>(&'a self, default_base: &'a Path) -> &'a Path {
+    fn load_path<'a>(&'a self, default_path: &'a Path) -> &'a Path {
         #[cfg(windows)]
         {
             let _ = self;
-            default_base
+            default_path
         }
 
         #[cfg(not(windows))]
         {
-            let _ = default_base;
-            &self.load_base
+            &self.load_path
         }
     }
 }
 
 #[cfg(not(windows))]
-impl Drop for VerifiedStagedLibraryLoadGuard {
-    fn drop(&mut self) {
-        if let Err(error) = std::fs::remove_file(&self.load_path) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!(
-                    "warning: failed to remove temporary verified lib3mf loader path {}: {error}",
-                    self.load_path.display()
-                );
-            }
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn create_verified_staged_library_load_path(
-    library_path: &Path,
-    file: &File,
-) -> Result<(PathBuf, PathBuf), String> {
-    use std::os::fd::AsRawFd;
-
-    // Point the loader at the already-open descriptor so the post-hash load never
-    // resolves the staged pathname again. This still assumes no hostile peer can
-    // replace the short-lived helper symlink before dlopen runs, which is an
-    // acceptable residual risk for this desktop app's bundled/pinned-library model.
-    let file_stem = library_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("lib3mf");
-    let parent = library_path.parent().ok_or_else(|| {
-        format!(
-            "staged lib3mf library path has no parent directory: {}",
-            library_path.display()
-        )
-    })?;
-    let fd_target = verified_library_fd_target(file);
-    let pid = std::process::id();
-    let raw_fd = file.as_raw_fd();
-
-    for attempt in 0..16 {
-        let suffix = if attempt == 0 {
-            format!("{pid}-{raw_fd}")
-        } else {
-            format!("{pid}-{raw_fd}-{attempt}")
-        };
-        let load_base = parent.join(format!(".{file_stem}.verified-load-{suffix}"));
-        let load_path = lib3mf_library_path(&load_base);
-        match create_file_symlink(&fd_target, &load_path) {
-            Ok(()) => return Ok((load_base, load_path)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(format!(
-                    "unable to create verified lib3mf loader path {} -> {}: {error}",
-                    load_path.display(),
-                    fd_target.display()
-                ))
-            }
-        }
-    }
-
-    Err(format!(
-        "unable to reserve a temporary verified lib3mf loader path beside {}",
-        library_path.display()
-    ))
-}
-
-#[cfg(not(windows))]
-fn verified_library_fd_target(file: &File) -> PathBuf {
+fn verified_library_fd_path(file: &File) -> Result<PathBuf, String> {
     use std::os::fd::AsRawFd;
 
     #[cfg(target_os = "linux")]
     {
-        PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()))
+        return Ok(PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd())));
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))]
     {
-        PathBuf::from(format!("/dev/fd/{}", file.as_raw_fd()))
+        return Ok(PathBuf::from(format!("/dev/fd/{}", file.as_raw_fd())));
+    }
+
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "dragonfly",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )))]
+    {
+        Err("verified lib3mf fd-path loading is unsupported on this Unix platform".to_string())
     }
 }
 
@@ -2671,12 +2850,11 @@ mod tests {
 
     #[cfg(not(windows))]
     #[test]
-    fn verified_staged_library_load_path_reads_original_bytes_after_swap() {
+    fn verified_staged_library_fd_path_reads_original_bytes_after_swap_without_helper_symlink() {
         let temp = tempfile::tempdir().unwrap();
         let staged = temp
             .path()
             .join(format!("lib3mf.{}", lib3mf_library_extension()));
-        let staged_base = staged.with_extension("");
         let original_bytes = b"vetted\n";
         let swapped_bytes = b"tampered\n";
         std::fs::write(&staged, original_bytes).unwrap();
@@ -2684,14 +2862,22 @@ mod tests {
         let swapped_out = temp
             .path()
             .join(format!("original.{}", lib3mf_library_extension()));
-        let mut verified_load_path = None;
+        let initial_entries = vec![staged.file_name().unwrap().to_string_lossy().into_owned()];
 
-        let observed_bytes = with_verified_staged_library_load_base(
-            &staged_base,
+        let observed_bytes = with_verified_staged_library_load_path(
+            &staged,
             Some(&expected_hash),
-            |load_base, _load_base_str| {
-                let load_path = lib3mf_library_path(load_base);
-                verified_load_path = Some(load_path.clone());
+            |load_path, _load_path_str| {
+                assert_eq!(
+                    temp_dir_entry_names(temp.path()),
+                    initial_entries,
+                    "verified non-Windows load should not materialize a helper path beside the staged library"
+                );
+                assert!(
+                    is_verified_fd_path(load_path),
+                    "expected direct fd path, got {}",
+                    load_path.display()
+                );
                 assert_ne!(
                     load_path, staged,
                     "non-Windows loads must not reopen the staged pathname after final verification"
@@ -2699,19 +2885,22 @@ mod tests {
 
                 std::fs::rename(&staged, &swapped_out).map_err(|error| error.to_string())?;
                 std::fs::write(&staged, swapped_bytes).map_err(|error| error.to_string())?;
-                std::fs::read(&load_path).map_err(|error| error.to_string())
+                assert_eq!(
+                    temp_dir_entry_names(temp.path()),
+                    vec![
+                        staged.file_name().unwrap().to_string_lossy().into_owned(),
+                        swapped_out.file_name().unwrap().to_string_lossy().into_owned(),
+                    ],
+                    "only the staged file and swapped-out original should exist on disk during the verified load"
+                );
+                std::fs::read(load_path).map_err(|error| error.to_string())
             },
         )
         .unwrap();
 
-        let verified_load_path = verified_load_path.unwrap();
         assert_eq!(observed_bytes, original_bytes);
         assert_eq!(std::fs::read(&staged).unwrap(), swapped_bytes);
         assert_eq!(std::fs::read(&swapped_out).unwrap(), original_bytes);
-        assert!(
-            !verified_load_path.exists(),
-            "verified non-Windows loader path should be removed once the load guard drops"
-        );
     }
 
     #[test]
@@ -2867,5 +3056,54 @@ mod tests {
     fn should_skip_symlink_test(error: &std::io::Error) -> bool {
         matches!(error.kind(), ErrorKind::PermissionDenied)
             || cfg!(windows) && matches!(error.raw_os_error(), Some(1314))
+    }
+
+    #[cfg(not(windows))]
+    fn is_verified_fd_path(path: &Path) -> bool {
+        let numeric_fd = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| !name.is_empty() && name.chars().all(|ch| ch.is_ascii_digit()));
+        if !numeric_fd {
+            return false;
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            path.starts_with(Path::new("/proc/self/fd"))
+        }
+
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "dragonfly",
+            target_os = "netbsd",
+            target_os = "openbsd"
+        ))]
+        {
+            path.starts_with(Path::new("/dev/fd"))
+        }
+
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "dragonfly",
+            target_os = "netbsd",
+            target_os = "openbsd"
+        )))]
+        {
+            false
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn temp_dir_entry_names(path: &Path) -> Vec<String> {
+        let mut entries = std::fs::read_dir(path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        entries.sort();
+        entries
     }
 }
