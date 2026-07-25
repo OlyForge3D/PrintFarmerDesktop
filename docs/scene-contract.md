@@ -83,3 +83,87 @@ isolating a part keeps its ancestors visible: a plate root left visible does not
 by itself mean the whole plate is on screen. Only visibility changes, so
 geometry, colors, and materials survive a plate switch untouched. The selector is
 omitted entirely for single-plate scenes.
+
+## Metadata surfaces
+
+Two panels read the DTO without touching the GPU, so both are unit-testable in
+isolation:
+
+- `src/renderer/library/VendorPanel.tsx` renders the source attribution the
+  sidecar extracts — title, designer, description, copyright, license, and the
+  creation/modification timestamps. Dates are formatted for display but fall
+  back to the raw string when unparseable, because the value comes straight out
+  of an untrusted file and showing `Invalid Date` would hide what is actually
+  written there.
+- `src/renderer/library/sceneMaterials.ts` groups `material.baseColor` across
+  objects into distinct swatches with part and triangle counts. Objects carrying
+  `material.faceColors` are excluded from swatch groups and counted separately,
+  because a per-face palette cannot be represented as one colour. A group is
+  only reported as the viewer default when **every** member was unauthored, so a
+  file that genuinely specifies grey is not mislabelled as having no material.
+
+## Level of detail
+
+Large scenes get a reduced-detail proxy so orbiting stays interactive.
+`src/renderer/viewer/lod.ts` holds the whole policy and the decimation itself as
+pure functions over the DTO — no `THREE` renderer state — and
+`buildViewerSceneGraph` is the only place that turns the result into
+`THREE.LOD` nodes.
+
+- A scene qualifies only when the **scene total is ≥ 150,000 triangles _and_ at
+  least one object is ≥ 20,000**. A scene made of ten thousand tiny objects is
+  draw-call bound, not triangle bound, so decimating it would cost time and buy
+  nothing.
+- Within a qualifying scene the **per-object floor still applies**: only objects
+  ≥ 20,000 triangles get a proxy. `shouldSimplifyObject` is the single
+  definition of "dense enough" and both the scene test and the graph builder
+  call it. They drifted apart once — the builder gave a proxy to every object
+  with geometry, so sub-floor objects paid for a second geometry and a per-frame
+  level test, and the viewer's overlay counted them as "large parts drawn at
+  reduced detail". Nothing caught it: the fixture's control object was a single
+  triangle, which the decimator declines for having nothing to gain, so the
+  assertion held for a reason unrelated to the floor. A control object in an LOD
+  test has to be one the decimator _would_ accept, or it tests nothing.
+- Decimation is **vertex clustering**: quantise every vertex to a fixed grid
+  over the object's bounds, keep the first vertex that lands in each cell, and
+  drop triangles that collapse to a degenerate. Cells are half-open, so a vertex
+  exactly on the far bound belongs to the last cell rather than opening one past
+  the end of the grid. It is a single O(n) pass with no connectivity structure,
+  and it is deterministic — the same mesh always yields a byte-identical proxy.
+  Keeping a real input vertex rather than the cell average means every proxy
+  vertex lies on the original surface, which is what makes reusing the source
+  `bounds` sound.
+- The proxy **shares the full-detail material instance**. A second material
+  would make a wireframe toggle or colour change apply to only one level, so the
+  object would visibly change as it crossed the switch distance. Only the proxy
+  geometry is added to the disposal list.
+- Objects with per-face colours are left at full detail. Welding destroys the
+  triangle-per-vertex layout the colour attribute depends on, and the shared
+  material would then demand a colour buffer the proxy cannot supply and draw
+  black. The guard keys off the geometry's `color` attribute rather than the DTO
+  field, so it tracks what the material will actually require.
+- The switch is on **apparent size, not camera distance**. `updateLod(camera)`
+  picks a level for every proxied object before each draw, comparing the
+  object's world-space bounding sphere against the viewport half-height; the
+  proxy takes over below **15% of half-height**. `THREE.LOD`'s own selection is
+  switched off (`autoUpdate = false`) because it keys on
+  `distance / camera.zoom`, and under an orthographic projection the camera
+  never moves — `dollyCamera` only changes zoom — so distance describes nothing
+  the user is doing. Working the same threshold through both projections gives
+  screen coverages that differ by 2.4×, so no single distance constant serves
+  both.
+- Expressing the policy as screen coverage rather than as a multiple of the
+  object's radius is a **correctness requirement, not a preference**. The first
+  version used a fixed 3 radii, chosen without reference to `defaultCameraPosition`
+  — which offsets on all three axes, so the true distance is `× √3` — and to
+  `fitPerspectiveDistance`'s `padding = 1.15`. That put the default framing at
+  ~6.2 radii, on the far side of the switch, so the proxy was the visible level
+  from the moment a model loaded. Reading the live frustum means changing either
+  function cannot silently decalibrate the policy again.
+- Tests must assert **which level is visible**, not just that an LOD node exists.
+  A full suite of shape-only assertions stayed green through the defect above.
+
+`ModelViewer` draws on demand rather than every frame: it renders when the
+controls dispatch `change` (which covers dragging, damping settling, and the
+keyboard helpers uniformly), on resize, on context restore, and when a prop that
+affects the image changes. A still scene costs no GPU time.

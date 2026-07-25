@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import type { VendorMetadata } from '@shared/ipc';
 import { Icon } from '../ui/Icon';
 import { ModelStats } from '../library/ModelStats';
+import { MaterialsPanel } from '../library/MaterialsPanel';
 import { PartTree } from '../library/PartTree';
 import { VendorPanel } from '../library/VendorPanel';
 import { ModelViewer, type Projection } from './ModelViewer';
@@ -210,6 +211,7 @@ export function PreviewWorkspace({
                 <h2>Geometry</h2>
                 <ModelStats mesh={mesh} />
               </section>
+              <MaterialsPanel mesh={mesh} />
               {mesh.objects.length > 0 ? (
                 <section>
                   <h2>Scene</h2>
