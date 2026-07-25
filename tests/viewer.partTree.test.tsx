@@ -644,6 +644,21 @@ function tabStops(): readonly Element[] {
   return [...screen.getByRole('tree').querySelectorAll('[tabindex="0"]')];
 }
 
+/**
+ * Treeitems for `name` that the user can actually act on. Diagnostic rows are
+ * `aria-disabled` and carry no controls, so a repeated reference must never
+ * produce a second actionable row for the same part.
+ */
+function actionableItems(name: string): readonly Element[] {
+  return screen
+    .getAllByRole('treeitem')
+    .filter(
+      (item) =>
+        item.getAttribute('aria-disabled') !== 'true' &&
+        item.querySelector('.part-name')?.textContent === name,
+    );
+}
+
 describe('flattenPartTree hostile shapes', () => {
   it('renders a duplicated child once and flags the repeat, with unique keys', () => {
     const rows = flatten({
@@ -710,8 +725,10 @@ describe('flattenPartTree hostile shapes', () => {
     expect(new Set(rows.map((row) => row.key)).size).toBe(rows.length);
   });
 
-  it('flattens a 5,000-deep chain without a RangeError', () => {
-    const { objects, rootObjectIds } = chain(5_000);
+  it('flattens a 15,000-deep chain without a RangeError', () => {
+    // Deeper than any call stack tolerates, and still under the row budget so
+    // the whole chain has to come back.
+    const { objects, rootObjectIds } = chain(15_000);
     let rows: readonly PartTreeRow[] = [];
     expect(() => {
       rows = flattenPartTree({
@@ -722,8 +739,8 @@ describe('flattenPartTree hostile shapes', () => {
         collapsed: new Set(),
       });
     }).not.toThrow();
-    expect(rows).toHaveLength(5_000);
-    expect(rows[4_999]).toMatchObject({ objectId: 'n4999', level: 5_000 });
+    expect(rows).toHaveLength(15_000);
+    expect(rows[14_999]).toMatchObject({ objectId: 'n14999', level: 15_000 });
   });
 
   it('truncates with a notice row instead of exceeding the budget', () => {
@@ -735,6 +752,65 @@ describe('flattenPartTree hostile shapes', () => {
     expect(last).toMatchObject({ kind: 'notice', objectId: null });
     expect(last?.name).toMatch(/Scene too large/i);
     expect(isFocusableRow(last as PartTreeRow)).toBe(false);
+  });
+
+  it('clamps a fan-out wider than the budget and still flags truncation', () => {
+    // A node may legally carry up to 100k children. Queueing all of them would
+    // dwarf the rows that could ever be emitted, so the walk stops queueing —
+    // and must still say it truncated, even though the drain ends on its own.
+    const fanOut = MAX_PART_TREE_ROWS + 5_000;
+    const rows = flatten({
+      objects: [
+        object('root', 'Root', {
+          children: Array.from({ length: fanOut }, () => 'leaf'),
+        }),
+        object('leaf', 'Leaf', { parentId: 'root' }),
+      ],
+      rootObjectIds: ['root'],
+      plates: [],
+    });
+
+    expect(rows).toHaveLength(MAX_PART_TREE_ROWS + 1);
+    expect(rows[rows.length - 1]).toMatchObject({ kind: 'notice' });
+    // Sibling metadata still describes the real scene, not the clamped view.
+    expect(rows[1]).toMatchObject({ positionInSet: 1, setSize: fanOut });
+  });
+
+  it('leaves a scene one row under the budget alone', () => {
+    const { objects, rootObjectIds } = chain(MAX_PART_TREE_ROWS - 1);
+    const rows = flatten({ objects, rootObjectIds, plates: [] });
+
+    expect(rows).toHaveLength(MAX_PART_TREE_ROWS - 1);
+    expect(rows.some((row) => row.kind === 'notice')).toBe(false);
+  });
+
+  it('leaves a scene exactly at the budget alone', () => {
+    const { objects, rootObjectIds } = chain(MAX_PART_TREE_ROWS);
+    const rows = flatten({ objects, rootObjectIds, plates: [] });
+
+    // Nothing was dropped, so nothing is announced as truncated.
+    expect(rows).toHaveLength(MAX_PART_TREE_ROWS);
+    expect(rows.some((row) => row.kind === 'notice')).toBe(false);
+  });
+
+  it('truncates the first row past the budget', () => {
+    const { objects, rootObjectIds } = chain(MAX_PART_TREE_ROWS + 1);
+    const rows = flatten({ objects, rootObjectIds, plates: [] });
+
+    expect(rows).toHaveLength(MAX_PART_TREE_ROWS + 1);
+    expect(rows[rows.length - 1]).toMatchObject({ kind: 'notice' });
+  });
+
+  it('gives the truncation notice no sibling-set metadata to lie about', () => {
+    const { objects, rootObjectIds } = chain(MAX_PART_TREE_ROWS + 50);
+    const rows = flatten({ objects, rootObjectIds, plates: [] });
+
+    expect(rows[rows.length - 1]).toMatchObject({
+      kind: 'notice',
+      level: 1,
+      positionInSet: 0,
+      setSize: 0,
+    });
   });
 
   it('treats prototype-shaped object ids as ordinary data', () => {
@@ -783,6 +859,46 @@ describe('flattenPartTree hostile shapes', () => {
       key: tail?.key,
     });
   });
+
+  it('descends past a leading diagnostic child on ArrowRight', () => {
+    const rows = flatten({
+      objects: [
+        object('root', 'Root', { children: ['dup', 'branch'] }),
+        object('dup', 'Dup', { parentId: 'root' }),
+        object('branch', 'Branch', {
+          parentId: 'root',
+          children: ['dup', 'tail'],
+        }),
+        object('tail', 'Tail', { parentId: 'branch' }),
+      ],
+      rootObjectIds: ['root'],
+      plates: [],
+    });
+    // Root, Dup, Branch, Dup (diagnostic — already resolved), Tail.
+    const branch = rows[2];
+    expect(rows[3]?.invalid).toBe(true);
+
+    expect(partTreeKeyAction('ArrowRight', rows, branch?.key ?? '')).toEqual({
+      type: 'move',
+      key: rows[4]?.key,
+    });
+  });
+
+  it('stays put when every child of the focused row is a diagnostic', () => {
+    const rows = flatten({
+      objects: [
+        object('root', 'Root', { children: ['dup', 'branch'] }),
+        object('dup', 'Dup', { parentId: 'root' }),
+        object('branch', 'Branch', { parentId: 'root', children: ['dup'] }),
+      ],
+      rootObjectIds: ['root'],
+      plates: [],
+    });
+    const branch = rows[2];
+    expect(rows[3]?.invalid).toBe(true);
+
+    expect(partTreeKeyAction('ArrowRight', rows, branch?.key ?? '')).toBeNull();
+  });
 });
 
 describe('<PartTree /> single roving tab stop', () => {
@@ -805,7 +921,13 @@ describe('<PartTree /> single roving tab stop', () => {
       rootObjectIds: ['body'],
       plates: [],
     });
+
+    // Focus has to land on the repeat's row: when both copies shared one row
+    // key, activating either lit up the tab stop on both.
+    focusRow(screen.getAllByRole('treeitem')[1] as HTMLElement);
+
     expect(tabStops()).toHaveLength(1);
+    expect(actionableItems('Leaf')).toHaveLength(1);
   });
 
   it('keeps exactly one tab stop for a duplicated root reference', () => {
@@ -815,6 +937,7 @@ describe('<PartTree /> single roving tab stop', () => {
       plates: [],
     });
     expect(tabStops()).toHaveLength(1);
+    expect(actionableItems('Leaf')).toHaveLength(1);
   });
 
   it('keeps exactly one tab stop for the same object on two plates', () => {
@@ -827,6 +950,8 @@ describe('<PartTree /> single roving tab stop', () => {
       ],
     });
     expect(tabStops()).toHaveLength(1);
+    // Two live rows would give the same part two independent visibility toggles.
+    expect(actionableItems('Body')).toHaveLength(1);
   });
 
   it('keeps exactly one tab stop for a multi-parent reference', () => {
@@ -840,6 +965,7 @@ describe('<PartTree /> single roving tab stop', () => {
       plates: [],
     });
     expect(tabStops()).toHaveLength(1);
+    expect(actionableItems('Shared')).toHaveLength(1);
   });
 
   it('keeps one tab stop after arrowing across a diagnostic row', () => {
@@ -858,6 +984,25 @@ describe('<PartTree /> single roving tab stop', () => {
 
     expect(tabStops()).toHaveLength(1);
     expect(treeitem('Tail')).toHaveFocus();
+  });
+
+  it('still moves focus when a row key contains selector metacharacters', () => {
+    // Object ids come from untrusted files, and the key is fed straight into a
+    // `[data-row-key="…"]` lookup when focus follows a keyboard move.
+    renderTree({
+      objects: [
+        object('a"b\\c', 'Quoted', { children: ['tail'] }),
+        object('tail', 'Tail', { parentId: 'a"b\\c' }),
+      ],
+      rootObjectIds: ['a"b\\c'],
+      plates: [],
+    });
+
+    const root = focusRow(treeitem('Quoted'));
+    fireEvent.keyDown(root, { key: 'ArrowDown' });
+
+    expect(treeitem('Tail')).toHaveFocus();
+    expect(tabStops()).toHaveLength(1);
   });
 });
 

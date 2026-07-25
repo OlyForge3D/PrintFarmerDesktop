@@ -90,7 +90,9 @@ export function PartTree({
     if (key === null) return;
     pendingFocusRef.current = null;
     listRef.current
-      ?.querySelector<HTMLLIElement>(`[data-row-key="${cssEscape(key)}"]`)
+      ?.querySelector<HTMLLIElement>(
+        `[data-row-key="${escapeAttrSelectorValue(key)}"]`,
+      )
       ?.focus();
   });
 
@@ -274,13 +276,13 @@ function PartTreeItem({
   onIsolate: (row: PartTreeRow) => void;
 }): React.JSX.Element {
   if (row.kind === 'notice') {
+    // The truncation notice belongs to no sibling set, so it deliberately omits
+    // `aria-posinset`/`aria-setsize` rather than claiming "1 of 1".
     return (
       <li
         className="part-item part-item-invalid"
         role="treeitem"
         aria-level={row.level}
-        aria-posinset={row.positionInSet}
-        aria-setsize={row.setSize}
         aria-disabled="true"
         data-row-key={row.key}
         tabIndex={-1}
@@ -405,9 +407,10 @@ function indentStyle(level: number): React.CSSProperties {
 }
 
 /**
- * Minimal CSS.escape shim: jsdom and older Electron builds expose it, but the
- * attribute selector below only ever needs quotes and backslashes neutralized.
+ * Escapes a value for use inside a **double-quoted** attribute selector, which
+ * only requires quotes and backslashes to be neutralized. Deliberately narrower
+ * than `CSS.escape`: do not reuse it for identifiers or unquoted selectors.
  */
-function cssEscape(value: string): string {
+function escapeAttrSelectorValue(value: string): string {
   return value.replace(/["\\]/g, '\\$&');
 }
