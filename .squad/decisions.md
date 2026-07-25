@@ -197,29 +197,39 @@ Asserting the specific diagnostic is therefore **necessary but not sufficient �
 
 Nothing had to be overridden. A security reviewer finding no vulnerability has established that a change is **not a vulnerability** — not that it is safe to ship. Reading APPROVE as "clear to merge" silently promotes one axis over every other.
 
-**What made it legible:** the correctness reviewer named the split himself — "I do not dispute his severity judgement; I block on the axes that are mine" — rather than arguing severity. Reviewers should state the axis they are ruling on when they know another reviewer has ruled differently. Adjudicating a disagreement that does not exist wastes a round and teaches reviewers to soften findings that sit outside the loudest reviewer's remit.
+**What made it legible:** the correctness reviewer named the split himself rather than arguing severity — in his words, he did not dispute the severity judgement and blocked on the axes that were his. Reviewers should state the axis they are ruling on when they know another reviewer has ruled differently. Adjudicating a disagreement that does not exist wastes a round and teaches reviewers to soften findings that sit outside the loudest reviewer's remit.
 
 **Corollary:** a reviewer who has already approved should supersede their own earlier verdict rather than leave two contradicting comments on the PR, as happened correctly here when a delegated question turned an earlier APPROVE into a REJECT.
 
 **Guardrail — the axis must be one the reviewer was assigned or the project has committed to.** Additivity without this lets anyone block anything by naming a new axis, which converts review from a set of known conditions into an open-ended veto. A blocking finding has to land on either the reviewer's assigned remit or a written project contract — a documented behaviour, a stated limit, an accessibility or compatibility guarantee. B3 qualified on both counts: test discipline is the correctness reviewer's remit, and the availability regression contradicted the PR's own documented graceful-degradation contract. "I have concerns" is not an axis. If a reviewer finds something real but outside every established axis, it is escalated to the TL as a scope question rather than asserted as a blocker.
 
+**Known weak point in the guardrail:** the escalation path routes a novel finding to the TL, and the TL is sometimes also the author of the artifact under review — as on both docs PRs this week. Every entry in this file exists because someone found something not yet written down, so the _first_ instance of any new failure class is by construction unblockable under the guardrail. That is probably the right trade, but it means the escalation path is load-bearing, and it is weakest exactly where authorship and adjudication coincide. When they do, the escalated finding should go to a reviewer who is not the author, even if that costs a round.
+
 **Why:** Merge gating is not a vote. It is a conjunction of independent conditions, and the reviewers are the ones who know which condition they checked.
 
 ## 2026-07-25 — Order merges by measured collision, not by PR number or age
 
-**Decision:** Before publishing a merge order, run `git diff --name-only base...head` for each PR and order by **actual collision**. Do not infer a dependency from issue numbering, PR age, or which epic something belongs to. File overlap is the cheap first pass; it is necessary but **not sufficient** — see below.
+**Decision:** Before publishing a merge order, run `git diff --name-only base...head` for each PR and order by **actual measured overlap**. Do not infer a dependency from issue numbering, PR age, or which epic something belongs to.
 
 **Context:** I published the order #69 → #77 → #78 and told three sessions to work to it. #77 turned out to have **zero** file overlap with #69 — I had assumed the constraint rather than measured it, and reordering cost nothing once measured.
 
-**The second class, which `--name-only` cannot see.** #78 does not modify `partTreeModel.ts` at all. It **imports** `isObjectHidden` from it (`plateSelection.ts:15`), and #77 rewrote that module. So a pure file-overlap check reports #77 and #78 as independent, and they are not: #78's required fix is a rewrite of how it consumes that import. Landing #77 first was still right, but for the reason that overlap analysis misses — **consumer-of-a-changed-module**, not co-editor-of-a-file.
+The rule then paid for itself in the other direction. After #69 merged I measured #78 against the new `development` before treating its fresh APPROVE as actionable: `native/model-core/src/threemf.rs` is modified by both, and `git merge-tree --write-tree` returned a hard `CONFLICT (content)`. That is the primary rule working — a real, reproducible overlap, found by measuring rather than by assuming the approval still applied.
 
-So the pass has two steps: file overlap, then imports across the change boundary. The second matters more for the cheap-to-miss case, because a semantic dependency produces no conflict, no failed merge, and often no failing test — the consumer keeps compiling against a contract that has quietly changed underneath it.
+**The second class, which `--name-only` cannot see** — and which I twice claimed this repo demonstrates, wrongly. Both claims were rejected in fact-check. Recorded here rather than deleted, because the error is more instructive than the rule I was trying to write.
+
+Round 1 I wrote that #78's fix rewrites `partTreeModel.ts`. False: #78 does not touch that file. Round 2 I "corrected" it to say #78 **imports** `isObjectHidden` from it (`plateSelection.ts:15`, true) and so is a consumer of a module #77 rewrote. Also false, in three ways I did not check:
+
+- **The consumed contract never changed.** `isObjectHidden` is byte-identical before and after #77 (368 bytes, both revisions), as is its whole call closure down through `ancestorObjectIds` to `indexObjects`. Every hunk #77 made landed in `flattenPartTree` or `partTreeKeyAction`.
+- **The timing inverts it.** #78's fix was authored 27 minutes _before_ #77 merged, on a branch based at `f1e1bb0`, and has never been rebased onto #77. It neither waited for the change nor benefited from it.
+- **The prescribed remedy could not have fired.** I prescribed the import pass "before publishing a merge order." At that moment #78 was at `38024db`, which does not import `isObjectHidden` at all — the fix _created_ that import later. An import-boundary check run when the decision was taken would have reported exactly what `--name-only` reported.
+
+**The lesson is the shape of the error, not the rule I was reaching for.** Both rounds took a file-level fact and carried it to a symbol-level conclusion without measuring at the symbol level. Fixing the citation while inheriting its inference is its own failure mode, and it is the one that survives review, because the corrected fact is verifiable and draws the eye. `git log -S` and a byte comparison of the consumed function are about ninety seconds — the same "measure it, don't assume it" this entry is about, applied one level down.
+
+So: semantic coupling is a real hazard in principle and this repo **does not yet contain an instance of it**. When one occurs, record it then. A decision log that carries a rule nobody can reproduce from the cited evidence is worse than one that stays silent, because the unreproducible rule is what future sessions cite.
 
 **Cost of getting it wrong in the other direction:** telling an author to rebase onto a branch that is still under revision makes them do the work twice. "Do not rebase onto a PR that is in a fix round" is the companion rule.
 
-**Also:** when a merge lands under an author who is actively editing a file it touches — or importing from it — tell them within minutes and name the module. A clean textual merge is _more_ dangerous here, not less, when the two changes touch the same semantics rather than adjacent lines.
-
-**Why:** A published order is load-bearing — sessions serialize their work against it. An unmeasured one costs more than no order at all, because it is followed.
+**Also:** when a merge lands under an author who is actively editing a file it touches, tell them within minutes and name the file. A clean textual merge is _more_ dangerous here, not less, when the two changes touch the same semantics rather than adjacent lines.
 
 **Why:** A published order is load-bearing — sessions serialize their work against it. An unmeasured one costs more than no order at all, because it is followed.
 
