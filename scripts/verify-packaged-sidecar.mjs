@@ -1,6 +1,6 @@
-// CI smoke check: assert that `electron-forge package` bundled the Rust sidecar
-// binary into the packaged app's resources. Fails with a non-zero exit code if
-// no `model-core[.exe]` is found anywhere under `out/`.
+// CI smoke check: assert that `electron-forge package` bundled the Rust sidecar,
+// runtime icon, and exact compliance resources. Fails with a non-zero exit code
+// if any required resource is absent or differs from its repository source.
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -69,6 +69,97 @@ if (!icon || path.basename(path.dirname(icon)).toLowerCase() !== 'resources') {
   process.exit(1);
 }
 console.log(`[verify-packaged-sidecar] OK: bundled runtime icon at ${icon}`);
+
+const complianceResources = [
+  {
+    packagedName: 'PFD_LICENSE.txt',
+    parent: 'compliance',
+    source: path.join(repoRoot, 'LICENSE'),
+  },
+  {
+    packagedName: 'THIRD_PARTY_NOTICES.md',
+    parent: 'compliance',
+    source: path.join(repoRoot, 'THIRD_PARTY_NOTICES.md'),
+  },
+  {
+    packagedName: 'CORRESPONDING_SOURCE.md',
+    parent: 'compliance',
+    source: path.join(
+      repoRoot,
+      'docs',
+      'compliance',
+      'CORRESPONDING_SOURCE.md',
+    ),
+  },
+  {
+    packagedName: 'printer-calibration-provenance.json',
+    parent: 'compliance',
+    source: path.join(
+      repoRoot,
+      'compliance',
+      'printer-calibration-provenance.json',
+    ),
+  },
+  {
+    packagedName: 'printer-calibration-provenance.schema.json',
+    parent: 'compliance',
+    source: path.join(
+      repoRoot,
+      'compliance',
+      'printer-calibration-provenance.schema.json',
+    ),
+  },
+  {
+    packagedName: 'ELECTRON_LICENSE.txt',
+    parent: 'compliance',
+    source: path.join(repoRoot, 'node_modules', 'electron', 'dist', 'LICENSE'),
+  },
+  {
+    packagedName: 'LICENSES.chromium.html',
+    parent: 'compliance',
+    source: path.join(
+      repoRoot,
+      'node_modules',
+      'electron',
+      'dist',
+      'LICENSES.chromium.html',
+    ),
+  },
+];
+
+function isPackagedResource(candidate, expectedParent) {
+  const relativeParts = path
+    .relative(outDir, candidate)
+    .split(path.sep)
+    .map((part) => part.toLowerCase());
+  if (!relativeParts.includes('resources')) return false;
+  return (
+    expectedParent === undefined ||
+    path.basename(path.dirname(candidate)).toLowerCase() ===
+      expectedParent.toLowerCase()
+  );
+}
+
+for (const resource of complianceResources) {
+  const packaged = findFile(outDir, resource.packagedName, (candidate) =>
+    isPackagedResource(candidate, resource.parent),
+  );
+  if (!packaged) {
+    console.error(
+      `[verify-packaged-sidecar] FAILED: ${resource.packagedName} not found in packaged resources under ${outDir}`,
+    );
+    process.exit(1);
+  }
+  if (!readFileSync(packaged).equals(readFileSync(resource.source))) {
+    console.error(
+      `[verify-packaged-sidecar] FAILED: ${packaged} does not match ${resource.source}`,
+    );
+    process.exit(1);
+  }
+  console.log(
+    `[verify-packaged-sidecar] OK: bundled compliance resource matches ${packaged}`,
+  );
+}
 
 if (process.platform === 'darwin') {
   const packageJson = JSON.parse(

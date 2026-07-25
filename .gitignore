@@ -19,8 +19,10 @@ native/**/target/
 **/*.rs.bk
 Cargo.lock.orig
 
-# Staged sidecar binary (built into packaged app via forge extraResource)
+# Staged sidecar binary and compliance bundle (built into packaged app via
+# forge extraResource)
 resources/sidecar/
+resources/compliance/
 
 # TypeScript build artifacts
 *.tsbuildinfo

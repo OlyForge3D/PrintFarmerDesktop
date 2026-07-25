@@ -37,15 +37,16 @@ const config: ForgeConfig = {
       './resources/sidecar',
       './resources/target-profiles',
       './assets/icon.png',
+      './resources/compliance',
     ],
   },
   rebuildConfig: {},
   hooks: {
-    // Compile + stage the sidecar before the app is packaged, so the
-    // `extraResource` directory above exists and is current.
+    // Validate and stage generated resources before packaging.
     prePackage: () => {
       runBuildScript('verify-target-profiles.mjs', 'verifying target profiles');
       runBuildScript('stage-sidecar.mjs', 'staging the sidecar');
+      runBuildScript('stage-compliance.mjs', 'staging compliance resources');
       return Promise.resolve();
     },
   },

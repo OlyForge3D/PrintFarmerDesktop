@@ -4,8 +4,16 @@
   "version": "0.1.0",
   "description": "Local-first desktop 3D model library integrated with PrintFarmer",
   "author": "OlyForge3D",
-  "license": "UNLICENSED",
+  "license": "AGPL-3.0-only",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OlyForge3D/PrintFarmerDesktop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/OlyForge3D/PrintFarmerDesktop/issues"
+  },
+  "homepage": "https://github.com/OlyForge3D/PrintFarmerDesktop#readme",
   "main": ".vite/build/main.js",
   "type": "module",
   "engines": {
@@ -22,6 +30,7 @@
     "lint": "eslint .",
     "format": "prettier --check .",
     "format:write": "prettier --write .",
+    "check:provenance": "node scripts/check-calibration-provenance.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -52,6 +61,7 @@
     "@typescript-eslint/eslint-plugin": "^8.18.0",
     "@typescript-eslint/parser": "^8.18.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "ajv": "^8.17.1",
     "electron": "^33.2.1",
     "eslint": "^9.16.0",
     "eslint-plugin-react": "^7.37.2",
