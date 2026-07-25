@@ -33,10 +33,14 @@ repeated `children` entry, an object referenced by two parents, and the same
 object listed on two plates all render once and then degrade to a uniquely-keyed
 diagnostic row. Row keys are therefore unique for any graph shape, which is what
 lets the tree keep a single roving tab stop. The walk is iterative rather than
-recursive, so a deep chain cannot overflow the stack, and a global row budget
-truncates with a notice row rather than locking up the renderer. Unknown ids are
-dropped. Hiding a node hides its whole subtree; isolating a node hides
-everything except that node, its descendants, and the ancestors it hangs from.
+recursive, so a deep chain cannot overflow the stack, and a global row budget of
+20,000 rows — four times the 5,000-object sidecar cap above, so it cannot reach
+a legitimate scene — truncates with a notice row rather than locking up the
+renderer. Pending work is clamped against that same budget, so a node with a
+huge child list cannot balloon the queue past the rows that could ever be
+emitted. Unknown ids are dropped. Hiding a node hides its whole subtree;
+isolating a node hides everything except that node, its descendants, and the
+ancestors it hangs from.
 
 The tree is the accessible, non-canvas alternative to picking parts in the 3D
 view: it is a WAI-ARIA `tree` with a single roving tab stop, arrow keys to move

@@ -123,6 +123,9 @@ interface ObjectFrame {
  * - **No recursion.** The walk uses an explicit stack, so depth is bounded by
  *   the heap rather than the call stack.
  * - **Bounded output.** `MAX_PART_TREE_ROWS` truncates with a notice row.
+ * - **Bounded work.** Every queued frame resolves to exactly one row, so the
+ *   pending stack is clamped against the remaining budget too: the walk stops
+ *   *queueing* at the cap, not merely stops emitting.
  */
 export function flattenPartTree({
   objects,
@@ -137,6 +140,7 @@ export function flattenPartTree({
   const keyProbe = new Map<string, number>();
   const resolved = new Set<string>();
   let truncated = false;
+  let dropped = false;
 
   // Suffix collisions rather than trusting the path to be unique. `keyProbe`
   // remembers where the last probe for a base stopped so repeated collisions
@@ -154,31 +158,43 @@ export function flattenPartTree({
     return key;
   };
 
+  const pushTruncationNotice = (): void => {
+    if (truncated) return;
+    truncated = true;
+    rows.push({
+      key: claimKey('notice:truncated'),
+      kind: 'notice',
+      objectId: null,
+      plateId: null,
+      plateRootObjectIds: [],
+      name: `Scene too large to list in full; stopped after ${MAX_PART_TREE_ROWS.toLocaleString()} rows.`,
+      level: 1,
+      // The notice belongs to no sibling set. `0` is the sentinel the component
+      // reads to omit `aria-posinset`/`aria-setsize` rather than claim "1 of 1".
+      positionInSet: 0,
+      setSize: 0,
+      hasChildren: false,
+      childCount: 0,
+      expanded: false,
+      hidden: false,
+      ancestorHidden: false,
+      triangles: null,
+      parentKey: null,
+      invalid: false,
+    });
+  };
+
   const atCapacity = (): boolean => {
     if (rows.length < MAX_PART_TREE_ROWS) return false;
-    if (!truncated) {
-      truncated = true;
-      rows.push({
-        key: claimKey('notice:truncated'),
-        kind: 'notice',
-        objectId: null,
-        plateId: null,
-        plateRootObjectIds: [],
-        name: `Scene too large to list in full; stopped after ${MAX_PART_TREE_ROWS.toLocaleString()} rows.`,
-        level: 1,
-        positionInSet: 1,
-        setSize: 1,
-        hasChildren: false,
-        childCount: 0,
-        expanded: false,
-        hidden: false,
-        ancestorHidden: false,
-        triangles: null,
-        parentKey: null,
-        invalid: false,
-      });
-    }
+    pushTruncationNotice();
     return true;
+  };
+
+  // Clamping can drop children without the row count ever reaching the cap, so
+  // the notice is flushed on the way out rather than only from `atCapacity`.
+  const finish = (): readonly PartTreeRow[] => {
+    if (dropped) pushTruncationNotice();
+    return rows;
   };
 
   const walk = (seeds: readonly ObjectFrame[]): void => {
@@ -244,7 +260,15 @@ export function flattenPartTree({
       });
 
       if (!expanded) continue;
-      for (let index = children.length - 1; index >= 0; index -= 1) {
+      // Every queued frame resolves to exactly one row (children are filtered
+      // to known ids above), so `rows.length + stack.length` is already the
+      // final row count. Queue only what the budget can still spend: a node is
+      // allowed up to 100k children, and without this a single fan-out could
+      // balloon the stack far past anything that would ever be emitted.
+      const room = MAX_PART_TREE_ROWS - rows.length - stack.length;
+      const queued = Math.max(0, Math.min(children.length, room));
+      if (queued < children.length) dropped = true;
+      for (let index = queued - 1; index >= 0; index -= 1) {
         const childId = children[index];
         if (childId === undefined) continue;
         stack.push({
@@ -252,6 +276,7 @@ export function flattenPartTree({
           parentKey: key,
           level: frame.level + 1,
           positionInSet: index + 1,
+          // Honest sibling metadata: the dropped children still exist.
           setSize: children.length,
           ancestorHidden: effectivelyHidden,
         });
@@ -261,7 +286,7 @@ export function flattenPartTree({
 
   if (plates.length > 0) {
     for (const [plateIndex, plate] of plates.entries()) {
-      if (atCapacity()) return rows;
+      if (atCapacity()) return finish();
       const key = claimKey(plateRowKey(plate.id));
       const roots = plate.rootObjectIds.filter((id) => byId.has(id));
       const expanded = roots.length > 0 && !collapsed.has(key);
@@ -296,7 +321,7 @@ export function flattenPartTree({
         })),
       );
     }
-    return rows;
+    return finish();
   }
 
   const roots = rootObjectIds.filter((id) => byId.has(id));
@@ -310,7 +335,7 @@ export function flattenPartTree({
       ancestorHidden: false,
     })),
   );
-  return rows;
+  return finish();
 }
 
 /** Every object id reachable from `objectId`, including itself. Cycle-safe. */
@@ -435,11 +460,17 @@ export function partTreeKeyAction(
       if (row.hasChildren && !row.expanded) {
         return { type: 'expand', key: row.key };
       }
-      if (row.hasChildren) {
-        const child = nav[index + 1];
-        return child?.parentKey === row.key
-          ? { type: 'move', key: child.key }
-          : null;
+      if (!row.hasChildren) return null;
+      // Descend to the first *focusable* descendant. A leading child can be a
+      // diagnostic row, which navigation skips, so scan the descendant span
+      // rather than assuming the next row is the one to land on.
+      const start = rows.findIndex((candidate) => candidate.key === row.key);
+      for (let i = start + 1; i < rows.length; i += 1) {
+        const candidate = rows[i];
+        if (!candidate || candidate.level <= row.level) break;
+        if (isFocusableRow(candidate)) {
+          return { type: 'move', key: candidate.key };
+        }
       }
       return null;
     }
