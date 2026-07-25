@@ -338,9 +338,13 @@ mod tests {
 
     #[test]
     fn rejects_non_finite_ascii_coordinates() {
-        // `1e999` parses to `Ok(inf)` rather than failing, so it must be caught
-        // by the finiteness check and not by rejecting known spellings.
-        for poison in ["NaN", "inf", "-inf", "1e999", "-1e999", "1E+400"] {
+        // Built from the property "parses successfully and is non-finite", not
+        // from spellings: none of the exponent forms below carry an `inf`/`nan`
+        // substring, and `3.5e38` sits just past f32::MAX so it also defeats a
+        // "big exponent looks suspicious" heuristic.
+        for poison in [
+            "NaN", "inf", "-inf", "1e999", "-1e999", "1E+400", "1e39", "-1e39", "3.5e38",
+        ] {
             let ascii = format!(
                 "solid s\nfacet normal 0 0 1\nouter loop\nvertex {poison} 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid s\n"
             );
@@ -352,6 +356,12 @@ mod tests {
                 "'{poison}' must be rejected"
             );
         }
+
+        // The must-still-parse direction: `3.4e38` is the largest finite f32 and
+        // is legitimate input, so a guard that rejected large exponents wholesale
+        // would pass every case above and still break real models.
+        let ok = "solid s\nfacet normal 0 0 1\nouter loop\nvertex 3.4e38 0 0\nvertex 1 0 0\nvertex 0 1 0\nendloop\nendfacet\nendsolid s\n";
+        parse_bytes(ok.as_bytes()).expect("the largest finite f32 must still parse");
     }
 
     #[test]

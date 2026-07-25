@@ -273,10 +273,12 @@ fn self_closing_elements_do_not_accumulate_depth() {
 
 #[test]
 fn rejects_non_finite_vertex_coordinates() {
-    // `1e999` and friends carry none of the literal spellings below, yet
-    // `f32::from_str` returns `Ok(inf)` for them. A guard that blocklisted the
-    // spellings instead of checking `is_finite` would pass every other case
-    // here and still let an overflowing decimal poison the bounds.
+    // The corpus is deliberately built from a *property* — "parses successfully
+    // and is non-finite" — rather than from spellings. A longer blocklist is
+    // still a blocklist: the entries below carry no `inf`/`nan` substring, and
+    // `3.5e38` additionally defeats a "reject anything with a big exponent"
+    // heuristic, because it sits just past f32::MAX (~3.4028e38) and looks
+    // entirely unremarkable.
     for poison in [
         "NaN",
         "inf",
@@ -286,6 +288,9 @@ fn rejects_non_finite_vertex_coordinates() {
         "1e999",
         "-1e999",
         "1E+400",
+        "1e39",
+        "-1e39",
+        "3.5e38",
         "340282400000000000000000000000000000000000",
     ] {
         let resources = format!(
@@ -303,6 +308,21 @@ fn rejects_non_finite_vertex_coordinates() {
             "'{poison}' must be rejected, got {error}"
         );
     }
+
+    // The other direction, which is what keeps the loop above honest: the
+    // largest finite f32 must still parse. Without this, a guard that rejected
+    // every coordinate with a large exponent — or simply rejected everything —
+    // would satisfy every assertion above while making legitimate large models
+    // unopenable. `3.4e38` is finite and `3.5e38` is not, so the pair pins the
+    // boundary from both sides.
+    let resources = r#"<object id="1" type="model"><mesh><vertices>
+                 <vertex x="0" y="0" z="0"/>
+                 <vertex x="3.4e38" y="0" z="0"/>
+                 <vertex x="0" y="1" z="0"/>
+               </vertices><triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object>"#;
+    let model = model_document("millimeter", resources, r#"<item objectid="1"/>"#);
+    threemf::parse_bytes(&package(&model, Vec::new()))
+        .expect("the largest finite f32 is not an attack and must still parse");
 }
 
 #[test]
