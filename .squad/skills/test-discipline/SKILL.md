@@ -72,7 +72,7 @@ If fixture-writing reveals behavior that contradicts the issue text, do not sile
 
 Names and comments are what the next reader greps for. They find a hit, conclude the risk is covered, and stop. So a name that overstates is worse than no name at all: it does not merely fail to help, it actively stops the search that would have found the gap.
 
-Three instances landed in one week, each wrong in the direction that ends the audit:
+That mechanism is an inference about how people read code, not something the repository can prove. What the repository does show is the pattern — three instances landed in one week, each wrong in the direction that ends the audit rather than the direction that trips it:
 
 - `rejects_an_unbounded_appearance_table` measured the appearance _entry_ axis only. The structure had two axes, and the uncapped one — group count — sat behind a passing test aimed at exactly the right risk.
 - A comment reading "instances beyond the cap are dropped" was true of the internal map and false of what the user sees: those instances fall through to plate 0. Anyone auditing "where does over-cap geometry end up?" would have read it and stopped.
@@ -82,7 +82,7 @@ Two checks, applied to the name rather than the code:
 
 **Name the axis you varied, not the risk you had in mind.** A test aimed at the right risk still only measures the axis you thought to vary. "Is there a test for this risk?" is nearly as weak a question as "is there a test?" — both are answered by the name, and the name is what is wrong.
 
-**When a name states a dichotomy, check whether a third option exists.** `a_malformed_appearance_index_is_reported_not_silently_dropped` encodes a choice between fatal and silently-dropped. The correct behaviour was neither: appearance explicitly absent, geometry preserved, diagnostic surfaced. A name that forecloses the right answer will actively resist the right fix, because changing the behaviour now means admitting the test was misnamed.
+**When a name states a dichotomy, check whether a third option exists.** This one comes from a single case, but a sharp one. `a_malformed_appearance_index_is_reported_not_silently_dropped` encodes a choice between fatal and silently-dropped. The correct behaviour was neither: appearance explicitly absent, geometry preserved, diagnostic surfaced. A name that forecloses the right answer will actively resist the right fix, because changing the behaviour now means admitting the test was misnamed. The other two instances above are the axis problem, not this one — do not read them as three examples of the same trap.
 
 Corollary for reviewers: read the assertion before the name. If they disagree, the name is the defect — and it is the half that propagates.
 

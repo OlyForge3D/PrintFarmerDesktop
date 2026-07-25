@@ -201,17 +201,25 @@ Nothing had to be overridden. A security reviewer finding no vulnerability has e
 
 **Corollary:** a reviewer who has already approved should supersede their own earlier verdict rather than leave two contradicting comments on the PR, as happened correctly here when a delegated question turned an earlier APPROVE into a REJECT.
 
+**Guardrail — the axis must be one the reviewer was assigned or the project has committed to.** Additivity without this lets anyone block anything by naming a new axis, which converts review from a set of known conditions into an open-ended veto. A blocking finding has to land on either the reviewer's assigned remit or a written project contract — a documented behaviour, a stated limit, an accessibility or compatibility guarantee. B3 qualified on both counts: test discipline is the correctness reviewer's remit, and the availability regression contradicted the PR's own documented graceful-degradation contract. "I have concerns" is not an axis. If a reviewer finds something real but outside every established axis, it is escalated to the TL as a scope question rather than asserted as a blocker.
+
 **Why:** Merge gating is not a vote. It is a conjunction of independent conditions, and the reviewers are the ones who know which condition they checked.
 
 ## 2026-07-25 — Order merges by measured collision, not by PR number or age
 
-**Decision:** Before publishing a merge order, run `git diff --name-only base...head` for each PR and order by **actual file overlap**. Do not infer a dependency from issue numbering, PR age, or which epic something belongs to.
+**Decision:** Before publishing a merge order, run `git diff --name-only base...head` for each PR and order by **actual collision**. Do not infer a dependency from issue numbering, PR age, or which epic something belongs to. File overlap is the cheap first pass; it is necessary but **not sufficient** — see below.
 
-**Context:** I published the order #69 → #77 → #78 and told three sessions to work to it. #77 turned out to have **zero** file overlap with #69 — I had assumed the constraint rather than measured it. Merging #77 first was not merely harmless, it was strictly better: #78's required fix rewrites the visibility resolution in `partTreeModel.ts`, and #77 rewrote that same module. Landing #77 first meant the fix was built against the final version instead of a superseded one that would have forced a second rewrite.
+**Context:** I published the order #69 → #77 → #78 and told three sessions to work to it. #77 turned out to have **zero** file overlap with #69 — I had assumed the constraint rather than measured it, and reordering cost nothing once measured.
+
+**The second class, which `--name-only` cannot see.** #78 does not modify `partTreeModel.ts` at all. It **imports** `isObjectHidden` from it (`plateSelection.ts:15`), and #77 rewrote that module. So a pure file-overlap check reports #77 and #78 as independent, and they are not: #78's required fix is a rewrite of how it consumes that import. Landing #77 first was still right, but for the reason that overlap analysis misses — **consumer-of-a-changed-module**, not co-editor-of-a-file.
+
+So the pass has two steps: file overlap, then imports across the change boundary. The second matters more for the cheap-to-miss case, because a semantic dependency produces no conflict, no failed merge, and often no failing test — the consumer keeps compiling against a contract that has quietly changed underneath it.
 
 **Cost of getting it wrong in the other direction:** telling an author to rebase onto a branch that is still under revision makes them do the work twice. "Do not rebase onto a PR that is in a fix round" is the companion rule.
 
-**Also:** when a merge lands under an author who is actively editing a file it touches, tell them within minutes and name the file. A clean textual merge is _more_ dangerous here, not less, when both changes touch the same semantics rather than adjacent lines.
+**Also:** when a merge lands under an author who is actively editing a file it touches — or importing from it — tell them within minutes and name the module. A clean textual merge is _more_ dangerous here, not less, when the two changes touch the same semantics rather than adjacent lines.
+
+**Why:** A published order is load-bearing — sessions serialize their work against it. An unmeasured one costs more than no order at all, because it is followed.
 
 **Why:** A published order is load-bearing — sessions serialize their work against it. An unmeasured one costs more than no order at all, because it is followed.
 
