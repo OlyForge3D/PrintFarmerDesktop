@@ -162,6 +162,9 @@ export function ModelViewer({
       controls.update();
       if (!renderPendingRef.current) return;
       renderPendingRef.current = false;
+      // Detail levels depend on where the camera ended up, so they are picked
+      // for the frame about to be drawn rather than the one just finished.
+      sceneGraph.updateLod(camera);
       renderer.render(scene, camera);
     };
     animate();

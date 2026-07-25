@@ -4,15 +4,17 @@ import {
   LOD_GRID_RESOLUTION,
   LOD_MIN_SCENE_TRIANGLES,
   LOD_MIN_TRIANGLES,
-  LOD_SWITCH_RADII,
+  LOD_SWITCH_SCREEN_FRACTION,
+  apparentRadiusFraction,
   boundsRadius,
-  lodSwitchDistance,
   sceneTriangleCount,
   shouldBuildLod,
   shouldSimplifyObject,
+  shouldUseLodProxy,
   simplifyMesh,
   triangleCount,
 } from '../src/renderer/viewer/lod';
+import type { LodCamera } from '../src/renderer/viewer/lod';
 import type {
   Bounds,
   SceneMesh,
@@ -189,27 +191,126 @@ describe('shouldBuildLod', () => {
   });
 });
 
-describe('lodSwitchDistance', () => {
-  it('scales with the object, not with a fixed world distance', () => {
-    const small = meshOf([0, 0, 0, 1, 0, 0, 0, 1, 0], [0, 1, 2]);
-    const large = meshOf([0, 0, 0, 10, 0, 0, 0, 10, 0], [0, 1, 2]);
+describe('apparentRadiusFraction', () => {
+  const perspective: LodCamera = { kind: 'perspective', halfFovTangent: 0.5 };
+  const orthographic: LodCamera = { kind: 'orthographic', halfHeight: 10 };
 
-    expect(lodSwitchDistance(large)).toBeCloseTo(
-      lodSwitchDistance(small) * 10,
-      6,
-    );
-    expect(lodSwitchDistance(small)).toBeCloseTo(
-      boundsRadius(small) * LOD_SWITCH_RADII,
-      6,
+  it('shrinks with distance under a perspective camera', () => {
+    // Half-height at distance 4 is 4 * 0.5 = 2, so a radius-2 sphere exactly
+    // fills it.
+    expect(apparentRadiusFraction(perspective, 4, 2)).toBeCloseTo(1, 6);
+    expect(apparentRadiusFraction(perspective, 8, 2)).toBeCloseTo(0.5, 6);
+    expect(apparentRadiusFraction(perspective, 40, 2)).toBeCloseTo(0.1, 6);
+  });
+
+  it('is scale invariant, so the policy reads the same for any model size', () => {
+    // This is the property that lets one threshold serve a 5 mm part and a
+    // 5 m one: only the ratio of radius to distance matters.
+    const small = apparentRadiusFraction(perspective, 10, 1);
+    const large = apparentRadiusFraction(perspective, 10_000, 1_000);
+
+    expect(large).toBeCloseTo(small, 9);
+  });
+
+  it('ignores distance entirely under an orthographic camera', () => {
+    // The defining difference between the projections, and the reason a single
+    // distance threshold cannot serve both.
+    const near = apparentRadiusFraction(orthographic, 1, 2);
+    const far = apparentRadiusFraction(orthographic, 100_000, 2);
+
+    expect(near).toBeCloseTo(0.2, 6);
+    expect(far).toBeCloseTo(near, 9);
+  });
+
+  it('tracks orthographic zoom, which is what changes apparent size there', () => {
+    // `lodCameraOf` folds zoom into halfHeight; zooming in 4x quarters it.
+    const zoomedIn: LodCamera = { kind: 'orthographic', halfHeight: 10 / 4 };
+
+    expect(apparentRadiusFraction(zoomedIn, 50, 2)).toBeCloseTo(0.8, 6);
+  });
+
+  it('reports a collapsed frustum as filling the view', () => {
+    // Nothing can be sized against a zero-height frustum, and the safe default
+    // is the level that is never visibly wrong.
+    const collapsed: LodCamera = { kind: 'orthographic', halfHeight: 0 };
+
+    expect(apparentRadiusFraction(collapsed, 5, 1)).toBe(Infinity);
+    expect(shouldUseLodProxy(collapsed, 5, 1)).toBe(false);
+  });
+
+  it('reports a camera at or behind the object as filling the view', () => {
+    expect(apparentRadiusFraction(perspective, 0, 1)).toBe(Infinity);
+    expect(apparentRadiusFraction(perspective, -50, 1)).toBe(Infinity);
+    expect(shouldUseLodProxy(perspective, 0, 1)).toBe(false);
+  });
+});
+
+describe('shouldUseLodProxy', () => {
+  const perspective: LodCamera = { kind: 'perspective', halfFovTangent: 0.5 };
+
+  // Half-height is distance * 0.5, so a radius-1 sphere sits exactly at the
+  // threshold when distance = 2 / LOD_SWITCH_SCREEN_FRACTION.
+  const thresholdDistance = 2 / LOD_SWITCH_SCREEN_FRACTION;
+
+  it('keeps full detail at the threshold and just inside it', () => {
+    expect(
+      apparentRadiusFraction(perspective, thresholdDistance, 1),
+    ).toBeCloseTo(LOD_SWITCH_SCREEN_FRACTION, 9);
+    expect(shouldUseLodProxy(perspective, thresholdDistance, 1)).toBe(false);
+    expect(shouldUseLodProxy(perspective, thresholdDistance * 0.999, 1)).toBe(
+      false,
     );
   });
 
-  it('never returns zero for a degenerate object', () => {
-    // three.js treats a level at distance 0 as always active, which would make
-    // the proxy permanently replace the real geometry.
-    const point = meshOf([1, 1, 1, 1, 1, 1, 1, 1, 1], [0, 1, 2]);
+  it('swaps in the proxy just past the threshold', () => {
+    expect(shouldUseLodProxy(perspective, thresholdDistance * 1.001, 1)).toBe(
+      true,
+    );
+  });
 
-    expect(lodSwitchDistance(point)).toBeGreaterThan(0);
+  it('keeps full detail for an object with no size', () => {
+    // A zero-radius sphere covers nothing, which would otherwise read as
+    // "far away" and select a proxy that cannot exist for it.
+    expect(shouldUseLodProxy(perspective, 1, 0)).toBe(false);
+    expect(shouldUseLodProxy(perspective, 1, -1)).toBe(false);
+  });
+
+  it('keeps full detail when the distance is not a usable number', () => {
+    expect(shouldUseLodProxy(perspective, Number.NaN, 1)).toBe(false);
+    expect(shouldUseLodProxy(perspective, Infinity, 1)).toBe(false);
+  });
+
+  it('agrees between projections at equal apparent size', () => {
+    // The whole point of expressing the policy as screen coverage: the same
+    // object, equally large on screen, gets the same level either way.
+    const distance = thresholdDistance * 1.5;
+    const halfHeight = distance * 0.5;
+    const orthographic: LodCamera = { kind: 'orthographic', halfHeight };
+
+    expect(apparentRadiusFraction(orthographic, 1, 1)).toBeCloseTo(
+      apparentRadiusFraction(perspective, distance, 1),
+      9,
+    );
+    expect(shouldUseLodProxy(orthographic, 1, 1)).toBe(
+      shouldUseLodProxy(perspective, distance, 1),
+    );
+  });
+
+  it('scales the switch with the object, not with a fixed world distance', () => {
+    const small = meshOf([0, 0, 0, 1, 0, 0, 0, 1, 0], [0, 1, 2]);
+    const large = meshOf([0, 0, 0, 10, 0, 0, 0, 10, 0], [0, 1, 2]);
+
+    // A distance that hides the small object still shows the large one, since
+    // the large one is ten times the radius at the same remove.
+    const distance =
+      ((boundsRadius(small) * 2) / LOD_SWITCH_SCREEN_FRACTION) * 1.001;
+
+    expect(shouldUseLodProxy(perspective, distance, boundsRadius(small))).toBe(
+      true,
+    );
+    expect(shouldUseLodProxy(perspective, distance, boundsRadius(large))).toBe(
+      false,
+    );
   });
 });
 

@@ -1,6 +1,13 @@
 import * as THREE from 'three';
 
-import { lodSwitchDistance, shouldBuildLod, simplifyMesh } from './lod';
+import { boundsCenter } from './geometry';
+import {
+  boundsRadius,
+  shouldBuildLod,
+  shouldUseLodProxy,
+  simplifyMesh,
+} from './lod';
+import type { LodCamera } from './lod';
 import type {
   SceneMaterial,
   SceneMesh,
@@ -16,7 +23,43 @@ export interface ViewerSceneGraph {
    * is small enough to draw at full detail.
    */
   readonly lodObjectIds: ReadonlySet<string>;
+  /**
+   * Pick a detail level for every proxied object against the current camera.
+   *
+   * Must be called before each draw. `THREE.LOD`'s own automatic selection is
+   * switched off because it keys purely on camera distance, which does not
+   * describe apparent size under an orthographic projection - there the camera
+   * never moves and only zoom changes what the user sees.
+   */
+  updateLod(camera: THREE.PerspectiveCamera | THREE.OrthographicCamera): void;
   dispose(): void;
+}
+
+/** One proxied object and the local-space sphere used to size it on screen. */
+interface LodEntry {
+  readonly lod: THREE.LOD;
+  readonly center: THREE.Vector3;
+  readonly radius: number;
+}
+
+/**
+ * Reduce a live camera to the projection facts the LOD policy needs, folding in
+ * zoom so both variants are directly comparable.
+ */
+export function lodCameraOf(
+  camera: THREE.PerspectiveCamera | THREE.OrthographicCamera,
+): LodCamera {
+  const zoom = camera.zoom > 0 ? camera.zoom : 1;
+  if (camera instanceof THREE.OrthographicCamera) {
+    return {
+      kind: 'orthographic',
+      halfHeight: Math.abs(camera.top - camera.bottom) / 2 / zoom,
+    };
+  }
+  return {
+    kind: 'perspective',
+    halfFovTangent: Math.tan((camera.fov * Math.PI) / 180 / 2) / zoom,
+  };
 }
 
 export function buildViewerSceneGraph(
@@ -33,6 +76,7 @@ export function buildViewerSceneGraph(
   const geometries: THREE.BufferGeometry[] = [];
   const materials: THREE.Material[] = [];
   const lodObjectIds = new Set<string>();
+  const lodEntries: LodEntry[] = [];
   const useLod = shouldBuildLod(sceneMesh);
 
   const plateGroupMap = new Map<string, THREE.Group>();
@@ -71,14 +115,26 @@ export function buildViewerSceneGraph(
       if (proxy) {
         const lod = new THREE.LOD();
         lod.name = `${object.name}:lod`;
-        // matrixAutoUpdate stays on: THREE.LOD picks its level from the
-        // distance between the camera and its own world position, which it
-        // reads off the matrix during rendering.
+        // Level selection is driven by `updateLod` instead, so three.js must
+        // not also apply its own distance rule during rendering.
+        lod.autoUpdate = false;
+        // matrixAutoUpdate stays on: the world matrix is what places the
+        // object's bounding sphere for the apparent-size test.
         lod.addLevel(mesh, 0);
-        lod.addLevel(proxy.mesh, lodSwitchDistance(object.mesh));
+        lod.addLevel(proxy.mesh, 1);
+        // addLevel does not touch visibility, and both meshes default to
+        // visible. Without this the first frame draws the proxy on top of the
+        // full mesh until the first update runs.
+        proxy.mesh.visible = false;
         node.add(lod);
         geometries.push(proxy.geometry);
         lodObjectIds.add(object.id);
+        const [cx, cy, cz] = boundsCenter(object.mesh.bounds);
+        lodEntries.push({
+          lod,
+          center: new THREE.Vector3(cx, cy, cz),
+          radius: boundsRadius(object.mesh),
+        });
       } else {
         node.add(mesh);
       }
@@ -118,10 +174,47 @@ export function buildViewerSceneGraph(
 
   setHidden(hiddenObjectIds);
 
+  const cameraPosition = new THREE.Vector3();
+  const worldCenter = new THREE.Vector3();
+  const worldScale = new THREE.Vector3();
+  const updateLod = (
+    camera: THREE.PerspectiveCamera | THREE.OrthographicCamera,
+  ): void => {
+    if (lodEntries.length === 0) return;
+    const lodCamera = lodCameraOf(camera);
+    camera.updateWorldMatrix(true, false);
+    cameraPosition.setFromMatrixPosition(camera.matrixWorld);
+    for (const entry of lodEntries) {
+      // The caller may have moved a parent since the last draw, and nothing
+      // else refreshes these matrices before the level is chosen.
+      entry.lod.updateWorldMatrix(true, false);
+      worldCenter.copy(entry.center).applyMatrix4(entry.lod.matrixWorld);
+      worldScale.setFromMatrixScale(entry.lod.matrixWorld);
+      // A non-uniform scale makes the bounding sphere an ellipsoid; the largest
+      // axis is the one that decides how big it looks.
+      const radius =
+        entry.radius *
+        Math.max(
+          Math.abs(worldScale.x),
+          Math.abs(worldScale.y),
+          Math.abs(worldScale.z),
+        );
+      const useProxy = shouldUseLodProxy(
+        lodCamera,
+        cameraPosition.distanceTo(worldCenter),
+        radius,
+      );
+      const levels = entry.lod.levels;
+      if (levels[0]) levels[0].object.visible = !useProxy;
+      if (levels[1]) levels[1].object.visible = useProxy;
+    }
+  };
+
   return {
     root,
     setHidden,
     lodObjectIds,
+    updateLod,
     dispose: () => {
       for (const geometry of geometries) {
         geometry.dispose();

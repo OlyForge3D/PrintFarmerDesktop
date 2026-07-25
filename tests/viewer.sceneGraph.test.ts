@@ -2,6 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 
 import { buildViewerSceneGraph } from '../src/renderer/viewer/sceneGraph';
+import {
+  boundsCenter,
+  boundsRadius,
+  defaultCameraPosition,
+} from '../src/renderer/viewer/geometry';
 import type { SceneMesh, SceneObject } from '../src/renderer/viewer/types';
 
 function multiObjectScene(): SceneMesh {
@@ -268,10 +273,25 @@ describe('buildViewerSceneGraph level of detail', () => {
     expect([...graph.lodObjectIds]).toEqual(['dense']);
     expect(lods).toHaveLength(1);
     expect(lods[0]!.levels).toHaveLength(2);
-    // The full-detail level has to be the one active at the camera, or the
-    // viewer would show the proxy even when the part is being inspected.
-    expect(lods[0]!.levels[0]!.distance).toBe(0);
-    expect(lods[0]!.levels[1]!.distance).toBeGreaterThan(0);
+    // Level order is what `updateLod` indexes into: 0 is full detail, 1 is the
+    // proxy. three.js's own distance-based selection is switched off, because
+    // distance does not describe apparent size under an orthographic camera.
+    expect(lods[0]!.autoUpdate).toBe(false);
+    expect(lods[0]!.levels[0]!.distance).toBeLessThan(
+      lods[0]!.levels[1]!.distance,
+    );
+    graph.dispose();
+  });
+
+  it('starts with the proxy hidden so the first frame is not drawn twice', () => {
+    // addLevel does not touch visibility and meshes default to visible, so
+    // without an explicit hide both levels would render on top of each other
+    // until the first updateLod call.
+    const graph = buildViewerSceneGraph(heavyScene());
+    const [near, far] = findLods(graph.root)[0]!.levels;
+
+    expect(near!.object.visible).toBe(true);
+    expect(far!.object.visible).toBe(false);
     graph.dispose();
   });
 
@@ -360,6 +380,195 @@ describe('buildViewerSceneGraph level of detail', () => {
     expect(dense.geometry.getAttribute('color')).toBeDefined();
     expect(painted.lodObjectIds.size).toBe(0);
     painted.dispose();
+  });
+});
+
+/**
+ * Reproduce exactly how `ModelViewer` frames a scene, so these tests fail if
+ * either the framing or the LOD policy moves out from under the other. The
+ * first version of the policy used a fixed multiple of the object radius that
+ * happened to sit inside the default framing distance, so the proxy was showing
+ * the instant a model loaded and every shape-only assertion still passed.
+ */
+function framedCamera(
+  projection: 'perspective' | 'orthographic',
+  mesh: SceneMesh,
+  aspect = 16 / 9,
+): THREE.PerspectiveCamera | THREE.OrthographicCamera {
+  const center = boundsCenter(mesh.bounds);
+  const radius = Math.max(boundsRadius(mesh.bounds), 0.001);
+  const far = radius * 100 + 1000;
+  const camera =
+    projection === 'perspective'
+      ? new THREE.PerspectiveCamera(45, aspect, 0.01, far)
+      : new THREE.OrthographicCamera(
+          -radius * 1.2 * aspect,
+          radius * 1.2 * aspect,
+          radius * 1.2,
+          -radius * 1.2,
+          0.01,
+          far,
+        );
+  const [x, y, z] = defaultCameraPosition(center, radius, aspect, projection);
+  camera.position.set(x, y, z);
+  camera.lookAt(center[0], center[1], center[2]);
+  camera.updateMatrixWorld(true);
+  return camera;
+}
+
+describe('ViewerSceneGraph.updateLod', () => {
+  for (const projection of ['perspective', 'orthographic'] as const) {
+    it(`shows full detail at the default ${projection} framing`, () => {
+      // The regression this whole mechanism exists for: at the view the user is
+      // handed on load, the real mesh must be what they see.
+      const scene = heavyScene();
+      const graph = buildViewerSceneGraph(scene);
+      const camera = framedCamera(projection, scene);
+
+      graph.updateLod(camera);
+      const [near, far] = findLods(graph.root)[0]!.levels;
+
+      expect(near!.object.visible).toBe(true);
+      expect(far!.object.visible).toBe(false);
+      graph.dispose();
+    });
+  }
+
+  it('swaps in the proxy once a perspective camera is far enough out', () => {
+    const scene = heavyScene();
+    const graph = buildViewerSceneGraph(scene);
+    const camera = framedCamera('perspective', scene);
+    const center = boundsCenter(scene.bounds);
+
+    // Pull straight back along the view ray, the way dollying out does.
+    const offset = camera.position.clone().sub(new THREE.Vector3(...center));
+    camera.position
+      .copy(new THREE.Vector3(...center))
+      .add(offset.setLength(30));
+    camera.updateMatrixWorld(true);
+
+    graph.updateLod(camera);
+    const [near, far] = findLods(graph.root)[0]!.levels;
+
+    expect(near!.object.visible).toBe(false);
+    expect(far!.object.visible).toBe(true);
+    graph.dispose();
+  });
+
+  it('swaps in the proxy on orthographic zoom alone, without the camera moving', () => {
+    // Under an orthographic projection the camera never moves - `dollyCamera`
+    // only changes zoom - so a rule keyed on camera distance could not react to
+    // the user zooming out at all.
+    const scene = heavyScene();
+    const graph = buildViewerSceneGraph(scene);
+    const camera = framedCamera('orthographic', scene);
+    const before = camera.position.clone();
+
+    camera.zoom = 0.05;
+    camera.updateProjectionMatrix();
+
+    graph.updateLod(camera);
+    const [near, far] = findLods(graph.root)[0]!.levels;
+
+    expect(camera.position.equals(before)).toBe(true);
+    expect(near!.object.visible).toBe(false);
+    expect(far!.object.visible).toBe(true);
+    graph.dispose();
+  });
+
+  it('returns to full detail when the camera comes back', () => {
+    const scene = heavyScene();
+    const graph = buildViewerSceneGraph(scene);
+    const camera = framedCamera('orthographic', scene);
+    const [near, far] = findLods(graph.root)[0]!.levels;
+
+    camera.zoom = 0.05;
+    camera.updateProjectionMatrix();
+    graph.updateLod(camera);
+    expect(far!.object.visible).toBe(true);
+
+    camera.zoom = 1;
+    camera.updateProjectionMatrix();
+    graph.updateLod(camera);
+
+    expect(near!.object.visible).toBe(true);
+    expect(far!.object.visible).toBe(false);
+    graph.dispose();
+  });
+
+  it('sizes an object by its scaled world radius, not its local one', () => {
+    // A build transform can scale an object, and a scaled-up object stays
+    // legible on screen for longer than its local bounds suggest.
+    const scene = heavyScene();
+    const scaled: SceneMesh = {
+      ...scene,
+      objects: scene.objects.map((object) =>
+        object.id === 'dense'
+          ? {
+              ...object,
+              transform: {
+                matrix: [20, 0, 0, 0, 0, 20, 0, 0, 0, 0, 20, 0, 0, 0, 0, 1],
+              },
+            }
+          : object,
+      ),
+    };
+    const camera = framedCamera('perspective', scene);
+    const center = boundsCenter(scene.bounds);
+    const offset = camera.position.clone().sub(new THREE.Vector3(...center));
+    camera.position
+      .copy(new THREE.Vector3(...center))
+      .add(offset.setLength(30));
+    camera.updateMatrixWorld(true);
+
+    // Control: unscaled, this distance selects the proxy.
+    const plain = buildViewerSceneGraph(scene);
+    plain.updateLod(camera);
+    expect(findLods(plain.root)[0]!.levels[1]!.object.visible).toBe(true);
+    plain.dispose();
+
+    const graph = buildViewerSceneGraph(scaled);
+    graph.updateLod(camera);
+    const [near, far] = findLods(graph.root)[0]!.levels;
+
+    expect(near!.object.visible).toBe(true);
+    expect(far!.object.visible).toBe(false);
+    graph.dispose();
+  });
+
+  it('keeps hiding an object while its proxy is the active level', () => {
+    // Visibility, selection and plate switching are all built on per-object
+    // identity, and inserting an LOD node changes the shape of the graph those
+    // features walk. The proxy-active case needs its own coverage.
+    const scene = heavyScene();
+    const graph = buildViewerSceneGraph(scene);
+    const camera = framedCamera('orthographic', scene);
+    camera.zoom = 0.05;
+    camera.updateProjectionMatrix();
+    graph.updateLod(camera);
+
+    const node = graph.root.getObjectByName('Dense')!;
+    expect(findLods(graph.root)[0]!.levels[1]!.object.visible).toBe(true);
+    expect(node.visible).toBe(true);
+
+    graph.setHidden(new Set(['dense']));
+    graph.updateLod(camera);
+
+    expect(node.visible).toBe(false);
+    // The level choice is independent of hiding: re-showing must not strand the
+    // object on whichever level was current when it was hidden.
+    graph.setHidden(new Set());
+    expect(node.visible).toBe(true);
+    graph.dispose();
+  });
+
+  it('does nothing on a scene with no proxies', () => {
+    const graph = buildViewerSceneGraph(multiObjectScene());
+
+    expect(() =>
+      graph.updateLod(framedCamera('perspective', multiObjectScene())),
+    ).not.toThrow();
+    graph.dispose();
   });
 });
 

@@ -2,6 +2,9 @@ import { render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SceneMesh } from '../src/renderer/viewer/types';
+// Type-only: the runtime import is dynamic so the `three` mock can be hoisted
+// into place first, but the level assertions still need the real types.
+import type * as ThreeNs from 'three';
 
 class MockResizeObserver {
   observe(): void {}
@@ -370,6 +373,61 @@ describe('<ModelViewer />', () => {
       rerender(<ModelViewer mesh={simpleMesh('light')} />);
 
       expect(container.querySelector('.viewer-lod-note')).toBeNull();
+      unmount();
+    });
+  });
+
+  describe('detail level selection', () => {
+    /** The LOD node and its two levels out of the scene actually drawn. */
+    function levelsOfLastDraw(
+      THREE: typeof ThreeNs,
+      renderer: MockWebGLRendererLike,
+    ): { near: ThreeNs.Object3D; far: ThreeNs.Object3D } {
+      const calls = renderer.render.mock.calls;
+      const scene = calls[calls.length - 1]![0] as ThreeNs.Object3D;
+      let lod: ThreeNs.LOD | null = null;
+      scene.traverse((node: ThreeNs.Object3D) => {
+        if (node instanceof THREE.LOD) lod = node;
+      });
+      if (!lod) throw new Error('no LOD node in the rendered scene');
+      const levels = (lod as ThreeNs.LOD).levels;
+      return { near: levels[0]!.object, far: levels[1]!.object };
+    }
+
+    it('draws the full-detail mesh at the framing the viewer opens with', async () => {
+      // The defect this guards: the proxy used to be the active level from the
+      // first frame, so a large model never showed its real geometry until the
+      // user zoomed in.
+      const { THREE, ModelViewer, lastRenderer } = await loadHarness();
+      const { unmount } = render(<ModelViewer mesh={heavyMesh()} />);
+      const renderer = lastRenderer();
+      runFrame();
+
+      const { near, far } = levelsOfLastDraw(THREE, renderer);
+
+      expect(near.visible).toBe(true);
+      expect(far.visible).toBe(false);
+      unmount();
+    });
+
+    it('switches to the proxy once the camera pulls far enough out', async () => {
+      const { THREE, ModelViewer, lastRenderer, lastControls } =
+        await loadHarness();
+      const { unmount } = render(<ModelViewer mesh={heavyMesh()} />);
+      const renderer = lastRenderer();
+      runFrame();
+      const camera = renderer.render.mock.calls[0]![1] as ThreeNs.Camera;
+
+      camera.position.set(400, 400, 400);
+      camera.updateMatrixWorld(true);
+      // The same event a drag or a dolly fires, which is what flags the frame.
+      lastControls().dispatchEvent({ type: 'change' });
+      runFrame();
+
+      const { near, far } = levelsOfLastDraw(THREE, renderer);
+
+      expect(near.visible).toBe(false);
+      expect(far.visible).toBe(true);
       unmount();
     });
   });

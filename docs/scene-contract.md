@@ -130,6 +130,26 @@ pure functions over the DTO — no `THREE` renderer state — and
   material would then demand a colour buffer the proxy cannot supply and draw
   black. The guard keys off the geometry's `color` attribute rather than the DTO
   field, so it tracks what the material will actually require.
+- The switch is on **apparent size, not camera distance**. `updateLod(camera)`
+  picks a level for every proxied object before each draw, comparing the
+  object's world-space bounding sphere against the viewport half-height; the
+  proxy takes over below **15% of half-height**. `THREE.LOD`'s own selection is
+  switched off (`autoUpdate = false`) because it keys on
+  `distance / camera.zoom`, and under an orthographic projection the camera
+  never moves — `dollyCamera` only changes zoom — so distance describes nothing
+  the user is doing. Working the same threshold through both projections gives
+  screen coverages that differ by 2.4×, so no single distance constant serves
+  both.
+- Expressing the policy as screen coverage rather than as a multiple of the
+  object's radius is a **correctness requirement, not a preference**. The first
+  version used a fixed 3 radii, chosen without reference to `defaultCameraPosition`
+  — which offsets on all three axes, so the true distance is `× √3` — and to
+  `fitPerspectiveDistance`'s `padding = 1.15`. That put the default framing at
+  ~6.2 radii, on the far side of the switch, so the proxy was the visible level
+  from the moment a model loaded. Reading the live frustum means changing either
+  function cannot silently decalibrate the policy again.
+- Tests must assert **which level is visible**, not just that an LOD node exists.
+  A full suite of shape-only assertions stayed green through the defect above.
 
 `ModelViewer` draws on demand rather than every frame: it renders when the
 controls dispatch `change` (which covers dragging, damping settling, and the

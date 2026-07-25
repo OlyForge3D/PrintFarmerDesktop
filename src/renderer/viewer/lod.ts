@@ -43,14 +43,43 @@ export const LOD_MIN_SCENE_TRIANGLES = 150_000;
 export const LOD_GRID_RESOLUTION = 48;
 
 /**
- * Distance at which the proxy takes over, as a multiple of the object's
- * bounding-sphere radius.
+ * Share of the viewport half-height an object's bounding sphere may cover
+ * before the proxy takes over.
  *
- * At three radii the object spans a small enough part of the viewport that
- * collapsed detail is not resolvable, and the switch happens outside the range
- * where a user is inspecting a part closely.
+ * The thing that decides whether clustered detail is visible is how much of the
+ * screen the object occupies, so that is what the policy is expressed in. At
+ * 15% of half-height the object is a small figure in the view - roughly a
+ * fifteenth of the window's height - and a 48-cell grid is well below one pixel
+ * of error.
+ *
+ * Stating it as screen coverage rather than as a multiple of the object's
+ * radius is deliberate. A distance threshold has to be chosen against whatever
+ * distance the camera is actually placed at, and that placement lives in
+ * `defaultCameraPosition` / `applyOrthoFrustum`, two functions away. The first
+ * version of this policy used a fixed 3 radii, which sat *inside* the default
+ * framing distance of ~6.2 radii, so the proxy was showing the moment a model
+ * loaded. Reading the frustum instead of assuming it cannot drift that way.
  */
-export const LOD_SWITCH_RADII = 3;
+export const LOD_SWITCH_SCREEN_FRACTION = 0.15;
+
+/**
+ * The projection facts needed to turn a distance into an apparent size.
+ *
+ * Both variants fold in the camera's zoom, so a caller only has to supply what
+ * it reads off the live camera. Keeping this structural rather than taking a
+ * `THREE.Camera` is what lets the policy be exercised as plain arithmetic.
+ */
+export type LodCamera =
+  | {
+      readonly kind: 'perspective';
+      /** tan(vertical fov / 2), divided by zoom. */
+      readonly halfFovTangent: number;
+    }
+  | {
+      readonly kind: 'orthographic';
+      /** Half the frustum height in world units, divided by zoom. */
+      readonly halfHeight: number;
+    };
 
 /** Triangles in a mesh whose indices come in triples. */
 export function triangleCount(mesh: SceneObjectMesh): number {
@@ -102,11 +131,46 @@ export function boundsRadius(mesh: SceneObjectMesh): number {
   );
 }
 
-/** World distance at which a mesh's proxy should replace it. */
-export function lodSwitchDistance(mesh: SceneObjectMesh): number {
-  // A degenerate or zero-size object must not switch at distance 0, which
-  // three.js reads as "this level is always active".
-  return Math.max(boundsRadius(mesh) * LOD_SWITCH_RADII, Number.MIN_VALUE);
+/**
+ * Fraction of the viewport half-height covered by a sphere of `radius` whose
+ * centre is `distance` from the camera.
+ *
+ * Under an orthographic projection distance does not affect apparent size at
+ * all - only the frustum height and zoom do - which is why this cannot be
+ * written as a single distance comparison shared by both projections.
+ */
+export function apparentRadiusFraction(
+  camera: LodCamera,
+  distance: number,
+  radius: number,
+): number {
+  if (!(radius > 0)) return 0;
+  const halfHeight =
+    camera.kind === 'orthographic'
+      ? camera.halfHeight
+      : Math.max(0, distance) * camera.halfFovTangent;
+  // A camera behind or exactly at the object, or a collapsed frustum, gives no
+  // usable scale. Report the object as filling the view so the full-detail
+  // level is kept: showing too much detail is a performance cost, showing too
+  // little is a visible defect.
+  if (!(halfHeight > 0) || !Number.isFinite(halfHeight)) return Infinity;
+  return radius / halfHeight;
+}
+
+/** Whether an object at this apparent size should be drawn as its proxy. */
+export function shouldUseLodProxy(
+  camera: LodCamera,
+  distance: number,
+  radius: number,
+): boolean {
+  // A sphere with no radius covers nothing, which would read as "far away" and
+  // swap in a proxy for an object there is no proxy to gain anything from.
+  // Anything we cannot size stays at full detail.
+  if (!(radius > 0) || !Number.isFinite(distance)) return false;
+  return (
+    apparentRadiusFraction(camera, distance, radius) <
+    LOD_SWITCH_SCREEN_FRACTION
+  );
 }
 
 /**
