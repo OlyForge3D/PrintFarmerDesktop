@@ -60,6 +60,11 @@ export interface SidecarClientOptions {
   maxConsecutiveFailures?: number;
 }
 
+/** Private main-process-only native target reference. Never expose this to IPC. */
+export type RetargetTargetReference =
+  | { kind: 'bundled'; targetProfileId: string }
+  | { kind: 'imported'; path: string; expectedSha256: string };
+
 export type SidecarSyncEntityType =
   'ModelCollection' | 'ModelCollectionMembership' | 'Tag';
 export type SidecarSyncOperation = 'Create' | 'Update' | 'Delete';
@@ -219,6 +224,57 @@ export class SidecarClient {
   /** Parse a model file into a normalized scene mesh (raw wire object). */
   async loadScene(filePath: string): Promise<unknown> {
     return this.request('loadScene', { path: filePath });
+  }
+
+  async listRetargetProfiles(): Promise<unknown> {
+    return this.request('listRetargetProfiles', {});
+  }
+
+  async inspectRetargetProfile(profileId: string): Promise<unknown> {
+    return this.request('inspectRetargetProfile', { profileId });
+  }
+
+  async inspectImportedRetargetProfile(path: string): Promise<unknown> {
+    return this.request('inspectImportedRetargetProfile', { path });
+  }
+
+  async preflightRetarget(
+    sourcePath: string,
+    target: RetargetTargetReference,
+    objectExclusion: boolean,
+  ): Promise<unknown> {
+    return this.request('preflightRetarget', {
+      sourcePath,
+      target,
+      objectExclusion,
+    });
+  }
+
+  async buildRetarget(
+    sourcePath: string,
+    outputPath: string,
+    target: RetargetTargetReference,
+    objectExclusion: boolean,
+  ): Promise<unknown> {
+    return this.request(
+      'buildRetarget',
+      { sourcePath, outputPath, target, objectExclusion },
+      { timeoutMs: this.mutationTimeoutMs, terminateOnTimeout: true },
+    );
+  }
+
+  async validateRetargetOutput(
+    sourcePath: string,
+    outputPath: string,
+    target: RetargetTargetReference,
+    objectExclusion: boolean,
+  ): Promise<unknown> {
+    return this.request('validateRetargetOutput', {
+      sourcePath,
+      outputPath,
+      target,
+      objectExclusion,
+    });
   }
 
   /** Extract slicer-project (vendor) metadata from a 3MF file (raw wire object). */
@@ -926,6 +982,23 @@ export function resolveCatalogDbPath(): string | undefined {
   return dbPath && dbPath.length > 0 ? dbPath : undefined;
 }
 
+export function resolveTargetProfilesPath(): string {
+  const isUnpackaged = Boolean(
+    (process as NodeJS.Process & { defaultApp?: boolean }).defaultApp,
+  );
+  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string })
+    .resourcesPath;
+  if (!isUnpackaged && resourcesPath) {
+    return path.join(resourcesPath, 'target-profiles', 'snapmaker-u1');
+  }
+  return path.resolve(
+    process.cwd(),
+    'resources',
+    'target-profiles',
+    'snapmaker-u1',
+  );
+}
+
 /**
  * Spawn the real sidecar process and adapt its stdio into a
  * {@link SidecarChannel}. stdout is decoded as UTF-8 and split on newlines;
@@ -934,7 +1007,11 @@ export function resolveCatalogDbPath(): string | undefined {
 export function spawnSidecarChannel(binaryPath?: string): SidecarChannel {
   const executable = binaryPath ?? resolveSidecarPath();
   const dbPath = resolveCatalogDbPath();
-  const args = dbPath ? ['--catalog-db', dbPath] : [];
+  const args = [
+    ...(dbPath ? ['--catalog-db', dbPath] : []),
+    '--target-profiles-dir',
+    resolveTargetProfilesPath(),
+  ];
   const child = spawn(executable, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,

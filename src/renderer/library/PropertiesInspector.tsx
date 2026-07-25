@@ -30,8 +30,10 @@ export interface PropertiesInspectorProps {
   collectionMembership: Set<string>;
   organizationError: string | null;
   previewDisabled: boolean;
+  retargetEligible?: boolean;
   onToggleFavorite: () => void;
   onPreview: () => void;
+  onRetarget?: () => void;
   onAddTag: (name: string) => void;
   onRemoveTag: (tagId: string) => void;
   onToggleCollection: (collectionId: string) => void;
@@ -70,8 +72,10 @@ function SelectedModelInspector({
   collectionMembership,
   organizationError,
   previewDisabled,
+  retargetEligible = false,
   onToggleFavorite,
   onPreview,
+  onRetarget = () => undefined,
   onAddTag,
   onRemoveTag,
   onToggleCollection,
@@ -113,6 +117,19 @@ function SelectedModelInspector({
           onClick={onToggleFavorite}
         >
           <Icon name="star" />
+        </button>
+        <button
+          type="button"
+          className="inspector-preview-button"
+          onClick={onRetarget}
+          disabled={!retargetEligible || previewDisabled}
+          title={
+            retargetEligible
+              ? 'Prepare this editable 3MF for Snapmaker U1'
+              : 'Available cataloged editable 3MF required'
+          }
+        >
+          <span>Prepare for Snapmaker U1</span>
         </button>
         <button
           type="button"

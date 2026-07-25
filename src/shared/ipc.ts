@@ -53,6 +53,13 @@ export const IpcChannel = {
   RemoveUploadJob: 'uploadJobs:remove',
   ResetUploadJobs: 'uploadJobs:reset',
   ResetApprovedRoots: 'catalog:resetApprovedRoots',
+  RetargetListProfiles: 'retarget:listProfiles',
+  RetargetImportProfile: 'retarget:importProfile',
+  RetargetPreflight: 'retarget:preflight',
+  RetargetBuild: 'retarget:build',
+  RetargetLoadScene: 'retarget:loadScene',
+  RetargetSaveAs: 'retarget:saveAs',
+  RetargetDispose: 'retarget:dispose',
 } as const;
 
 export type IpcChannel = (typeof IpcChannel)[keyof typeof IpcChannel];
@@ -873,6 +880,367 @@ export const ResetApprovedRootsResponse = z
 export type ResetApprovedRootsResponse = z.infer<
   typeof ResetApprovedRootsResponse
 >;
+// --- retarget --------------------------------------------------------------
+
+const RetargetToken = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+const Sha256 = z.string().regex(/^[a-f0-9]{64}$/);
+const BoundedText = z.string().max(2048);
+const boundedRecord = <T extends z.ZodTypeAny>(value: T, maximum: number) =>
+  z.record(value).superRefine((record, context) => {
+    if (Object.keys(record).length > maximum) {
+      context.addIssue({
+        code: z.ZodIssueCode.too_big,
+        maximum,
+        type: 'array',
+        inclusive: true,
+        message: 'Too many record entries.',
+      });
+    }
+  });
+const IssueCode = z.enum([
+  'sourceNotFound',
+  'targetNotFound',
+  'outputPathConflict',
+  'invalidArchive',
+  'archiveLimitExceeded',
+  'unsafeArchivePath',
+  'externalRelationship',
+  'missingModel',
+  'emptyBuild',
+  'geometryOnly',
+  'preSlicedOnly',
+  'unsupportedPrusa',
+  'unsupportedCura',
+  'unsupportedSlicer',
+  'unknownOrcaFamilyProducer',
+  'missingProjectSettings',
+  'invalidProjectSettings',
+  'missingModelSettings',
+  'invalidModelSettings',
+  'incompleteProject',
+  'tooManyFilamentSlots',
+  'unsupportedMaterial',
+  'unsafeSettingValue',
+  'profileNotFound',
+  'profileManifestInvalid',
+  'profileHashMismatch',
+  'profileTypeMismatch',
+  'profileMissingParent',
+  'profileInheritanceCycle',
+  'profileValueInvalid',
+  'targetSourceConflict',
+  'staleSliceArtifactsRemoved',
+  'customGcodeRemoved',
+  'digitalSignaturesRemoved',
+  'unsupportedSourceSettingsOmitted',
+  'paintMetadataPreservedUnverified',
+  'profileRecommendationAmbiguous',
+  'sourceSettingReplaced',
+  'settingClamped',
+  'filamentProfileMapped',
+  'sceneIncompatible',
+  'sourceChanged',
+  'outputValidationFailed',
+  'io',
+]);
+const RetargetErrorCode = z.enum([
+  'invalidRequest',
+  'sidecarUnavailable',
+  'profileStoreCorrupt',
+  'profileImportFailed',
+  'profileNotFound',
+  'artifactNotFound',
+  'artifactExpired',
+  'artifactForbidden',
+  'artifactBusy',
+  'sourceChanged',
+  'saveSourceConflict',
+  'saveDestinationExists',
+  'saveFailed',
+  'internalError',
+]);
+const RetargetIssue = z
+  .object({
+    code: IssueCode,
+    severity: z.enum(['blocker', 'warning', 'error']),
+    title: BoundedText,
+    message: BoundedText,
+    action: BoundedText,
+    part: BoundedText.nullable(),
+    setting: BoundedText.nullable(),
+  })
+  .strict();
+const RetargetFailure = z
+  .object({
+    domain: z.enum(['native', 'electron']),
+    code: z.union([IssueCode, RetargetErrorCode]),
+    message: BoundedText,
+    action: BoundedText,
+    part: BoundedText.nullable(),
+    setting: BoundedText.nullable(),
+  })
+  .strict();
+const RetargetProfile = z
+  .object({
+    id: z.string().min(1).max(512),
+    source: z.enum(['bundled', 'imported']),
+    displayName: z.string().min(1).max(512),
+    processName: z.string().min(1).max(512),
+    machineName: z.string().min(1).max(512),
+    compatibleFilaments: z.array(z.string().min(1).max(512)).max(100),
+    layerHeight: z.number().finite().positive().max(10),
+    category: z.string().max(128).nullable(),
+    bundleCommit: z.string().max(128).nullable(),
+    settingCount: z.number().int().nonnegative().max(10_000),
+    settingsSummary: boundedRecord(
+      z.union([
+        z.string().max(1024),
+        z.number().finite(),
+        z.boolean(),
+        z.array(z.string().max(1024)).max(100),
+      ]),
+      10_000,
+    ),
+    importedAt: z.number().int().nonnegative().nullable(),
+    fingerprint: Sha256,
+  })
+  .strict();
+export type RetargetProfile = z.infer<typeof RetargetProfile>;
+const RetargetCatalog = z
+  .object({
+    profiles: z.array(RetargetProfile).max(200),
+    warnings: z.array(RetargetFailure).max(100),
+  })
+  .strict();
+const RetargetChange = z
+  .object({
+    code: IssueCode,
+    message: BoundedText,
+    setting: BoundedText.nullable(),
+    before: BoundedText.nullable(),
+    after: BoundedText.nullable(),
+  })
+  .strict();
+const RetargetSource = z
+  .object({
+    fileName: z.string().min(1).max(512),
+    byteSize: z.number().int().nonnegative(),
+    sha256: Sha256,
+    producer: BoundedText,
+    machineId: BoundedText.nullable(),
+    processId: BoundedText.nullable(),
+    layerHeight: z.number().finite().nullable(),
+    objectCount: z.number().int().nonnegative().max(100_000),
+    buildItemCount: z.number().int().nonnegative().max(100_000),
+    plateCount: z.number().int().nonnegative().max(1_000),
+    materials: z.array(z.string().max(512)).max(100),
+    colors: z.array(z.string().max(512)).max(100),
+  })
+  .strict();
+const RetargetPreflightReport = z
+  .object({
+    accepted: z.boolean(),
+    source: RetargetSource,
+    recommendation: z
+      .object({
+        recommended: z
+          .object({
+            profileId: z.string().max(512),
+            displayName: BoundedText,
+            score: z.number().finite(),
+            rationale: BoundedText,
+          })
+          .strict(),
+        alternatives: z
+          .array(
+            z
+              .object({
+                profileId: z.string().max(512),
+                displayName: BoundedText,
+                score: z.number().finite(),
+                rationale: BoundedText,
+              })
+              .strict(),
+          )
+          .max(100),
+      })
+      .strict()
+      .nullable(),
+    blockers: z.array(RetargetIssue).max(100),
+    warnings: z.array(RetargetIssue).max(100),
+    proposedChanges: boundedRecord(z.array(RetargetChange).max(20_000), 100),
+  })
+  .strict();
+const RetargetValidation = z
+  .object({
+    valid: z.boolean(),
+    sourceSha256: Sha256,
+    outputSha256: Sha256,
+    sourcePreserved: z.boolean(),
+    sceneCompatibility: z
+      .object({
+        compatible: z.boolean(),
+        differences: z.array(BoundedText).max(1000),
+      })
+      .strict(),
+    invariants: boundedRecord(z.boolean(), 1000),
+    warnings: z.array(RetargetIssue).max(100),
+    errors: z.array(RetargetIssue).max(100),
+  })
+  .strict();
+const RetargetBuildReport = z
+  .object({
+    sourceSha256: Sha256,
+    outputSha256: Sha256,
+    outputFileName: z.string().min(1).max(512),
+    targetProfileId: z.string().min(1).max(512),
+    removedPartCount: z.number().int().nonnegative().max(100_000),
+    preservedPartCount: z.number().int().nonnegative().max(100_000),
+    appliedChanges: boundedRecord(z.array(RetargetChange).max(20_000), 100),
+    warnings: z.array(RetargetIssue).max(100),
+    validation: RetargetValidation,
+  })
+  .strict();
+const RetargetOutcome = <T extends z.ZodTypeAny>(value: T) =>
+  z.discriminatedUnion('status', [
+    z.object({ status: z.literal('ok'), value }).strict(),
+    z
+      .object({
+        status: z.literal('blocked'),
+        blockers: z.array(RetargetIssue).max(100),
+        warnings: z.array(RetargetIssue).max(100),
+        value: value.nullable(),
+      })
+      .strict(),
+    z.object({ status: z.literal('error'), error: RetargetFailure }).strict(),
+  ]);
+
+export const RetargetListProfilesRequest = z.void();
+export const RetargetListProfilesResponse = RetargetOutcome(RetargetCatalog);
+export type RetargetListProfilesResponse = z.infer<
+  typeof RetargetListProfilesResponse
+>;
+export const RetargetImportProfileRequest = z.void();
+export const RetargetImportProfileResponse = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('canceled') }).strict(),
+  z
+    .object({
+      status: z.literal('ok'),
+      profile: RetargetProfile,
+      duplicate: z.boolean(),
+    })
+    .strict(),
+  z.object({ status: z.literal('error'), error: RetargetFailure }).strict(),
+]);
+export type RetargetImportProfileResponse = z.infer<
+  typeof RetargetImportProfileResponse
+>;
+export const RetargetPreflightRequest = z
+  .object({
+    modelHash: Sha256,
+    rootId: z.string().min(1).max(256),
+    profileId: z.string().min(1).max(512),
+    objectExclusion: z.boolean(),
+  })
+  .strict();
+export type RetargetPreflightRequest = z.infer<typeof RetargetPreflightRequest>;
+export const RetargetPreflightResponse = RetargetOutcome(
+  z.object({ token: RetargetToken, report: RetargetPreflightReport }).strict(),
+);
+export type RetargetPreflightResponse = z.infer<
+  typeof RetargetPreflightResponse
+>;
+export const RetargetBuildRequest = z
+  .object({
+    token: RetargetToken,
+    profileId: z.string().min(1).max(512),
+    objectExclusion: z.boolean(),
+  })
+  .strict();
+export type RetargetBuildRequest = z.infer<typeof RetargetBuildRequest>;
+export const RetargetBuildResponse = RetargetOutcome(RetargetBuildReport);
+export type RetargetBuildResponse = z.infer<typeof RetargetBuildResponse>;
+export const RetargetLoadSceneRequest = z
+  .object({ token: RetargetToken, source: z.enum(['source', 'output']) })
+  .strict();
+export type RetargetLoadSceneRequest = z.infer<typeof RetargetLoadSceneRequest>;
+const RetargetSceneMesh = SceneMesh.strict().superRefine((scene, context) => {
+  const limits: Array<[number, number, string]> = [
+    [scene.positions.length, 30_000_000, 'positions'],
+    [scene.indices.length, 30_000_000, 'indices'],
+    [scene.faceColors?.length ?? 0, 30_000_000, 'faceColors'],
+    [scene.parts.length, 20_000, 'parts'],
+    [scene.objects.length, 100_000, 'objects'],
+    [scene.rootObjectIds.length, 100_000, 'rootObjectIds'],
+    [scene.plates.length, 1_000, 'plates'],
+  ];
+  for (const [actual, maximum, field] of limits) {
+    if (actual > maximum) {
+      context.addIssue({
+        code: z.ZodIssueCode.too_big,
+        maximum,
+        type: 'array',
+        inclusive: true,
+        path: [field],
+        message: `${field} exceeds the retarget scene limit.`,
+      });
+    }
+  }
+  for (const [index, object] of scene.objects.entries()) {
+    if (object.children.length > 100_000) {
+      context.addIssue({
+        code: z.ZodIssueCode.too_big,
+        maximum: 100_000,
+        type: 'array',
+        inclusive: true,
+        path: ['objects', index, 'children'],
+        message: 'Scene object children exceed the retarget scene limit.',
+      });
+    }
+    if (
+      object.mesh &&
+      (object.mesh.positions.length > 30_000_000 ||
+        object.mesh.indices.length > 30_000_000)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.too_big,
+        maximum: 30_000_000,
+        type: 'array',
+        inclusive: true,
+        path: ['objects', index, 'mesh'],
+        message: 'Scene object mesh exceeds the retarget scene limit.',
+      });
+    }
+  }
+});
+export const RetargetLoadSceneResponse = RetargetOutcome(RetargetSceneMesh);
+export type RetargetLoadSceneResponse = z.infer<
+  typeof RetargetLoadSceneResponse
+>;
+export const RetargetSaveAsRequest = z
+  .object({ token: RetargetToken })
+  .strict();
+export type RetargetSaveAsRequest = z.infer<typeof RetargetSaveAsRequest>;
+export const RetargetSaveAsResponse = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('canceled') }).strict(),
+  z
+    .object({
+      status: z.literal('ok'),
+      fileName: z.string().min(1).max(512),
+      refreshWarning: RetargetFailure.nullable(),
+    })
+    .strict(),
+  z.object({ status: z.literal('error'), error: RetargetFailure }).strict(),
+]);
+export type RetargetSaveAsResponse = z.infer<typeof RetargetSaveAsResponse>;
+export const RetargetDisposeRequest = z
+  .object({ token: RetargetToken })
+  .strict();
+export type RetargetDisposeRequest = z.infer<typeof RetargetDisposeRequest>;
+export const RetargetDisposeResponse = z
+  .object({ disposed: z.boolean() })
+  .strict();
+export type RetargetDisposeResponse = z.infer<typeof RetargetDisposeResponse>;
 
 /**
  * Registry mapping each channel to its request/response schemas. Used by both
@@ -1039,6 +1407,34 @@ export const ipcSchemas = {
     request: ResetApprovedRootsRequest,
     response: ResetApprovedRootsResponse,
   },
+  [IpcChannel.RetargetListProfiles]: {
+    request: RetargetListProfilesRequest,
+    response: RetargetListProfilesResponse,
+  },
+  [IpcChannel.RetargetImportProfile]: {
+    request: RetargetImportProfileRequest,
+    response: RetargetImportProfileResponse,
+  },
+  [IpcChannel.RetargetPreflight]: {
+    request: RetargetPreflightRequest,
+    response: RetargetPreflightResponse,
+  },
+  [IpcChannel.RetargetBuild]: {
+    request: RetargetBuildRequest,
+    response: RetargetBuildResponse,
+  },
+  [IpcChannel.RetargetLoadScene]: {
+    request: RetargetLoadSceneRequest,
+    response: RetargetLoadSceneResponse,
+  },
+  [IpcChannel.RetargetSaveAs]: {
+    request: RetargetSaveAsRequest,
+    response: RetargetSaveAsResponse,
+  },
+  [IpcChannel.RetargetDispose]: {
+    request: RetargetDisposeRequest,
+    response: RetargetDisposeResponse,
+  },
 } as const;
 
 export type IpcSchemas = typeof ipcSchemas;
@@ -1115,4 +1511,19 @@ export interface PrintFarmerApi {
   removeUploadJob(request: UploadJobRequest): Promise<RemoveUploadJobResponse>;
   resetUploadJobs(): Promise<ResetUploadJobsResponse>;
   resetApprovedRoots(): Promise<ResetApprovedRootsResponse>;
+  listRetargetProfiles(): Promise<RetargetListProfilesResponse>;
+  importRetargetProfile(): Promise<RetargetImportProfileResponse>;
+  preflightRetarget(
+    request: RetargetPreflightRequest,
+  ): Promise<RetargetPreflightResponse>;
+  buildRetarget(request: RetargetBuildRequest): Promise<RetargetBuildResponse>;
+  loadRetargetScene(
+    request: RetargetLoadSceneRequest,
+  ): Promise<RetargetLoadSceneResponse>;
+  saveRetargetAs(
+    request: RetargetSaveAsRequest,
+  ): Promise<RetargetSaveAsResponse>;
+  disposeRetarget(
+    request: RetargetDisposeRequest,
+  ): Promise<RetargetDisposeResponse>;
 }
