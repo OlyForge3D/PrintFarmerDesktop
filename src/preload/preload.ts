@@ -58,6 +58,19 @@ import {
   type RemoveUploadJobResponse,
   type ResetUploadJobsResponse,
   type ResetApprovedRootsResponse,
+  type RetargetListProfilesResponse,
+  type RetargetImportProfileResponse,
+  type RetargetPreflightRequest,
+  type RetargetPreflightResponse,
+  type RetargetBuildRequest,
+  type RetargetBuildResponse,
+  type RetargetLoadSceneRequest,
+  type RetargetLoadSceneResponse,
+  type RetargetSaveAsRequest,
+  type RetargetSaveAsResponse,
+  type RetargetDisposeRequest,
+  type RetargetDisposeResponse,
+  ipcSchemas,
 } from '@shared/ipc';
 
 /**
@@ -285,6 +298,44 @@ const api: PrintFarmerApi = {
     ipcRenderer.invoke(
       IpcChannel.ResetApprovedRoots,
     ) as Promise<ResetApprovedRootsResponse>,
+  listRetargetProfiles: async (): Promise<RetargetListProfilesResponse> =>
+    ipcSchemas[IpcChannel.RetargetListProfiles].response.parse(
+      await ipcRenderer.invoke(IpcChannel.RetargetListProfiles),
+    ),
+  importRetargetProfile: async (): Promise<RetargetImportProfileResponse> =>
+    ipcSchemas[IpcChannel.RetargetImportProfile].response.parse(
+      await ipcRenderer.invoke(IpcChannel.RetargetImportProfile),
+    ),
+  preflightRetarget: async (
+    request: RetargetPreflightRequest,
+  ): Promise<RetargetPreflightResponse> =>
+    ipcSchemas[IpcChannel.RetargetPreflight].response.parse(
+      await ipcRenderer.invoke(IpcChannel.RetargetPreflight, request),
+    ),
+  buildRetarget: async (
+    request: RetargetBuildRequest,
+  ): Promise<RetargetBuildResponse> =>
+    ipcSchemas[IpcChannel.RetargetBuild].response.parse(
+      await ipcRenderer.invoke(IpcChannel.RetargetBuild, request),
+    ),
+  loadRetargetScene: async (
+    request: RetargetLoadSceneRequest,
+  ): Promise<RetargetLoadSceneResponse> =>
+    ipcSchemas[IpcChannel.RetargetLoadScene].response.parse(
+      await ipcRenderer.invoke(IpcChannel.RetargetLoadScene, request),
+    ),
+  saveRetargetAs: async (
+    request: RetargetSaveAsRequest,
+  ): Promise<RetargetSaveAsResponse> =>
+    ipcSchemas[IpcChannel.RetargetSaveAs].response.parse(
+      await ipcRenderer.invoke(IpcChannel.RetargetSaveAs, request),
+    ),
+  disposeRetarget: async (
+    request: RetargetDisposeRequest,
+  ): Promise<RetargetDisposeResponse> =>
+    ipcSchemas[IpcChannel.RetargetDispose].response.parse(
+      await ipcRenderer.invoke(IpcChannel.RetargetDispose, request),
+    ),
 };
 
 contextBridge.exposeInMainWorld('printFarmer', api);

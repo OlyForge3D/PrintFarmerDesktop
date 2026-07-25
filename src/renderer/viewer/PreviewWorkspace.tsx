@@ -24,6 +24,8 @@ export interface PreviewWorkspaceProps {
   onReset: () => void;
   onToggleObject: (id: string) => void;
   onToggleAllObjects: (visible: boolean) => void;
+  retargetEligible?: boolean;
+  onRetarget?: () => void;
 }
 
 export function PreviewWorkspace({
@@ -43,6 +45,8 @@ export function PreviewWorkspace({
   onReset,
   onToggleObject,
   onToggleAllObjects,
+  retargetEligible = false,
+  onRetarget = () => undefined,
 }: PreviewWorkspaceProps): React.JSX.Element {
   const dialogRef = useRef<HTMLElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
@@ -141,6 +145,13 @@ export function PreviewWorkspace({
             <button type="button" onClick={onReset} disabled={!mesh}>
               <Icon name="reset" />
               Reset
+            </button>
+            <button
+              type="button"
+              onClick={onRetarget}
+              disabled={!retargetEligible}
+            >
+              Prepare for Snapmaker U1
             </button>
           </div>
         </header>

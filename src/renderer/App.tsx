@@ -41,6 +41,8 @@ import { Icon } from './ui/Icon';
 import appIconUrl from '../../assets/icon.png';
 import { ServerProfilesDialog } from './serverProfiles/ServerProfilesDialog';
 import { UploadQueueDialog } from './uploads/UploadQueueDialog';
+import { RetargetWorkflow } from './retarget/RetargetWorkflow';
+import type { RetargetTarget } from './retarget/useRetargetWorkflow';
 
 interface PreviewTarget {
   path: string;
@@ -56,7 +58,9 @@ type ModalOwner =
   | 'import'
   | 'previewPreparation'
   | 'preview'
-  | 'uploadQueue';
+  | 'uploadQueue'
+  | 'retargetPreparation'
+  | 'retarget';
 
 export function App(): React.JSX.Element {
   const [info, setInfo] = useState<AppInfoResponse | null>(null);
@@ -84,6 +88,10 @@ export function App(): React.JSX.Element {
   const [uploadError, setUploadError] = useState<string | null>(null);
 
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [retargetTarget, setRetargetTarget] = useState<RetargetTarget | null>(
+    null,
+  );
+  const [returnToPreview, setReturnToPreview] = useState(false);
   const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(
     null,
   );
@@ -105,6 +113,7 @@ export function App(): React.JSX.Element {
     () => new Set(),
   );
   const previewReturnFocusRef = useRef<HTMLElement | null>(null);
+  const retargetReturnFocusRef = useRef<HTMLElement | null>(null);
   const importReturnFocusRef = useRef<HTMLElement | null>(null);
   const profileReturnFocusRef = useRef<HTMLElement | null>(null);
   const uploadReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -184,22 +193,26 @@ export function App(): React.JSX.Element {
     !onboardingDismissed &&
     library.status !== 'loading' &&
     !profilesOpen &&
+    !retargetTarget &&
     !previewOpen &&
     !uploadQueueOpen &&
     !library.importDraft &&
     !importPreparing &&
     library.sourceRoots.length === 0;
+  const retargetOpen = retargetTarget !== null;
   const modalOpen =
     onboardingOpen ||
     previewOpen ||
     library.importDraft !== null ||
     profilesOpen ||
-    uploadQueueOpen;
+    uploadQueueOpen ||
+    retargetOpen;
   const backgroundExcluded =
     previewOpen ||
     library.importDraft !== null ||
     profilesOpen ||
-    uploadQueueOpen;
+    uploadQueueOpen ||
+    retargetOpen;
   const prepareFolderImport = library.addFolder;
   const dismissFolderImport = library.cancelImport;
   const commitFolderImport = library.confirmImport;
@@ -212,6 +225,64 @@ export function App(): React.JSX.Element {
         : null,
     [library.models, selectedHash],
   );
+  const retargetIdentity = useCallback(
+    (model: LogicalModel): RetargetTarget | null => {
+      const location = model.locations.find((item) => item.available);
+      return model.format === 'threeMf' && location
+        ? {
+            modelHash: model.hash,
+            rootId: location.rootId,
+            name: modelDisplayName(model),
+          }
+        : null;
+    },
+    [],
+  );
+  const openRetarget = useCallback(
+    (model: LogicalModel, fromPreview = false): void => {
+      const target = retargetIdentity(model);
+      if (!target) return;
+      retargetReturnFocusRef.current =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+      if (fromPreview) {
+        setPreviewOpen(false);
+        setReturnToPreview(true);
+        setModalOwner('retarget');
+      } else {
+        if (reserveModal('retargetPreparation') === null) return;
+        setModalOwner('retarget');
+        setReturnToPreview(false);
+      }
+      setRetargetTarget(target);
+    },
+    [reserveModal, retargetIdentity, setModalOwner],
+  );
+  const closeRetarget = useCallback((): void => {
+    setRetargetTarget(null);
+    if (returnToPreview) {
+      setModalOwner('preview');
+      setPreviewOpen(true);
+      setReturnToPreview(false);
+      setTimeout(() =>
+        document
+          .querySelector<HTMLElement>('.preview-toolbar button:last-child')
+          ?.focus(),
+      );
+    } else {
+      releaseModal('retarget');
+      setTimeout(() => {
+        const fallback = document.querySelector<HTMLElement>(
+          '.inspector-preview-button:last-of-type',
+        );
+        (retargetReturnFocusRef.current?.isConnected
+          ? retargetReturnFocusRef.current
+          : fallback
+        )?.focus();
+      });
+    }
+  }, [releaseModal, returnToPreview, setModalOwner]);
   const selectedPath =
     selectedModel && isAvailable(selectedModel)
       ? preferredPath(selectedModel)
@@ -1207,6 +1278,9 @@ export function App(): React.JSX.Element {
           collectionMembership={modelCollections.membership}
           organizationError={organizationError}
           previewDisabled={workspaceActionsDisabled}
+          retargetEligible={
+            selectedModel ? retargetIdentity(selectedModel) !== null : false
+          }
           onToggleFavorite={() => {
             if (selectedModel) {
               void toggleFavorite(selectedModel.hash);
@@ -1216,6 +1290,9 @@ export function App(): React.JSX.Element {
             if (selectedModel) {
               previewModel(selectedModel);
             }
+          }}
+          onRetarget={() => {
+            if (selectedModel) openRetarget(selectedModel);
           }}
           onAddTag={(name) => {
             void modelTags.add(name);
@@ -1301,7 +1378,21 @@ export function App(): React.JSX.Element {
           onReset={() => setResetToken((value) => value + 1)}
           onToggleObject={toggleObject}
           onToggleAllObjects={toggleAllObjects}
+          retargetEligible={
+            previewTarget.hash !== null &&
+            previewTarget.hash === selectedModel?.hash &&
+            selectedModel
+              ? retargetIdentity(selectedModel) !== null
+              : false
+          }
+          onRetarget={() => {
+            if (selectedModel) openRetarget(selectedModel, true);
+          }}
         />
+      ) : null}
+
+      {retargetTarget ? (
+        <RetargetWorkflow target={retargetTarget} onClose={closeRetarget} />
       ) : null}
 
       {profilesOpen ? (

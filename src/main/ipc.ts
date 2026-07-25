@@ -1,5 +1,12 @@
 import path from 'node:path';
-import { app, BrowserWindow, dialog, ipcMain, safeStorage } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  safeStorage,
+  type WebContents,
+} from 'electron';
 import {
   AppInfoResponse,
   IPC_CONTRACT_VERSION,
@@ -18,6 +25,8 @@ import {
 import { ServerProfileService } from './serverProfiles.js';
 import { createUploadJobService, type UploadJobService } from './uploadJobs.js';
 import { RootApprovalStore } from './rootApprovals.js';
+import { TargetProfileService } from './targetProfiles.js';
+import { RetargetArtifactService } from './retargetArtifacts.js';
 
 /**
  * Register all IPC handlers. Every incoming payload is validated against its
@@ -63,6 +72,26 @@ export function registerIpcHandlers(
       approvals,
     );
   void uploads.initialize().catch(() => undefined);
+  const targetProfiles = new TargetProfileService({
+    userDataPath: app.getPath('userData'),
+    sidecar,
+  });
+  const retargetArtifacts = new RetargetArtifactService({
+    sidecar,
+    profiles: targetProfiles,
+    dialogs: dialog,
+  });
+  const retargetReady = retargetArtifacts.initialize();
+  let targetProfilesInitialized = false;
+  const refreshTargetProfiles = async () => {
+    if (!targetProfilesInitialized) {
+      await targetProfiles.initialize();
+      targetProfilesInitialized = true;
+      return targetProfiles.catalog();
+    }
+    return targetProfiles.refresh();
+  };
+  const retargetOwnerCleanup = new WeakSet<WebContents>();
 
   // Terminate the sidecar child process when the app exits. Windows does not
   // reap child processes on parent exit, so without this the `model-core`
@@ -75,7 +104,31 @@ export function registerIpcHandlers(
   }
   app.on('will-quit', () => {
     uploads.dispose();
+    void retargetArtifacts.disposeAll();
   });
+
+  function retargetElectronError(
+    code: 'invalidRequest' | 'profileImportFailed',
+  ): {
+    domain: 'electron';
+    code: 'invalidRequest' | 'profileImportFailed';
+    message: string;
+    action: string;
+    part: null;
+    setting: null;
+  } {
+    return {
+      domain: 'electron',
+      code,
+      message:
+        code === 'profileImportFailed'
+          ? 'The selected profile is not a valid editable Snapmaker U1 3MF.'
+          : 'The retarget request is no longer valid.',
+      action: 'Try the operation again.',
+      part: null,
+      setting: null,
+    };
+  }
 
   const activeSyncContext = async (): Promise<{
     profileId: string;
@@ -134,6 +187,158 @@ export function registerIpcHandlers(
         sidecarVersion,
       };
       return ipcSchemas[IpcChannel.SidecarPing].response.parse(response);
+    },
+  );
+
+  ipcMain.handle(IpcChannel.RetargetListProfiles, async () => {
+    try {
+      await retargetReady;
+      return ipcSchemas[IpcChannel.RetargetListProfiles].response.parse({
+        status: 'ok',
+        value: await refreshTargetProfiles(),
+      });
+    } catch {
+      return ipcSchemas[IpcChannel.RetargetListProfiles].response.parse({
+        status: 'error',
+        error: {
+          domain: 'electron',
+          code: 'profileStoreCorrupt',
+          message: 'Saved imported profiles could not be read.',
+          action: 'Re-import the affected profile.',
+          part: null,
+          setting: null,
+        },
+      });
+    }
+  });
+
+  ipcMain.handle(IpcChannel.RetargetImportProfile, async (event) => {
+    try {
+      await retargetReady;
+      if (!targetProfilesInitialized) {
+        await refreshTargetProfiles();
+      }
+    } catch {
+      return ipcSchemas[IpcChannel.RetargetImportProfile].response.parse({
+        status: 'error',
+        error: {
+          domain: 'electron',
+          code: 'sidecarUnavailable',
+          message: 'Snapmaker U1 profiles are unavailable.',
+          action: 'Retry after the native model service is available.',
+          part: null,
+          setting: null,
+        },
+      });
+    }
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    if (!owner) {
+      return ipcSchemas[IpcChannel.RetargetImportProfile].response.parse({
+        status: 'error',
+        error: retargetElectronError('invalidRequest'),
+      });
+    }
+    const picked = await dialog.showOpenDialog(owner, {
+      title: 'Import Snapmaker U1 reference',
+      properties: ['openFile'],
+      filters: [{ name: 'Editable Snapmaker U1 3MF', extensions: ['3mf'] }],
+    });
+    if (picked.canceled || picked.filePaths.length !== 1) {
+      return ipcSchemas[IpcChannel.RetargetImportProfile].response.parse({
+        status: 'canceled',
+      });
+    }
+    try {
+      const result = await targetProfiles.importFile(picked.filePaths[0]!);
+      return ipcSchemas[IpcChannel.RetargetImportProfile].response.parse({
+        status: 'ok',
+        ...result,
+      });
+    } catch {
+      return ipcSchemas[IpcChannel.RetargetImportProfile].response.parse({
+        status: 'error',
+        error: retargetElectronError('profileImportFailed'),
+      });
+    }
+  });
+
+  ipcMain.handle(
+    IpcChannel.RetargetPreflight,
+    async (event, rawRequest: unknown) => {
+      try {
+        await retargetReady;
+      } catch {
+        return ipcSchemas[IpcChannel.RetargetPreflight].response.parse({
+          status: 'error',
+          error: {
+            domain: 'electron',
+            code: 'sidecarUnavailable',
+            message: 'The retarget workspace could not be prepared.',
+            action: 'Restart the application and try again.',
+            part: null,
+            setting: null,
+          },
+        });
+      }
+      const request =
+        ipcSchemas[IpcChannel.RetargetPreflight].request.parse(rawRequest);
+      if (!retargetOwnerCleanup.has(event.sender)) {
+        retargetOwnerCleanup.add(event.sender);
+        const ownerId = event.sender.id;
+        event.sender.once('destroyed', () => {
+          void retargetArtifacts.disposeOwner(ownerId);
+        });
+      }
+      const response = await retargetArtifacts.preflight(
+        event.sender.id,
+        request,
+      );
+      return ipcSchemas[IpcChannel.RetargetPreflight].response.parse(response);
+    },
+  );
+  ipcMain.handle(
+    IpcChannel.RetargetBuild,
+    async (event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.RetargetBuild].request.parse(rawRequest);
+      const response = await retargetArtifacts.build(event.sender.id, request);
+      return ipcSchemas[IpcChannel.RetargetBuild].response.parse(response);
+    },
+  );
+  ipcMain.handle(
+    IpcChannel.RetargetLoadScene,
+    async (event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.RetargetLoadScene].request.parse(rawRequest);
+      const response = await retargetArtifacts.loadScene(
+        event.sender.id,
+        request,
+      );
+      return ipcSchemas[IpcChannel.RetargetLoadScene].response.parse(response);
+    },
+  );
+  ipcMain.handle(
+    IpcChannel.RetargetSaveAs,
+    async (event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.RetargetSaveAs].request.parse(rawRequest);
+      const owner = BrowserWindow.fromWebContents(event.sender);
+      const response = owner
+        ? await retargetArtifacts.saveAs(event.sender.id, request.token, owner)
+        : { status: 'error', error: retargetElectronError('invalidRequest') };
+      return ipcSchemas[IpcChannel.RetargetSaveAs].response.parse(response);
+    },
+  );
+  ipcMain.handle(
+    IpcChannel.RetargetDispose,
+    async (event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.RetargetDispose].request.parse(rawRequest);
+      const response = await retargetArtifacts.disposeForOwner(
+        event.sender.id,
+        request.token,
+      );
+      return ipcSchemas[IpcChannel.RetargetDispose].response.parse(response);
     },
   );
 

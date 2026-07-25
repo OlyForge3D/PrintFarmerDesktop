@@ -68,6 +68,61 @@ describe('SidecarClient', () => {
     expect(IPC_CONTRACT_VERSION).toBe(2);
     expect(SIDECAR_RPC_PROTOCOL_VERSION).toBe(1);
   });
+
+  it('uses the amended six retarget RPC shapes and mutation timeout for builds', async () => {
+    const { channel, sent } = makeFakeChannel((request, emit) => {
+      emit(
+        JSON.stringify({
+          id: request.id,
+          ok: true,
+          result: { status: 'ok', value: {} },
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel);
+    const target = {
+      kind: 'imported' as const,
+      path: 'C:\\private\\u1.3mf',
+      expectedSha256: 'a'.repeat(64),
+    };
+    await client.listRetargetProfiles();
+    await client.inspectRetargetProfile('bundle:profile');
+    await client.inspectImportedRetargetProfile(target.path);
+    await client.preflightRetarget('C:\\source.3mf', target, true);
+    await client.buildRetarget(
+      'C:\\source.3mf',
+      'C:\\output.3mf',
+      target,
+      true,
+    );
+    await client.validateRetargetOutput(
+      'C:\\source.3mf',
+      'C:\\output.3mf',
+      target,
+      true,
+    );
+    const requests = sent.map(
+      (line) =>
+        JSON.parse(line) as { method: string; params: Record<string, unknown> },
+    );
+    expect(requests.map((request) => request.method)).toEqual([
+      'listRetargetProfiles',
+      'inspectRetargetProfile',
+      'inspectImportedRetargetProfile',
+      'preflightRetarget',
+      'buildRetarget',
+      'validateRetargetOutput',
+    ]);
+    expect(requests[3]?.params).toMatchObject({
+      sourcePath: 'C:\\source.3mf',
+      target,
+      objectExclusion: true,
+    });
+    expect(requests[4]?.params).toMatchObject({
+      outputPath: 'C:\\output.3mf',
+      target,
+    });
+  });
   it('resolves a handshake response', async () => {
     const { channel } = makeFakeChannel((req, emit) => {
       emit(
