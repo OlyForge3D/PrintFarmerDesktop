@@ -14,12 +14,15 @@ import {
 function fakeFileSystem(): RootApprovalFileSystem & {
   files: Map<string, Uint8Array>;
   realpaths: Map<string, string>;
+  identity: { dev: bigint; ino: bigint };
 } {
   const files = new Map<string, Uint8Array>();
   const realpaths = new Map<string, string>();
+  const identity = { dev: 1n, ino: 2n };
   return {
     files,
     realpaths,
+    identity,
     readFile(filePath) {
       const value = files.get(filePath);
       return value
@@ -66,8 +69,8 @@ function fakeFileSystem(): RootApprovalFileSystem & {
       const exists = realpaths.has(filePath);
       return exists
         ? Promise.resolve({
-            dev: 1n,
-            ino: 2n,
+            dev: identity.dev,
+            ino: identity.ino,
             isDirectory: () => true,
             isFile: () => false,
             isSymbolicLink: () => false,
@@ -114,6 +117,37 @@ describe('main-owned root approvals', () => {
     await expect(store.authorizeFile(model)).resolves.toEqual({
       sourcePath: model,
       canonicalPath: model,
+    });
+  });
+
+  it('rejects a root whose filesystem identity changed while its path stayed identical', async () => {
+    const fileSystem = fakeFileSystem();
+    const selected = path.resolve('approved-identity');
+    const model = path.join(selected, 'models', 'part.stl');
+    fileSystem.realpaths.set(selected, selected);
+    fileSystem.realpaths.set(model, model);
+    const store = new RootApprovalStore({
+      userDataPath: path.resolve('user-data-identity'),
+      fileSystem,
+      createId: () => '33333333-3333-4333-8333-333333333333',
+      now: () => 0,
+    });
+    await store.approveFromPicker(selected);
+    await expect(store.authorizeFile(model)).resolves.toEqual({
+      sourcePath: model,
+      canonicalPath: model,
+    });
+
+    // Swap the inode behind an unchanged path: the approved directory was
+    // replaced with a different one at the same location. Every path-shaped
+    // check still succeeds — `samePath` compares the same two strings and
+    // `isWithinRoot` still contains the model — so only the stored-identity
+    // comparison at rootApprovals.ts:209 can reject this. Varying the path
+    // instead would measure containment and leave this control unproven.
+    fileSystem.identity.ino = 99n;
+
+    await expect(store.authorizeFile(model)).rejects.toMatchObject({
+      code: 'APPROVAL_REQUIRED',
     });
   });
 

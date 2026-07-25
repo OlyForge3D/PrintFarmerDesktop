@@ -239,14 +239,29 @@ channel-by-channel enumeration would be mostly noise; these are the ones that ma
 `C:\Users\me\.ssh\id_rsa`, then read the result back through a scene, a thumbnail, or an
 upload to an attacker-controlled server.
 
-**Controls.** The renderer cannot express a path for these operations. `OpenFolder`
+**Controls.** Two different mechanisms, and the distinction matters because slice 2 found a
+channel where the second one was missing.
+
+For _root-scoped_ operations the renderer genuinely cannot express a path: `OpenFolder`
 (`src/main/ipc.ts:664`) and `OpenModelFile` (`src/main/ipc.ts:695`) only _show the OS picker_
-and return what the user chose; every later operation resolves an approval ID or a canonical
-picker file through `RootApprovalStore`. `authorizeFile` (`src/main/rootApprovals.ts:189`)
-canonicalizes with `realpath` and requires containment via `isWithinRoot`
-(`src/main/rootApprovals.ts:417`), which appends `path.sep` before the prefix comparison so a
-sibling like `C:\library-evil` cannot pass for `C:\library`. Picker-approved single files are
-tracked separately in `approvedPickerFiles` (`src/main/ipc.ts:156`).
+and return what the user chose, and `ScanRoot` (`src/main/ipc.ts:443`) takes an `approvalId`,
+never a path.
+
+For _per-file_ operations the renderer **does** supply a path string — `LoadScene`,
+`ExtractVendorMetadata`, `ExtractVendorPlateThumbnails` and `RenderThumbnail` all carry
+`path: z.string().min(1).max(4096)`. The control is not that the path is inexpressible; it is
+that each handler must _translate_ it through `authorizeRendererFile` (`src/main/ipc.ts:157`)
+and forward only the returned canonical path to the sidecar. An earlier revision of this
+document claimed "the renderer cannot express a path for these operations" as a single blanket
+statement. That was wrong, and being wrong in the safe-sounding direction is what made it
+costly: it described a property the code did not have, so it could not notice a channel that
+lacked it.
+
+`authorizeFile` (`src/main/rootApprovals.ts:189`) canonicalizes with `realpath` and requires
+containment via `isWithinRoot` (`src/main/rootApprovals.ts:417`), which appends `path.sep`
+before the prefix comparison so a sibling like `C:\library-evil` cannot pass for `C:\library`.
+Picker-approved single files are tracked separately in `approvedPickerFiles`
+(`src/main/ipc.ts:156`).
 
 There is a third control here that is easy to miss, and it defends a different axis:
 `authorizeFile` re-`realpath`s each **stored root** on every call and binds it to the
@@ -257,11 +272,28 @@ root I approved". A root swapped for a symlink or a different volume after appro
 second check even though it would pass the first. Both need proving separately — a test that
 only varies the path exercises containment and leaves identity binding unmeasured.
 
-**Coverage. Store-level good, IPC-level absent.** `tests/rootApprovals.test.ts` covers
-sibling-prefix escape, renderer-invented approvals, and ancestor swaps. But **no test in this
-repository invokes `registerIpcHandlers`**, so nothing proves the _handlers_ consult the store
-at all. A handler that called `fs.readFile(request.path)` directly would pass the entire
-existing suite. → PR C.
+**Finding (slice 2, fixed in the same PR).** `ExtractVendorPlateThumbnails` forwarded
+`request.path` straight to the sidecar, with no `authorizeRendererFile` call, from its
+introduction in `9fe0c99` (#36) until slice 2. Its three sibling handlers all authorized. No
+contract test could have caught it: `ExtractVendorPlateThumbnailsRequest` (`src/shared/ipc.ts:301`)
+and `ExtractVendorMetadataRequest` (`src/shared/ipc.ts:272`) are identical schemas, so the
+difference existed only in the handler body — the layer `tests/ipc.test.ts` does not execute.
+The chain was `preload.ts` → `src/main/ipc.ts` → `src/main/sidecar.ts:301` →
+`native/model-core/src/serve.rs:816` → `vendor::read_plate_thumbnails_file`, with no
+authorization at any layer, consistent with B2's statement that the sidecar performs none of
+its own. Impact was bounded — an arbitrary-file-**open** primitive giving existence probing, an
+error oracle, and content disclosure for files that parse as 3MF — not general file read. No
+renderer code called the channel, which is why it stayed invisible: nothing would have broken.
+
+**Coverage. Now proven at the IPC level.** `tests/rootApprovals.test.ts` covers sibling-prefix
+escape, renderer-invented approvals, ancestor swaps, and — added in slice 2 — identity
+substitution behind an unchanged path, which isolates `matchesStoredIdentity` from containment.
+`tests/ipc.authz.test.ts` invokes `registerIpcHandlers` and asserts, uniformly across all four
+path-carrying channels, that an unapproved path is refused _without the sidecar being invoked_
+and that the canonical path rather than the renderer's string is forwarded. Removing the
+authorization call from any of the four turns the suite red (M1–M4 in the slice-2 mutation
+table). The prior claim that "a handler that called `fs.readFile(request.path)` directly would
+pass the entire existing suite" was true when written, and is no longer true.
 
 **A control on this threat that §1 obliges me to record, and which was missing until round 4.**
 `retargetDialogs()` (`src/main/ipc.ts:55-88`) reads `PRINTFARMER_E2E_SAVE_DIALOGS` and
@@ -292,13 +324,17 @@ makes it unusual for this repo, but it is the only place the guarantee actually 
 `record.owner !== owner` (`src/main/retargetArtifacts.ts:439`), backed by a 30-minute TTL
 (`:440-443`) and a re-entrancy guard (`:444`).
 
-**Coverage. Service-level yes, wiring no.** `tests/retargetArtifacts.test.ts:253` covers owner
-binding and expiry at the service. The IPC wiring is untested: five handlers pass
-`event.sender.id` into the service (`src/main/ipc.ts:346`, `:357`, `:367`, `:380`, `:391`), and
-a handler that passed a constant instead would leave that service test green while collapsing
-the control entirely. This is the "a different control fired than the one under test" failure
-mode, one layer up. The same is true of the teardown path at `src/main/ipc.ts:338-344`, which
-disposes an owner's artifacts when its `webContents` is destroyed. → PR C.
+**Coverage. Service-level and wiring both proven; teardown still not.**
+`tests/retargetArtifacts.test.ts:253` covers owner binding and expiry at the service.
+`tests/ipc.authz.test.ts` now covers the wiring: each of the five handlers
+(`src/main/ipc.ts:346`, `:357`, `:367`, `:380`, `:391`) is invoked from two different senders
+and must forward both distinct ids, so a handler passing a constant — including a captured
+first-caller id — fails. M5 and M6 in the slice-2 mutation table confirm it: replacing
+`event.sender.id` with a literal turns the suite red.
+
+The teardown path at `src/main/ipc.ts:338-344`, which disposes an owner's artifacts when its
+`webContents` is destroyed, remains **untested**. The slice-2 harness stubs `event.sender.once`
+rather than firing `destroyed`, so nothing yet proves disposal happens. → still open.
 
 ### T1.3 — Renderer exfiltrates credentials (A2)
 
@@ -337,11 +373,19 @@ and the weakest link is the default — a future `webPreferences` edit could fli
 in CI noticing. Recorded here deliberately rather than filed as a defect: per this squad's
 reviewer standard, an unreproduced risk is a non-blocking observation, not a rejection.
 
-**Ruling requested** — add sender validation as defense in depth, or accept this residual with
-the rationale above? Note that the diagnosis suggests a cheaper third option: because the load
-bearing element is an _unstated default_, a one-line assertion that `nodeIntegrationInSubFrames`
-is falsy converts it into something CI notices, at a small fraction of the cost of full sender
-validation. That assertion belongs in PR C's scope under either ruling.
+**Ruling given (slice 2): the cheap option was taken.** `tests/mainWindow.security.test.ts`
+asserts `nodeIntegrationInSubFrames` is falsy on the options passed to `new BrowserWindow`,
+alongside `contextIsolation`, `nodeIntegration`, `sandbox`, `webSecurity` and
+`allowRunningInsecureContent`. The assertion is on falsiness rather than `=== false`, because
+the value is legitimately absent today; it fails if anyone sets it to `true`. Setting it true
+turns the suite red (M11), as does disabling `sandbox` (M12). The process-wide window-open
+denial at `src/main/main.ts:283-285` is asserted separately from the per-window handler, using
+a WebContents that never passes through `hardenWindow` (M13).
+
+**Residual, unchanged.** Full `senderFrame` validation is still absent, deliberately: no repro
+was built, and per this squad's reviewer standard an unreproduced risk is a non-blocking
+observation. What changed is only that the unstated default is now pinned by CI, which is the
+weakest link named above — not the absent control itself.
 
 ### T1.5 — Renderer navigates itself somewhere useful to an attacker (A2)
 
@@ -357,14 +401,19 @@ app additionally flips fuses (`forge.config.ts:92-100`): `RunAsNode` off,
 `EnableNodeOptionsEnvironmentVariable` off, `EnableNodeCliInspectArguments` off,
 `EnableEmbeddedAsarIntegrityValidation` on, `OnlyLoadAppFromAsar` on.
 
-**Coverage. None.** `src/main/security.ts` has no test at all. Nothing pins that the
-production `script-src` stays `'self'` with no `'unsafe-inline'` — note that the production
-policy _does_ carry `'unsafe-inline'` in `style-src` (`src/main/security.ts:70`), which is a
-deliberate and much weaker concession, so a test asserting merely "the policy contains no
-`'unsafe-inline'`" would be wrong about this code and would fail on correct input. The
-directive has to be named. Nothing would catch the _development_ policy being served in
-production either — one absent `devServerUrl` check away, and invisible to every existing
-test. → PR C.
+**Coverage. Now proven, except the fuses.** `tests/security.test.ts` covers `hardenWindow` and
+`applyContentSecurityPolicy`: off-origin `will-navigate` is cancelled and diverted to the OS
+browser, `file:` and the configured dev-server origin are permitted (so a listener that
+cancelled unconditionally would fail rather than pass), every window open is denied, and
+permission requests are refused. The CSP assertions name the **directive**, not the policy
+string: `script-src` must be exactly `'self'` while `style-src` is separately asserted to
+_carry_ `'unsafe-inline'` (`src/main/security.ts:70`), since that concession is deliberate and a
+policy-wide search for the token would fail on correct input. A paired assertion runs the same
+check against both branches so the development relaxation cannot leak into the packaged policy.
+M7–M10 confirm each of these turns the suite red when its control is removed.
+
+The packaged **fuses** (`forge.config.ts:92-100`) remain unasserted — they are build
+configuration, not runtime code, and nothing in the test suite reads them. → still open.
 
 ### T1.6 — Malformed or oversized IPC payload (A2)
 
@@ -375,7 +424,8 @@ test. → PR C.
 **Coverage. Good — the one part of the IPC surface with real coverage.**
 `tests/ipc.test.ts` and `tests/retarget.ipc.test.ts` exercise this axis thoroughly. Both test
 schemas in isolation and never register a handler, so they prove the _contract_, not the
-_plumbing_ — which is why T1.1 through T1.5 above are uncovered despite these files existing.
+_plumbing_. Slice 2 closed that gap for T1.1, T1.2, T1.4 and T1.5 by invoking
+`registerIpcHandlers` directly in `tests/ipc.authz.test.ts`; T1.3 and T1.7 remain contract-only.
 
 ### T1.7 — Local process rewrites a persisted main-process store (A4)
 
@@ -755,22 +805,30 @@ someone with administrative rights. → PR B.
 
 ## 9. Open work derived from this model
 
-| Threat           | Gap                                                                                | Where      |
-| ---------------- | ---------------------------------------------------------------------------------- | ---------- |
-| T4.1, T4.2       | No SBOM, licence, or vulnerability gate                                            | PR B (#21) |
-| T1.1, T1.2, T1.5 | No test ever invokes an IPC handler; `src/main/security.ts` untested               | PR C (#21) |
-| T1.3, T3.3       | Credential non-egress asserted nowhere                                             | PR C (#21) |
-| T1.4             | One-line assertion that `nodeIntegrationInSubFrames` is falsy, under either ruling | PR C (#21) |
-| T2.2             | No fuzzing; parser coverage is example-based                                       | PR D (#21) |
-| T1.7             | Five persisted JSON stores; malformed-input handling untested                      | PR C (#21) |
-| T1.1             | E2E dialog seeding: nothing asserts the branch is absent from a release bundle     | PR C (#21) |
-| T1.7             | `0o700`/`0o600` modes are a control no test asserts, on any store                  | PR C (#21) |
-| T2.5             | Retarget: 10 of 12 ZIP controls unproven; XML and JSON layers wholly unguarded     | PR D (#21) |
-| T2.6             | Malformed catalog bytes and `PRINTFARMER_CATALOG_DB` redirection untested          | PR D (#21) |
-| T1.4             | Full sender validation — awaiting a ruling                                         | undecided  |
-| T2.5             | Whether `retarget` should adopt `ParseGuard` — a design change, not a test         | not in #21 |
-| T2.6             | Catalog concurrency invariant unstated and untested                                | not in #21 |
-| Out of scope     | No signing, notarization, or update integrity                                      | #22        |
+| Threat     | Gap                                                                            | Where       |
+| ---------- | ------------------------------------------------------------------------------ | ----------- |
+| T4.1, T4.2 | No SBOM, licence, or vulnerability gate                                        | PR B (#21)  |
+| T1.2       | Owner teardown on `webContents` destroy (`ipc.ts:338-344`) still unproven      | PR C2 (#21) |
+| T1.3, T3.3 | Credential non-egress asserted nowhere                                         | PR C2 (#21) |
+| T1.5       | Packaged fuses (`forge.config.ts:92-100`) unasserted                           | PR C2 (#21) |
+| T2.2       | No fuzzing; parser coverage is example-based                                   | PR D (#21)  |
+| T1.7       | Five persisted JSON stores; malformed-input handling untested                  | PR C2 (#21) |
+| T1.1       | E2E dialog seeding: nothing asserts the branch is absent from a release bundle | PR C2 (#21) |
+| T1.7       | `0o700`/`0o600` modes are a control no test asserts, on any store              | PR C2 (#21) |
+| T2.5       | Retarget: 10 of 12 ZIP controls unproven; XML and JSON layers wholly unguarded | PR D (#21)  |
+| T2.6       | Malformed catalog bytes and `PRINTFARMER_CATALOG_DB` redirection untested      | PR D (#21)  |
+| T1.4       | Full sender validation — ruled: residual accepted, default now pinned by CI    | closed      |
+
+Discharged by slice 2 (`tests/ipc.authz.test.ts`, `tests/security.test.ts`,
+`tests/mainWindow.security.test.ts`, and the identity case added to
+`tests/rootApprovals.test.ts`): the IPC handler layer is now invoked by tests; per-channel path
+authorization, artifact-owner threading, `security.ts` navigation/CSP/permission controls, the
+`nodeIntegrationInSubFrames` default, the process-wide window-open denial, and
+`matchesStoredIdentity` as an axis distinct from containment are each pinned by a test shown to
+fail when its control is removed. The mutation table is in the slice-2 PR.
+| T2.5 | Whether `retarget` should adopt `ParseGuard` — a design change, not a test | not in #21 |
+| T2.6 | Catalog concurrency invariant unstated and untested | not in #21 |
+| Out of scope | No signing, notarization, or update integrity | #22 |
 
 Three rows change PR D's shape rather than merely adding to it. **T2.5 is the big one**: a
 harness scoped from T2.2 alone would fuzz the catalog parsers and never reach an
