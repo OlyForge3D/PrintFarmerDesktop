@@ -1,0 +1,291 @@
+{
+  "$schema": "./printer-calibration-provenance.schema.json",
+  "schemaVersion": 1,
+  "feature": "printer-calibration",
+  "repository": {
+    "name": "OlyForge3D/PrintFarmerDesktop",
+    "license": "AGPL-3.0-only",
+    "licenseReview": {
+      "status": "pending-maintainer-approval",
+      "issue": "https://github.com/OlyForge3D/PrintFarmerDesktop/issues/51",
+      "approvedBy": null,
+      "approvedAt": null,
+      "decisionReference": null
+    }
+  },
+  "approvedSource": {
+    "id": "calibration-source-v1.3.2",
+    "canonicalRepository": "https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard",
+    "tag": "v1.3.2",
+    "tagUrl": "https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/tree/v1.3.2",
+    "releaseUrl": "https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/releases/tag/v1.3.2",
+    "commit": "057d6117b9ab31747ede3a5684a009cb6079ad11",
+    "commitUrl": "https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/commit/057d6117b9ab31747ede3a5684a009cb6079ad11",
+    "tree": "4197589b91376c485e57a28ca6281d54a2358f7b",
+    "archive": {
+      "url": "https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/archive/057d6117b9ab31747ede3a5684a009cb6079ad11.tar.gz",
+      "sha256": "a7f985d44d4188d600ead0b916eec98a14bfba9f53079aea659cbaaa8adc5047",
+      "bytes": 1581075
+    },
+    "license": {
+      "spdx": "AGPL-3.0-only",
+      "path": "License",
+      "blob": "be3f7b28e564e7dd05eaf59d64adba1a4065ac0e",
+      "url": "https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/blob/057d6117b9ab31747ede3a5684a009cb6079ad11/License"
+    },
+    "packageMetadata": {
+      "path": "package.json",
+      "blob": "61c87aad217483c34b8ca4d40560d02edd4cfff6",
+      "url": "https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/blob/057d6117b9ab31747ede3a5684a009cb6079ad11/package.json",
+      "declaredVersion": "1.3.2",
+      "declaredLicense": "AGPL-3.0-only"
+    },
+    "eligibilityDecision": {
+      "status": "first-eligible-source",
+      "authority": "https://github.com/OlyForge3D/PrintFarmerDesktop/issues/51",
+      "recordedAt": "2026-07-24"
+    }
+  },
+  "derivedRoots": [
+    "src/calibration/derived",
+    "tests/calibration/derived",
+    "native/model-core/src/calibration/derived",
+    "native/model-core/tests/calibration/derived"
+  ],
+  "sourceDecisions": [
+    {
+      "sourcePath": "src/logic/formulas.ts",
+      "sourceBlob": "5d1ac9edd84bde6bb5993204efcf1f33b001eecb",
+      "decision": "eligible-for-review",
+      "category": "pure-domain-logic",
+      "reason": "Framework-independent formulas may be adapted after file-level notice and behavior review."
+    },
+    {
+      "sourcePath": "src/logic/ranges.ts",
+      "sourceBlob": "98b79bc9ea416fc926fa2f7bfdae6f836cb054d7",
+      "decision": "eligible-for-review",
+      "category": "pure-domain-logic",
+      "reason": "Range logic may be adapted only after removing dependencies on excluded static printer data."
+    },
+    {
+      "sourcePath": "src/logic/validation.ts",
+      "sourceBlob": "8b80a9650779d588a6c9f69243d34e50497cd6a9",
+      "decision": "eligible-for-review",
+      "category": "validation",
+      "reason": "Framework-independent validation is eligible for a later exact adaptation review."
+    },
+    {
+      "sourcePath": "src/export/backup.ts",
+      "sourceBlob": "4b71dd289c30f01fe5fd93fbbd59f2eb2bbf15db",
+      "decision": "eligible-for-review",
+      "category": "backup-schema",
+      "reason": "Schema parsing concepts are eligible; browser storage, product identity, and lifecycle code must be rewritten."
+    },
+    {
+      "sourcePath": "src/slicerIntegration/orcaFamily.ts",
+      "sourceBlob": "50760deec7757c789f2d040d92e349e3396ca1d1",
+      "decision": "eligible-for-review",
+      "category": "orca-profile-logic",
+      "reason": "Upstream Orca profile logic is eligible after limiting it to PFD's supported upstream distribution."
+    },
+    {
+      "sourcePath": "src/slicerIntegration/adapters/orca.ts",
+      "sourceBlob": "abbbf5e0190c54c3416b8606a887726eedeadcdc",
+      "decision": "eligible-for-review",
+      "category": "orca-profile-logic",
+      "reason": "The upstream Orca adapter is eligible for exact file-level review and PFD architecture adaptation."
+    },
+    {
+      "sourcePath": "src/slicerIntegration/generator.ts",
+      "sourceBlob": "a1e046cbe6681cc8e5518042b5823b548858367a",
+      "decision": "eligible-for-review",
+      "category": "orca-profile-logic",
+      "reason": "Profile generation is eligible only after independent safety and PrintFarmer authority review."
+    },
+    {
+      "sourcePath": "src/slicerIntegration/validation.ts",
+      "sourceBlob": "6aa236a702074315b6fd1d043fa2ba9496c0a630",
+      "decision": "eligible-for-review",
+      "category": "validation",
+      "reason": "Profile validation is eligible for exact adaptation and independent PFD-specific tests."
+    },
+    {
+      "sourcePath": "tests/formulas.test.ts",
+      "sourceBlob": "913e0a8d89668344e63ec9fa97d3ac5d6532eb0f",
+      "decision": "eligible-for-review",
+      "category": "derived-tests",
+      "reason": "Any port remains an attributed derived test and cannot replace independent PFD coverage."
+    },
+    {
+      "sourcePath": "tests/importExport.test.ts",
+      "sourceBlob": "366edd734a8d2b40e5b08d4184088bdb482e1075",
+      "decision": "eligible-for-review",
+      "category": "derived-tests",
+      "reason": "Only schema behavior may be ported; browser persistence and product-specific fixtures are excluded."
+    },
+    {
+      "sourcePath": "tests/slicerIntegration/generator.test.ts",
+      "sourceBlob": "a499dd306da11075d06ac0f0c42f3eb34087bd71",
+      "decision": "eligible-for-review",
+      "category": "derived-tests",
+      "reason": "Any port must retain attribution and add independent PFD generation and safety coverage."
+    },
+    {
+      "sourcePath": "tests/slicerIntegration/validation.test.ts",
+      "sourceBlob": "6d46a8732bee20141e7cd94ef92e878ab9fa6b02",
+      "decision": "eligible-for-review",
+      "category": "derived-tests",
+      "reason": "Any port must retain attribution and exclude unverified third-party fixture content."
+    },
+    {
+      "sourcePath": "Printer_Database/Printer_Database.xlsx",
+      "sourceBlob": "b57e704b1712449f2414f9d2135262bfa70da01a",
+      "decision": "exclude",
+      "category": "static-printer-data",
+      "reason": "PFD must use authoritative PrintFarmer printer instances and sanitized configuration snapshots."
+    },
+    {
+      "sourcePath": "src/data/printerDatabase.ts",
+      "sourceBlob": "922a3688e6c09f0e53a62e5290a346a2dfd3e26f",
+      "decision": "exclude",
+      "category": "static-printer-data",
+      "reason": "A desktop-maintained printer catalog is outside the approved architecture."
+    },
+    {
+      "sourcePath": "src/data/printers.json",
+      "sourceBlob": "dc915ff760c3558e22ccda71af37fbe8dd4e0c37",
+      "decision": "exclude",
+      "category": "static-printer-data",
+      "reason": "Generated printer records are not authoritative and their individual provenance is not verified."
+    },
+    {
+      "sourcePath": "scripts/generate-printer-database.mjs",
+      "sourceBlob": "3b5b1f25e739c5d095803430262ad20fff10ddee",
+      "decision": "exclude",
+      "category": "static-printer-data",
+      "reason": "PFD must not generate or maintain a second printer database."
+    },
+    {
+      "sourcePath": "src/data/calibrations.ts",
+      "sourceBlob": "e7b6452c163de67d734b70b6218f5caec34a6121",
+      "decision": "exclude",
+      "category": "unverified-data-table",
+      "reason": "Data tables require independent provenance and behavior review and are excluded from this source boundary."
+    },
+    {
+      "sourcePath": "src/data/materials.ts",
+      "sourceBlob": "7c87078d3b46c27ef7de5eecb2ff2ef46030d793",
+      "decision": "exclude",
+      "category": "unverified-data-table",
+      "reason": "Material data provenance is not established and must not be copied."
+    },
+    {
+      "sourcePath": "src/data/glossary.ts",
+      "sourceBlob": "968e68645db7dfe0e1fc735f7ce1dac9d986734b",
+      "decision": "rewrite-only",
+      "category": "product-prose",
+      "reason": "User-facing explanatory text must be written for the native PFD workflow."
+    },
+    {
+      "sourcePath": "src/data/models.ts",
+      "sourceBlob": "bccd30728ef023a9f73d9646d6b15cd5af11c2f1",
+      "decision": "exclude",
+      "category": "third-party-model-data",
+      "reason": "Third-party model metadata remains linked or user-imported and is never bundled from this source."
+    },
+    {
+      "sourcePath": "src/data/slicers.ts",
+      "sourceBlob": "e488cb809ff1b9228ec621c5ac06ddb205a5862e",
+      "decision": "exclude",
+      "category": "out-of-scope-product-data",
+      "reason": "Initial PFD eligibility is explicit upstream OrcaSlicer metadata from PrintFarmer, not a local slicer table."
+    },
+    {
+      "sourcePath": "public/models/manifest.json",
+      "sourceBlob": "0ed7f8a95766ef6142474d47bbd65d2545d65f4b",
+      "decision": "exclude",
+      "category": "third-party-model-data",
+      "reason": "Calibration models are linked or user-imported and are not distributed by PFD."
+    },
+    {
+      "sourcePath": "app-icon.png",
+      "sourceBlob": "e20d80a63c6e5bdbb261829ae093658898458001",
+      "decision": "exclude",
+      "category": "unverified-asset",
+      "reason": "Branding and non-code assets are excluded without independent provenance evidence."
+    },
+    {
+      "sourcePath": "src/slicerIntegration/adapters/bambu.ts",
+      "sourceBlob": "d2dbf4d226db75a65867980bb11d2f9e0ee926e5",
+      "decision": "exclude",
+      "category": "out-of-scope-adapter",
+      "reason": "Initial PFD calibration scope supports only the explicit upstream OrcaSlicer distribution."
+    },
+    {
+      "sourcePath": "src/slicerIntegration/adapters/elegooSlicer.ts",
+      "sourceBlob": "64b195dee85318fd70db985acfc237a02267c852",
+      "decision": "exclude",
+      "category": "out-of-scope-adapter",
+      "reason": "Initial PFD calibration scope supports only the explicit upstream OrcaSlicer distribution."
+    },
+    {
+      "sourcePath": "src/slicerIntegration/adapters/flashStudio.ts",
+      "sourceBlob": "3b3af680fd6f1f4072d01497f71d174cb99d5fb8",
+      "decision": "exclude",
+      "category": "out-of-scope-adapter",
+      "reason": "Initial PFD calibration scope supports only the explicit upstream OrcaSlicer distribution."
+    },
+    {
+      "sourcePath": "src/slicerIntegration/adapters/snapmakerOrca.ts",
+      "sourceBlob": "28d5ccfcdca3596a1685fc4eece6c9f57ffa70a7",
+      "decision": "exclude",
+      "category": "out-of-scope-adapter",
+      "reason": "Initial PFD calibration scope supports only the explicit upstream OrcaSlicer distribution."
+    }
+  ],
+  "pathPolicies": [
+    {
+      "scope": "Every source revision except tag v1.3.2 at commit 057d6117b9ab31747ede3a5684a009cb6079ad11 and tree 4197589b91376c485e57a28ca6281d54a2358f7b",
+      "decision": "exclude",
+      "category": "unreviewed-source-revision",
+      "reason": "Older licensing, moving branches, forks, local history, moved tags, and other snapshots are outside the reviewed boundary."
+    },
+    {
+      "scope": "Printer_Database/**, src/data/**, and scripts/generate-printer-database.mjs",
+      "decision": "exclude",
+      "category": "static-or-unverified-data",
+      "reason": "PFD must not import a printer catalog or data table without independent item-level provenance."
+    },
+    {
+      "scope": "public/models/** and every third-party calibration model or model link",
+      "decision": "exclude",
+      "category": "third-party-models",
+      "reason": "Models remain linked or user-imported and are never bundled from the source snapshot."
+    },
+    {
+      "scope": "public/**, app-icon.png, src-tauri/icons/**, tests/**/fixtures/**, screenshots, icons, and binary assets",
+      "decision": "exclude",
+      "category": "unverified-assets",
+      "reason": "The containing repository license does not establish independent provenance for each non-code asset."
+    },
+    {
+      "scope": "src/ui/**, src/styles.css, index.html, src/main.ts, src/storage/**, src-tauri/**",
+      "decision": "rewrite-only",
+      "category": "pfd-owned-architecture",
+      "reason": "UI, styling, lifecycle, persistence, filesystem, and shell integration must be native Electron and PFD code."
+    },
+    {
+      "scope": "README, documentation, branding, help text, reports, and all user-facing product prose",
+      "decision": "rewrite-only",
+      "category": "pfd-product-framing",
+      "reason": "Public product language must describe native PFD Printer Calibration based on upstream OrcaSlicer and its official wiki."
+    },
+    {
+      "scope": "Printer ownership, synchronization, queueing, authorization, dispatch, and safety orchestration",
+      "decision": "rewrite-only",
+      "category": "printfarmer-authority",
+      "reason": "PrintFarmer is authoritative and these controls require independent PFD and backend implementations."
+    }
+  ],
+  "derivedFiles": []
+}

@@ -27,6 +27,17 @@ Early development. See the implementation plan and the tracked work items.
 Source models are never moved, modified, or uploaded without an explicit user
 action.
 
+## Printer Calibration
+
+Printer Calibration is being developed as a native, first-class PFD workspace
+based on upstream
+[OrcaSlicer](https://github.com/OrcaSlicer/OrcaSlicer) calibration behavior and
+its official
+[calibration guide](https://github.com/OrcaSlicer/OrcaSlicer/wiki/calibration_guide).
+It will use PrintFarmer printer instances and sanitized configuration snapshots
+instead of a desktop-maintained printer catalog. PFD does not bundle third-party
+calibration models or launch a separate calibration application.
+
 ## Repository layout
 
 ```
@@ -80,6 +91,13 @@ To ship without any prompt later, add a Windows code-signing certificate
 notarization (`packagerConfig.osxSign` + `osxNotarize`); no other changes are
 required.
 
-## License
+## License and source
 
-Proprietary — OlyForge3D. All rights reserved.
+PrintFarmer Desktop is licensed under
+[GNU AGPL v3.0 only](./LICENSE) (`AGPL-3.0-only`). The complete source,
+dependency locks, build scripts, attribution, and provenance records for each
+official binary release are available from that release's matching Git tag in
+this repository. See
+[Corresponding Source](./docs/compliance/CORRESPONDING_SOURCE.md) and
+[Third-Party Notices](./THIRD_PARTY_NOTICES.md) for the release and attribution
+policy.

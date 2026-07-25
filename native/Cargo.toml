@@ -5,7 +5,8 @@ members = ["model-core"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "UNLICENSED"
+license = "AGPL-3.0-only"
+repository = "https://github.com/OlyForge3D/PrintFarmerDesktop"
 publish = false
 
 [profile.release]

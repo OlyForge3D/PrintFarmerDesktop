@@ -39,6 +39,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Calibration provenance
+        run: npm run check:provenance
+
       - name: Build sidecar (release)
         working-directory: native
         run: cargo build --release -p model-core --features sqlite
@@ -50,7 +53,7 @@ jobs:
           PRINTFARMER_SKIP_SIDECAR_BUILD: '1'
         run: npm run make
 
-      - name: Verify the sidecar was bundled
+      - name: Verify packaged sidecar and compliance resources
         run: node scripts/verify-packaged-sidecar.mjs
 
       - name: Collect artifacts

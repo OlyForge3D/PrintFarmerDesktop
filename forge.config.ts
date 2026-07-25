@@ -27,6 +27,20 @@ function stageSidecar(): void {
   }
 }
 
+/** Stage repository and Electron notices into the packaged app resources. */
+function stageCompliance(): void {
+  const script = path.join(repoRoot, 'scripts', 'stage-compliance.mjs');
+  const result = spawnSync(process.execPath, [script], {
+    cwd: repoRoot,
+    stdio: 'inherit',
+  });
+  if (result.status !== 0) {
+    throw new Error(
+      `staging compliance resources failed (exit code ${result.status ?? 'unknown'})`,
+    );
+  }
+}
+
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
@@ -34,7 +48,11 @@ const config: ForgeConfig = {
     icon: iconBasePath,
     // Ship the compiled sidecar next to the app so the packaged main process
     // resolves it via `resolveSidecarPath()` at `<resources>/sidecar/<binary>`.
-    extraResource: ['./resources/sidecar', './assets/icon.png'],
+    extraResource: [
+      './resources/sidecar',
+      './assets/icon.png',
+      './resources/compliance',
+    ],
   },
   rebuildConfig: {},
   hooks: {
@@ -42,6 +60,7 @@ const config: ForgeConfig = {
     // `extraResource` directory above exists and is current.
     prePackage: () => {
       stageSidecar();
+      stageCompliance();
       return Promise.resolve();
     },
   },
