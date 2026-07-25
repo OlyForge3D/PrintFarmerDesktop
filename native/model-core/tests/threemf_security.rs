@@ -496,3 +496,86 @@ fn a_hostile_package_stays_distinguishable_from_a_broken_one_at_the_scene_layer(
     assert_eq!(broken_code, "threemf.malformed");
     assert_ne!(hostile_code, broken_code);
 }
+
+// --- ZIP64 trailer ---------------------------------------------------------
+
+fn read_u32_at(data: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(data[offset..offset + 4].try_into().expect("four bytes"))
+}
+
+/// Rebuild `data`'s trailer as a ZIP64 package declaring `total_entries`
+/// entries. With the honest count this is a valid ZIP64 archive; with an
+/// inflated one it is the classic "declare four billion entries and let the
+/// reader preallocate for them" attack, which a 16-bit EOCD cannot express.
+fn with_zip64_trailer(data: &[u8], total_entries: u64) -> Vec<u8> {
+    const EOCD_SIZE: usize = 22;
+    let eocd = data.len() - EOCD_SIZE;
+    assert_eq!(
+        &data[eocd..eocd + 4],
+        b"PK\x05\x06",
+        "fixture builder must emit a comment-less EOCD"
+    );
+    let central_size = u64::from(read_u32_at(data, eocd + 12));
+    let central_offset = u64::from(read_u32_at(data, eocd + 16));
+    let central_end = usize::try_from(central_offset + central_size).expect("central end");
+
+    let mut out = data[..central_end].to_vec();
+    let zip64_eocd = central_end as u64;
+
+    // ZIP64 end-of-central-directory record: 56 bytes, whose size field
+    // excludes its own 12-byte prefix.
+    out.extend_from_slice(b"PK\x06\x06");
+    out.extend_from_slice(&44u64.to_le_bytes());
+    out.extend_from_slice(&45u16.to_le_bytes());
+    out.extend_from_slice(&45u16.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&total_entries.to_le_bytes());
+    out.extend_from_slice(&total_entries.to_le_bytes());
+    out.extend_from_slice(&central_size.to_le_bytes());
+    out.extend_from_slice(&central_offset.to_le_bytes());
+
+    // ZIP64 locator.
+    out.extend_from_slice(b"PK\x06\x07");
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&zip64_eocd.to_le_bytes());
+    out.extend_from_slice(&1u32.to_le_bytes());
+
+    // EOCD carrying the sentinels that hand parsing to the ZIP64 record.
+    out.extend_from_slice(b"PK\x05\x06");
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&u16::MAX.to_le_bytes());
+    out.extend_from_slice(&u16::MAX.to_le_bytes());
+    out.extend_from_slice(&u32::MAX.to_le_bytes());
+    out.extend_from_slice(&u32::MAX.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out
+}
+
+#[test]
+fn an_honest_zip64_package_still_parses() {
+    // The entry-count ceiling must reject hostile declarations without
+    // blanket-rejecting ZIP64, which large legitimate packages rely on.
+    let base = package_with(Vec::new());
+    let entries = u64::from(read_u32_at(&base, base.len() - 22 + 10) & 0xFFFF);
+    let zip64 = with_zip64_trailer(&base, entries);
+    let mesh = threemf::parse_bytes(&zip64).expect("a valid ZIP64 package must parse");
+    assert!(!mesh.vertices.is_empty(), "ZIP64 package lost its geometry");
+}
+
+#[test]
+fn rejects_a_zip64_trailer_declaring_an_impossible_entry_count() {
+    // Only ZIP64 can express a count past 65535, so this is the only route to
+    // the entry ceiling. Reaching the assertion at all proves the reader
+    // refused before sizing a collection from the attacker's number.
+    let base = package_with(Vec::new());
+    for declared in [1u64 << 40, u64::MAX] {
+        let error = parse_error(&with_zip64_trailer(&base, declared));
+        assert_eq!(
+            error.code(),
+            "too_large",
+            "declared {declared} entries: {error}"
+        );
+    }
+}
