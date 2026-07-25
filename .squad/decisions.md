@@ -239,12 +239,12 @@ The common shape is not carelessness about facts. Every one of the three was che
 
 So the operative property is **tense, not negation**: any unpinned present-tense claim about a mutable object — branch, PR, working tree, or the repo as a whole — ages badly, positive or negative alike. The negation was a red herring. Write the measurement in the past tense with both operands named (`git merge-tree --write-tree 085d91a ca224a1` returned …), because a statement about two immutable SHAs stays true forever, while the same statement about "#78" stops being true the moment someone rebases.
 
-Round 7 supplied the controlled experiment, and it is the single best piece of evidence in this file for the rule. The same fact was written twice, by the same author, in the same commit range, in the two files this entry governs:
+Round 7 supplied the controlled experiment, and it is the single best piece of evidence in this file for the rule. The same fact was written twice, in **the same commit** (`f1e1bb0`), in the two files this entry governs:
 
-- `decisions.md:176` — "Both **emit** `limit.total_decompressed_bytes`." Falsified by `085d91a`.
+- `decisions.md:176` — "Both **emit** `limit.total_decompressed_bytes`." Falsified by `085d91a`, 80 minutes later.
 - `SKILL.md:37` — "On PR #69 both … **emitted** `limit.total_decompressed_bytes`." Still true, and permanently so.
 
-Identical claim, identical evidence, identical author. One survived and one did not, and **the only difference between them is tense and scope**. Nothing about care, checking, or subject-matter knowledge separates the two sentences — which is why the rule cannot be replaced by trying harder.
+Identical claim, identical evidence, written in one sitting by one author. One survived and one did not, and **the only difference between them is tense and scope**. Nothing about care, checking, attention or subject-matter knowledge can separate the two sentences — there was no interval in which to become careless. That is why the rule cannot be replaced by trying harder, and why it belongs in a file rather than in someone's habits.
 
 That the error **recurred across four rounds and was caught on every one**, and was then reintroduced _by the fix for it_, is the strongest argument in this file for external review. Nothing survived the check — each instance was rejected on the pass it appeared, including the round whose entire subject was making claims that do not expire. A fifth pass then found two further instances in paragraphs written the same morning and untouched since, using the rule this entry had just added — one of them in a citation that had itself been cleared across three rounds of an earlier review. A sixth pass then found this very paragraph overstating that interval as "days," and found the enumeration in the paragraph above it had gone stale within the hour.
 
