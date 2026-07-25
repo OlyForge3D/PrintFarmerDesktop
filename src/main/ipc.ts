@@ -267,14 +267,16 @@ export function registerIpcHandlers(
       // state instead of an error dialog.
       let sidecarVersion: string | null = null;
       let ok = false;
+      let sceneCacheRecipe: string | undefined;
       try {
         const handshake = await sidecar.handshake();
-        await sceneCache.adoptRecipe(handshake.sceneCacheRecipe);
         sidecarVersion = handshake.sidecarVersion;
+        sceneCacheRecipe = handshake.sceneCacheRecipe;
         ok = true;
       } catch {
         ok = false;
       }
+      if (ok) await sceneCache.adoptRecipe(sceneCacheRecipe);
       const response: SidecarPingResponse = {
         ok,
         nonce: request.nonce,

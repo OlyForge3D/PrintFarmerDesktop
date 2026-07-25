@@ -29,6 +29,7 @@ export interface SceneCacheSidecar {
 }
 
 export interface SceneCacheFileSystem {
+  hashFile(filePath: string): Promise<string>;
   mkdir(directoryPath: string): Promise<void>;
   readText(filePath: string): Promise<string>;
   rename(sourcePath: string, destinationPath: string): Promise<void>;
@@ -47,11 +48,11 @@ export interface SceneCacheServiceOptions {
 
 interface RecipeLease {
   recipe: string | null;
-  generation: number;
   storageReady: boolean;
 }
 
 const nodeFileSystem: SceneCacheFileSystem = {
+  hashFile,
   mkdir: async (directoryPath) => {
     await mkdir(directoryPath, { recursive: true, mode: 0o700 });
   },
@@ -82,7 +83,6 @@ export class SceneCacheService {
   private readonly maxEntryBytes: number;
   private readonly reportError: (message: string, error: unknown) => void;
   private activeRecipe: string | null | typeof UNINITIALIZED = UNINITIALIZED;
-  private generation = 0;
   private storageReady = false;
   private mutationTail: Promise<void> = Promise.resolve();
   private readonly inFlight = new Map<string, Promise<Scene>>();
@@ -119,15 +119,11 @@ export class SceneCacheService {
     });
 
     if (!advertisedRecipe) {
-      const loaded = await this.sidecar.loadSceneWithRecipe(filePath);
-      const scene = LoadSceneResponse.parse(loaded.scene);
-      if (loaded.cacheRecipe) {
-        await this.replaceRecipeIfCurrent(lease, loaded.cacheRecipe);
-      }
-      return scene;
+      return this.deriveWithoutStore(filePath, lease);
     }
 
-    const modelHash = await hashFile(filePath);
+    const modelHash = await this.hashModel(filePath);
+    if (!modelHash) return this.deriveWithoutStore(filePath, lease);
     const assumedKey = sceneCacheKey(modelHash, advertisedRecipe);
     const cached = lease.storageReady ? await this.readEntry(assumedKey) : null;
     if (cached && this.isCurrent(lease)) return cached;
@@ -170,12 +166,34 @@ export class SceneCacheService {
         : await this.replaceRecipeIfCurrent(lease, actualRecipe);
     if (!actualLease) return this.loadScene(filePath);
 
-    const hashAfterLoad = await hashFile(filePath);
-    if (hashAfterLoad !== modelHash) return scene;
+    const hashAfterLoad = await this.hashModel(filePath);
+    if (!hashAfterLoad || hashAfterLoad !== modelHash) return scene;
 
     const key = sceneCacheKey(modelHash, actualRecipe);
     await this.writeEntryIfCurrent(key, scene, actualLease);
     return scene;
+  }
+
+  private async deriveWithoutStore(
+    filePath: string,
+    lease: RecipeLease,
+  ): Promise<Scene> {
+    const loaded = await this.sidecar.loadSceneWithRecipe(filePath);
+    const scene = LoadSceneResponse.parse(loaded.scene);
+    await this.replaceRecipeIfCurrent(lease, loaded.cacheRecipe ?? null);
+    return scene;
+  }
+
+  private async hashModel(filePath: string): Promise<string | null> {
+    try {
+      return await this.fileSystem.hashFile(filePath);
+    } catch (error) {
+      this.reportError(
+        'Scene cache model hashing failed; loading without persistence.',
+        error,
+      );
+      return null;
+    }
   }
 
   private async replaceRecipeIfCurrent(
@@ -198,10 +216,7 @@ export class SceneCacheService {
       return;
     }
 
-    if (this.activeRecipe === UNINITIALIZED || this.activeRecipe !== recipe) {
-      this.generation += 1;
-      this.activeRecipe = recipe;
-    }
+    this.activeRecipe = recipe;
     this.storageReady = false;
 
     if (recipe === null) {
@@ -353,16 +368,13 @@ export class SceneCacheService {
     }
     return {
       recipe: this.activeRecipe,
-      generation: this.generation,
       storageReady: this.storageReady,
     };
   }
 
   private isCurrent(lease: RecipeLease): boolean {
     return (
-      this.activeRecipe !== UNINITIALIZED &&
-      this.activeRecipe === lease.recipe &&
-      this.generation === lease.generation
+      this.activeRecipe !== UNINITIALIZED && this.activeRecipe === lease.recipe
     );
   }
 

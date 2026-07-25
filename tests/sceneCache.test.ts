@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   mkdtemp,
   mkdir,
@@ -12,6 +13,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  MAX_SCENE_ENTRY_BYTES,
   SceneCacheService,
   sceneCacheKey,
   type SceneCacheFileSystem,
@@ -114,6 +116,10 @@ async function cachedSceneFiles(userDataPath: string): Promise<string[]> {
 
 function testFileSystem(): SceneCacheFileSystem {
   return {
+    hashFile: async (filePath) =>
+      createHash('sha256')
+        .update(await readFile(filePath))
+        .digest('hex'),
     mkdir: async (directoryPath) => {
       await mkdir(directoryPath, { recursive: true });
     },
@@ -443,6 +449,34 @@ describe('SceneCacheService', () => {
     expect(await cachedSceneFiles(undersizedDirectory)).toEqual([]);
   });
 
+  it('uses the shipped 64 MiB entry limit by default', async () => {
+    expect(MAX_SCENE_ENTRY_BYTES).toBe(67_108_864);
+    const userDataPath = await temporaryDirectory();
+    const filePath = await modelFile(userDataPath);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    sidecar.returnedRecipe = 'scene/v2.2';
+    await new SceneCacheService({ userDataPath, sidecar }).loadScene(filePath);
+    const baseFileSystem = testFileSystem();
+    const fileSystem: SceneCacheFileSystem = {
+      ...baseFileSystem,
+      size: (targetPath) =>
+        targetPath.endsWith('.scene.json')
+          ? Promise.resolve(67_108_865)
+          : baseFileSystem.size(targetPath),
+    };
+
+    await expect(
+      new SceneCacheService({
+        userDataPath,
+        sidecar,
+        fileSystem,
+      }).loadScene(filePath),
+    ).resolves.toEqual(scene(2));
+
+    expect(sidecar.loadSceneWithRecipe).toHaveBeenCalledTimes(2);
+  });
+
   it('rejects oversized entries before reading their payload', async () => {
     const userDataPath = await temporaryDirectory();
     const filePath = await modelFile(userDataPath);
@@ -512,6 +546,48 @@ describe('SceneCacheService', () => {
     await expect(cache.loadScene(filePath)).resolves.toEqual(scene(2));
 
     expect(sidecar.loadSceneWithRecipe).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns the derived scene when the model vanishes during derivation', async () => {
+    const userDataPath = await temporaryDirectory();
+    const filePath = await modelFile(userDataPath);
+    const expected = scene(7);
+    const cache = new SceneCacheService({
+      userDataPath,
+      sidecar: {
+        sceneCacheRecipe: () => Promise.resolve('scene/v2.2'),
+        loadSceneWithRecipe: async () => {
+          await rm(filePath, { force: true });
+          return { scene: expected, cacheRecipe: 'scene/v2.2' };
+        },
+      },
+      reportError: vi.fn(),
+    });
+
+    await expect(cache.loadScene(filePath)).resolves.toEqual(expected);
+  });
+
+  it('loads uncached when the initial model hash cannot be read', async () => {
+    const userDataPath = await temporaryDirectory();
+    const missingPath = path.join(userDataPath, 'moved.stl');
+    const expected = scene(8);
+    const loadSceneWithRecipe = vi.fn(() =>
+      Promise.resolve({
+        scene: expected,
+        cacheRecipe: 'scene/v2.2',
+      }),
+    );
+    const cache = new SceneCacheService({
+      userDataPath,
+      sidecar: {
+        sceneCacheRecipe: () => Promise.resolve('scene/v2.2'),
+        loadSceneWithRecipe,
+      },
+      reportError: vi.fn(),
+    });
+
+    await expect(cache.loadScene(missingPath)).resolves.toEqual(expected);
+    expect(loadSceneWithRecipe).toHaveBeenCalledOnce();
   });
 
   it('invalidates outstanding reads before recipe eviction performs I/O', async () => {
