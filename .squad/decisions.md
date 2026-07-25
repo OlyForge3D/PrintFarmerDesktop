@@ -57,3 +57,24 @@
 **New rule:** Never fire two `gh pr merge` calls back-to-back without confirming, between them, that the first merge's commit is actually an ancestor of the target branch (e.g. `git merge-base --is-ancestor <merge-commit> origin/<branch>`, or re-fetching and checking `git log` before merging the next PR). Merges against a shared base must be serialized with a verification step in between — batching/parallelizing squash-merges of independent PRs targeting the same branch is not safe.
 
 **Why:** Self-identified during routine PR monitoring; recorded so future sessions (Ripley/Ralph) don't reintroduce silent data loss by merging multiple PRs against the same base without verifying each one lands before starting the next.
+
+## 2026-07-25: Backlog reconciliation — stale epics closed, sequencing chain shortened, Ralph re-enabled read-only
+
+**By:** Ripley
+
+**Trigger:** Jeff observed "seems like work has stalled." Root cause was not blocked work — it was that the scheduled backlog driver (Ralph) had been **disabled** for main-checkout safety, and nothing replaced it, so nothing scanned the board between manual asks. A secondary cause was **stale tracking**: several epics and issues stayed open long after their work shipped, hiding how much was actually done.
+
+**What was reconciled:**
+
+- **Issues #25 and #26 closed.** Both were fully implemented and merged in `development` via PR #33, but stayed open because that PR carried no `Closes #N` reference. Verified against `development` before closing, with evidence comments on each.
+- **Epic #7 (Desktop PrintFarmer connection & upload workflows) closed.** All tracked children (#24, #25, #26) complete; blockers `PrintFarmer#833`/`#834` closed.
+- **Epic #8 (Bi-directional metadata sync & conflict resolution) closed.** Children #27 (PR #37) and #28 (PR #31) complete; cross-repo blocker `PrintFarmer#835` closed. Noted that #28 shipped as a conflict-resolution center _shell_ — residual depth should be filed as new child issues rather than holding the epic open.
+- **Epic #5's checklist corrected.** It still showed `[ ]` for the long-closed #18, #19 and #30 (and the markdown had collapsed into a single unrendered line). Only #20 genuinely remains.
+
+**Sequencing chain is now `#4 -> #5 -> #6`** (was `#4 -> #5 -> #7 -> #6 -> #8`). Epics #3, #7 and #8 are closed. Epic #6 (#21/#22/#23) stays blocked until #4 and #5 finish.
+
+**Ralph re-enabled (hourly) with an explicitly read-only charter.** The workflow runs _in-place in the main checkout_ `D:\s\PrintFarmerDesktop`, which is why it had been disabled. Rather than leave the board unattended, its prompt now hard-codes: main checkout is **strictly read-only** (read-only `git`/`gh` inspection only; no edit/add/commit/checkout/branch/merge/rebase/stash/reset/push/pull/fetch/clean), and **all** code work must be delegated through `create_session`, which provisions an isolated worktree. The prompt also carries the merge-safety rule from the 2026-07-25 incident and an explicit duplicate-delegation check (`list_sessions_and_chats` before spawning), since concurrent sessions previously collided on the same PR.
+
+**Convention established (third application):** an epic whose tracked children are all closed gets **closed**, not left open as a container. Precedent set by epic #3 at Jeff's direction, now applied to #7 and #8. If new scope emerges under a closed epic, file new child issues and open a fresh epic rather than reopening.
+
+**Why:** Recorded so future sessions treat stale-tracking cleanup as part of routine monitoring (Ralph's Step 1 scan now includes it), and so nobody re-disables Ralph without also arranging a replacement driver — an unattended board is what stalls, not the work itself.
