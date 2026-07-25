@@ -7,6 +7,7 @@ import {
   safeStorage,
   type WebContents,
 } from 'electron';
+import { z } from 'zod';
 import {
   AppInfoResponse,
   IPC_CONTRACT_VERSION,
@@ -23,10 +24,84 @@ import {
   type ChannelFactory,
 } from './sidecar.js';
 import { ServerProfileService } from './serverProfiles.js';
+import {
+  TargetProfileNativeError,
+  TargetProfileService,
+} from './targetProfiles.js';
+import { RetargetArtifactService, type Dialogs } from './retargetArtifacts.js';
+
+declare const __PRINTFARMER_E2E_BUILD__: boolean;
+
+const automatedSaveDialogs = z
+  .array(
+    z
+      .object({
+        canceled: z.boolean(),
+        filePath: z.string().max(4096),
+      })
+      .strict()
+      .superRefine((value, context) => {
+        if (!value.canceled && value.filePath.length === 0) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'A non-canceled save response requires a file path.',
+          });
+        }
+      }),
+  )
+  .max(10);
+const automatedOpenDialogs = z.array(z.string().max(4096)).max(10);
+
+function retargetDialogs(): Dialogs {
+  if (
+    typeof __PRINTFARMER_E2E_BUILD__ === 'undefined' ||
+    !__PRINTFARMER_E2E_BUILD__ ||
+    process.env.PRINTFARMER_E2E !== '1'
+  ) {
+    return dialog;
+  }
+
+  const saves = automatedSaveDialogs.parse(
+    JSON.parse(process.env.PRINTFARMER_E2E_SAVE_DIALOGS ?? '[]'),
+  );
+  const openPaths = automatedOpenDialogs.parse(
+    process.env.PRINTFARMER_E2E_OPEN_DIALOGS
+      ? JSON.parse(process.env.PRINTFARMER_E2E_OPEN_DIALOGS)
+      : process.env.PRINTFARMER_E2E_OPEN_DIALOG
+        ? [process.env.PRINTFARMER_E2E_OPEN_DIALOG]
+        : [],
+  );
+  let saveIndex = 0;
+  let openIndex = 0;
+  return {
+    showSaveDialog: () =>
+      Promise.resolve(saves[saveIndex++] ?? { canceled: true, filePath: '' }),
+    showOpenDialog: () => {
+      const openPath = openPaths[openIndex++];
+      return Promise.resolve(
+        openPath
+          ? { canceled: false, filePaths: [openPath] }
+          : { canceled: true, filePaths: [] },
+      );
+    },
+  };
+}
+
+function targetProfileFailure(error: unknown) {
+  return error instanceof TargetProfileNativeError
+    ? error.failure
+    : {
+        domain: 'electron' as const,
+        code: 'sidecarUnavailable' as const,
+        message: 'Snapmaker U1 profiles could not be loaded.',
+        action:
+          'Restart the application; reinstall it if the profile bundle remains unavailable.',
+        part: null,
+        setting: null,
+      };
+}
 import { createUploadJobService, type UploadJobService } from './uploadJobs.js';
 import { RootApprovalStore } from './rootApprovals.js';
-import { TargetProfileService } from './targetProfiles.js';
-import { RetargetArtifactService } from './retargetArtifacts.js';
 
 /**
  * Register all IPC handlers. Every incoming payload is validated against its
@@ -41,11 +116,13 @@ export function registerIpcHandlers(
   channelFactory?: ChannelFactory,
   profileService?: ServerProfileService,
   sharedSidecar?: SidecarClient,
+  sharedRetargetSidecar?: SidecarClient,
   uploadJobService?: UploadJobService,
   rootApprovalStore?: RootApprovalStore,
-): void {
+): () => Promise<void> {
   const sidecar =
     sharedSidecar ?? new SidecarClient(channelFactory ?? spawnSidecarChannel);
+  const retargetSidecar = sharedRetargetSidecar ?? sidecar;
   const profiles =
     profileService ??
     new ServerProfileService({
@@ -55,6 +132,27 @@ export function registerIpcHandlers(
   const approvals =
     rootApprovalStore ??
     new RootApprovalStore({ userDataPath: app.getPath('userData') });
+  const targetProfiles = new TargetProfileService({
+    userDataPath: app.getPath('userData'),
+    sidecar: retargetSidecar,
+  });
+  const retargetDialogService = retargetDialogs();
+  const retargetArtifacts = new RetargetArtifactService({
+    sidecar: retargetSidecar,
+    profiles: targetProfiles,
+    dialogs: retargetDialogService,
+  });
+  const retargetReady = retargetArtifacts.initialize();
+  let targetProfilesInitialized = false;
+  const refreshTargetProfiles = async () => {
+    if (!targetProfilesInitialized) {
+      await targetProfiles.initialize();
+      targetProfilesInitialized = true;
+      return targetProfiles.catalog();
+    }
+    return targetProfiles.refresh();
+  };
+  const retargetOwnerCleanup = new WeakSet<WebContents>();
   const approvedPickerFiles = new Set<string>();
   const authorizeRendererFile = async (
     requestedPath: string,
@@ -72,40 +170,6 @@ export function registerIpcHandlers(
       approvals,
     );
   void uploads.initialize().catch(() => undefined);
-  const targetProfiles = new TargetProfileService({
-    userDataPath: app.getPath('userData'),
-    sidecar,
-  });
-  const retargetArtifacts = new RetargetArtifactService({
-    sidecar,
-    profiles: targetProfiles,
-    dialogs: dialog,
-  });
-  const retargetReady = retargetArtifacts.initialize();
-  let targetProfilesInitialized = false;
-  const refreshTargetProfiles = async () => {
-    if (!targetProfilesInitialized) {
-      await targetProfiles.initialize();
-      targetProfilesInitialized = true;
-      return targetProfiles.catalog();
-    }
-    return targetProfiles.refresh();
-  };
-  const retargetOwnerCleanup = new WeakSet<WebContents>();
-
-  // Terminate the sidecar child process when the app exits. Windows does not
-  // reap child processes on parent exit, so without this the `model-core`
-  // process would linger as an orphan after every quit.
-  if (!sharedSidecar) {
-    app.on('will-quit', () => {
-      sidecar.dispose();
-      profiles.clearTokens();
-    });
-  }
-  app.on('will-quit', () => {
-    uploads.dispose();
-    void retargetArtifacts.disposeAll();
-  });
 
   function retargetElectronError(
     code: 'invalidRequest' | 'profileImportFailed',
@@ -129,6 +193,9 @@ export function registerIpcHandlers(
       setting: null,
     };
   }
+  app.on('will-quit', () => {
+    uploads.dispose();
+  });
 
   const activeSyncContext = async (): Promise<{
     profileId: string;
@@ -197,17 +264,10 @@ export function registerIpcHandlers(
         status: 'ok',
         value: await refreshTargetProfiles(),
       });
-    } catch {
+    } catch (error) {
       return ipcSchemas[IpcChannel.RetargetListProfiles].response.parse({
         status: 'error',
-        error: {
-          domain: 'electron',
-          code: 'profileStoreCorrupt',
-          message: 'Saved imported profiles could not be read.',
-          action: 'Re-import the affected profile.',
-          part: null,
-          setting: null,
-        },
+        error: targetProfileFailure(error),
       });
     }
   });
@@ -218,17 +278,10 @@ export function registerIpcHandlers(
       if (!targetProfilesInitialized) {
         await refreshTargetProfiles();
       }
-    } catch {
+    } catch (error) {
       return ipcSchemas[IpcChannel.RetargetImportProfile].response.parse({
         status: 'error',
-        error: {
-          domain: 'electron',
-          code: 'sidecarUnavailable',
-          message: 'Snapmaker U1 profiles are unavailable.',
-          action: 'Retry after the native model service is available.',
-          part: null,
-          setting: null,
-        },
+        error: targetProfileFailure(error),
       });
     }
     const owner = BrowserWindow.fromWebContents(event.sender);
@@ -238,7 +291,7 @@ export function registerIpcHandlers(
         error: retargetElectronError('invalidRequest'),
       });
     }
-    const picked = await dialog.showOpenDialog(owner, {
+    const picked = await retargetDialogService.showOpenDialog(owner, {
       title: 'Import Snapmaker U1 reference',
       properties: ['openFile'],
       filters: [{ name: 'Editable Snapmaker U1 3MF', extensions: ['3mf'] }],
@@ -616,9 +669,14 @@ export function registerIpcHandlers(
       title: 'Add model folder',
       properties: ['openDirectory' as const],
     };
-    const result = owner
-      ? await dialog.showOpenDialog(owner, options)
-      : await dialog.showOpenDialog(options);
+    const result =
+      retargetDialogService === dialog
+        ? owner
+          ? await dialog.showOpenDialog(owner, options)
+          : await dialog.showOpenDialog(options)
+        : owner
+          ? await retargetDialogService.showOpenDialog(owner, options)
+          : await dialog.showOpenDialog(options);
 
     const selectedPath =
       result.canceled || result.filePaths.length === 0
@@ -764,8 +822,17 @@ export function registerIpcHandlers(
   ipcMain.handle(IpcChannel.ResetApprovedRoots, async () => {
     await approvals.reset();
     approvedPickerFiles.clear();
+    await retargetArtifacts.disposeArtifacts();
     return ipcSchemas[IpcChannel.ResetApprovedRoots].response.parse({
       reset: true,
     });
   });
+
+  return async () => {
+    await retargetArtifacts.disposeAll();
+    if (!sharedSidecar) {
+      sidecar.dispose();
+      profiles.clearTokens();
+    }
+  };
 }

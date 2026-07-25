@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { constants, createReadStream } from 'node:fs';
 import {
-  copyFile,
   lstat,
   mkdir,
+  open,
   readFile,
   readdir,
   rename,
@@ -17,7 +17,8 @@ import type { RetargetProfile } from '@shared/ipc';
 import type { RetargetTargetReference, SidecarClient } from './sidecar.js';
 
 const MAX_PROFILE_BYTES = 512 * 1024 * 1024;
-const MAX_ENTRIES = 200;
+const MAX_CATALOG_ENTRIES = 200;
+const MAX_WARNINGS = 100;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const SHA = /^[a-f0-9]{64}$/;
 const importedId = (sha256: string): string => `imported:${sha256}`;
@@ -122,10 +123,28 @@ const manifestSchema = z
           })
           .strict(),
       )
-      .max(MAX_ENTRIES),
+      .max(MAX_CATALOG_ENTRIES),
   })
   .strict();
 type Manifest = z.infer<typeof manifestSchema>;
+type NativeError = z.infer<typeof nativeError>;
+
+export class TargetProfileNativeError extends Error {
+  readonly failure;
+
+  constructor(error: NativeError) {
+    super(error.message);
+    this.name = 'TargetProfileNativeError';
+    this.failure = {
+      domain: 'native' as const,
+      code: error.code,
+      message: error.message,
+      action: error.action,
+      part: error.part ?? null,
+      setting: error.setting ?? null,
+    };
+  }
+}
 
 export interface TargetProfileServiceOptions {
   userDataPath: string;
@@ -136,6 +155,7 @@ export interface TargetProfileServiceOptions {
     | 'inspectImportedRetargetProfile'
   >;
   now?: () => number;
+  maxProfileBytes?: number;
 }
 
 export interface PublicCatalog {
@@ -156,18 +176,21 @@ export class TargetProfileService {
   private readonly objects: string;
   private readonly manifestPath: string;
   private readonly now: () => number;
+  private readonly maxProfileBytes: number;
   private bundled = new Map<string, RetargetProfile>();
   private imported = new Map<
     string,
     { profile: RetargetProfile; path: string; sha256: string }
   >();
   private warnings: PublicCatalog['warnings'] = [];
+  private mutationQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: TargetProfileServiceOptions) {
     this.root = path.join(options.userDataPath, 'retarget', 'profiles', 'v1');
     this.objects = path.join(this.root, 'objects', 'sha256');
     this.manifestPath = path.join(this.root, 'manifest.json');
     this.now = options.now ?? Date.now;
+    this.maxProfileBytes = options.maxProfileBytes ?? MAX_PROFILE_BYTES;
   }
 
   async initialize(): Promise<void> {
@@ -177,6 +200,10 @@ export class TargetProfileService {
   }
 
   async refresh(): Promise<PublicCatalog> {
+    return this.withMutation(() => this.refreshLocked());
+  }
+
+  private async refreshLocked(): Promise<PublicCatalog> {
     this.warnings = [];
     await this.loadBundled();
     try {
@@ -198,25 +225,25 @@ export class TargetProfileService {
       .map(({ profile }) => profile)
       .sort(compareProfiles)
       .concat([...this.bundled.values()].sort(compareProfiles));
-    return { profiles, warnings: this.warnings };
+    return { profiles, warnings: this.warnings.slice(0, MAX_WARNINGS) };
   }
 
   async importFile(
     sourcePath: string,
   ): Promise<{ profile: RetargetProfile; duplicate: boolean }> {
+    return this.withMutation(() => this.importFileLocked(sourcePath));
+  }
+
+  private async importFileLocked(
+    sourcePath: string,
+  ): Promise<{ profile: RetargetProfile; duplicate: boolean }> {
     await mkdir(this.objects, { recursive: true });
-    const source = await lstat(sourcePath);
-    if (
-      !source.isFile() ||
-      source.isSymbolicLink() ||
-      source.size > MAX_PROFILE_BYTES ||
-      path.extname(sourcePath).toLowerCase() !== '.3mf'
-    ) {
+    if (path.extname(sourcePath).toLowerCase() !== '.3mf') {
       throw new Error('profileImportFailed');
     }
     const staging = path.join(this.root, `.import-${randomUUID()}.tmp`);
-    await copyFile(sourcePath, staging, 1); // COPYFILE_EXCL
     try {
+      await copyBoundedRegularFile(sourcePath, staging, this.maxProfileBytes);
       const sha256 = await hashRegularFile(staging);
       const inspected = nativeOutcome(importedDetails).parse(
         await this.options.sidecar.inspectImportedRetargetProfile(staging),
@@ -228,6 +255,22 @@ export class TargetProfileService {
       ) {
         throw new Error('profileImportFailed');
       }
+      const manifest = await this.readManifest(true);
+      const existingIndex = manifest.entries.findIndex(
+        (entry) => entry.sha256 === sha256,
+      );
+      const existing =
+        existingIndex === -1 ? undefined : manifest.entries[existingIndex];
+      const importedCapacity = Math.max(
+        0,
+        MAX_CATALOG_ENTRIES - this.bundled.size,
+      );
+      if (
+        existingIndex >= importedCapacity ||
+        (!existing && manifest.entries.length >= importedCapacity)
+      ) {
+        throw new Error('profileCatalogFull');
+      }
       const finalPath = this.objectPath(sha256);
       await mkdir(path.dirname(finalPath), { recursive: true });
       try {
@@ -238,10 +281,6 @@ export class TargetProfileService {
           throw new Error('profileStoreCorrupt');
         await rm(staging, { force: true });
       }
-      const manifest = await this.readManifest(true);
-      const existing = manifest.entries.find(
-        (entry) => entry.sha256 === sha256,
-      );
       if (existing) {
         await this.loadImported();
         return {
@@ -282,14 +321,18 @@ export class TargetProfileService {
 
   private async loadBundled(): Promise<void> {
     const listed = nativeOutcome(
-      z.array(bundledSummary).max(MAX_ENTRIES),
+      z.array(bundledSummary).max(MAX_CATALOG_ENTRIES),
     ).parse(await this.options.sidecar.listRetargetProfiles());
+    if (listed.status === 'error')
+      throw new TargetProfileNativeError(listed.error);
     if (listed.status !== 'ok') throw new Error('sidecarUnavailable');
     const next = new Map<string, RetargetProfile>();
     for (const summary of listed.value) {
       const inspected = nativeOutcome(bundledDetails).parse(
         await this.options.sidecar.inspectRetargetProfile(summary.profileId),
       );
+      if (inspected.status === 'error')
+        throw new TargetProfileNativeError(inspected.error);
       if (inspected.status !== 'ok') throw new Error('sidecarUnavailable');
       const value = inspected.value;
       next.set(value.profileId, {
@@ -315,7 +358,20 @@ export class TargetProfileService {
     this.imported.clear();
     const manifest = await this.readManifest(true);
     const referenced = new Set(manifest.entries.map((entry) => entry.sha256));
-    for (const entry of manifest.entries) {
+    const importedCapacity = Math.max(
+      0,
+      MAX_CATALOG_ENTRIES - this.bundled.size,
+    );
+    const activeEntries = manifest.entries.slice(0, importedCapacity);
+    if (activeEntries.length !== manifest.entries.length) {
+      this.warnings.push(
+        storeWarning(
+          'Imported targets beyond the catalog capacity were excluded.',
+          'Remove unused imported targets before adding another reference.',
+        ),
+      );
+    }
+    for (const entry of activeEntries) {
       const objectPath = this.objectPath(entry.sha256);
       try {
         if (
@@ -349,9 +405,23 @@ export class TargetProfileService {
     manifest: Manifest,
   ): Promise<void> {
     const recovered = [...manifest.entries];
+    const importedCapacity = Math.max(
+      0,
+      MAX_CATALOG_ENTRIES - this.bundled.size,
+    );
     for (const file of await walkFiles(this.objects)) {
       const name = path.basename(file, '.3mf');
       if (!SHA.test(name) || referenced.has(name)) continue;
+      if (recovered.length >= importedCapacity) {
+        await rm(file, { force: true });
+        this.warnings.push(
+          storeWarning(
+            `Discarded unreferenced profile ${importedId(name)} because the target catalog is full.`,
+            'Remove an imported target before importing this reference again.',
+          ),
+        );
+        continue;
+      }
       try {
         if ((await hashRegularFile(file)) !== name)
           throw new Error('bad orphan');
@@ -422,6 +492,15 @@ export class TargetProfileService {
     await rename(temporary, this.manifestPath);
   }
 
+  private withMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.mutationQueue.then(operation, operation);
+    this.mutationQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
   private objectPath(sha256: string): string {
     return path.join(this.objects, sha256.slice(0, 2), `${sha256}.3mf`);
   }
@@ -477,6 +556,48 @@ function compareProfiles(a: RetargetProfile, b: RetargetProfile): number {
 }
 function hashText(value: string): string {
   return createHash('sha256').update(value).digest('hex');
+}
+async function copyBoundedRegularFile(
+  sourcePath: string,
+  destinationPath: string,
+  maximumBytes: number,
+): Promise<void> {
+  const source = await open(
+    sourcePath,
+    constants.O_RDONLY | constants.O_NOFOLLOW,
+  );
+  try {
+    const metadata = await source.stat();
+    if (!metadata.isFile() || metadata.size > maximumBytes) {
+      throw new Error('profileImportFailed');
+    }
+    const destination = await open(destinationPath, 'wx', 0o600);
+    try {
+      const buffer = Buffer.allocUnsafe(64 * 1024);
+      let copied = 0;
+      for (;;) {
+        const { bytesRead } = await source.read(buffer, 0, buffer.length, null);
+        if (bytesRead === 0) break;
+        copied += bytesRead;
+        if (copied > maximumBytes) throw new Error('profileImportFailed');
+        let written = 0;
+        while (written < bytesRead) {
+          const result = await destination.write(
+            buffer,
+            written,
+            bytesRead - written,
+            null,
+          );
+          written += result.bytesWritten;
+        }
+      }
+      await destination.sync();
+    } finally {
+      await destination.close();
+    }
+  } finally {
+    await source.close();
+  }
 }
 async function hashRegularFile(file: string): Promise<string> {
   const info = await lstat(file);

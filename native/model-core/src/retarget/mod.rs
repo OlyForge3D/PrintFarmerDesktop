@@ -46,9 +46,9 @@ impl Default for RetargetLimits {
     fn default() -> Self {
         Self {
             max_source_bytes: 512 * 1024 * 1024,
-            max_archive_parts: 100_000,
-            max_uncompressed_bytes: 2 * 1024 * 1024 * 1024,
-            max_part_bytes: 512 * 1024 * 1024,
+            max_archive_parts: 10_000,
+            max_uncompressed_bytes: 1024 * 1024 * 1024,
+            max_part_bytes: 256 * 1024 * 1024,
             max_project_settings_bytes: 16 * 1024 * 1024,
             max_model_settings_bytes: 16 * 1024 * 1024,
             max_manifest_bytes: 16 * 1024 * 1024,

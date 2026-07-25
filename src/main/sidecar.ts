@@ -58,6 +58,8 @@ export interface SidecarClientOptions {
   mutationTimeoutMs?: number;
   terminationTimeoutMs?: number;
   maxConsecutiveFailures?: number;
+  serializeRequests?: boolean;
+  requireProtocolHandshake?: boolean;
 }
 
 /** Private main-process-only native target reference. Never expose this to IPC. */
@@ -189,6 +191,11 @@ export class SidecarClient {
   private readonly mutationTimeoutMs: number;
   private readonly terminationTimeoutMs: number;
   private readonly maxConsecutiveFailures: number;
+  private readonly serializeRequests: boolean;
+  private readonly requireProtocolHandshake: boolean;
+  private serializedQueue: Promise<void> = Promise.resolve();
+  private protocolChannel: SidecarChannel | null = null;
+  private protocolReady: Promise<void> | null = null;
 
   constructor(
     private readonly createChannel: ChannelFactory,
@@ -202,6 +209,8 @@ export class SidecarClient {
       options.terminationTimeoutMs ?? DEFAULT_TERMINATION_TIMEOUT_MS;
     this.maxConsecutiveFailures =
       options.maxConsecutiveFailures ?? MAX_CONSECUTIVE_FAILURES;
+    this.serializeRequests = options.serializeRequests ?? false;
+    this.requireProtocolHandshake = options.requireProtocolHandshake ?? false;
   }
 
   /** Confirm the sidecar is alive and report its protocol/version. */
@@ -213,17 +222,17 @@ export class SidecarClient {
       protocolVersion: number;
       sidecarVersion: string;
     };
-    if (result.protocolVersion !== SIDECAR_RPC_PROTOCOL_VERSION) {
-      throw new Error(
-        `unsupported sidecar protocol ${result.protocolVersion}; expected ${SIDECAR_RPC_PROTOCOL_VERSION}`,
-      );
-    }
+    validateHandshake(result);
     return result;
   }
 
   /** Parse a model file into a normalized scene mesh (raw wire object). */
   async loadScene(filePath: string): Promise<unknown> {
     return this.request('loadScene', { path: filePath });
+  }
+
+  async loadRetargetScene(filePath: string): Promise<unknown> {
+    return this.retargetRequest('loadScene', { path: filePath });
   }
 
   async listRetargetProfiles(): Promise<unknown> {
@@ -235,7 +244,7 @@ export class SidecarClient {
   }
 
   async inspectImportedRetargetProfile(path: string): Promise<unknown> {
-    return this.request('inspectImportedRetargetProfile', { path });
+    return this.retargetRequest('inspectImportedRetargetProfile', { path });
   }
 
   async preflightRetarget(
@@ -243,7 +252,7 @@ export class SidecarClient {
     target: RetargetTargetReference,
     objectExclusion: boolean,
   ): Promise<unknown> {
-    return this.request('preflightRetarget', {
+    return this.retargetRequest('preflightRetarget', {
       sourcePath,
       target,
       objectExclusion,
@@ -269,7 +278,7 @@ export class SidecarClient {
     target: RetargetTargetReference,
     objectExclusion: boolean,
   ): Promise<unknown> {
-    return this.request('validateRetargetOutput', {
+    return this.retargetRequest('validateRetargetOutput', {
       sourcePath,
       outputPath,
       target,
@@ -751,6 +760,13 @@ export class SidecarClient {
     });
   }
 
+  private retargetRequest(method: string, params: unknown): Promise<unknown> {
+    return this.request(method, params, {
+      timeoutMs: this.mutationTimeoutMs,
+      terminateOnTimeout: true,
+    });
+  }
+
   private request(
     method: string,
     params: unknown,
@@ -758,6 +774,57 @@ export class SidecarClient {
       timeoutMs: this.requestTimeoutMs,
       terminateOnTimeout: false,
     },
+  ): Promise<unknown> {
+    const dispatch = async (): Promise<unknown> => {
+      if (this.requireProtocolHandshake && method !== 'handshake') {
+        await this.ensureProtocol();
+      }
+      return this.dispatchRequest(method, params, policy);
+    };
+    if (!this.serializeRequests) {
+      return dispatch();
+    }
+    const result = this.serializedQueue.then(dispatch);
+    this.serializedQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  private async ensureProtocol(): Promise<void> {
+    const channel = this.ensureChannel();
+    if (this.protocolChannel !== channel || !this.protocolReady) {
+      this.protocolChannel = channel;
+      this.protocolReady = this.dispatchRequest(
+        'handshake',
+        {},
+        {
+          timeoutMs: this.requestTimeoutMs,
+          terminateOnTimeout: false,
+        },
+      ).then((result) => {
+        validateHandshake(result);
+      });
+    }
+    try {
+      await this.protocolReady;
+    } catch (error) {
+      if (this.protocolChannel === channel) {
+        this.protocolChannel = null;
+        this.protocolReady = null;
+      }
+      throw error;
+    }
+    if (this.channel !== channel) {
+      await this.ensureProtocol();
+    }
+  }
+
+  private dispatchRequest(
+    method: string,
+    params: unknown,
+    policy: RequestPolicy,
   ): Promise<unknown> {
     if (this.disposed) {
       return Promise.reject(new Error('sidecar client disposed'));
@@ -903,6 +970,7 @@ export class SidecarClient {
       if (this.channel === closedChannel) {
         this.channel = null;
       }
+      this.clearProtocol(closedChannel);
       this.rejectAllPending(terminationError);
       return;
     }
@@ -911,6 +979,7 @@ export class SidecarClient {
       return;
     }
     this.channel = null;
+    this.clearProtocol(closedChannel);
     if (this.pending.size > 0) {
       this.recordFailure();
       this.rejectAllPending(
@@ -925,12 +994,37 @@ export class SidecarClient {
     this.consecutiveFailures += 1;
   }
 
+  private clearProtocol(channel: SidecarChannel): void {
+    if (this.protocolChannel !== channel) return;
+    this.protocolChannel = null;
+    this.protocolReady = null;
+  }
+
   private rejectAllPending(reason: Error): void {
     for (const [, pending] of this.pending) {
       clearTimeout(pending.timer);
       pending.reject(reason);
     }
     this.pending.clear();
+  }
+}
+
+function validateHandshake(value: unknown): asserts value is {
+  protocolVersion: number;
+  sidecarVersion: string;
+} {
+  const result = value as {
+    protocolVersion?: unknown;
+    sidecarVersion?: unknown;
+  } | null;
+  if (
+    result?.protocolVersion !== SIDECAR_RPC_PROTOCOL_VERSION ||
+    typeof result.sidecarVersion !== 'string' ||
+    result.sidecarVersion.length === 0
+  ) {
+    throw new Error(
+      `sidecar protocol mismatch: expected ${SIDECAR_RPC_PROTOCOL_VERSION}, received ${String(result?.protocolVersion)}`,
+    );
   }
 }
 

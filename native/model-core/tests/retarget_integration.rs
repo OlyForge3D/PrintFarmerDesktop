@@ -12,6 +12,45 @@ use tempfile::TempDir;
 use zip::write::{SimpleFileOptions, ZipWriter};
 use zip::CompressionMethod;
 
+const MANDATORY_SPEED_KEYS: &[&str] = &[
+    "bridge_speed",
+    "gap_infill_speed",
+    "initial_layer_infill_speed",
+    "initial_layer_speed",
+    "initial_layer_travel_speed",
+    "inner_wall_speed",
+    "internal_bridge_speed",
+    "internal_solid_infill_speed",
+    "ironing_speed",
+    "outer_wall_speed",
+    "overhang_1_4_speed",
+    "overhang_2_4_speed",
+    "overhang_3_4_speed",
+    "overhang_4_4_speed",
+    "overhang_totally_speed",
+    "small_perimeter_speed",
+    "sparse_infill_speed",
+    "support_interface_speed",
+    "support_speed",
+    "top_surface_speed",
+    "travel_speed",
+    "travel_speed_z",
+];
+
+const MANDATORY_ACCELERATION_KEYS: &[&str] = &[
+    "bridge_acceleration",
+    "default_acceleration",
+    "initial_layer_acceleration",
+    "initial_layer_travel_acceleration",
+    "inner_wall_acceleration",
+    "internal_bridge_acceleration",
+    "internal_solid_infill_acceleration",
+    "outer_wall_acceleration",
+    "sparse_infill_acceleration",
+    "top_surface_acceleration",
+    "travel_acceleration",
+];
+
 fn bundle_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -188,6 +227,11 @@ fn builds_deterministically_preserves_source_and_reopens_scene() {
     let first = temp.path().join("first.3mf");
     let second = temp.path().join("second.3mf");
     editable_project(&source, "OrcaSlicer-2.3", true);
+    replace_zip_part(
+        &source,
+        "Metadata/_rels/slice_info.config.rels",
+        br#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>"#,
+    );
     let source_hash = hash_file(&source).unwrap();
 
     let preflight = engine
@@ -261,6 +305,7 @@ fn builds_deterministically_preserves_source_and_reopens_scene() {
     for removed in [
         "Metadata/plate_1.gcode",
         "Metadata/slice_info.config",
+        "Metadata/_rels/slice_info.config.rels",
         "Metadata/custom_gcode_per_layer.xml",
         "_xmlsignatures/origin.sigs",
     ] {
@@ -281,6 +326,157 @@ fn builds_deterministically_preserves_source_and_reopens_scene() {
     model_core::threemf::parse_file(&first).unwrap();
     model_core::scene::load_scene(&first).unwrap();
     model_core::vendor::extract_file(&first).unwrap();
+}
+
+#[test]
+fn independent_projects_preserve_single_material_and_multi_tool_placement() {
+    let engine = engine();
+    let target = target_id(&engine);
+    let temp = TempDir::new().unwrap();
+
+    let single = temp.path().join("single-material.3mf");
+    let single_output = temp.path().join("single-material-output.3mf");
+    editable_project(&single, "OrcaSlicer-2.3.5", true);
+    replace_zip_part(
+        &single,
+        "Metadata/project_settings.config",
+        br##"{"printer_model":"Independent source","layer_height":"0.2","filament_type":["PLA"],"filament_colour":["#112233"]}"##,
+    );
+    replace_zip_part(
+        &single,
+        "Metadata/model_settings.config",
+        br#"<config><object id="2" extruder="1"><part id="9" extruder="1"/></object><plate><metadata key="object_id" value="2"/></plate></config>"#,
+    );
+    let single_preflight = engine
+        .preflight(&single, RetargetOptions::default())
+        .unwrap();
+    assert!(single_preflight.accepted, "{:?}", single_preflight.blockers);
+    assert_eq!(single_preflight.source.materials, ["PLA"]);
+    assert_eq!(single_preflight.source.plate_count, 1);
+    let single_report = engine
+        .build(&single, &single_output, &target, RetargetOptions::default())
+        .unwrap();
+    assert!(single_report.validation.valid);
+    let imported_single = engine.inspect_imported_profile(&single_output).unwrap();
+    assert_eq!(imported_single.capabilities.max_filament_slots, 1);
+    let single_settings: Value = serde_json::from_slice(&read_zip_part(
+        &single_output,
+        "Metadata/project_settings.config",
+    ))
+    .unwrap();
+    assert_eq!(
+        single_settings["filament_settings_id"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        read_zip_part(&single, "Metadata/model_settings.config"),
+        read_zip_part(&single_output, "Metadata/model_settings.config")
+    );
+
+    let routed = temp.path().join("multi-tool-two-plate.3mf");
+    let routed_output = temp.path().join("multi-tool-two-plate-output.3mf");
+    editable_project(&routed, "OrcaSlicer-2.3.5", true);
+    replace_zip_part(
+        &routed,
+        "Metadata/model_settings.config",
+        br#"<config><object id="2" extruder="2"><part id="9" extruder="1"/></object><assembly><assemble_item object_id="1"/></assembly><plate><metadata key="object_id" value="2"/></plate><plate/></config>"#,
+    );
+    let routed_preflight = engine
+        .preflight(&routed, RetargetOptions::default())
+        .unwrap();
+    assert!(routed_preflight.accepted, "{:?}", routed_preflight.blockers);
+    assert_eq!(routed_preflight.source.materials, ["PLA", "PETG"]);
+    assert_eq!(routed_preflight.source.plate_count, 2);
+    let routed_report = engine
+        .build(&routed, &routed_output, &target, RetargetOptions::default())
+        .unwrap();
+    assert!(routed_report.validation.valid);
+    assert_eq!(
+        read_zip_part(&routed, "Metadata/model_settings.config"),
+        read_zip_part(&routed_output, "Metadata/model_settings.config")
+    );
+    assert_eq!(
+        read_zip_part(&routed, "3D/3dmodel.model"),
+        read_zip_part(&routed_output, "3D/3dmodel.model")
+    );
+}
+
+#[test]
+fn every_mandatory_global_and_object_motion_setting_is_clamped() {
+    let engine = engine();
+    let target = target_id(&engine);
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("all-motion-overrides.3mf");
+    let output = temp.path().join("all-motion-overrides-output.3mf");
+    editable_project(&source, "OrcaSlicer-2.3.5", true);
+
+    let mut settings = serde_json::Map::from_iter([
+        ("printer_model".to_string(), json!("Independent source")),
+        ("layer_height".to_string(), json!("0.2")),
+        ("filament_type".to_string(), json!(["PLA", "PETG"])),
+        ("filament_colour".to_string(), json!(["#112233", "#AABBCC"])),
+    ]);
+    for key in MANDATORY_SPEED_KEYS
+        .iter()
+        .chain(MANDATORY_ACCELERATION_KEYS)
+    {
+        settings.insert((*key).to_string(), json!("999999"));
+    }
+    replace_zip_part(
+        &source,
+        "Metadata/project_settings.config",
+        serde_json::to_string(&settings).unwrap().as_bytes(),
+    );
+
+    let object_overrides = MANDATORY_SPEED_KEYS
+        .iter()
+        .chain(MANDATORY_ACCELERATION_KEYS)
+        .map(|key| format!(r#"<metadata key="{key}" value="999999" note="A &amp; B"/>"#))
+        .collect::<String>();
+    let model_settings = format!(
+        r#"<config><object id="2" extruder="2">{object_overrides}</object><plate><metadata key="object_id" value="2"/></plate></config>"#
+    );
+    replace_zip_part(
+        &source,
+        "Metadata/model_settings.config",
+        model_settings.as_bytes(),
+    );
+
+    let report = engine
+        .build(&source, &output, &target, RetargetOptions::default())
+        .unwrap();
+    assert!(report.validation.valid);
+    let rebuilt: Value =
+        serde_json::from_slice(&read_zip_part(&output, "Metadata/project_settings.config"))
+            .unwrap();
+    let rebuilt_model =
+        String::from_utf8(read_zip_part(&output, "Metadata/model_settings.config")).unwrap();
+    assert!(rebuilt_model.contains(r#"note="A &amp; B""#));
+    assert!(!rebuilt_model.contains("&amp;amp;"));
+    let guardrail_changes = report.applied_changes.get("guardrails").unwrap();
+    for key in MANDATORY_SPEED_KEYS
+        .iter()
+        .chain(MANDATORY_ACCELERATION_KEYS)
+    {
+        let global = rebuilt[*key].as_str().unwrap().parse::<f64>().unwrap();
+        assert!(
+            global.is_finite() && global > 0.0 && global < 999999.0,
+            "{key} was not safely clamped: {global}"
+        );
+        assert!(
+            !rebuilt_model.contains(&format!(r#"key="{key}" value="999999""#)),
+            "per-object {key} was not clamped"
+        );
+        assert!(
+            guardrail_changes
+                .iter()
+                .any(|change| change.setting.as_deref() == Some(key)),
+            "{key} did not produce a guardrail change"
+        );
+    }
 }
 
 #[test]
@@ -392,6 +588,21 @@ fn classifies_slicers_and_blocks_invalid_material_configurations() {
         .iter()
         .any(|blocker| blocker.code == IssueCode::InvalidModelSettings));
 
+    let invalid_part_extruder = temp.path().join("invalid-part-extruder.3mf");
+    editable_project(&invalid_part_extruder, "OrcaSlicer", true);
+    replace_zip_part(
+        &invalid_part_extruder,
+        "Metadata/model_settings.config",
+        br#"<config><object id="2"><part id="9" extruder="5"/></object></config>"#,
+    );
+    let report = engine
+        .preflight(&invalid_part_extruder, RetargetOptions::default())
+        .unwrap();
+    assert!(report
+        .blockers
+        .iter()
+        .any(|blocker| blocker.code == IssueCode::InvalidModelSettings));
+
     let invalid_extruder = temp.path().join("invalid-extruder-metadata.3mf");
     editable_project(&invalid_extruder, "OrcaSlicer", true);
     replace_zip_part(
@@ -421,6 +632,21 @@ fn classifies_slicers_and_blocks_invalid_material_configurations() {
         .blockers
         .iter()
         .any(|blocker| blocker.code == IssueCode::InvalidModelSettings));
+
+    let inherited_extruder = temp.path().join("inherited-extruder.3mf");
+    editable_project(&inherited_extruder, "OrcaSlicer", true);
+    replace_zip_part(
+        &inherited_extruder,
+        "Metadata/model_settings.config",
+        br#"<config><object id="2" extruder="0"><metadata key="extruder" value="0"/></object></config>"#,
+    );
+    let report = engine
+        .preflight(&inherited_extruder, RetargetOptions::default())
+        .unwrap();
+    assert!(report
+        .blockers
+        .iter()
+        .all(|blocker| blocker.code != IssueCode::InvalidModelSettings));
 
     let dangling_plate_object = temp.path().join("dangling-plate-object.3mf");
     editable_project(&dangling_plate_object, "OrcaSlicer", true);
@@ -539,6 +765,23 @@ fn rejects_external_relationships_and_existing_output() {
 }
 
 #[test]
+fn rejects_oversized_control_parts_during_archive_loading() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("oversized-project-settings.3mf");
+    editable_project(&source, "OrcaSlicer", true);
+    let limits = RetargetLimits {
+        max_project_settings_bytes: 64,
+        ..RetargetLimits::default()
+    };
+    let engine = RetargetEngine::open(bundle_root(), limits).unwrap();
+
+    let error = engine
+        .preflight(&source, RetargetOptions::default())
+        .unwrap_err();
+    assert_eq!(error.code, IssueCode::ArchiveLimitExceeded);
+}
+
+#[test]
 fn missing_sources_use_stable_source_not_found_code() {
     let engine = engine();
     let target = target_id(&engine);
@@ -587,6 +830,21 @@ fn preflight_blocks_inconsistent_per_filament_arrays() {
         blocker.code == IssueCode::IncompleteProject
             && blocker.setting.as_deref() == Some("additional_cooling_fan_speed")
     }));
+
+    let too_many_materials = temp.path().join("too-many-materials.3mf");
+    editable_project(&too_many_materials, "OrcaSlicer", true);
+    mutate_project_settings(&too_many_materials, |settings| {
+        settings["filament_type"] = json!(["PLA", "PETG", "ABS", "ASA", "PLA"]);
+        settings["filament_colour"] =
+            json!(["#111111", "#222222", "#333333", "#444444", "#555555"]);
+    });
+    let report = engine
+        .preflight_target(&too_many_materials, &target, RetargetOptions::default())
+        .unwrap();
+    assert!(report
+        .blockers
+        .iter()
+        .any(|blocker| blocker.code == IssueCode::UnsupportedMaterial));
 
     let request = json!({
         "id": 1,
@@ -829,6 +1087,43 @@ fn imported_target_inspect_preflight_build_and_rpc_are_content_addressed() {
             RetargetOptions::default(),
         )
         .unwrap();
+    let pinned_reference_settings: Value = serde_json::from_slice(&read_zip_part(
+        &reference,
+        "Metadata/project_settings.config",
+    ))
+    .unwrap();
+    mutate_project_settings(&reference, |settings| {
+        settings["machine_start_gcode"] = json!("M112 IMPORTED MACHINE SCRIPT");
+        settings["filament_start_gcode"] = json!([
+            "M112 IMPORTED FILAMENT SCRIPT",
+            "M112 IMPORTED FILAMENT SCRIPT"
+        ]);
+        settings["time_lapse_gcode"] = json!("M112 IMPORTED TIMELAPSE SCRIPT");
+        settings["machine_max_speed_x"] = json!(["999999", "999999"]);
+        settings["machine_max_speed_y"] = json!(["999999", "999999"]);
+        settings["inner_wall_speed"] = json!("999999");
+        settings["silent_mode"] = json!("1");
+        settings["standby_temperature_delta"] = json!("500");
+        for key in [
+            "filament_max_volumetric_speed",
+            "nozzle_temperature",
+            "nozzle_temperature_initial_layer",
+            "idle_temperature",
+            "hot_plate_temp",
+            "hot_plate_temp_initial_layer",
+            "cool_plate_temp",
+            "cool_plate_temp_initial_layer",
+            "eng_plate_temp",
+            "eng_plate_temp_initial_layer",
+            "textured_cool_plate_temp",
+            "textured_cool_plate_temp_initial_layer",
+            "textured_plate_temp",
+            "textured_plate_temp_initial_layer",
+            "chamber_temperature",
+        ] {
+            settings[key] = json!(["999999", "999999"]);
+        }
+    });
     mutate_project_settings(&source, |settings| {
         settings["filament_type"] = json!(["PETG", "Polylactic Acid"]);
         settings["filament_colour"] = json!(["#AABBCC", "#112233"]);
@@ -886,6 +1181,82 @@ fn imported_target_inspect_preflight_build_and_rpc_are_content_addressed() {
         output_settings["filament_settings_id"],
         json!([reference_filaments[1], reference_filaments[0]])
     );
+    assert_ne!(
+        output_settings["machine_start_gcode"],
+        "M112 IMPORTED MACHINE SCRIPT"
+    );
+    assert!(output_settings["filament_start_gcode"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|value| value != "M112 IMPORTED FILAMENT SCRIPT"));
+    assert!(output_settings.get("time_lapse_gcode").is_none());
+    assert_eq!(
+        output_settings["silent_mode"],
+        pinned_reference_settings["silent_mode"]
+    );
+    assert!(
+        output_settings["standby_temperature_delta"]
+            .as_str()
+            .unwrap()
+            .parse::<f64>()
+            .unwrap()
+            <= 0.0
+    );
+    assert_eq!(
+        output_settings["machine_max_speed_x"],
+        pinned_reference_settings["machine_max_speed_x"]
+    );
+    let pinned_machine_speed = ["machine_max_speed_x", "machine_max_speed_y"]
+        .iter()
+        .map(|key| {
+            pinned_reference_settings[*key]
+                .as_array()
+                .unwrap()
+                .first()
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .parse::<f64>()
+                .unwrap()
+        })
+        .reduce(f64::min)
+        .unwrap();
+    assert!(
+        output_settings["inner_wall_speed"]
+            .as_str()
+            .unwrap()
+            .parse::<f64>()
+            .unwrap()
+            <= pinned_machine_speed
+    );
+    for key in [
+        "filament_max_volumetric_speed",
+        "nozzle_temperature",
+        "nozzle_temperature_initial_layer",
+        "idle_temperature",
+        "hot_plate_temp",
+        "hot_plate_temp_initial_layer",
+        "cool_plate_temp",
+        "cool_plate_temp_initial_layer",
+        "eng_plate_temp",
+        "eng_plate_temp_initial_layer",
+        "textured_cool_plate_temp",
+        "textured_cool_plate_temp_initial_layer",
+        "textured_plate_temp",
+        "textured_plate_temp_initial_layer",
+        "chamber_temperature",
+    ] {
+        match output_settings.get(key) {
+            Some(value) => assert!(value.as_array().unwrap().iter().all(|value| value
+                .as_str()
+                .unwrap()
+                .parse::<f64>()
+                .unwrap()
+                < 999999.0)),
+            None => assert!(pinned_reference_settings.get(key).is_none()),
+        }
+    }
 
     let alias_error = engine
         .preflight_target(&reference, target.clone(), RetargetOptions::default())
@@ -989,6 +1360,17 @@ fn imported_targets_reject_incomplete_invalid_and_ambiguous_settings() {
         .unwrap_err();
     assert_eq!(error.code, IssueCode::ProfileValueInvalid);
     assert_eq!(error.setting.as_deref(), Some("printer_variant"));
+
+    let executable_setting = temp.path().join("executable-setting.3mf");
+    fs::copy(&reference, &executable_setting).unwrap();
+    mutate_project_settings(&executable_setting, |settings| {
+        settings["post_process"] = json!(["untrusted-command"]);
+    });
+    let error = engine
+        .inspect_imported_profile(&executable_setting)
+        .unwrap_err();
+    assert_eq!(error.code, IssueCode::ProfileValueInvalid);
+    assert_eq!(error.setting.as_deref(), Some("post_process"));
 
     let missing_script = temp.path().join("missing-script.3mf");
     fs::copy(&reference, &missing_script).unwrap();

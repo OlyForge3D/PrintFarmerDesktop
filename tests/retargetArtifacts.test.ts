@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   access,
   mkdir,
@@ -20,6 +20,12 @@ const temporaryDirectories: string[] = [];
 const profileId =
   'snapmaker-u1-orca-presets:profiles/Snapmaker/process/standard.json';
 
+async function sha256(file: string): Promise<string> {
+  return createHash('sha256')
+    .update(await readFile(file))
+    .digest('hex');
+}
+
 function report(sourceHash: string) {
   return {
     accepted: true,
@@ -37,7 +43,14 @@ function report(sourceHash: string) {
     recommendation: null,
     blockers: [],
     warnings: [],
-    proposedChanges: {},
+    proposedChanges: {
+      objectExclusion: [
+        {
+          code: 'objectExclusionEnabled',
+          message: 'Enabled object exclusion.',
+        },
+      ],
+    },
   };
 }
 
@@ -107,7 +120,14 @@ async function fixture(options?: {
             targetProfileId: profileId,
             removedPartCount: 0,
             preservedPartCount: 1,
-            appliedChanges: {},
+            appliedChanges: {
+              machine: [
+                {
+                  code: 'machineReplaced',
+                  message: 'Replaced the machine profile.',
+                },
+              ],
+            },
             warnings: [],
             validation: {
               valid: true,
@@ -123,21 +143,23 @@ async function fixture(options?: {
         };
       },
     ),
-    validateRetargetOutput: vi.fn(async (_source: string, output: string) => {
-      const outputHash = createHash('sha256')
-        .update(await readFile(output))
-        .digest('hex');
-      return {
-        status: 'ok',
-        value: {
-          valid: true,
-          sourceSha256: sourceHash,
-          outputSha256: outputHash,
-          sourcePreserved: true,
-        },
-      };
-    }),
-    loadScene: vi.fn(() => Promise.resolve({ sceneVersion: 2 })),
+    validateRetargetOutput: vi.fn(
+      async (_source: string, output: string): Promise<unknown> => {
+        const outputHash = createHash('sha256')
+          .update(await readFile(output))
+          .digest('hex');
+        return {
+          status: 'ok',
+          value: {
+            valid: true,
+            sourceSha256: sourceHash,
+            outputSha256: outputHash,
+            sourcePreserved: true,
+          },
+        };
+      },
+    ),
+    loadRetargetScene: vi.fn(() => Promise.resolve({ sceneVersion: 2 })),
     scanRoot: vi.fn(() => Promise.resolve({})),
   };
   const showSaveDialog = vi.fn(() =>
@@ -201,6 +223,33 @@ describe('RetargetArtifactService', () => {
     });
   });
 
+  it('normalizes optional native change fields for the strict IPC contract', async () => {
+    const { service, sourceHash } = await fixture();
+    await expect(
+      service.preflight(1, {
+        modelHash: sourceHash,
+        rootId: 'root-1',
+        profileId,
+        objectExclusion: false,
+      }),
+    ).resolves.toMatchObject({
+      status: 'ok',
+      value: {
+        report: {
+          proposedChanges: {
+            objectExclusion: [
+              {
+                setting: null,
+                before: null,
+                after: null,
+              },
+            ],
+          },
+        },
+      },
+    });
+  });
+
   it('binds tokens to owners and expires them', async () => {
     let now = 0;
     const { service, sourceHash } = await fixture({ now: () => now });
@@ -260,14 +309,175 @@ describe('RetargetArtifactService', () => {
     );
   });
 
+  it('preserves source bytes across save outcomes and cleans a successful artifact', async () => {
+    const { service, showSaveDialog, source, sourceHash, root } =
+      await fixture();
+    const preflight = (await service.preflight(1, {
+      modelHash: sourceHash,
+      rootId: 'root-1',
+      profileId,
+      objectExclusion: false,
+    })) as { status: 'ok'; value: { token: string } };
+    expect(await sha256(source)).toBe(sourceHash);
+    await expect(
+      service.build(1, {
+        token: preflight.value.token,
+        profileId,
+        objectExclusion: false,
+      }),
+    ).resolves.toMatchObject({ status: 'ok' });
+    expect(await sha256(source)).toBe(sourceHash);
+
+    showSaveDialog.mockResolvedValueOnce({ canceled: true });
+    await expect(
+      service.saveAs(1, preflight.value.token, {} as BrowserWindow),
+    ).resolves.toEqual({ status: 'canceled' });
+    expect(await sha256(source)).toBe(sourceHash);
+
+    const collision = path.join(root, 'existing.3mf');
+    await writeFile(collision, 'existing');
+    showSaveDialog.mockResolvedValueOnce({
+      canceled: false,
+      filePath: collision,
+    });
+    await expect(
+      service.saveAs(1, preflight.value.token, {} as BrowserWindow),
+    ).resolves.toMatchObject({
+      status: 'error',
+      error: { code: 'saveDestinationExists' },
+    });
+    expect(await readFile(collision, 'utf8')).toBe('existing');
+    expect(await sha256(source)).toBe(sourceHash);
+
+    const destination = path.join(root, 'saved.3mf');
+    showSaveDialog.mockResolvedValueOnce({
+      canceled: false,
+      filePath: destination,
+    });
+    await expect(
+      service.saveAs(1, preflight.value.token, {} as BrowserWindow),
+    ).resolves.toMatchObject({ status: 'ok', fileName: 'saved.3mf' });
+    expect(await readFile(destination, 'utf8')).toBe('retargeted');
+    expect(await sha256(source)).toBe(sourceHash);
+    await expect(
+      service.loadScene(1, {
+        token: preflight.value.token,
+        source: 'output',
+      }),
+    ).resolves.toMatchObject({
+      status: 'error',
+      error: { code: 'artifactNotFound' },
+    });
+  });
+
+  it('preserves source bytes through sidecar failure, recovery, validation failure, and restart', async () => {
+    const first = await fixture();
+    const firstPreflight = (await first.service.preflight(1, {
+      modelHash: first.sourceHash,
+      rootId: 'root-1',
+      profileId,
+      objectExclusion: false,
+    })) as { status: 'ok'; value: { token: string } };
+    first.sidecar.buildRetarget.mockRejectedValueOnce(
+      new Error('sidecar exited'),
+    );
+    await expect(
+      first.service.build(1, {
+        token: firstPreflight.value.token,
+        profileId,
+        objectExclusion: false,
+      }),
+    ).resolves.toMatchObject({
+      status: 'error',
+      error: { code: 'internalError' },
+    });
+    expect(await sha256(first.source)).toBe(first.sourceHash);
+
+    await expect(
+      first.service.build(1, {
+        token: firstPreflight.value.token,
+        profileId,
+        objectExclusion: false,
+      }),
+    ).resolves.toMatchObject({ status: 'ok' });
+    expect(await sha256(first.source)).toBe(first.sourceHash);
+    await first.service.dispose(firstPreflight.value.token);
+
+    const validationPreflight = (await first.service.preflight(1, {
+      modelHash: first.sourceHash,
+      rootId: 'root-1',
+      profileId,
+      objectExclusion: false,
+    })) as { status: 'ok'; value: { token: string } };
+    first.sidecar.validateRetargetOutput.mockResolvedValueOnce({
+      status: 'error',
+      error: {
+        code: 'invalidArchive',
+        message: 'invalid output',
+        action: 'retry',
+      },
+    });
+    await expect(
+      first.service.build(1, {
+        token: validationPreflight.value.token,
+        profileId,
+        objectExclusion: false,
+      }),
+    ).resolves.toMatchObject({
+      status: 'error',
+      error: { code: 'invalidArchive' },
+    });
+    expect(await sha256(first.source)).toBe(first.sourceHash);
+
+    await first.service.disposeAll();
+    const restarted = await fixture({ tempPath: first.root });
+    expect(restarted.sourceHash).toBe(first.sourceHash);
+    await expect(
+      restarted.service.preflight(2, {
+        modelHash: restarted.sourceHash,
+        rootId: 'root-1',
+        profileId,
+        objectExclusion: false,
+      }),
+    ).resolves.toMatchObject({ status: 'ok' });
+    expect(await sha256(restarted.source)).toBe(first.sourceHash);
+    await restarted.service.disposeAll();
+  });
+
   it('removes stale app-instance roots on startup', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'u1-cleanup-'));
     temporaryDirectories.push(root);
-    const stale = path.join(root, 'PrintFarmer', 'retarget', 'stale-instance');
+    const parent = path.join(root, 'PrintFarmer', 'retarget');
+    const staleId = randomUUID();
+    const stale = path.join(parent, staleId);
     await mkdir(stale, { recursive: true });
     await writeFile(path.join(stale, 'artifact.3mf'), 'stale');
+    await writeFile(
+      path.join(stale, '.printfarmer-retarget-owner.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        instanceId: staleId,
+        pid: 2147483647,
+      }),
+    );
+    const unowned = path.join(parent, randomUUID());
+    await mkdir(unowned);
+    await writeFile(path.join(unowned, 'source.3mf'), 'must survive');
+    const activeId = randomUUID();
+    const active = path.join(parent, activeId);
+    await mkdir(active);
+    await writeFile(
+      path.join(active, '.printfarmer-retarget-owner.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        instanceId: activeId,
+        pid: process.pid,
+      }),
+    );
     const { service } = await fixture({ tempPath: root });
     await service.disposeAll();
     await expect(access(stale)).rejects.toThrow();
+    await expect(access(unowned)).resolves.toBeUndefined();
+    await expect(access(active)).resolves.toBeUndefined();
   });
 });

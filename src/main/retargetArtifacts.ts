@@ -1,6 +1,8 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { constants, createReadStream, createWriteStream } from 'node:fs';
 import {
+  chmod,
+  copyFile,
   link,
   lstat,
   mkdir,
@@ -12,6 +14,7 @@ import {
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { z } from 'zod';
 import type {
   BrowserWindow,
@@ -22,6 +25,16 @@ import type { SidecarClient } from './sidecar.js';
 import { TargetProfileService } from './targetProfiles.js';
 
 const TTL_MS = 30 * 60 * 1000;
+const OWNER_MARKER = '.printfarmer-retarget-owner.json';
+const instanceIdPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ownerMarker = z
+  .object({
+    schemaVersion: z.literal(1),
+    instanceId: z.string().regex(instanceIdPattern),
+    pid: z.number().int().positive(),
+  })
+  .strict();
 const sha = /^[a-f0-9]{64}$/;
 const token = (): string => randomBytes(32).toString('base64url');
 const nativeOutcome = z.discriminatedUnion('status', [
@@ -78,7 +91,7 @@ type Sidecar = Pick<
   | 'preflightRetarget'
   | 'buildRetarget'
   | 'validateRetargetOutput'
-  | 'loadScene'
+  | 'loadRetargetScene'
   | 'scanRoot'
 >;
 export interface Dialogs {
@@ -119,38 +132,51 @@ export interface RetargetArtifactServiceOptions {
 }
 
 export class RetargetArtifactService {
+  private readonly appRoot: string;
   private readonly parentRoot: string;
   private readonly root: string;
+  private readonly instanceId: string;
   private readonly now: () => number;
   private readonly records = new Map<string, ArtifactRecord>();
   constructor(private readonly options: RetargetArtifactServiceOptions) {
-    this.parentRoot = path.join(
-      options.tempPath ?? os.tmpdir(),
-      'PrintFarmer',
-      'retarget',
-    );
-    this.root = path.join(this.parentRoot, randomUUID());
+    this.appRoot = path.join(options.tempPath ?? os.tmpdir(), 'PrintFarmer');
+    this.parentRoot = path.join(this.appRoot, 'retarget');
+    this.instanceId = randomUUID();
+    this.root = path.join(this.parentRoot, this.instanceId);
     this.now = options.now ?? Date.now;
   }
   async initialize(): Promise<void> {
-    await mkdir(this.parentRoot, { recursive: true });
+    await ensurePrivateDirectory(this.appRoot);
+    await ensurePrivateDirectory(this.parentRoot);
     for (const entry of await readdir(this.parentRoot, {
       withFileTypes: true,
     })) {
-      if (entry.isDirectory()) {
-        await rm(path.join(this.parentRoot, entry.name), {
-          recursive: true,
-          force: true,
-        });
-      }
+      if (!entry.isDirectory() || !instanceIdPattern.test(entry.name)) continue;
+      const candidate = path.join(this.parentRoot, entry.name);
+      const marker = await readOwnerMarker(candidate);
+      if (!marker || isProcessRunning(marker.pid)) continue;
+      await removeOwnedInstance(candidate, marker.instanceId);
     }
-    await mkdir(this.root, { recursive: true });
+    await mkdir(this.root, { mode: 0o700 });
+    await writeFile(
+      path.join(this.root, OWNER_MARKER),
+      JSON.stringify({
+        schemaVersion: 1,
+        instanceId: this.instanceId,
+        pid: process.pid,
+      }),
+      { encoding: 'utf8', flag: 'wx', mode: 0o600 },
+    );
   }
-  async disposeAll(): Promise<void> {
+  async disposeArtifacts(): Promise<void> {
     await Promise.all(
       [...this.records.keys()].map((value) => this.dispose(value)),
     );
-    await rm(this.root, { recursive: true, force: true });
+  }
+
+  async disposeAll(): Promise<void> {
+    await this.disposeArtifacts();
+    await removeOwnedInstance(this.root, this.instanceId);
   }
 
   async preflight(
@@ -319,7 +345,7 @@ export class RetargetArtifactService {
       if (!file) return error('artifactNotFound');
       return {
         status: 'ok',
-        value: await this.options.sidecar.loadScene(file),
+        value: await this.options.sidecar.loadRetargetScene(file),
       };
     } catch {
       return error('sidecarUnavailable');
@@ -518,6 +544,26 @@ function sanitizeIssues(value: unknown[]): unknown[] {
     };
   });
 }
+function sanitizeChanges(value: unknown): globalThis.Record<string, unknown[]> {
+  const groups = value as globalThis.Record<string, unknown>;
+  return Object.fromEntries(
+    Object.entries(groups ?? {}).map(([group, changes]) => [
+      group,
+      Array.isArray(changes)
+        ? changes.map((item) => {
+            const change = item as globalThis.Record<string, unknown>;
+            return {
+              code: change.code,
+              message: change.message,
+              setting: change.setting ?? null,
+              before: change.before ?? null,
+              after: change.after ?? null,
+            };
+          })
+        : [],
+    ]),
+  );
+}
 function sanitizePreflight(value: unknown): unknown {
   const report = value as globalThis.Record<string, unknown>;
   return {
@@ -542,7 +588,7 @@ function sanitizePreflight(value: unknown): unknown {
     recommendation: report.recommendation ?? null,
     blockers: sanitizeIssues((report.blockers as unknown[]) ?? []),
     warnings: sanitizeIssues((report.warnings as unknown[]) ?? []),
-    proposedChanges: report.proposedChanges ?? {},
+    proposedChanges: sanitizeChanges(report.proposedChanges),
   };
 }
 function sanitizeBuild(value: unknown): unknown {
@@ -556,9 +602,9 @@ function sanitizeBuild(value: unknown): unknown {
       'targetProfileId',
       'removedPartCount',
       'preservedPartCount',
-      'appliedChanges',
       'warnings',
     ]),
+    appliedChanges: sanitizeChanges(report.appliedChanges),
     warnings: sanitizeIssues((report.warnings as unknown[]) ?? []),
     validation: {
       ...nullableFields(validation, [
@@ -592,6 +638,67 @@ function validValidation(value: unknown, sourceHash: string): boolean {
 function readString(value: unknown, key: string): string | null {
   const field = (value as globalThis.Record<string, unknown>)[key];
   return typeof field === 'string' ? field : null;
+}
+async function ensurePrivateDirectory(directory: string): Promise<void> {
+  try {
+    await mkdir(directory, { mode: 0o700 });
+  } catch (error) {
+    if (
+      !(error instanceof Error) ||
+      !('code' in error) ||
+      error.code !== 'EEXIST'
+    )
+      throw error;
+  }
+  const metadata = await lstat(directory);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error(`unsafe retarget workspace directory: ${directory}`);
+  }
+  if (process.platform !== 'win32') await chmod(directory, 0o700);
+}
+async function readOwnerMarker(
+  directory: string,
+): Promise<z.infer<typeof ownerMarker> | null> {
+  try {
+    const directoryMetadata = await lstat(directory);
+    if (!directoryMetadata.isDirectory() || directoryMetadata.isSymbolicLink())
+      return null;
+    const markerPath = path.join(directory, OWNER_MARKER);
+    const markerMetadata = await lstat(markerPath);
+    if (
+      !markerMetadata.isFile() ||
+      markerMetadata.isSymbolicLink() ||
+      markerMetadata.size > 1024
+    )
+      return null;
+    const parsed = ownerMarker.parse(
+      JSON.parse(await readFile(markerPath, 'utf8')),
+    );
+    return parsed.instanceId === path.basename(directory) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+async function removeOwnedInstance(
+  directory: string,
+  expectedInstanceId: string,
+): Promise<void> {
+  const marker = await readOwnerMarker(directory);
+  if (!marker || marker.instanceId !== expectedInstanceId) return;
+  await rm(directory, { recursive: true, force: true });
+}
+function isProcessRunning(pid: number): boolean {
+  if (pid === process.pid) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (
+      error instanceof Error &&
+      'code' in error &&
+      String(error.code) === 'EPERM'
+    );
+  }
 }
 async function hashFile(file: string): Promise<string> {
   const hash = createHash('sha256');
@@ -640,12 +747,24 @@ async function copyExclusive(
     `.${path.basename(destination)}.${randomUUID()}.tmp`,
   );
   try {
-    await writeFile(temporary, await readFile(source), {
-      flag: 'wx',
-      flush: true,
-    });
-    await link(temporary, destination);
+    await pipeline(
+      createReadStream(source),
+      createWriteStream(temporary, { flags: 'wx', mode: 0o600, flush: true }),
+    );
+    try {
+      await link(temporary, destination);
+    } catch (error) {
+      if (!isUnsupportedLinkError(error)) throw error;
+      await copyFile(temporary, destination, constants.COPYFILE_EXCL);
+    }
   } finally {
     await rm(temporary, { force: true });
   }
+}
+
+function isUnsupportedLinkError(error: unknown): boolean {
+  if (!(error instanceof Error) || !('code' in error)) return false;
+  return ['EACCES', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP', 'EPERM'].includes(
+    String(error.code),
+  );
 }

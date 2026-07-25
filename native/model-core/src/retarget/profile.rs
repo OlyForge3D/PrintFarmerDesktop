@@ -12,15 +12,33 @@ use super::report::{IssueCode, RankedTarget, TargetRecommendation};
 use super::{RetargetError, RetargetLimits};
 
 pub(crate) const BUNDLE_ID: &str = "snapmaker-u1-orca-presets";
-pub(crate) const BUNDLE_COMMIT: &str = "0c2d17834b7820339c1cf4326fda7db9da4a766a";
 pub(crate) const MACHINE_NAME: &str = "Snapmaker U1 (0.4 nozzle)";
 const MACHINE_MODEL_NAME: &str = "Snapmaker U1";
 const EXPECTED_FILES: usize = 82;
 const EXPECTED_ROOTS: usize = 40;
 const EXPECTED_PROCESS_ROOTS: usize = 15;
 const EXPECTED_FILAMENT_ROOTS: usize = 23;
-const EXPECTED_MANIFEST_SHA256: &str =
-    "aaa7fb83f0ab84353607e3297b767cc5be3bea2d4576a94068f3067540da41a3";
+const BUNDLED_MANIFEST: &[u8] =
+    include_bytes!("../../../../resources/target-profiles/snapmaker-u1/manifest.json");
+const EXECUTABLE_IMPORTED_SETTINGS: &[&str] = &["post_process"];
+const PINNED_FILAMENT_GCODE_SETTINGS: &[&str] = &["filament_start_gcode", "filament_end_gcode"];
+const PINNED_FILAMENT_CEILING_SETTINGS: &[&str] = &[
+    "filament_max_volumetric_speed",
+    "nozzle_temperature",
+    "nozzle_temperature_initial_layer",
+    "idle_temperature",
+    "hot_plate_temp",
+    "hot_plate_temp_initial_layer",
+    "cool_plate_temp",
+    "cool_plate_temp_initial_layer",
+    "eng_plate_temp",
+    "eng_plate_temp_initial_layer",
+    "textured_cool_plate_temp",
+    "textured_cool_plate_temp_initial_layer",
+    "textured_plate_temp",
+    "textured_plate_temp_initial_layer",
+    "chamber_temperature",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettingValue {
@@ -222,6 +240,7 @@ impl ResolvedTarget {
         &self,
         materials: &[String],
     ) -> Result<Vec<&ResolvedProfile>, RetargetError> {
+        validate_material_capacity(&self.machine, materials)?;
         if !self.imported {
             return map_bundled_materials(&self.filaments, &self.filament_defaults, materials);
         }
@@ -325,7 +344,9 @@ impl Bundle {
         })?;
         let manifest_sha256 = crate::hash::hash_reader(manifest_bytes.as_slice())
             .map_err(|error| manifest_error(format!("cannot hash profile manifest: {error}")))?;
-        if manifest_sha256 != EXPECTED_MANIFEST_SHA256 {
+        let bundled_manifest_sha256 = crate::hash::hash_reader(BUNDLED_MANIFEST)
+            .map_err(|error| manifest_error(format!("cannot hash bundled manifest: {error}")))?;
+        if manifest_sha256 != bundled_manifest_sha256 {
             return Err(RetargetError::new(
                 IssueCode::ProfileHashMismatch,
                 "profile manifest does not match the pinned Snapmaker U1 bundle",
@@ -334,7 +355,9 @@ impl Bundle {
         }
         let manifest: Manifest = serde_json::from_slice(&manifest_bytes)
             .map_err(|error| manifest_error(format!("invalid manifest JSON: {error}")))?;
-        validate_manifest_shape(&manifest)?;
+        let bundled_manifest: Manifest = serde_json::from_slice(BUNDLED_MANIFEST)
+            .map_err(|error| manifest_error(format!("invalid bundled manifest JSON: {error}")))?;
+        validate_manifest_shape(&manifest, &bundled_manifest.upstream.commit)?;
 
         let mut profiles = HashMap::<String, Profile>::new();
         let mut files_by_path = HashMap::<String, ManifestFile>::new();
@@ -571,6 +594,7 @@ impl Bundle {
         &self,
         materials: &[String],
     ) -> Result<Vec<&ResolvedProfile>, RetargetError> {
+        validate_material_capacity(&self.machine, materials)?;
         map_bundled_materials(&self.filaments, &self.filament_defaults, materials)
     }
 
@@ -689,18 +713,38 @@ impl Bundle {
                 "Choose a U1 reference smaller than 512 MiB.",
             ));
         }
-        let capacity = usize::try_from(metadata.len()).unwrap_or_default();
-        let mut snapshot = Vec::with_capacity(capacity);
-        file.by_ref()
-            .take(limits.max_source_bytes.saturating_add(1))
-            .read_to_end(&mut snapshot)
-            .map_err(|error| RetargetError::target_io(path, error))?;
-        if snapshot.len() as u64 > limits.max_source_bytes {
-            return Err(RetargetError::new(
+        let allocation_error = || {
+            RetargetError::new(
                 IssueCode::ArchiveLimitExceeded,
-                "imported target exceeds the compressed archive limit",
-                "Choose a U1 reference smaller than 512 MiB.",
-            ));
+                "imported target cannot be allocated safely",
+                "Choose a smaller U1 reference.",
+            )
+        };
+        let capacity = usize::try_from(metadata.len()).map_err(|_| allocation_error())?;
+        let mut snapshot = Vec::new();
+        snapshot
+            .try_reserve_exact(capacity)
+            .map_err(|_| allocation_error())?;
+        let mut reader = file
+            .by_ref()
+            .take(limits.max_source_bytes.saturating_add(1));
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = reader
+                .read(&mut buffer)
+                .map_err(|error| RetargetError::target_io(path, error))?;
+            if read == 0 {
+                break;
+            }
+            if snapshot.len() as u64 + read as u64 > limits.max_source_bytes {
+                return Err(RetargetError::new(
+                    IssueCode::ArchiveLimitExceeded,
+                    "imported target exceeds the compressed archive limit",
+                    "Choose a U1 reference smaller than 512 MiB.",
+                ));
+            }
+            snapshot.try_reserve(read).map_err(|_| allocation_error())?;
+            snapshot.extend_from_slice(&buffer[..read]);
         }
         let sha256_before = crate::hash::hash_reader(snapshot.as_slice())
             .map_err(|error| RetargetError::target_io(path, error))?;
@@ -799,6 +843,21 @@ impl Bundle {
             }
         }
         let slot_count = project.materials.len();
+        let tool_count = project
+            .settings
+            .get("nozzle_diameter")
+            .map(|value| value.as_list().len())
+            .unwrap_or_default();
+        if slot_count > tool_count {
+            return Err(RetargetError::new(
+                IssueCode::ProfileValueInvalid,
+                format!(
+                    "imported reference declares {slot_count} filament slots for {tool_count} U1 tools"
+                ),
+                "Use at most one filament slot per Snapmaker U1 tool.",
+            )
+            .with_setting("filament_type"));
+        }
         for (key, count) in [
             ("nozzle_diameter", 4),
             ("extruder_offset", 4),
@@ -886,6 +945,12 @@ impl Bundle {
         ] {
             require_imported_numeric_values(&project.settings, key, false)?;
         }
+        for key in PINNED_FILAMENT_CEILING_SETTINGS {
+            if project.settings.contains_key(*key) {
+                require_imported_list(&project.settings, key, slot_count)?;
+                require_imported_numeric_values(&project.settings, key, true)?;
+            }
+        }
         for (key, value) in &project.settings {
             if let SettingValue::List(values) = value {
                 if values.len() == slot_count
@@ -952,13 +1017,64 @@ impl Bundle {
             }
             let mut settings = BTreeMap::new();
             for (key, value) in &project.settings {
-                if !self.is_filament_setting_key(key) {
+                if !self.is_filament_setting_key(key) || is_executable_gcode_setting(key) {
                     continue;
                 }
                 if let SettingValue::List(values) = value {
                     if values.len() == project.materials.len() {
                         settings.insert(key.clone(), SettingValue::Scalar(values[slot].clone()));
                     }
+                }
+            }
+            let pinned_filament = map_bundled_materials(
+                &self.filaments,
+                &self.filament_defaults,
+                std::slice::from_ref(material),
+            )?
+            .into_iter()
+            .next()
+            .ok_or_else(|| manifest_error("pinned filament script source is missing"))?;
+            for key in PINNED_FILAMENT_GCODE_SETTINGS {
+                let value = pinned_filament
+                    .settings
+                    .get(*key)
+                    .or_else(|| self.filament_defaults.get(*key))
+                    .ok_or_else(|| {
+                        manifest_error(format!("pinned filament script setting '{key}' is missing"))
+                    })?;
+                settings.insert((*key).to_string(), value.clone());
+            }
+            for key in PINNED_FILAMENT_CEILING_SETTINGS {
+                if !settings.contains_key(*key) {
+                    continue;
+                }
+                let Some(ceiling) = pinned_filament
+                    .settings
+                    .get(*key)
+                    .or_else(|| self.filament_defaults.get(*key))
+                    .and_then(setting_finite_non_negative)
+                else {
+                    settings.remove(*key);
+                    continue;
+                };
+                let current = settings
+                    .get(*key)
+                    .and_then(setting_finite_non_negative)
+                    .ok_or_else(|| {
+                        RetargetError::new(
+                            IssueCode::ProfileValueInvalid,
+                            format!(
+                                "imported reference setting '{key}' must be finite and non-negative"
+                            ),
+                            "Use a complete U1 filament profile with valid numeric settings.",
+                        )
+                        .with_setting(*key)
+                    })?;
+                if current > ceiling {
+                    settings.insert(
+                        (*key).to_string(),
+                        SettingValue::Scalar(ceiling.to_string()),
+                    );
                 }
             }
             settings.insert(
@@ -976,18 +1092,70 @@ impl Bundle {
                 settings,
             });
         }
-        let shared_settings = project
+        for setting in EXECUTABLE_IMPORTED_SETTINGS {
+            if project.settings.contains_key(*setting) {
+                return Err(RetargetError::new(
+                    IssueCode::ProfileValueInvalid,
+                    format!("imported reference contains executable setting '{setting}'"),
+                    "Remove local post-processing commands from the imported reference project.",
+                )
+                .with_setting(*setting));
+            }
+        }
+        let mut shared_settings = project
             .settings
             .iter()
-            .filter(|(key, _)| !self.is_filament_setting_key(key))
+            .filter(|(key, _)| {
+                !self.is_filament_setting_key(key) && !is_executable_gcode_setting(key)
+            })
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect::<BTreeMap<_, _>>();
+        for key in super::transform::MACHINE_OWNED_KEYS {
+            if let Some(value) = self.machine.settings.get(*key) {
+                shared_settings.insert((*key).to_string(), value.clone());
+            } else {
+                shared_settings.remove(*key);
+            }
+        }
+        let standby_temperature_delta = self
+            .processes
+            .values()
+            .filter_map(|process| process.settings.get("standby_temperature_delta"))
+            .filter_map(setting_finite)
+            .filter(|value| *value <= 0.0)
+            .max_by(f64::total_cmp)
+            .ok_or_else(|| {
+                manifest_error("pinned process standby_temperature_delta is missing or unsafe")
+            })?;
+        shared_settings.insert(
+            "standby_temperature_delta".to_string(),
+            SettingValue::Scalar(standby_temperature_delta.to_string()),
+        );
         let process_name = project
             .settings
             .get("print_settings_id")
             .and_then(SettingValue::first)
             .unwrap_or_default()
             .to_string();
+        let ceiling_machine = ResolvedProfile {
+            name: machine_name.to_string(),
+            path: path.display().to_string(),
+            sha256: sha256_before.clone(),
+            settings: shared_settings.clone(),
+        };
+        let ceiling_process = ResolvedProfile {
+            name: process_name.clone(),
+            path: path.display().to_string(),
+            sha256: sha256_before.clone(),
+            settings: shared_settings.clone(),
+        };
+        let mut sanitized_changes = BTreeMap::new();
+        guardrails::apply(
+            &mut shared_settings,
+            &ceiling_machine,
+            &ceiling_process,
+            &mut sanitized_changes,
+        )?;
         let machine = ResolvedProfile {
             name: machine_name.to_string(),
             path: path.display().to_string(),
@@ -1000,7 +1168,7 @@ impl Bundle {
             sha256: sha256_before.clone(),
             settings: shared_settings,
         };
-        guardrails::validate(&project.settings, &machine, &process)?;
+        guardrails::validate(&machine.settings, &machine, &process)?;
         let profile_id = format!("imported:{sha256_before}");
         let details = ImportedTargetProfileDetails {
             profile_id: profile_id.clone(),
@@ -1039,10 +1207,13 @@ impl Bundle {
     }
 }
 
-fn validate_manifest_shape(manifest: &Manifest) -> Result<(), RetargetError> {
+fn validate_manifest_shape(
+    manifest: &Manifest,
+    expected_commit: &str,
+) -> Result<(), RetargetError> {
     if manifest.schema_version != 1
         || manifest.bundle_id != BUNDLE_ID
-        || manifest.upstream.commit != BUNDLE_COMMIT
+        || manifest.upstream.commit != expected_commit
         || manifest.target_printer.model != "U1"
         || manifest.target_printer.preset != MACHINE_NAME
         || manifest.target_printer.variant != "0.4"
@@ -1236,10 +1407,15 @@ fn is_imported_shared_array_key(key: &str) -> bool {
         || matches!(
             key,
             "compatible_prints"
+                | "default_filament_profile"
                 | "extruder_colour"
                 | "flush_volumes_matrix"
                 | "flush_volumes_vector"
         )
+}
+
+fn is_executable_gcode_setting(key: &str) -> bool {
+    key.to_ascii_lowercase().ends_with("_gcode")
 }
 
 fn require_imported_scalar<'a>(
@@ -1621,6 +1797,45 @@ fn map_bundled_materials<'a>(
         .collect::<Result<Vec<_>, _>>()?;
     validate_material_defaults(&mapped, defaults)?;
     Ok(mapped)
+}
+
+fn validate_material_capacity(
+    machine: &ResolvedProfile,
+    materials: &[String],
+) -> Result<(), RetargetError> {
+    let tool_count = machine
+        .settings
+        .get("nozzle_diameter")
+        .map(|value| value.as_list().len())
+        .unwrap_or_default();
+    if tool_count == 0 {
+        return Err(manifest_error(format!(
+            "machine '{}' has no verified tool capacity",
+            machine.name
+        )));
+    }
+    if materials.len() > tool_count {
+        return Err(RetargetError::new(
+            IssueCode::UnsupportedMaterial,
+            format!(
+                "source declares {} filament slots, but the Snapmaker U1 has {tool_count} tools",
+                materials.len()
+            ),
+            "Reduce the source project to at most four filament slots.",
+        )
+        .with_setting("filament_type"));
+    }
+    Ok(())
+}
+
+fn setting_finite_non_negative(value: &SettingValue) -> Option<f64> {
+    let value = value.first()?.trim().parse::<f64>().ok()?;
+    (value.is_finite() && value >= 0.0).then_some(value)
+}
+
+fn setting_finite(value: &SettingValue) -> Option<f64> {
+    let value = value.first()?.trim().parse::<f64>().ok()?;
+    value.is_finite().then_some(value)
 }
 
 fn validate_material_defaults(

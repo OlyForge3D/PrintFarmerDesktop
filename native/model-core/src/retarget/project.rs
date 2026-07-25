@@ -520,12 +520,13 @@ fn observe_model_settings(
                         ));
                     }
                 }
-                if local == b"object" || local == b"assemble_item" {
+                if matches!(local, b"object" | b"part" | b"assemble_item") {
                     validate_model_record_attributes(
                         &reader,
                         &element,
                         &retained_ids,
                         filament_slots,
+                        local != b"part",
                     )?;
                 }
                 if local == b"metadata" {
@@ -572,12 +573,13 @@ fn observe_model_settings(
                         ));
                     }
                 }
-                if local == b"object" || local == b"assemble_item" {
+                if matches!(local, b"object" | b"part" | b"assemble_item") {
                     validate_model_record_attributes(
                         &reader,
                         &element,
                         &retained_ids,
                         filament_slots,
+                        local != b"part",
                     )?;
                 }
                 if local == b"metadata" {
@@ -627,6 +629,7 @@ fn observe_model_settings(
         element: &quick_xml::events::BytesStart<'_>,
         retained_ids: &HashSet<u32>,
         filament_slots: usize,
+        validate_id_reference: bool,
     ) -> Result<(), RetargetIssue> {
         let mut object_reference_seen = false;
         let mut extruder_seen = false;
@@ -643,7 +646,9 @@ fn observe_model_settings(
                     "model record semantic attributes must be unqualified",
                 ));
             }
-            if matches!(name, b"id" | b"object_id" | b"objectid") {
+            if matches!(name, b"object_id" | b"objectid")
+                || (validate_id_reference && name == b"id")
+            {
                 if object_reference_seen {
                     return Err(invalid_model_settings(
                         "model record declares conflicting object references",
@@ -827,10 +832,10 @@ fn observe_model_settings(
     fn validate_extruder_slot(value: &str, filament_slots: usize) -> Result<(), RetargetIssue> {
         let slot = value.parse::<usize>().map_err(|_| {
             invalid_model_settings(format!(
-                "extruder value '{value}' is not a positive slot number"
+                "extruder value '{value}' is not a non-negative slot number"
             ))
         })?;
-        if slot == 0 || slot > filament_slots {
+        if slot > filament_slots {
             return Err(invalid_model_settings(format!(
                 "model settings reference filament slot {slot}, but only {filament_slots} slots exist"
             )));

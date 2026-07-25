@@ -64,9 +64,76 @@ function makeFakeChannel(
 }
 
 describe('SidecarClient', () => {
-  it('keeps Desktop IPC v2 independent from sidecar protocol v1', () => {
-    expect(IPC_CONTRACT_VERSION).toBe(2);
-    expect(SIDECAR_RPC_PROTOCOL_VERSION).toBe(1);
+  it('rejects a sidecar with an incompatible protocol version', async () => {
+    const { channel } = makeFakeChannel((request, emit) => {
+      emit(
+        JSON.stringify({
+          id: request.id,
+          ok: true,
+          result: { protocolVersion: 2, sidecarVersion: 'stale' },
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel);
+
+    await expect(client.handshake()).rejects.toThrow(
+      'sidecar protocol mismatch: expected 1, received 2',
+    );
+  });
+
+  it('handshakes a newly spawned channel before other RPCs', async () => {
+    const methods: string[] = [];
+    const { channel } = makeFakeChannel((request, emit) => {
+      methods.push(request.method);
+      emit(
+        JSON.stringify({
+          id: request.id,
+          ok: true,
+          result:
+            request.method === 'handshake'
+              ? { protocolVersion: 1, sidecarVersion: 'test' }
+              : [],
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel, {
+      requireProtocolHandshake: true,
+    });
+
+    await expect(client.listRetargetProfiles()).resolves.toEqual([]);
+    await expect(client.listRetargetProfiles()).resolves.toEqual([]);
+    expect(methods).toEqual([
+      'handshake',
+      'listRetargetProfiles',
+      'listRetargetProfiles',
+    ]);
+  });
+
+  it('starts serialized request deadlines only when each request is dispatched', async () => {
+    let releaseFirst: (() => void) | undefined;
+    const { channel, sent } = makeFakeChannel((request, emit) => {
+      const respond = () =>
+        emit(
+          JSON.stringify({
+            id: request.id,
+            ok: true,
+            result: { protocolVersion: 1, sidecarVersion: 'test' },
+          }),
+        );
+      if (request.id === 1) releaseFirst = respond;
+      else respond();
+    });
+    const client = new SidecarClient(() => channel, {
+      serializeRequests: true,
+    });
+
+    const first = client.handshake();
+    const second = client.handshake();
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    releaseFirst?.();
+    await first;
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    await second;
   });
 
   it('uses the amended six retarget RPC shapes and mutation timeout for builds', async () => {
@@ -123,6 +190,11 @@ describe('SidecarClient', () => {
       target,
     });
   });
+
+  it('keeps Desktop IPC v2 independent from sidecar protocol v1', () => {
+    expect(IPC_CONTRACT_VERSION).toBe(2);
+    expect(SIDECAR_RPC_PROTOCOL_VERSION).toBe(1);
+  });
   it('resolves a handshake response', async () => {
     const { channel } = makeFakeChannel((req, emit) => {
       emit(
@@ -152,7 +224,7 @@ describe('SidecarClient', () => {
     });
     const client = new SidecarClient(() => channel);
     await expect(client.handshake()).rejects.toThrow(
-      /unsupported sidecar protocol 2; expected 1/,
+      /sidecar protocol mismatch: expected 1, received 2/,
     );
   });
 

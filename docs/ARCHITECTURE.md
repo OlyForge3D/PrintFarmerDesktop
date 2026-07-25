@@ -68,6 +68,66 @@ finish after the profile dialog closes. A synchronous modal owner coordinates
 profile, import, file-picker, preview, and upload-queue entry so asynchronous
 preparation cannot overlap or later remount another modal.
 
+## Snapmaker U1 retargeting
+
+The U1 workflow preserves the process boundary rather than teaching the
+renderer about files:
+
+1. The renderer sends only a catalog model hash/root ID, an opaque profile ID,
+   an object-exclusion choice, or an artifact token through strict Zod IPC.
+2. Electron main resolves the cataloged source path, rejects symlinks and
+   unavailable locations, computes the source SHA-256, and resolves either a
+   bundled profile ID or a content-addressed imported reference. Paths never
+   cross into the renderer.
+3. The Rust sidecar performs strict editable-project preflight and returns
+   typed blockers/warnings. Builds replace machine/process/filament-owned
+   settings, remove stale slice/G-code/signature parts and links, clamp every
+   supported global and per-object motion override, rebuild OPC control parts
+   deterministically, and validate the output by reopening it. Retarget/profile
+   requests use a dedicated, serialized sidecar so archive-heavy work cannot
+   consume catalog/sync deadlines; timeouts start when requests are dispatched.
+4. Electron independently checks the returned source/output hashes and native
+   validation result before issuing an owner-bound random artifact token. The
+   renderer can request only the source or output scene associated with that
+   token.
+5. Save As uses an exclusive temporary write plus hard link. It rejects the
+   source and any existing destination, then disposes the temporary artifact
+   only after a successful save. Cancellation and collisions leave the review
+   copy available for another destination.
+
+Artifact tokens are bound to the originating `webContents`, expire after 30
+minutes, and are disposed on workflow/window teardown. Each app instance owns a
+mode-restricted random directory under the OS temporary directory with an
+ownership marker. Startup ignores links, unmarked directories, and directories
+owned by a live process; it removes only validated stale instance directories.
+Shutdown removes the active owned directory. Request epochs
+prevent stale profile imports, preflights, builds, and source/output scene loads
+from replacing newer UI state or retaining a late token.
+
+Bundled U1 profiles are an offline snapshot of `Snapmaker/Orca_Presets` pinned
+to exact commit `0c2d17834b7820339c1cf4326fda7db9da4a766a`. The generated
+manifest records every selected path and SHA-256, provenance, retrieval date,
+and the no-runtime-fetch policy. Packaging verifies the source bundle before
+copying it; Windows and macOS package/release jobs then verify the sidecar,
+manifest, and every declared profile hash inside packaged resources. Imported
+U1 references are copied into the Electron user-data directory under their
+SHA-256, recorded in a strict atomic manifest, re-inspected on refresh, and
+excluded individually if missing or corrupt without hiding bundled profiles.
+Native inspection rejects executable post-processing settings before any
+imported settings can be carried into the generated project. Imported machine
+identity, dimensions, motion limits, tools, and every machine/filament G-code
+hook are never trusted: generated projects always use manifest-verified values
+from the pinned bundled snapshot. Imported process motion values are clamped
+against those independent machine ceilings before they can become a target;
+imported filament temperatures and volumetric flow are capped by the
+corresponding pinned material profile.
+
+Paint-bearing model parts are preserved byte-for-byte, but the normalized
+viewer does not certify the slicer's paint semantics. A typed
+`paintMetadataPreservedUnverified` warning therefore requires review in the
+accepted Snapmaker Orca release. Direct slicing, printer communication, and
+physical tool-change validation remain outside the desktop trust boundary.
+
 The main process probes the anonymous version and capability endpoints and
 publishes only redacted profile metadata plus explicit feature availability.
 HTTP LAN profiles remain supported with a persistent warning. A missing

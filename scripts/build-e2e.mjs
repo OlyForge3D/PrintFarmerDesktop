@@ -11,6 +11,7 @@
 import { spawnSync } from 'node:child_process';
 
 process.env.PRINTFARMER_SKIP_SIDECAR_BUILD = '1';
+process.env.PRINTFARMER_BUILD_E2E = '1';
 
 const result = spawnSync('electron-forge', ['package'], {
   stdio: 'inherit',

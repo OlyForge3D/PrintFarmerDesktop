@@ -35,6 +35,7 @@ pub(crate) const MACHINE_OWNED_KEYS: &[&str] = &[
     "nozzle_type",
     "extruder_offset",
     "single_extruder_multi_material",
+    "silent_mode",
     "auxiliary_fan",
     "extruder_clearance_radius",
     "extruder_clearance_height_to_rod",
@@ -199,6 +200,7 @@ const SOURCE_INTENT_KEYS: &[&str] = &[
     "support_speed",
     "top_surface_speed",
     "travel_speed",
+    "travel_speed_z",
     "bridge_acceleration",
     "default_acceleration",
     "initial_layer_acceleration",
@@ -455,8 +457,7 @@ fn clamp_metadata_element(
         .to_string();
     let mut replacement = BytesStart::new(name);
     for (name, value) in &attributes {
-        let escaped = quick_xml::escape::escape(value).into_owned();
-        replacement.push_attribute((name.as_str(), escaped.as_str()));
+        replacement.push_attribute((name.as_str(), value.as_str()));
     }
     Ok((
         replacement,

@@ -3,11 +3,11 @@ import { defineConfig } from '@playwright/test';
 /**
  * Playwright configuration for the Electron end-to-end suite.
  *
- * These tests launch the *real* built Electron app (main + preload + renderer
- * bundles under `.vite/`, produced by `npm run package`) together with the
- * compiled Rust sidecar, and drive it through Chromium's DevTools protocol.
- * They are intentionally isolated from the Vitest unit suite (`tests/`), which
- * runs in jsdom without a real Electron process.
+ * The shell smoke tests launch production main/preload/renderer bundles through
+ * Electron's test launcher. Release-hardening specs launch the actual Forge
+ * packaged executable and attach over Chromium's remote-debugging protocol so
+ * ASAR integrity and production fuses remain enabled. Both tiers use the real
+ * compiled Rust sidecar and stay isolated from the jsdom Vitest suite.
  */
 export default defineConfig({
   testDir: './e2e',

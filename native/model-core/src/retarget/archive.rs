@@ -17,6 +17,7 @@ pub(crate) const MODEL_SETTINGS_PART: &str = "Metadata/model_settings.config";
 const CONTENT_TYPES_PART: &str = "[Content_Types].xml";
 pub(crate) const CONTENT_TYPES_PART_FOR_VALIDATION: &str = "[content_types].xml";
 const MAX_RELATIONSHIP_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_CONTENT_TYPES_BYTES: u64 = 16 * 1024 * 1024;
 const MODEL_RELATIONSHIP_TYPE: &str =
     "http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel";
 
@@ -74,13 +75,26 @@ impl ArchivePackage {
         if metadata.len() > limits.max_source_bytes {
             return Err(limit_error("compressed archive exceeds 512 MiB"));
         }
-        let capacity = usize::try_from(metadata.len()).unwrap_or_default();
-        let mut data = Vec::with_capacity(capacity);
-        file.take(limits.max_source_bytes.saturating_add(1))
-            .read_to_end(&mut data)
-            .map_err(|error| RetargetError::source_io(path, error))?;
-        if data.len() as u64 > limits.max_source_bytes {
-            return Err(limit_error("compressed archive exceeds 512 MiB"));
+        let capacity = usize::try_from(metadata.len())
+            .map_err(|_| limit_error("compressed archive cannot be allocated safely"))?;
+        let mut data = Vec::new();
+        data.try_reserve_exact(capacity)
+            .map_err(|_| limit_error("compressed archive cannot be allocated safely"))?;
+        let mut reader = file.take(limits.max_source_bytes.saturating_add(1));
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = reader
+                .read(&mut buffer)
+                .map_err(|error| RetargetError::source_io(path, error))?;
+            if read == 0 {
+                break;
+            }
+            if data.len() as u64 + read as u64 > limits.max_source_bytes {
+                return Err(limit_error("compressed archive exceeds 512 MiB"));
+            }
+            data.try_reserve(read)
+                .map_err(|_| limit_error("compressed archive cannot be allocated safely"))?;
+            data.extend_from_slice(&buffer[..read]);
         }
         Ok(data)
     }
@@ -130,14 +144,19 @@ impl ArchivePackage {
                     "Re-export the project using Stored or Deflate compression.",
                 ));
             }
-            if file.size() > limits.max_part_bytes {
-                return Err(limit_error(format!("part '{name}' exceeds 512 MiB")));
+            let part_limit = configured_part_limit(&name, limits);
+            if file.size() > part_limit {
+                return Err(limit_error(format!(
+                    "part '{name}' exceeds the configured size limit"
+                )));
             }
             total_uncompressed = total_uncompressed
                 .checked_add(file.size())
                 .ok_or_else(|| limit_error("archive size overflowed"))?;
             if total_uncompressed > limits.max_uncompressed_bytes {
-                return Err(limit_error("archive expands beyond 2 GiB"));
+                return Err(limit_error(
+                    "archive expands beyond the configured size limit",
+                ));
             }
             let key = name.to_ascii_lowercase();
             if !names.insert(key.clone()) {
@@ -147,18 +166,32 @@ impl ArchivePackage {
             }
             let capacity = usize::try_from(file.size())
                 .map_err(|_| limit_error(format!("part '{name}' is too large")))?;
-            let mut bytes = Vec::with_capacity(capacity);
-            file.by_ref()
-                .take(limits.max_part_bytes.saturating_add(1))
-                .read_to_end(&mut bytes)
-                .map_err(RetargetError::io)?;
-            if bytes.len() as u64 != file.size() {
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(capacity)
+                .map_err(|_| limit_error(format!("part '{name}' cannot be allocated safely")))?;
+            bytes.resize(capacity, 0);
+            let mut offset = 0usize;
+            while offset < bytes.len() {
+                let read = file.read(&mut bytes[offset..]).map_err(RetargetError::io)?;
+                if read == 0 {
+                    return Err(RetargetError::new(
+                        IssueCode::InvalidArchive,
+                        format!("declared and streamed size disagree for part '{name}'"),
+                        "Re-export the source project.",
+                    ));
+                }
+                offset += read;
+            }
+            let mut extra = [0u8; 1];
+            if file.read(&mut extra).map_err(RetargetError::io)? != 0 {
                 return Err(RetargetError::new(
                     IssueCode::InvalidArchive,
                     format!("declared and streamed size disagree for part '{name}'"),
                     "Re-export the source project.",
                 ));
             }
+
             parts.insert(key, ArchivePart { name, bytes });
         }
         let package = Self {
@@ -226,7 +259,20 @@ impl ArchivePackage {
                 }
             }
         }
+        for source in plan.removed.clone() {
+            let relationship = Self::relationship_part_name(&source);
+            if self.parts.contains_key(&relationship) {
+                plan.removed.insert(relationship);
+            }
+        }
         plan
+    }
+
+    fn relationship_part_name(source: &str) -> String {
+        match source.rsplit_once('/') {
+            Some((directory, file)) => format!("{directory}/_rels/{file}.rels"),
+            None => format!("_rels/{source}.rels"),
+        }
     }
 
     fn validate_relationships(&self) -> Result<(), RetargetError> {
@@ -363,6 +409,21 @@ impl ArchivePackage {
             removed_part_count: stale.removed.len(),
             preserved_part_count: parts.len(),
         })
+    }
+}
+
+fn configured_part_limit(name: &str, limits: &RetargetLimits) -> u64 {
+    let lower = name.to_ascii_lowercase();
+    if lower == PROJECT_SETTINGS_PART.to_ascii_lowercase() {
+        limits.max_project_settings_bytes
+    } else if lower == MODEL_SETTINGS_PART.to_ascii_lowercase() {
+        limits.max_model_settings_bytes
+    } else if lower == CONTENT_TYPES_PART_FOR_VALIDATION {
+        MAX_CONTENT_TYPES_BYTES
+    } else if lower.ends_with(".rels") {
+        MAX_RELATIONSHIP_BYTES
+    } else {
+        limits.max_part_bytes
     }
 }
 

@@ -26,6 +26,7 @@ pub(crate) const SPEED_KEYS: &[&str] = &[
     "support_speed",
     "top_surface_speed",
     "travel_speed",
+    "travel_speed_z",
 ];
 
 pub(crate) const ACCELERATION_KEYS: &[&str] = &[
@@ -116,25 +117,40 @@ fn target_ceiling(
     process: &ResolvedProfile,
 ) -> Result<f64, RetargetError> {
     if SPEED_KEYS.contains(&key) {
-        process
-            .settings
-            .get(key)
-            .and_then(SettingValue::finite_positive)
-            .or_else(|| speed_machine_ceiling(machine, key))
-            .ok_or_else(|| unsafe_value(key, "no positive target speed ceiling exists"))
+        minimum_positive(
+            process
+                .settings
+                .get(key)
+                .and_then(SettingValue::finite_positive),
+            speed_machine_ceiling(machine, key),
+        )
+        .ok_or_else(|| unsafe_value(key, "no positive target speed ceiling exists"))
     } else if ACCELERATION_KEYS.contains(&key) {
-        process
-            .settings
-            .get(key)
-            .and_then(SettingValue::finite_positive)
-            .or_else(|| acceleration_machine_ceiling(machine, key))
-            .ok_or_else(|| unsafe_value(key, "no positive target acceleration ceiling exists"))
+        minimum_positive(
+            process
+                .settings
+                .get(key)
+                .and_then(SettingValue::finite_positive),
+            acceleration_machine_ceiling(machine, key),
+        )
+        .ok_or_else(|| unsafe_value(key, "no positive target acceleration ceiling exists"))
     } else {
         Err(unsafe_value(key, "setting has no motion guardrail"))
     }
 }
 
-fn speed_machine_ceiling(machine: &ResolvedProfile, _key: &str) -> Option<f64> {
+fn minimum_positive(left: Option<f64>, right: Option<f64>) -> Option<f64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+fn speed_machine_ceiling(machine: &ResolvedProfile, key: &str) -> Option<f64> {
+    if key == "travel_speed_z" {
+        return first_positive(machine.settings.get("machine_max_speed_z"));
+    }
     let mut candidates = Vec::new();
     push_positive(&mut candidates, machine.settings.get("machine_max_speed_x"));
     push_positive(&mut candidates, machine.settings.get("machine_max_speed_y"));
@@ -192,11 +208,23 @@ fn clamp_value(
 
 fn clamp_scalar(key: &str, value: &str, ceiling: f64) -> Result<String, RetargetError> {
     let trimmed = value.trim();
+    if let Some(percentage) = trimmed.strip_suffix('%') {
+        let percentage = percentage
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| unsafe_value(key, format!("'{value}' is not a valid percentage")))?;
+        if !percentage.is_finite() || percentage < 0.0 {
+            return Err(unsafe_value(
+                key,
+                format!("'{value}' is not a non-negative percentage"),
+            ));
+        }
+        return Ok(format!("{}%", format_decimal(percentage.min(100.0))));
+    }
     let parsed = trimmed.parse::<f64>();
     let safe = match parsed {
         Ok(number) if number.is_finite() && number > 0.0 => number.min(ceiling),
-        Ok(0.0) => ceiling,
-        _ if trimmed.ends_with('%') => ceiling,
+        Ok(0.0) => return Ok("0".to_string()),
         _ => {
             return Err(unsafe_value(
                 key,
@@ -209,11 +237,24 @@ fn clamp_scalar(key: &str, value: &str, ceiling: f64) -> Result<String, Retarget
 
 fn validate_value(key: &str, value: &SettingValue, ceiling: f64) -> Result<(), RetargetError> {
     for scalar in value.as_list() {
+        if let Some(percentage) = scalar.trim().strip_suffix('%') {
+            let parsed = percentage
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| unsafe_value(key, "percentage is not numeric"))?;
+            if parsed.is_finite() && (0.0..=100.0).contains(&parsed) {
+                continue;
+            }
+            return Err(unsafe_value(
+                key,
+                format!("percentage {parsed} exceeds safe relative bounds"),
+            ));
+        }
         let parsed = scalar
             .trim()
             .parse::<f64>()
             .map_err(|_| unsafe_value(key, "value is not numeric"))?;
-        if !parsed.is_finite() || parsed <= 0.0 || parsed > ceiling {
+        if !parsed.is_finite() || parsed < 0.0 || parsed > ceiling {
             return Err(unsafe_value(
                 key,
                 format!("value {parsed} exceeds safe target ceiling {ceiling}"),
@@ -270,8 +311,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scalar_clamp_replaces_percentages_and_caps_numbers() {
-        assert_eq!(clamp_scalar("speed", "150%", 300.0).unwrap(), "300");
+    fn scalar_clamp_preserves_relative_semantics_and_caps_numbers() {
+        assert_eq!(clamp_scalar("speed", "150%", 300.0).unwrap(), "100%");
+        assert_eq!(clamp_scalar("speed", "75%", 300.0).unwrap(), "75%");
+        assert_eq!(clamp_scalar("speed", "0", 300.0).unwrap(), "0");
         assert_eq!(clamp_scalar("speed", "500", 300.0).unwrap(), "300");
         assert_eq!(clamp_scalar("speed", "120", 300.0).unwrap(), "120");
     }

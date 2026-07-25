@@ -110,6 +110,9 @@ jobs:
           # The sidecar is built in the dedicated step above; the packaging
           # hook only needs to stage it.
           PRINTFARMER_SKIP_SIDECAR_BUILD: '1'
+          # Dialog responses are compiled into CI-only packages so ordinary
+          # release packages cannot enable automation through the environment.
+          PRINTFARMER_BUILD_E2E: '1'
         run: npm run package
 
       - name: Verify packaged sidecar and compliance resources
