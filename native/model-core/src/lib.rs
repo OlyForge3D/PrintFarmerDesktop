@@ -10,6 +10,7 @@ pub mod geometry;
 pub mod hash;
 pub mod model;
 pub mod obj;
+pub mod retarget;
 pub mod rpc;
 pub mod scan;
 pub mod scene;

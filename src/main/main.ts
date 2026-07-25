@@ -21,7 +21,9 @@ import { PrintFarmerSyncEngine } from './syncEngine.js';
 
 let syncEngine: PrintFarmerSyncEngine | null = null;
 let sharedSidecar: SidecarClient | null = null;
+let sharedRetargetSidecar: SidecarClient | null = null;
 let sharedProfiles: ServerProfileService | null = null;
+let disposeIpcResources: (() => Promise<void>) | null = null;
 let shutdownStarted = false;
 let cleanupComplete = false;
 
@@ -198,12 +200,23 @@ if (!enforceSingleInstance()) {
         'catalog.sqlite3',
       );
     }
-    sharedSidecar = new SidecarClient(spawnSidecarChannel);
+    sharedSidecar = new SidecarClient(spawnSidecarChannel, {
+      requireProtocolHandshake: true,
+    });
+    sharedRetargetSidecar = new SidecarClient(spawnSidecarChannel, {
+      serializeRequests: true,
+      requireProtocolHandshake: true,
+    });
     sharedProfiles = new ServerProfileService({
       userDataPath: app.getPath('userData'),
       secretStorage: safeStorage,
     });
-    registerIpcHandlers(undefined, sharedProfiles, sharedSidecar);
+    disposeIpcResources = registerIpcHandlers(
+      undefined,
+      sharedProfiles,
+      sharedSidecar,
+      sharedRetargetSidecar,
+    );
     syncEngine = new PrintFarmerSyncEngine(
       sharedProfiles,
       sharedSidecar,
@@ -228,28 +241,38 @@ if (!enforceSingleInstance()) {
   });
 
   app.on('before-quit', (event) => {
-    if (cleanupComplete || !syncEngine) return;
+    if (cleanupComplete) return;
     event.preventDefault();
     if (shutdownStarted) return;
     shutdownStarted = true;
     const engine = syncEngine;
     syncEngine = null;
+    const disposeIpc = disposeIpcResources;
+    disposeIpcResources = null;
     void (async () => {
+      const disposal = engine?.dispose() ?? Promise.resolve();
       try {
-        const disposal = engine.dispose();
-        await Promise.race([
-          disposal,
-          new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+        await Promise.all([
+          disposeIpc?.() ?? Promise.resolve(),
+          Promise.race([
+            disposal,
+            new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+          ]),
         ]);
+      } catch (error) {
+        console.error('[shutdown] resource cleanup failed', error);
+      } finally {
+        // Windows does not reap child processes when the parent exits.
         sharedSidecar?.dispose();
         sharedSidecar = null;
+        sharedRetargetSidecar?.dispose();
+        sharedRetargetSidecar = null;
         await Promise.race([
           disposal,
           new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
         ]);
         sharedProfiles?.clearTokens();
         sharedProfiles = null;
-      } finally {
         cleanupComplete = true;
         app.quit();
       }

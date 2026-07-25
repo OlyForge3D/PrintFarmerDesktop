@@ -8,6 +8,11 @@ import { defineConfig } from 'vite';
 // plugin's default CommonJS output injects `require`, which throws
 // "require is not defined in ES module scope" before the app can start.
 export default defineConfig({
+  define: {
+    __PRINTFARMER_E2E_BUILD__: JSON.stringify(
+      process.env.PRINTFARMER_BUILD_E2E === '1',
+    ),
+  },
   build: {
     // Providing our own `lib` config stops @electron-forge/plugin-vite from
     // forcing its default CommonJS output. We emit ESM so the built `main.js`

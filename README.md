@@ -28,6 +28,92 @@ Early development. See the implementation plan and the tracked work items.
 Source models are never moved, modified, or uploaded without an explicit user
 action.
 
+## Prepare an editable project for Snapmaker U1
+
+PrintFarmer Desktop can create a **new review copy** of an editable Orca-family
+3MF project for the Snapmaker U1. This workflow is available on Windows and
+macOS from the selected model's inspector and 3D preview.
+
+1. Catalog and select an editable `.3mf` created by OrcaSlicer or another
+   Orca-compatible slicer export.
+2. Choose **Prepare for Snapmaker U1**.
+3. Explicitly select either a bundled U1 process profile or import an editable
+   U1 reference project. Imported references are copied into a
+   content-addressed local store; the renderer never receives their path.
+4. Review preflight blockers, warnings, and proposed changes. Optionally enable
+   per-plate object exclusion.
+5. Build and validate a temporary review copy, then toggle between the source
+   and U1 output scenes.
+6. Use **Save As** to create a new `.3mf`. Existing files and the source are
+   never overwritten.
+
+The source must contain editable geometry, project settings, model settings,
+one to four supported filament slots, valid object/tool routing, and valid OPC
+relationships. Geometry-only 3MFs, G-code-only/pre-sliced archives, unsupported
+Prusa/Cura projects, unsafe or malformed archives, dangling object references,
+and incomplete/ambiguous settings are rejected with an actionable blocker.
+Imported U1 references that contain local executable post-processing commands
+are also rejected; remove those commands before importing the reference.
+Unknown Orca-family producers are accepted with a warning and require careful
+review.
+
+Every output replaces machine identity, dimensions, limits, tools, and all
+executable machine/filament G-code with values from the pinned bundled snapshot.
+It applies the selected hash-bound process, maps compatible filament settings,
+caps imported filament temperatures and volumetric flow at pinned material
+values, and clamps all supported global/per-object speed, Z travel, and
+acceleration overrides to independent pinned U1 ceilings;
+optionally enables object exclusion; removes stale plate G-code, slice
+metadata, custom per-layer G-code, digital signatures, and their obsolete OPC
+links; rebuilds the package deterministically; and reopens and validates the
+result. Geometry, build transforms, plate placement, tool routing, and unknown
+non-slice parts are preserved. Raw paint metadata is preserved, but the app
+reports it as **render-unverified**: inspect painted regions in Snapmaker Orca
+before printing.
+
+The workflow is local-only. Projects and imported profiles are not uploaded,
+and the app performs no runtime profile download. Temporary review artifacts
+use owner-bound, expiring tokens, are removed when the workflow/window closes,
+and stale app-instance directories are removed on the next startup. The app
+checks the source SHA-256 before preflight/build and after native validation;
+cancel, failure, save, sidecar recovery, and app restart do not authorize a
+source write.
+
+### U1 profiles and provenance
+
+Released builds contain a reviewed byte-for-byte snapshot from
+[`Snapmaker/Orca_Presets`](https://github.com/Snapmaker/Orca_Presets), pinned to
+commit `0c2d17834b7820339c1cf4326fda7db9da4a766a`. The package verifier checks the
+manifest and every declared SHA-256 on Windows and macOS. Updates are
+maintainer-only, require an exact 40-character commit and reviewed path
+allowlist, and are documented in [the contributing guide](docs/CONTRIBUTING.md#pinned-target-profile-snapshots).
+
+Imported references are useful when a reviewed project-specific U1 setup is
+required. They must themselves be complete, editable U1 projects. The app
+stores their exact bytes and expected SHA-256 and rejects missing, changed,
+incomplete, or ambiguous references.
+
+### Troubleshooting and current limits
+
+- **Build is disabled:** select a target profile and resolve every preflight
+  blocker.
+- **Source changed:** refresh/rescan the catalog and retry only after confirming
+  the source file is stable.
+- **Destination exists/source conflict:** choose a new filename; Save As is
+  intentionally non-overwriting.
+- **Paint warning:** open the result in the accepted Snapmaker Orca version and
+  inspect every painted region before slicing.
+- **Profile unavailable/corrupt:** use a bundled profile or re-import the exact
+  editable U1 reference.
+- **Sidecar unavailable:** restart the app; unsaved temporary output is
+  disposable and the source remains unchanged.
+
+Phase one does not generate printer-ready G-code, send jobs to a printer,
+control hardware, prove physical tool changes, repair unsupported slicer
+projects, remap more than four material slots, or visually certify painted
+regions. Snapmaker Orca and hardware acceptance remains a release gate recorded
+in [the U1 acceptance checklist](docs/snapmaker-u1-release-acceptance.md).
+
 ## Printer Calibration
 
 Printer Calibration is being developed as a native, first-class PFD workspace

@@ -42,35 +42,44 @@ export function useRetargetWorkflow(
   const dispose = useCallback((value: string | null) => {
     if (value) void window.printFarmer.disposeRetarget({ token: value });
   }, []);
-  useEffect(() => () => dispose(tokenRef.current), [dispose]);
-  useEffect(() => {
+  useEffect(
+    () => () => {
+      epoch.current += 1;
+      dispose(tokenRef.current);
+    },
+    [dispose],
+  );
+  const loadProfiles = useCallback(async () => {
     const request = ++epoch.current;
-    void window.printFarmer
-      .listRetargetProfiles()
-      .then((response) => {
-        if (request !== epoch.current) return;
-        if (response.status === 'ok') {
-          setProfiles(response.value.profiles);
-          setProfileWarnings(
-            response.value.warnings.map((warning) => warning.message),
-          );
-          setPhase('ready');
-        } else {
-          setMessage(
-            response.status === 'error'
-              ? response.error.message
-              : 'Profiles are unavailable.',
-          );
-          setPhase('error');
-        }
-      })
-      .catch(() => {
-        if (request === epoch.current) {
-          setMessage('Profiles are unavailable.');
-          setPhase('error');
-        }
-      });
+    setMessage(null);
+    setPhase('loading');
+    try {
+      const response = await window.printFarmer.listRetargetProfiles();
+      if (request !== epoch.current) return;
+      if (response.status === 'ok') {
+        setProfiles(response.value.profiles);
+        setProfileWarnings(
+          response.value.warnings.map((warning) => warning.message),
+        );
+        setPhase('ready');
+      } else {
+        setMessage(
+          response.status === 'error'
+            ? response.error.message
+            : 'Profiles are unavailable.',
+        );
+        setPhase('error');
+      }
+    } catch {
+      if (request === epoch.current) {
+        setMessage('Profiles are unavailable.');
+        setPhase('error');
+      }
+    }
   }, []);
+  useEffect(() => {
+    void loadProfiles();
+  }, [loadProfiles]);
   const preflight = useCallback(
     async (profileId: string, exclusion = objectExclusion) => {
       const request = ++epoch.current;
@@ -172,7 +181,7 @@ export function useRetargetWorkflow(
     } catch {
       if (request === epoch.current) {
         setMessage('The project could not be saved.');
-        setPhase('error');
+        setPhase('review');
       }
       return;
     }
@@ -191,20 +200,34 @@ export function useRetargetWorkflow(
       setPhase('saved');
     } else {
       setMessage(response.error.message);
-      setPhase('error');
+      setPhase('review');
     }
   }, [token]);
   const importProfile = useCallback(async () => {
+    const request = ++epoch.current;
+    setMessage(null);
     let response: RetargetImportProfileResponse;
     try {
       response = await window.printFarmer.importRetargetProfile();
     } catch {
-      setMessage('The U1 reference could not be imported.');
+      if (request === epoch.current)
+        setMessage('The U1 reference could not be imported.');
       return;
     }
-    if (response.status !== 'ok') return;
-    const listed: RetargetListProfilesResponse =
-      await window.printFarmer.listRetargetProfiles();
+    if (request !== epoch.current || response.status === 'canceled') return;
+    if (response.status === 'error') {
+      setMessage(response.error.message);
+      return;
+    }
+    let listed: RetargetListProfilesResponse;
+    try {
+      listed = await window.printFarmer.listRetargetProfiles();
+    } catch {
+      if (request === epoch.current)
+        setMessage('The U1 profile catalog could not be refreshed.');
+      return;
+    }
+    if (request !== epoch.current) return;
     if (listed.status === 'ok') {
       setProfiles(listed.value.profiles);
       setProfileWarnings(
@@ -212,16 +235,21 @@ export function useRetargetWorkflow(
       );
       setSelectedId(response.profile.id);
       void preflight(response.profile.id);
+    } else {
+      setMessage(
+        listed.status === 'error'
+          ? listed.error.message
+          : 'The U1 profile catalog could not be refreshed.',
+      );
     }
   }, [preflight]);
   const retry = useCallback(() => {
     if (selectedId) {
       void preflight(selectedId);
     } else {
-      setMessage(null);
-      setPhase('ready');
+      void loadProfiles();
     }
-  }, [preflight, selectedId]);
+  }, [loadProfiles, preflight, selectedId]);
   return {
     phase,
     profiles,

@@ -19,20 +19,36 @@ export function RetargetWorkflow({
   const closeButton = useRef<HTMLButtonElement | null>(null);
   const [scene, setScene] = useState<'source' | 'output'>('output');
   const [mesh, setMesh] = useState<SceneMesh | null>(null);
+  const [sceneError, setSceneError] = useState<string | null>(null);
+  const [sceneRetry, setSceneRetry] = useState(0);
   const sceneEpoch = useRef(0);
   useEffect(() => {
-    if (flow.phase !== 'review' || !flow.token) return;
     const request = ++sceneEpoch.current;
+    setMesh(null);
+    setSceneError(null);
+    if (flow.phase !== 'review' || !flow.token) return;
     void window.printFarmer
       .loadRetargetScene({ token: flow.token, source: scene })
       .then((result) => {
-        if (request === sceneEpoch.current && result.status === 'ok')
+        if (request !== sceneEpoch.current) return;
+        if (result.status === 'ok') {
           setMesh(toViewerSceneMesh(result.value));
+        } else {
+          setSceneError(
+            result.status === 'error'
+              ? result.error.message
+              : 'The comparison scene is unavailable.',
+          );
+        }
       })
       .catch(() => {
-        if (request === sceneEpoch.current) setMesh(null);
+        if (request === sceneEpoch.current)
+          setSceneError('The comparison scene could not be loaded.');
       });
-  }, [flow.phase, flow.token, scene]);
+    return () => {
+      if (request === sceneEpoch.current) sceneEpoch.current += 1;
+    };
+  }, [flow.phase, flow.token, scene, sceneRetry]);
   useEffect(() => {
     closeButton.current?.focus();
     const handle = (event: KeyboardEvent): void => {
@@ -117,6 +133,12 @@ export function RetargetWorkflow({
             ? 'Building Snapmaker U1 project.'
             : flow.message}
         </div>
+        {flow.message &&
+        (flow.phase === 'ready' ||
+          flow.phase === 'blocked' ||
+          flow.phase === 'review') ? (
+          <p role="alert">{flow.message}</p>
+        ) : null}
         <header>
           <div>
             <h2 id="retarget-title">Prepare for Snapmaker U1</h2>
@@ -293,6 +315,16 @@ export function RetargetWorkflow({
                 className="viewer-canvas"
                 background="#0b0e12"
               />
+            ) : sceneError ? (
+              <p role="alert">
+                {sceneError}{' '}
+                <button
+                  type="button"
+                  onClick={() => setSceneRetry((value) => value + 1)}
+                >
+                  Retry scene
+                </button>
+              </p>
             ) : (
               <p role="status">Loading comparison scene…</p>
             )}

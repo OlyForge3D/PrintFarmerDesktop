@@ -56,7 +56,7 @@ function importedDetails(bytes: Buffer) {
   };
 }
 
-async function createService() {
+async function createService(maxProfileBytes?: number) {
   const userDataPath = await import('node:fs/promises').then(({ mkdtemp }) =>
     mkdtemp(path.join(os.tmpdir(), 'u1-profiles-')),
   );
@@ -67,6 +67,7 @@ async function createService() {
   const service = new TargetProfileService({
     userDataPath,
     now: () => 1234,
+    ...(maxProfileBytes === undefined ? {} : { maxProfileBytes }),
     sidecar: {
       listRetargetProfiles: vi.fn(() =>
         Promise.resolve(ok([bundledSummary()])),
@@ -89,6 +90,114 @@ afterEach(async () => {
 });
 
 describe('TargetProfileService', () => {
+  it('rejects imports at the copy boundary before inspecting them', async () => {
+    const { service, userDataPath, inspectImportedRetargetProfile } =
+      await createService(8);
+    await service.initialize();
+    const source = path.join(userDataPath, 'oversized.3mf');
+    await writeFile(source, 'ninebytes');
+
+    await expect(service.importFile(source)).rejects.toThrow(
+      'profileImportFailed',
+    );
+    expect(inspectImportedRetargetProfile).not.toHaveBeenCalled();
+  });
+
+  it('preserves native bundle-integrity failures for IPC', async () => {
+    const userDataPath = await import('node:fs/promises').then(({ mkdtemp }) =>
+      mkdtemp(path.join(os.tmpdir(), 'u1-profiles-')),
+    );
+    temporaryDirectories.push(userDataPath);
+    const service = new TargetProfileService({
+      userDataPath,
+      sidecar: {
+        listRetargetProfiles: vi.fn(() =>
+          Promise.resolve({
+            status: 'error',
+            error: {
+              code: 'profileHashMismatch',
+              message: 'The bundled profile hash does not match.',
+              action: 'Restore the application profile bundle.',
+            },
+          }),
+        ),
+        inspectRetargetProfile: vi.fn(),
+        inspectImportedRetargetProfile: vi.fn(),
+      },
+    });
+
+    await expect(service.initialize()).rejects.toMatchObject({
+      failure: {
+        domain: 'native',
+        code: 'profileHashMismatch',
+        message: 'The bundled profile hash does not match.',
+        action: 'Restore the application profile bundle.',
+        part: null,
+        setting: null,
+      },
+    });
+  });
+
+  it('serializes concurrent imports at the combined catalog limit', async () => {
+    const { service, userDataPath } = await createService();
+    await service.initialize();
+    const root = path.join(userDataPath, 'retarget', 'profiles', 'v1');
+    const entries = Array.from({ length: 198 }, (_, index) => {
+      const sha256 = index.toString(16).padStart(64, '0');
+      return { id: `imported:${sha256}`, sha256, importedAt: index };
+    });
+    await writeFile(
+      path.join(root, 'manifest.json'),
+      JSON.stringify({ schemaVersion: 1, entries }),
+    );
+    const first = path.join(userDataPath, 'capacity-reference-a.3mf');
+    const second = path.join(userDataPath, 'capacity-reference-b.3mf');
+    await writeFile(first, 'editable-capacity-reference-a');
+    await writeFile(second, 'editable-capacity-reference-b');
+
+    const outcomes = await Promise.allSettled([
+      service.importFile(first),
+      service.importFile(second),
+    ]);
+    expect(outcomes.map(({ status }) => status).sort()).toEqual([
+      'fulfilled',
+      'rejected',
+    ]);
+    expect(
+      (
+        JSON.parse(
+          await readFile(path.join(root, 'manifest.json'), 'utf8'),
+        ) as {
+          entries: unknown[];
+        }
+      ).entries,
+    ).toHaveLength(199);
+    expect(outcomes.find(({ status }) => status === 'rejected')).toMatchObject({
+      reason: new Error('profileCatalogFull'),
+    });
+    expect(service.catalog().profiles.length).toBeLessThanOrEqual(200);
+
+    const overflowSha = createHash('sha256')
+      .update(await readFile(second))
+      .digest('hex');
+    const manifestPath = path.join(root, 'manifest.json');
+    const overflowManifest = JSON.parse(
+      await readFile(manifestPath, 'utf8'),
+    ) as {
+      schemaVersion: 1;
+      entries: Array<{ id: string; sha256: string; importedAt: number }>;
+    };
+    overflowManifest.entries.push({
+      id: `imported:${overflowSha}`,
+      sha256: overflowSha,
+      importedAt: 999,
+    });
+    await writeFile(manifestPath, JSON.stringify(overflowManifest));
+    await expect(service.importFile(second)).rejects.toThrow(
+      'profileCatalogFull',
+    );
+  });
+
   it('imports amended native details once and exposes no renderer path', async () => {
     const { service, userDataPath } = await createService();
     await service.initialize();
