@@ -68,6 +68,24 @@ A 29-node diamond DAG expanded to 32,767 rows in `partTreeModel.ts` precisely be
 
 If fixture-writing reveals behavior that contradicts the issue text, do not silently encode current behavior as correct. Two legitimate options: fix it, or pin it **and flag it explicitly** for the reviewer to rule on. Pinning without flagging converts an open question into a permanent contract by accident.
 
+## A name is a claim, and it is the claim least likely to be audited
+
+Names and comments are what the next reader greps for. They find a hit, conclude the risk is covered, and stop. So a name that overstates is worse than no name at all: it does not merely fail to help, it actively stops the search that would have found the gap.
+
+Three instances landed in one week, each wrong in the direction that ends the audit:
+
+- `rejects_an_unbounded_appearance_table` measured the appearance _entry_ axis only. The structure had two axes, and the uncapped one — group count — sat behind a passing test aimed at exactly the right risk.
+- A comment reading "instances beyond the cap are dropped" was true of the internal map and false of what the user sees: those instances fall through to plate 0. Anyone auditing "where does over-cap geometry end up?" would have read it and stopped.
+- `malformed_colour_values_are_ignored_rather_than_fatal` asserted `Some([0,0,0])`. Its own message said "fall back rather than poison the scene" — but black _is_ a poisoned colour. The name described the intent; the assertion pinned the opposite.
+
+Two checks, applied to the name rather than the code:
+
+**Name the axis you varied, not the risk you had in mind.** A test aimed at the right risk still only measures the axis you thought to vary. "Is there a test for this risk?" is nearly as weak a question as "is there a test?" — both are answered by the name, and the name is what is wrong.
+
+**When a name states a dichotomy, check whether a third option exists.** `a_malformed_appearance_index_is_reported_not_silently_dropped` encodes a choice between fatal and silently-dropped. The correct behaviour was neither: appearance explicitly absent, geometry preserved, diagnostic surfaced. A name that forecloses the right answer will actively resist the right fix, because changing the behaviour now means admitting the test was misnamed.
+
+Corollary for reviewers: read the assertion before the name. If they disagree, the name is the defect — and it is the half that propagates.
+
 ## Mocks hide missing production code
 
 Downstream tests that mock the sidecar stayed green while the entire native retarget engine was missing from `development`. If a test mocks the thing it is nominally validating, it cannot detect that the thing is gone. At least one test per integration boundary must exercise the real implementation.

@@ -188,3 +188,43 @@ Asserting the specific diagnostic is therefore **necessary but not sufficient �
 **Process note:** both #68 round-2 reviewers extracted the **pre-fix** function from the superseded commit and ran the new tests' hostile shapes against it, producing a before/after table (a 29-object diamond DAG at 49,150 rows vs 43; an 18-level DAG at 1,048,573 rows vs linear). **That is the evidentiary standard for a fix round**: a test that cannot fail against the old code is not a regression test, and demonstrating the failure costs minutes.
 
 **Why:** Recorded because all three are cases where a control was correct and the _test_ was the defect — the hardest class to find by reading either one alone.
+
+## 2026-07-25 — Reviewers ruling on different axes are not in disagreement
+
+**Decision:** When two reviewers reach opposite verdicts, first establish whether they are ruling on the same axis. If they are not, **both verdicts stand and the axes are additive** — any one of them can block. The TL does not "break the tie," because there is no tie.
+
+**Context:** On PR #69 the security reviewer returned APPROVE and the correctness reviewer returned REJECT on the same finding. It looked like a contradiction requiring adjudication. It was not. The security reviewer had ruled on _security severity_: no memory-unsafety, no cross-object mis-attribution, because the appearance state resets per object. That was correct. The correctness reviewer blocked on _availability, contract accuracy and test discipline_: a file with one unparseable cosmetic attribute opened before the PR and failed to open after it. Also correct.
+
+Nothing had to be overridden. A security reviewer finding no vulnerability has established that a change is **not a vulnerability** — not that it is safe to ship. Reading APPROVE as "clear to merge" silently promotes one axis over every other.
+
+**What made it legible:** the correctness reviewer named the split himself — "I do not dispute his severity judgement; I block on the axes that are mine" — rather than arguing severity. Reviewers should state the axis they are ruling on when they know another reviewer has ruled differently. Adjudicating a disagreement that does not exist wastes a round and teaches reviewers to soften findings that sit outside the loudest reviewer's remit.
+
+**Corollary:** a reviewer who has already approved should supersede their own earlier verdict rather than leave two contradicting comments on the PR, as happened correctly here when a delegated question turned an earlier APPROVE into a REJECT.
+
+**Why:** Merge gating is not a vote. It is a conjunction of independent conditions, and the reviewers are the ones who know which condition they checked.
+
+## 2026-07-25 — Order merges by measured collision, not by PR number or age
+
+**Decision:** Before publishing a merge order, run `git diff --name-only base...head` for each PR and order by **actual file overlap**. Do not infer a dependency from issue numbering, PR age, or which epic something belongs to.
+
+**Context:** I published the order #69 → #77 → #78 and told three sessions to work to it. #77 turned out to have **zero** file overlap with #69 — I had assumed the constraint rather than measured it. Merging #77 first was not merely harmless, it was strictly better: #78's required fix rewrites the visibility resolution in `partTreeModel.ts`, and #77 rewrote that same module. Landing #77 first meant the fix was built against the final version instead of a superseded one that would have forced a second rewrite.
+
+**Cost of getting it wrong in the other direction:** telling an author to rebase onto a branch that is still under revision makes them do the work twice. "Do not rebase onto a PR that is in a fix round" is the companion rule.
+
+**Also:** when a merge lands under an author who is actively editing a file it touches, tell them within minutes and name the file. A clean textual merge is _more_ dangerous here, not less, when both changes touch the same semantics rather than adjacent lines.
+
+**Why:** A published order is load-bearing — sessions serialize their work against it. An unmeasured one costs more than no order at all, because it is followed.
+
+## 2026-07-25 — A freeze overrides a standing instruction
+
+**Decision:** When a branch is frozen for review, an outstanding standing instruction to "fold in-scope findings without asking" is **suspended** for the duration. Any find, however correct, is reported and not pushed.
+
+**Context:** I had issued both — a standing instruction to fold in-scope work without asking, because head movement is my cost to bear, and later an absolute freeze so two reviewers could finally sit on one head. An author pushed a correct, reviewer-requested, CI-green change under the freeze. That was an ambiguity I authored, not an order ignored, and the record says so.
+
+I accepted the push rather than reverting it: the content was right, and reverting good work to make a procedural point costs the project more than the breach did. Reverting would also have been the wrong lesson — the fault was in the instructions, not the judgement.
+
+**Mitigating factor worth noting:** the push **appended** rather than force-pushed, so the reviewers' pinned SHA remained an ancestor and no completed review was invalidated. An append costs a re-pin; a rewrite costs the round. If a frozen branch must move, appending is the cheap failure.
+
+**The unambiguous half:** the push was not announced on the PR. Status lives on the PR because chat is lossy — two reviewers sat pinned to a SHA they had been told was final, discoverable only by polling.
+
+**Why:** Rules that contradict each other are worse than either rule alone, because the delegate has to guess and will be blamed either way.
