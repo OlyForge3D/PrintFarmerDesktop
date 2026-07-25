@@ -2422,10 +2422,7 @@ fn read_plate_layout<R: Read + Seek>(
 ///
 /// `object_id` is the 3MF resource id and `instance_id` counts that object's
 /// build items in document order, which is what [`flatten`] replays.
-fn parse_plate_layout(
-    xml: &str,
-    guard: &mut ParseGuard,
-) -> Result<PlateLayout, ThreeMfError> {
+fn parse_plate_layout(xml: &str, guard: &mut ParseGuard) -> Result<PlateLayout, ThreeMfError> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
 
@@ -3774,8 +3771,7 @@ mod tests {
         let plates: Vec<String> = (0..MAX_SCENE_PLATES + 5)
             .map(|index| plate_block(index as u32 + 1, None, &[(index as u32 + 1, 0)]))
             .collect();
-        let layout =
-            parse_plate_layout(&model_settings(&plates), &mut test_guard()).unwrap();
+        let layout = parse_plate_layout(&model_settings(&plates), &mut test_guard()).unwrap();
 
         assert_eq!(layout.names.len(), MAX_SCENE_PLATES);
         // Instances declared on plates beyond the cap are absent from
@@ -3816,6 +3812,8 @@ mod tests {
                         })
                         .collect(),
                     unit: "millimeter".to_string(),
+                    appearances: HashMap::new(),
+                    malformed_appearance: false,
                 },
             )]),
             root_part: DEFAULT_MODEL_PART.to_string(),
@@ -4208,6 +4206,39 @@ mod tests {
         assert_eq!(mesh.plates.len(), 1);
         assert_eq!(mesh.plates[0].name, "Plate 1");
         assert_eq!(mesh.plates[0].root_object_ids.len(), 4);
+    }
+
+    #[test]
+    fn vendor_plate_metadata_rejects_document_type_declarations() {
+        let bytes = package_with_model_settings(
+            &four_instance_model(),
+            "<!DOCTYPE config><config></config>",
+        );
+
+        assert!(matches!(
+            parse_bytes(&bytes),
+            Err(ThreeMfError::Limit(LimitViolation::XmlDoctype))
+        ));
+    }
+
+    #[test]
+    fn vendor_plate_metadata_preserves_compression_ratio_enforcement() {
+        let mut settings = String::from("<config><!--");
+        settings.push_str(&"x".repeat(crate::limits::COMPRESSION_RATIO_FLOOR_BYTES as usize + 1));
+        settings.push_str("--></config>");
+        assert!((settings.len() as u64) < MAX_METADATA_XML_BYTES);
+
+        let error = parse_bytes(&package_with_model_settings(
+            &four_instance_model(),
+            &settings,
+        ))
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ThreeMfError::Limit(LimitViolation::CompressionRatio { part, .. })
+                if part == MODEL_SETTINGS_PART
+        ));
     }
 
     #[test]
