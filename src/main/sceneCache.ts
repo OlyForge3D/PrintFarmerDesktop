@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import {
@@ -14,6 +14,7 @@ const MANIFEST_NAME = 'recipe.json';
 const UNINITIALIZED = Symbol('uninitialized-scene-cache-recipe');
 
 export const SCENE_CACHE_DIRECTORY = 'scene-cache.v1';
+export const MAX_SCENE_ENTRY_BYTES = 64 * 1024 * 1024;
 
 const SceneCacheManifest = z
   .object({
@@ -27,15 +28,46 @@ export interface SceneCacheSidecar {
   loadSceneWithRecipe(filePath: string): Promise<RecipeBoundScene>;
 }
 
+export interface SceneCacheFileSystem {
+  mkdir(directoryPath: string): Promise<void>;
+  readText(filePath: string): Promise<string>;
+  rename(sourcePath: string, destinationPath: string): Promise<void>;
+  remove(targetPath: string): Promise<void>;
+  size(filePath: string): Promise<number>;
+  writeText(filePath: string, contents: string): Promise<void>;
+}
+
 export interface SceneCacheServiceOptions {
   userDataPath: string;
   sidecar: SceneCacheSidecar;
+  fileSystem?: SceneCacheFileSystem;
+  maxEntryBytes?: number;
+  reportError?: (message: string, error: unknown) => void;
 }
 
 interface RecipeLease {
   recipe: string | null;
   generation: number;
+  storageReady: boolean;
 }
+
+const nodeFileSystem: SceneCacheFileSystem = {
+  mkdir: async (directoryPath) => {
+    await mkdir(directoryPath, { recursive: true, mode: 0o700 });
+  },
+  readText: (filePath) => readFile(filePath, 'utf8'),
+  rename,
+  remove: async (targetPath) => {
+    await rm(targetPath, { recursive: true, force: true });
+  },
+  size: async (filePath) => (await stat(filePath)).size,
+  writeText: (filePath, contents) =>
+    writeFile(filePath, contents, {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    }),
+};
 
 /**
  * Persists validated scene DTOs under the recipe advertised by the sidecar.
@@ -46,8 +78,12 @@ export class SceneCacheService {
   private readonly cacheDirectory: string;
   private readonly manifestPath: string;
   private readonly sidecar: SceneCacheSidecar;
+  private readonly fileSystem: SceneCacheFileSystem;
+  private readonly maxEntryBytes: number;
+  private readonly reportError: (message: string, error: unknown) => void;
   private activeRecipe: string | null | typeof UNINITIALIZED = UNINITIALIZED;
   private generation = 0;
+  private storageReady = false;
   private mutationTail: Promise<void> = Promise.resolve();
   private readonly inFlight = new Map<string, Promise<Scene>>();
 
@@ -58,6 +94,13 @@ export class SceneCacheService {
     );
     this.manifestPath = path.join(this.cacheDirectory, MANIFEST_NAME);
     this.sidecar = options.sidecar;
+    this.fileSystem = options.fileSystem ?? nodeFileSystem;
+    this.maxEntryBytes = options.maxEntryBytes ?? MAX_SCENE_ENTRY_BYTES;
+    this.reportError =
+      options.reportError ??
+      ((message, error) => {
+        console.error(message, error);
+      });
   }
 
   async initialize(): Promise<void> {
@@ -86,7 +129,7 @@ export class SceneCacheService {
 
     const modelHash = await hashFile(filePath);
     const assumedKey = sceneCacheKey(modelHash, advertisedRecipe);
-    const cached = await this.readEntry(assumedKey);
+    const cached = lease.storageReady ? await this.readEntry(assumedKey) : null;
     if (cached && this.isCurrent(lease)) return cached;
     if (!this.isCurrent(lease)) return this.loadScene(filePath);
 
@@ -147,33 +190,49 @@ export class SceneCacheService {
   }
 
   private async adoptRecipeLocked(recipe: string | null): Promise<void> {
-    if (this.activeRecipe !== UNINITIALIZED && this.activeRecipe === recipe) {
+    if (
+      this.activeRecipe !== UNINITIALIZED &&
+      this.activeRecipe === recipe &&
+      (recipe === null || this.storageReady)
+    ) {
       return;
     }
+
+    if (this.activeRecipe === UNINITIALIZED || this.activeRecipe !== recipe) {
+      this.generation += 1;
+      this.activeRecipe = recipe;
+    }
+    this.storageReady = false;
 
     if (recipe === null) {
-      await rm(this.cacheDirectory, { recursive: true, force: true });
-      this.activeRecipe = null;
-      this.generation += 1;
+      await this.removeBestEffort(
+        this.cacheDirectory,
+        'Could not clear the unversioned scene cache.',
+      );
       return;
     }
 
-    const persistedRecipe =
-      this.activeRecipe === UNINITIALIZED
-        ? await this.readPersistedRecipe()
-        : this.activeRecipe;
-    if (persistedRecipe !== recipe) {
-      await rm(this.cacheDirectory, { recursive: true, force: true });
-      await mkdir(this.cacheDirectory, { recursive: true, mode: 0o700 });
-      await this.writeManifest(recipe);
+    try {
+      const persistedRecipe = await this.readPersistedRecipe();
+      if (persistedRecipe !== recipe) {
+        await this.fileSystem.remove(this.cacheDirectory);
+        await this.fileSystem.mkdir(this.cacheDirectory);
+        await this.writeManifest(recipe);
+      } else {
+        await this.fileSystem.mkdir(this.cacheDirectory);
+      }
+      this.storageReady = true;
+    } catch (error) {
+      this.reportError(
+        'Scene cache initialization failed; loading without persistence.',
+        error,
+      );
     }
-    this.activeRecipe = recipe;
-    this.generation += 1;
   }
 
   private async readPersistedRecipe(): Promise<string | null> {
     try {
-      const payload = await readFile(this.manifestPath, 'utf8');
+      const payload = await this.fileSystem.readText(this.manifestPath);
       const parsed = SceneCacheManifest.safeParse(JSON.parse(payload));
       return parsed.success ? parsed.data.recipe : null;
     } catch (error) {
@@ -192,14 +251,13 @@ export class SceneCacheService {
       recipe,
     });
     try {
-      await writeFile(temporaryPath, payload, {
-        encoding: 'utf8',
-        flag: 'wx',
-        mode: 0o600,
-      });
-      await rename(temporaryPath, this.manifestPath);
+      await this.fileSystem.writeText(temporaryPath, payload);
+      await this.fileSystem.rename(temporaryPath, this.manifestPath);
     } catch (error) {
-      await rm(temporaryPath, { force: true }).catch(() => undefined);
+      await this.removeBestEffort(
+        temporaryPath,
+        'Could not remove a temporary scene cache manifest.',
+      );
       throw error;
     }
   }
@@ -207,18 +265,32 @@ export class SceneCacheService {
   private async readEntry(key: string): Promise<Scene | null> {
     const entryPath = this.entryPath(key);
     try {
-      const payload = await readFile(entryPath, 'utf8');
+      if ((await this.fileSystem.size(entryPath)) > this.maxEntryBytes) {
+        await this.removeBestEffort(
+          entryPath,
+          'Could not remove an oversized scene cache entry.',
+        );
+        return null;
+      }
+      const payload = await this.fileSystem.readText(entryPath);
       const parsed = LoadSceneResponse.safeParse(JSON.parse(payload));
       if (parsed.success) return parsed.data;
-      await rm(entryPath, { force: true });
+      await this.removeBestEffort(
+        entryPath,
+        'Could not remove an invalid scene cache entry.',
+      );
       return null;
     } catch (error) {
       if (isMissing(error)) return null;
-      if (error instanceof SyntaxError) {
-        await rm(entryPath, { force: true });
-        return null;
-      }
-      throw error;
+      this.reportError(
+        'Scene cache read failed; deriving the scene again.',
+        error,
+      );
+      await this.removeBestEffort(
+        entryPath,
+        'Could not remove an unreadable scene cache entry.',
+      );
+      return null;
     }
   }
 
@@ -228,24 +300,47 @@ export class SceneCacheService {
     lease: RecipeLease,
   ): Promise<void> {
     await this.withMutationLock(async () => {
-      if (!this.isCurrent(lease) || lease.recipe === null) return;
+      if (
+        !this.isCurrent(lease) ||
+        lease.recipe === null ||
+        !this.storageReady
+      ) {
+        return;
+      }
+      const payload = JSON.stringify(scene);
+      if (Buffer.byteLength(payload, 'utf8') > this.maxEntryBytes) return;
       const entryPath = this.entryPath(key);
       const temporaryPath = path.join(
         this.cacheDirectory,
         `.${key}.${randomUUID()}.tmp`,
       );
       try {
-        await writeFile(temporaryPath, JSON.stringify(scene), {
-          encoding: 'utf8',
-          flag: 'wx',
-          mode: 0o600,
-        });
-        await rename(temporaryPath, entryPath);
+        await this.fileSystem.writeText(temporaryPath, payload);
+        await this.fileSystem.rename(temporaryPath, entryPath);
       } catch (error) {
-        await rm(temporaryPath, { force: true }).catch(() => undefined);
-        throw error;
+        this.storageReady = false;
+        this.reportError(
+          'Scene cache write failed; returning the uncached scene.',
+          error,
+        );
+      } finally {
+        await this.removeBestEffort(
+          temporaryPath,
+          'Could not remove a temporary scene cache entry.',
+        );
       }
     });
+  }
+
+  private async removeBestEffort(
+    targetPath: string,
+    message: string,
+  ): Promise<void> {
+    try {
+      await this.fileSystem.remove(targetPath);
+    } catch (error) {
+      this.reportError(message, error);
+    }
   }
 
   private entryPath(key: string): string {
@@ -256,7 +351,11 @@ export class SceneCacheService {
     if (this.activeRecipe === UNINITIALIZED) {
       throw new Error('scene cache recipe has not been initialized');
     }
-    return { recipe: this.activeRecipe, generation: this.generation };
+    return {
+      recipe: this.activeRecipe,
+      generation: this.generation,
+      storageReady: this.storageReady,
+    };
   }
 
   private isCurrent(lease: RecipeLease): boolean {

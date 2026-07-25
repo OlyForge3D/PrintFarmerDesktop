@@ -104,11 +104,24 @@ function targetProfileFailure(error: unknown) {
 import { createUploadJobService, type UploadJobService } from './uploadJobs.js';
 import { RootApprovalStore } from './rootApprovals.js';
 
+export function createLoadSceneHandler(
+  authorizeFile: (requestedPath: string) => Promise<string>,
+  sceneCache: Pick<SceneCacheService, 'loadScene'>,
+) {
+  return async (_event: unknown, rawRequest: unknown) => {
+    const request = ipcSchemas[IpcChannel.LoadScene].request.parse(rawRequest);
+    const approvedPath = await authorizeFile(request.path);
+    return sceneCache.loadScene(approvedPath);
+  };
+}
+
 /**
- * Register all IPC handlers. Every incoming payload is validated against its
- * Zod request schema before the handler runs, and every result is validated
- * against the response schema before being returned to the renderer. Invalid
- * input from a compromised renderer is rejected rather than trusted.
+ * Register all IPC handlers. Incoming payloads are validated against their Zod
+ * request schemas before handlers run. Responses are validated at their trust
+ * boundaries before being returned to the renderer; scene-cache hits are
+ * validated when read from disk and sidecar scenes when received. Invalid data
+ * from a compromised renderer or external process is rejected rather than
+ * trusted.
  *
  * @param channelFactory - Optional sidecar transport override, primarily for
  *   tests. Defaults to spawning the real `model-core` process.
@@ -140,6 +153,8 @@ export function registerIpcHandlers(
       userDataPath: app.getPath('userData'),
       sidecar,
     });
+  // Eager initialization starts the sidecar so obsolete recipe namespaces are
+  // evicted before the first scene request.
   void sceneCache.initialize().catch((error: unknown) => {
     console.error('[scene-cache] startup invalidation failed', error);
   });
@@ -407,14 +422,10 @@ export function registerIpcHandlers(
     },
   );
 
-  ipcMain.handle(IpcChannel.LoadScene, async (_event, rawRequest: unknown) => {
-    const request = ipcSchemas[IpcChannel.LoadScene].request.parse(rawRequest);
-    const approvedPath = await authorizeRendererFile(request.path);
-    const raw = await sceneCache.loadScene(approvedPath);
-    // Validate the sidecar's response against the contract before trusting it
-    // in the renderer.
-    return ipcSchemas[IpcChannel.LoadScene].response.parse(raw);
-  });
+  ipcMain.handle(
+    IpcChannel.LoadScene,
+    createLoadSceneHandler(authorizeRendererFile, sceneCache),
+  );
 
   ipcMain.handle(
     IpcChannel.ExtractVendorMetadata,

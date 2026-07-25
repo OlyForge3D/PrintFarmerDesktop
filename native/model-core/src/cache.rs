@@ -65,6 +65,10 @@ pub fn thumbnail_cache_recipe(size: u32) -> String {
 /// recipe grows a `/`-bearing component, `("a/b", "c")` and `("a", "b/c")`
 /// collapse to the same key, and two different artifacts silently share a cache
 /// entry. Length-prefixing removes the precondition instead of documenting it.
+///
+/// Electron owns the persisted scene cache and mirrors this algorithm. This
+/// sidecar helper is the executable specification used to keep both processes'
+/// keys byte-for-byte aligned.
 pub fn cache_key(model_hash: &str, recipe: &str) -> String {
     let mut hasher = Sha256::new();
     for field in [recipe, model_hash] {
@@ -155,6 +159,14 @@ mod tests {
 
     #[test]
     fn no_two_distinct_recipe_and_hash_pairs_share_a_key() {
+        let ((recipe_a, hash_a), (recipe_b, hash_b)) = (("ab", "c"), ("a", "bc"));
+        assert_eq!(format!("{recipe_a}{hash_a}"), format!("{recipe_b}{hash_b}"));
+        assert_ne!(
+            cache_key(hash_a, recipe_a),
+            cache_key(hash_b, recipe_b),
+            "length-prefixing must distinguish fields even without a separator"
+        );
+
         // The old key was `format!("{recipe}/{model_hash}")`, which is only
         // unambiguous while neither field can contain the separator. Nothing
         // enforced that, so a recipe that ever grew a `/`-bearing component
