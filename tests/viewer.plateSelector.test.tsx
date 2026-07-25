@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import * as THREE from 'three';
 
+import { isolateHiddenObjectIds } from '../src/renderer/library/partTreeModel';
 import { PlateSelector } from '../src/renderer/viewer/PlateSelector';
 import {
   ALL_PLATES,
@@ -26,14 +27,6 @@ function plate(index: number, roots: string[], name?: string): ScenePlate {
   };
 }
 
-/** Two plates carrying one root each, the shape the sidecar now emits. */
-function twoPlates(): ScenePlate[] {
-  return [
-    plate(0, ['plate-0/item-0/object-1']),
-    plate(1, ['plate-1/item-1/object-1']),
-  ];
-}
-
 function object(
   id: string,
   plateId: string,
@@ -56,6 +49,37 @@ function object(
     buildItemIndex: 0,
     ...overrides,
   };
+}
+
+/** One flat root object per declared root id. */
+function objectsFor(plates: readonly ScenePlate[]): SceneObject[] {
+  return plates.flatMap((entry) =>
+    entry.rootObjectIds.map((id) => object(id, entry.id)),
+  );
+}
+
+/** Two plates carrying one root each, the shape the sidecar now emits. */
+function twoPlates(): ScenePlate[] {
+  return [
+    plate(0, ['plate-0/item-0/object-1']),
+    plate(1, ['plate-1/item-1/object-1']),
+  ];
+}
+
+/**
+ * Two plates where the first root has two children - the shape that exposes
+ * root-only visibility checks, because isolating one child keeps the root
+ * visible while hiding a sibling.
+ */
+function nestedPlates(): { plates: ScenePlate[]; objects: SceneObject[] } {
+  const plates = [plate(0, ['p0-root']), plate(1, ['p1-root'])];
+  const objects = [
+    object('p0-root', 'plate-0', { children: ['p0-a', 'p0-b'] }),
+    object('p0-a', 'plate-0', { parentId: 'p0-root' }),
+    object('p0-b', 'plate-0', { parentId: 'p0-root' }),
+    object('p1-root', 'plate-1'),
+  ];
+  return { plates, objects };
 }
 
 function twoPlateScene(): SceneMesh {
@@ -90,9 +114,17 @@ function twoPlateScene(): SceneMesh {
 function renderSelector(
   plates: readonly ScenePlate[],
   hidden: ReadonlySet<string>,
+  objects: readonly SceneObject[] = objectsFor(plates),
   onSelect = vi.fn(),
 ): { onSelect: ReturnType<typeof vi.fn> } {
-  render(<PlateSelector plates={plates} hidden={hidden} onSelect={onSelect} />);
+  render(
+    <PlateSelector
+      plates={plates}
+      objects={objects}
+      hidden={hidden}
+      onSelect={onSelect}
+    />,
+  );
   return { onSelect };
 }
 
@@ -118,23 +150,31 @@ describe('plateHiddenObjectIds', () => {
   });
 
   it('does not list descendants, because visibility cascades', () => {
-    const plates = [plate(0, ['root']), plate(1, ['other'])];
+    const { plates } = nestedPlates();
 
-    expect([...plateHiddenObjectIds(plates, 'plate-0')]).toEqual(['other']);
+    expect([...plateHiddenObjectIds(plates, 'plate-0')]).toEqual(['p1-root']);
   });
 });
 
 describe('activePlateId', () => {
   it('reports all plates when nothing is hidden', () => {
-    expect(activePlateId(twoPlates(), new Set())).toBe(ALL_PLATES);
+    const plates = twoPlates();
+
+    expect(activePlateId(plates, objectsFor(plates), new Set())).toBe(
+      ALL_PLATES,
+    );
   });
 
   it('reports the one plate left visible', () => {
     const plates = twoPlates();
 
-    expect(activePlateId(plates, new Set(['plate-0/item-0/object-1']))).toBe(
-      'plate-1',
-    );
+    expect(
+      activePlateId(
+        plates,
+        objectsFor(plates),
+        new Set(['plate-0/item-0/object-1']),
+      ),
+    ).toBe('plate-1');
   });
 
   it('round-trips every plate through the hidden set', () => {
@@ -143,10 +183,11 @@ describe('activePlateId', () => {
       plate(1, ['b1']),
       plate(2, ['c1', 'c2']),
     ];
+    const objects = objectsFor(plates);
 
     for (const entry of plates) {
       expect(
-        activePlateId(plates, plateHiddenObjectIds(plates, entry.id)),
+        activePlateId(plates, objects, plateHiddenObjectIds(plates, entry.id)),
       ).toBe(entry.id);
     }
   });
@@ -155,13 +196,55 @@ describe('activePlateId', () => {
     const plates = [plate(0, ['a1', 'a2']), plate(1, ['b1'])];
 
     // 'a2' still visible, so "plate 1 only" is not an honest description.
-    expect(activePlateId(plates, new Set(['a1', 'b1']))).toBeNull();
+    expect(
+      activePlateId(plates, objectsFor(plates), new Set(['a1', 'b1'])),
+    ).toBeNull();
+  });
+
+  it('reports no plate when a descendant of the visible plate is hidden', () => {
+    const { plates, objects } = nestedPlates();
+
+    // Only a child is hidden, so both plate roots keep their own hidden flag
+    // clear; a root-only check would wrongly answer 'plate-0' here.
+    expect(
+      activePlateId(plates, objects, new Set(['p0-b', 'p1-root'])),
+    ).toBeNull();
+  });
+
+  it('reports no plate while a part inside a plate is isolated', () => {
+    const { plates, objects } = nestedPlates();
+    // The exact hidden set the app produces for "isolate p0-a": the isolated
+    // node and its ancestors stay visible, so plate-0's root is NOT hidden and
+    // plate-1's root is - indistinguishable from "plate-0 selected" unless
+    // descendants are consulted.
+    const hidden = isolateHiddenObjectIds(objects, 'p0-a');
+    expect(hidden.has('p0-root')).toBe(false);
+    expect(hidden.has('p1-root')).toBe(true);
+
+    expect(activePlateId(plates, objects, hidden)).toBeNull();
+  });
+
+  it('still reports the plate when isolating leaves that plate whole', () => {
+    const plates = [plate(0, ['p0-root']), plate(1, ['p1-root'])];
+    const objects = [
+      object('p0-root', 'plate-0', { children: ['p0-a'] }),
+      object('p0-a', 'plate-0', { parentId: 'p0-root' }),
+      object('p1-root', 'plate-1'),
+    ];
+
+    // Isolating the only child hides nothing else on plate-0, so the whole
+    // plate really is what is on screen.
+    expect(
+      activePlateId(plates, objects, isolateHiddenObjectIds(objects, 'p0-a')),
+    ).toBe('plate-0');
   });
 
   it('reports no plate when several plates are visible alongside a hidden one', () => {
     const plates = [plate(0, ['a1']), plate(1, ['b1']), plate(2, ['c1'])];
 
-    expect(activePlateId(plates, new Set(['c1']))).toBeNull();
+    expect(
+      activePlateId(plates, objectsFor(plates), new Set(['c1'])),
+    ).toBeNull();
   });
 
   it('reports no plate when everything is hidden', () => {
@@ -170,34 +253,46 @@ describe('activePlateId', () => {
     expect(
       activePlateId(
         plates,
+        objectsFor(plates),
         new Set(plates.flatMap((entry) => entry.rootObjectIds)),
       ),
     ).toBeNull();
   });
 
-  it('ignores plates that carry no geometry', () => {
+  it('ignores plates that carry no objects', () => {
     const plates = [plate(0, []), plate(1, ['b1']), plate(2, ['c1'])];
 
     // The empty plate cannot be hidden, so it must not block the answer.
-    expect(activePlateId(plates, new Set(['c1']))).toBe('plate-1');
+    expect(activePlateId(plates, objectsFor(plates), new Set(['c1']))).toBe(
+      'plate-1',
+    );
   });
 
-  it('reports all plates when no plate carries geometry', () => {
-    expect(activePlateId([plate(0, []), plate(1, [])], new Set())).toBe(
+  it('reports all plates when no plate carries objects', () => {
+    expect(activePlateId([plate(0, []), plate(1, [])], [], new Set())).toBe(
       ALL_PLATES,
     );
   });
 
   it('reports all plates when there are no plates at all', () => {
-    expect(activePlateId([], new Set())).toBe(ALL_PLATES);
+    expect(activePlateId([], [], new Set())).toBe(ALL_PLATES);
+  });
+
+  it('ignores objects whose plate is not declared', () => {
+    const plates = [plate(0, ['a1']), plate(1, ['b1'])];
+    const objects = [...objectsFor(plates), object('orphan', 'plate-7')];
+
+    expect(activePlateId(plates, objects, new Set(['b1']))).toBe('plate-0');
   });
 });
 
 describe('<PlateSelector />', () => {
   it('renders nothing for a single-plate scene', () => {
+    const plates = [plate(0, ['a1'])];
     const { container } = render(
       <PlateSelector
-        plates={[plate(0, ['a1'])]}
+        plates={plates}
+        objects={objectsFor(plates)}
         hidden={new Set()}
         onSelect={vi.fn()}
       />,
@@ -208,7 +303,12 @@ describe('<PlateSelector />', () => {
 
   it('renders nothing when the scene has no plates', () => {
     const { container } = render(
-      <PlateSelector plates={[]} hidden={new Set()} onSelect={vi.fn()} />,
+      <PlateSelector
+        plates={[]}
+        objects={[]}
+        hidden={new Set()}
+        onSelect={vi.fn()}
+      />,
     );
 
     expect(container).toBeEmptyDOMElement();
@@ -229,8 +329,7 @@ describe('<PlateSelector />', () => {
   });
 
   it('checks the plate implied by the hidden set', () => {
-    const plates = twoPlates();
-    renderSelector(plates, new Set(['plate-0/item-0/object-1']));
+    renderSelector(twoPlates(), new Set(['plate-0/item-0/object-1']));
 
     expect(screen.getByRole('radio', { name: 'Plate 2' })).toBeChecked();
     expect(screen.getByRole('radio', { name: 'All plates' })).not.toBeChecked();
@@ -267,6 +366,22 @@ describe('<PlateSelector />', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Custom visibility');
   });
 
+  it('stays usable while a part is isolated', () => {
+    const { plates, objects } = nestedPlates();
+    const { onSelect } = renderSelector(
+      plates,
+      isolateHiddenObjectIds(objects, 'p0-a'),
+      objects,
+    );
+
+    // With no radio checked the plate the isolation sits on is still clickable;
+    // a checked radio would swallow the click and strand the user.
+    expect(screen.getByRole('status')).toHaveTextContent('Custom visibility');
+    fireEvent.click(screen.getByRole('radio', { name: 'Plate 1' }));
+
+    expect(onSelect).toHaveBeenCalledWith('plate-0');
+  });
+
   it('hides the custom state once a plate is fully selected', () => {
     renderSelector(twoPlates(), new Set(['plate-0/item-0/object-1']));
 
@@ -286,10 +401,21 @@ describe('<PlateSelector />', () => {
 
   it('keeps groups distinct across two mounted selectors', () => {
     const plates = twoPlates();
+    const objects = objectsFor(plates);
     render(
       <>
-        <PlateSelector plates={plates} hidden={new Set()} onSelect={vi.fn()} />
-        <PlateSelector plates={plates} hidden={new Set()} onSelect={vi.fn()} />
+        <PlateSelector
+          plates={plates}
+          objects={objects}
+          hidden={new Set()}
+          onSelect={vi.fn()}
+        />
+        <PlateSelector
+          plates={plates}
+          objects={objects}
+          hidden={new Set()}
+          onSelect={vi.fn()}
+        />
       </>,
     );
     const groups = screen.getAllByRole('group', { name: 'Plate' });

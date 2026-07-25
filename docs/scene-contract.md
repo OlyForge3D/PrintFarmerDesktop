@@ -77,6 +77,9 @@ hidden-object set: selecting a plate hides the other plates' root objects, and
 the checked radio is _derived_ from the hidden set rather than stored alongside
 it. That keeps one source of truth, so a part-tree toggle can never leave the
 selector claiming a plate that is not what is on screen — a visibility state
-that matches no single plate reports as "Custom" instead. Only visibility
-changes, so geometry, colors, and materials survive a plate switch untouched.
-The selector is omitted entirely for single-plate scenes.
+that matches no single plate reports as "Custom" instead. Deriving it resolves
+_effective_ visibility for every object on a plate, not just its roots, because
+isolating a part keeps its ancestors visible: a plate root left visible does not
+by itself mean the whole plate is on screen. Only visibility changes, so
+geometry, colors, and materials survive a plate switch untouched. The selector is
+omitted entirely for single-plate scenes.

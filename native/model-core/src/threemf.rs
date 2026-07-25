@@ -72,7 +72,9 @@ const MODEL_SETTINGS_PART: &str = "Metadata/model_settings.config";
 /// Upper bound on declared plates, so a hostile package cannot make us allocate
 /// unbounded plate records. Matches both `vendor::MAX_PLATES` and the scene-DTO
 /// `plates` cap the IPC layer enforces (`src/shared/ipc.ts`), which would reject
-/// the whole scene if we emitted more.
+/// the whole scene if we emitted more. This caps the plate *names* we retain;
+/// the per-instance assignment map is instead bounded by
+/// `MAX_METADATA_XML_BYTES`, since each entry needs its own XML element.
 const MAX_SCENE_PLATES: usize = 1_000;
 const MODEL_CONTENT_TYPE: &str = "application/vnd.ms-package.3dmanufacturing-3dmodel+xml";
 const MODEL_RELATIONSHIP_TYPE: &str =

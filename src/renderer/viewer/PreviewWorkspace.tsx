@@ -214,6 +214,7 @@ export function PreviewWorkspace({
                   <h2>Scene</h2>
                   <PlateSelector
                     plates={mesh.plates}
+                    objects={mesh.objects}
                     hidden={hiddenObjects}
                     onSelect={onSelectPlate}
                   />

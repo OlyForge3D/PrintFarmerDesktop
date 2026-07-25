@@ -8,27 +8,34 @@
  * is not any single plate, which shows as "Custom".
  */
 
-import { useId } from 'react';
+import { useId, useMemo } from 'react';
 
 import { ALL_PLATES, activePlateId } from './plateSelection';
-import type { ScenePlate } from './types';
+import type { SceneObject, ScenePlate } from './types';
 
 export interface PlateSelectorProps {
   plates: readonly ScenePlate[];
+  objects: readonly SceneObject[];
   hidden: ReadonlySet<string>;
   onSelect: (plateId: string) => void;
 }
 
 export function PlateSelector({
   plates,
+  objects,
   hidden,
   onSelect,
 }: PlateSelectorProps): React.JSX.Element | null {
   const groupName = useId();
+  // Resolving effective visibility walks ancestors per object, so keep it off
+  // the path of unrelated re-renders.
+  const active = useMemo(
+    () => activePlateId(plates, objects, hidden),
+    [plates, objects, hidden],
+  );
   // A single plate is the ordinary case and needs no control.
   if (plates.length < 2) return null;
 
-  const active = activePlateId(plates, hidden);
   const options = [
     { id: ALL_PLATES, label: 'All plates' },
     ...plates.map((plate) => ({ id: plate.id, label: plate.name })),
