@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use model_core::catalog::InMemoryCatalog;
 use model_core::hash::hash_file;
-use model_core::retarget::{IssueCode, RetargetEngine, RetargetLimits, RetargetOptions};
+use model_core::retarget::{
+    IssueCode, RetargetEngine, RetargetLimits, RetargetOptions, TargetReference,
+};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use zip::write::{SimpleFileOptions, ZipWriter};
@@ -592,7 +594,7 @@ fn preflight_blocks_inconsistent_per_filament_arrays() {
         "params": {
             "sourcePath": source,
             "outputPath": temp.path().join("blocked-output.3mf"),
-            "targetProfileId": target,
+            "target": {"kind": "bundled", "targetProfileId": target},
             "objectExclusion": false
         }
     });
@@ -807,6 +809,281 @@ fn validation_rejects_json_type_and_relationship_tampering() {
 }
 
 #[test]
+fn imported_target_inspect_preflight_build_and_rpc_are_content_addressed() {
+    let engine = engine();
+    let bundled = target_id(&engine);
+    let temp = TempDir::new().unwrap();
+    let reference_seed = temp.path().join("reference-seed.3mf");
+    let reference = temp.path().join("imported-reference.3mf");
+    let source = temp.path().join("imported-source.3mf");
+    let first = temp.path().join("imported-first.3mf");
+    let second = temp.path().join("imported-second.3mf");
+    let rpc_output = temp.path().join("imported-rpc.3mf");
+    editable_project(&reference_seed, "OrcaSlicer", true);
+    editable_project(&source, "MakerWorld-Orca", true);
+    engine
+        .build(
+            &reference_seed,
+            &reference,
+            &bundled,
+            RetargetOptions::default(),
+        )
+        .unwrap();
+    mutate_project_settings(&source, |settings| {
+        settings["filament_type"] = json!(["PETG", "Polylactic Acid"]);
+        settings["filament_colour"] = json!(["#AABBCC", "#112233"]);
+    });
+
+    let inspected = engine.inspect_imported_profile(&reference).unwrap();
+    assert_eq!(
+        inspected.profile_id,
+        format!("imported:{}", inspected.sha256)
+    );
+    assert!(inspected.capabilities.motion_guardrails);
+    assert_eq!(inspected.capabilities.max_filament_slots, 2);
+    let target = TargetReference::imported(&reference, &inspected.sha256);
+    let source_hash = hash_file(&source).unwrap();
+
+    let preflight = engine
+        .preflight_target(&source, target.clone(), RetargetOptions::default())
+        .unwrap();
+    assert!(preflight.accepted, "{:?}", preflight.blockers);
+    assert_eq!(
+        preflight
+            .recommendation
+            .as_ref()
+            .unwrap()
+            .recommended
+            .profile_id,
+        inspected.profile_id
+    );
+    assert!(preflight
+        .warnings
+        .iter()
+        .any(|warning| warning.code == IssueCode::PaintMetadataPreservedUnverified));
+
+    let first_report = engine
+        .build(&source, &first, target.clone(), RetargetOptions::default())
+        .unwrap();
+    engine
+        .build(&source, &second, target.clone(), RetargetOptions::default())
+        .unwrap();
+    assert_eq!(fs::read(&first).unwrap(), fs::read(&second).unwrap());
+    assert_eq!(first_report.target_profile_id, inspected.profile_id);
+    assert_eq!(hash_file(&source).unwrap(), source_hash);
+    assert!(engine.inspect_imported_profile(&first).is_ok());
+    let reference_settings: Value = serde_json::from_slice(&read_zip_part(
+        &reference,
+        "Metadata/project_settings.config",
+    ))
+    .unwrap();
+    let output_settings: Value =
+        serde_json::from_slice(&read_zip_part(&first, "Metadata/project_settings.config")).unwrap();
+    let reference_filaments = reference_settings["filament_settings_id"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        output_settings["filament_settings_id"],
+        json!([reference_filaments[1], reference_filaments[0]])
+    );
+
+    let alias_error = engine
+        .preflight_target(&reference, target.clone(), RetargetOptions::default())
+        .unwrap_err();
+    assert_eq!(alias_error.code, IssueCode::TargetSourceConflict);
+    let hard_link = temp.path().join("reference-hard-link.3mf");
+    fs::hard_link(&reference, &hard_link).unwrap();
+    let hard_link_error = engine
+        .preflight_target(&hard_link, target.clone(), RetargetOptions::default())
+        .unwrap_err();
+    assert_eq!(hard_link_error.code, IssueCode::TargetSourceConflict);
+    let expected_hash_error = engine
+        .preflight_target(
+            &source,
+            TargetReference::imported(&reference, "0".repeat(64)),
+            RetargetOptions::default(),
+        )
+        .unwrap_err();
+    assert_eq!(expected_hash_error.code, IssueCode::ProfileHashMismatch);
+
+    let requests = [
+        json!({"id":1,"method":"inspectImportedRetargetProfile","params":{"path":reference}}),
+        json!({"id":2,"method":"preflightRetarget","params":{"sourcePath":source,"target":{"kind":"imported","path":reference,"expectedSha256":inspected.sha256},"objectExclusion":false}}),
+        json!({"id":3,"method":"buildRetarget","params":{"sourcePath":source,"outputPath":rpc_output,"target":{"kind":"imported","path":reference,"expectedSha256":inspected.sha256},"objectExclusion":false}}),
+    ];
+    let input = requests
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    let mut output = Vec::new();
+    let mut store = InMemoryCatalog::new();
+    model_core::serve::run_with_retarget(&mut store, Some(&engine), input.as_bytes(), &mut output)
+        .unwrap();
+    let responses = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert!(responses.iter().all(|response| response["ok"] == true));
+    assert!(responses
+        .iter()
+        .all(|response| response["result"]["status"] == "ok"));
+    assert_eq!(
+        responses[2]["result"]["value"]["targetProfileId"],
+        inspected.profile_id
+    );
+
+    replace_zip_part(&reference, "Metadata/unknown.bin", b"tampered");
+    let tamper_error = engine
+        .preflight_target(&source, target, RetargetOptions::default())
+        .unwrap_err();
+    assert_eq!(tamper_error.code, IssueCode::ProfileHashMismatch);
+
+    let tamper_request = json!({
+        "id": 4,
+        "method": "preflightRetarget",
+        "params": {
+            "sourcePath": source,
+            "target": {
+                "kind": "imported",
+                "path": reference,
+                "expectedSha256": inspected.sha256
+            },
+            "objectExclusion": false
+        }
+    });
+    let mut output = Vec::new();
+    model_core::serve::run_with_retarget(
+        &mut store,
+        Some(&engine),
+        format!("{tamper_request}\n").as_bytes(),
+        &mut output,
+    )
+    .unwrap();
+    let response: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(response["result"]["status"], "error");
+    assert_eq!(response["result"]["error"]["code"], "profileHashMismatch");
+}
+
+#[test]
+fn imported_targets_reject_incomplete_invalid_and_ambiguous_settings() {
+    let engine = engine();
+    let bundled = target_id(&engine);
+    let temp = TempDir::new().unwrap();
+    let seed = temp.path().join("seed.3mf");
+    let reference = temp.path().join("reference.3mf");
+    editable_project(&seed, "OrcaSlicer", true);
+    engine
+        .build(&seed, &reference, &bundled, RetargetOptions::default())
+        .unwrap();
+
+    let invalid_identity_shape = temp.path().join("invalid-identity-shape.3mf");
+    fs::copy(&reference, &invalid_identity_shape).unwrap();
+    mutate_project_settings(&invalid_identity_shape, |settings| {
+        settings["printer_variant"] = json!(["0.4", "0.8"]);
+    });
+    let error = engine
+        .inspect_imported_profile(&invalid_identity_shape)
+        .unwrap_err();
+    assert_eq!(error.code, IssueCode::ProfileValueInvalid);
+    assert_eq!(error.setting.as_deref(), Some("printer_variant"));
+
+    let missing_script = temp.path().join("missing-script.3mf");
+    fs::copy(&reference, &missing_script).unwrap();
+    mutate_project_settings(&missing_script, |settings| {
+        settings
+            .as_object_mut()
+            .unwrap()
+            .remove("machine_start_gcode");
+    });
+    let error = engine
+        .inspect_imported_profile(&missing_script)
+        .unwrap_err();
+    assert_eq!(error.code, IssueCode::IncompleteProject);
+    assert_eq!(error.setting.as_deref(), Some("machine_start_gcode"));
+
+    let invalid_limit = temp.path().join("invalid-limit.3mf");
+    fs::copy(&reference, &invalid_limit).unwrap();
+    mutate_project_settings(&invalid_limit, |settings| {
+        settings["machine_max_speed_x"] = json!(["fast", "500"]);
+    });
+    let error = engine.inspect_imported_profile(&invalid_limit).unwrap_err();
+    assert_eq!(error.code, IssueCode::ProfileValueInvalid);
+    assert_eq!(error.setting.as_deref(), Some("machine_max_speed_x"));
+
+    let invalid_process_shape = temp.path().join("invalid-process-shape.3mf");
+    fs::copy(&reference, &invalid_process_shape).unwrap();
+    mutate_project_settings(&invalid_process_shape, |settings| {
+        settings["prime_tower_width"] = json!(["35", "40"]);
+    });
+    let error = engine
+        .inspect_imported_profile(&invalid_process_shape)
+        .unwrap_err();
+    assert_eq!(error.code, IssueCode::ProfileValueInvalid);
+    assert_eq!(error.setting.as_deref(), Some("prime_tower_width"));
+
+    let ambiguous = temp.path().join("ambiguous-array.3mf");
+    fs::copy(&reference, &ambiguous).unwrap();
+    mutate_project_settings(&ambiguous, |settings| {
+        settings["imported_slot_override"] = json!(["first", "second"]);
+    });
+    let error = engine.inspect_imported_profile(&ambiguous).unwrap_err();
+    assert_eq!(error.code, IssueCode::ProfileValueInvalid);
+    assert_eq!(error.setting.as_deref(), Some("imported_slot_override"));
+
+    let four_slot_reference = temp.path().join("four-slot-reference.3mf");
+    fs::copy(&reference, &four_slot_reference).unwrap();
+    mutate_project_settings(&four_slot_reference, |settings| {
+        for (key, value) in settings.as_object_mut().unwrap() {
+            if !key.starts_with("machine_") {
+                let Some(values) = value.as_array_mut() else {
+                    continue;
+                };
+                if values.len() == 2 {
+                    *values = vec![
+                        values[0].clone(),
+                        values[1].clone(),
+                        values[0].clone(),
+                        values[1].clone(),
+                    ];
+                }
+            }
+        }
+        settings["filament_type"] = json!(["PLA", "PETG", "ABS", "ASA"]);
+        settings["filament_settings_id"] = json!([
+            "Imported PLA",
+            "Imported PETG",
+            "Imported ABS",
+            "Imported ASA"
+        ]);
+        settings["filament_colour"] = json!(["#111111", "#222222", "#333333", "#444444"]);
+    });
+    let four_slot = engine
+        .inspect_imported_profile(&four_slot_reference)
+        .unwrap();
+    assert_eq!(four_slot.capabilities.max_filament_slots, 4);
+
+    let sparse_process = engine
+        .list_bundled_profiles()
+        .unwrap()
+        .into_iter()
+        .find(|profile| profile.display_name.starts_with("0.08 Extra Fine"))
+        .unwrap();
+    let sparse_reference = temp.path().join("sparse-process-reference.3mf");
+    engine
+        .build(
+            &seed,
+            &sparse_reference,
+            &sparse_process.profile_id,
+            RetargetOptions::default(),
+        )
+        .unwrap();
+    assert!(engine.inspect_imported_profile(&sparse_reference).is_ok());
+}
+
+#[test]
 fn six_retarget_methods_use_typed_wire_outcomes() {
     let engine = engine();
     let target = target_id(&engine);
@@ -823,9 +1100,9 @@ fn six_retarget_methods_use_typed_wire_outcomes() {
         json!({"id":1,"method":"listRetargetProfiles","params":{}}),
         json!({"id":2,"method":"inspectRetargetProfile","params":{"profileId":target}}),
         json!({"id":3,"method":"inspectImportedRetargetProfile","params":{"path":built}}),
-        json!({"id":4,"method":"preflightRetarget","params":{"sourcePath":source,"objectExclusion":false}}),
-        json!({"id":5,"method":"buildRetarget","params":{"sourcePath":source,"outputPath":rpc_built,"targetProfileId":target,"objectExclusion":false}}),
-        json!({"id":6,"method":"validateRetargetOutput","params":{"sourcePath":source,"outputPath":built,"targetProfileId":target,"objectExclusion":false}}),
+        json!({"id":4,"method":"preflightRetarget","params":{"sourcePath":source,"target":{"kind":"bundled","targetProfileId":target},"objectExclusion":false}}),
+        json!({"id":5,"method":"buildRetarget","params":{"sourcePath":source,"outputPath":rpc_built,"target":{"kind":"bundled","targetProfileId":target},"objectExclusion":false}}),
+        json!({"id":6,"method":"validateRetargetOutput","params":{"sourcePath":source,"outputPath":built,"target":{"kind":"bundled","targetProfileId":target},"objectExclusion":false}}),
     ];
     let input = requests
         .iter()
@@ -857,12 +1134,14 @@ fn six_retarget_methods_use_typed_wire_outcomes() {
 #[test]
 fn transport_keeps_outer_errors_and_stable_blocker_codes() {
     let engine = engine();
+    let target = target_id(&engine);
     let temp = TempDir::new().unwrap();
     let geometry = temp.path().join("wire-geometry.3mf");
     simple_archive(&geometry, false);
     let requests = [
         json!({"id":1,"method":"preflightRetarget","params":{}}),
-        json!({"id":2,"method":"preflightRetarget","params":{"sourcePath":geometry,"objectExclusion":false}}),
+        json!({"id":2,"method":"preflightRetarget","params":{"sourcePath":geometry,"target":{"kind":"bundled","targetProfileId":target},"objectExclusion":false}}),
+        json!({"id":3,"method":"preflightRetarget","params":{"sourcePath":geometry,"target":{"kind":"bundled","targetProfileId":target,"path":"ignored.3mf"},"objectExclusion":false}}),
     ];
     let input = requests
         .iter()
@@ -890,6 +1169,11 @@ fn transport_keeps_outer_errors_and_stable_blocker_codes() {
         responses[1]["result"]["blockers"][0]["code"],
         "geometryOnly"
     );
+    assert_eq!(responses[2]["ok"], false);
+    assert!(responses[2]["error"]
+        .as_str()
+        .unwrap()
+        .contains("invalid preflightRetarget params"));
 }
 
 fn read_zip_part(path: &Path, name: &str) -> Vec<u8> {
@@ -899,6 +1183,17 @@ fn read_zip_part(path: &Path, name: &str) -> Vec<u8> {
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut part, &mut bytes).unwrap();
     bytes
+}
+
+fn mutate_project_settings(path: &Path, mutate: impl FnOnce(&mut Value)) {
+    let mut settings: Value =
+        serde_json::from_slice(&read_zip_part(path, "Metadata/project_settings.config")).unwrap();
+    mutate(&mut settings);
+    replace_zip_part(
+        path,
+        "Metadata/project_settings.config",
+        serde_json::to_string(&settings).unwrap().as_bytes(),
+    );
 }
 
 fn zip_part(path: &Path, name: &str) -> Option<PathBuf> {

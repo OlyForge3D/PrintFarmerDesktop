@@ -2,13 +2,13 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use super::archive::{ArchivePackage, MODEL_SETTINGS_PART, PROJECT_SETTINGS_PART};
-use super::profile::Bundle;
+use super::profile::{Bundle, ResolvedTarget, MACHINE_NAME};
 use super::project::ProjectInspection;
 use super::report::{
     ChangeRecord, GroupedChanges, IssueCode, PreflightReport, RetargetIssue, SourceSummary,
 };
 use super::{RetargetError, RetargetLimits, RetargetOptions};
-use crate::hash::hash_file;
+use crate::hash::hash_reader;
 use crate::rpc::SceneMeshDto;
 use crate::scene::SceneMesh;
 
@@ -18,9 +18,39 @@ pub(crate) fn run(
     options: &RetargetOptions,
     limits: &RetargetLimits,
 ) -> Result<PreflightReport, RetargetError> {
-    let archive = ArchivePackage::open(source_path, limits)?;
-    let hash =
-        hash_file(source_path).map_err(|error| RetargetError::source_io(source_path, error))?;
+    run_with_context(source_path, options, limits, TargetContext::Bundle(bundle))
+}
+
+pub(crate) fn run_target(
+    source_path: &Path,
+    target: &ResolvedTarget,
+    options: &RetargetOptions,
+    limits: &RetargetLimits,
+) -> Result<PreflightReport, RetargetError> {
+    run_with_context(
+        source_path,
+        options,
+        limits,
+        TargetContext::Resolved(target),
+    )
+}
+
+#[derive(Clone, Copy)]
+enum TargetContext<'a> {
+    Bundle(&'a Bundle),
+    Resolved(&'a ResolvedTarget),
+}
+
+fn run_with_context(
+    source_path: &Path,
+    options: &RetargetOptions,
+    limits: &RetargetLimits,
+    target: TargetContext<'_>,
+) -> Result<PreflightReport, RetargetError> {
+    let snapshot = ArchivePackage::read_bounded(source_path, limits)?;
+    let archive = ArchivePackage::from_bytes(&snapshot, limits)?;
+    let hash = hash_reader(snapshot.as_slice())
+        .map_err(|error| RetargetError::source_io(source_path, error))?;
     let file_name = source_path
         .file_name()
         .and_then(|name| name.to_str())
@@ -63,21 +93,43 @@ pub(crate) fn run(
         });
     }
 
-    let project = ProjectInspection::inspect(source_path, &archive, limits)?;
-    report_from_inspection(bundle, source_path, archive, project, options, hash)
+    let project = ProjectInspection::inspect_snapshot(source_path, &archive, limits, &snapshot)?;
+    report_from_inspection(target, source_path, &archive, &project, options, hash)
+}
+
+pub(crate) fn report_from_target_inspection(
+    source_path: &Path,
+    archive: &ArchivePackage,
+    project: &ProjectInspection,
+    target: &ResolvedTarget,
+    options: &RetargetOptions,
+    hash: String,
+) -> Result<PreflightReport, RetargetError> {
+    report_from_inspection(
+        TargetContext::Resolved(target),
+        source_path,
+        archive,
+        project,
+        options,
+        hash,
+    )
 }
 
 fn report_from_inspection(
-    bundle: &Bundle,
+    target: TargetContext<'_>,
     source_path: &Path,
-    archive: ArchivePackage,
-    project: ProjectInspection,
+    archive: &ArchivePackage,
+    project: &ProjectInspection,
     options: &RetargetOptions,
     hash: String,
 ) -> Result<PreflightReport, RetargetError> {
     let mut blockers = project.blockers.clone();
     let mut warnings = project.warnings.clone();
-    if let Err(error) = bundle.map_materials(&project.materials) {
+    let material_result = match target {
+        TargetContext::Bundle(bundle) => bundle.map_materials(&project.materials),
+        TargetContext::Resolved(target) => target.map_materials(&project.materials),
+    };
+    if let Err(error) = material_result {
         let mut blocker = RetargetIssue::blocker(
             error.code,
             "Unsupported filament configuration",
@@ -87,8 +139,10 @@ fn report_from_inspection(
         blocker = blocker.with_setting(error.setting.as_deref().unwrap_or("filament_type"));
         blockers.push(blocker);
     }
-    if let Err(error) = super::transform::validate_source_array_lengths(&project, |key| {
-        bundle.is_filament_setting_key(key)
+    if let Err(error) = super::transform::validate_source_array_lengths(project, |key| match target
+    {
+        TargetContext::Bundle(bundle) => bundle.is_filament_setting_key(key),
+        TargetContext::Resolved(target) => target.is_filament_setting_key(key),
     }) {
         let mut blocker = RetargetIssue::blocker(
             error.code,
@@ -141,9 +195,10 @@ fn report_from_inspection(
         ));
     }
 
-    let recommendation = project
-        .layer_height
-        .map(|height| bundle.recommend(height, project.process_id.as_deref()));
+    let recommendation = project.layer_height.map(|height| match target {
+        TargetContext::Bundle(bundle) => bundle.recommend(height, project.process_id.as_deref()),
+        TargetContext::Resolved(target) => target.recommendation(height),
+    });
     if let Some(recommendation) = &recommendation {
         if recommendation
             .alternatives
@@ -161,7 +216,14 @@ fn report_from_inspection(
         }
     }
 
-    let proposed_changes = proposed_changes(&archive, &project, options);
+    let (machine_name, process_name) = match target {
+        TargetContext::Bundle(_) => (MACHINE_NAME, None),
+        TargetContext::Resolved(target) => (
+            target.machine.name.as_str(),
+            Some(target.process.name.as_str()),
+        ),
+    };
+    let proposed_changes = proposed_changes(archive, project, options, machine_name, process_name);
     let before_scene = SceneMeshDto::from(&SceneMesh::from_threemf(&project.mesh));
     Ok(PreflightReport {
         accepted: blockers.is_empty(),
@@ -173,15 +235,15 @@ fn report_from_inspection(
                 .to_string(),
             byte_size: archive.compressed_size,
             sha256: hash,
-            producer: project.producer,
-            machine_id: project.machine_id,
-            process_id: project.process_id,
+            producer: project.producer.clone(),
+            machine_id: project.machine_id.clone(),
+            process_id: project.process_id.clone(),
             layer_height: project.layer_height,
             object_count: project.mesh.object_count,
             build_item_count: project.mesh.build_item_count,
             plate_count: project.plate_count,
-            materials: project.materials,
-            colors: project.colors,
+            materials: project.materials.clone(),
+            colors: project.colors.clone(),
         },
         recommendation,
         blockers,
@@ -195,6 +257,8 @@ fn proposed_changes(
     archive: &ArchivePackage,
     project: &ProjectInspection,
     options: &RetargetOptions,
+    machine_name: &str,
+    process_name: Option<&str>,
 ) -> GroupedChanges {
     let mut changes = GroupedChanges::new();
     changes
@@ -207,7 +271,7 @@ fn proposed_changes(
                     .to_string(),
             setting: Some("printer_settings_id".to_string()),
             before: project.machine_id.clone(),
-            after: Some("Snapmaker U1 (0.4 nozzle)".to_string()),
+            after: Some(machine_name.to_string()),
         });
     changes
         .entry("process".to_string())
@@ -219,7 +283,7 @@ fn proposed_changes(
                 .to_string(),
         setting: Some("print_settings_id".to_string()),
         before: project.process_id.clone(),
-        after: None,
+        after: process_name.map(str::to_string),
     });
     changes
         .entry("objectExclusion".to_string())

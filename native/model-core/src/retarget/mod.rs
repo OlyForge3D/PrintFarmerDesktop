@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use profile::{
-    FilamentProfileSummary, ImportedTargetProfileDetails, MachineProfileSummary,
-    TargetProfileDetails, TargetProfileSummary,
+    FilamentProfileSummary, ImportedTargetCapabilities, ImportedTargetProfileDetails,
+    MachineProfileSummary, TargetProfileDetails, TargetProfileSummary,
 };
 pub use report::{
     BuildReport, ChangeRecord, GroupedChanges, IssueCode, IssueSeverity, PreflightReport,
@@ -68,6 +68,47 @@ pub struct RetargetOptions {
     pub object_exclusion: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum TargetReference {
+    Bundled {
+        #[serde(rename = "targetProfileId")]
+        target_profile_id: String,
+    },
+    Imported {
+        path: PathBuf,
+        #[serde(rename = "expectedSha256")]
+        expected_sha256: String,
+    },
+}
+
+impl TargetReference {
+    pub fn bundled(target_profile_id: impl Into<String>) -> Self {
+        Self::Bundled {
+            target_profile_id: target_profile_id.into(),
+        }
+    }
+
+    pub fn imported(path: impl Into<PathBuf>, expected_sha256: impl Into<String>) -> Self {
+        Self::Imported {
+            path: path.into(),
+            expected_sha256: expected_sha256.into(),
+        }
+    }
+}
+
+impl From<&str> for TargetReference {
+    fn from(value: &str) -> Self {
+        Self::bundled(value)
+    }
+}
+
+impl From<&String> for TargetReference {
+    fn from(value: &String) -> Self {
+        Self::bundled(value.clone())
+    }
+}
+
 #[derive(Debug, Clone, Error, PartialEq, Eq, Serialize, Deserialize)]
 #[error("{message}")]
 #[serde(rename_all = "camelCase")]
@@ -106,6 +147,18 @@ impl RetargetError {
                 IssueCode::SourceNotFound,
                 format!("source file does not exist: {}", path.display()),
                 "Choose an existing editable 3MF project.",
+            )
+        } else {
+            Self::io(error)
+        }
+    }
+
+    pub(crate) fn target_io(path: &Path, error: std::io::Error) -> Self {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Self::new(
+                IssueCode::TargetNotFound,
+                format!("imported target file does not exist: {}", path.display()),
+                "Inspect an existing imported U1 reference again.",
             )
         } else {
             Self::io(error)
@@ -188,19 +241,50 @@ impl RetargetEngine {
         preflight::run(&self.bundle, source_path.as_ref(), &options, &self.limits)
     }
 
+    pub fn preflight_target(
+        &self,
+        source_path: impl AsRef<Path>,
+        target: impl Into<TargetReference>,
+        options: RetargetOptions,
+    ) -> Result<PreflightReport, RetargetError> {
+        let source_path = source_path.as_ref();
+        let target = target.into();
+        validate_source_target_distinct(source_path, &target)?;
+        let resolved = self.resolve_target(&target)?;
+        preflight::run_target(source_path, &resolved, &options, &self.limits)
+    }
+
     pub fn build(
         &self,
         source_path: impl AsRef<Path>,
         output_path: impl AsRef<Path>,
-        target_profile_id: &str,
+        target: impl Into<TargetReference>,
         options: RetargetOptions,
     ) -> Result<BuildReport, RetargetError> {
         let source_path = source_path.as_ref();
         let output_path = output_path.as_ref();
+        let target = target.into();
+        validate_source_target_distinct(source_path, &target)?;
         validate_output_path(source_path, output_path)?;
-        let source_hash_before = crate::hash::hash_file(source_path)
+        let source_snapshot = ArchivePackage::read_bounded(source_path, &self.limits)?;
+        let source_hash_before = crate::hash::hash_reader(source_snapshot.as_slice())
             .map_err(|error| RetargetError::source_io(source_path, error))?;
-        let preflight = self.preflight(source_path, options.clone())?;
+        let archive = ArchivePackage::from_bytes(&source_snapshot, &self.limits)?;
+        let project = ProjectInspection::inspect_snapshot(
+            source_path,
+            &archive,
+            &self.limits,
+            &source_snapshot,
+        )?;
+        let resolved = self.resolve_target(&target)?;
+        let preflight = preflight::report_from_target_inspection(
+            source_path,
+            &archive,
+            &project,
+            &resolved,
+            &options,
+            source_hash_before.clone(),
+        )?;
         if let Some(blocker) = preflight.blockers.first() {
             return Err(RetargetError::new(
                 blocker.code,
@@ -208,25 +292,13 @@ impl RetargetEngine {
                 blocker.action.clone(),
             ));
         }
-        let source_hash_after_preflight = crate::hash::hash_file(source_path)
-            .map_err(|error| RetargetError::source_io(source_path, error))?;
-        if source_hash_after_preflight != source_hash_before {
-            return Err(RetargetError::new(
-                IssueCode::SourceChanged,
-                "source file changed during preflight",
-                "Retry with a stable source file.",
-            ));
-        }
-        let archive = ArchivePackage::open(source_path, &self.limits)?;
-        let project = ProjectInspection::inspect(source_path, &archive, &self.limits)?;
-        let process = self.bundle.process(target_profile_id)?;
-        let filaments = self.bundle.map_materials(&project.materials)?;
+        let filaments = resolved.map_materials(&project.materials)?;
         let transformed = transform::build_settings(
             &project,
-            self.bundle.machine(),
-            process,
+            &resolved.machine,
+            &resolved.process,
             &filaments,
-            self.bundle.filament_defaults(),
+            &resolved.filament_defaults,
             options.object_exclusion,
         )?;
         let change_count: usize = transformed.changes.values().map(Vec::len).sum();
@@ -266,8 +338,16 @@ impl RetargetEngine {
                     "Discard the output and retry with a stable source file.",
                 ));
             }
-            let validation =
-                self.validate_output(source_path, output_path, target_profile_id, options)?;
+            let output_snapshot = ArchivePackage::read_bounded(output_path, &self.limits)?;
+            let validation = validate::run_snapshots(
+                source_path,
+                output_path,
+                &source_snapshot,
+                &output_snapshot,
+                &resolved,
+                &options,
+                &self.limits,
+            )?;
             if !validation.valid {
                 return Err(RetargetError::new(
                     IssueCode::OutputValidationFailed,
@@ -285,7 +365,7 @@ impl RetargetEngine {
                     .and_then(|name| name.to_str())
                     .unwrap_or_default()
                     .to_string(),
-                target_profile_id: target_profile_id.to_string(),
+                target_profile_id: resolved.profile_id.clone(),
                 removed_part_count: write.removed_part_count,
                 preserved_part_count: write.preserved_part_count,
                 applied_changes: transformed.changes,
@@ -303,18 +383,65 @@ impl RetargetEngine {
         &self,
         source_path: impl AsRef<Path>,
         output_path: impl AsRef<Path>,
-        target_profile_id: &str,
+        target: impl Into<TargetReference>,
         options: RetargetOptions,
     ) -> Result<ValidationReport, RetargetError> {
+        let target = target.into();
+        validate_source_target_distinct(source_path.as_ref(), &target)?;
+        let resolved = self.resolve_target(&target)?;
         validate::run(
-            &self.bundle,
             source_path.as_ref(),
             output_path.as_ref(),
-            target_profile_id,
+            &resolved,
             &options,
             &self.limits,
         )
     }
+
+    fn resolve_target(
+        &self,
+        target: &TargetReference,
+    ) -> Result<profile::ResolvedTarget, RetargetError> {
+        match target {
+            TargetReference::Bundled { target_profile_id } => {
+                self.bundle.resolve_bundled(target_profile_id)
+            }
+            TargetReference::Imported {
+                path,
+                expected_sha256,
+            } => self
+                .bundle
+                .resolve_imported(path, Some(expected_sha256), &self.limits)
+                .map(|(target, _)| target),
+        }
+    }
+}
+
+fn validate_source_target_distinct(
+    source: &Path,
+    target: &TargetReference,
+) -> Result<(), RetargetError> {
+    let TargetReference::Imported { path, .. } = target else {
+        return Ok(());
+    };
+    let source = source
+        .canonicalize()
+        .map_err(|error| RetargetError::source_io(source, error))?;
+    let target = path
+        .canonicalize()
+        .map_err(|error| RetargetError::target_io(path, error))?;
+    if source == target || same_file_identity(&source, &target).map_err(RetargetError::io)? {
+        return Err(RetargetError::new(
+            IssueCode::TargetSourceConflict,
+            "source project and imported target reference resolve to the same file",
+            "Choose a distinct imported U1 reference project.",
+        ));
+    }
+    Ok(())
+}
+
+fn same_file_identity(left: &Path, right: &Path) -> std::io::Result<bool> {
+    same_file::is_same_file(left, right)
 }
 
 fn validate_output_path(source: &Path, output: &Path) -> Result<(), RetargetError> {

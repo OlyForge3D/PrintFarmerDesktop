@@ -20,7 +20,7 @@ pub(crate) struct TransformResult {
     pub warnings: Vec<RetargetIssue>,
 }
 
-const MACHINE_OWNED_KEYS: &[&str] = &[
+pub(crate) const MACHINE_OWNED_KEYS: &[&str] = &[
     "printer_model",
     "printer_variant",
     "printer_settings_id",
@@ -94,7 +94,7 @@ const MACHINE_OWNED_KEYS: &[&str] = &[
     "layer_change_gcode",
 ];
 
-const PROCESS_OWNED_KEYS: &[&str] = &[
+pub(crate) const PROCESS_OWNED_KEYS: &[&str] = &[
     "print_settings_id",
     "compatible_printers",
     "compatible_printers_condition",

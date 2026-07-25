@@ -8,6 +8,7 @@ use crate::rpc::SceneMeshDto;
 #[serde(rename_all = "camelCase")]
 pub enum IssueCode {
     SourceNotFound,
+    TargetNotFound,
     OutputPathConflict,
     InvalidArchive,
     ArchiveLimitExceeded,
@@ -36,6 +37,7 @@ pub enum IssueCode {
     ProfileMissingParent,
     ProfileInheritanceCycle,
     ProfileValueInvalid,
+    TargetSourceConflict,
     StaleSliceArtifactsRemoved,
     CustomGcodeRemoved,
     DigitalSignaturesRemoved,

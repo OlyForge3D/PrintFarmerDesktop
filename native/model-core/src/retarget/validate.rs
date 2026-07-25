@@ -5,38 +5,60 @@ use super::archive::{
     ArchivePackage, CONTENT_TYPES_PART_FOR_VALIDATION, MODEL_SETTINGS_PART, PROJECT_SETTINGS_PART,
 };
 use super::guardrails;
-use super::profile::{Bundle, SettingValue, MACHINE_NAME};
+use super::profile::{ResolvedTarget, SettingValue};
 use super::project::ProjectInspection;
 use super::report::{IssueCode, RetargetIssue, SceneCompatibility, ValidationReport};
 use super::transform;
 use super::{RetargetError, RetargetLimits, RetargetOptions};
-use crate::hash::hash_file;
+use crate::hash::{hash_file, hash_reader};
 use crate::rpc::SceneMeshDto;
 use crate::scene::SceneMesh;
 
 pub(crate) fn run(
-    bundle: &Bundle,
     source_path: &Path,
     output_path: &Path,
-    target_profile_id: &str,
+    target: &ResolvedTarget,
     options: &RetargetOptions,
     limits: &RetargetLimits,
 ) -> Result<ValidationReport, RetargetError> {
-    let source_sha256 =
-        hash_file(source_path).map_err(|error| RetargetError::source_io(source_path, error))?;
-    let output_sha256 = hash_file(output_path).map_err(RetargetError::io)?;
-    let source_archive = ArchivePackage::open(source_path, limits)?;
-    let output_archive = ArchivePackage::open(output_path, limits)?;
-    let source = ProjectInspection::inspect(source_path, &source_archive, limits)?;
-    let output = ProjectInspection::inspect(output_path, &output_archive, limits)?;
-    let process = bundle.process(target_profile_id)?;
-    let filaments = bundle.map_materials(&source.materials)?;
+    let source_snapshot = ArchivePackage::read_bounded(source_path, limits)?;
+    let output_snapshot = ArchivePackage::read_bounded(output_path, limits)?;
+    run_snapshots(
+        source_path,
+        output_path,
+        &source_snapshot,
+        &output_snapshot,
+        target,
+        options,
+        limits,
+    )
+}
+
+pub(crate) fn run_snapshots(
+    source_path: &Path,
+    output_path: &Path,
+    source_snapshot: &[u8],
+    output_snapshot: &[u8],
+    target: &ResolvedTarget,
+    options: &RetargetOptions,
+    limits: &RetargetLimits,
+) -> Result<ValidationReport, RetargetError> {
+    let source_sha256 = hash_reader(source_snapshot)
+        .map_err(|error| RetargetError::source_io(source_path, error))?;
+    let output_sha256 = hash_reader(output_snapshot).map_err(RetargetError::io)?;
+    let source_archive = ArchivePackage::from_bytes(source_snapshot, limits)?;
+    let output_archive = ArchivePackage::from_bytes(output_snapshot, limits)?;
+    let source =
+        ProjectInspection::inspect_snapshot(source_path, &source_archive, limits, source_snapshot)?;
+    let output =
+        ProjectInspection::inspect_snapshot(output_path, &output_archive, limits, output_snapshot)?;
+    let filaments = target.map_materials(&source.materials)?;
     let expected = transform::build_settings(
         &source,
-        bundle.machine(),
-        process,
+        &target.machine,
+        &target.process,
         &filaments,
-        bundle.filament_defaults(),
+        &target.filament_defaults,
         options.object_exclusion,
     )?;
 
@@ -61,14 +83,14 @@ pub(crate) fn run(
         .settings
         .get("printer_settings_id")
         .and_then(SettingValue::first)
-        == Some(MACHINE_NAME)
+        == Some(target.machine.name.as_str())
         && output
             .settings
             .get("print_settings_id")
             .and_then(SettingValue::first)
-            == Some(process.name.as_str());
+            == Some(target.process.name.as_str());
     let guardrails_valid =
-        guardrails::validate(&output.settings, bundle.machine(), process).is_ok();
+        guardrails::validate(&output.settings, &target.machine, &target.process).is_ok();
     let project_complete = output.blockers.is_empty();
     let source_preserved = source_sha256
         == hash_file(source_path).map_err(|error| RetargetError::source_io(source_path, error))?;
