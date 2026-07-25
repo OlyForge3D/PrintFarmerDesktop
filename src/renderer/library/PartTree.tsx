@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SceneObject, ScenePlate } from '../viewer/types';
 import {
   flattenPartTree,
+  isFocusableRow,
   partTreeKeyAction,
   type PartTreeRow,
 } from './partTreeModel';
@@ -59,9 +60,13 @@ export function PartTree({
     [objects, rootObjectIds, plates, hidden, collapsed],
   );
 
-  const firstKey = rows[0]?.key ?? null;
+  // The roving tab stop must land on a row that can actually take focus, so
+  // diagnostic and notice rows are never candidates. This is what keeps
+  // exactly one `tabIndex={0}` in the tree for any scene shape.
+  const firstKey = rows.find(isFocusableRow)?.key ?? null;
   const currentKey =
-    activeKey !== null && rows.some((row) => row.key === activeKey)
+    activeKey !== null &&
+    rows.some((row) => row.key === activeKey && isFocusableRow(row))
       ? activeKey
       : firstKey;
 
@@ -101,6 +106,24 @@ export function PartTree({
       return next;
     });
   }, []);
+
+  // Collapsing by mouse can unmount the row that currently holds focus (its
+  // ancestor is the node being collapsed), which would drop focus to the
+  // document. Move the tab stop up to the node the user collapsed, but only
+  // when focus was already inside the tree so a stray click never steals it.
+  const onTwistyToggle = useCallback(
+    (row: PartTreeRow): void => {
+      const expanding = !row.expanded;
+      setExpanded(row.key, expanding);
+      if (expanding) return;
+      const focusInside =
+        listRef.current?.contains(document.activeElement) ?? false;
+      if (!focusInside) return;
+      setActiveKey(row.key);
+      pendingFocusRef.current = row.key;
+    },
+    [setExpanded],
+  );
 
   const toggleRowVisibility = useCallback(
     (row: PartTreeRow): void => {
@@ -221,7 +244,7 @@ export function PartTree({
             }
             isolationSupported={onIsolate !== undefined}
             onActivate={setActiveKey}
-            onSetExpanded={setExpanded}
+            onTwistyToggle={onTwistyToggle}
             onToggleVisibility={toggleRowVisibility}
             onIsolate={isolateRow}
           />
@@ -237,7 +260,7 @@ function PartTreeItem({
   isolated,
   isolationSupported,
   onActivate,
-  onSetExpanded,
+  onTwistyToggle,
   onToggleVisibility,
   onIsolate,
 }: {
@@ -246,10 +269,31 @@ function PartTreeItem({
   isolated: boolean;
   isolationSupported: boolean;
   onActivate: (key: string) => void;
-  onSetExpanded: (key: string, expanded: boolean) => void;
+  onTwistyToggle: (row: PartTreeRow) => void;
   onToggleVisibility: (row: PartTreeRow) => void;
   onIsolate: (row: PartTreeRow) => void;
 }): React.JSX.Element {
+  if (row.kind === 'notice') {
+    return (
+      <li
+        className="part-item part-item-invalid"
+        role="treeitem"
+        aria-level={row.level}
+        aria-posinset={row.positionInSet}
+        aria-setsize={row.setSize}
+        aria-disabled="true"
+        data-row-key={row.key}
+        tabIndex={-1}
+        style={indentStyle(row.level)}
+      >
+        <span className="part-row">
+          <span aria-hidden="true">⚠</span>
+          <span className="part-name">{row.name}</span>
+        </span>
+      </li>
+    );
+  }
+
   if (row.invalid) {
     return (
       <li
@@ -296,7 +340,7 @@ function PartTreeItem({
             aria-hidden="true"
             onClick={(event) => {
               event.stopPropagation();
-              onSetExpanded(row.key, !row.expanded);
+              onTwistyToggle(row);
             }}
           >
             {row.expanded ? '▾' : '▸'}

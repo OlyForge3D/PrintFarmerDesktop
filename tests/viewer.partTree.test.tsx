@@ -1,12 +1,14 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { PartTree } from '../src/renderer/library/PartTree.js';
 import {
   ancestorObjectIds,
   flattenPartTree,
+  isFocusableRow,
   isObjectHidden,
   isolateHiddenObjectIds,
+  MAX_PART_TREE_ROWS,
   objectRowKey,
   partTreeKeyAction,
   plateRowKey,
@@ -593,5 +595,318 @@ describe('<PartTree /> malformed scenes', () => {
     );
     expect(warn).toHaveBeenCalledTimes(1);
     warn.mockRestore();
+  });
+});
+
+/**
+ * A chain of `levels` diamonds: `m{i}` reaches `m{i+1}` both directly and via
+ * `s{i}`, so the number of distinct *paths* to the tail doubles every level.
+ * With 14 levels that is 29 objects but 2^15-1 = 32,767 paths through the
+ * `m` chain alone — the shape that made a path-local `seen` set explode.
+ */
+function diamondDag(levels: number): {
+  objects: readonly SceneObject[];
+  rootObjectIds: readonly string[];
+} {
+  const objects: SceneObject[] = [];
+  for (let i = 0; i <= levels; i += 1) {
+    objects.push(
+      object(`m${i}`, `M${i}`, {
+        children: i < levels ? [`s${i}`, `m${i + 1}`] : [],
+      }),
+    );
+  }
+  for (let i = 0; i < levels; i += 1) {
+    objects.push(object(`s${i}`, `S${i}`, { children: [`m${i + 1}`] }));
+  }
+  return { objects, rootObjectIds: ['m0'] };
+}
+
+/** A single-child chain `n0 → n1 → … → n{length-1}`. */
+function chain(length: number): {
+  objects: readonly SceneObject[];
+  rootObjectIds: readonly string[];
+} {
+  const objects: SceneObject[] = [];
+  for (let i = 0; i < length; i += 1) {
+    objects.push(
+      object(`n${i}`, `N${i}`, {
+        parentId: i === 0 ? null : `n${i - 1}`,
+        children: i === length - 1 ? [] : [`n${i + 1}`],
+      }),
+    );
+  }
+  return { objects, rootObjectIds: ['n0'] };
+}
+
+/** Every `tabIndex={0}` element inside the rendered tree. */
+function tabStops(): readonly Element[] {
+  return [...screen.getByRole('tree').querySelectorAll('[tabindex="0"]')];
+}
+
+describe('flattenPartTree hostile shapes', () => {
+  it('renders a duplicated child once and flags the repeat, with unique keys', () => {
+    const rows = flatten({
+      objects: [
+        object('body', 'Body', { children: ['leaf', 'leaf'] }),
+        object('leaf', 'Leaf', { parentId: 'body' }),
+      ],
+      rootObjectIds: ['body'],
+      plates: [],
+    });
+
+    expect(rows.map((row) => [row.objectId, row.invalid])).toEqual([
+      ['body', false],
+      ['leaf', false],
+      ['leaf', true],
+    ]);
+    expect(new Set(rows.map((row) => row.key)).size).toBe(rows.length);
+    // Sibling metadata stays honest: the repeat still occupies its slot.
+    expect(rows[2]).toMatchObject({ positionInSet: 2, setSize: 2 });
+  });
+
+  it('renders an object referenced by two parents once', () => {
+    const rows = flatten({
+      objects: [
+        object('a', 'A', { children: ['shared'] }),
+        object('b', 'B', { children: ['shared'] }),
+        object('shared', 'Shared'),
+      ],
+      rootObjectIds: ['a', 'b'],
+      plates: [],
+    });
+
+    const valid = rows.filter((row) => !row.invalid);
+    expect(valid.map((row) => row.objectId)).toEqual(['a', 'shared', 'b']);
+    expect(rows.filter((row) => row.invalid)).toHaveLength(1);
+    expect(new Set(rows.map((row) => row.key)).size).toBe(rows.length);
+  });
+
+  it('renders an object listed on two plates once', () => {
+    const rows = flatten({
+      objects: [object('body', 'Body')],
+      rootObjectIds: ['body'],
+      plates: [
+        { id: 'plate-0', name: 'Plate 1', index: 0, rootObjectIds: ['body'] },
+        { id: 'plate-1', name: 'Plate 2', index: 1, rootObjectIds: ['body'] },
+      ],
+    });
+
+    const objectRows = rows.filter((row) => row.kind === 'object');
+    expect(objectRows.map((row) => row.invalid)).toEqual([false, true]);
+    expect(new Set(rows.map((row) => row.key)).size).toBe(rows.length);
+  });
+
+  it('keeps a 29-object diamond DAG linear instead of exponential', () => {
+    const { objects, rootObjectIds } = diamondDag(14);
+    expect(objects).toHaveLength(29);
+
+    const rows = flatten({ objects, rootObjectIds, plates: [] });
+
+    // Was 32,767+ rows when the cycle guard was path-local.
+    expect(rows.length).toBeLessThan(100);
+    expect(rows.filter((row) => !row.invalid)).toHaveLength(objects.length);
+    expect(rows.filter((row) => row.invalid)).toHaveLength(14);
+    expect(new Set(rows.map((row) => row.key)).size).toBe(rows.length);
+  });
+
+  it('flattens a 5,000-deep chain without a RangeError', () => {
+    const { objects, rootObjectIds } = chain(5_000);
+    let rows: readonly PartTreeRow[] = [];
+    expect(() => {
+      rows = flattenPartTree({
+        objects,
+        rootObjectIds,
+        plates: [],
+        hidden: new Set(),
+        collapsed: new Set(),
+      });
+    }).not.toThrow();
+    expect(rows).toHaveLength(5_000);
+    expect(rows[4_999]).toMatchObject({ objectId: 'n4999', level: 5_000 });
+  });
+
+  it('truncates with a notice row instead of exceeding the budget', () => {
+    const { objects, rootObjectIds } = chain(MAX_PART_TREE_ROWS + 50);
+    const rows = flatten({ objects, rootObjectIds, plates: [] });
+
+    expect(rows).toHaveLength(MAX_PART_TREE_ROWS + 1);
+    const last = rows[rows.length - 1];
+    expect(last).toMatchObject({ kind: 'notice', objectId: null });
+    expect(last?.name).toMatch(/Scene too large/i);
+    expect(isFocusableRow(last as PartTreeRow)).toBe(false);
+  });
+
+  it('treats prototype-shaped object ids as ordinary data', () => {
+    const rows = flatten({
+      objects: [
+        object('__proto__', 'Proto', { children: ['constructor'] }),
+        object('constructor', 'Ctor', {
+          parentId: '__proto__',
+          children: ['prototype'],
+        }),
+        object('prototype', 'Prototype', { parentId: 'constructor' }),
+      ],
+      rootObjectIds: ['__proto__'],
+      plates: [],
+    });
+
+    expect(rows.map((row) => row.objectId)).toEqual([
+      '__proto__',
+      'constructor',
+      'prototype',
+    ]);
+    expect(rows.every((row) => !row.invalid)).toBe(true);
+    expect({}).not.toHaveProperty('polluted');
+  });
+
+  it('skips diagnostic rows when walking with the keyboard', () => {
+    const rows = flatten({
+      objects: [
+        object('body', 'Body', { children: ['leaf', 'leaf', 'tail'] }),
+        object('leaf', 'Leaf', { parentId: 'body' }),
+        object('tail', 'Tail', { parentId: 'body' }),
+      ],
+      rootObjectIds: ['body'],
+      plates: [],
+    });
+    const leaf = rows[1];
+    const tail = rows[3];
+    expect(rows[2]?.invalid).toBe(true);
+
+    expect(partTreeKeyAction('ArrowDown', rows, leaf?.key ?? '')).toEqual({
+      type: 'move',
+      key: tail?.key,
+    });
+    expect(partTreeKeyAction('End', rows, leaf?.key ?? '')).toEqual({
+      type: 'move',
+      key: tail?.key,
+    });
+  });
+});
+
+describe('<PartTree /> single roving tab stop', () => {
+  // Duplicate references legitimately warn; the warning itself is asserted in
+  // the diagnostics suite above, so keep it out of this suite's output.
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('keeps exactly one tab stop for a duplicated child reference', () => {
+    renderTree({
+      objects: [
+        object('body', 'Body', { children: ['leaf', 'leaf'] }),
+        object('leaf', 'Leaf', { parentId: 'body' }),
+      ],
+      rootObjectIds: ['body'],
+      plates: [],
+    });
+    expect(tabStops()).toHaveLength(1);
+  });
+
+  it('keeps exactly one tab stop for a duplicated root reference', () => {
+    renderTree({
+      objects: [object('leaf', 'Leaf')],
+      rootObjectIds: ['leaf', 'leaf'],
+      plates: [],
+    });
+    expect(tabStops()).toHaveLength(1);
+  });
+
+  it('keeps exactly one tab stop for the same object on two plates', () => {
+    renderTree({
+      objects: [object('body', 'Body')],
+      rootObjectIds: ['body'],
+      plates: [
+        { id: 'plate-0', name: 'Plate 1', index: 0, rootObjectIds: ['body'] },
+        { id: 'plate-1', name: 'Plate 2', index: 1, rootObjectIds: ['body'] },
+      ],
+    });
+    expect(tabStops()).toHaveLength(1);
+  });
+
+  it('keeps exactly one tab stop for a multi-parent reference', () => {
+    renderTree({
+      objects: [
+        object('a', 'A', { children: ['shared'] }),
+        object('b', 'B', { children: ['shared'] }),
+        object('shared', 'Shared'),
+      ],
+      rootObjectIds: ['a', 'b'],
+      plates: [],
+    });
+    expect(tabStops()).toHaveLength(1);
+  });
+
+  it('keeps one tab stop after arrowing across a diagnostic row', () => {
+    renderTree({
+      objects: [
+        object('body', 'Body', { children: ['leaf', 'leaf', 'tail'] }),
+        object('leaf', 'Leaf', { parentId: 'body' }),
+        object('tail', 'Tail', { parentId: 'body' }),
+      ],
+      rootObjectIds: ['body'],
+      plates: [],
+    });
+
+    const leaf = focusRow(treeitem('Leaf'));
+    fireEvent.keyDown(leaf, { key: 'ArrowDown' });
+
+    expect(tabStops()).toHaveLength(1);
+    expect(treeitem('Tail')).toHaveFocus();
+  });
+});
+
+describe('<PartTree /> mouse collapse', () => {
+  function twistyOf(name: string): Element {
+    const twisty = treeitem(name).querySelector('.part-twisty');
+    if (!twisty) throw new Error(`no twisty on "${name}"`);
+    return twisty;
+  }
+
+  it('moves focus to the collapsing node when its focused child unmounts', () => {
+    renderTree();
+    focusRow(treeitem('Lid'));
+    expect(treeitem('Lid')).toHaveFocus();
+
+    fireEvent.click(twistyOf('Body'));
+
+    expect(screen.queryByRole('treeitem', { name: 'Lid' })).toBeNull();
+    expect(treeitem('Body')).toHaveFocus();
+    expect(tabStops()).toHaveLength(1);
+  });
+
+  it('leaves focus alone when it is outside the tree', () => {
+    renderTree();
+    const outside = document.createElement('button');
+    document.body.append(outside);
+    act(() => {
+      outside.focus();
+    });
+
+    fireEvent.click(twistyOf('Body'));
+
+    expect(outside).toHaveFocus();
+    outside.remove();
+  });
+
+  it('does not grab focus when expanding', () => {
+    renderTree();
+    fireEvent.click(twistyOf('Body'));
+    const outside = document.createElement('button');
+    document.body.append(outside);
+    act(() => {
+      outside.focus();
+    });
+
+    fireEvent.click(twistyOf('Body'));
+
+    expect(treeitem('Lid')).toBeInTheDocument();
+    expect(outside).toHaveFocus();
+    outside.remove();
   });
 });

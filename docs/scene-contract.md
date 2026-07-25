@@ -27,9 +27,14 @@ interpreted for the UI. It flattens `plates` → `rootObjectIds` → `children` 
 the row list the part tree renders and the keyboard walks, and it derives the
 hidden-object sets that `ModelViewer` applies to the scene graph.
 
-Because scene DTOs come from untrusted files, every walk is cycle-safe: an
-object appears at most once per resolved tree, a repeated `children` reference
-is rendered as a diagnostic row instead of recursing, and unknown ids are
+Because scene DTOs come from untrusted files, the flatten is hostile-shape safe.
+An object id yields **at most one** rendered row across the whole tree, so a
+repeated `children` entry, an object referenced by two parents, and the same
+object listed on two plates all render once and then degrade to a uniquely-keyed
+diagnostic row. Row keys are therefore unique for any graph shape, which is what
+lets the tree keep a single roving tab stop. The walk is iterative rather than
+recursive, so a deep chain cannot overflow the stack, and a global row budget
+truncates with a notice row rather than locking up the renderer. Unknown ids are
 dropped. Hiding a node hides its whole subtree; isolating a node hides
 everything except that node, its descendants, and the ancestors it hangs from.
 

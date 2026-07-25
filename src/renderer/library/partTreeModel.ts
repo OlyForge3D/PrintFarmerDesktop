@@ -7,16 +7,31 @@
  * unit-tested without React or WebGL, and so the component stays a thin render
  * layer over an already-resolved row list.
  *
- * Scene graphs arrive from untrusted files, so every walk in this module is
- * cycle-safe: an object may appear at most once per resolved tree.
+ * Scene graphs arrive from untrusted files, so the flatten is hostile-shape
+ * safe: an object id yields at most **one** rendered row across the whole tree
+ * (later references degrade to uniquely-keyed diagnostic rows), the walk is
+ * iterative rather than recursive, and a global row budget bounds the output.
+ * Together these keep a duplicated child, a diamond DAG, or a 5,000-deep chain
+ * linear and crash-free.
  */
 import type { SceneObject, ScenePlate } from '../viewer/types';
 
+/**
+ * Hard ceiling on emitted rows. A scene that would exceed it is truncated with
+ * a trailing `notice` row rather than locking up the renderer.
+ */
+export const MAX_PART_TREE_ROWS = 20_000;
+
 /** A single keyboard-navigable line in the flattened tree. */
 export interface PartTreeRow {
-  /** Stable DOM/roving-tabindex key. Plate group ids are prefixed. */
+  /**
+   * Stable DOM/roving-tabindex key, unique across the whole row list no matter
+   * how the scene graph is shaped. Plate group ids are prefixed; a repeated
+   * path is disambiguated with a `#n` suffix.
+   */
   readonly key: string;
-  readonly kind: 'plate' | 'object';
+  /** `notice` rows are renderer diagnostics, not scene content. */
+  readonly kind: 'plate' | 'object' | 'notice';
   /** Scene object id, or `null` for a plate group heading. */
   readonly objectId: string | null;
   /** Plate id for a plate heading row, or `null` for object rows. */
@@ -43,8 +58,9 @@ export interface PartTreeRow {
   /** Key of the parent row, or `null` at the top level. */
   readonly parentKey: string | null;
   /**
-   * The object id was reached twice (a cycle or a duplicated child reference).
-   * The row is rendered as a diagnostic and has no children.
+   * The object id was already rendered elsewhere in the tree (a cycle, a
+   * duplicated child reference, or the same object on two plates). The row is
+   * rendered as a read-only diagnostic and has no children.
    */
   readonly invalid: boolean;
 }
@@ -76,9 +92,37 @@ function indexObjects(
   return new Map(objects.map((object) => [object.id, object]));
 }
 
+/** True when a row represents real, interactive scene content. */
+export function isFocusableRow(row: PartTreeRow): boolean {
+  return !row.invalid && row.kind !== 'notice';
+}
+
+interface ObjectFrame {
+  readonly objectId: string;
+  readonly parentKey: string | null;
+  readonly level: number;
+  readonly positionInSet: number;
+  readonly setSize: number;
+  readonly ancestorHidden: boolean;
+}
+
 /**
  * Flatten the scene graph into the visible row order the tree renders and the
  * keyboard walks. Collapsed subtrees contribute their heading row only.
+ *
+ * Hostile-shape guarantees, all of which the part tree's single-roving-tab-stop
+ * invariant depends on:
+ *
+ * - **One row per object.** `resolved` is global to the whole flatten, not to
+ *   the current path, so a duplicated child, a multi-parent reference and the
+ *   same object listed on two plates each render once and then degrade to a
+ *   diagnostic row. This is what keeps a diamond DAG linear instead of
+ *   exponential.
+ * - **Unique keys.** Every key is issued through `claimKey`, so no two rows can
+ *   ever collide even when the same path repeats.
+ * - **No recursion.** The walk uses an explicit stack, so depth is bounded by
+ *   the heap rather than the call stack.
+ * - **Bounded output.** `MAX_PART_TREE_ROWS` truncates with a notice row.
  */
 export function flattenPartTree({
   objects,
@@ -89,88 +133,136 @@ export function flattenPartTree({
 }: FlattenPartTreeOptions): readonly PartTreeRow[] {
   const byId = indexObjects(objects);
   const rows: PartTreeRow[] = [];
+  const usedKeys = new Set<string>();
+  const keyProbe = new Map<string, number>();
+  const resolved = new Set<string>();
+  let truncated = false;
 
-  const pushObject = (
-    objectId: string,
-    parentKey: string | null,
-    level: number,
-    positionInSet: number,
-    setSize: number,
-    ancestorHidden: boolean,
-    seen: ReadonlySet<string>,
-  ): void => {
-    const object = byId.get(objectId);
-    if (!object) return;
-    const key = objectRowKey(parentKey, objectId);
+  // Suffix collisions rather than trusting the path to be unique. `keyProbe`
+  // remembers where the last probe for a base stopped so repeated collisions
+  // stay amortized O(1) instead of rescanning from 2 every time.
+  const claimKey = (base: string): string => {
+    if (!usedKeys.has(base)) {
+      usedKeys.add(base);
+      return base;
+    }
+    let n = keyProbe.get(base) ?? 2;
+    while (usedKeys.has(`${base}#${n}`)) n += 1;
+    const key = `${base}#${n}`;
+    keyProbe.set(base, n + 1);
+    usedKeys.add(key);
+    return key;
+  };
 
-    if (seen.has(objectId)) {
+  const atCapacity = (): boolean => {
+    if (rows.length < MAX_PART_TREE_ROWS) return false;
+    if (!truncated) {
+      truncated = true;
       rows.push({
-        key,
-        kind: 'object',
-        objectId,
+        key: claimKey('notice:truncated'),
+        kind: 'notice',
+        objectId: null,
         plateId: null,
         plateRootObjectIds: [],
-        name: object.name,
-        level,
-        positionInSet,
-        setSize,
+        name: `Scene too large to list in full; stopped after ${MAX_PART_TREE_ROWS.toLocaleString()} rows.`,
+        level: 1,
+        positionInSet: 1,
+        setSize: 1,
         hasChildren: false,
         childCount: 0,
         expanded: false,
-        hidden: true,
-        ancestorHidden,
+        hidden: false,
+        ancestorHidden: false,
         triangles: null,
-        parentKey,
-        invalid: true,
+        parentKey: null,
+        invalid: false,
       });
-      return;
     }
+    return true;
+  };
 
-    const children = object.children.filter((childId) => byId.has(childId));
-    const directlyHidden = hidden.has(objectId);
-    const effectivelyHidden = ancestorHidden || directlyHidden;
-    const expanded = children.length > 0 && !collapsed.has(key);
+  const walk = (seeds: readonly ObjectFrame[]): void => {
+    const stack = seeds.slice().reverse();
+    while (stack.length > 0) {
+      if (atCapacity()) return;
+      const frame = stack.pop();
+      if (!frame) continue;
+      const object = byId.get(frame.objectId);
+      if (!object) continue;
+      const base = objectRowKey(frame.parentKey, frame.objectId);
 
-    rows.push({
-      key,
-      kind: 'object',
-      objectId,
-      plateId: null,
-      plateRootObjectIds: [],
-      name: object.name,
-      level,
-      positionInSet,
-      setSize,
-      hasChildren: children.length > 0,
-      childCount: children.length,
-      expanded,
-      hidden: effectivelyHidden,
-      ancestorHidden,
-      triangles: object.mesh
-        ? Math.floor(object.mesh.indices.length / 3)
-        : null,
-      parentKey,
-      invalid: false,
-    });
+      if (resolved.has(frame.objectId)) {
+        rows.push({
+          key: claimKey(base),
+          kind: 'object',
+          objectId: frame.objectId,
+          plateId: null,
+          plateRootObjectIds: [],
+          name: object.name,
+          level: frame.level,
+          positionInSet: frame.positionInSet,
+          setSize: frame.setSize,
+          hasChildren: false,
+          childCount: 0,
+          expanded: false,
+          hidden: true,
+          ancestorHidden: frame.ancestorHidden,
+          triangles: null,
+          parentKey: frame.parentKey,
+          invalid: true,
+        });
+        continue;
+      }
+      resolved.add(frame.objectId);
 
-    if (!expanded) return;
-    const nextSeen = new Set(seen).add(objectId);
-    children.forEach((childId, index) => {
-      pushObject(
-        childId,
+      const key = claimKey(base);
+      const children = object.children.filter((childId) => byId.has(childId));
+      const effectivelyHidden =
+        frame.ancestorHidden || hidden.has(frame.objectId);
+      const expanded = children.length > 0 && !collapsed.has(key);
+
+      rows.push({
         key,
-        level + 1,
-        index + 1,
-        children.length,
-        effectivelyHidden,
-        nextSeen,
-      );
-    });
+        kind: 'object',
+        objectId: frame.objectId,
+        plateId: null,
+        plateRootObjectIds: [],
+        name: object.name,
+        level: frame.level,
+        positionInSet: frame.positionInSet,
+        setSize: frame.setSize,
+        hasChildren: children.length > 0,
+        childCount: children.length,
+        expanded,
+        hidden: effectivelyHidden,
+        ancestorHidden: frame.ancestorHidden,
+        triangles: object.mesh
+          ? Math.floor(object.mesh.indices.length / 3)
+          : null,
+        parentKey: frame.parentKey,
+        invalid: false,
+      });
+
+      if (!expanded) continue;
+      for (let index = children.length - 1; index >= 0; index -= 1) {
+        const childId = children[index];
+        if (childId === undefined) continue;
+        stack.push({
+          objectId: childId,
+          parentKey: key,
+          level: frame.level + 1,
+          positionInSet: index + 1,
+          setSize: children.length,
+          ancestorHidden: effectivelyHidden,
+        });
+      }
+    }
   };
 
   if (plates.length > 0) {
-    plates.forEach((plate, plateIndex) => {
-      const key = plateRowKey(plate.id);
+    for (const [plateIndex, plate] of plates.entries()) {
+      if (atCapacity()) return rows;
+      const key = claimKey(plateRowKey(plate.id));
       const roots = plate.rootObjectIds.filter((id) => byId.has(id));
       const expanded = roots.length > 0 && !collapsed.has(key);
       rows.push({
@@ -192,18 +284,32 @@ export function flattenPartTree({
         parentKey: null,
         invalid: false,
       });
-      if (!expanded) return;
-      roots.forEach((rootId, index) => {
-        pushObject(rootId, key, 2, index + 1, roots.length, false, new Set());
-      });
-    });
+      if (!expanded) continue;
+      walk(
+        roots.map((rootId, index) => ({
+          objectId: rootId,
+          parentKey: key,
+          level: 2,
+          positionInSet: index + 1,
+          setSize: roots.length,
+          ancestorHidden: false,
+        })),
+      );
+    }
     return rows;
   }
 
   const roots = rootObjectIds.filter((id) => byId.has(id));
-  roots.forEach((rootId, index) => {
-    pushObject(rootId, null, 1, index + 1, roots.length, false, new Set());
-  });
+  walk(
+    roots.map((rootId, index) => ({
+      objectId: rootId,
+      parentKey: null,
+      level: 1,
+      positionInSet: index + 1,
+      setSize: roots.length,
+      ancestorHidden: false,
+    })),
+  );
   return rows;
 }
 
@@ -292,32 +398,37 @@ export type PartTreeKeyAction =
  *
  * Returns `null` when the key is not handled, so the caller leaves the event
  * alone (browser find-as-you-type, Tab, etc. keep working).
+ *
+ * Navigation walks only focusable rows: diagnostic and notice rows are
+ * `aria-disabled` read-outs, so arrowing past them skips them rather than
+ * parking the roving tab stop on a row that cannot act.
  */
 export function partTreeKeyAction(
   key: string,
   rows: readonly PartTreeRow[],
   activeKey: string,
 ): PartTreeKeyAction | null {
-  const index = rows.findIndex((row) => row.key === activeKey);
+  const nav = rows.filter(isFocusableRow);
+  const index = nav.findIndex((row) => row.key === activeKey);
   if (index < 0) return null;
-  const row = rows[index];
+  const row = nav[index];
   if (!row) return null;
 
   switch (key) {
     case 'ArrowDown': {
-      const next = rows[index + 1];
+      const next = nav[index + 1];
       return next ? { type: 'move', key: next.key } : null;
     }
     case 'ArrowUp': {
-      const previous = rows[index - 1];
+      const previous = nav[index - 1];
       return previous ? { type: 'move', key: previous.key } : null;
     }
     case 'Home': {
-      const first = rows[0];
+      const first = nav[0];
       return first ? { type: 'move', key: first.key } : null;
     }
     case 'End': {
-      const last = rows[rows.length - 1];
+      const last = nav[nav.length - 1];
       return last ? { type: 'move', key: last.key } : null;
     }
     case 'ArrowRight': {
@@ -325,7 +436,7 @@ export function partTreeKeyAction(
         return { type: 'expand', key: row.key };
       }
       if (row.hasChildren) {
-        const child = rows[index + 1];
+        const child = nav[index + 1];
         return child?.parentKey === row.key
           ? { type: 'move', key: child.key }
           : null;
