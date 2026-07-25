@@ -1621,21 +1621,56 @@ where
 }
 
 fn verify_checkout_revision(revision_path: &Path) -> Result<String, String> {
+    let revision = run_git_stdout(revision_path, &["rev-parse", "HEAD"], "git rev-parse HEAD")?;
+    if revision.is_empty() {
+        return Err(format!(
+            "git rev-parse HEAD returned an empty revision for {}",
+            revision_path.display()
+        ));
+    }
+
+    let dirty_entries = run_git_stdout(
+        revision_path,
+        &["status", "--porcelain", "--untracked-files=no"],
+        "git status --porcelain --untracked-files=no",
+    )?;
+    let dirty_entries = dirty_entries
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if !dirty_entries.is_empty() {
+        return Err(format!(
+            "lib3mf checkout at {} resolved to revision {} but has tracked working tree changes: {}",
+            revision_path.display(),
+            revision,
+            dirty_entries.join(", ")
+        ));
+    }
+
+    Ok(revision)
+}
+
+fn run_git_stdout(
+    revision_path: &Path,
+    args: &[&str],
+    description: &str,
+) -> Result<String, String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(revision_path)
-        .args(["rev-parse", "HEAD"])
+        .args(args)
         .output()
         .map_err(|error| {
             format!(
-                "unable to verify lib3mf checkout revision at {}: {error}",
+                "unable to verify lib3mf checkout at {} with `{description}`: {error}",
                 revision_path.display()
             )
         })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(format!(
-            "git rev-parse HEAD failed for {}: {}",
+            "{description} failed for {}: {}",
             revision_path.display(),
             if stderr.is_empty() {
                 format!("exit status {}", output.status)
@@ -1645,14 +1680,7 @@ fn verify_checkout_revision(revision_path: &Path) -> Result<String, String> {
         ));
     }
 
-    let revision = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if revision.is_empty() {
-        return Err(format!(
-            "git rev-parse HEAD returned an empty revision for {}",
-            revision_path.display()
-        ));
-    }
-    Ok(revision)
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 #[cfg(test)]
@@ -1851,6 +1879,76 @@ mod tests {
         assert!(error.contains("refusing to stage"));
         assert!(error.contains(pinned_lib3mf_revision()));
         assert!(error.contains("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"));
+    }
+
+    #[test]
+    fn verify_checkout_revision_rejects_dirty_tracked_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let revision_dir = temp.path().join("lib3mf_rs-test").join("deadbee");
+        init_git_checkout_fixture(&revision_dir);
+        let clean_head = git_stdout(&revision_dir, &["rev-parse", "HEAD"]);
+
+        std::fs::write(revision_dir.join("tracked.txt"), b"tampered\n").unwrap();
+
+        let error = verify_checkout_revision(&revision_dir).unwrap_err();
+        assert!(error.contains("tracked working tree changes"));
+        assert!(error.contains("tracked.txt"));
+        assert!(error.contains(&clean_head));
+    }
+
+    fn init_git_checkout_fixture(revision_dir: &Path) {
+        std::fs::create_dir_all(revision_dir.join("libraries")).unwrap();
+        git_success(revision_dir, &["init"]);
+        git_success(revision_dir, &["config", "user.name", "Bishop Test"]);
+        git_success(
+            revision_dir,
+            &["config", "user.email", "bishop@example.com"],
+        );
+
+        std::fs::write(
+            revision_dir
+                .join("libraries")
+                .join(format!("lib3mf.{}", lib3mf_library_extension())),
+            b"fake",
+        )
+        .unwrap();
+        std::fs::write(revision_dir.join("tracked.txt"), b"clean\n").unwrap();
+
+        git_success(revision_dir, &["add", "."]);
+        git_success(revision_dir, &["commit", "-m", "fixture"]);
+    }
+
+    fn git_stdout(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed for {}: {}",
+            args,
+            repo.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn git_success(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed for {}: {}",
+            args,
+            repo.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
 
     #[cfg(windows)]
