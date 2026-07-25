@@ -14,7 +14,7 @@
 //! optional and vary across slicer versions. Only a corrupt outer ZIP is a hard
 //! error.
 
-use std::io::{Cursor, Read, Seek};
+use std::io::{Read, Seek};
 use std::path::Path;
 
 use quick_xml::events::Event;
@@ -186,8 +186,8 @@ pub fn extract_file(path: &Path) -> Result<VendorMetadata, ThreeMfError> {
 
 /// Extract vendor metadata from an in-memory 3MF package.
 pub fn extract_bytes(data: &[u8]) -> Result<VendorMetadata, ThreeMfError> {
-    let mut archive = ZipArchive::new(Cursor::new(data))?;
     let mut guard = ParseGuard::default();
+    let (mut archive, _index) = threemf::open_package(data, &mut guard)?;
 
     let core = extract_core(&mut archive, &mut guard)?;
     let plates = extract_plates(&mut archive, &mut guard)?;
@@ -378,8 +378,8 @@ fn collect_parts<R: Read + Seek>(
 /// Read a named embedded part (e.g. a plate thumbnail) as raw bytes, returning
 /// `None` if the part is absent. Callers use this to upload plate PNGs.
 pub fn read_part_bytes(data: &[u8], part_name: &str) -> Result<Option<Vec<u8>>, ThreeMfError> {
-    let mut archive = ZipArchive::new(Cursor::new(data))?;
     let mut guard = ParseGuard::default();
+    let (mut archive, _index) = threemf::open_package(data, &mut guard)?;
     read_part_bytes_limited(
         &mut archive,
         part_name,
@@ -508,8 +508,8 @@ fn plate_index_from_part_name(part_name: &str) -> Option<u32> {
 /// Extraction enforces both per-entry and aggregate limits against the actual
 /// decompressed bytes returned from the ZIP reader.
 pub fn read_plate_thumbnails(data: &[u8]) -> Result<Vec<PlateThumbnail>, ThreeMfError> {
-    let mut archive = ZipArchive::new(Cursor::new(data))?;
     let mut guard = ParseGuard::default();
+    let (mut archive, _index) = threemf::open_package(data, &mut guard)?;
     let part_names = collect_thumbnail_part_names(&mut archive, &mut guard)?;
     let mut thumbnails = Vec::new();
     let mut total_thumbnail_bytes = 0u64;
@@ -543,7 +543,8 @@ pub fn read_plate_thumbnails_file(path: &Path) -> Result<Vec<PlateThumbnail>, Th
 /// Whether a package appears to be a slicer project (has any known vendor part).
 /// Cheap heuristic over the ZIP index; does not parse content.
 pub fn is_vendor_project(data: &[u8]) -> Result<bool, ThreeMfError> {
-    let archive = ZipArchive::new(Cursor::new(data))?;
+    let mut guard = ParseGuard::default();
+    let (archive, _index) = threemf::open_package(data, &mut guard)?;
     let known = [
         SLICE_INFO_PART,
         PRUSA_MODEL_CONFIG,
@@ -560,6 +561,7 @@ pub fn is_vendor_project(data: &[u8]) -> Result<bool, ThreeMfError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
     use std::io::Write;
     use zip::write::{SimpleFileOptions, ZipWriter};
     use zip::CompressionMethod;

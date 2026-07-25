@@ -266,14 +266,38 @@ impl ParseGuard {
         }
         // A zero-length compressed payload that claims a non-trivial expansion
         // is infinitely amplified; treat it as maximally suspicious.
-        let ratio = uncompressed_bytes / compressed_bytes.max(1);
-        if ratio > self.limits.max_compression_ratio {
+        let divisor = compressed_bytes.max(1);
+        // Compare by cross-multiplication rather than dividing: an integer
+        // quotient truncates, so a 300.99:1 expansion would compute as 300 and
+        // slip past a 300:1 cap. If the allowance itself overflows u64 then no
+        // real payload can exceed it.
+        let exceeded = match self.limits.max_compression_ratio.checked_mul(divisor) {
+            Some(allowed) => uncompressed_bytes > allowed,
+            None => false,
+        };
+        if exceeded {
             return Err(LimitViolation::CompressionRatio {
                 part: part.to_string(),
-                ratio,
+                // Round up so the reported ratio never reads as within the cap
+                // it just failed.
+                ratio: uncompressed_bytes.div_ceil(divisor),
                 compressed_bytes,
                 uncompressed_bytes,
                 limit: self.limits.max_compression_ratio,
+            });
+        }
+        Ok(())
+    }
+
+    /// Reject a package whose central directory *claims* a total expansion past
+    /// the budget, before any entry is opened. Distinct from
+    /// [`Self::charge_decompressed`], which tracks bytes actually produced:
+    /// this catches an archive assembled from many entries that each sit under
+    /// the ratio floor but together promise far more than we will ever allow.
+    pub fn check_declared_archive_total(&self, declared_bytes: u64) -> Result<(), LimitViolation> {
+        if declared_bytes > self.limits.max_total_decompressed_bytes {
+            return Err(LimitViolation::TotalDecompressedBytes {
+                limit: self.limits.max_total_decompressed_bytes,
             });
         }
         Ok(())

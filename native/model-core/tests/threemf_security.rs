@@ -579,3 +579,296 @@ fn rejects_a_zip64_trailer_declaring_an_impossible_entry_count() {
         );
     }
 }
+
+// --- vendor entry points share the archive preflight ------------------------
+
+/// Every public reader must apply the same archive-wide limits. A vendor entry
+/// point that opens the ZIP itself is a second door into the package with none
+/// of them, so each door gets the same hostile package.
+#[test]
+fn every_vendor_entry_point_rejects_a_bomb_the_scene_path_rejects() {
+    // Deliberately NOT a .png: the thumbnail collector only ratio-checked image
+    // parts, so an attacker just renames the bomb and walks through.
+    let data = package_with(vec![Part::bytes(
+        "Metadata/payload.bin",
+        vec![0u8; 16 * 1024 * 1024],
+    )]);
+
+    assert_eq!(
+        threemf::parse_bytes(&data)
+            .expect_err("scene path must reject the bomb")
+            .code(),
+        "limit.compression_ratio"
+    );
+
+    type Door<'a> = (&'a str, Box<dyn Fn() -> Result<(), ThreeMfError> + 'a>);
+    let doors: Vec<Door<'_>> = vec![
+        (
+            "extract_bytes",
+            Box::new(|| vendor::extract_bytes(&data).map(|_| ())),
+        ),
+        (
+            "read_plate_thumbnails",
+            Box::new(|| vendor::read_plate_thumbnails(&data).map(|_| ())),
+        ),
+        (
+            "read_part_bytes",
+            Box::new(|| vendor::read_part_bytes(&data, "Metadata/payload.bin").map(|_| ())),
+        ),
+        (
+            "is_vendor_project",
+            Box::new(|| vendor::is_vendor_project(&data).map(|_| ())),
+        ),
+    ];
+    for (name, call) in doors {
+        let error = call().expect_err(&format!("{name} must reject the bomb too"));
+        assert_eq!(
+            error.code(),
+            "limit.compression_ratio",
+            "{name} let the bomb through: {error}"
+        );
+    }
+}
+
+#[test]
+fn vendor_entry_points_still_accept_a_benign_project() {
+    // The preflight must not turn into a blanket rejection of real projects.
+    let data = package_with(vec![Part::text(
+        "Metadata/slice_info.config",
+        "<?xml version=\"1.0\"?><config/>",
+    )]);
+    vendor::extract_bytes(&data).expect("a benign vendor project must still parse");
+    assert!(vendor::is_vendor_project(&data).expect("vendor detection must still work"));
+    assert!(vendor::read_plate_thumbnails(&data)
+        .expect("thumbnail extraction must still work")
+        .is_empty());
+}
+
+#[test]
+fn rejects_an_archive_whose_declared_expansion_blows_the_budget_in_aggregate() {
+    // End-to-end companion to the unit-level accumulator test: every entry sits
+    // under the ratio floor, so only aggregate accounting can catch this.
+    let limits = ParseLimits {
+        max_total_decompressed_bytes: 4 * 1024 * 1024,
+        ..ParseLimits::default().without_timeout()
+    };
+    let filler = "x".repeat(1024 * 1024);
+    let parts: Vec<Part> = (0..8)
+        .map(|i| Part::text(&format!("Metadata/pad_{i}.txt"), &filler))
+        .collect();
+    let data = package_with(parts);
+    let error = threemf::parse_bytes_with_limits(&data, limits)
+        .expect_err("the aggregate declared expansion must be rejected");
+    assert_eq!(error.code(), "limit.total_decompressed_bytes", "{error}");
+}
+
+// --- ratio cap boundary -----------------------------------------------------
+
+#[test]
+fn ratio_cap_rejects_a_fractional_overshoot() {
+    // Integer division truncates: 4_194_305 / 13_935 is 300.99, which computes
+    // as 300 and slips past a 300:1 cap. Cross-multiplication catches it.
+    let guard = ParseGuard::new(ParseLimits::default().without_timeout());
+    let limit = ParseLimits::default().max_compression_ratio;
+    // Hicks's exact case: one byte past the ratio floor, at 300.99:1.
+    let compressed = 13_935u64;
+    let just_over = COMPRESSION_RATIO_FLOOR_BYTES + 1;
+    assert!(
+        just_over > limit * compressed,
+        "the fixture numbers must actually exceed the cap"
+    );
+    assert_eq!(
+        just_over / compressed,
+        limit,
+        "and must truncate to exactly the cap, which is what used to let them pass"
+    );
+
+    let error = guard
+        .check_ratio("part", compressed, just_over)
+        .expect_err("a fractional overshoot must still be rejected");
+    assert_eq!(error.code(), "limit.compression_ratio", "{error}");
+    assert!(
+        error.to_string().contains(&format!("{}x", limit + 1)),
+        "the reported ratio must not read as within the cap it failed: {error}"
+    );
+
+    // Exactly at the cap still passes, above the floor so the check applies.
+    let compressed = 20_000u64;
+    guard
+        .check_ratio("part", compressed, limit * compressed)
+        .expect("exactly at the cap must pass");
+}
+
+#[test]
+fn ratio_cap_allowance_cannot_overflow_into_a_false_rejection() {
+    let guard = ParseGuard::new(ParseLimits::default().without_timeout());
+    // limit * compressed overflows u64, so no real payload can exceed it.
+    guard
+        .check_ratio("part", u64::MAX / 2, u64::MAX)
+        .expect("an overflowing allowance must not reject");
+}
+
+// --- appearance resources are attacker-controlled too -----------------------
+
+fn model_with_resources(resources: &str, object_attrs: &str, triangle_attrs: &str) -> Vec<u8> {
+    let model = format!(
+        r##"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <resources>
+{resources}
+    <object id="1" type="model"{object_attrs}>
+      <mesh>
+        <vertices>
+          <vertex x="0" y="0" z="0"/>
+          <vertex x="1" y="0" z="0"/>
+          <vertex x="0" y="1" z="0"/>
+        </vertices>
+        <triangles>
+          <triangle v1="0" v2="1" v3="2"{triangle_attrs}/>
+        </triangles>
+      </mesh>
+    </object>
+  </resources>
+  <build><item objectid="1"/></build>
+</model>"##
+    );
+    package(&model, Vec::new())
+}
+
+#[test]
+fn a_dangling_appearance_reference_costs_a_colour_not_the_model() {
+    // An exporter that names a resource it never wrote must not brick the file.
+    let data = model_with_resources("", r#" pid="999" pindex="7""#, r#" pid="999" p1="3""#);
+    let mesh = threemf::parse_bytes(&data).expect("geometry must survive a dangling reference");
+    assert_eq!(mesh.triangle_count(), 1);
+    assert_eq!(mesh.objects[0].material.base_color, None);
+}
+
+#[test]
+fn an_out_of_range_appearance_index_does_not_panic() {
+    // `pindex` is an unchecked attacker-controlled index into a Vec.
+    let resources =
+        r##"    <basematerials id="10"><base name="PLA" displaycolor="#FF0000"/></basematerials>"##;
+    let data = model_with_resources(resources, r#" pid="10" pindex="4294967295""#, "");
+    let mesh = threemf::parse_bytes(&data).expect("an out-of-range index must not be fatal");
+    assert_eq!(mesh.objects[0].material.base_color, None);
+}
+
+#[test]
+fn malformed_colour_values_are_ignored_rather_than_fatal() {
+    for value in ["", "#", "not-a-colour", "#GGGGGG", "#12345", "#1234567890"] {
+        let resources = format!(
+            r##"    <basematerials id="10"><base name="X" displaycolor="{value}"/></basematerials>"##
+        );
+        let data = model_with_resources(&resources, r#" pid="10" pindex="0""#, "");
+        let mesh = threemf::parse_bytes(&data)
+            .unwrap_or_else(|e| panic!("colour {value:?} must not be fatal: {e}"));
+        assert_eq!(
+            mesh.objects[0].material.base_color,
+            Some([0, 0, 0]),
+            "colour {value:?} must fall back rather than poison the scene"
+        );
+    }
+}
+
+#[test]
+fn a_malformed_appearance_index_is_reported_not_silently_dropped() {
+    // Silently ignoring a bad `pid` would attach the wrong material to a face.
+    let data = model_with_resources("", r#" pid="not-a-number""#, "");
+    assert_eq!(parse_error(&data).code(), "malformed");
+}
+
+#[test]
+fn alpha_is_accepted_and_discarded() {
+    let resources =
+        r##"    <basematerials id="10"><base name="X" displaycolor="#0A141EFF"/></basematerials>"##;
+    let data = model_with_resources(resources, r#" pid="10" pindex="0""#, "");
+    let mesh = threemf::parse_bytes(&data).expect("8-digit colours are legal");
+    assert_eq!(mesh.objects[0].material.base_color, Some([10, 20, 30]));
+}
+
+#[test]
+fn rejects_an_unbounded_appearance_table() {
+    // Each entry carries an owned name, so an unbounded table is cheap
+    // memory amplification from a small compressed payload. Colours are
+    // distinct so the archive does not compress well enough to trip the
+    // ratio guard first — this must fail on the appearance cap itself.
+    let entries = model_core::threemf::MAX_APPEARANCE_ENTRIES + 1;
+    let mut resources = String::with_capacity(entries * 32 + 64);
+    resources.push_str("    <m:colorgroup xmlns:m=\"http://schemas.microsoft.com/3dmanufacturing/material/2015/02\" id=\"11\">\n");
+    for index in 0..entries {
+        resources.push_str(&format!(
+            "      <m:color color=\"#{:06X}\"/>\n",
+            index % 0x00FF_FFFF
+        ));
+    }
+    resources.push_str("    </m:colorgroup>");
+    let data = model_with_resources(&resources, "", "");
+    assert_eq!(parse_error(&data).code(), "too_large");
+}
+
+#[test]
+fn rejects_an_oversized_material_name() {
+    let name = "A".repeat(64 * 1024);
+    let resources = format!(
+        r##"    <basematerials id="10"><base name="{name}" displaycolor="#FFFFFF"/></basematerials>"##
+    );
+    let data = model_with_resources(&resources, r#" pid="10" pindex="0""#, "");
+    assert_eq!(parse_error(&data).code(), "too_large");
+}
+
+// --- the availability half of the limits ------------------------------------
+
+/// A ceiling that degrades into blanket rejection of large legitimate models is
+/// an availability bug wearing a security hat. Generated rather than checked in
+/// so the repository stays sane, and sized well past the checked-in fixture.
+#[test]
+fn a_realistically_large_model_is_accepted_within_the_default_budget() {
+    const N: usize = 360;
+    let mut vertices = String::with_capacity((N + 1) * (N + 1) * 48);
+    for row in 0..=N {
+        for col in 0..=N {
+            vertices.push_str(&format!(
+                "          <vertex x=\"{}.5\" y=\"{}.25\" z=\"0\"/>\n",
+                col, row
+            ));
+        }
+    }
+    let mut triangles = String::with_capacity(N * N * 104);
+    for row in 0..N {
+        for col in 0..N {
+            let a = row * (N + 1) + col;
+            let (b, c, d) = (a + 1, a + N + 1, a + N + 2);
+            triangles.push_str(&format!(
+                "          <triangle v1=\"{a}\" v2=\"{b}\" v3=\"{d}\"/>\n          <triangle v1=\"{a}\" v2=\"{d}\" v3=\"{c}\"/>\n"
+            ));
+        }
+    }
+    let model = format!(
+        r##"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <resources>
+    <object id="1" name="Stress grid" type="model">
+      <mesh>
+        <vertices>
+{vertices}        </vertices>
+        <triangles>
+{triangles}        </triangles>
+      </mesh>
+    </object>
+  </resources>
+  <build><item objectid="1"/></build>
+</model>"##
+    );
+    assert!(
+        model.len() as u64 > 4 * COMPRESSION_RATIO_FLOOR_BYTES,
+        "the stress model must clear the ratio floor by a wide margin, got {} bytes",
+        model.len()
+    );
+
+    let data = package(&model, Vec::new());
+    let mesh = threemf::parse_bytes(&data)
+        .expect("a large but entirely legitimate model must not be rejected");
+    assert_eq!(mesh.vertex_count(), (N + 1) * (N + 1));
+    assert_eq!(mesh.triangle_count(), N * N * 2);
+}

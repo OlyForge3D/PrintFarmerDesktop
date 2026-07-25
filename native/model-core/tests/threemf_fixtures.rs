@@ -20,8 +20,10 @@ mod threemf_support;
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::{Cursor, Read};
 use std::path::PathBuf;
 
+use model_core::limits::COMPRESSION_RATIO_FLOOR_BYTES;
 use model_core::threemf;
 use model_core::vendor;
 use serde::{Deserialize, Serialize};
@@ -73,6 +75,14 @@ struct ExpectedScene {
     plate_count: usize,
     bounds_min: [f32; 3],
     bounds_max: [f32; 3],
+    /// Per-scene-object appearance, so deleting the appearance resources from a
+    /// fixture makes its manifest entry fail instead of passing unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    base_colors: Vec<Option<[u8; 3]>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    face_colors: Vec<Option<Vec<[u8; 3]>>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    material_labels: Vec<Option<String>>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -83,6 +93,45 @@ struct ExpectedVendor {
     plate_indices: Vec<u32>,
     filament_types: Vec<String>,
     thumbnail_parts: Vec<String>,
+}
+
+/// Appearance projected out of a parsed scene, in scene-object order:
+/// object base colours, per-face colours, then per-part material labels.
+type Appearance = (
+    Vec<Option<[u8; 3]>>,
+    Vec<Option<Vec<[u8; 3]>>>,
+    Vec<Option<String>>,
+);
+
+/// Project appearance out of a parsed scene, in scene-object order.
+///
+/// Returned empty when nothing in the scene carries the value, so manifests for
+/// geometry-only fixtures stay free of long runs of nulls — and so a fixture
+/// that *should* carry appearance fails loudly if the parser stops producing it.
+fn expected_appearance(mesh: &threemf::ThreeMfMesh) -> Appearance {
+    fn dense<T>(values: Vec<Option<T>>) -> Vec<Option<T>> {
+        if values.iter().all(Option::is_none) {
+            Vec::new()
+        } else {
+            values
+        }
+    }
+
+    (
+        dense(mesh.objects.iter().map(|o| o.material.base_color).collect()),
+        dense(
+            mesh.objects
+                .iter()
+                .map(|o| o.material.face_colors.clone())
+                .collect(),
+        ),
+        dense(
+            mesh.parts
+                .iter()
+                .map(|p| p.material_label.clone())
+                .collect(),
+        ),
+    )
 }
 
 fn fixture_dir() -> PathBuf {
@@ -275,9 +324,14 @@ fn unit_inch() -> Authored {
 }
 
 fn large_grid() -> Authored {
-    // 40x40 quads => 1681 vertices / 3200 triangles: large enough to exercise
-    // the per-vertex work budget, small enough to stay a tidy repo artifact.
-    const N: usize = 40;
+    // Sized so the uncompressed model XML clears COMPRESSION_RATIO_FLOOR_BYTES
+    // (4 MiB), the lowest threshold at which the archive limits actually engage.
+    // Below that floor a "large" fixture cannot detect a regression that starts
+    // rejecting realistically large models, which is the failure mode that makes
+    // a limit worse than no limit. Still far under the 20M vertex / 40M triangle
+    // ceilings, so it proves the limits pass legitimate work rather than trip on
+    // it.
+    const N: usize = 170;
     let mut vertices = String::new();
     for row in 0..=N {
         for col in 0..=N {
@@ -313,7 +367,7 @@ fn large_grid() -> Authored {
     Authored {
         file: "large_grid.3mf",
         label: "large",
-        notes: "40x40 triangulated grid (1681 vertices / 3200 triangles).",
+        notes: "170x170 triangulated grid (29241 vertices / 57800 triangles); its uncompressed model XML clears the 4 MiB compression-ratio floor.",
         bytes: package(&model_document("millimeter", &resources, build), Vec::new()),
     }
 }
@@ -576,6 +630,7 @@ fn well_formed_fixtures_match_their_expected_scenes() {
         let mesh = threemf::parse_bytes(&bytes)
             .unwrap_or_else(|e| panic!("{} ({}) failed to parse: {e}", record.file, record.label));
 
+        let (base_colors, face_colors, material_labels) = expected_appearance(&mesh);
         let actual = ExpectedScene {
             unit: mesh.unit.clone(),
             vertex_count: mesh.vertex_count(),
@@ -589,6 +644,9 @@ fn well_formed_fixtures_match_their_expected_scenes() {
             plate_count: mesh.plates.len(),
             bounds_min: mesh.bounds.min,
             bounds_max: mesh.bounds.max,
+            base_colors,
+            face_colors,
+            material_labels,
         };
         assert_eq!(actual, expected, "{} ({})", record.file, record.label);
 
@@ -690,23 +748,29 @@ fn regenerate_threemf_fixtures() {
 
         let parsed = threemf::parse_bytes(&authored.bytes);
         let (expected, expected_error) = match &parsed {
-            Ok(mesh) => (
-                Some(ExpectedScene {
-                    unit: mesh.unit.clone(),
-                    vertex_count: mesh.vertex_count(),
-                    triangle_count: mesh.triangle_count(),
-                    object_count: mesh.object_count,
-                    build_item_count: mesh.build_item_count,
-                    part_count: mesh.parts.len(),
-                    part_names: mesh.parts.iter().map(|p| p.name.clone()).collect(),
-                    scene_object_count: mesh.objects.len(),
-                    root_object_ids: mesh.root_object_ids.clone(),
-                    plate_count: mesh.plates.len(),
-                    bounds_min: mesh.bounds.min,
-                    bounds_max: mesh.bounds.max,
-                }),
-                None,
-            ),
+            Ok(mesh) => {
+                let (base_colors, face_colors, material_labels) = expected_appearance(mesh);
+                (
+                    Some(ExpectedScene {
+                        unit: mesh.unit.clone(),
+                        vertex_count: mesh.vertex_count(),
+                        triangle_count: mesh.triangle_count(),
+                        object_count: mesh.object_count,
+                        build_item_count: mesh.build_item_count,
+                        part_count: mesh.parts.len(),
+                        part_names: mesh.parts.iter().map(|p| p.name.clone()).collect(),
+                        scene_object_count: mesh.objects.len(),
+                        root_object_ids: mesh.root_object_ids.clone(),
+                        plate_count: mesh.plates.len(),
+                        bounds_min: mesh.bounds.min,
+                        bounds_max: mesh.bounds.max,
+                        base_colors,
+                        face_colors,
+                        material_labels,
+                    }),
+                    None,
+                )
+            }
             Err(error) => (None, Some(error.code().to_string())),
         };
 
@@ -747,4 +811,148 @@ fn regenerate_threemf_fixtures() {
     let mut json = serde_json::to_string_pretty(&manifest).expect("serialize manifest");
     json.push('\n');
     fs::write(dir.join("manifest.json"), json).expect("write manifest");
+}
+
+// --- appearance -------------------------------------------------------------
+
+/// The point Hicks made: a fixture named after colour and material must fail if
+/// the appearance resources are deleted from it. This asserts the manifest
+/// actually carries appearance, so an empty expectation can never pass silently.
+#[test]
+fn the_color_material_fixture_actually_covers_appearance() {
+    let record = read_manifest()
+        .fixtures
+        .into_iter()
+        .find(|record| record.file == "color_material.3mf")
+        .expect("the color/material fixture must be in the manifest");
+    let expected = record.expected.expect("it must be a parsing fixture");
+
+    assert!(
+        expected.base_colors.iter().any(Option::is_some),
+        "no object-level colour is pinned, so removing <basematerials> would not fail this fixture"
+    );
+    assert!(
+        expected.face_colors.iter().any(Option::is_some),
+        "no per-face colour is pinned, so removing triangle p1 would not fail this fixture"
+    );
+    assert!(
+        expected.material_labels.iter().any(Option::is_some),
+        "no material label is pinned, so removing <base name> would not fail this fixture"
+    );
+}
+
+/// The removal test made concrete: strip the appearance resources from the very
+/// same model document and the parse must produce something different.
+#[test]
+fn stripping_appearance_resources_changes_the_parsed_scene() {
+    let bytes = fs::read(fixture_dir().join("color_material.3mf")).expect("read fixture");
+    let coloured = threemf::parse_bytes(&bytes).expect("fixture parses");
+    assert!(
+        coloured
+            .objects
+            .iter()
+            .any(|o| o.material.base_color.is_some()),
+        "the fixture must carry appearance in the first place"
+    );
+
+    let stripped = catalog()
+        .into_iter()
+        .find(|a| a.file == "color_material.3mf")
+        .expect("authored fixture");
+    let plain = threemf::parse_bytes(&strip_appearance(&stripped.bytes))
+        .expect("the geometry must survive losing its appearance");
+
+    assert_eq!(
+        plain.triangle_count(),
+        coloured.triangle_count(),
+        "stripping appearance must not disturb geometry"
+    );
+    assert!(
+        plain
+            .objects
+            .iter()
+            .all(|o| o.material.base_color.is_none() && o.material.face_colors.is_none()),
+        "with the resources gone there is nothing left to resolve"
+    );
+    assert_ne!(
+        plain
+            .objects
+            .iter()
+            .map(|o| o.material.clone())
+            .collect::<Vec<_>>(),
+        coloured
+            .objects
+            .iter()
+            .map(|o| o.material.clone())
+            .collect::<Vec<_>>(),
+        "removing every appearance resource must be detectable"
+    );
+}
+
+/// Rebuild the colour/material package with its appearance resources removed,
+/// leaving the geometry byte-identical.
+fn strip_appearance(original: &[u8]) -> Vec<u8> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(original)).expect("fixture is a zip");
+    let mut model = String::new();
+    archive
+        .by_name("3D/3dmodel.model")
+        .expect("model part")
+        .read_to_string(&mut model)
+        .expect("model part is text");
+
+    // Drop the resource tables and every reference to them.
+    let mut out = String::with_capacity(model.len());
+    let mut depth = 0usize;
+    for line in model.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("<basematerials") || trimmed.starts_with("<m:colorgroup") {
+            depth += 1;
+        }
+        let inside = depth > 0;
+        if trimmed.starts_with("</basematerials") || trimmed.starts_with("</m:colorgroup") {
+            depth -= 1;
+        }
+        if inside {
+            continue;
+        }
+        let mut kept = line.to_string();
+        for attribute in ["pid", "pindex", "p1", "p2", "p3"] {
+            while let Some(start) = kept.find(&format!(" {attribute}=\"")) {
+                let rest = &kept[start + attribute.len() + 3..];
+                let end =
+                    rest.find('"').expect("attribute is quoted") + start + attribute.len() + 4;
+                kept.replace_range(start..end, "");
+            }
+        }
+        out.push_str(&kept);
+        out.push('\n');
+    }
+    package(&out, Vec::new())
+}
+
+/// The finding that made this necessary: a "large" fixture sitting orders of
+/// magnitude below every configured limit cannot detect a regression that starts
+/// rejecting realistically large models — the failure mode that makes a limit
+/// worse than no limit.
+#[test]
+fn the_large_fixture_crosses_a_meaningful_threshold() {
+    let bytes = fs::read(fixture_dir().join("large_grid.3mf")).expect("read fixture");
+    let mut archive = zip::ZipArchive::new(Cursor::new(&bytes)).expect("fixture is a zip");
+    let declared = archive
+        .by_name("3D/3dmodel.model")
+        .expect("model part")
+        .size();
+    assert!(
+        declared > COMPRESSION_RATIO_FLOOR_BYTES,
+        "the large fixture's model XML is {declared} bytes, under the \
+         {COMPRESSION_RATIO_FLOOR_BYTES}-byte ratio floor, so the archive limits never engage on it"
+    );
+
+    let mesh = threemf::parse_bytes(&bytes).expect("a large but legitimate model must parse");
+    assert!(
+        mesh.triangle_count() > 50_000 && mesh.vertex_count() > 25_000,
+        "{} triangles / {} vertices is not representative of a real model",
+        mesh.triangle_count(),
+        mesh.vertex_count()
+    );
 }

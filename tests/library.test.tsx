@@ -1748,6 +1748,97 @@ describe('useThumbnail', () => {
     expect(renderThumbnail).toHaveBeenCalledTimes(1);
   });
 
+  it('reuses a cached thumbnail while the sidecar reports the same recipe', async () => {
+    const renderThumbnail = vi.fn().mockResolvedValue({
+      width: 256,
+      height: 256,
+      pngBase64: 'STABLE',
+      cacheRecipe: 'scene/v3.2/thumb-v1-256',
+    });
+    installApi({ renderThumbnail });
+
+    const first = renderHook(() => useThumbnail(model({ hash: 'versioned' })));
+    await waitFor(() => expect(first.result.current.status).toBe('ready'));
+
+    const second = renderHook(() => useThumbnail(model({ hash: 'versioned' })));
+    await waitFor(() => expect(second.result.current.status).toBe('ready'));
+
+    expect(renderThumbnail).toHaveBeenCalledTimes(1);
+  });
+
+  it('evicts thumbnails rendered under a superseded recipe', async () => {
+    // A version nothing reads invalidates nothing: once the sidecar reports a
+    // new recipe, pixels produced under the previous semantics must go.
+    const png = (pngBase64: string, cacheRecipe: string) => ({
+      width: 256,
+      height: 256,
+      pngBase64,
+      cacheRecipe,
+    });
+    const renderThumbnail = vi
+      .fn()
+      .mockResolvedValueOnce(png('OLD', 'scene/v3.2/thumb-v1-256'))
+      .mockResolvedValueOnce(png('BUMPED', 'scene/v3.3/thumb-v2-256'))
+      .mockResolvedValueOnce(png('REDONE', 'scene/v3.3/thumb-v2-256'));
+    installApi({ renderThumbnail });
+
+    const first = renderHook(() => useThumbnail(model({ hash: 'first' })));
+    await waitFor(() => expect(first.result.current.status).toBe('ready'));
+    expect(first.result.current.src).toBe('data:image/png;base64,OLD');
+
+    // A different model answered by a newer sidecar carries the new recipe.
+    const other = renderHook(() => useThumbnail(model({ hash: 'second' })));
+    await waitFor(() =>
+      expect(other.result.current.src).toBe('data:image/png;base64,BUMPED'),
+    );
+
+    // The first model's cached pixels are now stale and must be re-rendered.
+    const again = renderHook(() => useThumbnail(model({ hash: 'first' })));
+    await waitFor(() =>
+      expect(again.result.current.src).toBe('data:image/png;base64,REDONE'),
+    );
+    expect(renderThumbnail).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not serve unversioned entries once a versioned sidecar answers', async () => {
+    // An older sidecar omits the recipe. Those pixels must not satisfy a
+    // lookup made once a versioned sidecar is answering.
+    const renderThumbnail = vi
+      .fn()
+      .mockResolvedValueOnce({ width: 256, height: 256, pngBase64: 'LEGACY' })
+      .mockResolvedValueOnce({
+        width: 256,
+        height: 256,
+        pngBase64: 'VERSIONED',
+        cacheRecipe: 'scene/v3.2/thumb-v1-256',
+      })
+      .mockResolvedValueOnce({
+        width: 256,
+        height: 256,
+        pngBase64: 'REDONE',
+        cacheRecipe: 'scene/v3.2/thumb-v1-256',
+      });
+    installApi({ renderThumbnail });
+
+    const legacy = renderHook(() => useThumbnail(model({ hash: 'mixed' })));
+    await waitFor(() =>
+      expect(legacy.result.current.src).toBe('data:image/png;base64,LEGACY'),
+    );
+
+    const upgraded = renderHook(() => useThumbnail(model({ hash: 'other' })));
+    await waitFor(() =>
+      expect(upgraded.result.current.src).toBe(
+        'data:image/png;base64,VERSIONED',
+      ),
+    );
+
+    const again = renderHook(() => useThumbnail(model({ hash: 'mixed' })));
+    await waitFor(() =>
+      expect(again.result.current.src).toBe('data:image/png;base64,REDONE'),
+    );
+    expect(renderThumbnail).toHaveBeenCalledTimes(3);
+  });
+
   it('shares an in-flight render across hook instances', async () => {
     const result = {
       width: 256,

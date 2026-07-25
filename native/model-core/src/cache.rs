@@ -27,6 +27,18 @@ use crate::scene::SCENE_DTO_VERSION;
 ///   that previously produced a (poisoned) scene now fail to parse.
 pub const PARSER_SEMANTICS_VERSION: u32 = 2;
 
+/// Bumped whenever the thumbnail renderer changes the pixels it produces for an
+/// unchanged scene.
+///
+/// Distinct from [`PARSER_SEMANTICS_VERSION`] because the two move
+/// independently: a camera, projection, lighting or rasterization change alters
+/// every cached thumbnail while leaving scene DTOs untouched. Without this a
+/// renderer change silently reuses stale pixels forever.
+///
+/// History:
+/// * `1` — initial deterministic orthographic renderer.
+pub const THUMBNAIL_RENDERER_VERSION: u32 = 1;
+
 /// Recipe for a cached scene DTO.
 pub fn scene_cache_recipe() -> String {
     scene_recipe_for(SCENE_DTO_VERSION, PARSER_SEMANTICS_VERSION)
@@ -38,7 +50,10 @@ fn scene_recipe_for(scene_dto_version: u32, parser_semantics_version: u32) -> St
 
 /// Recipe for a cached thumbnail rendered at `size` pixels square.
 pub fn thumbnail_cache_recipe(size: u32) -> String {
-    format!("{}/thumb-{size}", scene_cache_recipe())
+    format!(
+        "{}/thumb-v{THUMBNAIL_RENDERER_VERSION}-{size}",
+        scene_cache_recipe()
+    )
 }
 
 /// Full cache key for a derived artifact belonging to `model_hash`.
@@ -83,6 +98,23 @@ mod tests {
     fn thumbnail_recipes_differ_per_size() {
         assert_ne!(thumbnail_cache_recipe(256), thumbnail_cache_recipe(512));
         assert!(thumbnail_cache_recipe(512).starts_with(&scene_cache_recipe()));
+    }
+
+    #[test]
+    fn thumbnail_recipes_carry_the_renderer_version() {
+        // A renderer change alters every cached thumbnail while leaving scene
+        // DTOs untouched, so the scene recipe alone cannot invalidate them.
+        assert!(
+            thumbnail_cache_recipe(256).contains(&format!("v{THUMBNAIL_RENDERER_VERSION}")),
+            "thumbnail recipes must encode the renderer semantics version"
+        );
+        assert_ne!(
+            format!("thumb-v{THUMBNAIL_RENDERER_VERSION}-256"),
+            format!("thumb-v{}-256", THUMBNAIL_RENDERER_VERSION + 1),
+            "bumping the renderer version must change the recipe"
+        );
+        // Size and renderer version must not be conflatable.
+        assert_ne!(thumbnail_cache_recipe(1), thumbnail_cache_recipe(11));
     }
 
     #[test]

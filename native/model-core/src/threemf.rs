@@ -14,7 +14,7 @@
 //! scope and handled elsewhere.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Cursor, Read, Seek};
+use std::io::{self, Cursor, Read, Seek};
 use std::path::Path;
 
 use quick_xml::events::{BytesStart, Event};
@@ -44,6 +44,13 @@ pub const MAX_MODEL_XML_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_TOTAL_MODEL_XML_BYTES: u64 = 1024 * 1024 * 1024;
 /// Maximum component nesting depth; also breaks any reference cycle.
 pub const MAX_COMPONENT_DEPTH: usize = 50;
+/// Ceiling on `<base>`/`<color>` entries across every appearance resource in a
+/// model part. Each entry is attacker-controlled and carries an owned name, so
+/// an unbounded table is a cheap memory-amplification primitive.
+pub const MAX_APPEARANCE_ENTRIES: usize = 1_000_000;
+/// Longest accepted `<base name="...">`. Material labels are display strings,
+/// not payloads.
+const MAX_MATERIAL_NAME_BYTES: usize = 256;
 
 /// Conventional location of the model part when relationships are absent.
 const DEFAULT_MODEL_PART: &str = "3D/3dmodel.model";
@@ -261,8 +268,34 @@ enum ObjectGeometry {
     Mesh {
         vertices: Vec<[f32; 3]>,
         triangles: Vec<[u32; 3]>,
+        /// Per-triangle `(pid, index)` appearance reference.
+        ///
+        /// Left empty when no triangle declares one, so an uncoloured mesh
+        /// pays nothing; once any triangle does, this is backfilled and stays
+        /// exactly `triangles.len()` long.
+        triangle_appearance: Vec<Option<(u32, u32)>>,
     },
     Components(Vec<Component>),
+}
+
+/// One `<basematerials>` or `<colorgroup>` resource: a positional table that
+/// `pindex`/`p1` attributes index into.
+#[derive(Debug, Clone, Default)]
+struct AppearanceGroup {
+    colors: Vec<[u8; 3]>,
+    /// Material names, parallel to `colors`. Only `<basematerials>` supplies
+    /// them; a `<colorgroup>` leaves them `None`.
+    names: Vec<Option<String>>,
+}
+
+impl AppearanceGroup {
+    fn color_at(&self, index: u32) -> Option<[u8; 3]> {
+        self.colors.get(usize::try_from(index).ok()?).copied()
+    }
+
+    fn name_at(&self, index: u32) -> Option<&str> {
+        self.names.get(usize::try_from(index).ok()?)?.as_deref()
+    }
 }
 
 /// A parsed but not-yet-flattened object keyed later by its id.
@@ -271,6 +304,8 @@ struct RawObject {
     geometry: ObjectGeometry,
     /// The object's declared `name` attribute, when present.
     name: Option<String>,
+    /// The object-level `(pid, pindex)` appearance reference, when declared.
+    appearance: Option<(u32, u32)>,
 }
 
 /// The model document: reusable objects plus the build's placed instances.
@@ -279,6 +314,8 @@ struct RawModel {
     objects: HashMap<u32, RawObject>,
     build: Vec<Component>,
     unit: String,
+    /// `<basematerials>` / `<colorgroup>` resources, keyed by resource id.
+    appearances: HashMap<u32, AppearanceGroup>,
 }
 
 impl RawModel {
@@ -322,6 +359,7 @@ struct ParseBudget {
     triangles: usize,
     objects: usize,
     components: usize,
+    appearances: usize,
 }
 
 impl ParseBudget {
@@ -348,6 +386,10 @@ impl ParseBudget {
     fn add_component(&mut self) -> Result<(), ThreeMfError> {
         Self::add(&mut self.components, MAX_COMPONENTS)
     }
+
+    fn add_appearance(&mut self) -> Result<(), ThreeMfError> {
+        Self::add(&mut self.appearances, MAX_APPEARANCE_ENTRIES)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -357,7 +399,7 @@ struct ContentTypes {
 }
 
 #[derive(Debug)]
-struct PackageIndex {
+pub(crate) struct PackageIndex {
     actual_names: HashMap<String, String>,
 }
 
@@ -502,9 +544,7 @@ pub fn parse_bytes_with_limits(
     limits: ParseLimits,
 ) -> Result<ThreeMfMesh, ThreeMfError> {
     let mut guard = ParseGuard::new(limits);
-    let package_index = package_index_from_zip(data)?;
-    let mut archive = ZipArchive::new(Cursor::new(data))?;
-    validate_archive_parts(&mut archive, &package_index, &mut guard)?;
+    let (mut archive, package_index) = open_package(data, &mut guard)?;
 
     let mut model_xml_bytes = 0u64;
     let mut parse_budget = ParseBudget::default();
@@ -667,13 +707,13 @@ fn read_text_entry_limited<R: Read + Seek>(
                 return Err(ThreeMfError::TooLarge);
             }
             guard.charge_entry(name, file.compressed_size(), file.size())?;
-            let mut contents = String::new();
-            file.by_ref()
-                .take(max_bytes.saturating_add(1))
-                .read_to_string(&mut contents)?;
-            if contents.len() as u64 > max_bytes {
+            let bytes = read_entry_guarded(&mut file, max_bytes, 0, guard)?;
+            if bytes.len() as u64 > max_bytes {
                 return Err(ThreeMfError::TooLarge);
             }
+            // Matches what `read_to_string` would have produced for non-UTF-8.
+            let contents = String::from_utf8(bytes)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             // The declared size is attacker-controlled, so charge whatever the
             // entry actually produced beyond what was already budgeted.
             let actual = contents.len() as u64;
@@ -683,6 +723,51 @@ fn read_text_entry_limited<R: Read + Seek>(
         Err(ZipError::FileNotFound) => Ok(None),
         Err(e) => Err(e.into()),
     }
+}
+
+/// Read an entry to completion with the deadline observed *during* the read.
+///
+/// A single `read_to_end` is one uninterruptible blocking call: decompressing a
+/// large entry can consume the entire time budget inside it and still return
+/// success, because the surrounding checkpoints only sample the clock every so
+/// many calls and an entry with few XML events may never reach another sample.
+/// Chunking gives the guard a checkpoint per chunk, and the unsampled check
+/// after the loop means an expiry is never reported as a successful parse.
+fn read_entry_guarded(
+    reader: &mut impl Read,
+    max_bytes: u64,
+    capacity: usize,
+    guard: &mut ParseGuard,
+) -> Result<Vec<u8>, ThreeMfError> {
+    // Small enough that one chunk cannot outlast a sane deadline, large enough
+    // that clock reads do not dominate an ordinary parse.
+    const CHUNK_BYTES: usize = 64 * 1024;
+
+    // One byte past the ceiling so the caller can still tell "exactly at the
+    // limit" from "overran it", exactly as `take(max_bytes + 1)` did.
+    let ceiling = max_bytes.saturating_add(1);
+    let mut contents = Vec::with_capacity(capacity);
+    let mut chunk = vec![0u8; CHUNK_BYTES];
+    loop {
+        guard.check_now()?;
+        let remaining = ceiling.saturating_sub(contents.len() as u64);
+        if remaining == 0 {
+            break;
+        }
+        let want = usize::try_from(remaining)
+            .unwrap_or(CHUNK_BYTES)
+            .min(CHUNK_BYTES);
+        match reader.read(&mut chunk[..want]) {
+            Ok(0) => break,
+            Ok(read) => contents.extend_from_slice(&chunk[..read]),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    // Unsampled: the final chunk may have consumed what was left of the budget,
+    // and a deadline that expires on the last read must not return success.
+    guard.check_now()?;
+    Ok(contents)
 }
 
 fn validate_archive_parts<R: Read + Seek>(
@@ -697,6 +782,7 @@ fn validate_archive_parts<R: Read + Seek>(
     }
 
     let mut seen = HashSet::with_capacity(archive.len());
+    let mut declared_total = 0u64;
     for index in 0..archive.len() {
         guard.checkpoint()?;
         let file = archive.by_index(index)?;
@@ -713,8 +799,35 @@ fn validate_archive_parts<R: Read + Seek>(
         // entry is opened, so a bomb parked in an unread part still fails the
         // package rather than lying in wait for a later feature to read it.
         guard.check_ratio(name, file.compressed_size(), file.size())?;
+        declared_total = declared_total.saturating_add(file.size());
     }
+    // Many entries can each sit under the ratio floor and still promise an
+    // aggregate expansion past the budget.
+    guard.check_declared_archive_total(declared_total)?;
     Ok(())
+}
+
+/// Open an in-memory package for reading, applying the archive-wide preflight
+/// that every entry point must share: entry count, central-directory/reader
+/// agreement, OPC part-name validation, per-entry decompression ratio, and
+/// declared aggregate expansion.
+///
+/// An archive opened over borrowed package bytes, paired with its validated
+/// central-directory index.
+pub(crate) type OpenPackage<'a> = (ZipArchive<Cursor<&'a [u8]>>, PackageIndex);
+
+/// **Every** public reader goes through here — scene *and* vendor. A path that
+/// constructs [`ZipArchive`] directly is a second door into the same package
+/// with none of these limits applied, which is exactly the bypass this
+/// function exists to make structurally impossible.
+pub(crate) fn open_package<'a>(
+    data: &'a [u8],
+    guard: &mut ParseGuard,
+) -> Result<OpenPackage<'a>, ThreeMfError> {
+    let package_index = package_index_from_zip(data)?;
+    let mut archive = ZipArchive::new(Cursor::new(data))?;
+    validate_archive_parts(&mut archive, &package_index, guard)?;
+    Ok((archive, package_index))
 }
 
 fn package_index_from_zip(data: &[u8]) -> Result<PackageIndex, ThreeMfError> {
@@ -972,10 +1085,7 @@ pub(crate) fn read_entry_bytes<R: Read + Seek, F: Fn() -> ThreeMfError>(
             const MAX_PREALLOCATED_BYTES: u64 = 1024 * 1024;
             let capacity = usize::try_from(file.size().min(MAX_PREALLOCATED_BYTES))
                 .map_err(|_| too_large())?;
-            let mut contents = Vec::with_capacity(capacity);
-            file.by_ref()
-                .take(max_bytes.saturating_add(1))
-                .read_to_end(&mut contents)?;
+            let contents = read_entry_guarded(&mut file, max_bytes, capacity, guard)?;
             if contents.len() as u64 > max_bytes {
                 return Err(too_large());
             }
@@ -1432,10 +1542,13 @@ fn parse_model_xml(
     let mut objects: HashMap<u32, RawObject> = HashMap::new();
     let mut build: Vec<Component> = Vec::new();
     let mut unit = String::from("millimeter");
+    let mut appearances: HashMap<u32, AppearanceGroup> = HashMap::new();
 
     let mut current_id: Option<u32> = None;
     let mut current_geometry: Option<ObjectGeometry> = None;
     let mut current_name: Option<String> = None;
+    let mut current_appearance: Option<(u32, u32)> = None;
+    let mut current_group: Option<(u32, AppearanceGroup)> = None;
     let mut in_build = false;
     let mut xml_guard = guard.xml_guard();
 
@@ -1450,16 +1563,28 @@ fn parse_model_xml(
                         unit = u;
                     }
                 }
+                // Both resource kinds are positional tables indexed by
+                // `pindex`/`p1`; they differ only in carrying material names.
+                // Matched by local name in the fallback arm below, because the
+                // material extension is conventionally namespace-prefixed
+                // (`<m:colorgroup>`) while the core elements are not.
                 b"object" => {
                     current_id = Some(attr_u32(&e, b"id")?);
                     current_geometry = None;
                     current_name =
                         decoded_attr(&reader, &e, b"name")?.filter(|name| !name.trim().is_empty());
+                    current_appearance = match optional_attr_u32(&e, b"pid")? {
+                        Some(pid) => {
+                            Some((pid, optional_attr_u32(&e, b"pindex")?.unwrap_or_default()))
+                        }
+                        None => None,
+                    };
                 }
                 b"mesh" => {
                     current_geometry = Some(ObjectGeometry::Mesh {
                         vertices: Vec::new(),
                         triangles: Vec::new(),
+                        triangle_appearance: Vec::new(),
                     });
                 }
                 b"vertex" => {
@@ -1473,7 +1598,11 @@ fn parse_model_xml(
                     }
                 }
                 b"triangle" => {
-                    if let Some(ObjectGeometry::Mesh { triangles, .. }) = current_geometry.as_mut()
+                    if let Some(ObjectGeometry::Mesh {
+                        triangles,
+                        triangle_appearance,
+                        ..
+                    }) = current_geometry.as_mut()
                     {
                         budget.add_triangle()?;
                         triangles.push([
@@ -1481,6 +1610,21 @@ fn parse_model_xml(
                             attr_u32(&e, b"v2")?,
                             attr_u32(&e, b"v3")?,
                         ]);
+                        // 3MF allows a per-vertex gradient across a triangle;
+                        // the scene DTO carries one colour per face, so the
+                        // first corner wins and the rest are ignored.
+                        let face = match optional_attr_u32(&e, b"pid")? {
+                            Some(pid) => optional_attr_u32(&e, b"p1")?.map(|p1| (pid, p1)),
+                            None => None,
+                        };
+                        // Start tracking at the first coloured face and stay on.
+                        // The resize backfills the plain triangles that came
+                        // before it and is a no-op once tracking is under way,
+                        // so this stays exactly `triangles.len()` long.
+                        if !triangle_appearance.is_empty() || face.is_some() {
+                            triangle_appearance.resize(triangles.len() - 1, None);
+                            triangle_appearance.push(face);
+                        }
                     }
                 }
                 b"components" => {
@@ -1505,7 +1649,39 @@ fn parse_model_xml(
                         transform: optional_transform(&e)?,
                     });
                 }
-                _ => {}
+                _ => match e.local_name().as_ref() {
+                    b"basematerials" | b"colorgroup" => {
+                        current_group = Some((attr_u32(&e, b"id")?, AppearanceGroup::default()));
+                    }
+                    b"base" => {
+                        if let Some((_, group)) = current_group.as_mut() {
+                            budget.add_appearance()?;
+                            group.colors.push(
+                                parse_appearance_color(&e, b"displaycolor")?.unwrap_or([0; 3]),
+                            );
+                            let label = decoded_attr(&reader, &e, b"name")?;
+                            if label
+                                .as_ref()
+                                .is_some_and(|l| l.len() > MAX_MATERIAL_NAME_BYTES)
+                            {
+                                return Err(ThreeMfError::TooLarge);
+                            }
+                            group
+                                .names
+                                .push(label.filter(|name| !name.trim().is_empty()));
+                        }
+                    }
+                    b"color" => {
+                        if let Some((_, group)) = current_group.as_mut() {
+                            budget.add_appearance()?;
+                            group
+                                .colors
+                                .push(parse_appearance_color(&e, b"color")?.unwrap_or([0; 3]));
+                            group.names.push(None);
+                        }
+                    }
+                    _ => {}
+                },
             },
             Event::End(e) => match e.name().as_ref() {
                 b"object" => {
@@ -1513,6 +1689,7 @@ fn parse_model_xml(
                         let geometry = current_geometry.take().unwrap_or(ObjectGeometry::Mesh {
                             vertices: Vec::new(),
                             triangles: Vec::new(),
+                            triangle_appearance: Vec::new(),
                         });
                         budget.add_object()?;
                         if objects
@@ -1521,6 +1698,7 @@ fn parse_model_xml(
                                 RawObject {
                                     geometry,
                                     name: current_name.take(),
+                                    appearance: current_appearance.take(),
                                 },
                             )
                             .is_some()
@@ -1532,7 +1710,16 @@ fn parse_model_xml(
                     }
                 }
                 b"build" => in_build = false,
-                _ => {}
+                _ => {
+                    if matches!(e.local_name().as_ref(), b"basematerials" | b"colorgroup") {
+                        if let Some((id, group)) = current_group.take() {
+                            // Last writer wins rather than erroring: a duplicate
+                            // resource id is not a memory-safety problem and
+                            // real exporters occasionally emit one.
+                            appearances.insert(id, group);
+                        }
+                    }
+                }
             },
             Event::Eof => break,
             _ => {}
@@ -1543,7 +1730,87 @@ fn parse_model_xml(
         objects,
         build,
         unit,
+        appearances,
     })
+}
+
+/// Parse a 3MF `sRGB` hex colour attribute (`#RRGGBB` or `#RRGGBBAA`).
+///
+/// Alpha is accepted and discarded: the scene DTO carries opaque RGB. An
+/// unparseable value is treated as absent rather than fatal, because a bad
+/// colour must not cost the user their geometry.
+fn parse_appearance_color(
+    element: &BytesStart<'_>,
+    name: &[u8],
+) -> Result<Option<[u8; 3]>, ThreeMfError> {
+    let Some(raw) = get_attr(element, name) else {
+        return Ok(None);
+    };
+    let text = raw.trim();
+    let hex = text.strip_prefix('#').unwrap_or(text);
+    if hex.len() != 6 && hex.len() != 8 {
+        return Ok(None);
+    }
+    let mut rgb = [0u8; 3];
+    for (index, slot) in rgb.iter_mut().enumerate() {
+        let Some(pair) = hex.get(index * 2..index * 2 + 2) else {
+            return Ok(None);
+        };
+        match u8::from_str_radix(pair, 16) {
+            Ok(value) => *slot = value,
+            Err(_) => return Ok(None),
+        }
+    }
+    Ok(Some(rgb))
+}
+
+/// Resolve an object's `<basematerials>`/`<colorgroup>` references into the
+/// concrete colours the scene DTO carries.
+///
+/// Dangling references resolve to `None` rather than an error: an exporter that
+/// emits a `pid` for a resource it never wrote should cost the user a colour,
+/// not the whole model.
+fn resolve_material(model: &RawModel, object: &RawObject) -> ThreeMfMaterial {
+    let base_color = object
+        .appearance
+        .and_then(|(pid, index)| model.appearances.get(&pid)?.color_at(index));
+
+    let face_colors = match &object.geometry {
+        ObjectGeometry::Mesh {
+            triangles,
+            triangle_appearance,
+            ..
+        } if !triangle_appearance.is_empty() => {
+            let resolved: Vec<[u8; 3]> = triangle_appearance
+                .iter()
+                .map(|face| {
+                    face.and_then(|(pid, index)| model.appearances.get(&pid)?.color_at(index))
+                        // A face without its own colour inherits the object's.
+                        .or(base_color)
+                        .unwrap_or([0; 3])
+                })
+                .collect();
+            // The DTO contract is "either absent or exactly one per triangle".
+            (resolved.len() == triangles.len()).then_some(resolved)
+        }
+        _ => None,
+    };
+
+    ThreeMfMaterial {
+        base_color,
+        face_colors,
+    }
+}
+
+/// The material name an object's `pid`/`pindex` names, when it resolves to a
+/// `<basematerials>` entry that carries one.
+fn resolve_material_label(model: &RawModel, object: &RawObject) -> Option<String> {
+    let (pid, index) = object.appearance?;
+    model
+        .appearances
+        .get(&pid)?
+        .name_at(index)
+        .map(str::to_string)
 }
 
 fn referenced_model_parts(model: &RawModel) -> HashSet<String> {
@@ -1656,7 +1923,11 @@ fn flatten(package: &RawPackage, guard: &mut ParseGuard) -> Result<ThreeMfMesh, 
             status: SceneLoadStatus::Complete,
             status_detail: None,
             part_number: None,
-            material_label: None,
+            material_label: package
+                .models
+                .get(model_part)
+                .and_then(|model| Some((model, model.objects.get(&item.object_id)?)))
+                .and_then(|(model, object)| resolve_material_label(model, object)),
         });
     }
 
@@ -1736,10 +2007,12 @@ fn expand(
     })?;
 
     let name = part_name(package, model_part, object_id);
+    let material = resolve_material(model, object);
     let mesh = match &object.geometry {
         ObjectGeometry::Mesh {
             vertices,
             triangles,
+            ..
         } => {
             output.record_mesh_object()?;
             #[cfg(test)]
@@ -1765,7 +2038,7 @@ fn expand(
         children: Vec::new(),
         transform: local_transform,
         mesh,
-        material: ThreeMfMaterial::default(),
+        material,
         plate_id: plate_id.to_string(),
         build_item_index,
     });
@@ -1774,6 +2047,7 @@ fn expand(
         ObjectGeometry::Mesh {
             vertices,
             triangles,
+            ..
         } => {
             if output.vertices.len() + vertices.len() > MAX_VERTICES
                 || output.triangles.len() + triangles.len() > MAX_TRIANGLES
@@ -1944,6 +2218,21 @@ fn attr_u32(e: &BytesStart, name: &[u8]) -> Result<u32, ThreeMfError> {
     })
 }
 
+/// Like [`attr_u32`] but absent is `None` rather than an error. A malformed
+/// value is still rejected: silently dropping a bad `pid` would attach the
+/// wrong material to a face instead of reporting the corruption.
+fn optional_attr_u32(e: &BytesStart, name: &[u8]) -> Result<Option<u32>, ThreeMfError> {
+    match get_attr(e, name) {
+        Some(raw) => raw.trim().parse::<u32>().map(Some).map_err(|_| {
+            ThreeMfError::Malformed(format!(
+                "invalid '{}' value '{raw}'",
+                String::from_utf8_lossy(name)
+            ))
+        }),
+        None => Ok(None),
+    }
+}
+
 fn attr_f32(e: &BytesStart, name: &[u8]) -> Result<f32, ThreeMfError> {
     let raw = get_attr(e, name).ok_or_else(|| {
         ThreeMfError::Malformed(format!(
@@ -1976,6 +2265,83 @@ mod tests {
     /// on machine speed.
     fn test_guard() -> ParseGuard {
         ParseGuard::new(ParseLimits::default().without_timeout())
+    }
+
+    /// A reader that is slow *by construction* rather than by racing the clock,
+    /// so a mid-read expiry is deterministic instead of machine-dependent.
+    struct SlowReader {
+        remaining: usize,
+        delay: std::time::Duration,
+    }
+
+    impl Read for SlowReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.remaining == 0 {
+                return Ok(0);
+            }
+            std::thread::sleep(self.delay);
+            let n = buf.len().min(self.remaining);
+            buf[..n].fill(b'x');
+            self.remaining -= n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_deadline_expiring_mid_read_is_an_error_not_a_success() {
+        let mut guard = ParseGuard::new(
+            ParseLimits::default().with_timeout(std::time::Duration::from_millis(60)),
+        );
+        // Twenty chunks at 20 ms: the budget runs out partway through the read,
+        // never at a boundary before it starts.
+        let mut reader = SlowReader {
+            remaining: 20 * 64 * 1024,
+            delay: std::time::Duration::from_millis(20),
+        };
+        let error = read_entry_guarded(&mut reader, 64 * 1024 * 1024, 0, &mut guard)
+            .expect_err("expiry during a read must not be reported as success");
+        assert_eq!(error.code(), "limit.timeout", "{error}");
+        assert!(
+            reader.remaining > 0,
+            "the read must have been abandoned in flight, not after completing"
+        );
+    }
+
+    #[test]
+    fn a_deadline_expiring_on_the_final_read_is_still_an_error() {
+        let mut guard = ParseGuard::new(
+            ParseLimits::default().with_timeout(std::time::Duration::from_millis(30)),
+        );
+        // A single chunk that outlasts the budget: the loop's own check passes
+        // on entry, so only the unsampled check afterwards can catch this.
+        let mut reader = SlowReader {
+            remaining: 8,
+            delay: std::time::Duration::from_millis(60),
+        };
+        let error = read_entry_guarded(&mut reader, 1024, 0, &mut guard)
+            .expect_err("a budget consumed by the last read must not return success");
+        assert_eq!(error.code(), "limit.timeout", "{error}");
+    }
+
+    #[test]
+    fn chunked_reads_return_the_whole_entry() {
+        let mut guard = test_guard();
+        // Deliberately not a chunk multiple, so a boundary bug truncates.
+        let payload = vec![b'x'; 3 * 64 * 1024 + 17];
+        let contents = read_entry_guarded(&mut payload.as_slice(), u64::MAX, 0, &mut guard)
+            .expect("a benign entry must read in full");
+        assert_eq!(contents, payload);
+    }
+
+    #[test]
+    fn chunked_reads_stop_one_byte_past_the_ceiling() {
+        let mut guard = test_guard();
+        let payload = vec![b'x'; 4096];
+        let contents = read_entry_guarded(&mut payload.as_slice(), 8, 0, &mut guard)
+            .expect("overrun detection belongs to the caller");
+        // Exactly max_bytes + 1, so the caller can distinguish "at the limit"
+        // from "over it" without buffering the whole hostile entry.
+        assert_eq!(contents.len(), 9);
     }
 
     fn expected_three_row_major_matrix(transform: &Transform) -> [f32; 16] {
@@ -2759,8 +3125,10 @@ mod tests {
                             sentinel_vertices.clone()
                         },
                         triangles: vec![[0, 1, 2]],
+                        triangle_appearance: Vec::new(),
                     },
                     name: None,
+                    appearance: None,
                 },
             );
             build.push(Component {
@@ -2777,6 +3145,7 @@ mod tests {
                     objects,
                     build,
                     unit: "millimeter".to_string(),
+                    appearances: HashMap::new(),
                 },
             )]),
             root_part: DEFAULT_MODEL_PART.to_string(),

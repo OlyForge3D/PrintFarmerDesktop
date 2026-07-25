@@ -104,6 +104,47 @@
           8.0,
           8.0,
           25.0
+        ],
+        "baseColors": [
+          [
+            255,
+            0,
+            0
+          ],
+          [
+            255,
+            204,
+            0
+          ]
+        ],
+        "faceColors": [
+          null,
+          [
+            [
+              18,
+              171,
+              52
+            ],
+            [
+              255,
+              204,
+              0
+            ],
+            [
+              255,
+              204,
+              0
+            ],
+            [
+              255,
+              204,
+              0
+            ]
+          ]
+        ],
+        "materialLabels": [
+          "PLA Red",
+          null
         ]
       }
     },
@@ -194,13 +235,13 @@
     {
       "file": "large_grid.3mf",
       "label": "large",
-      "notes": "40x40 triangulated grid (1681 vertices / 3200 triangles).",
-      "sha256": "e59acf3468e8332656c110a4fe1e33a9b8bf449ba9c824fc3da08c71f9954529",
-      "byteLen": 21154,
+      "notes": "170x170 triangulated grid (29241 vertices / 57800 triangles); its uncompressed model XML clears the 4 MiB compression-ratio floor.",
+      "sha256": "29c54978e97fc7fb62fa305bfd0f2b144ec0a39a692e782f6d37114c6881dd14",
+      "byteLen": 358637,
       "expected": {
         "unit": "millimeter",
-        "vertexCount": 1681,
-        "triangleCount": 3200,
+        "vertexCount": 29241,
+        "triangleCount": 57800,
         "objectCount": 1,
         "buildItemCount": 1,
         "partCount": 1,
@@ -218,8 +259,8 @@
           0.0
         ],
         "boundsMax": [
-          40.0,
-          40.0,
+          170.0,
+          170.0,
           0.0
         ]
       }
