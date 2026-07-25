@@ -16,6 +16,7 @@ use model_core::limits::{
     CancellationToken, ParseGuard, ParseLimits, COMPRESSION_RATIO_FLOOR_BYTES, MAX_XML_DEPTH,
 };
 use model_core::scene;
+use model_core::scene_status::SceneLoadStatus;
 use model_core::threemf::{self, ThreeMfError};
 use model_core::vendor;
 
@@ -954,7 +955,13 @@ fn an_out_of_range_appearance_index_does_not_panic() {
 }
 
 #[test]
-fn malformed_colour_values_are_ignored_rather_than_fatal() {
+fn an_unreadable_colour_value_leaves_the_appearance_absent() {
+    // Renamed from `malformed_colour_values_are_ignored_rather_than_fatal`,
+    // whose assertion contradicted its own message: it said "fall back rather
+    // than poison the scene" while pinning `Some([0, 0, 0])`. Black *is* a
+    // poisoned colour. It is a real value that renders confidently and is
+    // indistinguishable from a material that is genuinely black, so the viewer
+    // cannot tell it was invented. Absent is the only answer that stays honest.
     for value in ["", "#", "not-a-colour", "#GGGGGG", "#12345", "#1234567890"] {
         let resources = format!(
             r##"    <basematerials id="10"><base name="X" displaycolor="{value}"/></basematerials>"##
@@ -963,18 +970,196 @@ fn malformed_colour_values_are_ignored_rather_than_fatal() {
         let mesh = threemf::parse_bytes(&data)
             .unwrap_or_else(|e| panic!("colour {value:?} must not be fatal: {e}"));
         assert_eq!(
-            mesh.objects[0].material.base_color,
-            Some([0, 0, 0]),
-            "colour {value:?} must fall back rather than poison the scene"
+            mesh.objects[0].material.base_color, None,
+            "colour {value:?} must leave the appearance absent, never invent one"
+        );
+        // Geometry is untouched: this costs a colour, not the model.
+        assert_eq!(mesh.triangle_count(), 1, "colour {value:?}");
+        // And it is not silent either - the third option the old name did not
+        // admit exists.
+        assert_eq!(
+            mesh.status,
+            SceneLoadStatus::Partial,
+            "colour {value:?} must degrade the load status"
+        );
+        assert!(
+            !mesh.status_messages.is_empty(),
+            "colour {value:?} must surface a diagnostic"
+        );
+    }
+
+    // The control: a readable colour in the same markup still resolves, so the
+    // assertions above cannot be passing because nothing ever resolves.
+    let resources =
+        r##"    <basematerials id="10"><base name="X" displaycolor="#112233"/></basematerials>"##;
+    let data = model_with_resources(resources, r#" pid="10" pindex="0""#, "");
+    let mesh = threemf::parse_bytes(&data).expect("a readable colour must parse");
+    assert_eq!(
+        mesh.objects[0].material.base_color,
+        Some([0x11, 0x22, 0x33])
+    );
+    assert_eq!(mesh.status, SceneLoadStatus::Complete);
+    assert!(mesh.status_messages.is_empty());
+}
+
+#[test]
+fn an_unreadable_appearance_reference_clears_the_appearance_and_is_reported() {
+    // Renamed from `a_malformed_appearance_index_is_reported_not_silently_dropped`.
+    // That name encoded a false dichotomy - *fatal* or *silently dropped* - and
+    // the correct answer is the third option it did not admit exists: clear the
+    // appearance, keep the geometry, and say so. A name that forecloses the
+    // right answer actively resists the right fix, which is why the fatal path
+    // survived review this long.
+    //
+    // Aborting the whole parse was never buying safety, because the sibling
+    // path for a *dangling* reference already resolved to nothing without
+    // complaint. It was an availability bug wearing a security hat, and an
+    // attacker-triggerable one: a single junk attribute anywhere in a part
+    // denied display of everything in it.
+    let resources =
+        r##"    <basematerials id="10"><base name="X" displaycolor="#112233"/></basematerials>"##;
+    for (object_attrs, triangle_attrs, what) in [
+        (r#" pid="not-a-number""#, "", "object pid"),
+        (r#" pid="10" pindex="not-a-number""#, "", "object pindex"),
+        ("", r#" pid="not-a-number" p1="0""#, "triangle pid"),
+        ("", r#" pid="10" p1="not-a-number""#, "triangle p1"),
+    ] {
+        let data = model_with_resources(resources, object_attrs, triangle_attrs);
+        let mesh = threemf::parse_bytes(&data)
+            .unwrap_or_else(|e| panic!("an unreadable {what} must not be fatal: {e}"));
+        assert_eq!(mesh.triangle_count(), 1, "{what}: geometry must survive");
+        assert_eq!(
+            mesh.objects[0].material.base_color, None,
+            "{what}: the appearance must be cleared, not guessed"
+        );
+        assert_eq!(
+            mesh.objects[0].material.face_colors, None,
+            "{what}: no face may be given an invented colour"
+        );
+        assert_eq!(
+            mesh.status,
+            SceneLoadStatus::Partial,
+            "{what}: the load status must record the degradation"
+        );
+        assert!(
+            !mesh.status_messages.is_empty(),
+            "{what}: the corruption must be surfaced, not swallowed"
         );
     }
 }
 
 #[test]
-fn a_malformed_appearance_index_is_reported_not_silently_dropped() {
-    // Silently ignoring a bad `pid` would attach the wrong material to a face.
-    let data = model_with_resources("", r#" pid="not-a-number""#, "");
-    assert_eq!(parse_error(&data).code(), "malformed");
+fn an_unreadable_pindex_does_not_fall_back_to_entry_zero() {
+    // The specific mis-attribution an "ignore it and carry on" fix invites.
+    // An *absent* `pindex` legitimately means entry 0, so the lazy reading of
+    // "treat unreadable as absent" would paint the object in entry 0's colour -
+    // a real material belonging to something else, applied confidently.
+    let resources = r##"    <basematerials id="10">
+      <base name="First" displaycolor="#112233"/>
+      <base name="Second" displaycolor="#445566"/>
+    </basematerials>"##;
+
+    // Absent: entry 0, per the spec.
+    let data = model_with_resources(resources, r#" pid="10""#, "");
+    let mesh = threemf::parse_bytes(&data).expect("an absent pindex is legal");
+    assert_eq!(
+        mesh.objects[0].material.base_color,
+        Some([0x11, 0x22, 0x33]),
+        "an absent pindex must still mean entry 0"
+    );
+
+    // Unreadable: nothing. The two must not collapse onto the same behaviour.
+    let data = model_with_resources(resources, r#" pid="10" pindex="?""#, "");
+    let mesh = threemf::parse_bytes(&data).expect("an unreadable pindex must not be fatal");
+    assert_eq!(
+        mesh.objects[0].material.base_color, None,
+        "an unreadable pindex must clear the reference, not resolve to entry 0"
+    );
+}
+
+#[test]
+fn appearance_leniency_does_not_extend_to_geometry() {
+    // The hazard in any "be more lenient" change is the leniency leaking. A
+    // colour we cannot read costs a colour; a coordinate or vertex index we
+    // cannot read means we do not know the shape, and a guess there puts wrong
+    // triangles on a print plate. These must stay fatal, and this test exists
+    // to fail loudly if the cosmetic path is ever widened to reach them.
+    // Every fixture below carries four real vertices, and each junk attribute is
+    // positioned so that a leniently-defaulted 0 would still be *in range* and
+    // still form a non-degenerate triangle. That is load-bearing: the first
+    // version of this test had a single vertex and `v2="1" v3="2"`, so a
+    // defaulted `v1` produced `[0,1,2]` and the downstream out-of-range vertex
+    // check rejected it. The test passed while the leniency it exists to detect
+    // had already leaked — a different control was firing. Mutation-verified:
+    // routing `v1` through the cosmetic parser now fails this test.
+    const VERTICES: &str = r#"<vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/><vertex x="0" y="0" z="1"/>"#;
+    let geometry_attacks = [
+        (
+            "vertex x",
+            format!(r#"<vertex x="junk" y="0" z="0"/>{VERTICES}"#),
+            r#"<triangle v1="1" v2="2" v3="3"/>"#.to_string(),
+            r#"<vertex x="0" y="0" z="0"/>"#,
+        ),
+        (
+            "triangle v1",
+            VERTICES.to_string(),
+            r#"<triangle v1="junk" v2="1" v3="2"/>"#.to_string(),
+            r#"<triangle v1="3" v2="1" v3="2"/>"#,
+        ),
+        (
+            "triangle v3",
+            VERTICES.to_string(),
+            r#"<triangle v1="1" v2="2" v3="junk"/>"#.to_string(),
+            r#"<triangle v1="1" v2="2" v3="3"/>"#,
+        ),
+    ];
+    for (label, vertices, triangles, repaired) in geometry_attacks {
+        let build = |vertices: &str, triangles: &str| {
+            let model = format!(
+                r##"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <resources>
+    <object id="1" type="model">
+      <mesh>
+        <vertices>{vertices}</vertices>
+        <triangles>{triangles}</triangles>
+      </mesh>
+    </object>
+  </resources>
+  <build><item objectid="1"/></build>
+</model>"##
+            );
+            package(&model, Vec::new())
+        };
+
+        assert_eq!(
+            parse_error(&build(&vertices, &triangles)).code(),
+            "malformed",
+            "{label}: malformed geometry must stay fatal"
+        );
+
+        // The control that pins *why* it was rejected. Replace only the junk
+        // with the value leniency would have invented, leaving the document
+        // otherwise byte-identical: it must parse. So the rejection above is
+        // attributable to the unreadable attribute and nothing downstream.
+        let (fixed_vertices, fixed_triangles) = if label == "vertex x" {
+            (
+                vertices.replacen(r#"<vertex x="junk" y="0" z="0"/>"#, repaired, 1),
+                triangles.clone(),
+            )
+        } else {
+            (vertices.clone(), repaired.to_string())
+        };
+        threemf::parse_bytes(&build(&fixed_vertices, &fixed_triangles)).unwrap_or_else(|e| {
+            panic!("{label}: the repaired document must parse, or the fixture proves nothing: {e}")
+        });
+    }
+
+    // The mirror image, so this test proves a *boundary* rather than just
+    // "some things are fatal": the identical junk in a cosmetic attribute is
+    // survivable in the very same document shape.
+    let data = model_with_resources("", r#" pid="junk""#, "");
+    threemf::parse_bytes(&data).expect("the same junk in a cosmetic attribute must not be fatal");
 }
 
 #[test]
@@ -1087,22 +1272,50 @@ fn an_out_of_range_per_triangle_index_does_not_mis_index() {
         let data = model_with_resources(resources, "", &attrs);
         let mesh = threemf::parse_bytes(&data)
             .unwrap_or_else(|e| panic!("p1={index} must not be fatal: {e}"));
-        if let Some(face) = mesh.objects[0].material.face_colors.as_ref() {
-            assert_ne!(
-                face[0],
-                [0x11, 0x22, 0x33],
-                "p1={index} must not reach a group entry it does not address"
-            );
-            assert_ne!(
-                face[0],
-                [0x44, 0x55, 0x66],
-                "p1={index} must not reach a group entry it does not address"
-            );
-        }
+        // Asserted outright rather than under `if let Some(face)`. The old
+        // conditional made the whole check vacuous the moment the colours were
+        // absent, which is exactly the case it most needed to pin.
+        assert_eq!(
+            mesh.objects[0].material.face_colors, None,
+            "p1={index} must leave the face colours absent"
+        );
+        assert_eq!(
+            mesh.triangle_count(),
+            1,
+            "p1={index}: geometry must survive"
+        );
+        assert_eq!(
+            mesh.status,
+            SceneLoadStatus::Partial,
+            "p1={index} must be reported, not swallowed"
+        );
+    }
+
+    // The case this test claimed to cover and did not. With no object-level
+    // material the fallback had nothing to fall back *to*, so a failed lookup
+    // landed on black and the assertions above passed for the wrong reason.
+    // Give the object a real material and the old `.or(base_color)` path
+    // silently paints the face in it — a neighbour's colour, indistinguishable
+    // from a deliberate one. A test aimed at the right risk still only measures
+    // the axis you thought to vary.
+    for index in ["2", "99", "4294967295"] {
+        let attrs = format!(r#" pid="11" p1="{index}""#);
+        let data = model_with_resources(resources, r#" pid="11" pindex="0""#, &attrs);
+        let mesh = threemf::parse_bytes(&data)
+            .unwrap_or_else(|e| panic!("p1={index} with a base material must not be fatal: {e}"));
+        assert_eq!(
+            mesh.objects[0].material.base_color,
+            Some([0x11, 0x22, 0x33]),
+            "p1={index}: the object's own valid material must be unaffected"
+        );
+        assert_eq!(
+            mesh.objects[0].material.face_colors, None,
+            "p1={index} must not inherit the object's colour to cover a failed lookup"
+        );
     }
 
     // ...and the same markup with an in-range index still resolves, so the
-    // assertion above is not passing merely because nothing is ever resolved.
+    // assertions above are not passing merely because nothing is ever resolved.
     let data = model_with_resources(resources, "", r#" pid="11" p1="1""#);
     let mesh = threemf::parse_bytes(&data).expect("an in-range index must resolve");
     let face = mesh.objects[0]
@@ -1111,6 +1324,11 @@ fn an_out_of_range_per_triangle_index_does_not_mis_index() {
         .as_ref()
         .expect("an in-range per-face index must produce face colours");
     assert_eq!(face[0], [0x44, 0x55, 0x66]);
+    assert_eq!(
+        mesh.status,
+        SceneLoadStatus::Complete,
+        "a clean resolve must not be reported as degraded"
+    );
 }
 
 // --- the availability half of the limits ------------------------------------

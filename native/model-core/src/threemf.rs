@@ -292,15 +292,25 @@ enum ObjectGeometry {
 /// `pindex`/`p1` attributes index into.
 #[derive(Debug, Clone, Default)]
 struct AppearanceGroup {
-    colors: Vec<[u8; 3]>,
+    /// `None` where the entry declared a colour we could not parse.
+    ///
+    /// Optional on purpose. A non-optional slot forces the parser to invent a
+    /// value for a malformed entry, and the only available invention is black -
+    /// which is indistinguishable from a legitimately black material. Keeping
+    /// the absence representable is what lets an unreadable colour stay absent
+    /// all the way to the DTO instead of being laundered into a real colour.
+    colors: Vec<Option<[u8; 3]>>,
     /// Material names, parallel to `colors`. Only `<basematerials>` supplies
     /// them; a `<colorgroup>` leaves them `None`.
     names: Vec<Option<String>>,
 }
 
 impl AppearanceGroup {
+    /// The colour at `index`, or `None` when the index is out of range or the
+    /// entry there was unreadable. Both are the same thing to a caller: this
+    /// reference does not name a colour we can show.
     fn color_at(&self, index: u32) -> Option<[u8; 3]> {
-        self.colors.get(usize::try_from(index).ok()?).copied()
+        self.colors.get(usize::try_from(index).ok()?).copied()?
     }
 
     fn name_at(&self, index: u32) -> Option<&str> {
@@ -326,6 +336,15 @@ struct RawModel {
     unit: String,
     /// `<basematerials>` / `<colorgroup>` resources, keyed by resource id.
     appearances: HashMap<u32, AppearanceGroup>,
+    /// Whether any cosmetic `pid`/`pindex`/`p1` in this part was unreadable.
+    ///
+    /// A flag rather than a count on purpose: an object placed by several build
+    /// items is resolved once per instance, so a count would multiply, and a
+    /// hostile part carrying a million junk attributes must not be able to
+    /// amplify itself into a million diagnostics. Boolean `or` is idempotent,
+    /// which makes both problems structurally impossible instead of merely
+    /// handled.
+    malformed_appearance: bool,
 }
 
 impl RawModel {
@@ -460,6 +479,13 @@ pub struct ThreeMfPart {
 pub struct ThreeMfMaterial {
     pub base_color: Option<[u8; 3]>,
     pub face_colors: Option<Vec<[u8; 3]>>,
+}
+
+/// A resolved material plus whether any declared appearance reference failed to
+/// resolve, so the caller can degrade the load status instead of guessing.
+struct ResolvedMaterial {
+    material: ThreeMfMaterial,
+    unresolved: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1563,6 +1589,7 @@ fn parse_model_xml(
     let mut current_geometry: Option<ObjectGeometry> = None;
     let mut current_name: Option<String> = None;
     let mut current_appearance: Option<(u32, u32)> = None;
+    let mut malformed_appearance = false;
     let mut current_group: Option<(u32, AppearanceGroup)> = None;
     let mut in_build = false;
     let mut xml_guard = guard.xml_guard();
@@ -1588,12 +1615,28 @@ fn parse_model_xml(
                     current_geometry = None;
                     current_name =
                         decoded_attr(&reader, &e, b"name")?.filter(|name| !name.trim().is_empty());
-                    current_appearance = match optional_attr_u32(&e, b"pid")? {
-                        Some(pid) => {
-                            Some((pid, optional_attr_u32(&e, b"pindex")?.unwrap_or_default()))
-                        }
-                        None => None,
-                    };
+                    current_appearance =
+                        match optional_cosmetic_u32(&e, b"pid", &mut malformed_appearance) {
+                            Some(pid) => {
+                                // An *absent* `pindex` legitimately means entry 0.
+                                // An *unreadable* one must clear the whole
+                                // reference instead, because entry 0 is a real
+                                // material: defaulting there would silently paint
+                                // the object in some other entry's colour, which is
+                                // the mis-attribution this leniency exists to
+                                // avoid.
+                                let mut pindex_unreadable = false;
+                                let pindex =
+                                    optional_cosmetic_u32(&e, b"pindex", &mut pindex_unreadable);
+                                if pindex_unreadable {
+                                    malformed_appearance = true;
+                                    None
+                                } else {
+                                    Some((pid, pindex.unwrap_or_default()))
+                                }
+                            }
+                            None => None,
+                        };
                 }
                 b"mesh" => {
                     current_geometry = Some(ObjectGeometry::Mesh {
@@ -1628,10 +1671,13 @@ fn parse_model_xml(
                         // 3MF allows a per-vertex gradient across a triangle;
                         // the scene DTO carries one colour per face, so the
                         // first corner wins and the rest are ignored.
-                        let face = match optional_attr_u32(&e, b"pid")? {
-                            Some(pid) => optional_attr_u32(&e, b"p1")?.map(|p1| (pid, p1)),
-                            None => None,
-                        };
+                        // `zip` rather than `and_then` deliberately: it
+                        // evaluates both, so an unreadable `p1` is flagged even
+                        // when `pid` is absent and the pair can never resolve.
+                        // Short-circuiting there would let a junk attribute go
+                        // unreported purely because its partner was missing.
+                        let face = optional_cosmetic_u32(&e, b"pid", &mut malformed_appearance)
+                            .zip(optional_cosmetic_u32(&e, b"p1", &mut malformed_appearance));
                         // Start tracking at the first coloured face and stay on.
                         // The resize backfills the plain triangles that came
                         // before it and is a no-op once tracking is under way,
@@ -1676,9 +1722,9 @@ fn parse_model_xml(
                     b"base" => {
                         if let Some((_, group)) = current_group.as_mut() {
                             budget.add_appearance()?;
-                            group.colors.push(
-                                parse_appearance_color(&e, b"displaycolor")?.unwrap_or([0; 3]),
-                            );
+                            group
+                                .colors
+                                .push(parse_appearance_color(&e, b"displaycolor")?);
                             let label = decoded_attr(&reader, &e, b"name")?;
                             if label
                                 .as_ref()
@@ -1694,9 +1740,7 @@ fn parse_model_xml(
                     b"color" => {
                         if let Some((_, group)) = current_group.as_mut() {
                             budget.add_appearance()?;
-                            group
-                                .colors
-                                .push(parse_appearance_color(&e, b"color")?.unwrap_or([0; 3]));
+                            group.colors.push(parse_appearance_color(&e, b"color")?);
                             group.names.push(None);
                         }
                     }
@@ -1751,6 +1795,7 @@ fn parse_model_xml(
         build,
         unit,
         appearances,
+        malformed_appearance,
     })
 }
 
@@ -1787,13 +1832,23 @@ fn parse_appearance_color(
 /// Resolve an object's `<basematerials>`/`<colorgroup>` references into the
 /// concrete colours the scene DTO carries.
 ///
-/// Dangling references resolve to `None` rather than an error: an exporter that
-/// emits a `pid` for a resource it never wrote should cost the user a colour,
-/// not the whole model.
-fn resolve_material(model: &RawModel, object: &RawObject) -> ThreeMfMaterial {
+/// Every way of failing to determine a colour converges on the same outcome:
+/// the appearance is **absent**, the geometry is untouched, and the caller is
+/// told. Dangling `pid`, out-of-range `pindex`/`p1` and an entry whose colour
+/// would not parse are indistinguishable to a viewer - each one means "this
+/// reference does not name a colour we can show" - so handling them differently
+/// only produces inconsistency, not safety.
+///
+/// The two outcomes this must never produce are black and a neighbour's colour.
+/// Both are lies a renderer cannot detect: they arrive as ordinary values, so
+/// the user sees a confidently wrong model rather than an uncoloured one.
+fn resolve_material(model: &RawModel, object: &RawObject) -> ResolvedMaterial {
     let base_color = object
         .appearance
         .and_then(|(pid, index)| model.appearances.get(&pid)?.color_at(index));
+    // A declared reference that resolved to nothing is the corruption; having
+    // no reference at all is simply an uncoloured object.
+    let mut unresolved = object.appearance.is_some() && base_color.is_none();
 
     let face_colors = match &object.geometry {
         ObjectGeometry::Mesh {
@@ -1801,24 +1856,44 @@ fn resolve_material(model: &RawModel, object: &RawObject) -> ThreeMfMaterial {
             triangle_appearance,
             ..
         } if !triangle_appearance.is_empty() => {
-            let resolved: Vec<[u8; 3]> = triangle_appearance
+            let resolved: Option<Vec<[u8; 3]>> = triangle_appearance
                 .iter()
-                .map(|face| {
-                    face.and_then(|(pid, index)| model.appearances.get(&pid)?.color_at(index))
-                        // A face without its own colour inherits the object's.
-                        .or(base_color)
-                        .unwrap_or([0; 3])
+                .map(|face| match face {
+                    Some((pid, index)) => {
+                        let color = model
+                            .appearances
+                            .get(pid)
+                            .and_then(|group| group.color_at(*index));
+                        // Note the absent `.or(base_color)`: a face that asked
+                        // for a specific entry and did not get one must not
+                        // quietly fall back to the object's material. That is
+                        // the neighbour's-value case, and it is worse than no
+                        // colour because it looks deliberate.
+                        unresolved |= color.is_none();
+                        color
+                    }
+                    // A face that declared no reference of its own legitimately
+                    // inherits the object's material, per the 3MF spec. Not a
+                    // defect, so it is not reported as one.
+                    None => base_color,
                 })
                 .collect();
-            // The DTO contract is "either absent or exactly one per triangle".
-            (resolved.len() == triangles.len()).then_some(resolved)
+            // `collect` into `Option` yields `None` if any single face did.
+            // All-or-nothing is forced by the DTO, which carries one colour per
+            // triangle or none at all, and dropping the array is the only
+            // honest way to say "some of these faces have no colour we can
+            // vouch for" without inventing values for them.
+            resolved.filter(|colors| colors.len() == triangles.len())
         }
         _ => None,
     };
 
-    ThreeMfMaterial {
-        base_color,
-        face_colors,
+    ResolvedMaterial {
+        material: ThreeMfMaterial {
+            base_color,
+            face_colors,
+        },
+        unresolved,
     }
 }
 
@@ -1872,6 +1947,10 @@ struct FlattenOutput {
     triangles: Vec<[u32; 3]>,
     expansion_steps: usize,
     mesh_object_count: usize,
+    /// Set when any object's declared appearance reference failed to resolve.
+    /// Accumulated with `or`, so re-resolving the same object for each build
+    /// instance cannot inflate it.
+    unresolved_appearance: bool,
     #[cfg(test)]
     mesh_builds_started: usize,
 }
@@ -1951,6 +2030,32 @@ fn flatten(package: &RawPackage, guard: &mut ParseGuard) -> Result<ThreeMfMesh, 
         });
     }
 
+    let mut status = SceneLoadStatus::Complete;
+    let mut status_messages = Vec::new();
+    // Fixed order, and at most one message per defect kind, so the diagnostic
+    // is deterministic and a hostile package cannot turn a million bad
+    // attributes into a million strings.
+    if package
+        .models
+        .values()
+        .any(|model| model.malformed_appearance)
+    {
+        status = status.combine(SceneLoadStatus::Partial);
+        status_messages.push(
+            "some appearance references could not be read and were ignored; the objects \
+             using them are shown without their declared colours"
+                .to_string(),
+        );
+    }
+    if output.unresolved_appearance {
+        status = status.combine(SceneLoadStatus::Partial);
+        status_messages.push(
+            "some appearance references could not be resolved to a colour; the objects \
+             using them are shown without their declared colours"
+                .to_string(),
+        );
+    }
+
     let mut bounds = Aabb::empty();
     for v in &output.vertices {
         bounds.expand(*v);
@@ -1966,8 +2071,8 @@ fn flatten(package: &RawPackage, guard: &mut ParseGuard) -> Result<ThreeMfMesh, 
             .map(|model| model.objects.len())
             .sum(),
         build_item_count: root_model.build.len(),
-        status: SceneLoadStatus::Complete,
-        status_messages: Vec::new(),
+        status,
+        status_messages,
         parts,
         objects,
         root_object_ids,
@@ -2028,6 +2133,8 @@ fn expand(
 
     let name = part_name(package, model_part, object_id);
     let material = resolve_material(model, object);
+    output.unresolved_appearance |= material.unresolved;
+    let material = material.material;
     let mesh = match &object.geometry {
         ObjectGeometry::Mesh {
             vertices,
@@ -2238,18 +2345,27 @@ fn attr_u32(e: &BytesStart, name: &[u8]) -> Result<u32, ThreeMfError> {
     })
 }
 
-/// Like [`attr_u32`] but absent is `None` rather than an error. A malformed
-/// value is still rejected: silently dropping a bad `pid` would attach the
-/// wrong material to a face instead of reporting the corruption.
-fn optional_attr_u32(e: &BytesStart, name: &[u8]) -> Result<Option<u32>, ThreeMfError> {
-    match get_attr(e, name) {
-        Some(raw) => raw.trim().parse::<u32>().map(Some).map_err(|_| {
-            ThreeMfError::Malformed(format!(
-                "invalid '{}' value '{raw}'",
-                String::from_utf8_lossy(name)
-            ))
-        }),
-        None => Ok(None),
+/// Parse an optional **cosmetic** `u32` attribute (`pid`, `pindex`, `p1`),
+/// treating an unreadable value as absent and flagging that it was unreadable.
+///
+/// Deliberately not a general-purpose helper, and the name says so, because the
+/// hazard in a leniency change is leniency leaking to the wrong attributes.
+/// Geometry keeps [`attr_u32`] and stays fatal: a `v1` we cannot read means we
+/// do not know the shape, and guessing there would put wrong triangles on a
+/// print plate. A `pid` we cannot read only means we do not know a colour.
+///
+/// Refusing to open the whole file over an unreadable colour reference is an
+/// availability bug rather than a safety measure - it is also attacker
+/// triggerable, since one junk attribute anywhere in a model part would deny
+/// display of everything in it.
+fn optional_cosmetic_u32(e: &BytesStart, name: &[u8], unreadable: &mut bool) -> Option<u32> {
+    let raw = get_attr(e, name)?;
+    match raw.trim().parse::<u32>() {
+        Ok(value) => Some(value),
+        Err(_) => {
+            *unreadable = true;
+            None
+        }
     }
 }
 
@@ -3166,6 +3282,7 @@ mod tests {
                     build,
                     unit: "millimeter".to_string(),
                     appearances: HashMap::new(),
+                    malformed_appearance: false,
                 },
             )]),
             root_part: DEFAULT_MODEL_PART.to_string(),
