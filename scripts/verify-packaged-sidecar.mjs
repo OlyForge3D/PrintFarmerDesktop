@@ -5,6 +5,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { verifyBundleDirectory } from './target-profile-tools.mjs';
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -48,6 +49,17 @@ if (!found) {
   process.exit(1);
 }
 console.log(`[verify-packaged-sidecar] OK: bundled sidecar at ${found}`);
+
+const packagedResources = path.dirname(path.dirname(found));
+const packagedProfiles = path.join(
+  packagedResources,
+  'target-profiles',
+  'snapmaker-u1',
+);
+const packagedManifest = await verifyBundleDirectory(packagedProfiles);
+console.log(
+  `[verify-packaged-sidecar] OK: bundled ${packagedManifest.files.length} hashed target-profile files at ${packagedProfiles}`,
+);
 
 const icon = findFile(outDir, 'icon.png');
 if (!icon || path.basename(path.dirname(icon)).toLowerCase() !== 'resources') {

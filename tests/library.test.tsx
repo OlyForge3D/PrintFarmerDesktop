@@ -149,7 +149,10 @@ describe('useLibrary', () => {
   });
 
   it('previews a chosen folder, then imports its confirmed rules', async () => {
-    const openFolder = vi.fn().mockResolvedValue({ path: 'C:\\models' });
+    const openFolder = vi.fn().mockResolvedValue({
+      path: 'C:\\models',
+      approvalId: '11111111-1111-4111-8111-111111111111',
+    });
     const previewImport = vi.fn().mockResolvedValue({
       modelCount: 1,
       totalBytes: 2048,
@@ -193,7 +196,9 @@ describe('useLibrary', () => {
       await result.current.addFolder();
     });
 
-    expect(previewImport).toHaveBeenCalledWith({ path: 'C:\\models' });
+    expect(previewImport).toHaveBeenCalledWith({
+      approvalId: '11111111-1111-4111-8111-111111111111',
+    });
     expect(importRoot).not.toHaveBeenCalled();
     expect(result.current.importDraft?.rootId).toBe(
       rootIdForPath('C:\\models'),
@@ -208,7 +213,7 @@ describe('useLibrary', () => {
 
     expect(importRoot).toHaveBeenCalledWith({
       rootId: rootIdForPath('C:\\models'),
-      path: 'C:\\models',
+      approvalId: '11111111-1111-4111-8111-111111111111',
       rules: [{ relativePath: '', kind: 'collection', name: 'Models' }],
       commonTags: ['printable'],
     });
@@ -224,7 +229,10 @@ describe('useLibrary', () => {
       .mockResolvedValueOnce([])
       .mockRejectedValueOnce(new Error('refresh offline'));
     installApi({
-      openFolder: vi.fn().mockResolvedValue({ path: 'C:\\models' }),
+      openFolder: vi.fn().mockResolvedValue({
+        path: 'C:\\models',
+        approvalId: '11111111-1111-4111-8111-111111111111',
+      }),
       previewImport: vi.fn().mockResolvedValue({
         modelCount: 1,
         totalBytes: 1,
@@ -278,7 +286,10 @@ describe('useLibrary', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([model()]);
     installApi({
-      openFolder: vi.fn().mockResolvedValue({ path: 'C:\\models' }),
+      openFolder: vi.fn().mockResolvedValue({
+        path: 'C:\\models',
+        approvalId: '11111111-1111-4111-8111-111111111111',
+      }),
       previewImport: vi.fn().mockResolvedValue({
         modelCount: 1,
         totalBytes: 1,
@@ -331,7 +342,10 @@ describe('useLibrary', () => {
       resolvedCollections: [],
     });
     installApi({
-      openFolder: vi.fn().mockResolvedValue({ path: 'C:\\empty' }),
+      openFolder: vi.fn().mockResolvedValue({
+        path: 'C:\\empty',
+        approvalId: '11111111-1111-4111-8111-111111111111',
+      }),
       previewImport: vi.fn().mockResolvedValue({
         modelCount: 0,
         totalBytes: 0,
@@ -355,14 +369,20 @@ describe('useLibrary', () => {
       await result.current.confirmImport({ rules: [], commonTags: [] });
     });
     expect(importRoot).toHaveBeenCalledWith(
-      expect.objectContaining({ path: 'C:\\empty', rules: [] }),
+      expect.objectContaining({
+        approvalId: '11111111-1111-4111-8111-111111111111',
+        rules: [],
+      }),
     );
     expect(result.current.lastReport?.missing).toBe(1);
   });
 
   it('rejects an incomplete folder preview before opening the wizard', async () => {
     installApi({
-      openFolder: vi.fn().mockResolvedValue({ path: 'C:\\restricted' }),
+      openFolder: vi.fn().mockResolvedValue({
+        path: 'C:\\restricted',
+        approvalId: '11111111-1111-4111-8111-111111111111',
+      }),
       previewImport: vi.fn().mockResolvedValue({
         modelCount: 0,
         totalBytes: 0,
@@ -403,7 +423,10 @@ describe('useLibrary', () => {
     const importPromise = new Promise<typeof importResult>((resolve) => {
       finishImport = resolve;
     });
-    const openFolder = vi.fn().mockResolvedValue({ path: 'C:\\models' });
+    const openFolder = vi.fn().mockResolvedValue({
+      path: 'C:\\models',
+      approvalId: '11111111-1111-4111-8111-111111111111',
+    });
     const previewImport = vi.fn().mockResolvedValue({
       modelCount: 1,
       totalBytes: 1,
@@ -493,7 +516,11 @@ describe('useLibrary', () => {
       missing: 0,
       hashErrors: 0,
     });
-    installApi({ listModels, scanRoot });
+    const openFolder = vi.fn().mockResolvedValue({
+      path: 'C:\\models',
+      approvalId: '11111111-1111-4111-8111-111111111111',
+    });
+    installApi({ listModels, scanRoot, openFolder });
 
     const { result } = renderHook(() => useLibrary());
     await waitFor(() => expect(result.current.sourceRoots).toHaveLength(1));
@@ -508,9 +535,10 @@ describe('useLibrary', () => {
       await result.current.rescanRoot('root-1');
     });
 
+    expect(openFolder).toHaveBeenCalledOnce();
     expect(scanRoot).toHaveBeenCalledWith({
       rootId: 'root-1',
-      path: 'C:\\models',
+      approvalId: '11111111-1111-4111-8111-111111111111',
     });
     expect(result.current.lastReport?.unchanged).toBe(1);
     expect(result.current.sourceRoots[0]?.status).toBe('available');
@@ -544,6 +572,7 @@ describe('useLibrary', () => {
 describe('smart import', () => {
   const draft: ImportDraft = {
     rootId: 'root-smart',
+    approvalId: '11111111-1111-4111-8111-111111111111',
     path: 'C:\\Models',
     preview: {
       modelCount: 3,

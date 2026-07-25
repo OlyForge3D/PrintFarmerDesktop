@@ -104,7 +104,7 @@ describe('<App />', () => {
   it('uses the canonical application icon in the custom titlebar', async () => {
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -131,7 +131,7 @@ describe('<App />', () => {
   it('renders app info returned by the main process', async () => {
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'darwin',
         electronVersion: '33.0.0',
@@ -218,7 +218,7 @@ describe('<App />', () => {
   it('opens server profiles from the sidebar and excludes the workspace', async () => {
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -353,6 +353,10 @@ describe('<App />', () => {
       }),
       listModels,
       scanRoot,
+      openFolder: vi.fn().mockResolvedValue({
+        path: 'C:\\models',
+        approvalId: '11111111-1111-4111-8111-111111111111',
+      }),
       renderThumbnail: vi.fn().mockResolvedValue({
         width: 256,
         height: 256,
@@ -367,7 +371,9 @@ describe('<App />', () => {
     expect(
       screen.getByRole('progressbar', { name: 'Scan progress' }),
     ).toBeVisible();
-    expect(screen.getAllByText('Reconnecting C:\\models')).toHaveLength(2);
+    await waitFor(() =>
+      expect(screen.getAllByText('Reconnecting C:\\models')).toHaveLength(2),
+    );
 
     await act(async () => {
       pending.resolve({
@@ -383,7 +389,7 @@ describe('<App />', () => {
     await waitFor(() =>
       expect(scanRoot).toHaveBeenCalledWith({
         rootId: 'root-1',
-        path: 'C:\\models',
+        approvalId: '11111111-1111-4111-8111-111111111111',
       }),
     );
     await waitFor(() =>
@@ -419,6 +425,10 @@ describe('<App />', () => {
       }),
       listModels,
       scanRoot,
+      openFolder: vi.fn().mockResolvedValue({
+        path: 'C:\\models',
+        approvalId: '22222222-2222-4222-8222-222222222222',
+      }),
       renderThumbnail: vi.fn().mockResolvedValue({
         width: 256,
         height: 256,
@@ -434,7 +444,7 @@ describe('<App />', () => {
     await waitFor(() =>
       expect(scanRoot).toHaveBeenCalledWith({
         rootId: 'root-1',
-        path: 'C:\\models',
+        approvalId: '22222222-2222-4222-8222-222222222222',
       }),
     );
     await waitFor(() =>
@@ -480,7 +490,7 @@ describe('<App />', () => {
     };
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -519,7 +529,7 @@ describe('<App />', () => {
     );
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -579,7 +589,7 @@ describe('<App />', () => {
     });
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -640,7 +650,7 @@ describe('<App />', () => {
     }>();
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -650,7 +660,10 @@ describe('<App />', () => {
         profiles: [],
         selectedProfileId: null,
       }),
-      openFolder: vi.fn().mockResolvedValue({ path: 'C:\\GatedImport' }),
+      openFolder: vi.fn().mockResolvedValue({
+        path: 'C:\\GatedImport',
+        approvalId: '11111111-1111-4111-8111-111111111111',
+      }),
       previewImport: vi.fn().mockReturnValue(preview.promise),
       listCollections: vi.fn().mockResolvedValue([]),
       listTags: vi.fn().mockResolvedValue([]),
@@ -720,7 +733,7 @@ describe('<App />', () => {
     });
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -771,7 +784,7 @@ describe('<App />', () => {
     const openFolder = vi.fn();
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -822,7 +835,7 @@ describe('<App />', () => {
       );
       installApi({
         getAppInfo: vi.fn().mockResolvedValue({
-          contractVersion: 1,
+          contractVersion: 2,
           appVersion: '0.1.0',
           platform: 'win32',
           electronVersion: '33.0.0',
@@ -872,7 +885,7 @@ describe('<App />', () => {
       );
       installApi({
         getAppInfo: vi.fn().mockResolvedValue({
-          contractVersion: 1,
+          contractVersion: 2,
           appVersion: '0.1.0',
           platform: 'win32',
           electronVersion: '33.0.0',
@@ -940,7 +953,7 @@ describe('<App />', () => {
     const loadScene = vi.fn();
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -1032,13 +1045,16 @@ describe('<App />', () => {
     const scanRoot = vi.fn();
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
       }),
       listModels: vi.fn().mockResolvedValue([]),
-      openFolder: vi.fn().mockResolvedValue({ path: selectedPath }),
+      openFolder: vi.fn().mockResolvedValue({
+        path: selectedPath,
+        approvalId: '11111111-1111-4111-8111-111111111111',
+      }),
       previewImport,
       importRoot,
       scanRoot,
@@ -1054,7 +1070,9 @@ describe('<App />', () => {
         name: 'Organize models before importing',
       }),
     ).toBeVisible();
-    expect(previewImport).toHaveBeenCalledWith({ path: selectedPath });
+    expect(previewImport).toHaveBeenCalledWith({
+      approvalId: '11111111-1111-4111-8111-111111111111',
+    });
     expect(scanRoot).not.toHaveBeenCalled();
     expect(screen.getByLabelText('Organization for Cats')).toHaveValue(
       'collection',
@@ -1071,7 +1089,7 @@ describe('<App />', () => {
     await waitFor(() =>
       expect(importRoot).toHaveBeenCalledWith({
         rootId: rootIdForPath(selectedPath),
-        path: selectedPath,
+        approvalId: '11111111-1111-4111-8111-111111111111',
         rules: [
           {
             relativePath: '',
@@ -1117,12 +1135,15 @@ describe('<App />', () => {
       ],
     };
     const openFolder = vi.fn(
-      () => new Promise<{ path: string } | null>(() => undefined),
+      () =>
+        new Promise<{ path: string; approvalId: string } | null>(
+          () => undefined,
+        ),
     );
     const loadScene = vi.fn();
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -1194,7 +1215,7 @@ describe('<App />', () => {
       .mockReturnValueOnce(collectionRefresh);
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',
@@ -1209,7 +1230,10 @@ describe('<App />', () => {
       collectionsForModel,
       listCollections: vi.fn().mockResolvedValue([collection]),
       listTags: vi.fn().mockResolvedValue([]),
-      openFolder: vi.fn().mockResolvedValue({ path: 'C:\\ImportRoot' }),
+      openFolder: vi.fn().mockResolvedValue({
+        path: 'C:\\ImportRoot',
+        approvalId: '11111111-1111-4111-8111-111111111111',
+      }),
       previewImport: vi.fn().mockResolvedValue({
         modelCount: 1,
         totalBytes: 100,
@@ -1320,7 +1344,7 @@ describe('<App />', () => {
     });
     installApi({
       getAppInfo: vi.fn().mockResolvedValue({
-        contractVersion: 1,
+        contractVersion: 2,
         appVersion: '0.1.0',
         platform: 'win32',
         electronVersion: '33.0.0',

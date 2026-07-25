@@ -44,6 +44,7 @@ interface PendingRequest {
 
 /** Default per-request timeout. Parsing a very large model can be slow. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+export const SIDECAR_RPC_PROTOCOL_VERSION = 1 as const;
 /** Imports get a longer watchdog; expiry terminates the mutating sidecar. */
 export const DEFAULT_MUTATION_TIMEOUT_MS = 15 * 60_000;
 /** Maximum wait for a killed sidecar to confirm process closure. */
@@ -207,6 +208,11 @@ export class SidecarClient {
       protocolVersion: number;
       sidecarVersion: string;
     };
+    if (result.protocolVersion !== SIDECAR_RPC_PROTOCOL_VERSION) {
+      throw new Error(
+        `unsupported sidecar protocol ${result.protocolVersion}; expected ${SIDECAR_RPC_PROTOCOL_VERSION}`,
+      );
+    }
     return result;
   }
 
@@ -274,6 +280,56 @@ export class SidecarClient {
   /** List every logical model known to the catalog (raw wire array). */
   async listModels(): Promise<unknown> {
     return this.request('listModels', {});
+  }
+
+  /** Persist a successful local-to-remote model upload mapping. */
+  async linkRemoteModel(link: {
+    profileId: string;
+    localModelHash: string;
+    remoteModelId: string;
+    clientUploadId: string;
+    etag: string | null;
+    uploadStatus: 'uploaded';
+    createdAt: number;
+    updatedAt: number;
+    uploadedAt: number | null;
+  }): Promise<unknown> {
+    return this.request('linkRemoteModel', link);
+  }
+
+  /** Return the durable profile/hash upload mapping, when one exists. */
+  async getRemoteModelLink(
+    profileId: string,
+    serverBinding: string,
+    hash: string,
+  ): Promise<SidecarRemoteModelLink | null> {
+    return (await this.request('getRemoteModelLink', {
+      profileId,
+      serverBinding,
+      localModelHash: hash,
+    })) as SidecarRemoteModelLink | null;
+  }
+
+  async removeRemoteModelLink(
+    profileId: string,
+    serverBinding: string,
+    hash: string,
+  ): Promise<unknown> {
+    return this.request('removeRemoteModelLink', {
+      profileId,
+      serverBinding,
+      localModelHash: hash,
+    });
+  }
+
+  async purgeRemoteModelLinks(
+    profileId: string,
+    serverBinding: string,
+  ): Promise<unknown> {
+    return this.request('purgeRemoteModelLinks', {
+      profileId,
+      serverBinding,
+    });
   }
 
   /** List every model hash marked as a local favorite. */
@@ -491,16 +547,6 @@ export class SidecarClient {
       entityType,
       localId,
     })) as SidecarEntityRevision | null;
-  }
-
-  async getRemoteModelLink(
-    profileId: string,
-    localModelHash: string,
-  ): Promise<SidecarRemoteModelLink | null> {
-    return (await this.request('getRemoteModelLink', {
-      profileId,
-      localModelHash,
-    })) as SidecarRemoteModelLink | null;
   }
 
   async listSyncEntityRevisions(

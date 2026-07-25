@@ -22,15 +22,16 @@ npm install
 
 Renderer/main/preload (run from the repo root):
 
-| Command                    | Purpose                               |
-| -------------------------- | ------------------------------------- |
-| `npm run dev`              | Launch the app with hot reload        |
-| `npm run typecheck`        | Strict TypeScript check (no emit)     |
-| `npm run lint`             | ESLint (type-aware)                   |
-| `npm run format`           | Prettier check (`format:write` fixes) |
-| `npm run check:provenance` | Calibration source/provenance gate    |
-| `npm run test`             | Vitest unit/component tests           |
-| `npm run make`             | Build platform installers             |
+| Command                          | Purpose                                    |
+| -------------------------------- | ------------------------------------------ |
+| `npm run dev`                    | Launch the app with hot reload             |
+| `npm run typecheck`              | Strict TypeScript check (no emit)          |
+| `npm run lint`                   | ESLint (type-aware)                        |
+| `npm run format`                 | Prettier check (`format:write` fixes)      |
+| `npm run check:provenance`       | Calibration source/provenance gate         |
+| `npm run test`                   | Vitest unit/component tests                |
+| `npm run make`                   | Build platform installers                  |
+| `npm run verify:target-profiles` | Verify the pinned printer-profile snapshot |
 
 Rust sidecar (run from `native/`):
 
@@ -93,3 +94,28 @@ blobs; audit every newly considered source file and asset; update the ADR,
 manifest, checker pin, and failure fixtures together; and obtain an authorized
 maintainer decision before any file uses the new revision. Never move an
 existing tag or silently update a hash.
+
+## Pinned target-profile snapshots
+
+Released builds bundle reviewed printer data from
+[`Snapmaker/Orca_Presets`](https://github.com/Snapmaker/Orca_Presets) under
+`resources/target-profiles/`. The app never downloads profiles at runtime.
+Each bundle manifest records the exact upstream commit, selected paths,
+per-file SHA-256 hashes, retrieval date, and provenance. The current upstream
+repository has no top-level license file, so its manifest states that fact
+without asserting license terms.
+
+Updates are maintainer-only and require an explicit reviewed 40-character
+commit plus retrieval date:
+
+```text
+npm run update:snapmaker-presets -- --ref <40-hex-commit> --retrieved-at YYYY-MM-DD
+npm run verify:target-profiles
+```
+
+The updater accepts only the reviewed path allowlist in
+`scripts/target-profile-tools.mjs`, validates U1 identity and the complete
+inheritance closure, and rejects branches, tags, missing dependencies, unsafe
+paths, changed license-file status, and unreachable extras. Adding or removing
+a path therefore requires a code review of the allowlist as well as the
+regenerated manifest and profile bytes.

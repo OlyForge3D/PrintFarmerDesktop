@@ -13,30 +13,15 @@ const repoRoot = path.dirname(fileURLToPath(import.meta.url));
 const iconBasePath = path.join(repoRoot, 'assets', 'icon');
 const windowsIconPath = `${iconBasePath}.ico`;
 
-/** Build and stage the Rust sidecar into `resources/sidecar/` before packaging. */
-function stageSidecar(): void {
-  const script = path.join(repoRoot, 'scripts', 'stage-sidecar.mjs');
+function runBuildScript(scriptName: string, description: string): void {
+  const script = path.join(repoRoot, 'scripts', scriptName);
   const result = spawnSync(process.execPath, [script], {
     cwd: repoRoot,
     stdio: 'inherit',
   });
   if (result.status !== 0) {
     throw new Error(
-      `staging the sidecar failed (exit code ${result.status ?? 'unknown'})`,
-    );
-  }
-}
-
-/** Stage repository and Electron notices into the packaged app resources. */
-function stageCompliance(): void {
-  const script = path.join(repoRoot, 'scripts', 'stage-compliance.mjs');
-  const result = spawnSync(process.execPath, [script], {
-    cwd: repoRoot,
-    stdio: 'inherit',
-  });
-  if (result.status !== 0) {
-    throw new Error(
-      `staging compliance resources failed (exit code ${result.status ?? 'unknown'})`,
+      `${description} failed (exit code ${result.status ?? 'unknown'})`,
     );
   }
 }
@@ -50,17 +35,18 @@ const config: ForgeConfig = {
     // resolves it via `resolveSidecarPath()` at `<resources>/sidecar/<binary>`.
     extraResource: [
       './resources/sidecar',
+      './resources/target-profiles',
       './assets/icon.png',
       './resources/compliance',
     ],
   },
   rebuildConfig: {},
   hooks: {
-    // Compile + stage the sidecar before the app is packaged, so the
-    // `extraResource` directory above exists and is current.
+    // Validate and stage generated resources before packaging.
     prePackage: () => {
-      stageSidecar();
-      stageCompliance();
+      runBuildScript('verify-target-profiles.mjs', 'verifying target profiles');
+      runBuildScript('stage-sidecar.mjs', 'staging the sidecar');
+      runBuildScript('stage-compliance.mjs', 'staging compliance resources');
       return Promise.resolve();
     },
   },

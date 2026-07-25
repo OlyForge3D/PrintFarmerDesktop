@@ -187,6 +187,15 @@ export interface ProfileFileSystem {
   unlink(filePath: string): Promise<void>;
 }
 
+export function serverProfileBinding(
+  profileId: string,
+  baseUrl: string,
+): string {
+  return createHash('sha256')
+    .update(`${profileId}\0${normalizeServerUrl(baseUrl)}`)
+    .digest('hex');
+}
+
 export interface SecretStorage {
   isEncryptionAvailable(): boolean;
   encryptString(value: string): Uint8Array;
@@ -298,6 +307,15 @@ interface TokenBinding {
   generation: number;
 }
 
+export interface AuthenticatedProfileContext {
+  profile: RedactedProfile;
+  token: string;
+  revision: string;
+  generation: number;
+  serverBinding: string;
+  endpoint(relativePath: string): URL;
+}
+
 interface PendingResponse {
   response: Response;
   signal: AbortSignal;
@@ -333,6 +351,7 @@ export function normalizeServerUrl(raw: string): string {
       'Enter a valid HTTP or HTTPS server URL.',
     );
   }
+
   if (
     (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
     parsed.username ||
@@ -350,6 +369,22 @@ export function normalizeServerUrl(raw: string): string {
   return parsed.toString().replace(/\/$/, '');
 }
 
+export function buildServerEndpoint(
+  baseUrl: string,
+  relativePath: string,
+): URL {
+  const normalized = normalizeServerUrl(baseUrl);
+  const base = new URL(`${normalized}/`);
+  const relative = relativePath.replace(/^\/+/, '');
+  if (!relative || relative.includes('\\')) {
+    throw new ServerProfileError(
+      'VALIDATION_ERROR',
+      'The server endpoint path is invalid.',
+    );
+  }
+  return new URL(relative, base);
+}
+
 export class ServerProfileService {
   private readonly fileSystem: ProfileFileSystem;
   private readonly fetchImpl: typeof globalThis.fetch;
@@ -360,6 +395,9 @@ export class ServerProfileService {
   private readonly tokenBindings = new Map<string, TokenBinding>();
   private readonly tokenRenewals = new Map<string, TokenRenewal>();
   private readonly authGenerations = new Map<string, number>();
+  private readonly profileBindingListeners = new Set<
+    (profileId: string, previousBinding: string) => Promise<void> | void
+  >();
   private readonly invalidationListeners = new Set<
     (transition: ProfileBindingTransition) => Promise<void> | void
   >();
@@ -386,6 +424,16 @@ export class ServerProfileService {
     for (const id of ids) {
       this.invalidateToken(id);
     }
+  }
+
+  onProfileBindingChanged(
+    listener: (
+      profileId: string,
+      previousBinding: string,
+    ) => Promise<void> | void,
+  ): () => void {
+    this.profileBindingListeners.add(listener);
+    return () => this.profileBindingListeners.delete(listener);
   }
 
   subscribeInvalidation(
@@ -526,13 +574,18 @@ export class ServerProfileService {
     this.requireEncryption();
     const secret = this.secretFromDraft(draft);
     const id = draft.id ?? this.createId();
-    const expectedRevision = await this.withMutationLock(async () => {
+    const expected = await this.withMutationLock(async () => {
       const store = await this.readStore();
       const existing = store.profiles.find((profile) => profile.id === id);
       if (draft.id && !existing) {
         throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
       }
-      return existing ? profileRevision(existing) : null;
+      return {
+        revision: existing ? profileRevision(existing) : null,
+        binding: existing
+          ? serverProfileBinding(existing.id, existing.baseUrl)
+          : null,
+      };
     });
     let probed: ProbedProfile;
     try {
@@ -568,7 +621,7 @@ export class ServerProfileService {
       const index = store.profiles.findIndex((profile) => profile.id === id);
       const current = index < 0 ? null : store.profiles[index]!;
       const currentRevision = current ? profileRevision(current) : null;
-      if (currentRevision !== expectedRevision) {
+      if (currentRevision !== expected.revision) {
         this.invalidateToken(id);
         throw profileChangedError();
       }
@@ -616,6 +669,10 @@ export class ServerProfileService {
         throw error;
       }
     });
+    const newBinding = serverProfileBinding(id, tested.baseUrl);
+    if (expected.binding && expected.binding !== newBinding) {
+      await this.notifyProfileBindingChanged(id, expected.binding);
+    }
     if (transition) {
       await this.emitInvalidation(transition).catch(() => {
         console.error('[profiles] binding transition deferred');
@@ -638,6 +695,7 @@ export class ServerProfileService {
   }
 
   async delete(id: string): Promise<ListServerProfilesResponse> {
+    let previousBinding = '';
     const result = await this.withMutationLock(async () => {
       const store = await this.readStore();
       const index = store.profiles.findIndex((profile) => profile.id === id);
@@ -645,6 +703,7 @@ export class ServerProfileService {
         throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
       }
       const removed = store.profiles[index]!;
+      previousBinding = serverProfileBinding(removed.id, removed.baseUrl);
       const oldBinding = persistedBinding(removed);
       const transition: ProfileBindingTransition = {
         id: this.createId(),
@@ -664,6 +723,7 @@ export class ServerProfileService {
       await this.writeStore(store);
       return { response: this.redactStore(store), transition };
     });
+    await this.notifyProfileBindingChanged(id, previousBinding);
     await this.emitInvalidation(result.transition).catch(() => {
       console.error('[profiles] binding transition deferred');
     });
@@ -677,6 +737,7 @@ export class ServerProfileService {
       if (!profile) {
         throw new ServerProfileError('NOT_FOUND', 'Server profile not found.');
       }
+
       const secret = this.decryptSecret(profile);
       const binding = credentialBinding(profile.baseUrl, secret);
       const generation = this.currentAuthGeneration(id);
@@ -688,6 +749,7 @@ export class ServerProfileService {
       ) {
         return { cachedToken: cached.token };
       }
+
       return {
         profile,
         secret,
@@ -795,7 +857,7 @@ export class ServerProfileService {
     return this.getToken(id);
   }
 
-  async getAuthenticatedContext(
+  async getAuthenticatedServerContext(
     id: string,
     expectedBaseUrl?: string,
     forceRefresh = false,
@@ -872,6 +934,92 @@ export class ServerProfileService {
       );
       await this.writeStore(store);
     });
+  }
+
+  async getAuthenticatedContext(
+    id: string,
+  ): Promise<AuthenticatedProfileContext> {
+    const token = await this.getToken(id);
+    return this.withMutationLock(async () => {
+      const store = await this.readStore();
+      const stored = store.profiles.find((profile) => profile.id === id);
+      const cached = this.tokens.get(id);
+      if (!stored || !cached || cached.token !== token) {
+        throw authenticationSupersededError();
+      }
+      const revision = profileRevision(stored);
+      if (
+        cached.generation !== this.currentAuthGeneration(id) ||
+        cached.binding !==
+          credentialBinding(stored.baseUrl, this.decryptSecret(stored))
+      ) {
+        throw authenticationSupersededError();
+      }
+      return {
+        profile: this.redact(stored),
+        token,
+        revision,
+        generation: cached.generation,
+        serverBinding: serverProfileBinding(stored.id, stored.baseUrl),
+        endpoint: (relativePath: string) =>
+          buildServerEndpoint(stored.baseUrl, relativePath),
+      };
+    });
+  }
+
+  async revalidateAuthenticatedContext(
+    context: AuthenticatedProfileContext,
+  ): Promise<void> {
+    await this.withMutationLock(async () => {
+      const store = await this.readStore();
+      const stored = store.profiles.find(
+        (profile) => profile.id === context.profile.id,
+      );
+      const cached = this.tokens.get(context.profile.id);
+      if (
+        !stored ||
+        profileRevision(stored) !== context.revision ||
+        this.currentAuthGeneration(context.profile.id) !== context.generation ||
+        cached?.generation !== context.generation ||
+        cached.token !== context.token
+      ) {
+        throw authenticationSupersededError();
+      }
+    });
+  }
+
+  async invalidateRejectedContext(
+    context: AuthenticatedProfileContext,
+  ): Promise<boolean> {
+    return this.withMutationLock(async () => {
+      const store = await this.readStore();
+      const stored = store.profiles.find(
+        (profile) => profile.id === context.profile.id,
+      );
+      const cached = this.tokens.get(context.profile.id);
+      if (
+        !stored ||
+        profileRevision(stored) !== context.revision ||
+        this.currentAuthGeneration(context.profile.id) !== context.generation ||
+        cached?.generation !== context.generation ||
+        cached.token !== context.token
+      ) {
+        return false;
+      }
+      this.invalidateToken(context.profile.id);
+      return true;
+    });
+  }
+
+  private async notifyProfileBindingChanged(
+    profileId: string,
+    previousBinding: string,
+  ): Promise<void> {
+    await Promise.allSettled(
+      [...this.profileBindingListeners].map((listener) =>
+        Promise.resolve(listener(profileId, previousBinding)),
+      ),
+    );
   }
 
   private async probe(

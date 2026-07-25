@@ -50,6 +50,14 @@ import {
   type SelectServerProfileResponse,
   type TestServerProfileRequest,
   type TestServerProfileResponse,
+  type StartUploadJobRequest,
+  type StartUploadJobResponse,
+  type ListUploadJobsResponse,
+  type UploadJobRequest,
+  type UploadJobResponse,
+  type RemoveUploadJobResponse,
+  type ResetUploadJobsResponse,
+  type ResetApprovedRootsResponse,
 } from '@shared/ipc';
 
 /**
@@ -224,6 +232,59 @@ const api: PrintFarmerApi = {
       IpcChannel.DeleteServerProfile,
       request,
     ) as Promise<DeleteServerProfileResponse>,
+  startUploadJob: (
+    request: StartUploadJobRequest,
+  ): Promise<StartUploadJobResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.StartUploadJob,
+      request,
+    ) as Promise<StartUploadJobResponse>,
+  listUploadJobs: (): Promise<ListUploadJobsResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ListUploadJobs,
+    ) as Promise<ListUploadJobsResponse>,
+  pauseUploadJob: (request: UploadJobRequest): Promise<UploadJobResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.PauseUploadJob,
+      request,
+    ) as Promise<UploadJobResponse>,
+  resumeUploadJob: (request: UploadJobRequest): Promise<UploadJobResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ResumeUploadJob,
+      request,
+    ) as Promise<UploadJobResponse>,
+  cancelUploadJob: (request: UploadJobRequest): Promise<UploadJobResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.CancelUploadJob,
+      request,
+    ) as Promise<UploadJobResponse>,
+  retryUploadJob: (request: UploadJobRequest): Promise<UploadJobResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.RetryUploadJob,
+      request,
+    ) as Promise<UploadJobResponse>,
+  confirmLegacyUploadRetry: (
+    request: UploadJobRequest,
+  ): Promise<UploadJobResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ConfirmLegacyUploadRetry,
+      request,
+    ) as Promise<UploadJobResponse>,
+  removeUploadJob: (
+    request: UploadJobRequest,
+  ): Promise<RemoveUploadJobResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.RemoveUploadJob,
+      request,
+    ) as Promise<RemoveUploadJobResponse>,
+  resetUploadJobs: (): Promise<ResetUploadJobsResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ResetUploadJobs,
+    ) as Promise<ResetUploadJobsResponse>,
+  resetApprovedRoots: (): Promise<ResetApprovedRootsResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ResetApprovedRoots,
+    ) as Promise<ResetApprovedRootsResponse>,
 };
 
 contextBridge.exposeInMainWorld('printFarmer', api);

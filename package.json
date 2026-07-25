@@ -25,6 +25,8 @@
     "make": "electron-forge make",
     "build:sidecar": "node scripts/stage-sidecar.mjs",
     "stage:sidecar": "node scripts/stage-sidecar.mjs --no-build",
+    "update:snapmaker-presets": "node scripts/update-snapmaker-presets.mjs",
+    "verify:target-profiles": "node scripts/verify-target-profiles.mjs",
     "lint": "eslint .",
     "format": "prettier --check .",
     "format:write": "prettier --write .",
