@@ -17,6 +17,7 @@ export interface PreviewWorkspaceProps {
   projection: Projection;
   resetToken: number;
   hiddenObjects: ReadonlySet<string>;
+  isolatedObject: string | null;
   onClose: () => void;
   onRetry: () => void;
   onToggleWireframe: () => void;
@@ -24,6 +25,8 @@ export interface PreviewWorkspaceProps {
   onReset: () => void;
   onToggleObject: (id: string) => void;
   onToggleAllObjects: (visible: boolean) => void;
+  onTogglePlate: (plateId: string, visible: boolean) => void;
+  onIsolateObject: (id: string | null) => void;
   retargetEligible?: boolean;
   onRetarget?: () => void;
 }
@@ -38,6 +41,7 @@ export function PreviewWorkspace({
   projection,
   resetToken,
   hiddenObjects,
+  isolatedObject,
   onClose,
   onRetry,
   onToggleWireframe,
@@ -45,6 +49,8 @@ export function PreviewWorkspace({
   onReset,
   onToggleObject,
   onToggleAllObjects,
+  onTogglePlate,
+  onIsolateObject,
   retargetEligible = false,
   onRetarget = () => undefined,
 }: PreviewWorkspaceProps): React.JSX.Element {
@@ -60,8 +66,11 @@ export function PreviewWorkspace({
         return;
       }
       if (event.key === 'Tab') {
+        // The part tree keeps its row actions out of the tab order with
+        // `tabindex="-1"`; excluding them here keeps the trap's first/last
+        // stops aligned with what Tab actually reaches.
         const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])',
+          'button:not(:disabled):not([tabindex="-1"]), [href]:not([tabindex="-1"]), input:not(:disabled):not([tabindex="-1"]), select:not(:disabled):not([tabindex="-1"]), [tabindex]:not([tabindex="-1"])',
         );
         if (!focusable?.length) {
           return;
@@ -205,8 +214,11 @@ export function PreviewWorkspace({
                     rootObjectIds={mesh.rootObjectIds}
                     plates={mesh.plates}
                     hidden={hiddenObjects}
+                    isolatedObjectId={isolatedObject}
                     onToggle={onToggleObject}
                     onToggleAll={onToggleAllObjects}
+                    onTogglePlate={onTogglePlate}
+                    onIsolate={onIsolateObject}
                   />
                 </section>
               ) : null}

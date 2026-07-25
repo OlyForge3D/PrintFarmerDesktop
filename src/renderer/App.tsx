@@ -27,6 +27,7 @@ import {
 import { folderBasename, libraryPresentation } from './library/presentation';
 import { useVendorMetadata } from './library/useVendorMetadata';
 import { computeSceneStats, type SceneStats } from './library/sceneStats';
+import { isolateHiddenObjectIds } from './library/partTreeModel';
 import { ImportWizard } from './library/ImportWizard';
 import { LibraryOnboarding } from './library/LibraryOnboarding';
 import {
@@ -112,6 +113,7 @@ export function App(): React.JSX.Element {
   const [hiddenObjects, setHiddenObjects] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  const [isolatedObject, setIsolatedObject] = useState<string | null>(null);
   const previewReturnFocusRef = useRef<HTMLElement | null>(null);
   const retargetReturnFocusRef = useRef<HTMLElement | null>(null);
   const importReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -697,6 +699,7 @@ export function App(): React.JSX.Element {
       setPreviewError(null);
       setLoadedMesh(null);
       setHiddenObjects(new Set());
+      setIsolatedObject(null);
       setLoading(true);
       try {
         const scene = toViewerSceneMesh(
@@ -844,6 +847,7 @@ export function App(): React.JSX.Element {
   }, [loadPreview, previewTarget]);
 
   const toggleObject = useCallback((id: string) => {
+    setIsolatedObject(null);
     setHiddenObjects((current) => {
       const next = new Set(current);
       if (next.has(id)) {
@@ -855,8 +859,44 @@ export function App(): React.JSX.Element {
     });
   }, []);
 
+  const togglePlate = useCallback(
+    (plateId: string, visible: boolean) => {
+      const plate = loadedMesh?.plates.find((entry) => entry.id === plateId);
+      if (!plate) return;
+      setIsolatedObject(null);
+      setHiddenObjects((current) => {
+        const next = new Set(current);
+        for (const objectId of plate.rootObjectIds) {
+          if (visible) {
+            next.delete(objectId);
+          } else {
+            next.add(objectId);
+          }
+        }
+        return next;
+      });
+    },
+    [loadedMesh],
+  );
+
+  const isolateObject = useCallback(
+    (id: string | null) => {
+      if (id === null) {
+        setIsolatedObject(null);
+        setHiddenObjects(new Set());
+        return;
+      }
+      const objects = loadedMesh?.objects ?? [];
+      if (!objects.some((object) => object.id === id)) return;
+      setIsolatedObject(id);
+      setHiddenObjects(isolateHiddenObjectIds(objects, id));
+    },
+    [loadedMesh],
+  );
+
   const toggleAllObjects = useCallback(
     (visible: boolean) => {
+      setIsolatedObject(null);
       setHiddenObjects(
         visible
           ? new Set()
@@ -1367,6 +1407,7 @@ export function App(): React.JSX.Element {
           projection={projection}
           resetToken={resetToken}
           hiddenObjects={hiddenObjects}
+          isolatedObject={isolatedObject}
           onClose={closePreview}
           onRetry={retryPreview}
           onToggleWireframe={() => setWireframe((value) => !value)}
@@ -1378,6 +1419,8 @@ export function App(): React.JSX.Element {
           onReset={() => setResetToken((value) => value + 1)}
           onToggleObject={toggleObject}
           onToggleAllObjects={toggleAllObjects}
+          onTogglePlate={togglePlate}
+          onIsolateObject={isolateObject}
           retargetEligible={
             previewTarget.hash !== null &&
             previewTarget.hash === selectedModel?.hash &&
