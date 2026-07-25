@@ -1,10 +1,14 @@
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{CStr, CString};
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::ptr;
 use std::sync::OnceLock;
+
+use sha2::Digest;
 
 use lib3mf_ffi::{
     eModelUnit, eObjectType, sColor, sPosition, sTransform, sTriangle, sTriangleProperties, CBool,
@@ -1381,6 +1385,12 @@ fn load_wrapper_from_library_base(base: &Path) -> Result<Wrapper, String> {
     let base_str = base
         .to_str()
         .ok_or_else(|| format!("lib3mf search path is not valid UTF-8: {}", base.display()))?;
+    // Keep a verified handle alive across Wrapper::new. On Windows this handle is
+    // opened without FILE_SHARE_WRITE/DELETE, so the staged path cannot be
+    // rewritten or swapped after the hash check and before LoadLibrary resolves it.
+    let _verified_staged_library = expected_staged_test_library_hash(&library_path)
+        .map(|expected_hash| verify_staged_library_before_load(&library_path, &expected_hash))
+        .transpose()?;
 
     #[cfg(windows)]
     {
@@ -1401,7 +1411,6 @@ fn load_wrapper_from_library_base(base: &Path) -> Result<Wrapper, String> {
 
     #[cfg(not(windows))]
     {
-        let _ = library_path;
         Wrapper::new(Some(base_str)).map_err(|error| error.message)
     }
 }
@@ -1509,6 +1518,7 @@ where
 
 const MODEL_CORE_CARGO_TOML: &str = include_str!("../Cargo.toml");
 const LIB3MF_PIN_LOCK: &str = include_str!("../lib3mf-pin.lock");
+const LIB3MF_STAGE_BUFFER_SIZE: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PinnedLib3mfArtifact {
@@ -1656,8 +1666,48 @@ pub(crate) fn stage_test_library_for_current_exe() -> Result<(), String> {
         .clone()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StagedLib3mfExpectation {
+    library_path: PathBuf,
+    sha256: String,
+}
+
+fn staged_test_library_expectation() -> &'static OnceLock<StagedLib3mfExpectation> {
+    static EXPECTATION: OnceLock<StagedLib3mfExpectation> = OnceLock::new();
+    &EXPECTATION
+}
+
+fn register_staged_test_library(path: PathBuf, sha256: String) -> Result<(), String> {
+    if let Some(existing) = staged_test_library_expectation().get() {
+        return if existing.library_path == path && existing.sha256 == sha256 {
+            Ok(())
+        } else {
+            Err(format!(
+                "staged lib3mf expectation already recorded for {} with SHA-256 {}",
+                existing.library_path.display(),
+                existing.sha256
+            ))
+        };
+    }
+
+    staged_test_library_expectation()
+        .set(StagedLib3mfExpectation {
+            library_path: path,
+            sha256,
+        })
+        .map_err(|_| "failed to record staged lib3mf expectation".to_string())
+}
+
+fn expected_staged_test_library_hash(library_path: &Path) -> Option<String> {
+    staged_test_library_expectation()
+        .get()
+        .filter(|expected| expected.library_path == library_path)
+        .map(|expected| expected.sha256.clone())
+}
+
 fn stage_test_library_for_current_exe_once() -> Result<(), String> {
     let extension = lib3mf_library_extension();
+    let artifact = pinned_lib3mf_artifact(extension)?;
     let exe_dir = std::env::current_exe()
         .map_err(|error| format!("unable to locate test executable: {error}"))?
         .parent()
@@ -1673,12 +1723,279 @@ fn stage_test_library_for_current_exe_once() -> Result<(), String> {
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
         .ok_or_else(|| "unable to determine Cargo home for lib3mf test staging".to_string())?;
     let checkouts = cargo_home.join("git").join("checkouts");
-    let source = select_pinned_lib3mf_library(&checkouts, extension, verify_checkout_revision)?;
-    std::fs::copy(&source, &staged)
-        .map_err(|error| format!("unable to stage {source:?} to {staged:?}: {error}"))?;
-    Ok(())
+    let staged_hash =
+        stage_vetted_lib3mf_library(&checkouts, &staged, &artifact, verify_checkout_revision)?;
+    register_staged_test_library(staged, staged_hash)
 }
 
+fn stage_vetted_lib3mf_library<F>(
+    checkouts: &Path,
+    staged: &Path,
+    artifact: &PinnedLib3mfArtifact,
+    verify_revision: F,
+) -> Result<String, String>
+where
+    F: FnMut(&Path) -> Result<String, String>,
+{
+    stage_vetted_lib3mf_library_with_hook(checkouts, staged, artifact, verify_revision, |_| Ok(()))
+}
+
+fn stage_vetted_lib3mf_library_with_hook<F, H>(
+    checkouts: &Path,
+    staged: &Path,
+    artifact: &PinnedLib3mfArtifact,
+    mut verify_revision: F,
+    mut before_stage: H,
+) -> Result<String, String>
+where
+    F: FnMut(&Path) -> Result<String, String>,
+    H: FnMut(&Path) -> Result<(), String>,
+{
+    let mut mismatches = Vec::new();
+    let mut repo_entries = std::fs::read_dir(checkouts)
+        .map_err(|error| format!("unable to read {checkouts:?}: {error}"))?
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+    repo_entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in repo_entries {
+        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        if !name.starts_with("lib3mf_rs-") {
+            continue;
+        }
+
+        let mut revision_entries = std::fs::read_dir(entry.path())
+            .map_err(|error| format!("unable to inspect {:?}: {error}", entry.path()))?
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        revision_entries.sort_by_key(|revision| revision.file_name());
+
+        for revision in revision_entries {
+            let revision_path = revision.path();
+            let candidate = revision_path
+                .join("libraries")
+                .join(format!("lib3mf.{}", artifact.extension));
+            if !candidate.is_file() {
+                continue;
+            }
+
+            let actual_revision = verify_revision(&revision_path)?;
+            if actual_revision != artifact.revision {
+                mismatches.push(format!(
+                    "{} resolved to {actual_revision} (expected {})",
+                    revision_path.display(),
+                    artifact.revision
+                ));
+                continue;
+            }
+
+            // Open the cached checkout once, then hash and stage through that same
+            // handle so later path swaps cannot change the bytes we copy.
+            let mut source = open_library_source_for_staging(&candidate).map_err(|error| {
+                format!(
+                    "unable to open vetted lib3mf candidate {} with a stable read handle: {error}",
+                    candidate.display()
+                )
+            })?;
+            before_stage(&candidate)?;
+            let actual_hash = match hash_and_stage_open_library(&candidate, &mut source, staged) {
+                Ok(hash) => hash,
+                Err(error) => {
+                    let _ = std::fs::remove_file(staged);
+                    return Err(error);
+                }
+            };
+            if actual_hash != artifact.sha256 {
+                let _ = std::fs::remove_file(staged);
+                mismatches.push(format!(
+                    "{} resolved to {} but {} content hash {} did not match vetted SHA-256 {}",
+                    revision_path.display(),
+                    actual_revision,
+                    candidate.display(),
+                    actual_hash,
+                    artifact.sha256
+                ));
+                continue;
+            }
+            if let Err(error) = verify_staged_library_contents(staged, &actual_hash) {
+                let _ = std::fs::remove_file(staged);
+                return Err(error);
+            }
+
+            return Ok(actual_hash);
+        }
+    }
+
+    if mismatches.is_empty() {
+        Err(format!(
+            "unable to find lib3mf.{} for pinned revision {} under {:?}",
+            artifact.extension, artifact.revision, checkouts
+        ))
+    } else {
+        Err(format!(
+            "refusing to stage lib3mf.{} from cached checkouts because none matched pinned revision {} with vetted SHA-256 {}: {}",
+            artifact.extension,
+            artifact.revision,
+            artifact.sha256,
+            mismatches.join(" | ")
+        ))
+    }
+}
+
+fn hash_and_stage_open_library(
+    source_path: &Path,
+    source: &mut File,
+    staged: &Path,
+) -> Result<String, String> {
+    if let Some(parent) = staged.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "unable to create staged lib3mf directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let mut staged_file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(staged)
+        .map_err(|error| {
+            format!(
+                "unable to open staged lib3mf path {} for writing vetted bytes from {}: {error}",
+                staged.display(),
+                source_path.display()
+            )
+        })?;
+
+    let mut hasher = sha2::Sha256::new();
+    let mut buffer = [0u8; LIB3MF_STAGE_BUFFER_SIZE];
+    loop {
+        let read = source.read(&mut buffer).map_err(|error| {
+            format!(
+                "unable to read vetted lib3mf bytes from {} while staging {}: {error}",
+                source_path.display(),
+                staged.display()
+            )
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        staged_file.write_all(&buffer[..read]).map_err(|error| {
+            format!(
+                "unable to write vetted lib3mf bytes from {} into staged path {}: {error}",
+                source_path.display(),
+                staged.display()
+            )
+        })?;
+    }
+    staged_file.flush().map_err(|error| {
+        format!(
+            "unable to flush staged lib3mf path {} after copying vetted bytes from {}: {error}",
+            staged.display(),
+            source_path.display()
+        )
+    })?;
+    staged_file.sync_all().map_err(|error| {
+        format!(
+            "unable to sync staged lib3mf path {} after copying vetted bytes from {}: {error}",
+            staged.display(),
+            source_path.display()
+        )
+    })?;
+
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn verify_staged_library_contents(staged: &Path, expected_hash: &str) -> Result<(), String> {
+    let actual_hash = crate::hash::hash_file(staged).map_err(|error| {
+        format!(
+            "unable to hash staged lib3mf path {} after copying vetted bytes: {error}",
+            staged.display()
+        )
+    })?;
+    if actual_hash == expected_hash {
+        Ok(())
+    } else {
+        Err(format!(
+            "staged lib3mf path {} hash {} did not match the vetted bytes hash {}",
+            staged.display(),
+            actual_hash,
+            expected_hash
+        ))
+    }
+}
+
+fn verify_staged_library_before_load(
+    library_path: &Path,
+    expected_hash: &str,
+) -> Result<File, String> {
+    let mut file = open_staged_library_for_load_verification(library_path).map_err(|error| {
+        format!(
+            "unable to open staged lib3mf library {} for immediate pre-load verification: {error}",
+            library_path.display()
+        )
+    })?;
+    let actual_hash = crate::hash::hash_reader(&mut file).map_err(|error| {
+        format!(
+            "unable to hash staged lib3mf library {} immediately before load: {error}",
+            library_path.display()
+        )
+    })?;
+    if actual_hash == expected_hash {
+        Ok(file)
+    } else {
+        Err(format!(
+            "staged lib3mf library {} hash {} did not match expected vetted SHA-256 {} immediately before load",
+            library_path.display(),
+            actual_hash,
+            expected_hash
+        ))
+    }
+}
+
+fn open_library_source_for_staging(path: &Path) -> std::io::Result<File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        const FILE_SHARE_DELETE: u32 = 0x0000_0004;
+
+        OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+            .open(path)
+    }
+
+    #[cfg(not(windows))]
+    {
+        File::open(path)
+    }
+}
+
+fn open_staged_library_for_load_verification(path: &Path) -> std::io::Result<File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+
+        OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(path)
+    }
+
+    #[cfg(not(windows))]
+    {
+        File::open(path)
+    }
+}
+
+#[cfg(test)]
 fn select_pinned_lib3mf_library<F>(
     checkouts: &Path,
     extension: &str,
@@ -1693,6 +2010,7 @@ where
     })
 }
 
+#[cfg(test)]
 fn select_vetted_lib3mf_library<F>(
     checkouts: &Path,
     artifact: &PinnedLib3mfArtifact,
@@ -2093,6 +2411,96 @@ mod tests {
         assert!(error.contains(&clean_head));
         assert!(error.contains(&clean_hash));
         assert!(error.contains(&library_path.display().to_string()));
+    }
+
+    #[test]
+    fn stage_library_stages_preopened_bytes_when_source_path_changes_after_open() {
+        let temp = tempfile::tempdir().unwrap();
+        let checkouts = temp.path().join("git").join("checkouts");
+        let revision_dir = checkouts.join("lib3mf_rs-test").join("deadbee");
+        init_git_checkout_fixture(&revision_dir);
+        let library_path = revision_dir
+            .join("libraries")
+            .join(format!("lib3mf.{}", lib3mf_library_extension()));
+        let original_bytes = b"original-safe-bytes\n";
+        std::fs::write(&library_path, original_bytes).unwrap();
+        git_success(&revision_dir, &["add", "."]);
+        git_success(&revision_dir, &["commit", "-m", "refresh library"]);
+
+        let clean_head = git_stdout(&revision_dir, &["rev-parse", "HEAD"]);
+        let clean_hash = crate::hash::hash_file(&library_path).unwrap();
+        let artifact = PinnedLib3mfArtifact {
+            revision: clean_head,
+            extension: lib3mf_library_extension().to_string(),
+            sha256: clean_hash.clone(),
+        };
+        let staged = temp
+            .path()
+            .join("staged")
+            .join(format!("lib3mf.{}", lib3mf_library_extension()));
+        let swapped_bytes = b"tampered-after-open\n";
+
+        let staged_hash = stage_vetted_lib3mf_library_with_hook(
+            &checkouts,
+            &staged,
+            &artifact,
+            verify_checkout_revision,
+            |candidate| {
+                let swapped_out = candidate.parent().unwrap().join(format!(
+                    "lib3mf-opened-backup.{}",
+                    lib3mf_library_extension()
+                ));
+                std::fs::rename(candidate, &swapped_out).map_err(|error| {
+                    format!(
+                        "failed to swap vetted source {} out from under the open handle: {error}",
+                        candidate.display()
+                    )
+                })?;
+                std::fs::write(candidate, swapped_bytes).map_err(|error| {
+                    format!(
+                        "failed to replace {} after swapping it out from under the open handle: {error}",
+                        candidate.display()
+                    )
+                })?;
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(staged_hash, clean_hash);
+        assert_eq!(std::fs::read(&staged).unwrap(), original_bytes);
+        assert_eq!(crate::hash::hash_file(&staged).unwrap(), clean_hash);
+        assert_eq!(std::fs::read(&library_path).unwrap(), swapped_bytes);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verified_staged_library_handle_blocks_swap_until_load_finishes() {
+        let temp = tempfile::tempdir().unwrap();
+        let staged = temp
+            .path()
+            .join(format!("lib3mf.{}", lib3mf_library_extension()));
+        std::fs::write(&staged, b"vetted\n").unwrap();
+        let expected_hash = crate::hash::hash_file(&staged).unwrap();
+
+        let load_guard = verify_staged_library_before_load(&staged, &expected_hash).unwrap();
+
+        assert!(
+            std::fs::rename(
+                &staged,
+                temp.path()
+                    .join(format!("blocked.{}", lib3mf_library_extension())),
+            )
+            .is_err(),
+            "verified staged handle should block path swaps until the load completes"
+        );
+        assert!(
+            std::fs::write(&staged, b"tampered\n").is_err(),
+            "verified staged handle should block in-place writes until the load completes"
+        );
+
+        drop(load_guard);
+        std::fs::write(&staged, b"tampered\n").unwrap();
     }
 
     #[test]
