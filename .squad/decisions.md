@@ -31,3 +31,11 @@
 **What:** Ralph (Work Monitor) is now active for `OlyForge3D/PrintFarmerDesktop`. Scope: **all epics and their child issues/PRs EXCEPT epic #42 (Printer Calibration — handled separately, not ours) and epic #44 (Snapmaker U1 — explicitly held out per Jeff's direction).** Ralph's scan step must filter out any issue/PR whose parent epic is #42 or #44 before categorizing or acting. Everything else — #4, #5, #6, #7, #8, and any newly-triaged `squad`-labeled issue not under #42/#44 — is in scope for Ralph's continuous scan→act→re-scan loop, respecting the existing epic-by-epic sequencing (#4→#5→#7→#6→#8) and the concurrency amendment above. A recurring workflow was set up to keep the loop running on a cadence; Ralph also ran (or will run) an immediate first scan round on activation.
 
 **Why:** Requested by Jeff Papiez: "I want ralph to drive all epics except for 42 and 44." Epic #42 is owned/handled by a separate track outside this backlog; epic #44, while technically unblocked, was explicitly told to stay out of the sequencing chain in an earlier decision this same day — Ralph must honor both exclusions, not just #42's.
+
+## 2026-07-24: Rejection-lockout policy DISMISSED — original authors fix their own rejected work
+
+**By:** Ripley (on Jeff's direct instruction)
+
+**What:** The rejection-lockout convention used during PR #33 and PR #39 review cycles — where a rejected commit's original author was barred from personally authoring the fix, and a different squad member had to revise it instead — is **dismissed, effective immediately**. Going forward, when Hicks or Vasquez (or any reviewer) rejects a commit, the **original author of that commit fixes it themselves**. Do not rotate to a different author. This applies to all in-flight and future review cycles (e.g. PR #39's round-3 review currently in progress: if Vasquez rejects Bishop's `53f962b`, Bishop fixes it directly, not a different member).
+
+**Why:** Requested by Jeff Papiez: "Dismiss the lockout rule. Original owners are required to fix their own code changes." Unanimous-approval + green-CI still gates merge; only the "different author must revise a rejection" mechanic is removed.
