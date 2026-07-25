@@ -1,11 +1,12 @@
 # PrintFarmer Desktop Threat Model
 
-Status: living document. Last reviewed against `085d91a` (2026-07-25).
+Status: living document. Last reviewed against `8c0b4ba` (2026-07-25).
 
 This is a threat model for **this** application, not a generic checklist. Every control is
-cited by file and line so a reviewer can check it rather than take it on trust, and every
-threat carries an honest **coverage** verdict — including the cases where a control exists but
-nothing tests it. Those gaps are the work items, and they are collected in
+cited by a named symbol _and_ a line number so a reviewer can check it rather than take it on
+trust — the symbol is the durable half, because a line number silently rots when the file
+above it grows. Every threat carries an honest **coverage** verdict, including the cases where
+a control exists but nothing tests it. Those gaps are the work items, and they are collected in
 [section 9](#9-open-work-derived-from-this-model).
 
 [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) describes how the system works. This document
@@ -65,24 +66,27 @@ flowchart LR
     end
 
     subgraph Sidecar["Rust model-core - parses hostile bytes"]
-      PARSE[3MF / STL / OBJ / STEP parsers]
+      PARSE[3MF / STL / OBJ parsers]
+      RTG[retarget archive reader]
       DB[(SQLite catalog)]
     end
 
     R -->|B1| P --> IPC
     IPC --> APV & ART & CRED & NET
-    IPC -->|B2 stdio JSON-RPC| PARSE
+    IPC -->|B2 stdio JSON-RPC| PARSE & RTG
     MF -->|B3| PARSE
+    MF -->|B3| RTG
     SRV <-->|B4 HTTPS| NET
-    PARSE --- DB
+    PARSE -->|B5| DB
 ```
 
-| ID     | Boundary             | Crossing             | Why it matters                                                                                                                                                                                                      |
-| ------ | -------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **B1** | Renderer to main     | `contextBridge` IPC  | The renderer is the process most likely to be compromised — it renders untrusted geometry and remote strings. Everything it can reach, an attacker who owns it can reach.                                           |
-| **B2** | Main to sidecar      | stdio JSON-RPC       | The sidecar runs with the user's full privileges and performs no authorization of its own. Main is entirely responsible for what it asks the sidecar to open.                                                       |
-| **B3** | Model file to parser | `parse_bytes(&[u8])` | The only place in the product where fully attacker-controlled bytes meet hand-written parsing logic. Safe Rust, so the realistic outcomes are denial of service and logic corruption rather than memory corruption. |
-| **B4** | Main to server       | HTTPS `fetch`        | Carries the bearer credential. A hostile or impersonated server sees the token and returns data that becomes local state.                                                                                           |
+| ID     | Boundary                | Crossing                                           | Why it matters                                                                                                                                                                                                                                                                                                                                                          |
+| ------ | ----------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **B1** | Renderer to main        | `contextBridge` IPC                                | The renderer is the process most likely to be compromised — it renders untrusted geometry and remote strings. Everything it can reach, an attacker who owns it can reach.                                                                                                                                                                                               |
+| **B2** | Main to sidecar         | stdio JSON-RPC                                     | The sidecar runs with the user's full privileges and performs no authorization of its own. Main is entirely responsible for what it asks the sidecar to open.                                                                                                                                                                                                           |
+| **B3** | Model file to parser    | `parse_bytes(&[u8])`, `ArchivePackage::from_bytes` | Where fully attacker-controlled bytes meet hand-written parsing logic. **Two** ingestion paths, not one — the catalog parsers behind `threemf::open_package`, and the retarget archive reader with its own ZIP constructor and its own limit set (T2.5). Safe Rust, so the realistic outcomes are denial of service and logic corruption rather than memory corruption. |
+| **B4** | Main to server          | HTTPS `fetch`                                      | Carries the bearer credential. A hostile or impersonated server sees the token and returns data that becomes local state.                                                                                                                                                                                                                                               |
+| **B5** | Catalog file to sidecar | `SqliteCatalog::open`                              | The catalog is persisted state that a local process can rewrite, at a path an environment variable can redirect. It is therefore _input_ to the migration chain, not merely storage (T2.6).                                                                                                                                                                             |
 
 **The renderer is not trusted.** That is the load-bearing design decision.
 `src/main/main.ts:66-75` sets `contextIsolation: true`, `nodeIntegration: false`,
@@ -93,15 +97,15 @@ is that **"the renderer sends a hostile message" is the assumed baseline, not a 
 
 ## 3. Assets
 
-| Asset                          | Where it lives                                                 | Loss means                                                   |
-| ------------------------------ | -------------------------------------------------------------- | ------------------------------------------------------------ |
-| PrintFarmer API key / password | `safeStorage`-encrypted envelope under `userData`              | Full account takeover on the server                          |
-| Short-lived JWT                | Main-process memory only (`src/main/serverProfiles.ts:394`)    | Account access for the token's lifetime                      |
-| The user's model library       | Arbitrary user-chosen folders on disk                          | Exfiltration of unreleased or commercially sensitive designs |
-| Approved-root grants           | `approved-roots.v1.json` under `userData`                      | Widening the filesystem authority the app will exercise      |
-| Catalog database               | SQLite under `userData`                                        | Metadata disclosure; corruption breaks the library           |
-| Retarget artifacts             | Mode-`0700` per-instance directory under the OS temp directory | Disclosure or substitution of a project mid-workflow         |
-| Release integrity              | The CI pipeline and the dependency graph                       | Supply-chain compromise of every user                        |
+| Asset                          | Where it lives                                                        | Loss means                                                                             |
+| ------------------------------ | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| PrintFarmer API key / password | `safeStorage`-encrypted envelope under `userData`                     | Full account takeover on the server                                                    |
+| Short-lived JWT                | Main-process memory only (`src/main/serverProfiles.ts:394`)           | Account access for the token's lifetime                                                |
+| The user's model library       | Arbitrary user-chosen folders on disk                                 | Exfiltration of unreleased or commercially sensitive designs                           |
+| Approved-root grants           | `approved-roots.v1.json` under `userData`                             | Widening the filesystem authority the app will exercise                                |
+| Catalog database               | SQLite under `userData`, path overridable by `PRINTFARMER_CATALOG_DB` | Metadata disclosure; corruption breaks the library. Also an _input_ surface — see T2.6 |
+| Retarget artifacts             | Mode-`0700` per-instance directory under the OS temp directory        | Disclosure or substitution of a project mid-workflow                                   |
+| Release integrity              | The CI pipeline and the dependency graph                              | Supply-chain compromise of every user                                                  |
 
 ## 4. Adversaries
 
@@ -117,8 +121,8 @@ is that **"the renderer sends a hostile message" is the assumed baseline, not a 
 
 The renderer names **capabilities, never paths**: an opaque `approvalId`, a catalog SHA-256, an
 opaque profile ID, or an artifact token. 47 channels are registered across 43
-`ipcMain.handle` call sites (`src/main/ipc.ts:791-805` registers five upload-lifecycle
-channels in one loop), but authority is concentrated in three capability classes. A
+`ipcMain.handle` call sites (the upload-lifecycle loop at `src/main/ipc.ts:790` registers five
+channels at once, so 42 + 5 = 47), but authority is concentrated in three capability classes. A
 channel-by-channel enumeration would be mostly noise; these are the ones that matter.
 
 ### T1.1 — Renderer names an arbitrary filesystem path (A2)
@@ -128,14 +132,22 @@ channel-by-channel enumeration would be mostly noise; these are the ones that ma
 upload to an attacker-controlled server.
 
 **Controls.** The renderer cannot express a path for these operations. `OpenFolder`
-(`src/main/ipc.ts:664-693`) and `OpenModelFile` (`src/main/ipc.ts:695-724`) only _show the OS
-picker_ and return what the user chose; every later operation resolves an approval ID or a
-canonical picker file through `RootApprovalStore`. `authorizeFile`
-(`src/main/rootApprovals.ts:189-224`) canonicalizes with `realpath` and requires containment
-via `isWithinRoot` (`src/main/rootApprovals.ts:417-428`), which appends `path.sep` before the
-prefix comparison so a sibling like `C:\library-evil` cannot pass for `C:\library`.
-Picker-approved single files are tracked separately in `approvedPickerFiles`
-(`src/main/ipc.ts:156-163`).
+(`src/main/ipc.ts:664`) and `OpenModelFile` (`src/main/ipc.ts:695`) only _show the OS picker_
+and return what the user chose; every later operation resolves an approval ID or a canonical
+picker file through `RootApprovalStore`. `authorizeFile` (`src/main/rootApprovals.ts:189`)
+canonicalizes with `realpath` and requires containment via `isWithinRoot`
+(`src/main/rootApprovals.ts:417`), which appends `path.sep` before the prefix comparison so a
+sibling like `C:\library-evil` cannot pass for `C:\library`. Picker-approved single files are
+tracked separately in `approvedPickerFiles` (`src/main/ipc.ts:156`).
+
+There is a third control here that is easy to miss, and it defends a different axis:
+`authorizeFile` re-`realpath`s each **stored root** on every call and binds it to the
+device/inode identity recorded at approval time via `matchesStoredIdentity`
+(`src/main/rootApprovals.ts:207-209`), skipping any root that no longer matches. Containment
+answers "is this file under an approved root"; identity binding answers "is this still the same
+root I approved". A root swapped for a symlink or a different volume after approval fails the
+second check even though it would pass the first. Both need proving separately — a test that
+only varies the path exercises containment and leaves identity binding unmeasured.
 
 **Coverage. Store-level good, IPC-level absent.** `tests/rootApprovals.test.ts` covers
 sibling-prefix escape, renderer-invented approvals, and ancestor swaps. But **no test in this
@@ -169,10 +181,10 @@ embeds the bearer token, then exfiltrate it through a rendered resource URL.
 **Controls.** Secrets are encrypted at rest with `safeStorage` and appear in no response type
 — `ListServerProfiles` returns redacted metadata only. JWTs exist solely in main-process
 memory (`src/main/serverProfiles.ts:394`). Error text is replaced wholesale rather than
-filtered: `scrubSensitiveText` (`src/main/uploadTransport.ts:640-644`) discards its input and
+filtered: `scrubSensitiveText` (`src/main/uploadTransport.ts:641`) discards its input and
 returns a constant, which is the right shape — a filter is a blocklist, and blocklists leak.
-Every response is re-validated against its Zod schema before leaving main
-(`src/shared/ipc.ts:1257-1441`), so an accidental extra field is dropped at the boundary.
+Every response is re-validated against its Zod schema before leaving main (`ipcSchemas`,
+`src/shared/ipc.ts:1256`), so an accidental extra field is dropped at the boundary.
 
 **Coverage. Partial and indirect.** `tests/ipc.test.ts:31` validates the redacted profile
 _schema_, which proves the contract forbids a secret. It does not prove the implementation
@@ -185,17 +197,24 @@ populates that contract correctly, and nothing asserts that no `console.*` call 
 
 There is **no** `event.senderFrame` or sender-origin validation on any of the 47 channels;
 Electron's own security guidance recommends one. Reachability is currently blocked
-structurally instead: `nodeIntegrationInSubFrames` is left at its default of `false`, so a
-subframe receives no preload and therefore no `ipcRenderer`; `setWindowOpenHandler` denies
-every window open (`src/main/security.ts:36-41`); and `will-navigate` diverts non-internal
-navigation to the OS browser (`src/main/security.ts:29-34`).
+structurally instead, by three separate things: `nodeIntegrationInSubFrames` is left at its
+default of `false`, so a subframe receives no preload and therefore no `ipcRenderer`;
+`setWindowOpenHandler` denies every window open, both on the main window
+(`hardenWindow`, `src/main/security.ts:36-41`) and process-wide for _every_ web contents via
+the `app.on('web-contents-created', …)` handler at `src/main/main.ts:283-285`; and
+`will-navigate` diverts non-internal navigation to the OS browser
+(`src/main/security.ts:29-34`).
 
-That is a chain of one unstated default plus two guards standing in for an absent control, and
-the weakest link is the default — a future `webPreferences` edit could flip it with nothing in
-CI noticing. Recorded here deliberately rather than filed as a defect: per this squad's
+That is a chain of one unstated default plus three guards standing in for an absent control,
+and the weakest link is the default — a future `webPreferences` edit could flip it with nothing
+in CI noticing. Recorded here deliberately rather than filed as a defect: per this squad's
 reviewer standard, an unreproduced risk is a non-blocking observation, not a rejection.
+
 **Ruling requested** — add sender validation as defense in depth, or accept this residual with
-the rationale above?
+the rationale above? Note that the diagnosis suggests a cheaper third option: because the load
+bearing element is an _unstated default_, a one-line assertion that `nodeIntegrationInSubFrames`
+is falsy converts it into something CI notices, at a small fraction of the cost of full sender
+validation. That assertion belongs in PR C's scope under either ruling.
 
 ### T1.5 — Renderer navigates itself somewhere useful to an attacker (A2)
 
@@ -206,21 +225,25 @@ or open a popup that does not carry the hardened preferences.
 `will-navigate`, denies all window opens, and refuses every renderer permission request.
 `applyContentSecurityPolicy` (`src/main/security.ts:61-86`) attaches `script-src 'self'`,
 `object-src 'none'`, `base-uri 'none'`, and `frame-ancestors 'none'` in production, relaxing
-only for the Vite dev server (`:93-113`). The packaged app additionally flips fuses
-(`forge.config.ts:92-100`): `RunAsNode` off, `EnableNodeOptionsEnvironmentVariable` off,
-`EnableNodeCliInspectArguments` off, `EnableEmbeddedAsarIntegrityValidation` on,
-`OnlyLoadAppFromAsar` on.
+only for the Vite dev server (`developmentCsp`, `src/main/security.ts:93-113`). The packaged
+app additionally flips fuses (`forge.config.ts:92-100`): `RunAsNode` off,
+`EnableNodeOptionsEnvironmentVariable` off, `EnableNodeCliInspectArguments` off,
+`EnableEmbeddedAsarIntegrityValidation` on, `OnlyLoadAppFromAsar` on.
 
 **Coverage. None.** `src/main/security.ts` has no test at all. Nothing pins that the
-production CSP omits `'unsafe-inline'`, and nothing would catch the _development_ policy being
-served in production — one absent `devServerUrl` check away, and invisible to every existing
+production `script-src` stays `'self'` with no `'unsafe-inline'` — note that the production
+policy _does_ carry `'unsafe-inline'` in `style-src` (`src/main/security.ts:70`), which is a
+deliberate and much weaker concession, so a test asserting merely "the policy contains no
+`'unsafe-inline'`" would be wrong about this code and would fail on correct input. The
+directive has to be named. Nothing would catch the _development_ policy being served in
+production either — one absent `devServerUrl` check away, and invisible to every existing
 test. → PR C.
 
 ### T1.6 — Malformed or oversized IPC payload (A2)
 
 **Controls.** Every request and response passes a strict Zod schema with explicit bounds:
 `.strict()` rejects additive fields, string lengths are capped, and enums are closed
-(`src/shared/ipc.ts:1257-1441`).
+(`ipcSchemas`, `src/shared/ipc.ts:1256`).
 
 **Coverage. Good — the one part of the IPC surface with real coverage.**
 `tests/ipc.test.ts` and `tests/retarget.ipc.test.ts` exercise this axis thoroughly. Both test
@@ -232,7 +255,23 @@ _plumbing_ — which is why T1.1 through T1.5 above are uncovered despite these 
 The parsers are the deepest exposure to A1. They are written in safe Rust, so the realistic
 outcomes are denial of service, resource exhaustion, and logic corruption rather than memory
 corruption. `unsafe` appears in exactly one module, `native/model-core/src/threemf_lib3mf.rs`,
-which is the optional `lib3mf` FFI path and is not compiled into the default build.
+which is the optional `lib3mf` FFI path. That module is not merely off by default: the feature
+is `optional` with no `default` feature set, and both `scripts/stage-sidecar.mjs:38` and
+`.github/workflows/release.yml:47` build `--features sqlite`, so **no `unsafe` code ships at
+all**. (Beware the synonym trap when checking this: `retarget/{archive,guardrails,profile}.rs`
+match a search for `unsafe` because they use the identifiers `unsafe_path_error` and
+`unsafe_value`, which are error constructors, not unsafe blocks.)
+
+**The invariant that makes this section tractable.** Catalog-side 3MF ingestion has exactly one
+ZIP constructor: `threemf::open_package` (`native/model-core/src/threemf.rs:901`), which reads
+each entry through the per-chunk `read_entry_guarded` (`:814`). This is not incidental — #69
+found four separate `ZipArchive::new` sites in `vendor.rs`, one of which had a hole the others
+did not, and the fix was structural rather than local so that a fifth door could not
+reintroduce the bug. Every limit in T2.1 hangs off that single constructor.
+
+**There is one deliberate exception, and it must stay visible: `retarget/archive.rs`.** It is
+the second production ZIP constructor in the tree and it does not go through `open_package`.
+See T2.5. A search that expects `open_package` to be the only door will not find it.
 
 ### T2.1 — Decompression bomb, path traversal, XML entity expansion (A1)
 
@@ -248,6 +287,11 @@ DTD and entity attacks, deep nesting, and component cycles are covered by
 product, including the harder cases where a cheap preflight guard shadows a stricter
 accumulator on all honest input.
 
+**Scope of these controls, which is narrower than it looks.** Every limit above is enforced by
+`ParseGuard` on the `threemf::open_package` path. The retarget archive reader does not use
+`ParseGuard` and does not read `limits.rs` at all; it enforces a separate, independently
+maintained set. T2.5 covers it. Read "the ZIP-bomb work is done" as scoped to this path only.
+
 ### T2.2 — Structurally valid input that reaches an untested code path (A1)
 
 **Attack.** Not a bomb — a file well-formed enough to pass every limit above, which then drives
@@ -256,15 +300,23 @@ Superlinear output is the shape to fear: in #68 a 29-node diamond DAG expanded t
 because the tests covered ancestor cycles and nobody had drawn a diamond.
 
 **Controls.** The limits bound the obvious cases. Beyond them, correctness rests entirely on
-hand-written parsing in `threemf.rs`, `stl.rs`, `obj.rs`, `step.rs`, and `vendor.rs`.
+hand-written parsing in `threemf.rs`, `stl.rs`, `obj.rs`, and `vendor.rs`.
+
+`step.rs` is the exception on two counts, and both narrow the fuzzing scope. It is gated behind
+`#[cfg(feature = "step")]` (`native/model-core/src/lib.rs:25`), and neither
+`scripts/stage-sidecar.mjs:38` nor `.github/workflows/release.yml:47` enables that feature — so
+the **shipped** sidecar exposes four hand-written byte entry points, not five. It is also not
+hand-written: it delegates to the `truck-*` CAD kernel, which makes STEP primarily an A5
+supply-chain surface (T4.1) rather than an A1 parsing surface. Fuzzing a module that does not
+ship, to exercise a third-party kernel, is the wrong place to spend the effort first.
 
 **Coverage. This is the real gap.** Coverage is example-based: fixtures encode the shapes their
 authors imagined. There is no fuzzing anywhere in the tree. The recorded lesson from #69 is
 exactly this failure — a non-finite-float corpus assembled from spellings (`NaN`, `inf`,
 `Infinity`) missed `1e999`, which contains none of those substrings and still parses to
-infinity. All five parsers expose clean byte entry points (`threemf::parse_bytes`,
-`stl::parse_bytes`, `obj::parse_bytes`, `step::parse_bytes`, `vendor::extract_bytes`), so they
-are directly fuzzable with no viewer or IPC scaffolding. → PR D.
+infinity. The shipped parsers expose clean byte entry points (`threemf::parse_bytes`,
+`stl::parse_bytes`, `obj::parse_bytes`, `vendor::extract_bytes`), so they are directly fuzzable
+with no viewer or IPC scaffolding. → PR D.
 
 ### T2.3 — Sidecar is asked to open something it should not (A2 via B2)
 
@@ -295,6 +347,88 @@ request by `npm run check:provenance` (`.github/workflows/ci.yml:27-28`).
 `per_object_motion_overrides_are_clamped_and_validated`) and includes a `../escape.model`
 archive-traversal case.
 
+### T2.5 — The second archive reader, with its own limits and no tests (A1)
+
+**This is the entry point the "ZIP hardening is done" story misses.** Retarget ingestion does
+not go through `threemf::open_package`. `ArchivePackage::from_bytes`
+(`native/model-core/src/retarget/archive.rs:102`) calls `ZipArchive::new` directly at `:106`.
+Those are the only two ZIP constructors in production code; the other three matches in the tree
+are inside `#[cfg(test)]` modules in `threemf.rs`.
+
+**Reachable from the renderer**, via user-chosen files: `RetargetPreflight`, `RetargetBuild`,
+`RetargetLoadScene`, and `RetargetSaveAs` (`src/shared/ipc.ts:56-62`) reach it through
+`retarget/preflight.rs:50-51`, `retarget/mod.rs:269-272`, `retarget/validate.rs:24-25` and
+`:49-50`, and `retarget/profile.rs:758`. The bytes are A1's, in full.
+
+**Controls, and they are thorough.** `RetargetLimits` (`native/model-core/src/retarget/mod.rs:30`)
+is a genuinely careful control set, independently written: a 512 MiB source cap (`archive.rs:103`),
+a 10,000-part cap (`:107`), per-part caps (`:147-152`), a 1 GiB aggregate uncompressed cap
+(`:153-160`), and rejection of encrypted entries (`:117-123`), directory entries (`:124-128`),
+non-regular and symlink modes (`:129-136`), compression methods other than Stored and Deflate
+(`:137-146`), and case-equivalent duplicate part names (`:161-166`). It also catches
+declared-versus-streamed size disagreement in **both** directions — a short read at `:177-183`
+and trailing extra bytes at `:186-193` — which is the exact class #20 hardened on the catalog
+path. This reader is not sloppy work.
+
+**The problem is that it is a _second_ implementation, and nothing holds the two together.** It
+never reads `limits.rs`, so the two limit sets can drift with nothing comparing them. They have
+already diverged on one axis: `RetargetLimits` has **no compression-ratio ceiling** and **no
+parse deadline**, where the catalog path enforces `MAX_COMPRESSION_RATIO = 300` and a
+120-second `DEFAULT_PARSE_TIMEOUT`. Expansion is still bounded in absolute terms by the 1 GiB
+aggregate cap, so this is a materially weaker bound rather than an unbounded one — but a small
+archive expanding to 1 GiB is a ratio the catalog path would refuse, and no deadline bounds the
+time spent doing it.
+
+**Coverage. None — the sharpest gap in this document.** `archive.rs` contains no `#[test]` at
+all, and no test under `native/model-core/tests/` references any `RetargetLimits` field. Every
+control listed above is unproven: deleting any one of those checks today breaks no test. This
+is the inverse of T2.1, where the controls are weaker on paper but genuinely pinned.
+
+→ PR D must fuzz `ArchivePackage::from_bytes` alongside the catalog parsers, and should add the
+differential check no test currently makes: that the two limit sets stay in a documented
+relationship rather than drifting apart silently.
+
+### T2.6 — Hostile or corrupt catalog database (A4, A3)
+
+**Attack.** The catalog is not only storage; it is input. Its path is environment-overridable —
+`src/main/main.ts:197` sets `PRINTFARMER_CATALOG_DB` only `if (!process.env.PRINTFARMER_CATALOG_DB)`,
+so an inherited environment variable redirects it, and the sidecar reads that variable directly
+(`src/main/sidecar.ts:1081`). A4 can also simply rewrite the file at its default location under
+`userData`. Opening it runs `PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON`, reads
+`user_version`, and may run an 11-step migration chain over attacker-chosen contents
+(`SqliteCatalog::init`, `native/model-core/src/sqlite_catalog.rs:56-115`;
+`SCHEMA_VERSION = 11`, `native/model-core/src/schema.rs:11`).
+
+The catalog also holds attacker-influenced _strings_ — scanned paths, 3MF vendor metadata, and
+the server-supplied tag and collection metadata that T3.2 accepts as a residual. T3.2's residual
+terminates at "enters the local catalog"; this threat is the other side of that boundary.
+
+**Controls.** A database claiming a version newer than the binary understands is rejected
+outright (`sqlite_catalog.rs:61-63`) rather than being opened optimistically. Migrations run
+inside `BEGIN IMMEDIATE` and roll back as a unit on any error (`:65`, `:109-112`), so a failure
+partway through the chain does not leave a half-migrated schema behind.
+
+**Coverage. Better than it looks, and narrower than it needs to be.** The migration path is
+genuinely well tested inside `sqlite_catalog.rs`: forward migrations from v1, v2, v3, v5, v6 and
+v9 each have a test, the future-version rejection is pinned (`:3438-3441`), and a failed
+migration is asserted to leave `user_version` unchanged (`:3578-3584`). Do not read this row as
+"untested".
+
+Two axes are genuinely absent:
+
+- **Malformed file bytes.** Every existing test constructs the database through `rusqlite`
+  itself, so the file is always structurally valid SQLite. Nothing opens a truncated file, a
+  non-SQLite file, or a structurally valid database whose _contents_ are adversarial. Nothing
+  tests the `PRINTFARMER_CATALOG_DB` redirection at all.
+- **Concurrency.** Background scan and watch write while the UI queries. WAL is the design
+  decision that makes that safe, and it is recorded in a module doc comment
+  (`native/model-core/src/schema.rs:1-8`) rather than as a stated and tested invariant. This
+  document should not be the only place it is written down.
+
+→ PR D for the malformed-bytes axis, which is fuzzing-shaped and cheap once a harness exists.
+The concurrency axis is **not** claimed by #21; it needs its own issue rather than being
+smuggled into a security PR.
+
 ## 7. Threats at B4 — network and remote data
 
 ### T3.1 — Credential theft in transit (A3)
@@ -323,11 +457,12 @@ keeps modern idempotent upload, client thumbnails, and library sync gated.
 
 **Residual, accepted.** A compromised _authenticated_ server can still feed misleading tag and
 collection metadata into the local catalog. Rejecting that would require a trust model the
-product does not have.
+product does not have. What happens to that metadata once it is in the catalog is T2.6, which
+is where this residual's boundary continues rather than ends.
 
 ### T3.3 — Token leaks into a log or a user-visible error (A3, A2)
 
-**Controls.** `scrubSensitiveText` (`src/main/uploadTransport.ts:640-644`) replaces error text
+**Controls.** `scrubSensitiveText` (`src/main/uploadTransport.ts:641`) replaces error text
 wholesale. Main-process `console.error` calls use fixed strings rather than interpolating
 state — for example `src/main/serverProfiles.ts:678` and `src/main/syncEngine.ts:325`.
 
@@ -373,14 +508,24 @@ someone with administrative rights. → PR B.
 
 ## 9. Open work derived from this model
 
-| Threat           | Gap                                                                  | Where      |
-| ---------------- | -------------------------------------------------------------------- | ---------- |
-| T4.1, T4.2       | No SBOM, licence, or vulnerability gate                              | PR B (#21) |
-| T1.1, T1.2, T1.5 | No test ever invokes an IPC handler; `src/main/security.ts` untested | PR C (#21) |
-| T1.3, T3.3       | Credential non-egress asserted nowhere                               | PR C (#21) |
-| T2.2             | No fuzzing; parser coverage is example-based                         | PR D (#21) |
-| T1.4             | Sender validation absent — awaiting a ruling                         | undecided  |
-| Out of scope     | No signing, notarization, or update integrity                        | #22        |
+| Threat           | Gap                                                                                      | Where      |
+| ---------------- | ---------------------------------------------------------------------------------------- | ---------- |
+| T4.1, T4.2       | No SBOM, licence, or vulnerability gate                                                  | PR B (#21) |
+| T1.1, T1.2, T1.5 | No test ever invokes an IPC handler; `src/main/security.ts` untested                     | PR C (#21) |
+| T1.3, T3.3       | Credential non-egress asserted nowhere                                                   | PR C (#21) |
+| T1.4             | One-line assertion that `nodeIntegrationInSubFrames` is falsy, under either ruling       | PR C (#21) |
+| T2.2             | No fuzzing; parser coverage is example-based                                             | PR D (#21) |
+| T2.5             | Retarget archive reader: every control unproven, and no check that it tracks `limits.rs` | PR D (#21) |
+| T2.6             | Malformed catalog bytes and `PRINTFARMER_CATALOG_DB` redirection untested                | PR D (#21) |
+| T1.4             | Full sender validation — awaiting a ruling                                               | undecided  |
+| T2.6             | Catalog concurrency invariant unstated and untested — needs its own issue                | not in #21 |
+| Out of scope     | No signing, notarization, or update integrity                                            | #22        |
+
+Two rows deserve emphasis because they change PR D's shape rather than merely adding to it.
+**T2.5 doubles PR D's target list**: a harness built from T2.2 alone would fuzz the catalog
+parsers and never reach an attacker-supplied project archive, which is a whole ingestion path
+whose limits are a second implementation. And **T2.2 shrinks slightly** — `step.rs` does not
+ship and is not hand-written, so it is not where the first fuzzing effort belongs.
 
 Every negative test written against this model must be shown to **fail when the control it
 tests is removed**, with the mutation recorded in the pull request. For a security suite this
@@ -400,3 +545,16 @@ changes:
 - The introduction of code signing, notarization, or an update channel (#22), which invalidates
   section 1's out-of-scope reasoning entirely.
 - Any new dependency reached over `unsafe`, or any new git or path dependency source.
+- **A new parser, or any new ingestion entry point** — in particular any new `ZipArchive::new`
+  outside `threemf::open_package`, or any new `parse_bytes`-shaped function. This trigger is
+  first in importance and was missing from the first draft of this list: #78 landed 966 lines of
+  new hand-written plate-layout parsing in `threemf.rs` one commit after the SHA the first
+  version of this document was pinned to, and nothing here would have called for a re-read.
+- **`RetargetLimits` or `limits.rs` moving further apart** (T2.5), or the catalog schema version
+  and migration chain changing (T2.6).
+
+**On citations.** References here name a symbol as well as a line number. The line number is a
+convenience and it decays; the symbol is what a future reader should grep for. A single
+reviewed-at SHA at the top is a mitigation that one careless edit can leave stale while every
+citation beneath it rots, which is how a security precondition in #79 ended up pointing at a
+blank line. If you correct a citation, correct the SHA in the same commit.
