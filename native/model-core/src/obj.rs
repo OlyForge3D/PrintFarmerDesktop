@@ -38,6 +38,20 @@ pub enum ObjError {
     },
 }
 
+impl ObjError {
+    /// A stable machine-readable code for the Electron layer's diagnostics.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Io(_) => "io",
+            Self::NoGeometry => "no_geometry",
+            Self::TooManyVertices => "too_many_vertices",
+            Self::TooManyFaces => "too_many_faces",
+            Self::MalformedVertex { .. } | Self::MalformedFace { .. } => "malformed",
+            Self::IndexOutOfRange { .. } => "index_out_of_range",
+        }
+    }
+}
+
 /// A parsed Wavefront OBJ mesh in indexed triangle form.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObjMesh {
@@ -335,6 +349,31 @@ mod tests {
                 Err(ObjError::MalformedVertex { .. })
             ));
         }
+    }
+
+    /// The finiteness guard was reachable only through the literal spellings
+    /// `inf`/`nan` above, which is a blocklist-shaped corpus: it cannot tell a
+    /// real `is_finite()` check apart from a substring test. These parse
+    /// successfully and are non-finite while looking like ordinary decimals,
+    /// and `3.5e38` sits just past f32::MAX so it also defeats a "large
+    /// exponent is suspicious" heuristic.
+    #[test]
+    fn rejects_non_finite_vertex_coordinates() {
+        for poison in ["1e999", "-1e999", "1E+400", "1e39", "-1e39", "3.5e38"] {
+            let bad = format!("v {poison} 0 0\n");
+            assert!(
+                matches!(
+                    parse_bytes(bad.as_bytes()),
+                    Err(ObjError::MalformedVertex { .. })
+                ),
+                "'{poison}' must be rejected"
+            );
+        }
+
+        // And the boundary from the other side: the largest finite f32 is
+        // legitimate geometry, so rejecting it would be an availability bug.
+        let ok = b"v 3.4e38 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+        parse_bytes(&ok[..]).expect("the largest finite f32 must still parse");
     }
 
     #[test]

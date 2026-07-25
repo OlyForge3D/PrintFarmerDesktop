@@ -39,6 +39,24 @@ pub enum SceneError {
     Step(#[from] StepError),
 }
 
+impl SceneError {
+    /// A stable, machine-readable corruption diagnostic of the form
+    /// `<format>.<reason>`, e.g. `threemf.limit.compression_ratio` or
+    /// `stl.non_finite_number`. The Electron layer can branch on this — telling
+    /// a hostile package apart from a merely truncated one — without pattern
+    /// matching on prose that is free to change.
+    pub fn code(&self) -> String {
+        match self {
+            Self::UnsupportedFormat => "unsupported_format".to_string(),
+            Self::Stl(e) => format!("stl.{}", e.code()),
+            Self::ThreeMf(e) => format!("threemf.{}", e.code()),
+            Self::Obj(e) => format!("obj.{}", e.code()),
+            #[cfg(feature = "step")]
+            Self::Step(_) => "step.parse_error".to_string(),
+        }
+    }
+}
+
 /// A named, selectable region of the flattened scene. `triangle_start` and
 /// `triangle_count` index into the mesh's triangles (each triangle is three
 /// consecutive [`SceneMesh::indices`]), letting the viewer isolate or hide a
@@ -474,6 +492,38 @@ mod tests {
     use crate::scene_status::SceneLoadStatus;
     use crate::stl::Triangle;
     use std::fs;
+
+    #[test]
+    fn scene_error_codes_name_both_the_format_and_the_reason() {
+        assert_eq!(SceneError::UnsupportedFormat.code(), "unsupported_format");
+        assert_eq!(
+            SceneError::Stl(StlError::NonFiniteNumber { context: "vertex" }).code(),
+            "stl.non_finite_number"
+        );
+        assert_eq!(
+            SceneError::ThreeMf(ThreeMfError::MissingModelPart).code(),
+            "threemf.missing_model_part"
+        );
+        assert_eq!(
+            SceneError::Obj(ObjError::NoGeometry).code(),
+            "obj.no_geometry"
+        );
+    }
+
+    #[test]
+    fn a_security_limit_rejection_keeps_its_specific_code_through_scene_error() {
+        // A hostile package must stay distinguishable from a merely broken one
+        // once the error has been wrapped for the RPC layer.
+        let violation = crate::limits::LimitViolation::CompressionRatio {
+            part: "3D/3dmodel.model".to_string(),
+            ratio: 9_000,
+            compressed_bytes: 1_024,
+            uncompressed_bytes: 9_216_000,
+            limit: crate::limits::MAX_COMPRESSION_RATIO,
+        };
+        let code = SceneError::ThreeMf(ThreeMfError::Limit(violation)).code();
+        assert_eq!(code, "threemf.limit.compression_ratio");
+    }
 
     fn expected_three_row_major_matrix(transform: &threemf::Transform) -> [f32; 16] {
         let origin = transform.apply([0.0, 0.0, 0.0]);

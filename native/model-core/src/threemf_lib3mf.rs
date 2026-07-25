@@ -1500,8 +1500,20 @@ fn merge_validated_scene(mesh: &mut ThreeMfMesh, validated: ThreeMfMesh) {
     mesh.unit = validated.unit;
     mesh.object_count = validated.object_count;
     mesh.build_item_count = validated.build_item_count;
-    mesh.status = validated.status;
-    mesh.status_messages = validated.status_messages;
+    // Combined rather than replaced. `mesh` arrives from the internal parser and
+    // already carries its own findings - notably the appearance-corruption
+    // diagnostics, which lib3mf does not report because it does not resolve
+    // appearances the way the scene DTO needs. Assigning here discarded them, so
+    // the identical corrupt file reported a degraded scene with the feature off
+    // and a clean one with it on. A diagnostic that disappears when a validator
+    // is enabled is worse than no diagnostic: it makes the stronger
+    // configuration the quieter one.
+    mesh.status = mesh.status.combine(validated.status);
+    for message in validated.status_messages {
+        if !mesh.status_messages.contains(&message) {
+            mesh.status_messages.push(message);
+        }
+    }
 
     for (part, validated_part) in mesh.parts.iter_mut().zip(validated.parts) {
         if !validated_part.name.is_empty() {
@@ -3015,6 +3027,63 @@ mod tests {
             LOAD_LIBRARY_SEARCH_APPLICATION_DIR
                 | LOAD_LIBRARY_SEARCH_SYSTEM32
                 | LOAD_LIBRARY_SEARCH_USER_DIRS
+        );
+    }
+
+    #[test]
+    fn internal_parser_diagnostics_survive_native_validation() {
+        // The internal parser resolves appearances; lib3mf does not, so its
+        // findings exist only on `mesh`. `merge_validated_scene` used to assign
+        // both fields, which meant enabling the stronger validator silently
+        // erased the corruption diagnostics the weaker path had produced - the
+        // same file reporting degraded with the feature off and clean with it
+        // on. Combined, not replaced.
+        let mut mesh = sample_mesh();
+        mesh.status = SceneLoadStatus::Partial;
+        mesh.status_messages
+            .push("some appearance references could not be read".to_string());
+
+        let mut validated = sample_mesh();
+        validated.status = SceneLoadStatus::Complete;
+        validated.status_messages = vec!["a native finding".to_string()];
+
+        merge_validated_scene(&mut mesh, validated);
+
+        assert_eq!(mesh.status, SceneLoadStatus::Partial);
+        assert!(
+            mesh.status_messages
+                .iter()
+                .any(|m| m.contains("could not be read")),
+            "the internal finding must survive: {:?}",
+            mesh.status_messages
+        );
+        assert!(
+            mesh.status_messages.iter().any(|m| m == "a native finding"),
+            "the native finding must still be reported: {:?}",
+            mesh.status_messages
+        );
+    }
+
+    #[test]
+    fn merging_validated_messages_does_not_duplicate() {
+        // Both paths can legitimately observe the same defect. Appending
+        // unconditionally would let a hostile file grow the message list once
+        // per validation pass, which is the amplification the flag-not-count
+        // design elsewhere exists to prevent.
+        let shared = "the same finding from both parsers".to_string();
+        let mut mesh = sample_mesh();
+        mesh.status_messages.push(shared.clone());
+        let mut validated = sample_mesh();
+        validated.status_messages = vec![shared.clone()];
+
+        merge_validated_scene(&mut mesh, validated);
+
+        assert_eq!(
+            mesh.status_messages
+                .iter()
+                .filter(|m| **m == shared)
+                .count(),
+            1
         );
     }
 

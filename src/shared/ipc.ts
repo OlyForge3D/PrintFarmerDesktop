@@ -323,6 +323,13 @@ export const RenderThumbnailResponse = z.object({
   width: z.number().int().positive(),
   height: z.number().int().positive(),
   pngBase64: z.string().min(1),
+  /**
+   * Cache recipe the sidecar rendered under. Optional so an older sidecar that
+   * predates cache versioning still validates; when present, callers must key
+   * any persisted thumbnail by it so a parser/renderer change invalidates
+   * rather than silently reuses stale pixels.
+   */
+  cacheRecipe: z.string().min(1).optional(),
 });
 export type RenderThumbnailResponse = z.infer<typeof RenderThumbnailResponse>;
 

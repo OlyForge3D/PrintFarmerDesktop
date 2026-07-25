@@ -12,7 +12,8 @@
 //!   or `{"id":<u64>,"ok":false,"error":<string>}`
 //!
 //! Supported methods:
-//! - `handshake` — params ignored; returns `{protocolVersion, sidecarVersion}`.
+//! - `handshake` — params ignored; returns `{protocolVersion, sidecarVersion,
+//!   sceneDtoVersion, parserSemanticsVersion, sceneCacheRecipe}`.
 //! - `loadScene` — params `{"path":<string>}`; returns a [`crate::rpc::SceneMeshDto`].
 //! - `extractVendorMetadata` — params `{"path":<string>}`; returns a
 //!   [`crate::rpc::VendorMetadataDto`] (slicer identity, core metadata, per-plate
@@ -429,6 +430,13 @@ fn dispatch(
         "handshake" => Ok(serde_json::json!({
             "protocolVersion": RPC_PROTOCOL_VERSION,
             "sidecarVersion": sidecar_version(),
+            // Derived-artifact cache versioning: the Electron layer keys cached
+            // scenes and thumbnails by these so a sidecar upgrade that changes
+            // parse results (including one that starts rejecting hostile input)
+            // cannot be masked by a stale cache entry.
+            "sceneDtoVersion": crate::scene::SCENE_DTO_VERSION,
+            "parserSemanticsVersion": crate::cache::PARSER_SEMANTICS_VERSION,
+            "sceneCacheRecipe": crate::cache::scene_cache_recipe(),
         })),
         "listRetargetProfiles" => serialize_retarget_outcome(match retarget {
             Some(engine) => match engine.list_bundled_profiles() {
@@ -790,22 +798,27 @@ fn dispatch(
             let params: PathParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid loadScene params: {e}"))?;
             let dto = load_scene_dto(&PathBuf::from(&params.path))
-                .map_err(|e| format!("failed to load scene: {e}"))?;
+                .map_err(|e| format!("failed to load scene [{}]: {e}", e.code()))?;
             serde_json::to_value(dto).map_err(|e| format!("failed to serialize scene: {e}"))
         }
         "extractVendorMetadata" => {
             let params: PathParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid extractVendorMetadata params: {e}"))?;
             let dto = extract_vendor_metadata_dto(&PathBuf::from(&params.path))
-                .map_err(|e| format!("failed to extract vendor metadata: {e}"))?;
+                .map_err(|e| format!("failed to extract vendor metadata [{}]: {e}", e.code()))?;
             serde_json::to_value(dto)
                 .map_err(|e| format!("failed to serialize vendor metadata: {e}"))
         }
         "extractVendorPlateThumbnails" => {
             let params: PathParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid extractVendorPlateThumbnails params: {e}"))?;
-            let dto = extract_vendor_plate_thumbnails_dto(&PathBuf::from(&params.path))
-                .map_err(|e| format!("failed to extract vendor plate thumbnails: {e}"))?;
+            let dto =
+                extract_vendor_plate_thumbnails_dto(&PathBuf::from(&params.path)).map_err(|e| {
+                    format!(
+                        "failed to extract vendor plate thumbnails [{}]: {e}",
+                        e.code()
+                    )
+                })?;
             serde_json::to_value(dto)
                 .map_err(|e| format!("failed to serialize vendor plate thumbnails: {e}"))
         }
@@ -813,7 +826,7 @@ fn dispatch(
             let params: ThumbnailParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid renderThumbnail params: {e}"))?;
             let dto = render_thumbnail_dto(&PathBuf::from(&params.path), params.size)
-                .map_err(|e| format!("failed to render thumbnail: {e}"))?;
+                .map_err(|e| format!("failed to render thumbnail [{}]: {e}", e.code()))?;
             serde_json::to_value(dto).map_err(|e| format!("failed to serialize thumbnail: {e}"))
         }
         "scanRoot" => {
@@ -1281,6 +1294,27 @@ mod tests {
     }
 
     #[test]
+    fn handshake_advertises_the_derived_artifact_cache_versions() {
+        // The Electron layer keys cached scenes/thumbnails by these, so they
+        // have to survive on the wire; losing them silently resurrects caches
+        // written by a pre-hardening parser.
+        let out = hl(r#"{"id":9,"method":"handshake","params":{}}"#).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["result"]["sceneDtoVersion"],
+            crate::scene::SCENE_DTO_VERSION
+        );
+        assert_eq!(
+            v["result"]["parserSemanticsVersion"],
+            crate::cache::PARSER_SEMANTICS_VERSION
+        );
+        assert_eq!(
+            v["result"]["sceneCacheRecipe"],
+            crate::cache::scene_cache_recipe()
+        );
+    }
+
+    #[test]
     fn handshake_tolerates_missing_params() {
         let out = hl(r#"{"id":1,"method":"handshake"}"#).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
@@ -1322,6 +1356,29 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("failed to load scene"));
+    }
+
+    #[test]
+    fn load_scene_surfaces_a_stable_corruption_diagnostic_code() {
+        // Diagnostics must be machine-classifiable: a hostile package and a
+        // truncated one both fail, but the Electron layer has to tell them
+        // apart without pattern matching on prose.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("corrupt.stl");
+        std::fs::write(&path, vec![0u8; 40]).unwrap();
+        let request = serde_json::json!({
+            "id": 91,
+            "method": "loadScene",
+            "params": { "path": path.to_string_lossy() },
+        });
+        let out = hl(&request.to_string()).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], false);
+        let error = v["error"].as_str().unwrap();
+        assert!(
+            error.contains("[stl.malformed]"),
+            "expected a stable diagnostic code, got {error}"
+        );
     }
 
     #[test]
