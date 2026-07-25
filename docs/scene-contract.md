@@ -19,3 +19,21 @@ Format mapping:
 - STL / OBJ: one root object on `plate-0` with identity transform.
 - 3MF: one root object per build item; component references become child objects with local transforms preserved.
 - 3MF scenes are rejected once they exceed **5,000 mesh-bearing objects**, which keeps renderer-side `Group`/`BufferGeometry`/`Material`/`Mesh` allocation within a bounded desktop GPU budget.
+
+## Renderer consumption
+
+`src/renderer/library/partTreeModel.ts` is the single place the hierarchy is
+interpreted for the UI. It flattens `plates` → `rootObjectIds` → `children` into
+the row list the part tree renders and the keyboard walks, and it derives the
+hidden-object sets that `ModelViewer` applies to the scene graph.
+
+Because scene DTOs come from untrusted files, every walk is cycle-safe: an
+object appears at most once per resolved tree, a repeated `children` reference
+is rendered as a diagnostic row instead of recursing, and unknown ids are
+dropped. Hiding a node hides its whole subtree; isolating a node hides
+everything except that node, its descendants, and the ancestors it hangs from.
+
+The tree is the accessible, non-canvas alternative to picking parts in the 3D
+view: it is a WAI-ARIA `tree` with a single roving tab stop, arrow keys to move
+and expand/collapse, <kbd>Space</kbd> to hide or show the focused node, and
+<kbd>I</kbd> to isolate it.

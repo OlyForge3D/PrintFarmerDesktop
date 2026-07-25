@@ -24,20 +24,54 @@ vi.mock('../src/renderer/viewer/PreviewWorkspace.js', () => ({
     loading,
     error,
     mesh,
+    hiddenObjects,
+    isolatedObject,
     onClose,
+    onToggleObject,
+    onToggleAllObjects,
+    onTogglePlate,
+    onIsolateObject,
   }: {
     name: string;
     loading: boolean;
     error: string | null;
     mesh: SceneMesh | null;
+    hiddenObjects: ReadonlySet<string>;
+    isolatedObject: string | null;
     onClose: () => void;
+    onToggleObject: (id: string) => void;
+    onToggleAllObjects: (visible: boolean) => void;
+    onTogglePlate: (plateId: string, visible: boolean) => void;
+    onIsolateObject: (id: string | null) => void;
   }) => (
     <section role="dialog" aria-label={`3D preview of ${name}`}>
       <span>{loading ? `Loading ${name}` : null}</span>
       <span>{error}</span>
       <span>{mesh?.sourceFormat}</span>
+      <span data-testid="hidden-objects">
+        {[...hiddenObjects].sort().join(',')}
+      </span>
+      <span data-testid="isolated-object">{isolatedObject ?? ''}</span>
       <button type="button" onClick={onClose}>
         Back to library
+      </button>
+      <button type="button" onClick={() => onIsolateObject('lid')}>
+        Isolate lid
+      </button>
+      <button type="button" onClick={() => onIsolateObject('ghost')}>
+        Isolate ghost
+      </button>
+      <button type="button" onClick={() => onIsolateObject(null)}>
+        Exit isolation
+      </button>
+      <button type="button" onClick={() => onToggleObject('spare')}>
+        Toggle spare
+      </button>
+      <button type="button" onClick={() => onTogglePlate('plate-1', false)}>
+        Hide plate 2
+      </button>
+      <button type="button" onClick={() => onToggleAllObjects(false)}>
+        Hide all
       </button>
     </section>
   ),
@@ -782,6 +816,143 @@ describe('<App />', () => {
       screen.queryByRole('dialog', { name: 'Connect to PrintFarmer' }),
     ).not.toBeInTheDocument();
     expect(loadScene).toHaveBeenCalledOnce();
+  });
+
+  it('isolates a scene object and clears isolation on any manual toggle', async () => {
+    const model: LogicalModel = {
+      hash: 'assembly',
+      format: 'threeMf',
+      size: 400,
+      locations: [
+        {
+          rootId: 'root',
+          path: 'C:\\models\\assembly.3mf',
+          rootRelative: 'assembly.3mf',
+          size: 400,
+          available: true,
+        },
+      ],
+    };
+    const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    const scene: LoadSceneResponse = {
+      sceneVersion: 2,
+      positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+      indices: [0, 1, 2],
+      bounds: { min: [0, 0, 0], max: [1, 1, 0] },
+      sourceFormat: 'threeMf',
+      status: 'complete',
+      statusMessages: [],
+      parts: [],
+      objects: [
+        {
+          id: 'body',
+          sourceId: 'object-1',
+          name: 'Body',
+          parentId: null,
+          children: ['lid'],
+          transform: { matrix: identity },
+          mesh: null,
+          material: {},
+          plateId: 'plate-0',
+          buildItemIndex: 0,
+        },
+        {
+          id: 'lid',
+          sourceId: 'object-2',
+          name: 'Lid',
+          parentId: 'body',
+          children: [],
+          transform: { matrix: identity },
+          mesh: {
+            positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+            indices: [0, 1, 2],
+            bounds: { min: [0, 0, 0], max: [1, 1, 0] },
+          },
+          material: {},
+          plateId: 'plate-0',
+          buildItemIndex: 0,
+        },
+        {
+          id: 'spare',
+          sourceId: 'object-3',
+          name: 'Spare',
+          parentId: null,
+          children: [],
+          transform: { matrix: identity },
+          mesh: {
+            positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+            indices: [0, 1, 2],
+            bounds: { min: [0, 0, 0], max: [1, 1, 0] },
+          },
+          material: {},
+          plateId: 'plate-1',
+          buildItemIndex: 1,
+        },
+      ],
+      rootObjectIds: ['body', 'spare'],
+      plates: [
+        { id: 'plate-0', name: 'Plate 1', index: 0, rootObjectIds: ['body'] },
+        { id: 'plate-1', name: 'Plate 2', index: 1, rootObjectIds: ['spare'] },
+      ],
+    };
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 2,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([model]),
+      listServerProfiles: vi
+        .fn()
+        .mockResolvedValue({ profiles: [], selectedProfileId: null }),
+      renderThumbnail: vi
+        .fn()
+        .mockResolvedValue({ width: 256, height: 256, pngBase64: 'AAAA' }),
+      extractVendorMetadata: vi.fn().mockResolvedValue(null),
+      tagsForModel: vi.fn().mockResolvedValue([]),
+      listCollections: vi.fn().mockResolvedValue([]),
+      collectionsForModel: vi.fn().mockResolvedValue([]),
+      loadScene: vi.fn().mockResolvedValue(scene),
+    });
+
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Preview assembly.3mf in 3D' }),
+    );
+    await screen.findByRole('dialog', { name: '3D preview of assembly.3mf' });
+
+    const hidden = (): string =>
+      screen.getByTestId('hidden-objects').textContent ?? '';
+    const isolated = (): string =>
+      screen.getByTestId('isolated-object').textContent ?? '';
+
+    // Isolating a leaf keeps its ancestors visible and hides everything else.
+    fireEvent.click(screen.getByRole('button', { name: 'Isolate lid' }));
+    await waitFor(() => expect(isolated()).toBe('lid'));
+    expect(hidden()).toBe('spare');
+
+    // Any manual visibility change drops the (now inaccurate) isolation badge.
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle spare' }));
+    await waitFor(() => expect(isolated()).toBe(''));
+    expect(hidden()).toBe('');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide plate 2' }));
+    await waitFor(() => expect(hidden()).toBe('spare'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Isolate lid' }));
+    await waitFor(() => expect(isolated()).toBe('lid'));
+    fireEvent.click(screen.getByRole('button', { name: 'Exit isolation' }));
+    await waitFor(() => expect(isolated()).toBe(''));
+    expect(hidden()).toBe('');
+
+    // Unknown object ids are ignored rather than hiding the whole scene.
+    fireEvent.click(screen.getByRole('button', { name: 'Isolate ghost' }));
+    await waitFor(() => expect(hidden()).toBe(''));
+    expect(isolated()).toBe('');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide all' }));
+    await waitFor(() => expect(hidden()).toBe('body,lid,spare'));
   });
 
   it('blocks profiles and imports while the open-file picker is deferred', async () => {
