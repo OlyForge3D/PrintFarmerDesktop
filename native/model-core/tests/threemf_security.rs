@@ -8,6 +8,7 @@
 mod threemf_support;
 
 use std::fs;
+use std::io::Cursor;
 use std::thread;
 use std::time::Duration;
 
@@ -783,6 +784,32 @@ fn an_entry_that_lies_about_its_size_is_charged_what_it_actually_produced() {
         .expect_err("an under-declared entry must still be caught while it is read");
     assert_eq!(error.code(), "limit.total_decompressed_bytes", "{error}");
 
+    // Evidence unique to the accumulator, rather than an assertion on an error
+    // code both aggregate defenses happen to share.
+    //
+    // This twin declares *exactly* what the rejected package declares - the
+    // preflight sums declared sizes and reads nothing else, so the two archives
+    // are byte-for-byte identical from where it stands. They differ only in what
+    // they actually deliver. So if the twin parses under the same budget that
+    // rejected the other, the rejection cannot have come from the preflight: no
+    // control that sees only declarations can separate these two inputs.
+    let small = package(
+        &model_document(
+            "millimeter",
+            &triangle_object("1", "Honest"),
+            r#"<item objectid="1"/>"#,
+        ),
+        Vec::new(),
+    );
+    let twin = forge_declared_size(&small, "3D/3dmodel.model", declared);
+    assert_eq!(
+        declared_total(&twin),
+        declared_total(&forged),
+        "the twins must be indistinguishable to a control that only reads declared sizes"
+    );
+    threemf::parse_bytes_with_limits(&twin, limits.clone())
+        .expect("an identical declared profile must pass, isolating the accumulator");
+
     // And the same package parses when the budget genuinely accommodates it,
     // so the guard is charging real overflow rather than rejecting any lie.
     threemf::parse_bytes_with_limits(
@@ -793,6 +820,15 @@ fn an_entry_that_lies_about_its_size_is_charged_what_it_actually_produced() {
         },
     )
     .expect("a generous budget must still accept the same package");
+}
+
+/// Sum of every entry's *declared* uncompressed size — precisely the view of an
+/// archive that the declared-size preflight gets, and nothing more.
+fn declared_total(data: &[u8]) -> u64 {
+    let mut archive = zip::ZipArchive::new(Cursor::new(data)).expect("archive opens");
+    (0..archive.len())
+        .map(|i| archive.by_index(i).expect("entry").size())
+        .sum()
 }
 
 // --- ratio cap boundary -----------------------------------------------------
