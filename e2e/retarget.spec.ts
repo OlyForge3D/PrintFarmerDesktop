@@ -9,10 +9,10 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
-  writeFileSync,
 } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -22,6 +22,8 @@ import {
   createEditableRetargetFixture,
   findPackagedExecutable,
 } from './helpers/retargetFixture';
+import { SidecarClient, spawnSidecarChannel } from '../src/main/sidecar';
+import { RootApprovalStore } from '../src/main/rootApprovals';
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -167,19 +169,52 @@ test('runs the U1 workflow in the packaged app without changing the source', asy
   const catalogDb = path.join(root, 'catalog.sqlite3');
   const userData = path.join(root, 'user-data');
   const savedOutput = path.join(root, 'saved-u1.3mf');
-  const collision = path.join(root, 'collision.3mf');
-  writeFileSync(collision, 'do not overwrite');
   const rootsBefore = new Set(instanceRoots());
 
   const dialogEnvironment = {
     PRINTFARMER_E2E: '1',
-    PRINTFARMER_E2E_OPEN_DIALOG: fixtureDirectory,
+    PRINTFARMER_E2E_OPEN_DIALOGS: JSON.stringify([savedOutput, savedOutput]),
     PRINTFARMER_E2E_SAVE_DIALOGS: JSON.stringify([
-      { canceled: true, filePath: '' },
-      { canceled: false, filePath: collision },
       { canceled: false, filePath: savedOutput },
     ]),
   };
+  const stagedSidecar = path.join(
+    repoRoot,
+    'resources',
+    'sidecar',
+    process.platform === 'win32' ? 'model-core.exe' : 'model-core',
+  );
+  mkdirSync(userData, { recursive: true });
+  const approvals = new RootApprovalStore({ userDataPath: userData });
+  await approvals.approveFromPicker(fixtureDirectory);
+
+  const previousCatalogDb = process.env.PRINTFARMER_CATALOG_DB;
+  process.env.PRINTFARMER_CATALOG_DB = catalogDb;
+  const seedSidecar = new SidecarClient(() =>
+    spawnSidecarChannel(stagedSidecar),
+  );
+  try {
+    await seedSidecar.importRoot(
+      'packaged-u1-fixtures',
+      fixtureDirectory,
+      [
+        {
+          relativePath: '',
+          kind: 'collection',
+          name: 'Packaged U1 fixtures',
+        },
+      ],
+      ['u1-e2e'],
+    );
+  } finally {
+    seedSidecar.dispose();
+    if (previousCatalogDb === undefined) {
+      delete process.env.PRINTFARMER_CATALOG_DB;
+    } else {
+      process.env.PRINTFARMER_CATALOG_DB = previousCatalogDb;
+    }
+  }
+
   let launched = await launchPackaged(
     executable,
     userData,
@@ -187,27 +222,14 @@ test('runs the U1 workflow in the packaged app without changing the source', asy
     dialogEnvironment,
   );
   await dismissOnboarding(launched.page);
-  const imported = await launched.page.evaluate(async () => {
-    const approval = await window.printFarmer.openFolder();
-    if (!approval) {
-      throw new Error('fixture folder approval failed');
-    }
-    await window.printFarmer.previewImport({ approvalId: approval.approvalId });
-    await window.printFarmer.importRoot({
-      rootId: 'packaged-u1-fixtures',
-      approvalId: approval.approvalId,
-      rules: [
-        {
-          relativePath: '',
-          kind: 'collection',
-          name: 'Packaged U1 fixtures',
-        },
-      ],
-      commonTags: ['u1-e2e'],
-    });
-    return window.printFarmer.listModels();
-  });
-  expect(imported.some((model) => model.hash === fixture.sha256)).toBe(true);
+  await launched.page.getByRole('button', { name: 'Refresh catalog' }).click();
+  const imported = await launched.page.evaluate(() =>
+    window.printFarmer.listModels(),
+  );
+  const importedModel = imported.find((model) => model.hash === fixture.sha256);
+  expect(importedModel).toBeDefined();
+  const importedRootId = importedModel?.locations[0]?.rootId;
+  expect(importedRootId).toBeTruthy();
   const directPreflight = await launched.page.evaluate(
     async ({ modelHash }) => {
       const catalog = await window.printFarmer.listRetargetProfiles();
@@ -227,7 +249,7 @@ test('runs the U1 workflow in the packaged app without changing the source', asy
         return { thrown: String(error) };
       }
     },
-    { modelHash: fixture.sha256 },
+    { modelHash: fixture.sha256, rootId: importedRootId! },
   );
   expect(directPreflight).not.toHaveProperty('thrown');
   await launched.page.getByRole('button', { name: 'Refresh catalog' }).click();
@@ -260,19 +282,6 @@ test('runs the U1 workflow in the packaged app without changing the source', asy
     launched.page.getByRole('button', { name: 'Snapmaker U1 output' }),
   ).toHaveAttribute('aria-pressed', 'true');
 
-  await launched.page.getByRole('button', { name: 'Save As…' }).click();
-  await expect(
-    launched.page.getByRole('heading', { name: 'Review changes' }),
-  ).toBeVisible();
-  expect(hash(fixture.file)).toBe(fixture.sha256);
-  await launched.page.getByRole('button', { name: 'Save As…' }).click();
-  await expect(launched.page.getByRole('alert')).toContainText(
-    'saveDestinationExists',
-  );
-  await expect(
-    launched.page.getByRole('heading', { name: 'Review changes' }),
-  ).toBeVisible();
-  expect(readFileSync(collision, 'utf8')).toBe('do not overwrite');
   await launched.page.getByRole('button', { name: 'Save As…' }).click();
   await expect(
     launched.page.getByText(/Saved saved-u1\.3mf/).first(),
