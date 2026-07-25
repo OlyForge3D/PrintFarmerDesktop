@@ -63,6 +63,28 @@ function sceneMesh(): SceneMesh {
   };
 }
 
+/** A two-plate 3MF, the shape the sidecar emits for a Bambu/Orca project. */
+function multiPlateSceneMesh(): SceneMesh {
+  const base = sceneMesh();
+  const second = {
+    ...base.objects[0]!,
+    id: 'spare',
+    sourceId: 'object-3',
+    children: [],
+    plateId: 'plate-1',
+    buildItemIndex: 1,
+  };
+  return {
+    ...base,
+    objects: [...base.objects, second],
+    rootObjectIds: ['body', 'spare'],
+    plates: [
+      { id: 'plate-0', name: 'Plate 1', index: 0, rootObjectIds: ['body'] },
+      { id: 'plate-1', name: 'Plate 2', index: 1, rootObjectIds: ['spare'] },
+    ],
+  };
+}
+
 function baseProps(): PreviewWorkspaceProps {
   return {
     name: 'widget.3mf',
@@ -83,6 +105,7 @@ function baseProps(): PreviewWorkspaceProps {
     onToggleObject: vi.fn(),
     onToggleAllObjects: vi.fn(),
     onTogglePlate: vi.fn(),
+    onSelectPlate: vi.fn(),
     onIsolateObject: vi.fn(),
   };
 }
@@ -109,6 +132,7 @@ describe('<PreviewWorkspace />', () => {
       onToggleObject: vi.fn(),
       onToggleAllObjects: vi.fn(),
       onTogglePlate: vi.fn(),
+      onSelectPlate: vi.fn(),
       onIsolateObject: vi.fn(),
     };
     const { rerender } = render(
@@ -177,5 +201,26 @@ describe('<PreviewWorkspace />', () => {
     // hide/isolate button.
     fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
     expect(screen.getByRole('treeitem', { name: 'Plate 1' })).toHaveFocus();
+  });
+
+  it('omits the plate selector for a single-plate scene', () => {
+    render(<PreviewWorkspace {...baseProps()} mesh={sceneMesh()} />);
+
+    expect(screen.queryByRole('group', { name: 'Plate' })).toBeNull();
+  });
+
+  it('offers a plate selector and forwards the choice for a multi-plate scene', () => {
+    const props = { ...baseProps(), mesh: multiPlateSceneMesh() };
+    render(<PreviewWorkspace {...props} />);
+
+    const selector = screen.getByRole('group', { name: 'Plate' });
+    expect(
+      within(selector)
+        .getAllByRole('radio')
+        .map((radio) => radio.getAttribute('value')),
+    ).toEqual(['all', 'plate-0', 'plate-1']);
+
+    fireEvent.click(within(selector).getByRole('radio', { name: 'Plate 2' }));
+    expect(props.onSelectPlate).toHaveBeenCalledWith('plate-1');
   });
 });

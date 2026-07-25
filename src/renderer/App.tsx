@@ -28,6 +28,7 @@ import { folderBasename, libraryPresentation } from './library/presentation';
 import { useVendorMetadata } from './library/useVendorMetadata';
 import { computeSceneStats, type SceneStats } from './library/sceneStats';
 import { isolateHiddenObjectIds } from './library/partTreeModel';
+import { plateHiddenObjectIds } from './viewer/plateSelection';
 import { ImportWizard } from './library/ImportWizard';
 import { LibraryOnboarding } from './library/LibraryOnboarding';
 import {
@@ -879,6 +880,14 @@ export function App(): React.JSX.Element {
     [loadedMesh],
   );
 
+  const selectPlate = useCallback(
+    (plateId: string) => {
+      setIsolatedObject(null);
+      setHiddenObjects(plateHiddenObjectIds(loadedMesh?.plates ?? [], plateId));
+    },
+    [loadedMesh],
+  );
+
   const isolateObject = useCallback(
     (id: string | null) => {
       if (id === null) {
@@ -1420,6 +1429,7 @@ export function App(): React.JSX.Element {
           onToggleObject={toggleObject}
           onToggleAllObjects={toggleAllObjects}
           onTogglePlate={togglePlate}
+          onSelectPlate={selectPlate}
           onIsolateObject={isolateObject}
           retargetEligible={
             previewTarget.hash !== null &&

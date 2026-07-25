@@ -67,6 +67,13 @@ const DEFAULT_MODEL_PART: &str = "3D/3dmodel.model";
 const RELATIONSHIPS_PART: &str = "_rels/.rels";
 const CONTENT_TYPES_PART: &str = "[Content_Types].xml";
 const MAX_METADATA_XML_BYTES: u64 = 8 * 1024 * 1024;
+/// Vendor part in which Bambu Studio and OrcaSlicer record the plate layout.
+const MODEL_SETTINGS_PART: &str = "Metadata/model_settings.config";
+/// Upper bound on declared plates, so a hostile package cannot make us allocate
+/// unbounded plate records. Matches both `vendor::MAX_PLATES` and the scene-DTO
+/// `plates` cap the IPC layer enforces (`src/shared/ipc.ts`), which would reject
+/// the whole scene if we emitted more.
+const MAX_SCENE_PLATES: usize = 1_000;
 const MODEL_CONTENT_TYPE: &str = "application/vnd.ms-package.3dmanufacturing-3dmodel+xml";
 const MODEL_RELATIONSHIP_TYPE: &str =
     "http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel";
@@ -380,6 +387,22 @@ impl RawModel {
 struct RawPackage {
     models: HashMap<String, RawModel>,
     root_part: String,
+    plate_layout: PlateLayout,
+}
+
+/// Which plate each build instance sits on, as declared by Bambu Studio and
+/// OrcaSlicer in `Metadata/model_settings.config`.
+///
+/// This part is advisory: it is vendor metadata rather than 3MF core, so any
+/// problem reading or parsing it degrades to "one implicit plate" instead of
+/// failing a model that otherwise parsed cleanly.
+#[derive(Debug, Default)]
+struct PlateLayout {
+    /// Declared plate names, in declaration order. Empty entries are resolved
+    /// to a positional fallback once parsing finishes.
+    names: Vec<String>,
+    /// `(object id, instance index)` -> index into [`PlateLayout::names`].
+    assignments: HashMap<(u32, u32), usize>,
 }
 
 #[derive(Debug, Default)]
@@ -629,10 +652,13 @@ pub fn parse_bytes_with_limits(
     }
     models.insert(root_part_key.clone(), root_model);
 
+    let plate_layout = read_plate_layout(&mut archive, &package_index, &mut guard)?;
+
     flatten(
         &RawPackage {
             models,
             root_part: root_part_key,
+            plate_layout,
         },
         &mut guard,
     )
@@ -1976,6 +2002,29 @@ impl FlattenOutput {
     }
 }
 
+/// Map each build item to the plate index the vendor layout declares for it.
+///
+/// `instance_id` in `model_settings.config` counts a given object's build items
+/// in document order, so replaying that counter here is what links the two
+/// files. Anything the layout does not mention falls back to plate 0.
+fn assign_build_items_to_plates(root_model: &RawModel, layout: &PlateLayout) -> Vec<usize> {
+    let mut instance_counts: HashMap<u32, u32> = HashMap::new();
+    root_model
+        .build
+        .iter()
+        .map(|item| {
+            let counter = instance_counts.entry(item.object_id).or_insert(0);
+            let instance_id = *counter;
+            *counter += 1;
+            layout
+                .assignments
+                .get(&(item.object_id, instance_id))
+                .copied()
+                .unwrap_or(0)
+        })
+        .collect()
+}
+
 /// Expand the build into a single indexed mesh, baking every transform. Each
 /// build item is recorded as a [`ThreeMfPart`] spanning the triangles it added.
 fn flatten(package: &RawPackage, guard: &mut ParseGuard) -> Result<ThreeMfMesh, ThreeMfError> {
@@ -1986,18 +2035,48 @@ fn flatten(package: &RawPackage, guard: &mut ParseGuard) -> Result<ThreeMfMesh, 
     let mut parts: Vec<ThreeMfPart> = Vec::with_capacity(root_model.build.len());
     let mut objects: Vec<ThreeMfSceneObject> = Vec::new();
     let mut root_object_ids = Vec::with_capacity(root_model.build.len());
-    let plate_id = plate_id(0);
-    let mut plates = vec![ThreeMfPlate {
-        id: plate_id.clone(),
-        name: "Plate 1".to_string(),
-        index: 0,
-        root_object_ids: Vec::with_capacity(root_model.build.len()),
-    }];
+
+    // Resolve plate membership up front: the plate index is baked into every
+    // scene object id, so it has to be known before the first id is minted.
+    let item_plates = assign_build_items_to_plates(root_model, &package.plate_layout);
+    let mut used_plates = item_plates.clone();
+    used_plates.sort_unstable();
+    used_plates.dedup();
+    // An empty build still gets one plate, so the scene always has somewhere to
+    // hang a selector entry.
+    if used_plates.is_empty() {
+        used_plates.push(0);
+    }
+    // Only plates that actually receive geometry become scene plates, so a
+    // declared-but-empty plate never shows up as a dead entry in the selector.
+    let plate_slots: HashMap<usize, usize> = used_plates
+        .iter()
+        .enumerate()
+        .map(|(slot, declared)| (*declared, slot))
+        .collect();
+    let mut plates: Vec<ThreeMfPlate> = used_plates
+        .iter()
+        .enumerate()
+        .map(|(slot, declared)| ThreeMfPlate {
+            id: plate_id(slot),
+            name: package
+                .plate_layout
+                .names
+                .get(*declared)
+                .filter(|name| !name.is_empty())
+                .cloned()
+                .unwrap_or_else(|| format!("Plate {}", slot + 1)),
+            index: slot,
+            root_object_ids: Vec::new(),
+        })
+        .collect();
 
     for (build_item_index, item) in root_model.build.iter().enumerate() {
         let model_part = item.model_part.as_deref().unwrap_or(&package.root_part);
         let triangle_start = output.triangles.len();
-        let root_id = scene_object_id(build_item_index, item.object_id);
+        let plate_slot = plate_slots[&item_plates[build_item_index]];
+        let plate_id = plates[plate_slot].id.clone();
+        let root_id = scene_object_id(plate_slot, build_item_index, item.object_id);
         expand(
             package,
             model_part,
@@ -2014,7 +2093,7 @@ fn flatten(package: &RawPackage, guard: &mut ParseGuard) -> Result<ThreeMfMesh, 
             guard,
         )?;
         root_object_ids.push(root_id.clone());
-        plates[0].root_object_ids.push(root_id);
+        plates[plate_slot].root_object_ids.push(root_id);
         parts.push(ThreeMfPart {
             name: part_name(package, model_part, item.object_id),
             triangle_start,
@@ -2246,12 +2325,167 @@ fn source_object_id(model_part: &str, object_id: u32) -> String {
     format!("{model_part}#object-{object_id}")
 }
 
-fn scene_object_id(build_item_index: usize, object_id: u32) -> String {
-    format!("plate-0/item-{build_item_index}/object-{object_id}")
+fn scene_object_id(plate_index: usize, build_item_index: usize, object_id: u32) -> String {
+    format!("plate-{plate_index}/item-{build_item_index}/object-{object_id}")
 }
 
 fn plate_id(index: usize) -> String {
     format!("plate-{index}")
+}
+
+/// Read the vendor plate layout, if the package declares one.
+///
+/// Missing, oversized, unreadable, or malformed advisory metadata degrades to
+/// an empty layout, which puts every build item on the single implicit plate
+/// that this parser has always emitted. Security-budget violations still abort
+/// the package parse.
+fn read_plate_layout<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    package_index: &PackageIndex,
+    guard: &mut ParseGuard,
+) -> Result<PlateLayout, ThreeMfError> {
+    let Some(part_name) = package_index
+        .actual_name(MODEL_SETTINGS_PART)
+        .map(str::to_owned)
+    else {
+        return Ok(PlateLayout::default());
+    };
+    match read_text_entry_limited(archive, &part_name, MAX_METADATA_XML_BYTES, guard) {
+        Ok(Some(xml)) => parse_plate_layout(&xml, guard),
+        Ok(None)
+        | Err(ThreeMfError::Io(_))
+        | Err(ThreeMfError::Zip(_))
+        | Err(ThreeMfError::TooLarge) => Ok(PlateLayout::default()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Parse `Metadata/model_settings.config` into a plate layout.
+///
+/// The shape written by Bambu Studio and OrcaSlicer is:
+///
+/// ```xml
+/// <config>
+///   <plate>
+///     <metadata key="plater_id" value="1"/>
+///     <metadata key="plater_name" value="Left"/>
+///     <model_instance>
+///       <metadata key="object_id" value="2"/>
+///       <metadata key="instance_id" value="0"/>
+///     </model_instance>
+///   </plate>
+/// </config>
+/// ```
+///
+/// `object_id` is the 3MF resource id and `instance_id` counts that object's
+/// build items in document order, which is what [`flatten`] replays.
+fn parse_plate_layout(
+    xml: &str,
+    guard: &mut ParseGuard,
+) -> Result<PlateLayout, ThreeMfError> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+
+    let mut layout = PlateLayout::default();
+    let mut xml_guard = guard.xml_guard();
+    // `Some(slot)` while inside a plate we still have room to record.
+    let mut current_plate: Option<usize> = None;
+    let mut in_plate = false;
+    let mut in_instance = false;
+    let mut plater_id: Option<u32> = None;
+    let mut object_id: Option<u32> = None;
+    let mut instance_id: Option<u32> = None;
+
+    loop {
+        guard.checkpoint()?;
+        let event = match reader.read_event() {
+            Ok(event) => event,
+            // Advisory metadata never fails the model, so a malformed part just
+            // means "no layout".
+            Err(_) => return Ok(PlateLayout::default()),
+        };
+        xml_guard.observe(&event)?;
+        match event {
+            Event::Eof => break,
+            Event::Start(ref e) | Event::Empty(ref e) => match local_name(e.name().as_ref()) {
+                b"plate" => {
+                    in_plate = true;
+                    in_instance = false;
+                    plater_id = None;
+                    current_plate = if layout.names.len() < MAX_SCENE_PLATES {
+                        layout.names.push(String::new());
+                        Some(layout.names.len() - 1)
+                    } else {
+                        None
+                    };
+                }
+                b"model_instance" if in_plate => {
+                    in_instance = true;
+                    object_id = None;
+                    instance_id = None;
+                }
+                b"metadata" => {
+                    let Some(key) = get_attr(e, b"key") else {
+                        continue;
+                    };
+                    let value = get_attr(e, b"value").unwrap_or_default();
+                    match (in_instance, key.as_str()) {
+                        (true, "object_id") => object_id = value.trim().parse().ok(),
+                        (true, "instance_id") => instance_id = value.trim().parse().ok(),
+                        (false, "plater_id") if in_plate => plater_id = value.trim().parse().ok(),
+                        (false, "plater_name") if in_plate => {
+                            if let Some(slot) = current_plate {
+                                layout.names[slot] = value.trim().to_owned();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            },
+            Event::End(ref e) => match local_name(e.name().as_ref()) {
+                b"model_instance" if in_instance => {
+                    in_instance = false;
+                    if let (Some(slot), Some(object), Some(instance)) =
+                        (current_plate, object_id, instance_id)
+                    {
+                        // First declaration wins, so a duplicated instance
+                        // cannot silently move geometry to a later plate.
+                        layout.assignments.entry((object, instance)).or_insert(slot);
+                    }
+                }
+                b"plate" if in_plate => {
+                    if let Some(slot) = current_plate {
+                        if layout.names[slot].is_empty() {
+                            let label = plater_id.map(|id| id as usize).unwrap_or(slot + 1);
+                            layout.names[slot] = format!("Plate {label}");
+                        }
+                    }
+                    in_plate = false;
+                    in_instance = false;
+                    current_plate = None;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    // A truncated part can leave the final plate unnamed.
+    for (index, name) in layout.names.iter_mut().enumerate() {
+        if name.is_empty() {
+            *name = format!("Plate {}", index + 1);
+        }
+    }
+    Ok(layout)
+}
+
+/// Strip an XML namespace prefix, so `<p:plate>` matches `<plate>`.
+fn local_name(name: &[u8]) -> &[u8] {
+    match name.iter().rposition(|byte| *byte == b':') {
+        Some(index) => &name[index + 1..],
+        None => name,
+    }
 }
 
 /// Fetch an attribute's raw string value by name.
@@ -3286,6 +3520,7 @@ mod tests {
                 },
             )]),
             root_part: DEFAULT_MODEL_PART.to_string(),
+            plate_layout: PlateLayout::default(),
         };
         let root_model = package.models.get(DEFAULT_MODEL_PART).unwrap();
         let mut output = FlattenOutput::default();
@@ -3304,7 +3539,7 @@ mod tests {
                 item.object_id,
                 item.transform,
                 item.transform,
-                scene_object_id(build_item_index, item.object_id),
+                scene_object_id(0, build_item_index, item.object_id),
                 None,
                 build_item_index,
                 &plate_id,
@@ -3332,7 +3567,7 @@ mod tests {
             over_budget_item.object_id,
             over_budget_item.transform,
             over_budget_item.transform,
-            scene_object_id(MAX_RENDERABLE_SCENE_OBJECTS, over_budget_item.object_id),
+            scene_object_id(0, MAX_RENDERABLE_SCENE_OBJECTS, over_budget_item.object_id),
             None,
             MAX_RENDERABLE_SCENE_OBJECTS,
             &plate_id,
@@ -3358,13 +3593,383 @@ mod tests {
             .vertices
             .iter()
             .any(|vertex| sentinel_vertices.contains(vertex)));
-        assert!(scene_objects
-            .iter()
-            .all(|object| object.id
-                != scene_object_id(MAX_RENDERABLE_SCENE_OBJECTS, sentinel_object_id)));
+        assert!(scene_objects.iter().all(|object| object.id
+            != scene_object_id(0, MAX_RENDERABLE_SCENE_OBJECTS, sentinel_object_id)));
         assert!(scene_objects
             .iter()
             .all(|object| object.source_id
                 != source_object_id(DEFAULT_MODEL_PART, sentinel_object_id)));
+    }
+
+    /// Two objects, each built twice, so instance counting is exercised.
+    fn four_instance_model() -> String {
+        let object = |id: u32, x: f32| {
+            format!(
+                r#"    <object id="{id}" type="model">
+      <mesh>
+        <vertices>
+          <vertex x="{x}" y="0" z="0"/>
+          <vertex x="{}" y="0" z="0"/>
+          <vertex x="{x}" y="1" z="0"/>
+        </vertices>
+        <triangles>
+          <triangle v1="0" v2="1" v3="2"/>
+        </triangles>
+      </mesh>
+    </object>
+"#,
+                x + 1.0
+            )
+        };
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <resources>
+{}{}  </resources>
+  <build>
+    <item objectid="1"/>
+    <item objectid="2"/>
+    <item objectid="1"/>
+    <item objectid="2"/>
+  </build>
+</model>"#,
+            object(1, 0.0),
+            object(2, 5.0)
+        )
+    }
+
+    /// Build a package that also carries the Bambu/Orca plate layout part.
+    fn package_with_model_settings(model_xml: &str, settings_xml: &str) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut buf));
+            let options =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            writer.start_file(RELATIONSHIPS_PART, options).unwrap();
+            writer.write_all(RELS_XML.as_bytes()).unwrap();
+            writer.start_file(DEFAULT_MODEL_PART, options).unwrap();
+            writer.write_all(model_xml.as_bytes()).unwrap();
+            writer.start_file(MODEL_SETTINGS_PART, options).unwrap();
+            writer.write_all(settings_xml.as_bytes()).unwrap();
+            writer.finish().unwrap();
+        }
+        buf
+    }
+
+    fn plate_block(plater_id: u32, name: Option<&str>, instances: &[(u32, u32)]) -> String {
+        let name_row = match name {
+            Some(name) => format!("    <metadata key=\"plater_name\" value=\"{name}\"/>\n"),
+            None => String::new(),
+        };
+        let rows: String = instances
+            .iter()
+            .map(|(object_id, instance_id)| {
+                format!(
+                    r#"    <model_instance>
+      <metadata key="object_id" value="{object_id}"/>
+      <metadata key="instance_id" value="{instance_id}"/>
+    </model_instance>
+"#
+                )
+            })
+            .collect();
+        format!(
+            "  <plate>\n    <metadata key=\"plater_id\" value=\"{plater_id}\"/>\n{name_row}{rows}  </plate>\n"
+        )
+    }
+
+    fn model_settings(plates: &[String]) -> String {
+        format!(
+            "<?xml version=\"1.0\"?>\n<config>\n{}</config>",
+            plates.concat()
+        )
+    }
+
+    #[test]
+    fn plate_layout_maps_each_instance_to_its_declared_plate() {
+        let xml = model_settings(&[
+            plate_block(1, Some("Left"), &[(1, 0), (2, 0)]),
+            plate_block(2, Some("Right"), &[(1, 1), (2, 1)]),
+        ]);
+        let layout = parse_plate_layout(&xml, &mut test_guard()).unwrap();
+
+        assert_eq!(layout.names, vec!["Left".to_string(), "Right".to_string()]);
+        assert_eq!(layout.assignments.get(&(1, 0)), Some(&0));
+        assert_eq!(layout.assignments.get(&(2, 0)), Some(&0));
+        assert_eq!(layout.assignments.get(&(1, 1)), Some(&1));
+        assert_eq!(layout.assignments.get(&(2, 1)), Some(&1));
+    }
+
+    #[test]
+    fn plate_layout_names_unnamed_plates_from_plater_id() {
+        let xml = model_settings(&[
+            plate_block(3, None, &[(1, 0)]),
+            plate_block(7, Some(""), &[]),
+        ]);
+        let layout = parse_plate_layout(&xml, &mut test_guard()).unwrap();
+
+        assert_eq!(
+            layout.names,
+            vec!["Plate 3".to_string(), "Plate 7".to_string()]
+        );
+    }
+
+    #[test]
+    fn plate_layout_degrades_to_empty_on_malformed_xml() {
+        let xml = format!(
+            "{}<unclosed",
+            model_settings(&[plate_block(1, None, &[(1, 0)])])
+        );
+        let layout = parse_plate_layout(&xml, &mut test_guard()).unwrap();
+
+        assert!(layout.names.is_empty());
+        assert!(layout.assignments.is_empty());
+    }
+
+    #[test]
+    fn plate_layout_caps_declared_plates() {
+        let plates: Vec<String> = (0..MAX_SCENE_PLATES + 5)
+            .map(|index| plate_block(index as u32 + 1, None, &[(index as u32 + 1, 0)]))
+            .collect();
+        let layout =
+            parse_plate_layout(&model_settings(&plates), &mut test_guard()).unwrap();
+
+        assert_eq!(layout.names.len(), MAX_SCENE_PLATES);
+        // Instances declared on plates beyond the cap are dropped rather than
+        // being folded onto the last plate we kept.
+        assert!(layout
+            .assignments
+            .values()
+            .all(|plate| *plate < MAX_SCENE_PLATES));
+        assert_eq!(layout.assignments.len(), MAX_SCENE_PLATES);
+    }
+
+    #[test]
+    fn plate_layout_keeps_the_first_declaration_of_a_duplicated_instance() {
+        let xml = model_settings(&[
+            plate_block(1, Some("Left"), &[(1, 0)]),
+            plate_block(2, Some("Right"), &[(1, 0)]),
+        ]);
+        let layout = parse_plate_layout(&xml, &mut test_guard()).unwrap();
+
+        assert_eq!(layout.assignments.get(&(1, 0)), Some(&0));
+    }
+
+    #[test]
+    fn build_items_replay_the_vendor_instance_counter() {
+        let package = RawPackage {
+            models: HashMap::from([(
+                DEFAULT_MODEL_PART.to_string(),
+                RawModel {
+                    objects: HashMap::new(),
+                    build: vec![1, 2, 1, 2]
+                        .into_iter()
+                        .map(|object_id| Component {
+                            object_id,
+                            model_part: None,
+                            transform: Transform::identity(),
+                        })
+                        .collect(),
+                    unit: "millimeter".to_string(),
+                },
+            )]),
+            root_part: DEFAULT_MODEL_PART.to_string(),
+            plate_layout: parse_plate_layout(
+                &model_settings(&[
+                    plate_block(1, None, &[(1, 0), (2, 0)]),
+                    plate_block(2, None, &[(1, 1), (2, 1)]),
+                ]),
+                &mut test_guard(),
+            )
+            .unwrap(),
+        };
+        let root_model = package.models.get(DEFAULT_MODEL_PART).unwrap();
+
+        assert_eq!(
+            assign_build_items_to_plates(root_model, &package.plate_layout),
+            vec![0, 0, 1, 1]
+        );
+    }
+
+    #[test]
+    fn flatten_emits_one_scene_plate_per_populated_plate() {
+        let bytes = package_with_model_settings(
+            &four_instance_model(),
+            &model_settings(&[
+                plate_block(1, Some("Left"), &[(1, 0), (2, 0)]),
+                plate_block(2, Some("Right"), &[(1, 1), (2, 1)]),
+            ]),
+        );
+        let mesh = parse_bytes(&bytes).unwrap();
+
+        assert_eq!(mesh.plates.len(), 2);
+        assert_eq!(mesh.plates[0].id, "plate-0");
+        assert_eq!(mesh.plates[0].name, "Left");
+        assert_eq!(mesh.plates[0].index, 0);
+        assert_eq!(mesh.plates[1].id, "plate-1");
+        assert_eq!(mesh.plates[1].name, "Right");
+        assert_eq!(mesh.plates[1].index, 1);
+
+        assert_eq!(
+            mesh.plates[0].root_object_ids,
+            vec![
+                "plate-0/item-0/object-1".to_string(),
+                "plate-0/item-1/object-2".to_string()
+            ]
+        );
+        assert_eq!(
+            mesh.plates[1].root_object_ids,
+            vec![
+                "plate-1/item-2/object-1".to_string(),
+                "plate-1/item-3/object-2".to_string()
+            ]
+        );
+        // Every root id still appears once in the scene-wide roots, in build order.
+        assert_eq!(
+            mesh.root_object_ids,
+            vec![
+                "plate-0/item-0/object-1".to_string(),
+                "plate-0/item-1/object-2".to_string(),
+                "plate-1/item-2/object-1".to_string(),
+                "plate-1/item-3/object-2".to_string()
+            ]
+        );
+        for object in &mesh.objects {
+            let plate = if object.id.starts_with("plate-1/") {
+                "plate-1"
+            } else {
+                "plate-0"
+            };
+            assert_eq!(
+                object.plate_id, plate,
+                "object {} on wrong plate",
+                object.id
+            );
+        }
+    }
+
+    #[test]
+    fn flatten_keeps_a_single_plate_without_vendor_settings() {
+        let bytes = package(&four_instance_model(), true, DEFAULT_MODEL_PART);
+        let mesh = parse_bytes(&bytes).unwrap();
+
+        assert_eq!(mesh.plates.len(), 1);
+        assert_eq!(mesh.plates[0].id, "plate-0");
+        assert_eq!(mesh.plates[0].name, "Plate 1");
+        assert_eq!(mesh.plates[0].root_object_ids.len(), 4);
+        assert!(mesh
+            .objects
+            .iter()
+            .all(|object| object.id.starts_with("plate-0/") && object.plate_id == "plate-0"));
+    }
+
+    #[test]
+    fn flatten_skips_declared_plates_that_hold_no_geometry() {
+        let bytes = package_with_model_settings(
+            &four_instance_model(),
+            &model_settings(&[
+                plate_block(1, Some("Empty"), &[]),
+                plate_block(2, Some("Full"), &[(1, 0), (2, 0), (1, 1), (2, 1)]),
+            ]),
+        );
+        let mesh = parse_bytes(&bytes).unwrap();
+
+        // The empty plate is dropped and the populated one is renumbered to 0,
+        // so the selector never offers a plate with nothing on it.
+        assert_eq!(mesh.plates.len(), 1);
+        assert_eq!(mesh.plates[0].id, "plate-0");
+        assert_eq!(mesh.plates[0].index, 0);
+        assert_eq!(mesh.plates[0].name, "Full");
+        assert_eq!(mesh.plates[0].root_object_ids.len(), 4);
+    }
+
+    #[test]
+    fn flatten_falls_back_to_the_first_plate_for_unlisted_instances() {
+        let bytes = package_with_model_settings(
+            &four_instance_model(),
+            &model_settings(&[
+                plate_block(1, Some("Left"), &[(1, 0)]),
+                plate_block(2, Some("Right"), &[(1, 1)]),
+            ]),
+        );
+        let mesh = parse_bytes(&bytes).unwrap();
+
+        assert_eq!(mesh.plates.len(), 2);
+        // Object 2's instances are absent from the layout, so both land on plate 0.
+        assert_eq!(
+            mesh.plates[0].root_object_ids,
+            vec![
+                "plate-0/item-0/object-1".to_string(),
+                "plate-0/item-1/object-2".to_string(),
+                "plate-0/item-3/object-2".to_string()
+            ]
+        );
+        assert_eq!(
+            mesh.plates[1].root_object_ids,
+            vec!["plate-1/item-2/object-1".to_string()]
+        );
+    }
+
+    #[test]
+    fn flatten_ignores_a_model_settings_part_that_declares_no_plates() {
+        let bytes = package_with_model_settings(
+            &four_instance_model(),
+            "<?xml version=\"1.0\"?>\n<config><object id=\"1\"/></config>",
+        );
+        let mesh = parse_bytes(&bytes).unwrap();
+
+        assert_eq!(mesh.plates.len(), 1);
+        assert_eq!(mesh.plates[0].name, "Plate 1");
+        assert_eq!(mesh.plates[0].root_object_ids.len(), 4);
+    }
+
+    #[test]
+    fn flatten_puts_component_children_on_their_parents_plate() {
+        let model = r#"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <resources>
+    <object id="1" type="model">
+      <mesh>
+        <vertices>
+          <vertex x="0" y="0" z="0"/>
+          <vertex x="1" y="0" z="0"/>
+          <vertex x="0" y="1" z="0"/>
+        </vertices>
+        <triangles>
+          <triangle v1="0" v2="1" v3="2"/>
+        </triangles>
+      </mesh>
+    </object>
+    <object id="2" type="model">
+      <components>
+        <component objectid="1"/>
+      </components>
+    </object>
+  </resources>
+  <build>
+    <item objectid="2"/>
+    <item objectid="2"/>
+  </build>
+</model>"#;
+        let bytes = package_with_model_settings(
+            model,
+            &model_settings(&[
+                plate_block(1, Some("Left"), &[(2, 0)]),
+                plate_block(2, Some("Right"), &[(2, 1)]),
+            ]),
+        );
+        let mesh = parse_bytes(&bytes).unwrap();
+
+        assert_eq!(mesh.plates.len(), 2);
+        let second_plate: Vec<&ThreeMfSceneObject> = mesh
+            .objects
+            .iter()
+            .filter(|object| object.plate_id == "plate-1")
+            .collect();
+        assert_eq!(second_plate.len(), 2);
+        // The child id is derived from the root id, so it inherits the plate prefix.
+        assert!(second_plate
+            .iter()
+            .all(|object| object.id.starts_with("plate-1/item-1/object-2")));
     }
 }
