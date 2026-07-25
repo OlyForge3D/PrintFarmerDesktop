@@ -26,13 +26,30 @@ Every limit, threshold, or cap needs **both**:
 
 The passing side is not optional. A cap that degrades into blanket rejection is an availability bug wearing a security hat — a ZIP64 entry ceiling that rejects _all_ ZIP64 archives "passes" every rejection test while breaking every large legitimate package.
 
+Prove the passing side at the **documented legitimate maximum**, not at a comfortable value. Reviewing PR #68's 20,000-row part-tree budget, the check that carried weight was rendering a 5,001-object scene — the sidecar's documented mesh-object ceiling — and asserting it produced 5,001 rows with no truncation notice. "A small scene renders" would not have shown that the cap leaves headroom above real input.
+
+Also pin the boundary _adjacently_. A far-under case does not constrain the comparison operator: testing `MAX + 50` rejects and `5,000` passes leaves an off-by-one at `MAX` undetected. One of the two cases must sit next to the limit.
+
 ## Assert the specific failure, not merely that something failed
 
 `assert!(result.is_err())` passes when an unrelated earlier failure occurs, so it can pass while the control you meant to test never runs. Assert the exact diagnostic code (`threemf.limit.compression_ratio`), not just the presence of an error.
 
+**Necessary, but not sufficient: the diagnostic must be _unique_ to the control.** If two guards emit the same code, asserting it cannot tell you which one fired. On PR #69 both `check_declared_archive_total` and `charge_decompressed` emitted `limit.total_decompressed_bytes`, so a test that asserted the code exactly still could not distinguish them — and the accumulator turned out to be the one never exercised. When two controls must share a code, the test has to make one of them structurally impossible instead (see below).
+
 ## Verify your control is reachable at all
 
-A security control that cannot be reached is untested no matter how many tests surround it. On PR #69 the archive entry ceiling was structurally unreachable — a 16-bit ZIP EOCD caps at 65535 entries, below `MAX_ARCHIVE_PARTS` — so it was only exercisable by forging a ZIP64 trailer. Ask what input actually drives each guard, and whether any test truly produces it.
+A security control that cannot be reached is untested no matter how many tests surround it. Ask what input actually drives each guard, and whether any test truly produces it. Two instances of this, both on PR #69:
+
+- The archive entry ceiling was structurally unreachable — a 16-bit ZIP EOCD caps at 65535 entries, below `MAX_ARCHIVE_PARTS` — so it was only exercisable by forging a ZIP64 trailer.
+- The running decompression accumulator could never fire for an **honest** archive: the declared-total preflight sums _every_ entry while the accumulator counts only entries actually _read_, so declared >= charged and the preflight always wins the race. The accumulator fires only when an entry **lies** — declares small, delivers large — which is exactly the case it exists for, since declared sizes are attacker-controlled.
+
+The general shape: **when two guards defend the same budget, the cheaper one usually shadows the stricter one on all honest input.** The stricter guard is then live, correct, and untested. Reaching it requires constructing input that is dishonest in precisely the way the shadowing guard trusts — and the test must _prove_ the shadowing guard could not have fired, by asserting its own threshold was never crossed. A test where both guards could plausibly have rejected proves nothing about either.
+
+## Build corpora from properties, not spellings
+
+A corpus assembled from example strings tests the examples, not the rule. The non-finite float corpus used `["NaN", "inf", "-inf", "Infinity", "-Infinity"]`; `1e999` contains none of those substrings yet `f32::from_str` returns `Ok(inf)`. Enforcement was correct — `is_finite()` — but nothing pinned it, so a regression to substring blocklisting would have passed the entire suite.
+
+Include at least one case that satisfies the **property** while looking lexically ordinary: `1e999`, `1e39`, a 39-digit integer (`f32::MAX` is ~3.4e38). Same reasoning applies to path traversal, injection, and unicode corpora — the dangerous input is the one that does not look like the examples.
 
 ## Cover the shapes an attacker picks, not the shapes you drew
 

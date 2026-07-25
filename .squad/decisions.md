@@ -127,3 +127,60 @@ Bishop caught this while working issue #20 and correctly fell back to `.squad/de
 Ralph's standing prompt was amended with a "merge evidence rule" encoding all four.
 
 **Why:** Recorded because the failure was not in anyone's reasoning — the reviews were correct and both defects were real — but in where the conclusion was _stored_. Gating state belongs on the artifact being gated, in a form that survives the session that produced it. The PR is also a delivery channel that does not drop messages, which the chat channel demonstrably did.
+
+## 2026-07-25: An empty `reviews: []` does not mean "no review is running"
+
+**By:** Ripley
+
+**What:** Because this squad posts verdicts as **issue comments** rather than through GitHub's formal review API, `gh pr view --json reviews` returns `[]` for the entire duration of a review — before it starts, while it runs, and after a verdict has been posted as a comment. Two independent misreadings of that empty array occurred within about twenty minutes of each other:
+
+1. **Dallas** read `reviews: []` on PR #68 as "no review is in flight, so amending is cheap right now" and proposed a force-push-with-lease to correct a cosmetic commit trailer. Two reviewers were mid-pass at the time. He asked before acting, which is the only reason it cost nothing.
+2. **A monitoring session** read the same signal on the same PR, concluded no review was running, and performed its own — against the **stale** head `bb57000` rather than the live `1c80bdb`. It produced two confidently-argued blocking findings. Both were **false**: the first conflated the global `resolved` set with a path-local `seen` that correctly walks a single ancestor chain; the second was structurally impossible, since `firstKey` already resolves to the first focusable row. It withheld from posting, which is the only reason it cost nothing.
+
+**Both near-misses were caught by the agent choosing to ask rather than act.** That is not a control; it is good manners. The control is the rule below.
+
+**New rules:**
+
+1. **`reviews: []` carries no information about whether a review is running.** Verdicts arrive as comments at the _end_ of a pass, so the array is empty throughout. To determine review state, read the PR **comments**, and treat the absence of a verdict comment as "unknown", never as "none in flight".
+2. **Re-read the live `headRefOid` immediately before stating any conclusion about a PR** — a verdict, a finding, a merge decision, or a status report. A finding against a stale SHA is not a weaker finding; it is a **wrong** one, and acting on it sends an author to re-fix code that is already fixed.
+3. **Dispatching reviewers is the lead's exclusive act.** A session that notices an unreviewed PR reports it; it does not self-assign. Two agents reviewing the same SHA is wasted effort; two agents reviewing _different_ SHAs produces contradictory verdicts on the same PR.
+
+Ralph's standing prompt was amended with all three.
+
+**Why:** Recorded because both agents reasoned correctly from a signal that does not mean what its name implies. The fix is not "be more careful" — it is knowing that this particular field is uninformative under this squad's conventions.
+
+## 2026-07-25: `Copilot-Session` trailers are the reliable evidence of concurrent writers — committer identity is not
+
+**By:** Ripley
+
+**What:** Following up the worktree-takeover incident above, the question of "did two writers touch this branch" came up again on PR #68, and this time the forensics held. Stating the method explicitly, since I previously got it wrong on #69 and had to retract:
+
+- **Committer identity proves nothing.** Every commit made in any worktree of this repository carries `Jeff Papiez <jpapiez@live.com>`, because that is the repo-local git config. It is invariant across agents and cannot distinguish them.
+- **The `Copilot-Session` trailer is the discriminator.** _Divergent_ trailers within one branch are positive evidence of two writers; _identical_ trailers across all commits are positive evidence of one.
+- On #69 all commits carried Bishop's own trailer — one writer, and my earlier claim was false. On #68, `741459d` carried `8dd289e7` (the parallel instance I launched) while `1c80bdb` carried `032c3f16` (Dallas's own) — two writers, confirmed.
+
+**A rebase does not remove a trailer.** Dallas reported that rebasing #68 had re-authored the commits and cleared the bad trailer. It had not: rebase rewrites the SHA and the committer date, but reproduces the commit **message** verbatim, and the trailer lives in the message. The trailer survived until the branch was squash-merged. Correcting a trailer requires an explicit message rewrite (`--amend` or `filter-branch`/`filter-repo`), and is almost never worth the force-push.
+
+**Ruling that followed:** leave incident trailers alone. On #68 the divergent trailer was the only durable forensic trace of the takeover recorded in this log, and amending it mid-review would have invalidated two pinned reviews to erase evidence of a mistake worth remembering.
+
+**Why:** Recorded so this is not re-derived — twice now the question has come up mid-incident, under time pressure, and the first answer was wrong.
+
+## 2026-07-25: Review lessons from PRs #68 and #69 — reachability, shadowed controls, and corpora built from spellings
+
+**By:** Ripley
+
+**What:** Three findings from the round-2 reviews generalize past the code that produced them, and have been written into `.squad/skills/test-discipline/SKILL.md`.
+
+**1. A shared diagnostic code can hide an unreachable control.** Bishop self-reported, _after_ reporting his fix round complete and green, that his aggregate-decompression regression tripped the declared-total preflight rather than the running accumulator it was written for. Both emit `limit.total_decompressed_bytes`, so his assertion — which correctly named the specific code, per existing skill guidance — could not distinguish them.
+
+The structural reason is the general lesson: **when two guards defend the same budget, the cheaper one shadows the stricter one on all honest input.** The preflight sums every declared entry; the accumulator counts only entries actually read; so declared >= charged and the preflight always wins. The accumulator can fire only when an entry **lies**, which is precisely the attacker-controlled case it exists for. It was live, correct, and unreachable through the public API. Closing it needed a forged central-directory size field declaring 1 KB for a 1.5 MB entry, with the forged declaration asserted to sit orders of magnitude under budget so the preflight demonstrably could not be the rejecter.
+
+Asserting the specific diagnostic is therefore **necessary but not sufficient — the diagnostic must be unique to the control.**
+
+**2. A corpus built from spellings has a hole.** The non-finite float corpus listed `"NaN"`, `"inf"`, `"Infinity"` and so on. `1e999` contains none of those substrings, yet `f32::from_str` returns `Ok(inf)`. Enforcement was correct throughout — `is_finite()` — but nothing pinned it, so a regression to substring blocklisting would have passed the whole suite and failed an independent reviewer's harness. Found by Vasquez fuzzing the property rather than reusing the examples.
+
+**3. Prove a cap still admits the legitimate maximum.** Reviewing #68's 20,000-row part-tree budget, the check that carried weight was rendering a 5,001-object scene — the sidecar's _documented_ mesh-object ceiling — and showing it produced 5,001 rows with no truncation. That is what distinguishes a cap from blanket denial, and it is not visible from reading the constant.
+
+**Process note:** both #68 round-2 reviewers extracted the **pre-fix** function from the superseded commit and ran the new tests' hostile shapes against it, producing a before/after table (a 29-object diamond DAG at 49,150 rows vs 43; an 18-level DAG at 1,048,573 rows vs linear). **That is the evidentiary standard for a fix round**: a test that cannot fail against the old code is not a regression test, and demonstrating the failure costs minutes.
+
+**Why:** Recorded because all three are cases where a control was correct and the _test_ was the defect — the hardest class to find by reading either one alone.
