@@ -28,6 +28,10 @@ Early development. See the implementation plan and the tracked work items.
 Source models are never moved, modified, or uploaded without an explicit user
 action.
 
+The trust boundaries behind that claim, the adversaries they defend against, and
+the accepted residual risks are documented in
+[the threat model](./docs/security/THREAT_MODEL.md).
+
 ## Prepare an editable project for Snapmaker U1
 
 PrintFarmer Desktop can create a **new review copy** of an editable Orca-family
@@ -134,6 +138,7 @@ src/renderer/   React application (library, viewer, organization, uploads)
 src/shared/     Versioned IPC/API schemas and non-privileged shared types
 native/         Rust Cargo workspace (model-core sidecar)
 tests/          TypeScript/Rust tests, fixtures, and packaging smoke tests
+docs/security/  Threat model and security review records
 ```
 
 ## Development
