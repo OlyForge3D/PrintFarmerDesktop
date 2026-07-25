@@ -4179,9 +4179,18 @@ mod tests {
     fn flatten_degrades_when_the_vendor_part_exceeds_the_metadata_limit() {
         // One of the five advertised degradation modes. Padding is XML comment
         // text so the document stays well-formed - the point is the size limit,
-        // not a parse failure.
-        let mut settings = String::from("<?xml version=\"1.0\"?>\n<config>\n<!--");
-        settings.push_str(&"x".repeat(MAX_METADATA_XML_BYTES as usize + 1));
+        // not a parse failure or the independent compression-ratio guard.
+        const ALPHANUMERIC: &[u8] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        let mut state = 0x4d59_5df4_d0f3_3173u64;
+        let mut settings = String::with_capacity(MAX_METADATA_XML_BYTES as usize + 1024);
+        settings.push_str("<?xml version=\"1.0\"?>\n<config>\n<!--");
+        for _ in 0..MAX_METADATA_XML_BYTES as usize + 1 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            settings.push(ALPHANUMERIC[state as usize % ALPHANUMERIC.len()] as char);
+        }
         settings.push_str("-->\n");
         settings.push_str(&plate_block(1, Some("Left"), &[(1, 0), (2, 0)]));
         settings.push_str(&plate_block(2, Some("Right"), &[(1, 1), (2, 1)]));
@@ -4197,11 +4206,16 @@ mod tests {
         .unwrap();
         assert_eq!(control.plates.len(), 2);
 
-        let mesh = parse_bytes(&package_with_model_settings(
-            &four_instance_model(),
-            &settings,
-        ))
-        .unwrap();
+        let bytes = package_with_model_settings(&four_instance_model(), &settings);
+        let mut archive = ZipArchive::new(Cursor::new(&bytes)).unwrap();
+        let metadata = archive.by_name(MODEL_SETTINGS_PART).unwrap();
+        assert!(
+            metadata.size()
+                <= crate::limits::MAX_COMPRESSION_RATIO * metadata.compressed_size().max(1),
+            "the fixture must stay below the compression-ratio limit or the size fallback is untested"
+        );
+
+        let mesh = parse_bytes(&bytes).unwrap();
 
         assert_eq!(mesh.plates.len(), 1);
         assert_eq!(mesh.plates[0].name, "Plate 1");
