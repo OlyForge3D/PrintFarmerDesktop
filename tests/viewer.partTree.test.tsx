@@ -4,6 +4,7 @@ import { describe, afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { PartTree } from '../src/renderer/library/PartTree.js';
 import {
   ancestorObjectIds,
+  effectiveHiddenObjectIds,
   flattenPartTree,
   isFocusableRow,
   isObjectHidden,
@@ -248,6 +249,76 @@ describe('isolateHiddenObjectIds', () => {
 
   it('hides nothing for an unknown object id', () => {
     expect(isolateHiddenObjectIds(sampleObjects(), 'ghost').size).toBe(0);
+  });
+});
+
+describe('effectiveHiddenObjectIds', () => {
+  // The one-pass resolver replaced a per-object walk that was quadratic in
+  // scene size. It is only a safe replacement if it gives the same answer as
+  // the helper it replaced for every object, so that is asserted directly
+  // rather than by re-deriving expectations by hand.
+  const shapes = (objects: readonly SceneObject[]) =>
+    [
+      ['nothing hidden', new Set<string>()],
+      ['one root hidden', new Set(['body'])],
+      ['a leaf hidden', new Set(['lid'])],
+      ['isolating a child', isolateHiddenObjectIds(objects, 'lid')],
+      ['isolating a root', isolateHiddenObjectIds(objects, 'body')],
+      ['scattered ids', new Set(['lid', 'spare'])],
+      ['everything hidden', new Set(objects.map((o) => o.id))],
+      ['an id not in the scene', new Set(['ghost'])],
+    ] as const;
+
+  it('agrees with isObjectHidden on every object for every hidden set', () => {
+    const objects = sampleObjects();
+    for (const [label, hidden] of shapes(objects)) {
+      const resolved = effectiveHiddenObjectIds(objects, hidden);
+      for (const object of objects) {
+        expect(resolved.has(object.id), `${label}: ${object.id}`).toBe(
+          isObjectHidden(objects, object.id, hidden),
+        );
+      }
+    }
+  });
+
+  it('cascades a hidden root to its whole subtree', () => {
+    // The control for the test above: without cascading, the two functions
+    // would still agree on a flat scene, so the equivalence would prove little.
+    const resolved = effectiveHiddenObjectIds(
+      sampleObjects(),
+      new Set(['body']),
+    );
+
+    expect([...resolved].sort()).toEqual(['base', 'body', 'lid']);
+  });
+
+  it('returns an empty set when nothing is hidden', () => {
+    expect(effectiveHiddenObjectIds(sampleObjects(), new Set()).size).toBe(0);
+  });
+
+  it('terminates on a parent cycle, matching ancestorObjectIds', () => {
+    const cycle: SceneObject[] = [
+      object('a', 'A', { parentId: 'b', children: ['b'] }),
+      object('b', 'B', { parentId: 'a', children: ['a'] }),
+    ];
+
+    for (const hidden of [new Set<string>(), new Set(['a']), new Set(['b'])]) {
+      const resolved = effectiveHiddenObjectIds(cycle, hidden);
+      for (const entry of cycle) {
+        expect(resolved.has(entry.id)).toBe(
+          isObjectHidden(cycle, entry.id, hidden),
+        );
+      }
+    }
+  });
+
+  it('stops at a parent that is not in the scene', () => {
+    const orphan = [object('lonely', 'Lonely', { parentId: 'ghost' })];
+
+    expect(effectiveHiddenObjectIds(orphan, new Set(['ghost'])).size).toBe(0);
+    expect([...effectiveHiddenObjectIds(orphan, new Set(['lonely']))]).toEqual([
+      'lonely',
+    ]);
   });
 });
 

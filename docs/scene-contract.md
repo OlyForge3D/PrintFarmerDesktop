@@ -20,6 +20,31 @@ Format mapping:
 - 3MF: one root object per build item; component references become child objects with local transforms preserved.
 - 3MF scenes are rejected once they exceed **5,000 mesh-bearing objects**, which keeps renderer-side `Group`/`BufferGeometry`/`Material`/`Mesh` allocation within a bounded desktop GPU budget.
 
+### Plates
+
+Object ids embed the plate they belong to (`plate-{p}/item-{n}/object-{id}`), so
+plate membership is fixed at parse time and cannot drift from the scene graph.
+
+Plate membership comes from `Metadata/model_settings.config`, the vendor part
+Bambu Studio and OrcaSlicer write. Its `<plate>` blocks map `(object_id,
+instance_id)` pairs to plates, where `instance_id` counts a given object's build
+items in document order — the same order the flatten walks, which is what links
+the two files.
+
+That part is advisory, so every failure mode (absent, oversized, unreadable,
+malformed XML, or present but declaring no plates) degrades to the single
+implicit plate the parser has always emitted. STL, OBJ, and plain 3MF are
+therefore unchanged: one plate named `Plate 1`, ids still prefixed `plate-0/`.
+
+Two further rules keep the plate list honest:
+
+- At most **1,000** declared plates are recorded. That matches the vendor-metadata
+  cap and the scene-DTO `plates` limit the IPC layer enforces, which would
+  otherwise reject the entire scene rather than just the surplus plates.
+- Declared plates that receive no build item are dropped and the survivors are
+  renumbered from 0, so the plate selector never offers an entry with nothing on
+  it.
+
 ## Renderer consumption
 
 `src/renderer/library/partTreeModel.ts` is the single place the hierarchy is
@@ -46,3 +71,15 @@ The tree is the accessible, non-canvas alternative to picking parts in the 3D
 view: it is a WAI-ARIA `tree` with a single roving tab stop, arrow keys to move
 and expand/collapse, <kbd>Space</kbd> to hide or show the focused node, and
 <kbd>I</kbd> to isolate it.
+
+`src/renderer/viewer/plateSelection.ts` layers the plate selector on the same
+hidden-object set: selecting a plate hides the other plates' root objects, and
+the checked radio is _derived_ from the hidden set rather than stored alongside
+it. That keeps one source of truth, so a part-tree toggle can never leave the
+selector claiming a plate that is not what is on screen — a visibility state
+that matches no single plate reports as "Custom" instead. Deriving it resolves
+_effective_ visibility for every object on a plate, not just its roots, because
+isolating a part keeps its ancestors visible: a plate root left visible does not
+by itself mean the whole plate is on screen. Only visibility changes, so
+geometry, colors, and materials survive a plate switch untouched. The selector is
+omitted entirely for single-plate scenes.

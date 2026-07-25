@@ -32,7 +32,10 @@ const BAMBU_PROJECT_SETTINGS: &str = "Metadata/project_settings.config";
 const BAMBU_MODEL_SETTINGS: &str = "Metadata/model_settings.config";
 
 /// Guard so a hostile package cannot make us allocate unbounded plate records.
-const MAX_PLATES: usize = 1_000;
+///
+/// `pub(crate)` so `threemf::MAX_SCENE_PLATES` can assert equality at compile
+/// time rather than the two literals drifting apart independently.
+pub(crate) const MAX_PLATES: usize = 1_000;
 /// Guard so thumbnail RPCs cannot enumerate or decode unbounded image payloads.
 const MAX_THUMBNAIL_PARTS: usize = MAX_PLATES;
 const MAX_THUMBNAIL_PART_BYTES: u64 = 16 * 1024 * 1024;

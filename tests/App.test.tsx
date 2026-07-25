@@ -16,7 +16,10 @@ import type {
   ServerProfile,
 } from '@shared/ipc';
 import { rootIdForPath } from '../src/renderer/library/model.js';
-import type { SceneMesh } from '../src/renderer/viewer/types.js';
+import { ALL_PLATES } from '../src/renderer/viewer/plateSelection.js';
+// Typing the mock from the real props means a signature change here is a
+// typecheck error rather than a runtime failure in an unrelated assertion.
+import type { PreviewWorkspaceProps } from '../src/renderer/viewer/PreviewWorkspace.js';
 
 vi.mock('../src/renderer/viewer/PreviewWorkspace.js', () => ({
   PreviewWorkspace: ({
@@ -30,20 +33,9 @@ vi.mock('../src/renderer/viewer/PreviewWorkspace.js', () => ({
     onToggleObject,
     onToggleAllObjects,
     onTogglePlate,
+    onSelectPlate,
     onIsolateObject,
-  }: {
-    name: string;
-    loading: boolean;
-    error: string | null;
-    mesh: SceneMesh | null;
-    hiddenObjects: ReadonlySet<string>;
-    isolatedObject: string | null;
-    onClose: () => void;
-    onToggleObject: (id: string) => void;
-    onToggleAllObjects: (visible: boolean) => void;
-    onTogglePlate: (plateId: string, visible: boolean) => void;
-    onIsolateObject: (id: string | null) => void;
-  }) => (
+  }: PreviewWorkspaceProps) => (
     <section role="dialog" aria-label={`3D preview of ${name}`}>
       <span>{loading ? `Loading ${name}` : null}</span>
       <span>{error}</span>
@@ -69,6 +61,15 @@ vi.mock('../src/renderer/viewer/PreviewWorkspace.js', () => ({
       </button>
       <button type="button" onClick={() => onTogglePlate('plate-1', false)}>
         Hide plate 2
+      </button>
+      <button
+        type="button"
+        onClick={() => onSelectPlate({ kind: 'plate', plateId: 'plate-1' })}
+      >
+        Select plate 2
+      </button>
+      <button type="button" onClick={() => onSelectPlate(ALL_PLATES)}>
+        Select all plates
       </button>
       <button type="button" onClick={() => onToggleAllObjects(false)}>
         Hide all
@@ -953,6 +954,20 @@ describe('<App />', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Hide all' }));
     await waitFor(() => expect(hidden()).toBe('body,lid,spare'));
+
+    // Selecting a plate hides the other plates' roots outright, so it recovers
+    // from "everything hidden" rather than composing with it.
+    fireEvent.click(screen.getByRole('button', { name: 'Select plate 2' }));
+    await waitFor(() => expect(hidden()).toBe('body'));
+    expect(isolated()).toBe('');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Isolate lid' }));
+    await waitFor(() => expect(isolated()).toBe('lid'));
+
+    // Returning to all plates clears both the plate filter and the isolation.
+    fireEvent.click(screen.getByRole('button', { name: 'Select all plates' }));
+    await waitFor(() => expect(hidden()).toBe(''));
+    expect(isolated()).toBe('');
   });
 
   it('blocks profiles and imports while the open-file picker is deferred', async () => {

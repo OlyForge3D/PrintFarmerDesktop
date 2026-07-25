@@ -63,6 +63,28 @@ function sceneMesh(): SceneMesh {
   };
 }
 
+/** A two-plate 3MF, the shape the sidecar emits for a Bambu/Orca project. */
+function multiPlateSceneMesh(): SceneMesh {
+  const base = sceneMesh();
+  const second = {
+    ...base.objects[0]!,
+    id: 'spare',
+    sourceId: 'object-3',
+    children: [],
+    plateId: 'plate-1',
+    buildItemIndex: 1,
+  };
+  return {
+    ...base,
+    objects: [...base.objects, second],
+    rootObjectIds: ['body', 'spare'],
+    plates: [
+      { id: 'plate-0', name: 'Plate 1', index: 0, rootObjectIds: ['body'] },
+      { id: 'plate-1', name: 'Plate 2', index: 1, rootObjectIds: ['spare'] },
+    ],
+  };
+}
+
 function baseProps(): PreviewWorkspaceProps {
   return {
     name: 'widget.3mf',
@@ -83,6 +105,7 @@ function baseProps(): PreviewWorkspaceProps {
     onToggleObject: vi.fn(),
     onToggleAllObjects: vi.fn(),
     onTogglePlate: vi.fn(),
+    onSelectPlate: vi.fn(),
     onIsolateObject: vi.fn(),
   };
 }
@@ -109,6 +132,7 @@ describe('<PreviewWorkspace />', () => {
       onToggleObject: vi.fn(),
       onToggleAllObjects: vi.fn(),
       onTogglePlate: vi.fn(),
+      onSelectPlate: vi.fn(),
       onIsolateObject: vi.fn(),
     };
     const { rerender } = render(
@@ -176,6 +200,68 @@ describe('<PreviewWorkspace />', () => {
     // control must land on the tree row rather than on a `tabindex="-1"`
     // hide/isolate button.
     fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(screen.getByRole('treeitem', { name: 'Plate 1' })).toHaveFocus();
+  });
+
+  it('omits the plate selector for a single-plate scene', () => {
+    render(<PreviewWorkspace {...baseProps()} mesh={sceneMesh()} />);
+
+    expect(screen.queryByRole('group', { name: 'Plate' })).toBeNull();
+  });
+
+  it('offers a plate selector and forwards the choice for a multi-plate scene', () => {
+    const props = { ...baseProps(), mesh: multiPlateSceneMesh() };
+    render(<PreviewWorkspace {...props} />);
+
+    const selector = screen.getByRole('group', { name: 'Plate' });
+    expect(
+      within(selector)
+        .getAllByRole('radio')
+        .map((radio) => radio.getAttribute('value')),
+    ).toEqual(['all', 'plate-0', 'plate-1']);
+
+    fireEvent.click(within(selector).getByRole('radio', { name: 'Plate 2' }));
+    expect(props.onSelectPlate).toHaveBeenCalledWith({
+      kind: 'plate',
+      plateId: 'plate-1',
+    });
+  });
+
+  it('keeps a single Tab cycle once the plate selector appears', () => {
+    // The single-plate case above renders no selector, so it cannot catch a
+    // regression in the focus trap's bounds. The radios sit between the
+    // toolbar and the part tree, so `first` and `last` must be unchanged and
+    // Shift+Tab off the first control must still wrap to the tree.
+    render(<PreviewWorkspace {...baseProps()} mesh={multiPlateSceneMesh()} />);
+
+    expect(screen.getByRole('radio', { name: 'All plates' })).toBeChecked();
+    expect(
+      screen.getByRole('button', { name: 'Back to library' }),
+    ).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+
+    expect(screen.getByRole('treeitem', { name: 'Plate 1' })).toHaveFocus();
+  });
+
+  it('keeps an unchecked radio group as one tab stop', () => {
+    // Custom visibility leaves no radio checked. A radio group with nothing
+    // checked is still exactly one tab stop - only the first radio is tabbable
+    // - so the trap's control list must not grow by one entry per plate.
+    const props = {
+      ...baseProps(),
+      mesh: multiPlateSceneMesh(),
+      hiddenObjects: new Set(['lid']),
+    };
+    render(<PreviewWorkspace {...props} />);
+
+    expect(screen.getByRole('status')).toHaveTextContent('Custom visibility');
+    for (const radio of screen.getAllByRole('radio')) {
+      expect(radio).not.toBeChecked();
+    }
+
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+
     expect(screen.getByRole('treeitem', { name: 'Plate 1' })).toHaveFocus();
   });
 });

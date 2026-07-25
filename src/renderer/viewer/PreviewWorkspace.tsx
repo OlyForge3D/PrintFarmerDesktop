@@ -5,6 +5,8 @@ import { ModelStats } from '../library/ModelStats';
 import { PartTree } from '../library/PartTree';
 import { VendorPanel } from '../library/VendorPanel';
 import { ModelViewer, type Projection } from './ModelViewer';
+import { PlateSelector } from './PlateSelector';
+import type { PlateSelection } from './plateSelection';
 import type { SceneMesh } from './types';
 
 export interface PreviewWorkspaceProps {
@@ -26,6 +28,7 @@ export interface PreviewWorkspaceProps {
   onToggleObject: (id: string) => void;
   onToggleAllObjects: (visible: boolean) => void;
   onTogglePlate: (plateId: string, visible: boolean) => void;
+  onSelectPlate: (selection: PlateSelection) => void;
   onIsolateObject: (id: string | null) => void;
   retargetEligible?: boolean;
   onRetarget?: () => void;
@@ -50,6 +53,7 @@ export function PreviewWorkspace({
   onToggleObject,
   onToggleAllObjects,
   onTogglePlate,
+  onSelectPlate,
   onIsolateObject,
   retargetEligible = false,
   onRetarget = () => undefined,
@@ -209,6 +213,12 @@ export function PreviewWorkspace({
               {mesh.objects.length > 0 ? (
                 <section>
                   <h2>Scene</h2>
+                  <PlateSelector
+                    plates={mesh.plates}
+                    objects={mesh.objects}
+                    hidden={hiddenObjects}
+                    onSelect={onSelectPlate}
+                  />
                   <PartTree
                     objects={mesh.objects}
                     rootObjectIds={mesh.rootObjectIds}
