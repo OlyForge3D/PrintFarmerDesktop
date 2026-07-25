@@ -196,6 +196,15 @@ export function ModelViewer({
       } else {
         resetView(camera, controls, center, radius, aspectOf(container));
       }
+      // Some of these change what the next frame looks like without moving the
+      // camera, and the controls only ever report movement: an orthographic
+      // zoom just writes `camera.zoom`, and a reset lands an already-default
+      // camera back on the pose it was already on. Neither produces a `change`,
+      // so the on-demand loop would sit still with a stale viewport. Asking for
+      // the frame here covers every action instead of relying on each helper to
+      // remember, and costs nothing when `change` fires too - both set the same
+      // flag, which the loop clears after a single draw.
+      requestRender();
     };
     container.addEventListener('keydown', onKeyDown);
 

@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SceneMesh } from '../src/renderer/viewer/types';
@@ -105,6 +105,17 @@ async function loadHarness() {
         domElement: HTMLElement;
         enableDamping = false;
         target = new THREE.Vector3();
+        // The real controls decide whether to fire `change` by comparing the
+        // camera pose against the last one they saw, and stay silent when
+        // nothing moved. Modelling that is what makes these tests able to tell
+        // "the viewer repainted" from "the mock announced something": a mock
+        // that never fired would report every camera path as broken, and one
+        // that always fired would hide a missing invalidation. Deliberately
+        // omitted is the controls' own `zoomChanged` flag, because nothing in
+        // the viewer drives zoom through the controls - which is precisely the
+        // gap an external write to `camera.zoom` falls through.
+        lastPosition = new THREE.Vector3(NaN, NaN, NaN);
+        lastQuaternion = new THREE.Quaternion(NaN, NaN, NaN, NaN);
 
         constructor(object: unknown, domElement: HTMLElement) {
           super();
@@ -114,7 +125,15 @@ async function loadHarness() {
         }
 
         update(): boolean {
-          return false;
+          const camera = this.object as ThreeNs.Camera;
+          const moved =
+            !camera.position.equals(this.lastPosition) ||
+            !camera.quaternion.equals(this.lastQuaternion);
+          this.lastPosition.copy(camera.position);
+          this.lastQuaternion.copy(camera.quaternion);
+          if (!moved) return false;
+          this.dispatchEvent({ type: 'change' });
+          return true;
         }
 
         dispose(): void {}
@@ -346,6 +365,116 @@ describe('<ModelViewer />', () => {
       runFrame();
 
       expect(renderer.render).not.toHaveBeenCalled();
+    });
+
+    describe('keyboard camera actions', () => {
+      /**
+       * Draw one frame, hand back the camera the viewer is actually using, then
+       * settle. Tests need the camera to show that a key was acted on at all,
+       * separately from whether the screen was repainted - those are the two
+       * halves this bug came apart along.
+       */
+      function cameraAfterFirstDraw(
+        renderer: MockWebGLRendererLike,
+      ): ThreeNs.Camera {
+        runFrame();
+        const camera = renderer.render.mock.calls[0]?.[1] as
+          ThreeNs.Camera | undefined;
+        if (!camera) throw new Error('the viewer never drew a first frame');
+        settle(renderer);
+        return camera;
+      }
+
+      function pressKey(key: string): void {
+        fireEvent.keyDown(screen.getByRole('application'), { key });
+      }
+
+      it('redraws when the camera is orbited from the keyboard', async () => {
+        const { ModelViewer, lastRenderer } = await loadHarness();
+        const { unmount } = render(<ModelViewer mesh={simpleMesh('m')} />);
+        const renderer = lastRenderer();
+        settle(renderer);
+
+        pressKey('ArrowLeft');
+        runFrame();
+
+        // Control. Orbiting moves the camera pose, which the controls do
+        // observe, so this repaints through `change` on its own. It passing
+        // while the orthographic cases below fail is what shows the harness
+        // reports real movement rather than nothing at all.
+        expect(renderer.render).toHaveBeenCalledTimes(1);
+        unmount();
+      });
+
+      it('redraws when a perspective camera is zoomed from the keyboard', async () => {
+        const { ModelViewer, lastRenderer } = await loadHarness();
+        const { unmount } = render(
+          <ModelViewer mesh={simpleMesh('m')} projection="perspective" />,
+        );
+        const renderer = lastRenderer();
+        const camera = cameraAfterFirstDraw(renderer);
+        const pose = camera.position.clone();
+
+        pressKey('+');
+        runFrame();
+
+        // Control. Same key and same handler as the orthographic case; the only
+        // difference is that a perspective dolly moves the camera, so the
+        // controls see it. This is why the bug was projection-specific.
+        expect(camera.position.equals(pose)).toBe(false);
+        expect(renderer.render).toHaveBeenCalledTimes(1);
+        unmount();
+      });
+
+      it('redraws when an orthographic camera is zoomed from the keyboard', async () => {
+        const { ModelViewer, lastRenderer } = await loadHarness();
+        const { unmount } = render(
+          <ModelViewer mesh={simpleMesh('m')} projection="orthographic" />,
+        );
+        const renderer = lastRenderer();
+        const camera = cameraAfterFirstDraw(
+          renderer,
+        ) as ThreeNs.OrthographicCamera;
+        const pose = camera.position.clone();
+
+        pressKey('+');
+        runFrame();
+
+        // An orthographic zoom writes `camera.zoom` and leaves the pose alone,
+        // so the controls have nothing to report. Asserting the zoom changed is
+        // not enough on its own - that was already true while the viewport sat
+        // stale, which is exactly how this shipped.
+        expect(camera.zoom).toBeGreaterThan(1);
+        expect(camera.position.equals(pose)).toBe(true);
+        expect(renderer.render).toHaveBeenCalledTimes(1);
+        unmount();
+      });
+
+      it('redraws when the view is reset from the keyboard after an orthographic zoom', async () => {
+        const { ModelViewer, lastRenderer } = await loadHarness();
+        const { unmount } = render(
+          <ModelViewer mesh={simpleMesh('m')} projection="orthographic" />,
+        );
+        const renderer = lastRenderer();
+        const camera = cameraAfterFirstDraw(
+          renderer,
+        ) as ThreeNs.OrthographicCamera;
+
+        pressKey('+');
+        runFrame();
+        renderer.render.mockClear();
+
+        pressKey('r');
+        runFrame();
+
+        // Reset restores zoom to 1, but framing puts an already-default camera
+        // back on the pose it was already on, so this path is silent for the
+        // same reason the zoom is. Repairing only the zoom would leave R
+        // showing the zoomed image forever.
+        expect(camera.zoom).toBe(1);
+        expect(renderer.render).toHaveBeenCalledTimes(1);
+        unmount();
+      });
     });
   });
 
