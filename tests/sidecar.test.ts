@@ -109,6 +109,108 @@ describe('SidecarClient', () => {
     ]);
   });
 
+  it('binds a loaded scene to the recipe from the same sidecar channel', async () => {
+    const methods: string[] = [];
+    const { channel } = makeFakeChannel((request, emit) => {
+      methods.push(request.method);
+      emit(
+        JSON.stringify({
+          id: request.id,
+          ok: true,
+          result:
+            request.method === 'handshake'
+              ? {
+                  protocolVersion: 1,
+                  sidecarVersion: 'test',
+                  sceneCacheRecipe: 'scene/v2.2',
+                }
+              : { sceneVersion: 2 },
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel, {
+      requireProtocolHandshake: true,
+    });
+
+    await expect(client.sceneCacheRecipe()).resolves.toBe('scene/v2.2');
+    await expect(client.loadSceneWithRecipe('C:/part.stl')).resolves.toEqual({
+      scene: { sceneVersion: 2 },
+      cacheRecipe: 'scene/v2.2',
+    });
+    expect(methods).toEqual(['handshake', 'loadScene']);
+  });
+
+  it('uses the replacement channel recipe when the sidecar restarts before loading', async () => {
+    const first = makeFakeChannel((request, emit) => {
+      emit(
+        JSON.stringify({
+          id: request.id,
+          ok: true,
+          result: {
+            protocolVersion: 1,
+            sidecarVersion: 'old',
+            sceneCacheRecipe: 'scene/v2.1',
+          },
+        }),
+      );
+    });
+    const second = makeFakeChannel((request, emit) => {
+      emit(
+        JSON.stringify({
+          id: request.id,
+          ok: true,
+          result:
+            request.method === 'handshake'
+              ? {
+                  protocolVersion: 1,
+                  sidecarVersion: 'new',
+                  sceneCacheRecipe: 'scene/v2.2',
+                }
+              : { sceneVersion: 2 },
+        }),
+      );
+    });
+    let starts = 0;
+    const client = new SidecarClient(
+      () => {
+        starts += 1;
+        return starts === 1 ? first.channel : second.channel;
+      },
+      { requireProtocolHandshake: true },
+    );
+
+    await expect(client.sceneCacheRecipe()).resolves.toBe('scene/v2.1');
+    first.closeFromSidecar(0);
+    await expect(client.loadSceneWithRecipe('C:/part.stl')).resolves.toEqual({
+      scene: { sceneVersion: 2 },
+      cacheRecipe: 'scene/v2.2',
+    });
+    expect(starts).toBe(2);
+  });
+
+  it('keeps a missing scene recipe as an explicit unversioned state', async () => {
+    const { channel } = makeFakeChannel((request, emit) => {
+      emit(
+        JSON.stringify({
+          id: request.id,
+          ok: true,
+          result:
+            request.method === 'handshake'
+              ? { protocolVersion: 1, sidecarVersion: 'legacy' }
+              : { sceneVersion: 2 },
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel, {
+      requireProtocolHandshake: true,
+    });
+
+    await expect(client.sceneCacheRecipe()).resolves.toBeUndefined();
+    await expect(client.loadSceneWithRecipe('C:/part.stl')).resolves.toEqual({
+      scene: { sceneVersion: 2 },
+    });
+  });
+
   it('starts serialized request deadlines only when each request is dispatched', async () => {
     let releaseFirst: (() => void) | undefined;
     const { channel, sent } = makeFakeChannel((request, emit) => {

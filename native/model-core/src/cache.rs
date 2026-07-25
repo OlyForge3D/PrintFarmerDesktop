@@ -143,6 +143,17 @@ mod tests {
     }
 
     #[test]
+    fn cache_key_matches_the_electron_consumer_test_vector() {
+        // Keep the Electron main-process persistence key byte-for-byte aligned
+        // with the sidecar helper even though the process boundary prevents a
+        // direct function call.
+        assert_eq!(
+            cache_key(&"a".repeat(64), "scene/v2.2"),
+            "f4ef1c31ccf37c2e0cf75281448694835e8fe0d30473f6be361e15369c8c9672"
+        );
+    }
+
+    #[test]
     fn no_two_distinct_recipe_and_hash_pairs_share_a_key() {
         // The old key was `format!("{recipe}/{model_hash}")`, which is only
         // unambiguous while neither field can contain the separator. Nothing

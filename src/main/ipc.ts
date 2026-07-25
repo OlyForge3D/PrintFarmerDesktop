@@ -29,6 +29,7 @@ import {
   TargetProfileService,
 } from './targetProfiles.js';
 import { RetargetArtifactService, type Dialogs } from './retargetArtifacts.js';
+import { SceneCacheService } from './sceneCache.js';
 
 declare const __PRINTFARMER_E2E_BUILD__: boolean;
 
@@ -119,6 +120,7 @@ export function registerIpcHandlers(
   sharedRetargetSidecar?: SidecarClient,
   uploadJobService?: UploadJobService,
   rootApprovalStore?: RootApprovalStore,
+  sharedSceneCache?: SceneCacheService,
 ): () => Promise<void> {
   const sidecar =
     sharedSidecar ?? new SidecarClient(channelFactory ?? spawnSidecarChannel);
@@ -132,6 +134,15 @@ export function registerIpcHandlers(
   const approvals =
     rootApprovalStore ??
     new RootApprovalStore({ userDataPath: app.getPath('userData') });
+  const sceneCache =
+    sharedSceneCache ??
+    new SceneCacheService({
+      userDataPath: app.getPath('userData'),
+      sidecar,
+    });
+  void sceneCache.initialize().catch((error: unknown) => {
+    console.error('[scene-cache] startup invalidation failed', error);
+  });
   const targetProfiles = new TargetProfileService({
     userDataPath: app.getPath('userData'),
     sidecar: retargetSidecar,
@@ -243,6 +254,7 @@ export function registerIpcHandlers(
       let ok = false;
       try {
         const handshake = await sidecar.handshake();
+        await sceneCache.adoptRecipe(handshake.sceneCacheRecipe);
         sidecarVersion = handshake.sidecarVersion;
         ok = true;
       } catch {
@@ -398,7 +410,7 @@ export function registerIpcHandlers(
   ipcMain.handle(IpcChannel.LoadScene, async (_event, rawRequest: unknown) => {
     const request = ipcSchemas[IpcChannel.LoadScene].request.parse(rawRequest);
     const approvedPath = await authorizeRendererFile(request.path);
-    const raw = await sidecar.loadScene(approvedPath);
+    const raw = await sceneCache.loadScene(approvedPath);
     // Validate the sidecar's response against the contract before trusting it
     // in the renderer.
     return ipcSchemas[IpcChannel.LoadScene].response.parse(raw);
