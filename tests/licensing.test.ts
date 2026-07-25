@@ -14,6 +14,12 @@ interface LockfileMetadata {
   };
 }
 
+interface ProvenanceReview {
+  status?: unknown;
+  approvedBy?: unknown;
+  decisionReference?: unknown;
+}
+
 const repoRoot = path.resolve(import.meta.dirname, '..');
 
 function readText(relativePath: string): string {
@@ -34,6 +40,25 @@ function parseLockfile(): LockfileMetadata {
     throw new Error('package-lock.json must contain a JSON object');
   }
   return parsed;
+}
+
+function parseProvenanceReview(): ProvenanceReview {
+  const parsed: unknown = JSON.parse(
+    readText('compliance/printer-calibration-provenance.json'),
+  );
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    !('repository' in parsed) ||
+    typeof parsed.repository !== 'object' ||
+    parsed.repository === null ||
+    !('licenseReview' in parsed.repository) ||
+    typeof parsed.repository.licenseReview !== 'object' ||
+    parsed.repository.licenseReview === null
+  ) {
+    throw new Error('Provenance manifest must contain a license review');
+  }
+  return parsed.repository.licenseReview;
 }
 
 describe('repository licensing metadata', () => {
@@ -61,6 +86,15 @@ describe('repository licensing metadata', () => {
       'releases/tag/<tag>',
     );
     expect(readText('.github/CODEOWNERS')).toContain('/compliance/ @jpapiez');
+    expect(parseProvenanceReview()).toMatchObject({
+      status: 'approved',
+      approvedBy: '@jpapiez',
+      decisionReference:
+        'https://github.com/OlyForge3D/PrintFarmerDesktop/issues/51#issuecomment-5075723583',
+    });
+    expect(
+      readText('docs/adr/0001-printer-calibration-source-provenance.md'),
+    ).toContain('**Status:** Accepted');
   });
 
   it('keeps public Printer Calibration framing native to PFD', () => {

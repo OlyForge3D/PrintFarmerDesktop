@@ -120,14 +120,6 @@ function runCheck(root: string, manifestPath: string) {
 function createValidDerivedFixture() {
   const root = createRoot();
   const manifest = loadManifest();
-  manifest.repository.licenseReview = {
-    ...manifest.repository.licenseReview,
-    status: 'approved',
-    approvedBy: '@jpapiez',
-    approvedAt: '2026-07-24',
-    decisionReference:
-      'https://github.com/OlyForge3D/PrintFarmerDesktop/pull/999',
-  };
 
   const sourcePath = 'src/logic/formulas.ts';
   const sourceBlob = '5d1ac9edd84bde6bb5993204efcf1f33b001eecb';
@@ -244,12 +236,30 @@ describe('Printer Calibration provenance enforcement', () => {
 
   it('rejects derived source until repository licensing is approved', () => {
     const { root, manifest } = createValidDerivedFixture();
-    manifest.repository.licenseReview = loadManifest().repository.licenseReview;
+    manifest.repository.licenseReview = {
+      status: 'pending-maintainer-approval',
+      issue: 'https://github.com/OlyForge3D/PrintFarmerDesktop/issues/51',
+      approvedBy: null,
+      approvedAt: null,
+      decisionReference: null,
+    };
     const result = runCheck(root, writeManifest(root, manifest));
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(
       'Source-derived files are forbidden while repository licensing is pending-maintainer-approval',
+    );
+  });
+
+  it('rejects a forged repository licensing approval', () => {
+    const root = createRoot();
+    const manifest = loadManifest();
+    manifest.repository.licenseReview.approvedBy = '@unapproved-reviewer';
+    const result = runCheck(root, writeManifest(root, manifest));
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      'Repository licensing approval must name @jpapiez',
     );
   });
 

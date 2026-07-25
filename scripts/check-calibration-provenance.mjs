@@ -183,9 +183,12 @@ const fallbackIgnoredRoots = [
   'native/target',
   'out',
 ];
-const authorizedLicenseReviewers = new Set(['@jpapiez']);
-const approvalPullRequestPattern =
-  /^https:\/\/github\.com\/OlyForge3D\/PrintFarmerDesktop\/pull\/[1-9]\d*$/;
+const approvedLicenseReview = Object.freeze({
+  approvedBy: '@jpapiez',
+  approvedAt: '2026-07-24',
+  decisionReference:
+    'https://github.com/OlyForge3D/PrintFarmerDesktop/issues/51#issuecomment-5075723583',
+});
 
 function parseArguments(argv) {
   let root = process.cwd();
@@ -516,14 +519,19 @@ function validateLicenseReview(manifest, errors) {
         'Approved repository licensing requires approvedBy, approvedAt, and decisionReference',
       );
     }
-    if (!authorizedLicenseReviewers.has(review.approvedBy)) {
+    if (review.approvedBy !== approvedLicenseReview.approvedBy) {
       errors.push(
-        `Repository licensing approval must name an authorized compliance CODEOWNER: ${[...authorizedLicenseReviewers].join(', ')}`,
+        `Repository licensing approval must name ${approvedLicenseReview.approvedBy}`,
       );
     }
-    if (!approvalPullRequestPattern.test(review.decisionReference ?? '')) {
+    if (review.approvedAt !== approvedLicenseReview.approvedAt) {
       errors.push(
-        'Repository licensing approval decisionReference must be a PrintFarmerDesktop pull request URL',
+        `Repository licensing approval date must be ${approvedLicenseReview.approvedAt}`,
+      );
+    }
+    if (review.decisionReference !== approvedLicenseReview.decisionReference) {
+      errors.push(
+        `Repository licensing approval must reference ${approvedLicenseReview.decisionReference}`,
       );
     }
   } else if (

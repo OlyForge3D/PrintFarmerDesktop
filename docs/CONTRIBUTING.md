@@ -54,17 +54,13 @@ Rust sidecar (run from `native/`):
 
 ## Printer Calibration source-derived contributions
 
-No source-derived Printer Calibration file may be added while
-`repository.licenseReview.status` is
-`pending-maintainer-approval` in
-`compliance/printer-calibration-provenance.json`.
+PFD's `AGPL-3.0-only` adoption is approved and recorded in
+`compliance/printer-calibration-provenance.json`. If that approval record is
+removed or changed, CI rejects all source-derived files. Repository
+administrators should require review from the compliance CODEOWNER (`@jpapiez`)
+on the protected target branch.
 
-Approval must name the verified compliance CODEOWNER (`@jpapiez`) and link the
-approving PrintFarmerDesktop pull request. Repository administrators must require
-Code Owner review on the protected target branch; CODEOWNERS alone does not
-enforce review.
-
-After authorized maintainers record approval, source-derived files must:
+Source-derived files must:
 
 1. Use only the exact source revision pinned in the provenance manifest. Do not
    consult or copy older revisions, branches, forks, local history, static

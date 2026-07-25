@@ -1,32 +1,25 @@
 # ADR 0001: Printer Calibration source provenance
 
-- **Status:** Proposed; authorized maintainer licensing approval required
+- **Status:** Accepted
 - **Date:** 2026-07-24
 - **Issue:** https://github.com/OlyForge3D/PrintFarmerDesktop/issues/51
+- **Approval:** https://github.com/OlyForge3D/PrintFarmerDesktop/issues/51#issuecomment-5075723583
 
 ## Context
 
 PFD will provide Printer Calibration as a native workspace based on upstream
 OrcaSlicer behavior and the official OrcaSlicer calibration wiki. Selected
-domain logic may later be adapted from an AGPL source, but PFD currently claims
-a proprietary/`UNLICENSED` boundary and has no file-level provenance control.
-Source-derived work cannot begin until the repository license and source
-availability approach are approved by maintainers who are authorized to
-relicense the existing PFD work.
+domain logic may later be adapted from an AGPL source. PFD previously claimed a
+proprietary/`UNLICENSED` boundary and had no file-level provenance control.
 
-This ADR proposes `AGPL-3.0-only` for the PFD repository and distribution.
-Adding the metadata in this PR records the proposed implementation; it does not
-itself claim that the required maintainer decision occurred. The machine
-manifest remains `pending-maintainer-approval`, and CI rejects every derived
-file until that state is changed with reviewer identity, date, and decision
-reference. Approval must identify the verified repository administrator
-`@jpapiez` and the approving PrintFarmerDesktop pull request.
+On 2026-07-24, repository owner `@jpapiez` confirmed that PFD and PrintFarmer
+shall adopt GNU AGPL v3.0. The decision is recorded on issue #51. This ADR adopts
+`AGPL-3.0-only` for the PFD repository and distribution; the machine manifest
+binds approval to that exact decision.
 
-`.github/CODEOWNERS` protects the licensing, provenance, checker, and enforcement
-test files. GitHub reported that the `development` branch was not protected
-during this review, so CODEOWNERS is not yet an enforceable approval gate. A
-repository administrator must enable required Code Owner review before this ADR
-can move to Approved or any source-derived file can merge.
+`.github/CODEOWNERS` protects the licensing, provenance, checker, workflow,
+packaging, and enforcement-test files. The target branch should require Code
+Owner review so future policy changes cannot bypass that ownership boundary.
 
 ## Approved source boundary
 
@@ -51,9 +44,9 @@ identify AGPL v3, and the pinned `License` blob contains the GNU AGPL v3 text.
 The manifest contains the canonical URLs and archive size so this evidence can
 be recovered without relying on a branch name.
 
-The source-revision decision is distinct from the pending PFD relicensing
-decision. Eligibility never grants blanket approval to copy a file. Every
-adaptation requires an exact source path/blob decision and destination record.
+Repository licensing approval does not grant blanket approval to copy a source
+file. Every adaptation still requires an exact source path/blob decision and
+destination record.
 
 ## Explicit exclusions
 
@@ -90,7 +83,7 @@ provenance checker:
 
 - validates the manifest against its versioned JSON Schema;
 - compares the source identity to an immutable checker allowlist;
-- rejects derived code while repository licensing approval is pending;
+- rejects derived code if repository licensing approval is absent or regresses;
 - rejects files in a derived root that lack a manifest record;
 - rejects source paths/blobs that are not eligible in the pinned manifest;
 - requires original attribution, an AGPL SPDX identifier, modification and
@@ -99,8 +92,8 @@ provenance checker:
 
 CI and release workflows run the same offline check. Updating the checker,
 manifest, schema, and this ADR is a visible policy change requiring maintainer
-review. Branch protection must require the compliance CODEOWNER; arbitrary text
-in the manifest is not evidence of approval.
+review. The checker binds repository approval to the exact owner decision rather
+than trusting arbitrary manifest text.
 
 ## Corresponding Source and repository boundary
 
@@ -108,17 +101,14 @@ PFD release source is delivered from the immutable release tag as described in
 `docs/compliance/CORRESPONDING_SOURCE.md`; compliance files are also copied into
 packaged applications.
 
-The separate PrintFarmer repository currently declares MIT. MIT code is
-license-compatible as input to an AGPL work, but an affected PrintFarmer
-component cannot incorporate AGPL-derived source and continue to be distributed
-only as MIT. The generation code-owning issue,
-[PrintFarmer #899](https://github.com/OlyForge3D/PrintFarmer/issues/899), must
-record one of two decisions before implementation: establish an approved AGPL
-licensing and corresponding-source boundary for every affected component and
-distribution, or independently implement the upstream OrcaSlicer behavior
-without copying the pinned source. Until then, no pinned source blob may be
-copied into PrintFarmer. This repository does not modify or approve that backend
-decision.
+The separate PrintFarmer repository currently declares MIT, but the confirmed
+product direction requires it to adopt GNU AGPL v3.0 as well. That repository
+change is owned by
+[PrintFarmer #902](https://github.com/OlyForge3D/PrintFarmer/issues/902).
+Until #902 establishes the backend license, notices, source availability, and
+provenance controls, no pinned source blob may be copied into PrintFarmer and
+[PrintFarmer #899](https://github.com/OlyForge3D/PrintFarmer/issues/899) remains
+blocked. This repository does not modify the backend.
 
 ## Advancing or recovering the pin
 

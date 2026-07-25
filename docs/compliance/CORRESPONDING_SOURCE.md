@@ -33,12 +33,13 @@ If a modified PFD version is made remotely interactive, its operator must offer
 that version's Corresponding Source to remote users as required by AGPL section 13. A PFD source link does not satisfy source obligations for separately
 modified PrintFarmer components.
 
-No source-derived calibration code may enter PrintFarmer under its current MIT
-distribution solely because PFD is AGPL.
-[PrintFarmer #899](https://github.com/OlyForge3D/PrintFarmer/issues/899), which
-owns calibration generation, must first record an approved compatible licensing
-and source-delivery decision for every affected component, or implement the
-upstream OrcaSlicer behavior independently without copying protected source.
+The confirmed product direction requires PrintFarmer to adopt GNU AGPL v3.0 in
+its own repository. That work is tracked by
+[PrintFarmer #902](https://github.com/OlyForge3D/PrintFarmer/issues/902). Until
+it establishes the backend license, notices, corresponding-source delivery, and
+provenance controls, no source-derived calibration code may enter PrintFarmer
+and [PrintFarmer #899](https://github.com/OlyForge3D/PrintFarmer/issues/899)
+remains blocked.
 
 ## Recovery
 

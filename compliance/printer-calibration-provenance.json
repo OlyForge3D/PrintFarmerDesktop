@@ -6,11 +6,11 @@
     "name": "OlyForge3D/PrintFarmerDesktop",
     "license": "AGPL-3.0-only",
     "licenseReview": {
-      "status": "pending-maintainer-approval",
+      "status": "approved",
       "issue": "https://github.com/OlyForge3D/PrintFarmerDesktop/issues/51",
-      "approvedBy": null,
-      "approvedAt": null,
-      "decisionReference": null
+      "approvedBy": "@jpapiez",
+      "approvedAt": "2026-07-24",
+      "decisionReference": "https://github.com/OlyForge3D/PrintFarmerDesktop/issues/51#issuecomment-5075723583"
     }
   },
   "approvedSource": {
