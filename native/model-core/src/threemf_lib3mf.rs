@@ -1508,10 +1508,41 @@ where
 }
 
 const MODEL_CORE_CARGO_TOML: &str = include_str!("../Cargo.toml");
+const LIB3MF_PIN_LOCK: &str = include_str!("../lib3mf-pin.lock");
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PinnedLib3mfArtifact {
+    revision: String,
+    extension: String,
+    sha256: String,
+}
 
 fn pinned_lib3mf_revision() -> &'static str {
     extract_pinned_lib3mf_revision(MODEL_CORE_CARGO_TOML)
         .expect("native/model-core/Cargo.toml must pin lib3mf-ffi to an exact rev")
+}
+
+fn pinned_lib3mf_artifact(extension: &str) -> Result<PinnedLib3mfArtifact, String> {
+    let manifest_revision = pinned_lib3mf_revision();
+    let lock = parse_pinned_lib3mf_lock(LIB3MF_PIN_LOCK)?;
+    if lock.revision != manifest_revision {
+        return Err(format!(
+            "native/model-core/lib3mf-pin.lock pins revision {} but Cargo.toml pins {}; update both together",
+            lock.revision, manifest_revision
+        ));
+    }
+
+    let sha256 = lock.hashes.get(extension).ok_or_else(|| {
+        format!(
+            "native/model-core/lib3mf-pin.lock does not record a vetted SHA-256 for lib3mf.{extension}"
+        )
+    })?;
+
+    Ok(PinnedLib3mfArtifact {
+        revision: lock.revision.to_string(),
+        extension: extension.to_string(),
+        sha256: sha256.clone(),
+    })
 }
 
 fn extract_pinned_lib3mf_revision(manifest: &str) -> Result<&str, String> {
@@ -1524,6 +1555,98 @@ fn extract_pinned_lib3mf_revision(manifest: &str) -> Result<&str, String> {
         .ok_or_else(|| {
             "unable to extract lib3mf-ffi rev from native/model-core/Cargo.toml".to_string()
         })
+}
+
+struct PinnedLib3mfLock {
+    revision: String,
+    hashes: HashMap<String, String>,
+}
+
+fn parse_pinned_lib3mf_lock(lockfile: &str) -> Result<PinnedLib3mfLock, String> {
+    let mut revision = None;
+    let mut hashes = HashMap::new();
+
+    for (line_index, line) in lockfile.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        let (key, raw_value) = trimmed.split_once('=').ok_or_else(|| {
+            format!(
+                "invalid native/model-core/lib3mf-pin.lock line {}: expected key = \"value\"",
+                line_index + 1
+            )
+        })?;
+        let key = key.trim();
+        let value = parse_lockfile_value(raw_value.trim(), line_index + 1)?;
+
+        match key {
+            "revision" => {
+                if !is_git_revision(value) {
+                    return Err(format!(
+                        "invalid lib3mf pin revision on line {}: expected 40 lowercase hex characters",
+                        line_index + 1
+                    ));
+                }
+                revision = Some(value.to_string());
+            }
+            "dll" | "dylib" | "so" => {
+                if !is_sha256(value) {
+                    return Err(format!(
+                        "invalid lib3mf SHA-256 for {key} on line {}: expected 64 lowercase hex characters",
+                        line_index + 1
+                    ));
+                }
+                hashes.insert(key.to_string(), value.to_string());
+            }
+            other => {
+                return Err(format!(
+                    "unsupported native/model-core/lib3mf-pin.lock key `{other}` on line {}",
+                    line_index + 1
+                ));
+            }
+        }
+    }
+
+    let revision = revision.ok_or_else(|| {
+        "native/model-core/lib3mf-pin.lock must declare revision = \"<git sha>\"".to_string()
+    })?;
+    for extension in ["dll", "dylib", "so"] {
+        if !hashes.contains_key(extension) {
+            return Err(format!(
+                "native/model-core/lib3mf-pin.lock must declare a vetted SHA-256 for lib3mf.{extension}"
+            ));
+        }
+    }
+
+    Ok(PinnedLib3mfLock { revision, hashes })
+}
+
+fn parse_lockfile_value<'a>(value: &'a str, line_number: usize) -> Result<&'a str, String> {
+    value
+        .strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .ok_or_else(|| {
+            format!(
+                "invalid native/model-core/lib3mf-pin.lock line {}: values must be quoted",
+                line_number
+            )
+        })
+}
+
+fn is_git_revision(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 pub(crate) fn stage_test_library_for_current_exe() -> Result<(), String> {
@@ -1564,6 +1687,20 @@ fn select_pinned_lib3mf_library<F>(
 where
     F: FnMut(&Path) -> Result<String, String>,
 {
+    let artifact = pinned_lib3mf_artifact(extension)?;
+    select_vetted_lib3mf_library(checkouts, &artifact, |revision_path| {
+        verify_revision(revision_path)
+    })
+}
+
+fn select_vetted_lib3mf_library<F>(
+    checkouts: &Path,
+    artifact: &PinnedLib3mfArtifact,
+    mut verify_revision: F,
+) -> Result<PathBuf, String>
+where
+    F: FnMut(&Path) -> Result<String, String>,
+{
     let mut mismatches = Vec::new();
     let mut repo_entries = std::fs::read_dir(checkouts)
         .map_err(|error| format!("unable to read {checkouts:?}: {error}"))?
@@ -1571,7 +1708,6 @@ where
         .collect::<Vec<_>>();
     repo_entries.sort_by_key(|entry| entry.file_name());
 
-    let pinned_revision = pinned_lib3mf_revision();
     for entry in repo_entries {
         let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
         if !name.starts_with("lib3mf_rs-") {
@@ -1588,33 +1724,54 @@ where
             let revision_path = revision.path();
             let candidate = revision_path
                 .join("libraries")
-                .join(format!("lib3mf.{extension}"));
+                .join(format!("lib3mf.{}", artifact.extension));
             if !candidate.is_file() {
                 continue;
             }
 
             let actual_revision = verify_revision(&revision_path)?;
-            if actual_revision == pinned_revision {
-                return Ok(candidate);
+            if actual_revision != artifact.revision {
+                mismatches.push(format!(
+                    "{} resolved to {actual_revision} (expected {})",
+                    revision_path.display(),
+                    artifact.revision
+                ));
+                continue;
             }
 
-            mismatches.push(format!(
-                "{} resolved to {actual_revision} (expected {pinned_revision})",
-                revision_path.display()
-            ));
+            let actual_hash = crate::hash::hash_file(&candidate).map_err(|error| {
+                format!(
+                    "unable to hash staged lib3mf candidate {}: {error}",
+                    candidate.display()
+                )
+            })?;
+            if actual_hash != artifact.sha256 {
+                mismatches.push(format!(
+                    "{} resolved to {} but {} content hash {} did not match vetted SHA-256 {}",
+                    revision_path.display(),
+                    actual_revision,
+                    candidate.display(),
+                    actual_hash,
+                    artifact.sha256
+                ));
+                continue;
+            }
+
+            return Ok(candidate);
         }
     }
 
     if mismatches.is_empty() {
         Err(format!(
             "unable to find lib3mf.{} for pinned revision {} under {:?}",
-            extension, pinned_revision, checkouts
+            artifact.extension, artifact.revision, checkouts
         ))
     } else {
         Err(format!(
-            "refusing to stage lib3mf.{} from cached checkouts because none matched pinned revision {}: {}",
-            extension,
-            pinned_revision,
+            "refusing to stage lib3mf.{} from cached checkouts because none matched pinned revision {} with vetted SHA-256 {}: {}",
+            artifact.extension,
+            artifact.revision,
+            artifact.sha256,
             mismatches.join(" | ")
         ))
     }
@@ -1849,12 +2006,19 @@ mod tests {
     #[test]
     fn pinned_lib3mf_revision_matches_manifest_pin() {
         let revision = pinned_lib3mf_revision();
+        let artifact = pinned_lib3mf_artifact(lib3mf_library_extension()).unwrap();
         assert_eq!(
             extract_pinned_lib3mf_revision(MODEL_CORE_CARGO_TOML).unwrap(),
             revision
         );
+        assert_eq!(artifact.revision, revision);
         assert_eq!(revision.len(), 40);
         assert!(revision.chars().all(|ch| ch.is_ascii_hexdigit()));
+        assert_eq!(artifact.sha256.len(), 64);
+        assert!(artifact
+            .sha256
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')));
     }
 
     #[test]
@@ -1879,6 +2043,56 @@ mod tests {
         assert!(error.contains("refusing to stage"));
         assert!(error.contains(pinned_lib3mf_revision()));
         assert!(error.contains("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"));
+    }
+
+    #[test]
+    fn stage_library_selection_rejects_assume_unchanged_library_tampering() {
+        let temp = tempfile::tempdir().unwrap();
+        let checkouts = temp.path().join("git").join("checkouts");
+        let revision_dir = checkouts.join("lib3mf_rs-test").join("deadbee");
+        init_git_checkout_fixture(&revision_dir);
+        let clean_head = git_stdout(&revision_dir, &["rev-parse", "HEAD"]);
+        let library_path = revision_dir
+            .join("libraries")
+            .join(format!("lib3mf.{}", lib3mf_library_extension()));
+        let clean_hash = crate::hash::hash_file(&library_path).unwrap();
+        let repo_relative_library = Path::new("libraries")
+            .join(format!("lib3mf.{}", lib3mf_library_extension()))
+            .display()
+            .to_string();
+
+        git_success(
+            &revision_dir,
+            &["update-index", "--assume-unchanged", &repo_relative_library],
+        );
+        std::fs::write(&library_path, b"tampered-by-assume-unchanged\n").unwrap();
+
+        let hidden_status = git_stdout(
+            &revision_dir,
+            &["status", "--porcelain", "--untracked-files=no"],
+        );
+        assert!(
+            hidden_status.is_empty(),
+            "assume-unchanged fixture should hide the tampered library from git status, got: {hidden_status}"
+        );
+        assert_eq!(
+            verify_checkout_revision(&revision_dir).unwrap(),
+            clean_head,
+            "git-status-only revision verification should be bypassed by assume-unchanged in this fixture"
+        );
+
+        let artifact = PinnedLib3mfArtifact {
+            revision: clean_head.clone(),
+            extension: lib3mf_library_extension().to_string(),
+            sha256: clean_hash.clone(),
+        };
+        let error = select_vetted_lib3mf_library(&checkouts, &artifact, verify_checkout_revision)
+            .unwrap_err();
+
+        assert!(error.contains("content hash"));
+        assert!(error.contains(&clean_head));
+        assert!(error.contains(&clean_hash));
+        assert!(error.contains(&library_path.display().to_string()));
     }
 
     #[test]
