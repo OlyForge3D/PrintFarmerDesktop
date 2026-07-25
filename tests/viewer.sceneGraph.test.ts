@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 
 import { buildViewerSceneGraph } from '../src/renderer/viewer/sceneGraph';
-import type { SceneMesh } from '../src/renderer/viewer/types';
+import type { SceneMesh, SceneObject } from '../src/renderer/viewer/types';
 
 function multiObjectScene(): SceneMesh {
   return {
@@ -250,3 +250,237 @@ describe('buildViewerSceneGraph', () => {
     materialDispose.mockRestore();
   });
 });
+
+describe('buildViewerSceneGraph level of detail', () => {
+  it('leaves a small scene at full detail', () => {
+    const graph = buildViewerSceneGraph(multiObjectScene());
+
+    expect(graph.lodObjectIds.size).toBe(0);
+    expect(findLods(graph.root)).toHaveLength(0);
+    graph.dispose();
+  });
+
+  it('gives a heavy object a reduced-detail level', () => {
+    const scene = heavyScene();
+    const graph = buildViewerSceneGraph(scene);
+    const lods = findLods(graph.root);
+
+    expect([...graph.lodObjectIds]).toEqual(['dense']);
+    expect(lods).toHaveLength(1);
+    expect(lods[0]!.levels).toHaveLength(2);
+    // The full-detail level has to be the one active at the camera, or the
+    // viewer would show the proxy even when the part is being inspected.
+    expect(lods[0]!.levels[0]!.distance).toBe(0);
+    expect(lods[0]!.levels[1]!.distance).toBeGreaterThan(0);
+    graph.dispose();
+  });
+
+  it('makes the far level cheaper than the near one', () => {
+    const graph = buildViewerSceneGraph(heavyScene());
+    const [near, far] = findLods(graph.root)[0]!.levels;
+    const trianglesOf = (level: THREE.Object3D): number => {
+      const mesh = level as THREE.Mesh;
+      return (mesh.geometry.getIndex()?.count ?? 0) / 3;
+    };
+
+    expect(trianglesOf(far!.object)).toBeGreaterThan(0);
+    expect(trianglesOf(far!.object)).toBeLessThan(trianglesOf(near!.object));
+    graph.dispose();
+  });
+
+  it('shares one material across both levels', () => {
+    // A second material would make a wireframe or colour change apply to only
+    // one level, so the object would visibly change as it crossed the switch.
+    const graph = buildViewerSceneGraph(heavyScene());
+    const [near, far] = findLods(graph.root)[0]!.levels;
+
+    expect((far!.object as THREE.Mesh).material).toBe(
+      (near!.object as THREE.Mesh).material,
+    );
+    graph.dispose();
+  });
+
+  it('disposes the proxy geometry too', () => {
+    const geometryDispose = vi.spyOn(THREE.BufferGeometry.prototype, 'dispose');
+    const materialDispose = vi.spyOn(
+      THREE.MeshStandardMaterial.prototype,
+      'dispose',
+    );
+    const graph = buildViewerSceneGraph(heavyScene());
+
+    graph.dispose();
+
+    // Three geometries - the dense object's own, its proxy, and the small
+    // object's - but only two materials, because the proxy shares the dense
+    // object's. Disposing that twice would tear down a material still in use.
+    expect(geometryDispose).toHaveBeenCalledTimes(3);
+    expect(materialDispose).toHaveBeenCalledTimes(2);
+    geometryDispose.mockRestore();
+    materialDispose.mockRestore();
+  });
+
+  it('still hides an object through its LOD wrapper', () => {
+    const graph = buildViewerSceneGraph(heavyScene(), new Set(['dense']));
+    const node = graph.root.getObjectByName('Dense');
+
+    expect(node?.visible).toBe(false);
+    graph.setHidden(new Set());
+    expect(graph.root.getObjectByName('Dense')?.visible).toBe(true);
+    graph.dispose();
+  });
+
+  it('keeps a per-face-coloured object at full detail', () => {
+    // Clustering welds vertices, which destroys the triangle-per-vertex layout
+    // the colour attribute depends on; the shared material would then demand a
+    // colour buffer the proxy cannot supply and draw black. Per-face colours
+    // only take effect on an unindexed soup mesh, so the fixture has to be one.
+    const scene = heavyScene();
+    const soup = denseSoup(300);
+    const withSoup = (material: SceneObject['material']): SceneMesh => ({
+      ...scene,
+      objects: scene.objects.map((object) =>
+        object.id === 'dense' ? { ...object, mesh: soup, material } : object,
+      ),
+    });
+
+    // Control: the identical mesh without colours is big enough to qualify, so
+    // a plain-grey soup really does get a proxy.
+    const plain = buildViewerSceneGraph(withSoup({}));
+    expect([...plain.lodObjectIds]).toEqual(['dense']);
+    plain.dispose();
+
+    const painted = buildViewerSceneGraph(
+      withSoup({
+        faceColors: Array.from({ length: soup.indices.length }, () => 128),
+      }),
+    );
+    const dense = painted.root.getObjectByName('Dense:mesh') as THREE.Mesh;
+
+    // The guard has to be reached: the colour attribute really is present.
+    expect(dense.geometry.getAttribute('color')).toBeDefined();
+    expect(painted.lodObjectIds.size).toBe(0);
+    painted.dispose();
+  });
+});
+
+function findLods(root: THREE.Object3D): THREE.LOD[] {
+  const found: THREE.LOD[] = [];
+  root.traverse((node) => {
+    if (node instanceof THREE.LOD) found.push(node as THREE.LOD);
+  });
+  return found;
+}
+
+/**
+ * A scene above both LOD thresholds: one dense object worth simplifying plus a
+ * small one that must be left alone.
+ */
+function heavyScene(): SceneMesh {
+  const dense = denseGrid(420);
+  const small = {
+    positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+    indices: [0, 1, 2],
+    bounds: { min: [0, 0, 0] as const, max: [1, 1, 0] as const },
+  };
+  return {
+    sceneVersion: 2,
+    positions: [],
+    indices: [],
+    bounds: { min: [0, 0, 0], max: [1, 1, 1] },
+    sourceFormat: 'threeMf',
+    faceColors: null,
+    status: 'complete',
+    statusMessages: [],
+    parts: [],
+    objects: [
+      {
+        id: 'dense',
+        sourceId: 'dense#source',
+        name: 'Dense',
+        parentId: null,
+        children: [],
+        transform: {
+          matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+        },
+        mesh: dense,
+        material: {},
+        plateId: 'plate-0',
+        buildItemIndex: 0,
+      },
+      {
+        id: 'small',
+        sourceId: 'small#source',
+        name: 'Small',
+        parentId: null,
+        children: [],
+        transform: {
+          matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+        },
+        mesh: small,
+        material: {},
+        plateId: 'plate-0',
+        buildItemIndex: 0,
+      },
+    ],
+    rootObjectIds: ['dense', 'small'],
+    plates: [],
+  };
+}
+
+function denseGrid(steps: number): {
+  positions: number[];
+  indices: number[];
+  bounds: {
+    min: readonly [number, number, number];
+    max: readonly [number, number, number];
+  };
+} {
+  const positions: number[] = [];
+  const indices: number[] = [];
+  const step = 1 / steps;
+  for (let y = 0; y <= steps; y += 1) {
+    for (let x = 0; x <= steps; x += 1) {
+      positions.push(x * step, y * step, Math.sin(x + y) * step);
+    }
+  }
+  const stride = steps + 1;
+  for (let y = 0; y < steps; y += 1) {
+    for (let x = 0; x < steps; x += 1) {
+      const a = y * stride + x;
+      indices.push(a, a + 1, a + stride, a + 1, a + stride + 1, a + stride);
+    }
+  }
+  return {
+    positions,
+    indices,
+    bounds: { min: [0, 0, -step], max: [1, 1, step] },
+  };
+}
+
+/**
+ * The same grid as an unindexed triangle soup, the layout STL produces and the
+ * only one for which per-face colours are applied.
+ */
+function denseSoup(steps: number): {
+  positions: number[];
+  indices: number[];
+  bounds: {
+    min: readonly [number, number, number];
+    max: readonly [number, number, number];
+  };
+} {
+  const grid = denseGrid(steps);
+  const positions: number[] = [];
+  for (const index of grid.indices) {
+    positions.push(
+      grid.positions[index * 3] ?? 0,
+      grid.positions[index * 3 + 1] ?? 0,
+      grid.positions[index * 3 + 2] ?? 0,
+    );
+  }
+  return {
+    positions,
+    indices: grid.indices.map((_, i) => i),
+    bounds: grid.bounds,
+  };
+}

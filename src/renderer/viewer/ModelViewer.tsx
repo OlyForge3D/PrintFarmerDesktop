@@ -8,7 +8,7 @@
  * GPU; this file is the thin GPU-bound shell around it.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
@@ -67,7 +67,14 @@ export function ModelViewer({
   wireframeRef.current = wireframe;
   const hiddenObjectsRef = useRef(hiddenObjects);
   hiddenObjectsRef.current = hiddenObjects;
+  // Set whenever something other than the camera changes what the next frame
+  // should look like, so the idle loop knows to draw once more.
+  const renderPendingRef = useRef(true);
+  const requestRender = useCallback((): void => {
+    renderPendingRef.current = true;
+  }, []);
   const [error, setError] = useState<string | null>(null);
+  const [lodCount, setLodCount] = useState(0);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -93,6 +100,7 @@ export function ModelViewer({
       applyWireframe(object, wireframeRef.current);
     });
     sceneGraphRef.current = sceneGraph;
+    setLodCount(sceneGraph.lodObjectIds.size);
     scene.add(sceneGraph.root);
 
     scene.add(new THREE.AmbientLight(0xffffff, 0.55));
@@ -116,6 +124,11 @@ export function ModelViewer({
     controlsRef.current = controls;
     controls.enableDamping = true;
     controls.target.set(center[0], center[1], center[2]);
+    // OrbitControls fires `change` synchronously from update() whenever it
+    // actually moved the camera - from a drag, from damping easing out, or from
+    // the keyboard helpers below, which call update() themselves. Listening
+    // here catches every one of those without each call site remembering to.
+    controls.addEventListener('change', requestRender);
     controls.update();
 
     const resize = (): void => {
@@ -130,6 +143,7 @@ export function ModelViewer({
         applyOrthoFrustum(camera, radius, aspect);
       }
       camera.updateProjectionMatrix();
+      requestRender();
     };
     resize();
 
@@ -141,7 +155,13 @@ export function ModelViewer({
     const animate = (): void => {
       if (disposed) return;
       frame = requestAnimationFrame(animate);
+      // Damping keeps easing the camera for a while after the pointer stops, so
+      // update() has to run every frame. It fires `change` when it moves the
+      // camera, which is what flags the frame as needing a draw; a still scene
+      // therefore costs nothing, which is what keeps a large mesh responsive.
       controls.update();
+      if (!renderPendingRef.current) return;
+      renderPendingRef.current = false;
       renderer.render(scene, camera);
     };
     animate();
@@ -150,7 +170,12 @@ export function ModelViewer({
       event.preventDefault();
       setError('GPU context lost — attempting to recover…');
     };
-    const onContextRestored = (): void => setError(null);
+    const onContextRestored = (): void => {
+      setError(null);
+      // The restored context starts with an empty drawing buffer, so the scene
+      // has to be drawn again even though nothing about it changed.
+      requestRender();
+    };
     renderer.domElement.addEventListener('webglcontextlost', onContextLost);
     renderer.domElement.addEventListener(
       'webglcontextrestored',
@@ -185,24 +210,28 @@ export function ModelViewer({
         onContextRestored,
       );
       controls.dispose();
+      controls.removeEventListener('change', requestRender);
       controlsRef.current = null;
       cameraRef.current = null;
       sceneGraph.dispose();
       sceneGraphRef.current = null;
+      setLodCount(0);
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, [mesh, projection, background]);
+  }, [mesh, projection, background, requestRender]);
 
   useEffect(() => {
     sceneGraphRef.current?.root.traverse((object) => {
       applyWireframe(object, wireframe);
     });
-  }, [wireframe]);
+    requestRender();
+  }, [wireframe, requestRender]);
 
   useEffect(() => {
     sceneGraphRef.current?.setHidden(hiddenObjects);
-  }, [hiddenObjects]);
+    requestRender();
+  }, [hiddenObjects, requestRender]);
 
   // Reframe to the default fit whenever the reset token changes. The initial
   // mount already frames the model, so the token===0 first run is a no-op fit.
@@ -219,7 +248,8 @@ export function ModelViewer({
       frame.radius,
       aspectOf(container),
     );
-  }, [resetToken]);
+    requestRender();
+  }, [resetToken, requestRender]);
 
   return (
     <div
@@ -234,6 +264,12 @@ export function ModelViewer({
       {error && (
         <p role="alert" className="viewer-error">
           {error}
+        </p>
+      )}
+      {lodCount > 0 && (
+        <p className="viewer-lod-note">
+          {lodCount === 1 ? '1 large part is' : `${lodCount} large parts are`}{' '}
+          drawn at reduced detail when zoomed out.
         </p>
       )}
     </div>

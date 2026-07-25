@@ -26,6 +26,23 @@ function plateLabel(plate: PlateSliceInfo, fallbackIndex: number): string {
 }
 
 /**
+ * Render a 3MF metadata date, which is only conventionally ISO-8601.
+ *
+ * The value comes straight from the file, so it can be anything an authoring
+ * tool wrote. Anything unparseable is shown verbatim rather than replaced with
+ * "Invalid Date", so the user still sees what the file actually says.
+ */
+export function formatMetadataDate(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+/**
  * Read-only slicer-project details for a vendor 3MF: authoring slicer, core
  * metadata, and per-plate print-time/weight/filament stats. Standard 3MF with
  * no vendor payload renders a short "no vendor data" note instead.
@@ -33,7 +50,14 @@ function plateLabel(plate: PlateSliceInfo, fallbackIndex: number): string {
 export function VendorPanel({ metadata }: VendorPanelProps): React.JSX.Element {
   const { slicer, core, plates } = metadata;
   const hasCore =
-    core.title || core.designer || core.application || core.licenseTerms;
+    core.title ||
+    core.designer ||
+    core.description ||
+    core.application ||
+    core.licenseTerms ||
+    core.copyright ||
+    core.creationDate ||
+    core.modificationDate;
 
   if (slicer === 'unknown' && !hasCore && plates.length === 0) {
     return (
@@ -64,13 +88,40 @@ export function VendorPanel({ metadata }: VendorPanelProps): React.JSX.Element {
             <dd>{core.designer}</dd>
           </div>
         ) : null}
+        {core.application ? (
+          <div className="model-stat">
+            <dt>Application</dt>
+            <dd>{core.application}</dd>
+          </div>
+        ) : null}
         {core.licenseTerms ? (
           <div className="model-stat">
             <dt>License</dt>
             <dd>{core.licenseTerms}</dd>
           </div>
         ) : null}
+        {core.copyright ? (
+          <div className="model-stat">
+            <dt>Copyright</dt>
+            <dd>{core.copyright}</dd>
+          </div>
+        ) : null}
+        {core.creationDate ? (
+          <div className="model-stat">
+            <dt>Created</dt>
+            <dd>{formatMetadataDate(core.creationDate)}</dd>
+          </div>
+        ) : null}
+        {core.modificationDate ? (
+          <div className="model-stat">
+            <dt>Modified</dt>
+            <dd>{formatMetadataDate(core.modificationDate)}</dd>
+          </div>
+        ) : null}
       </dl>
+      {core.description ? (
+        <p className="vendor-description">{core.description}</p>
+      ) : null}
       {plates.length > 0 ? (
         <ul className="vendor-plates" aria-label="Plates">
           {plates.map((plate, index) => (

@@ -2306,6 +2306,52 @@ select:disabled {
   text-align: right;
 }
 
+.vendor-description {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.materials-panel {
+  margin: 0 0 12px;
+}
+
+.materials-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.materials-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 7px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.materials-swatch {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+}
+
+.materials-label {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.materials-detail {
+  margin-left: auto;
+  text-align: right;
+}
+
 .part-tree-header {
   display: flex;
   align-items: center;
@@ -2593,6 +2639,21 @@ select:disabled {
   color: var(--danger);
   place-items: center;
   text-align: center;
+}
+
+.viewer-lod-note {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  max-width: 260px;
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgb(0 0 0 / 45%);
+  color: rgb(255 255 255 / 82%);
+  font-size: 11px;
+  line-height: 1.4;
+  pointer-events: none;
 }
 
 .preview-details {

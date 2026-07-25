@@ -264,4 +264,34 @@ describe('<PreviewWorkspace />', () => {
 
     expect(screen.getByRole('treeitem', { name: 'Plate 1' })).toHaveFocus();
   });
+
+  it('shows the materials panel when the scene has authored colours', () => {
+    const scene = sceneMesh();
+    const props = {
+      ...baseProps(),
+      mesh: {
+        ...scene,
+        objects: scene.objects.map((object) =>
+          object.id === 'lid'
+            ? { ...object, material: { baseColor: [255, 0, 0] as const } }
+            : object,
+        ),
+      },
+    };
+    render(<PreviewWorkspace {...props} />);
+
+    expect(
+      within(screen.getByRole('list', { name: 'Materials' })).getByText(
+        '#ff0000',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('omits the materials panel when no colour was authored', () => {
+    // The default-grey fixture carries no material information, so a panel
+    // would only add an empty section to the sidebar.
+    render(<PreviewWorkspace {...baseProps()} mesh={sceneMesh()} />);
+
+    expect(screen.queryByRole('list', { name: 'Materials' })).toBeNull();
+  });
 });

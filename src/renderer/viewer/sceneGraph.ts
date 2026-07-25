@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 
+import { lodSwitchDistance, shouldBuildLod, simplifyMesh } from './lod';
 import type {
   SceneMaterial,
   SceneMesh,
@@ -10,6 +11,11 @@ import type {
 export interface ViewerSceneGraph {
   readonly root: THREE.Group;
   setHidden(hiddenObjectIds?: ReadonlySet<string>): void;
+  /**
+   * Objects given a reduced-detail stand-in, by object id. Empty when the scene
+   * is small enough to draw at full detail.
+   */
+  readonly lodObjectIds: ReadonlySet<string>;
   dispose(): void;
 }
 
@@ -26,6 +32,8 @@ export function buildViewerSceneGraph(
   const nodeMap = new Map<string, THREE.Group>();
   const geometries: THREE.BufferGeometry[] = [];
   const materials: THREE.Material[] = [];
+  const lodObjectIds = new Set<string>();
+  const useLod = shouldBuildLod(sceneMesh);
 
   const plateGroupMap = new Map<string, THREE.Group>();
   for (const plate of sceneMesh.plates) {
@@ -54,9 +62,26 @@ export function buildViewerSceneGraph(
       );
       const mesh = new THREE.Mesh(geometry, material);
       mesh.name = `${object.name}:mesh`;
-      node.add(mesh);
       geometries.push(geometry);
       materials.push(material);
+
+      const proxy = useLod
+        ? createLodProxy(object.mesh, geometry, material)
+        : null;
+      if (proxy) {
+        const lod = new THREE.LOD();
+        lod.name = `${object.name}:lod`;
+        // matrixAutoUpdate stays on: THREE.LOD picks its level from the
+        // distance between the camera and its own world position, which it
+        // reads off the matrix during rendering.
+        lod.addLevel(mesh, 0);
+        lod.addLevel(proxy.mesh, lodSwitchDistance(object.mesh));
+        node.add(lod);
+        geometries.push(proxy.geometry);
+        lodObjectIds.add(object.id);
+      } else {
+        node.add(mesh);
+      }
     }
 
     nodeMap.set(object.id, node);
@@ -96,6 +121,7 @@ export function buildViewerSceneGraph(
   return {
     root,
     setHidden,
+    lodObjectIds,
     dispose: () => {
       for (const geometry of geometries) {
         geometry.dispose();
@@ -106,6 +132,34 @@ export function buildViewerSceneGraph(
       root.clear();
     },
   };
+}
+
+/**
+ * Build the reduced-detail stand-in for one object, or `null` when clustering
+ * gained nothing.
+ *
+ * The proxy shares the full-detail material instance rather than making its
+ * own, so a wireframe toggle or colour applies to both levels at once and
+ * switching detail can never change how the object looks beyond its silhouette.
+ * That sharing is also why the proxy's material is not pushed onto the disposal
+ * list - disposing it twice would tear down the material still in use.
+ */
+function createLodProxy(
+  objectMesh: SceneObjectMesh,
+  fullGeometry: THREE.BufferGeometry,
+  material: THREE.Material,
+): { mesh: THREE.Mesh; geometry: THREE.BufferGeometry } | null {
+  // Sharing the material means sharing its `vertexColors` flag. Clustering
+  // welds vertices, which destroys the triangle-per-vertex layout per-face
+  // colours rely on, so a proxy could not supply the colour attribute the
+  // shared material would then demand - it would draw black. Such objects keep
+  // full detail rather than being drawn wrong at a distance.
+  if (fullGeometry.getAttribute('color') !== undefined) return null;
+  const simplified = simplifyMesh(objectMesh);
+  if (!simplified) return null;
+  const geometry = createObjectGeometry(simplified, null);
+  const mesh = new THREE.Mesh(geometry, material);
+  return { mesh, geometry };
 }
 
 function applyRowMajorMatrix(
