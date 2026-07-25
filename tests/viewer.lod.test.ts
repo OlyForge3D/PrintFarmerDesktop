@@ -365,12 +365,64 @@ describe('simplifyMesh', () => {
     expect(simplified.bounds).toEqual(dense.bounds);
   });
 
+  it('emits only vertices that exist in the original mesh', () => {
+    // The stronger claim that "inside the bounds" only implies. Reusing the
+    // source bounds is sound because every surviving point IS an input point,
+    // not merely somewhere within the box - a cell average or any other
+    // synthesised point would stay inside the bounds while moving the surface,
+    // and would pass a bounds-only check.
+    const dense = grid(120);
+    const simplified = simplifyMesh(dense)!;
+    const original = new Set<string>();
+    for (let i = 0; i < dense.positions.length; i += 3) {
+      original.add(dense.positions.slice(i, i + 3).join(','));
+    }
+
+    const synthesised: string[] = [];
+    for (let i = 0; i < simplified.positions.length; i += 3) {
+      const point = simplified.positions.slice(i, i + 3).join(',');
+      if (!original.has(point)) synthesised.push(point);
+    }
+
+    expect(synthesised).toEqual([]);
+  });
+
+  it('keeps the first vertex to claim a cell, not a later one', () => {
+    // Which member represents a cell is what decides whether the proxy sits on
+    // the original surface, so it is pinned rather than left to the
+    // implementation. Two vertices share cell (0,0,0) at this resolution.
+    const mesh = meshOf(
+      [0.1, 0, 0, 0.2, 0, 0, 0.9, 0, 0, 0.1, 0.9, 0],
+      [0, 1, 2, 1, 2, 3, 0, 2, 3],
+    );
+
+    const simplified = simplifyMesh(mesh, 2)!;
+
+    expect(simplified.positions.slice(0, 3)).toEqual([0.1, 0, 0]);
+  });
+
   it('is deterministic', () => {
     const dense = grid(80);
     const first = simplifyMesh(dense);
     const second = simplifyMesh(dense);
 
     expect(second).toEqual(first);
+  });
+
+  it('orders output vertices by the input scan, not by container internals', () => {
+    // The "byte-identical proxy" claim rests on output order being a function
+    // of the input alone. Calling twice cannot show that - any container that
+    // happens to be stable within one process passes. Emitting in first-claim
+    // order is what makes it true, so that is what gets asserted.
+    const mesh = meshOf(
+      [0.9, 0, 0, 0.1, 0, 0, 0.1, 0.9, 0, 0.2, 0, 0],
+      [0, 1, 2, 1, 2, 3, 0, 2, 3],
+    );
+
+    const simplified = simplifyMesh(mesh, 2)!;
+
+    // Input order is (0.9), (0.1), (0.1,0.9); the fourth welds into the second.
+    expect(simplified.positions).toEqual([0.9, 0, 0, 0.1, 0, 0, 0.1, 0.9, 0]);
   });
 
   it('collapses harder at a coarser grid', () => {
