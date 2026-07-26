@@ -830,9 +830,28 @@ describe('default framing bounds', () => {
  * the constant or the geometry helper it is supposed to be using, never against
  * a transcribed number. Changing `PERSPECTIVE_FOV` or `ORTHO_FRUSTUM_MULTIPLIER`
  * moves both sides of every one of these, so they cannot become the equality pin
- * on `PERSPECTIVE_FOV` that #86 AC4 forbids - `fitPerspectiveDistance` cancels
- * FOV out of the framing distance by construction, and pinning it would
- * over-constrain a value the design requires to stay free.
+ * on `PERSPECTIVE_FOV` that #86 AC4 forbids.
+ *
+ * That survival used to be explained by saying `fitPerspectiveDistance` cancels
+ * FOV out of the framing distance by construction. It does not - see
+ * `viewer.geometry.test.ts`, which measures the residue. Mutating
+ * `PERSPECTIVE_FOV` survives for two concrete reasons instead:
+ *
+ *  1. every assertion that names the constant is a delegation, so both sides
+ *     move together and the difference under test is unchanged; and
+ *  2. the one inequality that could bind - orthographic framing must not be
+ *     looser than perspective framing - has the two sides 1.2 and 1.9919 radii
+ *     apart. The perspective half-height at the framing position is
+ *     `sqrt(3) * 1.15 * radius / cos(fov/2)` (the `sqrt(3)` because the camera
+ *     sits on the (1,1,1) diagonal), so its infimum over all FOVs is
+ *     `sqrt(3) * 1.15 = 1.991858` radii, which exceeds
+ *     `ORTHO_FRUSTUM_MULTIPLIER = 1.2` by 65.99% of the ortho value. No FOV
+ *     brings them within reach of each other, so the cap can never bind on FOV.
+ *
+ * The distinction is load-bearing: the drift is 6.26% between 45 and 60 degrees
+ * in the measure `lod.apparentRadiusFraction` uses, so an inequality with less
+ * slack than that would start catching FOV changes and become the pin AC4
+ * forbids.
  */
 describe('ModelViewer framing primitives', () => {
   const aspect = 16 / 9;
@@ -922,21 +941,17 @@ describe('ModelViewer framing primitives', () => {
   });
 
   it('frames an orthographic camera at the shared default position', () => {
-    // The orthographic branch ignores FOV entirely, so the only thing to pin is
-    // that it agrees with `defaultCameraPosition` - the function "reset view"
-    // also frames through, which is the whole reason it is shared.
+    // The orthographic branch has no lens, so the only thing to pin is that it
+    // agrees with `defaultCameraPosition` - the function "reset view" also
+    // frames through, which is the whole reason it is shared.
     const radius = 4;
     const center: [number, number, number] = [-5, 6, 0.5];
     const camera = createCamera('orthographic', aspect, radius);
     frameCamera(camera, center, radius, aspect);
 
-    const [x, y, z] = defaultCameraPosition(
-      center,
-      radius,
-      aspect,
-      'orthographic',
-      PERSPECTIVE_FOV,
-    );
+    const [x, y, z] = defaultCameraPosition(center, radius, aspect, {
+      projection: 'orthographic',
+    });
     expect(camera.position.x).toBeCloseTo(x, 12);
     expect(camera.position.y).toBeCloseTo(y, 12);
     expect(camera.position.z).toBeCloseTo(z, 12);
@@ -959,6 +974,143 @@ describe('ModelViewer framing primitives', () => {
       .sub(camera.position)
       .normalize();
     expect(forward.dot(toCenter)).toBeCloseTo(1, 10);
+  });
+
+  it('keeps perspective framing looser than orthographic at every FOV', () => {
+    // Reason (2) from the block comment above, measured rather than asserted -
+    // a replacement mechanism that nothing checks is just a better-sounding
+    // version of the claim being retired.
+    //
+    // Perspective half-height at the framing position is
+    //   sqrt(3) * padding * radius / cos(fov/2)
+    // (sqrt(3) because the camera sits on the (1,1,1) diagonal), minimised as
+    // fov -> 0 at sqrt(3) * 1.15 = 1.991858 radii. Orthographic is a flat
+    // ORTHO_FRUSTUM_MULTIPLIER radii. The gap is what lets a FOV change pass
+    // unnoticed, so it is the thing to pin.
+    const radius = 4;
+    const center: [number, number, number] = [0, 0, 0];
+    let tightest = Infinity;
+    // Literal FOVs, not PERSPECTIVE_FOV: this must survive the AC4 mutation.
+    for (const fov of [1, 10, 20, 45, 60, 90, 120, 170]) {
+      const camera = createCamera(
+        'perspective',
+        aspect,
+        radius,
+      ) as THREE.PerspectiveCamera;
+      camera.fov = fov;
+      frameCamera(camera, center, radius, aspect);
+      const distance = camera.position.distanceTo(new THREE.Vector3(...center));
+      const halfHeight = distance * Math.tan((fov * Math.PI) / 180 / 2);
+      expect(halfHeight).toBeGreaterThan(radius * ORTHO_FRUSTUM_MULTIPLIER);
+      tightest = Math.min(tightest, halfHeight / radius);
+    }
+    // The infimum is approached from above as the lens narrows and is never
+    // reached, so bracket it rather than pinning it.
+    expect(tightest).toBeGreaterThan(Math.sqrt(3) * 1.15);
+    expect(tightest).toBeLessThan(Math.sqrt(3) * 1.15 * 1.001);
+  });
+
+  /**
+   * NB3: the projection matrix must agree with the lens the framing was
+   * computed from.
+   *
+   * These measure through THREE's real projection pipeline rather than reading
+   * matrix elements, because the matrix is the thing under suspicion. The
+   * apparent radius is recovered by projecting the model center and a point one
+   * radius away along the camera's own up axis and taking the NDC-y difference:
+   * that is what the renderer draws, and it depends on the *matrix*. It is then
+   * compared against `apparentRadiusFraction(lodCameraOf(camera), …)`, which
+   * reads `camera.fov` *live*. Agreement is the invariant; the hazard is that
+   * the LOD policy and the picture disagree.
+   *
+   * Measured before the fix: framing a camera set to half the default FOV left
+   * the matrix on the old lens and drew the model at 0.4802x the intended size,
+   * with LOD nonetheless computing the intended fraction.
+   *
+   * Both assertions delegate - neither names a FOV - so mutating
+   * `PERSPECTIVE_FOV` moves the camera, the matrix and the expectation together
+   * and survives, as AC4 requires.
+   */
+  function ndcApparentRadius(
+    camera: THREE.Camera,
+    center: [number, number, number],
+    radius: number,
+  ): number {
+    camera.updateMatrixWorld(true);
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+    const at = new THREE.Vector3(...center).project(camera);
+    const edge = new THREE.Vector3(...center)
+      .add(up.multiplyScalar(radius))
+      .project(camera);
+    return Math.abs(edge.y - at.y);
+  }
+
+  it('leaves the perspective projection matrix agreeing with the lens it framed from', () => {
+    const radius = 4;
+    const center: [number, number, number] = [0, 0, 0];
+    const camera = createCamera(
+      'perspective',
+      aspect,
+      radius,
+    ) as THREE.PerspectiveCamera;
+    // The mutation a caller performs: pick a lens, then ask to be framed for it.
+    // `frameCamera` consumes `camera.fov`, so it owns reconciling the matrix.
+    camera.fov = camera.fov / 2;
+    frameCamera(camera, center, radius, aspect);
+
+    const distance = camera.position.distanceTo(new THREE.Vector3(...center));
+    const drawn = ndcApparentRadius(camera, center, radius);
+    const believed = apparentRadiusFraction(
+      lodCameraOf(camera),
+      distance,
+      radius,
+    );
+    expect(drawn).toBeCloseTo(believed, 12);
+  });
+
+  it('leaves the orthographic projection matrix agreeing with the frustum it was given', () => {
+    // `applyOrthoFrustum` had the same defect and worse: `createCamera` returned
+    // `top = radius * ORTHO_FRUSTUM_MULTIPLIER` over a matrix still holding the
+    // constructor's -1..1 placeholder, measured at 0.208x at radius 4. The
+    // viewer never saw it because `resize()` runs straight afterwards, so no
+    // test that went through the viewer could have caught it.
+    const radius = 4;
+    const center: [number, number, number] = [0, 0, 0];
+    const camera = createCamera(
+      'orthographic',
+      aspect,
+      radius,
+    ) as THREE.OrthographicCamera;
+    frameCamera(camera, center, radius, aspect);
+
+    // Orthographic apparent size is distance-independent: one radius spans
+    // radius/top of the half-height, i.e. radius/(radius*MULT) of it, and NDC-y
+    // runs -1..1 so the half-height is 1.
+    const drawn = ndcApparentRadius(camera, center, radius);
+    expect(drawn).toBeCloseTo(radius / camera.top, 12);
+    expect(drawn).toBeCloseTo(1 / ORTHO_FRUSTUM_MULTIPLIER, 12);
+  });
+
+  it('keeps the orthographic frustum bounds and its matrix in step after a re-fit', () => {
+    // The bounds-vs-matrix agreement stated directly, and re-applied at a second
+    // radius so a matrix that happened to be right once cannot carry the test.
+    const camera = createCamera(
+      'orthographic',
+      aspect,
+      4,
+    ) as THREE.OrthographicCamera;
+    for (const radius of [4, 11]) {
+      applyOrthoFrustum(camera, radius, aspect);
+      // Perspective-free identity: elements[5] = 2 / (top - bottom).
+      expect(camera.projectionMatrix.elements[5]).toBeCloseTo(
+        2 / (camera.top - camera.bottom),
+        12,
+      );
+      expect(camera.projectionMatrix.elements[0]).toBeCloseTo(
+        2 / (camera.right - camera.left),
+        12,
+      );
+    }
   });
 });
 
