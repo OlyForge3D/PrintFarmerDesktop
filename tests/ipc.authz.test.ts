@@ -22,6 +22,8 @@ const electronState = vi.hoisted(() => ({
   handlers: new Map<string, Handler>(),
   /** Owner ids the IPC layer passed into the artifact service, per method. */
   owners: [] as { method: string; owner: unknown }[],
+  /** What the OS file picker returns for the next OpenModelFile call. */
+  pickerResult: { canceled: true, filePaths: [] as string[] },
 }));
 
 vi.mock('../src/main/retargetArtifacts.js', () => {
@@ -67,7 +69,9 @@ vi.mock('electron', () => ({
     },
   },
   BrowserWindow: { fromWebContents: () => ({ id: 'window-stub' }) },
-  dialog: {},
+  dialog: {
+    showOpenDialog: () => Promise.resolve(electronState.pickerResult),
+  },
   safeStorage: {
     isEncryptionAvailable: () => false,
     encryptString: () => Buffer.from(''),
@@ -84,6 +88,19 @@ const RENDERER_PATH = '/renderer/claimed/model.3mf';
 const CANONICAL_PATH = '/approved/real/model.3mf';
 /** A path the approval store refuses. */
 const UNAPPROVED_PATH = '/etc/shadow';
+/**
+ * A file the user picks from the OS dialog. Deliberately *not*
+ * {@link RENDERER_PATH}: `authorizeFile` refuses it, so anything that admits it
+ * can only be the picker allowlist.
+ */
+const PICKED_PATH = '/elsewhere/picked-by-user.3mf';
+/**
+ * What the fake `realpath` appends. The real `canonicalizePickerFile` resolves
+ * symlinks; the only property the handlers depend on is that its result differs
+ * from the string handed in, and — critically — differs from what authorization
+ * returns.
+ */
+const realpathOf = (requested: string) => `${requested}#realpath`;
 /**
  * Marker carried by every refusal the fake approval store issues. Assertions
  * match on it rather than on "any rejection", so a handler that blew up for an
@@ -111,6 +128,7 @@ interface Harness {
 function harness(): Harness {
   electronState.handlers.clear();
   electronState.owners.length = 0;
+  electronState.pickerResult = { canceled: true, filePaths: [] };
   const downstream: DownstreamCall[] = [];
 
   const record =
@@ -152,11 +170,18 @@ function harness(): Harness {
 
   // Only the renderer-path channels are exercised here, so the approval store
   // implements exactly the surface those handlers touch.
+  //
+  // `canonicalizePickerFile` resolves for *any* path, because the real one
+  // (rootApprovals.ts:321-330) is a bare `realpath` wrapper that performs no
+  // authorization and throws only when the file is missing. A mock that refuses
+  // unapproved paths here moves the refusal to the wrong step: it makes
+  // `authorizeRendererFile` look proven when only its first line ran, and the
+  // authorizing line at ipc.ts:188 could then be deleted with the suite still
+  // green. Returning a value distinct from the authorized one is what makes the
+  // two steps distinguishable in what the handlers forward.
   const approvals = {
-    canonicalizePickerFile: (requested: string) => {
-      if (requested === RENDERER_PATH) return Promise.resolve(CANONICAL_PATH);
-      return Promise.reject(new TestApprovalError(DENIED));
-    },
+    canonicalizePickerFile: (requested: string) =>
+      Promise.resolve(realpathOf(requested)),
     authorizeFile: (requested: string) => {
       if (requested === RENDERER_PATH) {
         return Promise.resolve({
@@ -335,6 +360,73 @@ describe('IPC handler layer: renderer-supplied filesystem paths', () => {
       });
     },
   );
+
+  describe('the picker allowlist', () => {
+    // The legitimate-maximum direction. Everything above pushes from the
+    // hostile side, which cannot tell a correct bound from a control that
+    // refuses everything — or, for the fast path at ipc.ts:187, from a branch
+    // that is never consulted at all. In production this allowlist is what
+    // lets a user open a single file chosen from the OS picker: a file that by
+    // construction sits outside every approved root, and that `authorizeFile`
+    // therefore refuses. If it broke, single-file open would stop working for
+    // every user and nothing here would say so.
+    it('admits a picked file on a path channel that refused the same path moments earlier', async () => {
+      const loadScene = h.handlers.get(IpcChannel.LoadScene);
+      expect(loadScene).toBeTypeOf('function');
+
+      // Before the pick. The only thing that changes between the two halves of
+      // this test is that the file has been through the picker, so an admitted
+      // path afterwards can only be the allowlist and not authorization.
+      await expect(
+        Promise.resolve(loadScene!(senderEvent(1), { path: PICKED_PATH })),
+      ).rejects.toThrow(DENIED);
+      expect(h.downstream).toEqual([]);
+
+      const openModelFile = h.handlers.get(IpcChannel.OpenModelFile);
+      expect(openModelFile).toBeTypeOf('function');
+      electronState.pickerResult = {
+        canceled: false,
+        filePaths: [PICKED_PATH],
+      };
+      await expect(
+        Promise.resolve(openModelFile!(senderEvent(1), undefined)),
+      ).resolves.toEqual({ path: realpathOf(PICKED_PATH) });
+
+      // After the pick: admitted, and admitted as the canonicalized form rather
+      // than the string the renderer sent.
+      await Promise.resolve(
+        loadScene!(senderEvent(1), { path: PICKED_PATH }),
+      ).catch(() => undefined);
+
+      const call = h.downstream.find(
+        (candidate) =>
+          candidate.target === 'sceneCache' && candidate.method === 'loadScene',
+      );
+      expect(
+        call,
+        'the picked file was refused after being picked',
+      ).toBeDefined();
+      expect(call!.args[0]).toBe(realpathOf(PICKED_PATH));
+      expect(call!.args[0]).not.toBe(PICKED_PATH);
+    });
+
+    it('admits only the file that was picked, not its directory or siblings', async () => {
+      const openModelFile = h.handlers.get(IpcChannel.OpenModelFile);
+      electronState.pickerResult = {
+        canceled: false,
+        filePaths: [PICKED_PATH],
+      };
+      await Promise.resolve(openModelFile!(senderEvent(1), undefined));
+
+      const loadScene = h.handlers.get(IpcChannel.LoadScene);
+      await expect(
+        Promise.resolve(
+          loadScene!(senderEvent(1), { path: '/elsewhere/sibling.3mf' }),
+        ),
+      ).rejects.toThrow(DENIED);
+      expect(h.downstream).toEqual([]);
+    });
+  });
 });
 
 /**
