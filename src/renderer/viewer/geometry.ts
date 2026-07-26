@@ -87,13 +87,22 @@ export const KEYBOARD_DOLLY_STEP = 0.9;
  * The default camera position for framing a model: placed along the (1,1,1)
  * diagonal from `center` at a distance that frames the bounding sphere. Shared
  * by the initial framing and the "reset view" action so both agree exactly.
+ *
+ * `verticalFovDeg` is required on purpose. It used to default to a hardcoded
+ * `45`, which is the same value `PERSPECTIVE_FOV` holds - so a caller that
+ * forgot to pass it got framing that agreed with the lens by coincidence rather
+ * than by construction, and the mistake was invisible. That is exactly what
+ * happened to the test helper this function serves. Making the argument
+ * mandatory turns that omission into a compile error. Orthographic framing
+ * ignores the value, but callers still state it rather than relying on a
+ * default that only looks correct while nobody changes the constant.
  */
 export function defaultCameraPosition(
   center: readonly [number, number, number],
   radius: number,
   aspect: number,
   projection: 'perspective' | 'orthographic',
-  verticalFovDeg = 45,
+  verticalFovDeg: number,
 ): [number, number, number] {
   const distance =
     projection === 'perspective'
