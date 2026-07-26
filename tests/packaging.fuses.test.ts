@@ -17,7 +17,9 @@
  * Each fuse is asserted by its semantic `FuseV1Options` name rather than the
  * numeric key electron-forge stores it under, so reordering the config cannot
  * make an assertion silently target the wrong fuse. Non-vacuity: flip any fuse
- * in `forge.config.ts:97-102` and exactly its row here turns RED.
+ * in `forge.config.ts:97-102` and its row here turns RED (the two ASAR fuses
+ * additionally trip the redundant pairing assertion below — they are never
+ * sole-detected by it, by design).
  */
 
 import { describe, expect, it } from 'vitest';
@@ -44,8 +46,12 @@ function fuseConfig(): Record<number, unknown> {
 
 describe('packaged runtime fuses', () => {
   it('registers a fuses plugin at all (guards every assertion below)', () => {
-    // If the plugin were dropped, reading `fusesConfig` would throw here rather
-    // than letting the per-fuse tests pass vacuously against `undefined`.
+    // Redundant-but-clearer diagnostic, not a vacuity guard: `fuseConfig()`
+    // throws when no FusesPlugin is registered, so a dropped plugin already
+    // turns every per-fuse row below RED on its own (measured: dropping the
+    // plugin fails all 8 tests, none pass vacuously against `undefined`). This
+    // row names that cause up front so the failure reads as "no fuses plugin"
+    // rather than six identical `fuseConfig` throws.
     expect(() => fuseConfig()).not.toThrow();
   });
 
@@ -62,11 +68,14 @@ describe('packaged runtime fuses', () => {
   });
 
   it('pairs ASAR integrity validation with only-load-from-ASAR', () => {
-    // The two are only meaningful together: validating the embedded ASAR hash
-    // does nothing if the runtime will still load app code from outside it, and
-    // refusing off-ASAR code does nothing if the ASAR itself is unvalidated.
-    // Asserting the pair prevents a future edit from keeping one while dropping
-    // the other and reading as "still hardened".
+    // Redundant assertion that documents intent, not an added guard: each of
+    // these two fuses already has its own row in the table above, so dropping
+    // either turns that row AND this one RED together (measured: flipping ASAR
+    // integrity validation fails "fuse 4" and this test, never this alone). Its
+    // value is naming the invariant in one place — validating the embedded ASAR
+    // hash is meaningless if the runtime still loads app code from outside it,
+    // and refusing off-ASAR code is meaningless if the ASAR itself is
+    // unvalidated — with a clearer label than two separate `fuse N` failures.
     const fuses = fuseConfig();
     expect(fuses[FuseV1Options.EnableEmbeddedAsarIntegrityValidation]).toBe(
       true,
