@@ -117,12 +117,15 @@ describe('defaultCameraPosition', () => {
   });
 
   it('places an orthographic camera at four radii from the center', () => {
-    const pos = defaultCameraPosition([0, 0, 0], 3, 1.5, 'orthographic');
+    // The FOV is required but unused on this path - orthographic framing has no
+    // lens to fit. Stated rather than defaulted so the omission that made this
+    // argument optional cannot come back.
+    const pos = defaultCameraPosition([0, 0, 0], 3, 1.5, 'orthographic', 45);
     expect(pos).toEqual([12, 12, 12]);
   });
 
   it('stays finite for a zero-radius model', () => {
-    const pos = defaultCameraPosition([0, 0, 0], 0, 1, 'perspective');
+    const pos = defaultCameraPosition([0, 0, 0], 0, 1, 'perspective', 45);
     expect(pos.every((v) => Number.isFinite(v) && v > 0)).toBe(true);
   });
 });

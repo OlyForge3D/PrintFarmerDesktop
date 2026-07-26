@@ -315,7 +315,11 @@ function applyWireframe(object: THREE.Object3D, wireframe: boolean): void {
   }
 }
 
-function createCamera(
+/**
+ * Build the camera for a projection. Exported so the tests can frame a scene
+ * through the same code the viewer uses instead of reproducing it.
+ */
+export function createCamera(
   projection: Projection,
   aspect: number,
   radius: number,
@@ -329,7 +333,13 @@ function createCamera(
   return new THREE.PerspectiveCamera(PERSPECTIVE_FOV, aspect, 0.01, far);
 }
 
-function applyOrthoFrustum(
+/**
+ * Size an orthographic frustum to the model. Exported so the tests can assert
+ * against the frustum the viewer actually builds rather than rebuilding it:
+ * a test that recomputes `radius * ORTHO_FRUSTUM_MULTIPLIER` itself pins the
+ * constant while leaving this function free to change underneath it.
+ */
+export function applyOrthoFrustum(
   camera: THREE.OrthographicCamera,
   radius: number,
   aspect: number,
@@ -342,20 +352,33 @@ function applyOrthoFrustum(
   camera.bottom = -halfHeight;
 }
 
-function frameCamera(
+/**
+ * Place a camera so it frames a model of `radius` at `center`. Exported so the
+ * tests can frame through production rather than restating it.
+ *
+ * The framing distance comes from the camera's *own* lens, not from
+ * `PERSPECTIVE_FOV` directly. Today those are identical - `createCamera` is the
+ * only thing that builds a perspective camera and it uses the constant - so
+ * this is a no-op for the viewer. It matters because "frame this camera" is the
+ * contract: a camera framed from a FOV other than the one it is looking through
+ * is mis-framed, and reading the constant instead of the lens is the same
+ * duplicated-literal shape #86 exists to delete. Orthographic framing ignores
+ * the FOV entirely; the constant is passed only to satisfy the now-required
+ * parameter.
+ */
+export function frameCamera(
   camera: THREE.PerspectiveCamera | THREE.OrthographicCamera,
   center: [number, number, number],
   radius: number,
   aspect: number,
 ): void {
-  const projection: Projection =
-    camera instanceof THREE.PerspectiveCamera ? 'perspective' : 'orthographic';
+  const perspective = camera instanceof THREE.PerspectiveCamera;
   const [x, y, z] = defaultCameraPosition(
     center,
     radius,
     aspect,
-    projection,
-    PERSPECTIVE_FOV,
+    perspective ? 'perspective' : 'orthographic',
+    perspective ? camera.fov : PERSPECTIVE_FOV,
   );
   camera.position.set(x, y, z);
   camera.lookAt(center[0], center[1], center[2]);
