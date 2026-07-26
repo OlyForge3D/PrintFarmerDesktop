@@ -447,7 +447,8 @@ export function registerIpcHandlers(
         ipcSchemas[IpcChannel.ExtractVendorPlateThumbnails].request.parse(
           rawRequest,
         );
-      const raw = await sidecar.extractVendorPlateThumbnails(request.path);
+      const approvedPath = await authorizeRendererFile(request.path);
+      const raw = await sidecar.extractVendorPlateThumbnails(approvedPath);
       return ipcSchemas[IpcChannel.ExtractVendorPlateThumbnails].response.parse(
         raw,
       );
