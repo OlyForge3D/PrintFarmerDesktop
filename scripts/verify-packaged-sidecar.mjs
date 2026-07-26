@@ -87,6 +87,11 @@ const complianceResources = [
     source: path.join(repoRoot, 'build', 'sbom.cdx.json'),
   },
   {
+    packagedName: 'third-party-licenses.md',
+    parent: 'compliance',
+    source: path.join(repoRoot, 'build', 'third-party-licenses.md'),
+  },
+  {
     packagedName: 'CORRESPONDING_SOURCE.md',
     parent: 'compliance',
     source: path.join(

@@ -122,8 +122,49 @@ jobs:
         # feature set a release builds.
         run: npm run verify:sbom
 
+      - name: Verify third-party licence policy
+        # Deterministic gate: every shipped component's licence must be
+        # compatible with the AGPL-3.0-only outbound licence or hold a reviewed
+        # exception. Reads the SBOM `npm run package` staged above.
+        run: npm run verify:licenses
+
+      - name: Verify third-party notices reproduce from the SBOM
+        run: npm run verify:notices
+
       - name: Verify packaged sidecar and compliance resources
         run: node scripts/verify-packaged-sidecar.mjs
 
       - name: Packaged Electron end-to-end tests
         run: npx playwright test
+
+  advisories:
+    name: Dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate SBOM (scopes advisories to what ships)
+        run: npm run sbom
+
+      # Report mode by design (see docs/security/THREAT_MODEL.md T4.2): advisory
+      # databases are fetched live, so a newly published advisory must not
+      # retroactively fail an unrelated pull request. Findings surface as
+      # `::warning::` annotations and the job stays green. An inability to run
+      # the audit — tool missing, unparseable output, registry unreachable —
+      # still fails the job loudly rather than passing in silence.
+      - name: Audit shipped dependencies for known advisories
+        run: npm run audit:advisories

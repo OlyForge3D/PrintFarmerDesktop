@@ -1,0 +1,243 @@
+// CI check: known vulnerability advisories affecting SHIPPED dependencies.
+//
+// This is a LIVE-DATABASE gate (docs/security/THREAT_MODEL.md T4.2). Unlike the
+// licence gate it consults data fetched at run time, so an advisory published
+// today could fail a pull request that changed nothing. That is why the CI job
+// wiring is non-required and this runs in "report" mode by default: it SURFACES
+// findings (GitHub `::warning::` annotations) without failing the merge.
+//
+// The gate is still a real gate, not decoration:
+//   * `--mode block` exits non-zero on any blocking advisory. The evaluator that
+//     decides "blocking" is unit-tested from both sides of the threshold in
+//     tests/supplyChainPolicy.test.ts, so the gate is proven able to fail.
+//   * An inability to audit — tool missing, unparseable output, registry
+//     unreachable — is NEVER a silent pass. It exits non-zero in BOTH modes, so
+//     "could not check" reads as a red job, not a green one. Converting a loud
+//     failure into a quiet one is the exact anti-pattern this repo has ruled out.
+//
+// Advisories are SCOPED to the shipped SBOM closure by package NAME: `cargo
+// audit` reads the whole workspace lock, which contains crates (truck-*,
+// lib3mf-ffi) the shipped feature set never compiles in.
+
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  evaluateAdvisories,
+  normalizeCargoAudit,
+  normalizeNpmAudit,
+  scopeToShippedClosure,
+} from './supply-chain-policy.mjs';
+
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+);
+
+const DEFAULT_SBOM = path.join(repoRoot, 'build', 'sbom.cdx.json');
+const cargoLock = path.join(repoRoot, 'native', 'Cargo.lock');
+
+function parseArgs(argv) {
+  const options = { mode: null, sbom: DEFAULT_SBOM };
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === '--mode') {
+      const value = argv[index + 1];
+      if (value !== 'block' && value !== 'report') {
+        throw new Error('--mode must be "block" or "report"');
+      }
+      options.mode = value;
+      index += 1;
+    } else if (argv[index] === '--sbom') {
+      const value = argv[index + 1];
+      if (!value) throw new Error('--sbom requires a path');
+      options.sbom = path.resolve(repoRoot, value);
+      index += 1;
+    }
+  }
+  return options;
+}
+
+/**
+ * Run an audit tool and return its stdout even when it exits non-zero — both
+ * `npm audit` and `cargo audit` exit non-zero merely because findings exist, so
+ * the exit status cannot be read as failure. A truly failed run is detected by
+ * the absence of a parseable report, never by the exit code.
+ *
+ * `useShell` is set for npm on Windows, where the executable is `npm.cmd`:
+ * Node's `execFile` refuses to run `.cmd` files directly since the CVE-2024-27980
+ * fix, so it must go through the shell or it reads as ENOENT ("not installed").
+ * The npm arguments are all fixed literals, so the shell carries no injection
+ * risk; cargo resolves as `cargo.exe` and needs no shell, keeping its lockfile
+ * path argument out of shell parsing entirely.
+ */
+function capture(command, args, cwd, useShell = false) {
+  try {
+    const stdout = execFileSync(command, args, {
+      cwd,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: useShell,
+    });
+    return { stdout, stderr: '' };
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return { missing: true, message: `${command} is not installed` };
+    }
+    return { stdout: error.stdout ?? '', stderr: error.stderr ?? '' };
+  }
+}
+
+function main() {
+  const options = parseArgs(process.argv.slice(2));
+
+  let policy = {};
+  try {
+    policy =
+      JSON.parse(
+        readFileSync(
+          path.join(repoRoot, 'scripts', 'supply-chain-policy.json'),
+          'utf8',
+        ),
+      ).advisories ?? {};
+  } catch (error) {
+    console.error(
+      `[audit-advisories] FAILED: policy unreadable: ${error.message}`,
+    );
+    process.exit(1);
+  }
+  const mode = options.mode ?? policy.enforcement ?? 'report';
+
+  // Shipped closure, by ecosystem, from the SBOM. Without it the gate cannot
+  // scope, so a missing SBOM fails closed rather than auditing the whole lock.
+  let sbom;
+  try {
+    sbom = JSON.parse(readFileSync(options.sbom, 'utf8'));
+  } catch {
+    console.error(
+      `[audit-advisories] FAILED: no SBOM at ${options.sbom}; run \`npm run sbom\` first so advisories can be scoped to what ships`,
+    );
+    process.exit(1);
+  }
+  const shipped = { npm: new Set(), cargo: new Set() };
+  for (const component of sbom.components ?? []) {
+    const ecosystem = component.properties?.find(
+      (property) => property.name === 'printfarmer:ecosystem',
+    )?.value;
+    if (ecosystem === 'npm') shipped.npm.add(component.name);
+    else if (ecosystem === 'cargo') shipped.cargo.add(component.name);
+  }
+
+  const advisories = [];
+  const couldNotRun = [];
+
+  // --- npm ---
+  const npm = capture(
+    'npm',
+    ['audit', '--json', '--omit=dev'],
+    repoRoot,
+    process.platform === 'win32',
+  );
+  if (npm.missing) {
+    couldNotRun.push(npm.message);
+  } else {
+    const report = tryParse(npm.stdout);
+    if (!report || typeof report.vulnerabilities !== 'object') {
+      couldNotRun.push(
+        `npm audit did not return a parseable report${trailer(npm.stderr)}`,
+      );
+    } else {
+      advisories.push(
+        ...scopeToShippedClosure(normalizeNpmAudit(report), shipped.npm),
+      );
+    }
+  }
+
+  // --- cargo ---
+  const cargo = capture(
+    'cargo',
+    ['audit', '--json', '-f', cargoLock],
+    repoRoot,
+  );
+  if (cargo.missing) {
+    couldNotRun.push(cargo.message);
+  } else {
+    const report = tryParse(cargo.stdout);
+    if (!report || !Array.isArray(report.vulnerabilities?.list)) {
+      couldNotRun.push(
+        `cargo audit did not return a parseable report${trailer(cargo.stderr)}`,
+      );
+    } else {
+      advisories.push(
+        ...scopeToShippedClosure(normalizeCargoAudit(report), shipped.cargo),
+      );
+    }
+  }
+
+  const result = evaluateAdvisories({ advisories, couldNotRun }, policy);
+
+  // Report every partition so the run is legible whether or not it fails.
+  for (const advisory of result.belowThreshold) {
+    console.log(
+      `[audit-advisories]   below threshold: ${advisory.id} (${advisory.severity}) ${advisory.package} [${advisory.ecosystem}]`,
+    );
+  }
+  for (const advisory of result.waived) {
+    console.log(
+      `[audit-advisories]   waived: ${advisory.id} ${advisory.package} — ${advisory.waiver.reason}`,
+    );
+  }
+  for (const advisory of result.blocking) {
+    const line = `${advisory.id} (${advisory.severity}) ${advisory.package} [${advisory.ecosystem}]${advisory.fixAvailable ? ' — fix available' : ''}`;
+    console.error(`[audit-advisories]   BLOCKING: ${line}`);
+    if (mode === 'report') console.log(`::warning::advisory ${line}`);
+  }
+  for (const reason of result.couldNotRun) {
+    console.error(`[audit-advisories]   COULD NOT RUN: ${reason}`);
+    console.log(`::warning::advisory audit could not run: ${reason}`);
+  }
+
+  // An inability to run is loud in BOTH modes: a check that cannot check must
+  // not report success.
+  if (result.couldNotRun.length > 0) {
+    console.error(
+      `[audit-advisories] FAILED: ${result.couldNotRun.length} audit(s) could not run; treating as a failure rather than a silent pass`,
+    );
+    process.exit(1);
+  }
+
+  if (result.blocking.length > 0 && mode === 'block') {
+    console.error(
+      `[audit-advisories] FAILED: ${result.blocking.length} advisory(ies) at or above the threshold with no waiver`,
+    );
+    process.exit(1);
+  }
+
+  const summary = `${result.blocking.length} at/above threshold, ${result.waived.length} waived, ${result.belowThreshold.length} below`;
+  console.log(
+    `[audit-advisories] OK (${mode} mode): ${summary}; scoped to ${shipped.npm.size} npm + ${shipped.cargo.size} cargo shipped package(s)`,
+  );
+}
+
+function tryParse(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function trailer(stderr) {
+  const trimmed = (stderr ?? '').trim();
+  if (!trimmed) return '';
+  const firstLine = trimmed.split('\n')[0];
+  return `: ${firstLine.slice(0, 200)}`;
+}
+
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main();
+}

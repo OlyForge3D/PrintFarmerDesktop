@@ -1,0 +1,28 @@
+{
+  "licenses": {
+    "outbound": "AGPL-3.0-only",
+    "allowed": [
+      "0BSD",
+      "Apache-2.0",
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "CC0-1.0",
+      "ISC",
+      "MIT",
+      "Unicode-3.0",
+      "Unlicense",
+      "Zlib"
+    ],
+    "componentExceptions": [
+      {
+        "purl": "pkg:generic/sqlite3",
+        "reason": "SQLite is dedicated to the public domain (the SQLite Blessing) and carries no SPDX identifier, so cargo/libsqlite3-sys records no licence and the SBOM has no licence node. Public-domain is compatible with the AGPL-3.0-only outbound licence. Keyed by the version-independent purl because the public-domain status is invariant across libsqlite3-sys versions."
+      }
+    ]
+  },
+  "advisories": {
+    "severityThreshold": "high",
+    "enforcement": "report",
+    "waivers": []
+  }
+}

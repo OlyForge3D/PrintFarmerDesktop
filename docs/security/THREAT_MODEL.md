@@ -772,13 +772,28 @@ which is precisely the class of invariant that decays silently as new call sites
 
 ### T4.1 — Malicious or licence-incompatible dependency
 
-**Controls. Partial — enumeration only.** `scripts/generate-sbom.mjs` produces a CycloneDX
-SBOM covering both dependency trees, staged into `resources/compliance/` and verified in the
-Package job by `scripts/verify-sbom.mjs`. That establishes _what_ is being reproduced. It does
-**not** check whether any of it is acceptable: there is still no `deny.toml`, no `cargo-audit`,
-and no `npm audit` gate, so a malicious or licence-incompatible dependency still enters
-undetected. Both lockfiles (`package-lock.json`, `native/Cargo.lock`) are committed and CI
-installs with `npm ci`, so builds are reproducible.
+**Controls. Enforced.** `scripts/generate-sbom.mjs` produces a CycloneDX SBOM covering both
+dependency trees, staged into `resources/compliance/` and verified in the Package job by
+`scripts/verify-sbom.mjs`. That establishes _what_ is being reproduced. Three policies now
+consume it so that _acceptability_ is checked too:
+
+- **Licence policy — deterministic, blocking.** `scripts/verify-licenses.mjs` evaluates every
+  shipped component's SPDX licence (handling `OR`/`AND`/`WITH`, parentheses and cargo's legacy
+  `/`) against `scripts/supply-chain-policy.json`, and fails the Package job on any licence not
+  compatible with the AGPL-3.0-only outbound licence or covered by a reviewed component
+  exception. A missing or unparseable licence fails **closed**. A GPL-2.0-only dependency is not
+  on the allowlist, so it is rejected.
+- **Advisory audit — live-database, report mode.** `scripts/audit-advisories.mjs` runs
+  `npm audit` and `cargo audit`, normalises both into one shape, scopes findings to the shipped
+  SBOM closure by package name, and reports those at or above a severity threshold. Per T4.2 it
+  does not block a pull request, but an inability to run the audit fails loudly (see T4.2).
+- **Third-party notices.** `scripts/generate-notices.mjs` enumerates the SBOM into
+  `build/third-party-licenses.md`, staged and verified by regenerate-and-compare
+  (`scripts/verify-notices.mjs`); the enumeration is code-unit ordered so it is byte-identical
+  across runners.
+
+Both lockfiles (`package-lock.json`, `native/Cargo.lock`) are committed and CI installs with
+`npm ci`, so builds are reproducible.
 
 Two specifics raise the stakes:
 
@@ -790,13 +805,21 @@ Two specifics raise the stakes:
   at least visible; at the shipped feature set there are currently none, because `lib3mf` is
   not enabled.
 - The product is **AGPL-3.0-only**. `docs/compliance/CORRESPONDING_SOURCE.md` requires notices
-  to ship under `resources/compliance/`, and `THIRD_PARTY_NOTICES.md` currently discharges that
-  by pointing at the lockfiles rather than enumerating licences. A GPL-2.0-**only** dependency
-  would be licence-incompatible with AGPL-3.0-only outbound, and nothing today would detect one
-  entering the graph. The SBOM records each component's declared licence, which is the input a
-  policy check needs, but no policy consumes it yet.
+  to ship under `resources/compliance/`. `THIRD_PARTY_NOTICES.md` retains its hand-authored
+  provenance (bundled slicer, printer-calibration data) and now points at the generated
+  `third-party-licenses.md` for the enumerated dependency licences. A GPL-2.0-**only**
+  dependency would be licence-incompatible with AGPL-3.0-only outbound; the licence gate above
+  now detects one entering the graph, because the SBOM records each component's declared licence
+  and `verify-licenses.mjs` consumes it.
 
-→ Enumeration: PR B1. Policy, notices and gates: PR B2.
+→ Enumeration: PR B1. Policy, notices and gates: PR B2 (this slice).
+
+**Residual.** The advisory audit reads databases fetched at run time, so it is wired non-blocking
+(T4.2); a high-severity advisory on a shipped crate surfaces as a warning and is escalated by a
+human, not by an automatic merge block. The licence allowlist is a property of policy, not of the
+current tree — a new permissive licence (e.g. `BSD-3-Clause`) is admitted without a change, and
+an ambiguous one is handled by a reviewed exception with a written reason rather than by widening
+the allowlist.
 
 ### T4.3 — An SBOM that presents as complete while describing part of the product
 
@@ -838,13 +861,31 @@ such construct exists in `src/` today; the check would not notice one being adde
 Advisory databases are fetched live, so an advisory-checking gate can fail a pull request that
 changed nothing. A gate that blocks unrelated work gets disabled, and a disabled gate is worse
 than no gate — the same failure shape as a cap that degrades into blanket rejection. The
-mitigation is to separate deterministic checks (licences, bans, sources, and a
-production-scoped audit against the committed lockfile) from live-database checks
-(advisories), and to let only the deterministic ones block a pull request.
+mitigation is to separate deterministic checks (licences, bans, sources) from live-database
+checks (advisories), and to let only the deterministic ones block a pull request.
 
-Note also that adding a job to `.github/workflows/ci.yml` does **not** make it a required
-check. Branch protection lists the six required checks and must be updated separately by
-someone with administrative rights. → PR B2.
+**Implemented.** The licence gate (`verify-licenses.mjs`, T4.1) is deterministic and blocks in
+the Package job. The advisory gate (`audit-advisories.mjs`) runs in a dedicated non-required
+`advisories` job in **report mode**: findings at or above the threshold surface as `::warning::`
+annotations and the job stays green, so a newly published advisory never retroactively fails an
+unrelated pull request. The gate is nonetheless a real gate — `--mode block` exits non-zero on
+any blocking advisory, and the threshold/waiver logic is unit-tested from both sides in
+`tests/supplyChainPolicy.test.ts`; only the CI wiring is non-blocking. Crucially, an inability to
+run the audit — tool missing, unparseable output, registry unreachable — exits non-zero in
+**both** modes, so "could not check" reads as a red job rather than a silent pass. Converting a
+loud failure into a quiet one is the failure mode this control exists to avoid. Waivers are
+per-advisory-id with a written reason; there is no blanket ignore.
+
+At the current shipped feature set the audit reports `quick-xml` (RUSTSEC-2026-0194/-0195, high)
+in the 3MF parser closure. It is surfaced, not waived: the remediation is an upstream-parser
+decision outside this tooling slice and is tracked for a human risk call.
+
+Note also that adding a job to `.github/workflows/ci.yml` does **not** make it a required check.
+As of this writing `development` has **no branch protection and no rulesets** (issue #111), so no
+status check is required and direct pushes are permitted. Every "CI green before merge" guarantee
+is therefore procedural — held up by the pre-merge re-read of the status rollup and by reviewers
+un-drafting rather than merging — not enforced. Making any check required, including the licence
+gate, is a separate administrative change tracked in #111.
 
 ## 9. Open work derived from this model
 
