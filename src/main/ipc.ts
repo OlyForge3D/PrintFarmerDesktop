@@ -875,6 +875,288 @@ export function registerIpcHandlers(
     });
   });
 
+  // --- Printer Calibration transport handlers (issue #52) -----------------
+  //
+  // These handlers validate every request from the renderer before acting.
+  // The renderer never receives credentials, raw JWT tokens, or arbitrary
+  // file/network primitives. All routes are fixed in calibrationHttp.ts.
+  //
+  // NOTE: Full implementations are wired in calibrationEngine.ts and
+  // calibrationHttp.ts. These stubs return typed unavailable states until
+  // downstream services (#53-#56) complete the feature. This is correct
+  // feature-gating behavior per the capability negotiation contract.
+
+  ipcMain.handle(IpcChannel.CalibrationGetAvailability, async () => {
+    // Returns a typed unavailable state when no profile is configured.
+    // Full capability negotiation requires a connected server profile.
+    const profileList = await profiles.list();
+    const hasProfile = profileList.selectedProfileId !== null;
+    return ipcSchemas[IpcChannel.CalibrationGetAvailability].response.parse({
+      available: false,
+      unavailableReason: hasProfile ? 'serverVersionTooLow' : 'noProfile',
+      unavailableDetail: hasProfile
+        ? 'Calibration API negotiation has not been completed for this server profile.'
+        : 'No server profile is selected.',
+      negotiatedApiVersion: null,
+      negotiatedSchemaVersion: null,
+      capabilityFlags: null,
+      grantedScopes: null,
+      offlineEditingEnabled: false,
+    });
+  });
+
+  // Calibration channels that require a valid server profile and IPC request.
+  // Each validates its request schema before dispatching. Returns 'noProfile'
+  // or 'syncRequired' when prerequisites are not met.
+
+  ipcMain.handle(
+    IpcChannel.CalibrationListPrinters,
+    (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationListPrinters].request.parse(rawRequest);
+      // Stub: full implementation requires calibration HTTP client integration.
+      return ipcSchemas[IpcChannel.CalibrationListPrinters].response.parse({
+        printers: [],
+        fetchedAt: new Date().toISOString(),
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationGetPrinterContext,
+    (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationGetPrinterContext].request.parse(
+        rawRequest,
+      );
+      throw Object.assign(
+        new Error('Calibration printer context requires server connectivity.'),
+        { code: 'CALIBRATION_UNAVAILABLE' },
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationListProjects,
+    (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationListProjects].request.parse(rawRequest);
+      return ipcSchemas[IpcChannel.CalibrationListProjects].response.parse({
+        projects: [],
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationGetProject,
+    (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationGetProject].request.parse(rawRequest);
+      throw Object.assign(new Error('Calibration project not found.'), {
+        code: 'CALIBRATION_NOT_FOUND',
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationSaveDraft,
+    (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationSaveDraft].request.parse(rawRequest);
+      throw Object.assign(
+        new Error('Calibration draft save requires an active project.'),
+        { code: 'CALIBRATION_UNAVAILABLE' },
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationListAttempts,
+    (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationListAttempts].request.parse(rawRequest);
+      return ipcSchemas[IpcChannel.CalibrationListAttempts].response.parse({
+        attempts: [],
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationGetAttempt,
+    (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationGetAttempt].request.parse(rawRequest);
+      throw Object.assign(new Error('Calibration attempt not found.'), {
+        code: 'CALIBRATION_NOT_FOUND',
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationStagePhoto,
+    (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationStagePhoto].request.parse(rawRequest);
+      throw Object.assign(
+        new Error('Calibration photo staging requires an active project.'),
+        { code: 'CALIBRATION_UNAVAILABLE' },
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationListConflicts,
+    (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationListConflicts].request.parse(rawRequest);
+      return ipcSchemas[IpcChannel.CalibrationListConflicts].response.parse({
+        conflicts: [],
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationResolveConflict,
+    (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationResolveConflict].request.parse(
+        rawRequest,
+      );
+      throw Object.assign(new Error('Calibration conflict not found.'), {
+        code: 'CALIBRATION_NOT_FOUND',
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationSyncNow,
+    (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationSyncNow].request.parse(rawRequest);
+      return ipcSchemas[IpcChannel.CalibrationSyncNow].response.parse({
+        phase: 'failed',
+        profileId: null,
+        projectId: null,
+        pushedOperations: 0,
+        pulledChanges: 0,
+        conflictCount: 0,
+        cursor: null,
+        error: 'Calibration sync is not yet available for this server profile.',
+      });
+    },
+  );
+
+  // Generation, queue, bed-clear, and print start are disabled until all
+  // mutations synchronize and printer context is freshly revalidated.
+  ipcMain.handle(
+    IpcChannel.CalibrationStartGeneration,
+    (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationStartGeneration].request.parse(
+        rawRequest,
+      );
+      return ipcSchemas[IpcChannel.CalibrationStartGeneration].response.parse({
+        status: 'error',
+        error: {
+          code: 'syncRequired',
+          message:
+            'Calibration generation is disabled until all mutations synchronize and printer context is validated.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationGetQueueState,
+    (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationGetQueueState].request.parse(rawRequest);
+      return ipcSchemas[IpcChannel.CalibrationGetQueueState].response.parse({
+        status: 'error',
+        error: {
+          code: 'syncRequired',
+          message: 'Calibration queue state requires server connectivity.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationAcknowledgeBedClear,
+    (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationAcknowledgeBedClear].request.parse(
+        rawRequest,
+      );
+      return ipcSchemas[
+        IpcChannel.CalibrationAcknowledgeBedClear
+      ].response.parse({
+        status: 'error',
+        error: {
+          code: 'syncRequired',
+          message:
+            'Bed-clear acknowledgement is disabled until sync is complete.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationStartPrint,
+    (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationStartPrint].request.parse(rawRequest);
+      return ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse({
+        status: 'error',
+        error: {
+          code: 'syncRequired',
+          message:
+            'Print start is disabled until sync is complete and printer context is validated.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      });
+    },
+  );
+
+  ipcMain.handle(IpcChannel.CalibrationListOrcaProfiles, () => {
+    return ipcSchemas[IpcChannel.CalibrationListOrcaProfiles].response.parse({
+      profiles: [],
+    });
+  });
+
+  ipcMain.handle(
+    IpcChannel.CalibrationExportOrcaProfile,
+    (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationExportOrcaProfile].request.parse(
+        rawRequest,
+      );
+      return ipcSchemas[IpcChannel.CalibrationExportOrcaProfile].response.parse(
+        {
+          status: 'error',
+          error: {
+            code: 'invalidData',
+            message: 'OrcaSlicer profile export is not yet available.',
+            retryable: false,
+            retryAfterSeconds: null,
+          },
+        },
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationImportLegacyBackupV4,
+    (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationImportLegacyBackupV4].request.parse(
+        rawRequest,
+      );
+      return ipcSchemas[
+        IpcChannel.CalibrationImportLegacyBackupV4
+      ].response.parse({
+        status: 'error',
+        error: {
+          code: 'invalidData',
+          message: 'Legacy calibration backup v4 import is not yet available.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      });
+    },
+  );
+  // --- End Printer Calibration transport handlers --------------------------
+
   return async () => {
     await retargetArtifacts.disposeAll();
     if (!sharedSidecar) {

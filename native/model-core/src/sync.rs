@@ -1097,6 +1097,250 @@ pub(crate) fn preflight_entity_revision_set(
         .collect())
 }
 
+// ==========================================================================
+// Calibration entity types (issue #52)
+// ==========================================================================
+//
+// These types represent the calibration-specific sync domain. They are
+// deliberately separate from the library sync entity types (`SyncEntityType`,
+// etc.) to avoid conflating the two domains.
+//
+// No credentials, server URLs, JWTs, API keys, or password material may
+// appear in any of these types. Profile IDs are opaque Electron-owned UUIDs.
+
+/// Entity types for the Printer Calibration sync domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum CalibrationEntityType {
+    CalibrationProject,
+    CalibrationStep,
+    CalibrationAttempt,
+    CalibrationEvent,
+    CalibrationObservation,
+    CalibrationPhoto,
+    CalibrationProfileRevision,
+    CalibrationPrinterSnapshot,
+}
+
+impl CalibrationEntityType {
+    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
+    pub(crate) fn as_db(self) -> &'static str {
+        match self {
+            Self::CalibrationProject => "CalibrationProject",
+            Self::CalibrationStep => "CalibrationStep",
+            Self::CalibrationAttempt => "CalibrationAttempt",
+            Self::CalibrationEvent => "CalibrationEvent",
+            Self::CalibrationObservation => "CalibrationObservation",
+            Self::CalibrationPhoto => "CalibrationPhoto",
+            Self::CalibrationProfileRevision => "CalibrationProfileRevision",
+            Self::CalibrationPrinterSnapshot => "CalibrationPrinterSnapshot",
+        }
+    }
+
+    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
+    pub(crate) fn from_db(value: &str) -> Result<Self, String> {
+        match value {
+            "CalibrationProject" => Ok(Self::CalibrationProject),
+            "CalibrationStep" => Ok(Self::CalibrationStep),
+            "CalibrationAttempt" => Ok(Self::CalibrationAttempt),
+            "CalibrationEvent" => Ok(Self::CalibrationEvent),
+            "CalibrationObservation" => Ok(Self::CalibrationObservation),
+            "CalibrationPhoto" => Ok(Self::CalibrationPhoto),
+            "CalibrationProfileRevision" => Ok(Self::CalibrationProfileRevision),
+            "CalibrationPrinterSnapshot" => Ok(Self::CalibrationPrinterSnapshot),
+            _ => Err(format!(
+                "invalid persisted calibration entity type: {value}"
+            )),
+        }
+    }
+}
+
+/// Outbox operation state for the calibration sync outbox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CalibrationOutboxState {
+    /// Operation is waiting to be claimed for push.
+    Pending,
+    /// Operation is leased and a push attempt is in flight.
+    Leased,
+    /// Operation was applied successfully on the server.
+    Settled,
+    /// Operation failed; awaiting retry per the retry schedule.
+    Failed,
+    /// Exact replay accepted (idempotent re-send). Treated as success.
+    Replayed,
+    /// Operation was superseded by a conflict resolution.
+    Superseded,
+}
+
+impl CalibrationOutboxState {
+    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
+    pub(crate) fn as_db(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Leased => "leased",
+            Self::Settled => "settled",
+            Self::Failed => "failed",
+            Self::Replayed => "replayed",
+            Self::Superseded => "superseded",
+        }
+    }
+
+    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
+    pub(crate) fn from_db(value: &str) -> Result<Self, String> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "leased" => Ok(Self::Leased),
+            "settled" => Ok(Self::Settled),
+            "failed" => Ok(Self::Failed),
+            "replayed" => Ok(Self::Replayed),
+            "superseded" => Ok(Self::Superseded),
+            _ => Err(format!(
+                "invalid persisted calibration outbox state: {value}"
+            )),
+        }
+    }
+
+    /// Whether this state allows a new push attempt.
+    pub fn is_pushable(self) -> bool {
+        matches!(self, Self::Pending | Self::Failed)
+    }
+
+    /// Whether this state means the operation is terminal.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Settled | Self::Replayed | Self::Superseded)
+    }
+}
+
+/// Conflict kind for the calibration conflict center.
+/// Only semantically safe resolutions are permitted; there is deliberately
+/// no last-write-wins path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CalibrationConflictKind {
+    /// Project metadata (displayName, description) conflict.
+    ProjectMetadata,
+    /// Step ordering changed concurrently.
+    StepOrdering,
+    /// Step draft fields (method, prerequisites, expected result) conflict.
+    StepDraft,
+    /// Selected current observation/attempt diverged.
+    OutcomeSelection,
+    /// Cached printer snapshot is stale vs server.
+    StalePrinterSnapshot,
+    /// Local edit vs server deletion.
+    DeletionVsLocalEdit,
+}
+
+impl CalibrationConflictKind {
+    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
+    pub(crate) fn as_db(self) -> &'static str {
+        match self {
+            Self::ProjectMetadata => "projectMetadata",
+            Self::StepOrdering => "stepOrdering",
+            Self::StepDraft => "stepDraft",
+            Self::OutcomeSelection => "outcomeSelection",
+            Self::StalePrinterSnapshot => "stalePrinterSnapshot",
+            Self::DeletionVsLocalEdit => "deletionVsLocalEdit",
+        }
+    }
+
+    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
+    pub(crate) fn from_db(value: &str) -> Result<Self, String> {
+        match value {
+            "projectMetadata" => Ok(Self::ProjectMetadata),
+            "stepOrdering" => Ok(Self::StepOrdering),
+            "stepDraft" => Ok(Self::StepDraft),
+            "outcomeSelection" => Ok(Self::OutcomeSelection),
+            "stalePrinterSnapshot" => Ok(Self::StalePrinterSnapshot),
+            "deletionVsLocalEdit" => Ok(Self::DeletionVsLocalEdit),
+            _ => Err(format!(
+                "invalid persisted calibration conflict kind: {value}"
+            )),
+        }
+    }
+
+    /// Return the semantically valid resolution strategies for this conflict kind.
+    ///
+    /// Append-only data (attempts, events, observations, photos, profile
+    /// revisions) and exact measurements cannot be silently merged; no
+    /// last-write-wins path exists.
+    pub fn available_resolutions(self) -> &'static [CalibrationConflictResolutionKind] {
+        match self {
+            Self::ProjectMetadata | Self::StepDraft => &[
+                CalibrationConflictResolutionKind::AcceptServer,
+                CalibrationConflictResolutionKind::KeepLocalAsNewRevision,
+                CalibrationConflictResolutionKind::ManualFieldMerge,
+            ],
+            Self::StepOrdering => &[
+                CalibrationConflictResolutionKind::AcceptServer,
+                CalibrationConflictResolutionKind::KeepLocalAsNewRevision,
+            ],
+            // Outcome selections, stale snapshots, and deletion conflicts have
+            // no safe automatic merge. Only accept-server or keep-local.
+            Self::OutcomeSelection | Self::StalePrinterSnapshot | Self::DeletionVsLocalEdit => &[
+                CalibrationConflictResolutionKind::AcceptServer,
+                CalibrationConflictResolutionKind::KeepLocalAsNewRevision,
+            ],
+        }
+    }
+}
+
+/// Calibration conflict resolution strategy.
+///
+/// Only semantically valid strategies for a given conflict kind are exposed.
+/// There is intentionally no last-write-wins option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CalibrationConflictResolutionKind {
+    /// Accept the server version; discard local changes.
+    AcceptServer,
+    /// Keep local changes as a new revision submitted on top of server state.
+    KeepLocalAsNewRevision,
+    /// Manual field-level merge (only for metadata/draft conflicts).
+    ManualFieldMerge,
+}
+
+impl CalibrationConflictResolutionKind {
+    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
+    pub(crate) fn as_db(self) -> &'static str {
+        match self {
+            Self::AcceptServer => "acceptServer",
+            Self::KeepLocalAsNewRevision => "keepLocalAsNewRevision",
+            Self::ManualFieldMerge => "manualFieldMerge",
+        }
+    }
+
+    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
+    pub(crate) fn from_db(value: &str) -> Result<Self, String> {
+        match value {
+            "acceptServer" => Ok(Self::AcceptServer),
+            "keepLocalAsNewRevision" => Ok(Self::KeepLocalAsNewRevision),
+            "manualFieldMerge" => Ok(Self::ManualFieldMerge),
+            _ => Err(format!(
+                "invalid persisted calibration conflict resolution: {value}"
+            )),
+        }
+    }
+}
+
+/// Cursor state for the calibration sync change feed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalibrationCursorStateDto {
+    pub profile_id: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    pub server_revision: u64,
+    pub checkpoint_generation: u64,
+}
+
+// ==========================================================================
+// End of Calibration entity types (issue #52)
+// ==========================================================================
+
 pub(crate) fn new_lease_token() -> String {
     new_collision_resistant_token("lease")
 }

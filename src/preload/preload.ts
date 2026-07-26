@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import {
   IpcChannel,
+  ipcSchemas,
   type AppInfoResponse,
   type ExtractVendorMetadataRequest,
   type ExtractVendorMetadataResponse,
@@ -70,7 +71,43 @@ import {
   type RetargetSaveAsResponse,
   type RetargetDisposeRequest,
   type RetargetDisposeResponse,
-  ipcSchemas,
+  // Printer Calibration transport (issue #52)
+  type CalibrationGetAvailabilityResponse,
+  type CalibrationListPrintersRequest,
+  type CalibrationListPrintersResponse,
+  type CalibrationGetPrinterContextRequest,
+  type CalibrationGetPrinterContextResponse,
+  type CalibrationListProjectsRequest,
+  type CalibrationListProjectsResponse,
+  type CalibrationGetProjectRequest,
+  type CalibrationGetProjectResponse,
+  type CalibrationSaveDraftRequest,
+  type CalibrationSaveDraftResponse,
+  type CalibrationListAttemptsRequest,
+  type CalibrationListAttemptsResponse,
+  type CalibrationGetAttemptRequest,
+  type CalibrationGetAttemptResponse,
+  type CalibrationStagePhotoRequest,
+  type CalibrationStagePhotoResponse,
+  type CalibrationListConflictsRequest,
+  type CalibrationListConflictsResponse,
+  type CalibrationResolveConflictRequest,
+  type CalibrationResolveConflictResponse,
+  type CalibrationSyncNowRequest,
+  type CalibrationSyncNowResponse,
+  type CalibrationStartGenerationRequest,
+  type CalibrationStartGenerationResponse,
+  type CalibrationGetQueueStateRequest,
+  type CalibrationGetQueueStateResponse,
+  type CalibrationAcknowledgeBedClearRequest,
+  type CalibrationAcknowledgeBedClearResponse,
+  type CalibrationStartPrintRequest,
+  type CalibrationStartPrintResponse,
+  type CalibrationListOrcaProfilesResponse,
+  type CalibrationExportOrcaProfileRequest,
+  type CalibrationExportOrcaProfileResponse,
+  type CalibrationImportLegacyBackupV4Request,
+  type CalibrationImportLegacyBackupV4Response,
 } from '@shared/ipc';
 
 /**
@@ -335,6 +372,130 @@ const api: PrintFarmerApi = {
   ): Promise<RetargetDisposeResponse> =>
     ipcSchemas[IpcChannel.RetargetDispose].response.parse(
       await ipcRenderer.invoke(IpcChannel.RetargetDispose, request),
+    ),
+  // --- Printer Calibration transport (issue #52) ---------------------------
+  getCalibrationAvailability:
+    async (): Promise<CalibrationGetAvailabilityResponse> =>
+      ipcSchemas[IpcChannel.CalibrationGetAvailability].response.parse(
+        await ipcRenderer.invoke(IpcChannel.CalibrationGetAvailability),
+      ),
+  listCalibrationPrinters: async (
+    request: CalibrationListPrintersRequest,
+  ): Promise<CalibrationListPrintersResponse> =>
+    ipcSchemas[IpcChannel.CalibrationListPrinters].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationListPrinters, request),
+    ),
+  getCalibrationPrinterContext: async (
+    request: CalibrationGetPrinterContextRequest,
+  ): Promise<CalibrationGetPrinterContextResponse> =>
+    ipcSchemas[IpcChannel.CalibrationGetPrinterContext].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationGetPrinterContext,
+        request,
+      ),
+    ),
+  listCalibrationProjects: async (
+    request: CalibrationListProjectsRequest,
+  ): Promise<CalibrationListProjectsResponse> =>
+    ipcSchemas[IpcChannel.CalibrationListProjects].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationListProjects, request),
+    ),
+  getCalibrationProject: async (
+    request: CalibrationGetProjectRequest,
+  ): Promise<CalibrationGetProjectResponse> =>
+    ipcSchemas[IpcChannel.CalibrationGetProject].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationGetProject, request),
+    ),
+  saveCalibrationDraft: async (
+    request: CalibrationSaveDraftRequest,
+  ): Promise<CalibrationSaveDraftResponse> =>
+    ipcSchemas[IpcChannel.CalibrationSaveDraft].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationSaveDraft, request),
+    ),
+  listCalibrationAttempts: async (
+    request: CalibrationListAttemptsRequest,
+  ): Promise<CalibrationListAttemptsResponse> =>
+    ipcSchemas[IpcChannel.CalibrationListAttempts].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationListAttempts, request),
+    ),
+  getCalibrationAttempt: async (
+    request: CalibrationGetAttemptRequest,
+  ): Promise<CalibrationGetAttemptResponse> =>
+    ipcSchemas[IpcChannel.CalibrationGetAttempt].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationGetAttempt, request),
+    ),
+  stageCalibrationPhoto: async (
+    request: CalibrationStagePhotoRequest,
+  ): Promise<CalibrationStagePhotoResponse> =>
+    ipcSchemas[IpcChannel.CalibrationStagePhoto].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationStagePhoto, request),
+    ),
+  listCalibrationConflicts: async (
+    request: CalibrationListConflictsRequest,
+  ): Promise<CalibrationListConflictsResponse> =>
+    ipcSchemas[IpcChannel.CalibrationListConflicts].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationListConflicts, request),
+    ),
+  resolveCalibrationConflict: async (
+    request: CalibrationResolveConflictRequest,
+  ): Promise<CalibrationResolveConflictResponse> =>
+    ipcSchemas[IpcChannel.CalibrationResolveConflict].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationResolveConflict, request),
+    ),
+  syncCalibrationNow: async (
+    request: CalibrationSyncNowRequest,
+  ): Promise<CalibrationSyncNowResponse> =>
+    ipcSchemas[IpcChannel.CalibrationSyncNow].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationSyncNow, request),
+    ),
+  startCalibrationGeneration: async (
+    request: CalibrationStartGenerationRequest,
+  ): Promise<CalibrationStartGenerationResponse> =>
+    ipcSchemas[IpcChannel.CalibrationStartGeneration].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationStartGeneration, request),
+    ),
+  getCalibrationQueueState: async (
+    request: CalibrationGetQueueStateRequest,
+  ): Promise<CalibrationGetQueueStateResponse> =>
+    ipcSchemas[IpcChannel.CalibrationGetQueueState].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationGetQueueState, request),
+    ),
+  acknowledgeCalibrationBedClear: async (
+    request: CalibrationAcknowledgeBedClearRequest,
+  ): Promise<CalibrationAcknowledgeBedClearResponse> =>
+    ipcSchemas[IpcChannel.CalibrationAcknowledgeBedClear].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationAcknowledgeBedClear,
+        request,
+      ),
+    ),
+  startCalibrationPrint: async (
+    request: CalibrationStartPrintRequest,
+  ): Promise<CalibrationStartPrintResponse> =>
+    ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationStartPrint, request),
+    ),
+  listOrcaProfiles: async (): Promise<CalibrationListOrcaProfilesResponse> =>
+    ipcSchemas[IpcChannel.CalibrationListOrcaProfiles].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationListOrcaProfiles),
+    ),
+  exportOrcaProfile: async (
+    request: CalibrationExportOrcaProfileRequest,
+  ): Promise<CalibrationExportOrcaProfileResponse> =>
+    ipcSchemas[IpcChannel.CalibrationExportOrcaProfile].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationExportOrcaProfile,
+        request,
+      ),
+    ),
+  importLegacyCalibrationBackupV4: async (
+    request: CalibrationImportLegacyBackupV4Request,
+  ): Promise<CalibrationImportLegacyBackupV4Response> =>
+    ipcSchemas[IpcChannel.CalibrationImportLegacyBackupV4].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationImportLegacyBackupV4,
+        request,
+      ),
     ),
 };
 
