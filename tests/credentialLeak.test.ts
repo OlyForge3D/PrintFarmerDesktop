@@ -62,7 +62,7 @@ const FORBIDDEN = [API_SECRET, ISSUED_JWT, ACCOUNT_PASSWORD, 'encryptedSecret'];
 /** Every forbidden token found in `value` once serialized. Empty == clean. */
 function leaks(value: unknown): string[] {
   const serialized =
-    typeof value === 'string' ? value : JSON.stringify(value) ?? '';
+    typeof value === 'string' ? value : (JSON.stringify(value) ?? '');
   return FORBIDDEN.filter((token) => serialized.includes(token));
 }
 
@@ -166,7 +166,9 @@ function successfulFetch(): typeof globalThis.fetch {
           }),
         );
       case '/api/auth/me':
-        return Promise.resolve(json({ id: 'operator-1', username: 'operator' }));
+        return Promise.resolve(
+          json({ id: 'operator-1', username: 'operator' }),
+        );
       default:
         return Promise.resolve(json({}, 404));
     }
@@ -254,7 +256,10 @@ describe('credential-leak: renderer-facing IPC responses', () => {
     const ciphertext = /"encryptedSecret":"([^"]+)"/.exec(
       persistedStore(fs),
     )?.[1];
-    expect(ciphertext, 'expected a persisted ciphertext to scan for').toBeTruthy();
+    expect(
+      ciphertext,
+      'expected a persisted ciphertext to scan for',
+    ).toBeTruthy();
 
     for (const [label, payload] of [
       ['save', saved],

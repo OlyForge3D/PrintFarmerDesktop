@@ -28,7 +28,9 @@ import forgeConfig from '../forge.config';
 function fuseConfig(): Record<number, unknown> {
   const plugins = forgeConfig.plugins ?? [];
   const fusesPlugin = plugins.find(
-    (plugin): plugin is { name: string; fusesConfig: Record<number, unknown> } =>
+    (
+      plugin,
+    ): plugin is { name: string; fusesConfig: Record<number, unknown> } =>
       typeof plugin === 'object' &&
       plugin !== null &&
       (plugin as { name?: unknown }).name === 'fuses' &&
@@ -66,7 +68,9 @@ describe('packaged runtime fuses', () => {
     // Asserting the pair prevents a future edit from keeping one while dropping
     // the other and reading as "still hardened".
     const fuses = fuseConfig();
-    expect(fuses[FuseV1Options.EnableEmbeddedAsarIntegrityValidation]).toBe(true);
+    expect(fuses[FuseV1Options.EnableEmbeddedAsarIntegrityValidation]).toBe(
+      true,
+    );
     expect(fuses[FuseV1Options.OnlyLoadAppFromAsar]).toBe(true);
   });
 });

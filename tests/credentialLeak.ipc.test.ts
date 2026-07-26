@@ -34,7 +34,10 @@ import {
 import type { ServerProfileDraft } from '@shared/ipc';
 
 const NOW = Date.parse('2026-07-23T12:00:00.000Z');
-const USER_DATA_PATH = path.join(process.cwd(), 'credential-leak-ipc-test-data');
+const USER_DATA_PATH = path.join(
+  process.cwd(),
+  'credential-leak-ipc-test-data',
+);
 const API_SECRET = 'desktop-secret';
 const ISSUED_JWT = 'short-lived-jwt';
 const FORBIDDEN = [API_SECRET, ISSUED_JWT, 'encryptedSecret'];
@@ -62,7 +65,9 @@ vi.mock('electron', () => ({
     },
   },
   BrowserWindow: { fromWebContents: () => ({ id: 'window-stub' }) },
-  dialog: { showOpenDialog: () => Promise.resolve({ canceled: true, filePaths: [] }) },
+  dialog: {
+    showOpenDialog: () => Promise.resolve({ canceled: true, filePaths: [] }),
+  },
   safeStorage: {
     isEncryptionAvailable: () => false,
     encryptString: () => Buffer.from(''),
@@ -180,7 +185,9 @@ function successfulFetch(): typeof globalThis.fetch {
           }),
         );
       case '/api/auth/me':
-        return Promise.resolve(json({ id: 'operator-1', username: 'operator' }));
+        return Promise.resolve(
+          json({ id: 'operator-1', username: 'operator' }),
+        );
       default:
         return Promise.resolve(json({}, 404));
     }
@@ -218,7 +225,8 @@ function register(profiles: ServerProfileService): Map<string, Handler> {
     loadScene: () => Promise.resolve({}),
     extractVendorMetadata: () => Promise.resolve({}),
     extractVendorPlateThumbnails: () => Promise.resolve({ thumbnails: [] }),
-    renderThumbnail: () => Promise.resolve({ width: 1, height: 1, pngBase64: 'AA==' }),
+    renderThumbnail: () =>
+      Promise.resolve({ width: 1, height: 1, pngBase64: 'AA==' }),
     scanRoot: () => Promise.resolve({}),
     handshake: () => Promise.resolve({ sidecarVersion: '0' }),
     dispose: () => undefined,
