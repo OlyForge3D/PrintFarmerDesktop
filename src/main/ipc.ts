@@ -54,6 +54,22 @@ import {
   ServerProfileCalibrationTokenProvider,
   SidecarCalibrationAdapter,
 } from './calibrationService.js';
+import {
+  discoverLocalOrcaFilamentProfiles,
+  findLocalOrcaProfileRaw,
+} from './orcaProfileDiscovery.js';
+import { generateOrcaProfile } from './orcaProfileGenerator.js';
+import type { OrcaPatchEntry } from './orcaProfileGenerator.js';
+import {
+  installOrcaProfileWindows,
+  restoreOrcaProfileWindows,
+  verifyExportedProfile,
+  canonicalizeSaveTarget,
+  cacheGeneratedProfile,
+  getCachedProfile,
+  clearProfileCache,
+  OrcaInstallError,
+} from './orcaProfileInstall.js';
 
 declare const __PRINTFARMER_E2E_BUILD__: boolean;
 
@@ -280,6 +296,7 @@ export function registerIpcHandlers(
     }
     activeSyncControllers.clear();
     uploads.dispose();
+    clearProfileCache();
   });
 
   function retargetElectronError(
@@ -1842,7 +1859,14 @@ export function registerIpcHandlers(
             !candidate.isOnline ||
             !isExplicitCalibrationEligibilityComplete(candidate)
           ) {
-            return null;
+            return {
+              pfEntries: [] as ReturnType<
+                typeof projectPrintFarmerOrcaProfile
+              >[],
+              localEntries: [] as Awaited<
+                ReturnType<typeof discoverLocalOrcaFilamentProfiles>
+              >,
+            };
           }
           try {
             const context = await calibrationHttp.getPrinterContext(
@@ -1851,13 +1875,20 @@ export function registerIpcHandlers(
               candidate.printerId,
               signal,
             );
-            return projectPrintFarmerOrcaProfile(candidate, context);
+            const pfEntry = projectPrintFarmerOrcaProfile(candidate, context);
+            // Discover locally installed OrcaSlicer profiles compatible with
+            // this printer context. These are real files on the user's machine
+            // and allow the user to use the local install as a base for export.
+            const localEntries = await discoverLocalOrcaFilamentProfiles(
+              context,
+            ).catch(() => []);
+            return { pfEntries: pfEntry ? [pfEntry] : [], localEntries };
           } catch (error) {
             if (
               error instanceof CalibrationHttpError &&
               ['notFound', 'invalidResponse'].includes(error.code)
             ) {
-              return null;
+              return { pfEntries: [], localEntries: [] };
             }
             throw error;
           }
@@ -1865,20 +1896,38 @@ export function registerIpcHandlers(
       );
       const profilesByScope = new Map<
         string,
-        NonNullable<(typeof discovered)[number]>
+        NonNullable<(typeof discovered)[number]['pfEntries'][number]>
       >();
-      for (const profile of discovered) {
-        if (profile === null) continue;
-        const scope = [
-          profile.orcaProfileId,
-          profile.printerId,
-          profile.configurationRevision,
-          profile.snapshotId,
-          profile.toolId,
-          profile.toolheadId,
-          profile.nozzleId,
-        ].join('\u0000');
-        profilesByScope.set(scope, profile);
+      for (const { pfEntries, localEntries } of discovered) {
+        for (const profile of pfEntries) {
+          if (profile === null) continue;
+          const scope = [
+            profile.orcaProfileId,
+            profile.printerId,
+            profile.configurationRevision,
+            profile.snapshotId,
+            profile.toolId,
+            profile.toolheadId,
+            profile.nozzleId,
+          ].join('\u0000');
+          profilesByScope.set(scope, profile);
+        }
+        // Include locally discovered profiles; deduplicate by scope key.
+        // Local entries with upstreamVerified=true take precedence over
+        // printFarmer entries for export eligibility.
+        for (const profile of localEntries) {
+          const scope =
+            [
+              profile.orcaProfileId,
+              profile.printerId,
+              profile.configurationRevision,
+              profile.snapshotId,
+              profile.toolId,
+              profile.toolheadId,
+              profile.nozzleId,
+            ].join('\u0000') + '\u0000local';
+          profilesByScope.set(scope, profile);
+        }
       }
       return ipcSchemas[IpcChannel.CalibrationListOrcaProfiles].response.parse({
         profiles: [...profilesByScope.values()],
@@ -1888,42 +1937,113 @@ export function registerIpcHandlers(
 
   ipcMain.handle(
     IpcChannel.CalibrationExportOrcaProfile,
-    async (_event, rawRequest: unknown) => {
+    async (event, rawRequest: unknown) => {
       const request =
         ipcSchemas[IpcChannel.CalibrationExportOrcaProfile].request.parse(
           rawRequest,
         );
-      // Export the generated OrcaSlicer profile from a profile revision.
-      // Requires a valid profile revision ID. The renderer cannot supply
-      // arbitrary file paths — the main process controls the export path.
-      const profileList = await profiles.list();
-      const selectedId = profileList.selectedProfileId;
-      if (!selectedId) {
+      // Retrieve the cached generated profile that was produced by a prior
+      // CalibrationGenerateOrcaProfile call with this operationId. The renderer
+      // cannot supply arbitrary profile bytes; they must originate from the
+      // main-process generation step.
+      const cached = getCachedProfile(request.operationId);
+      if (!cached) {
         return ipcSchemas[
           IpcChannel.CalibrationExportOrcaProfile
         ].response.parse({
           status: 'error',
           error: {
-            code: 'syncRequired',
-            message: 'No server profile is selected.',
+            code: 'workspaceNotReady',
+            message:
+              'No generated profile found for this operation. Generate the profile first.',
             retryable: false,
-            retryAfterSeconds: null,
           },
         });
       }
-      // Downstream issue #55 implements the full export UI/workflow.
-      // This handler validates the request and returns a typed not-yet-available
-      // response with a stable typed contract for the future implementation.
-      void request;
+
+      if (process.platform === 'darwin' || process.platform === 'linux') {
+        // macOS / Linux: export-only via native save dialog.
+        const owner = BrowserWindow.fromWebContents(event.sender);
+        if (!owner) {
+          return ipcSchemas[
+            IpcChannel.CalibrationExportOrcaProfile
+          ].response.parse({
+            status: 'error',
+            error: {
+              code: 'internalError',
+              message:
+                'Could not identify the parent window for the save dialog.',
+              retryable: false,
+            },
+          });
+        }
+        const saveResult = await dialog.showSaveDialog(owner, {
+          title: 'Export OrcaSlicer Filament Profile',
+          defaultPath: cached.safeFilename,
+          filters: [{ name: 'OrcaSlicer Profile', extensions: ['json'] }],
+        });
+        if (saveResult.canceled || !saveResult.filePath) {
+          return ipcSchemas[
+            IpcChannel.CalibrationExportOrcaProfile
+          ].response.parse({
+            status: 'canceled',
+          });
+        }
+        try {
+          const canonicalDest = await canonicalizeSaveTarget(
+            saveResult.filePath,
+          );
+          // Write exact bytes.
+          const { writeFile } = await import('node:fs/promises');
+          await writeFile(canonicalDest, cached.generatedJson, 'utf8');
+          // Verify exact bytes.
+          const exportedHash = await verifyExportedProfile(
+            canonicalDest,
+            cached.profileJsonHash,
+          );
+          return ipcSchemas[
+            IpcChannel.CalibrationExportOrcaProfile
+          ].response.parse({
+            status: 'ok',
+            profileJsonHash: exportedHash,
+            displayName: cached.displayName,
+          });
+        } catch (err) {
+          if (err instanceof OrcaInstallError) {
+            return ipcSchemas[
+              IpcChannel.CalibrationExportOrcaProfile
+            ].response.parse({
+              status: 'error',
+              error: {
+                code: err.code,
+                message: err.message,
+                retryable: err.retryable,
+              },
+            });
+          }
+          return ipcSchemas[
+            IpcChannel.CalibrationExportOrcaProfile
+          ].response.parse({
+            status: 'error',
+            error: {
+              code: 'internalError',
+              message: err instanceof Error ? err.message : 'Export failed.',
+              retryable: false,
+            },
+          });
+        }
+      }
+
+      // Windows: direct installation is handled by CalibrationInstallOrcaProfile.
+      // Export on Windows is not directly supported; direct the user to install.
       return ipcSchemas[IpcChannel.CalibrationExportOrcaProfile].response.parse(
         {
           status: 'error',
           error: {
-            code: 'invalidData',
+            code: 'unsupportedPlatform',
             message:
-              'OrcaSlicer profile export requires the generated profile UI (issue #55).',
+              'Use the Install action on Windows to write the profile to OrcaSlicer.',
             retryable: false,
-            retryAfterSeconds: null,
           },
         },
       );
@@ -1955,6 +2075,430 @@ export function registerIpcHandlers(
           retryAfterSeconds: null,
         },
       });
+    },
+  );
+
+  // --- Upstream Orca filament profiles (issue #55) -------------------------
+
+  /**
+   * Map from WorkspaceRecommendation.values[].key to OrcaSlicer field names.
+   * This mirrors the PATCH_MAPPINGS in the renderer domain but lives in main
+   * so the main process can build the patch from sidecar workspace state.
+   */
+  const WORKSPACE_TO_ORCA_KEY: Readonly<Record<string, string>> = {
+    nozzle_temperature: 'nozzle_temperature',
+    filament_flow_ratio: 'filament_flow_ratio',
+    enable_pressure_advance: 'enable_pressure_advance',
+    pressure_advance: 'pressure_advance',
+    retraction_length: 'filament_retraction_length',
+    filament_max_volumetric_speed: 'filament_max_volumetric_speed',
+    filament_shrink: 'filament_shrink',
+    filament_shrinkage_compensation_z: 'filament_shrinkage_compensation_z',
+  };
+
+  const SUPPORTED_ORCA_KEYS = new Set([
+    'nozzle_temperature',
+    'filament_flow_ratio',
+    'enable_pressure_advance',
+    'pressure_advance',
+    'filament_retraction_length',
+    'filament_max_volumetric_speed',
+    'filament_shrink',
+    'filament_shrinkage_compensation_z',
+  ]);
+
+  ipcMain.handle(
+    IpcChannel.CalibrationGenerateOrcaProfile,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationGenerateOrcaProfile].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+
+      // Read workspace state from sidecar.
+      let workspaceStateRaw: unknown;
+      try {
+        workspaceStateRaw = await sidecar.getCalibrationWorkspaceState(
+          selectedId,
+          request.projectId,
+        );
+      } catch (err) {
+        return ipcSchemas[
+          IpcChannel.CalibrationGenerateOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'workspaceNotReady',
+            message:
+              err instanceof Error
+                ? err.message
+                : 'Could not read workspace state.',
+            retryable: true,
+          },
+        });
+      }
+
+      if (!workspaceStateRaw) {
+        return ipcSchemas[
+          IpcChannel.CalibrationGenerateOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'workspaceNotReady',
+            message: 'Calibration project not found.',
+            retryable: false,
+          },
+        });
+      }
+
+      // Validate and extract workspace state.
+      const stateRecord =
+        ipcSchemas[IpcChannel.CalibrationGetWorkspaceState].response.safeParse(
+          workspaceStateRaw,
+        );
+      if (!stateRecord.success || !stateRecord.data) {
+        return ipcSchemas[
+          IpcChannel.CalibrationGenerateOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'workspaceNotReady',
+            message: 'Workspace state is invalid or corrupt.',
+            retryable: false,
+          },
+        });
+      }
+
+      const wsPayload = stateRecord.data.workspaceState;
+      const domainState = wsPayload.domainState;
+      const orcaProfileId = wsPayload.selectedBaseProfile.orcaProfileId;
+
+      // Build calibration patch entries from completed attempts.
+      const patchEntries: OrcaPatchEntry[] = [];
+      const stageOrder: string[] = [
+        'temperature',
+        'flowPass2',
+        'flowPass1',
+        'pressureAdvance',
+        'retraction',
+        'maximumVolumetricSpeed',
+        'shrinkage',
+      ];
+      const attemptsByStage = new Map<
+        string,
+        (typeof domainState.attempts)[number]
+      >();
+      for (const attempt of domainState.attempts) {
+        if (attempt.status !== 'completed' || !attempt.recommendation) continue;
+        const existing = attemptsByStage.get(attempt.stageId);
+        // Prefer later attempts (higher ordinal) for each stage.
+        if (!existing || attempt.ordinal > existing.ordinal) {
+          attemptsByStage.set(attempt.stageId, attempt);
+        }
+      }
+      for (const stageId of stageOrder) {
+        const attempt = attemptsByStage.get(stageId);
+        if (!attempt?.recommendation) continue;
+        for (const val of attempt.recommendation.values) {
+          const orcaKey = WORKSPACE_TO_ORCA_KEY[val.key];
+          if (!orcaKey || !SUPPORTED_ORCA_KEYS.has(orcaKey)) continue;
+          // Convert boolean values to numbers (0/1) for the patch entry schema.
+          const numericValue: number | string =
+            typeof val.value === 'boolean' ? (val.value ? 1 : 0) : val.value;
+          patchEntries.push({
+            key: orcaKey as Parameters<
+              typeof generateOrcaProfile
+            >[1][number]['key'],
+            value: numericValue,
+            sourceStageId: attempt.stageId,
+            sourceAttemptId: attempt.attemptId,
+            sourceObservationId: attempt.selectedObservationId ?? '',
+          });
+        }
+      }
+
+      if (patchEntries.length === 0) {
+        return ipcSchemas[
+          IpcChannel.CalibrationGenerateOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'workspaceNotReady',
+            message:
+              'No completed calibration attempts with recommendations found. Complete at least one calibration stage before generating a profile.',
+            retryable: false,
+          },
+        });
+      }
+
+      // Find the local base profile.
+      const localProfile = await findLocalOrcaProfileRaw(orcaProfileId);
+      if (!localProfile) {
+        return ipcSchemas[
+          IpcChannel.CalibrationGenerateOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'baseProfileMissing',
+            message: `Local OrcaSlicer base profile "${orcaProfileId}" was not found. Ensure OrcaSlicer is installed and the profile exists.`,
+            retryable: false,
+          },
+        });
+      }
+
+      // Generate the patched profile.
+      const snapshotId = domainState.binding.snapshot.snapshotId;
+      const result = generateOrcaProfile(
+        localProfile.resolvedRaw,
+        patchEntries,
+        request.projectId,
+        snapshotId,
+      );
+
+      // Cache the result by operationId for subsequent export/install calls.
+      cacheGeneratedProfile(request.operationId, {
+        generatedJson: result.generatedJson,
+        profileJsonHash: result.profileJsonHash,
+        displayName: result.displayName,
+        safeFilename: result.safeFilename,
+        cachedAt: Date.now(),
+      });
+
+      return ipcSchemas[
+        IpcChannel.CalibrationGenerateOrcaProfile
+      ].response.parse({
+        status: 'ok',
+        displayName: result.displayName,
+        safeFilename: result.safeFilename,
+        profileJsonHash: result.profileJsonHash,
+        patchedFieldCount: result.patchedFieldCount,
+        warnings: result.warnings,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationInstallOrcaProfile,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationInstallOrcaProfile].request.parse(
+          rawRequest,
+        );
+      await requireSelectedCalibrationProfile(request.profileId);
+
+      if (process.platform !== 'win32') {
+        return ipcSchemas[
+          IpcChannel.CalibrationInstallOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'unsupportedPlatform',
+            message:
+              'Direct profile installation is only supported on Windows. Use export on macOS.',
+            retryable: false,
+          },
+        });
+      }
+
+      const cached = getCachedProfile(request.operationId);
+      if (!cached) {
+        return ipcSchemas[
+          IpcChannel.CalibrationInstallOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'workspaceNotReady',
+            message:
+              'No generated profile found for this operation. Generate the profile first.',
+            retryable: false,
+          },
+        });
+      }
+
+      if (cached.profileJsonHash !== request.confirmedProfileJsonHash) {
+        return ipcSchemas[
+          IpcChannel.CalibrationInstallOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'verificationFailed',
+            message:
+              'Confirmed hash does not match the generated profile. Regenerate the profile.',
+            retryable: false,
+          },
+        });
+      }
+
+      try {
+        const installResult = await installOrcaProfileWindows(
+          cached.generatedJson,
+          cached.profileJsonHash,
+          cached.safeFilename,
+        );
+        return ipcSchemas[
+          IpcChannel.CalibrationInstallOrcaProfile
+        ].response.parse({
+          status: 'ok',
+          installedHash: installResult.installedHash,
+          backupHash: installResult.backupHash,
+        });
+      } catch (err) {
+        if (err instanceof OrcaInstallError) {
+          return ipcSchemas[
+            IpcChannel.CalibrationInstallOrcaProfile
+          ].response.parse({
+            status: 'error',
+            error: {
+              code: err.code,
+              message: err.message,
+              retryable: err.retryable,
+            },
+          });
+        }
+        return ipcSchemas[
+          IpcChannel.CalibrationInstallOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'internalError',
+            message:
+              err instanceof Error ? err.message : 'Installation failed.',
+            retryable: false,
+          },
+        });
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationRestoreOrcaProfile,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationRestoreOrcaProfile].request.parse(
+          rawRequest,
+        );
+      await requireSelectedCalibrationProfile(request.profileId);
+
+      if (process.platform !== 'win32') {
+        return ipcSchemas[
+          IpcChannel.CalibrationRestoreOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'unsupportedPlatform',
+            message: 'Profile restore is only supported on Windows.',
+            retryable: false,
+          },
+        });
+      }
+
+      const cached = getCachedProfile(request.operationId);
+      if (!cached) {
+        return ipcSchemas[
+          IpcChannel.CalibrationRestoreOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'workspaceNotReady',
+            message:
+              'No install operation found for this operationId. Cannot locate backup.',
+            retryable: false,
+          },
+        });
+      }
+
+      try {
+        const { getWindowsOrcaInstallRoot, computeInstallPath } =
+          await import('./orcaProfileInstall.js');
+        const installRoot = getWindowsOrcaInstallRoot();
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        // Reconstruct the backup path. The caller provides the expected hash;
+        // the handler verifies it before writing.
+        // We scan for the backup file with matching hash in the install dir.
+        const { readdir: readdirFs, readFile: readFileFs } =
+          await import('node:fs/promises');
+        const { createHash: createHashFs } = await import('node:crypto');
+        let backupPath: string | null = null;
+        try {
+          const entries = await readdirFs(installRoot, { withFileTypes: true });
+          for (const entry of entries) {
+            if (
+              entry.isFile() &&
+              entry.name.includes('.bak-') &&
+              entry.name.startsWith(cached.safeFilename)
+            ) {
+              const candidatePath = path.join(installRoot, entry.name);
+              try {
+                const bytes = await readFileFs(candidatePath);
+                const hash = createHashFs('sha256').update(bytes).digest('hex');
+                if (hash === request.backupHash) {
+                  backupPath = candidatePath;
+                  break;
+                }
+              } catch {
+                // Skip unreadable files.
+              }
+            }
+          }
+        } catch {
+          // Directory not accessible.
+        }
+
+        if (!backupPath) {
+          return ipcSchemas[
+            IpcChannel.CalibrationRestoreOrcaProfile
+          ].response.parse({
+            status: 'error',
+            error: {
+              code: 'pathRestricted',
+              message:
+                'Backup file with the specified hash not found in the OrcaSlicer user directory.',
+              retryable: false,
+            },
+          });
+        }
+
+        const destPath = computeInstallPath(cached.safeFilename, installRoot);
+        const restoreResult = await restoreOrcaProfileWindows(
+          backupPath,
+          request.backupHash,
+          cached.safeFilename,
+        );
+        void destPath;
+        void ts;
+        return ipcSchemas[
+          IpcChannel.CalibrationRestoreOrcaProfile
+        ].response.parse({
+          status: 'ok',
+          restoredHash: restoreResult.restoredHash,
+        });
+      } catch (err) {
+        if (err instanceof OrcaInstallError) {
+          return ipcSchemas[
+            IpcChannel.CalibrationRestoreOrcaProfile
+          ].response.parse({
+            status: 'error',
+            error: {
+              code: err.code,
+              message: err.message,
+              retryable: err.retryable,
+            },
+          });
+        }
+        return ipcSchemas[
+          IpcChannel.CalibrationRestoreOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'rollbackFailed',
+            message: err instanceof Error ? err.message : 'Restore failed.',
+            retryable: false,
+          },
+        });
+      }
     },
   );
   // --- End Printer Calibration transport handlers --------------------------

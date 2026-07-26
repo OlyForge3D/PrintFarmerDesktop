@@ -437,6 +437,41 @@ function makeApi(savedRecord = record()) {
     }),
     openCalibrationPhoto: vi.fn().mockResolvedValue(null),
     stageCalibrationPhoto: vi.fn<CalibrationApi['stageCalibrationPhoto']>(),
+    generateOrcaProfile: vi
+      .fn<CalibrationApi['generateOrcaProfile']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'workspaceNotReady',
+          message: 'Not implemented in test.',
+          retryable: false,
+        },
+      }),
+    exportOrcaProfile: vi
+      .fn<CalibrationApi['exportOrcaProfile']>()
+      .mockResolvedValue({
+        status: 'canceled',
+      }),
+    installOrcaProfile: vi
+      .fn<CalibrationApi['installOrcaProfile']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'unsupportedPlatform',
+          message: 'Not implemented in test.',
+          retryable: false,
+        },
+      }),
+    restoreOrcaProfile: vi
+      .fn<CalibrationApi['restoreOrcaProfile']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'unsupportedPlatform',
+          message: 'Not implemented in test.',
+          retryable: false,
+        },
+      }),
   } satisfies CalibrationApi;
 }
 
@@ -1225,12 +1260,10 @@ describe('CalibrationWorkspace', () => {
     expect(screen.getByText('Explicit upstream PLA')).toBeInTheDocument();
     expect(screen.getByText('orca-base')).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'Install patch transactionally' }),
+      screen.getByRole('button', { name: 'Generate OrcaSlicer profile' }),
     ).toBeDisabled();
     expect(
-      screen.getByText(
-        /Installation, rollback, and promotion must run in the transactional profile workflow/,
-      ),
+      screen.getByText(/Resolve blockers before generating a profile/),
     ).toBeInTheDocument();
   });
 

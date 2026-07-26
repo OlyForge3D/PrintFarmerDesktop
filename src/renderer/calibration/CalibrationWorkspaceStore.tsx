@@ -35,6 +35,7 @@ import type {
   CalibrationWorkspaceStoreValue,
   CalibrationWorkspaceView,
   CreationDataState,
+  GeneratedProfileState,
   MetadataDraft,
   NewProjectInput,
   OpenCalibrationProject,
@@ -203,6 +204,8 @@ export function CalibrationWorkspaceStoreProvider({
   orcaProfilesRef.current = orcaProfiles;
   const [liveMessage, setLiveMessage] = useState('');
   const [alertMessage, setAlertMessage] = useState<string | null>(null);
+  const [generatedProfile, setGeneratedProfile] =
+    useState<GeneratedProfileState | null>(null);
 
   const requestEpochRef = useRef(0);
   const creationRequestEpochRef = useRef(0);
@@ -1155,6 +1158,172 @@ export function CalibrationWorkspaceStoreProvider({
     [flush, refresh, reportError, selectedProfileId],
   );
 
+  const generateProfile = useCallback(async (): Promise<void> => {
+    const profileId = profileIdRef.current;
+    const project = activeProjectRef.current;
+    if (profileId === null || project === null) {
+      reportError('Open a calibration project before generating a profile.');
+      return;
+    }
+    const operationId = environment.createId();
+    setLiveMessage(
+      'Generating OrcaSlicer filament profile from calibration data.',
+    );
+    setAlertMessage(null);
+    try {
+      const result = await calibrationApi().generateOrcaProfile({
+        profileId,
+        projectId: project.record.projectId,
+        operationId,
+      });
+      if (profileIdRef.current !== profileId) return;
+      if (result.status === 'error') {
+        reportError(`Profile generation failed: ${result.error.message}`);
+        return;
+      }
+      setGeneratedProfile({
+        operationId,
+        displayName: result.displayName,
+        safeFilename: result.safeFilename,
+        profileJsonHash: result.profileJsonHash,
+        patchedFieldCount: result.patchedFieldCount,
+        warnings: result.warnings,
+        installedHash: null,
+        backupHash: null,
+        exportedHash: null,
+      });
+      const warningSuffix =
+        result.warnings.length > 0
+          ? ` ${result.warnings.length} warning${result.warnings.length === 1 ? '' : 's'}.`
+          : '';
+      setLiveMessage(
+        `Profile "${result.displayName}" generated with ${result.patchedFieldCount} calibrated field${result.patchedFieldCount === 1 ? '' : 's'}.${warningSuffix}`,
+      );
+    } catch (cause) {
+      if (profileIdRef.current !== profileId) return;
+      reportError(errorMessage(cause, 'OrcaSlicer profile generation failed.'));
+    }
+  }, [environment, reportError]);
+
+  const exportProfile = useCallback(async (): Promise<void> => {
+    const profileId = profileIdRef.current;
+    const project = activeProjectRef.current;
+    if (profileId === null || project === null) {
+      reportError('Open a calibration project before exporting a profile.');
+      return;
+    }
+    if (generatedProfile === null) {
+      reportError('Generate a profile before exporting it.');
+      return;
+    }
+    setLiveMessage('Opening save dialog for OrcaSlicer profile export.');
+    setAlertMessage(null);
+    try {
+      const result = await calibrationApi().exportOrcaProfile({
+        orcaProfileId: generatedProfile.displayName,
+        operationId: generatedProfile.operationId,
+      });
+      if (profileIdRef.current !== profileId) return;
+      if (result.status === 'canceled') {
+        setLiveMessage('Profile export was canceled.');
+        return;
+      }
+      if (result.status === 'error') {
+        reportError(`Profile export failed: ${result.error.message}`);
+        return;
+      }
+      setGeneratedProfile((prev) =>
+        prev ? { ...prev, exportedHash: result.profileJsonHash } : prev,
+      );
+      setLiveMessage(
+        `Profile "${generatedProfile.displayName}" exported successfully. Hash: ${result.profileJsonHash.slice(0, 12)}…`,
+      );
+    } catch (cause) {
+      if (profileIdRef.current !== profileId) return;
+      reportError(errorMessage(cause, 'OrcaSlicer profile export failed.'));
+    }
+  }, [generatedProfile, reportError]);
+
+  const installProfile = useCallback(async (): Promise<void> => {
+    const profileId = profileIdRef.current;
+    const project = activeProjectRef.current;
+    if (profileId === null || project === null) {
+      reportError('Open a calibration project before installing a profile.');
+      return;
+    }
+    if (generatedProfile === null) {
+      reportError('Generate a profile before installing it.');
+      return;
+    }
+    setLiveMessage('Installing OrcaSlicer filament profile transactionally.');
+    setAlertMessage(null);
+    try {
+      const result = await calibrationApi().installOrcaProfile({
+        profileId,
+        operationId: generatedProfile.operationId,
+        confirmedProfileJsonHash: generatedProfile.profileJsonHash,
+      });
+      if (profileIdRef.current !== profileId) return;
+      if (result.status === 'error') {
+        reportError(`Profile installation failed: ${result.error.message}`);
+        return;
+      }
+      setGeneratedProfile((prev) =>
+        prev
+          ? {
+              ...prev,
+              installedHash: result.installedHash,
+              backupHash: result.backupHash,
+            }
+          : prev,
+      );
+      setLiveMessage(
+        `Profile "${generatedProfile.displayName}" installed successfully. A backup was created.`,
+      );
+    } catch (cause) {
+      if (profileIdRef.current !== profileId) return;
+      reportError(
+        errorMessage(cause, 'OrcaSlicer profile installation failed.'),
+      );
+    }
+  }, [generatedProfile, reportError]);
+
+  const restoreProfile = useCallback(async (): Promise<void> => {
+    const profileId = profileIdRef.current;
+    const project = activeProjectRef.current;
+    if (profileId === null || project === null) {
+      reportError('Open a calibration project before restoring a profile.');
+      return;
+    }
+    if (generatedProfile === null || generatedProfile.backupHash === null) {
+      reportError('No install backup is available to restore from.');
+      return;
+    }
+    setLiveMessage('Restoring OrcaSlicer profile from backup.');
+    setAlertMessage(null);
+    try {
+      const result = await calibrationApi().restoreOrcaProfile({
+        profileId,
+        operationId: generatedProfile.operationId,
+        backupHash: generatedProfile.backupHash,
+      });
+      if (profileIdRef.current !== profileId) return;
+      if (result.status === 'error') {
+        reportError(`Profile restore failed: ${result.error.message}`);
+        return;
+      }
+      setGeneratedProfile((prev) =>
+        prev ? { ...prev, installedHash: null, backupHash: null } : prev,
+      );
+      setLiveMessage(
+        `Profile restored from backup. Hash: ${result.restoredHash.slice(0, 12)}…`,
+      );
+    } catch (cause) {
+      if (profileIdRef.current !== profileId) return;
+      reportError(errorMessage(cause, 'OrcaSlicer profile restore failed.'));
+    }
+  }, [generatedProfile, reportError]);
+
   const value = useMemo<CalibrationWorkspaceStoreValue>(
     () => ({
       profileId: selectedProfileId,
@@ -1177,6 +1346,7 @@ export function CalibrationWorkspaceStoreProvider({
       orcaProfiles,
       liveMessage,
       alertMessage,
+      generatedProfile,
       manageProfiles,
       refresh,
       sync,
@@ -1196,6 +1366,10 @@ export function CalibrationWorkspaceStoreProvider({
       refreshProjectContext,
       announce,
       reportError,
+      generateProfile,
+      exportProfile,
+      installProfile,
+      restoreProfile,
     }),
     [
       activeProject,
@@ -1209,7 +1383,11 @@ export function CalibrationWorkspaceStoreProvider({
       dispatchEvent,
       environment,
       error,
+      exportProfile,
       flush,
+      generatedProfile,
+      generateProfile,
+      installProfile,
       liveMessage,
       loadCreationData,
       loadPrinterContext,
@@ -1228,6 +1406,7 @@ export function CalibrationWorkspaceStoreProvider({
       refresh,
       refreshProjectContext,
       reportError,
+      restoreProfile,
       selectedProfileId,
       selectedStageId,
       setPhysicalMatch,

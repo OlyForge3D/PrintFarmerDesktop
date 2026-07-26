@@ -134,6 +134,8 @@ export interface CalibrationWorkspaceStoreValue {
   readonly orcaProfiles: readonly OrcaProfileEntry[];
   readonly liveMessage: string;
   readonly alertMessage: string | null;
+  /** State of the most recent profile generation operation. */
+  readonly generatedProfile: GeneratedProfileState | null;
   readonly manageProfiles: () => Promise<void>;
   readonly refresh: () => Promise<void>;
   readonly sync: (projectId?: string) => Promise<void>;
@@ -168,6 +170,30 @@ export interface CalibrationWorkspaceStoreValue {
   readonly refreshProjectContext: () => Promise<CalibrationPrinterContext | null>;
   readonly announce: (message: string) => void;
   readonly reportError: (message: string) => void;
+  /** Generate an OrcaSlicer profile from the current project's calibration data. */
+  readonly generateProfile: () => Promise<void>;
+  /** Export the generated profile to a user-chosen location (macOS/Linux). */
+  readonly exportProfile: () => Promise<void>;
+  /** Install the generated profile transactionally (Windows). */
+  readonly installProfile: () => Promise<void>;
+  /** Restore from a prior install backup (Windows). */
+  readonly restoreProfile: () => Promise<void>;
+}
+
+/** State of a generated OrcaSlicer profile (from CalibrationGenerateOrcaProfile). */
+export interface GeneratedProfileState {
+  /** Client-generated operation ID used to correlate generate → export/install. */
+  readonly operationId: string;
+  readonly displayName: string;
+  readonly safeFilename: string;
+  readonly profileJsonHash: string;
+  readonly patchedFieldCount: number;
+  readonly warnings: readonly string[];
+  /** Install outcome (Windows). Set after a successful installProfile call. */
+  readonly installedHash: string | null;
+  readonly backupHash: string | null;
+  /** Export outcome. Set after a successful exportProfile call. */
+  readonly exportedHash: string | null;
 }
 
 export function errorMessage(error: unknown, fallback: string): string {

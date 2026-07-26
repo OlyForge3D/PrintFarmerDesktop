@@ -37,6 +37,10 @@ export const IpcChannel = {
   CalibrationListOrcaProfiles: 'calibration:listOrcaProfiles',
   CalibrationExportOrcaProfile: 'calibration:exportOrcaProfile',
   CalibrationImportLegacyBackupV4: 'calibration:importLegacyBackupV4',
+  // --- Upstream Orca filament profiles (issue #55) -------------------------
+  CalibrationGenerateOrcaProfile: 'calibration:generateOrcaProfile',
+  CalibrationInstallOrcaProfile: 'calibration:installOrcaProfile',
+  CalibrationRestoreOrcaProfile: 'calibration:restoreOrcaProfile',
   // -------------------------------------------------------------------------
   AppInfo: 'app:info',
   SidecarPing: 'sidecar:ping',
@@ -2215,7 +2219,12 @@ export const CalibrationSelectedBaseProfile = z
   .object({
     orcaProfileId: z.string().min(1).max(512),
     displayName: z.string().min(1).max(512),
-    source: z.literal('printFarmer'),
+    /**
+     * 'printFarmer' — server-supplied, upstream-verified profile.
+     * 'systemInstall' — locally discovered from the OS OrcaSlicer installation,
+     * content-hash verified against the backend's recorded hash.
+     */
+    source: z.enum(['printFarmer', 'systemInstall']),
     upstreamVerified: z.literal(true),
     printerId: WorkspaceId,
     configurationRevision: z.number().int().nonnegative(),
@@ -3363,6 +3372,34 @@ export type CalibrationListOrcaProfilesResponse = z.infer<
 >;
 
 /**
+ * Typed error for local OrcaSlicer profile operations (install, restore,
+ * export). Declared here so it can be referenced by CalibrationExportOrcaProfileResponse.
+ */
+export const OrcaProfileOperationError = z
+  .object({
+    code: z.enum([
+      'slicerRunning',
+      'profileConflict',
+      'pathRestricted',
+      'permissionDenied',
+      'verificationFailed',
+      'rollbackFailed',
+      'unsupportedPlatform',
+      'baseProfileMissing',
+      'workspaceNotReady',
+      'invalidPatch',
+      'canceled',
+      'internalError',
+    ]),
+    message: z.string().max(1024),
+    retryable: z.boolean(),
+  })
+  .strict();
+export type OrcaProfileOperationError = z.infer<
+  typeof OrcaProfileOperationError
+>;
+
+/**
  * Export a local OrcaSlicer profile for use in a calibration project.
  * The renderer may not specify a filesystem path; main resolves based on
  * the stable orcaProfileId only.
@@ -3388,8 +3425,13 @@ export const CalibrationExportOrcaProfileResponse = z.discriminatedUnion(
         displayName: z.string().min(1).max(512),
       })
       .strict(),
+    /** User dismissed the native save dialog; no bytes were written. */
+    z.object({ status: z.literal('canceled') }).strict(),
     z
-      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .object({
+        status: z.literal('error'),
+        error: OrcaProfileOperationError,
+      })
       .strict(),
   ],
 );
@@ -3465,6 +3507,163 @@ export type CalibrationImportLegacyBackupV4Response = z.infer<
 // ==========================================================================
 // End of Printer Calibration transport additions
 // ==========================================================================
+
+// --- Upstream Orca filament profiles (issue #55) ---------------------------
+
+/**
+ * Request to generate a calibrated OrcaSlicer filament profile from the
+ * current calibration workspace state. The main process reads the workspace
+ * observations, resolves the local base profile by orcaProfileId, applies
+ * the patch, and caches the generated JSON keyed by operationId. The renderer
+ * never supplies the base profile path or generated JSON bytes directly.
+ */
+export const CalibrationGenerateOrcaProfileRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    projectId: z.string().uuid(),
+    /** Client-generated idempotency key; also used to retrieve cached output. */
+    operationId: z.string().uuid(),
+  })
+  .strict();
+export type CalibrationGenerateOrcaProfileRequest = z.infer<
+  typeof CalibrationGenerateOrcaProfileRequest
+>;
+
+export const CalibrationGenerateOrcaProfileResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        /** Display name for the generated profile. */
+        displayName: z.string().min(1).max(512),
+        /**
+         * Safe filename (no path separators, max 200 chars, .json suffix),
+         * suitable for a save-dialog default name.
+         */
+        safeFilename: z.string().min(1).max(200),
+        /** SHA-256 of the generated profile JSON (exact content identity). */
+        profileJsonHash: z.string().regex(/^[a-f0-9]{64}$/),
+        /** Number of patch fields applied from completed observations. */
+        patchedFieldCount: z.number().int().nonnegative().max(64),
+        /**
+         * Non-blocking warnings about partial calibration, skipped stages,
+         * or unresolved base fields.
+         */
+        warnings: z.array(z.string().max(512)).max(64),
+      })
+      .strict(),
+    z
+      .object({
+        status: z.literal('error'),
+        error: OrcaProfileOperationError,
+      })
+      .strict(),
+  ],
+);
+export type CalibrationGenerateOrcaProfileResponse = z.infer<
+  typeof CalibrationGenerateOrcaProfileResponse
+>;
+
+/**
+ * Windows-only: transactionally install the generated profile into the
+ * canonical OrcaSlicer user-data directory. Requires a prior successful
+ * CalibrationGenerateOrcaProfile call with the same operationId. The main
+ * process validates that OrcaSlicer is not running, creates a timestamped
+ * backup, writes via a temp file, performs readback verification, and
+ * atomically replaces the target.
+ */
+export const CalibrationInstallOrcaProfileRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    /**
+     * Must match the operationId from a prior CalibrationGenerateOrcaProfile
+     * call. Used to retrieve the cached generated profile bytes.
+     */
+    operationId: z.string().uuid(),
+    /**
+     * SHA-256 of the generated profile JSON the renderer received from the
+     * generate step. Verified against the main-process cache before writing.
+     */
+    confirmedProfileJsonHash: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+export type CalibrationInstallOrcaProfileRequest = z.infer<
+  typeof CalibrationInstallOrcaProfileRequest
+>;
+
+export const CalibrationInstallOrcaProfileResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        /** SHA-256 of what was successfully written and verified on disk. */
+        installedHash: z.string().regex(/^[a-f0-9]{64}$/),
+        /**
+         * SHA-256 of the backup that was created before writing. Pass to
+         * CalibrationRestoreOrcaProfile if rollback is needed.
+         */
+        backupHash: z.string().regex(/^[a-f0-9]{64}$/),
+      })
+      .strict(),
+    z
+      .object({
+        status: z.literal('error'),
+        error: OrcaProfileOperationError,
+      })
+      .strict(),
+  ],
+);
+export type CalibrationInstallOrcaProfileResponse = z.infer<
+  typeof CalibrationInstallOrcaProfileResponse
+>;
+
+/**
+ * Windows-only: restore a profile from a timestamped backup created during
+ * a prior CalibrationInstallOrcaProfile call. Used for explicit user-driven
+ * rollback after a confirmed install.
+ */
+export const CalibrationRestoreOrcaProfileRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    /**
+     * Must match the operationId from the original install call that produced
+     * the backup.
+     */
+    operationId: z.string().uuid(),
+    /**
+     * SHA-256 of the backup the renderer received from the install step.
+     * Verified before restoring.
+     */
+    backupHash: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+export type CalibrationRestoreOrcaProfileRequest = z.infer<
+  typeof CalibrationRestoreOrcaProfileRequest
+>;
+
+export const CalibrationRestoreOrcaProfileResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        /** SHA-256 of what was restored and verified on disk. */
+        restoredHash: z.string().regex(/^[a-f0-9]{64}$/),
+      })
+      .strict(),
+    z
+      .object({
+        status: z.literal('error'),
+        error: OrcaProfileOperationError,
+      })
+      .strict(),
+  ],
+);
+export type CalibrationRestoreOrcaProfileResponse = z.infer<
+  typeof CalibrationRestoreOrcaProfileResponse
+>;
 
 // --- retarget --------------------------------------------------------------
 
@@ -4114,6 +4313,19 @@ export const ipcSchemas = {
     request: CalibrationImportLegacyBackupV4Request,
     response: CalibrationImportLegacyBackupV4Response,
   },
+  // --- Upstream Orca filament profiles (issue #55) -------------------------
+  [IpcChannel.CalibrationGenerateOrcaProfile]: {
+    request: CalibrationGenerateOrcaProfileRequest,
+    response: CalibrationGenerateOrcaProfileResponse,
+  },
+  [IpcChannel.CalibrationInstallOrcaProfile]: {
+    request: CalibrationInstallOrcaProfileRequest,
+    response: CalibrationInstallOrcaProfileResponse,
+  },
+  [IpcChannel.CalibrationRestoreOrcaProfile]: {
+    request: CalibrationRestoreOrcaProfileRequest,
+    response: CalibrationRestoreOrcaProfileResponse,
+  },
 } as const;
 
 export type IpcSchemas = typeof ipcSchemas;
@@ -4271,4 +4483,14 @@ export interface PrintFarmerApi {
   importLegacyCalibrationBackupV4(
     request: CalibrationImportLegacyBackupV4Request,
   ): Promise<CalibrationImportLegacyBackupV4Response>;
+  // --- Upstream Orca filament profiles (issue #55) -------------------------
+  generateOrcaProfile(
+    request: CalibrationGenerateOrcaProfileRequest,
+  ): Promise<CalibrationGenerateOrcaProfileResponse>;
+  installOrcaProfile(
+    request: CalibrationInstallOrcaProfileRequest,
+  ): Promise<CalibrationInstallOrcaProfileResponse>;
+  restoreOrcaProfile(
+    request: CalibrationRestoreOrcaProfileRequest,
+  ): Promise<CalibrationRestoreOrcaProfileResponse>;
 }

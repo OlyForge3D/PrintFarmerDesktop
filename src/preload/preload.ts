@@ -116,6 +116,13 @@ import {
   type CalibrationExportOrcaProfileResponse,
   type CalibrationImportLegacyBackupV4Request,
   type CalibrationImportLegacyBackupV4Response,
+  // --- Upstream Orca filament profiles (issue #55) -------------------------
+  type CalibrationGenerateOrcaProfileRequest,
+  type CalibrationGenerateOrcaProfileResponse,
+  type CalibrationInstallOrcaProfileRequest,
+  type CalibrationInstallOrcaProfileResponse,
+  type CalibrationRestoreOrcaProfileRequest,
+  type CalibrationRestoreOrcaProfileResponse,
 } from '@shared/ipc';
 
 /**
@@ -535,6 +542,34 @@ const api: PrintFarmerApi = {
     ipcSchemas[IpcChannel.CalibrationImportLegacyBackupV4].response.parse(
       await ipcRenderer.invoke(
         IpcChannel.CalibrationImportLegacyBackupV4,
+        request,
+      ),
+    ),
+  // --- Upstream Orca filament profiles (issue #55) -------------------------
+  generateOrcaProfile: async (
+    request: CalibrationGenerateOrcaProfileRequest,
+  ): Promise<CalibrationGenerateOrcaProfileResponse> =>
+    ipcSchemas[IpcChannel.CalibrationGenerateOrcaProfile].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationGenerateOrcaProfile,
+        request,
+      ),
+    ),
+  installOrcaProfile: async (
+    request: CalibrationInstallOrcaProfileRequest,
+  ): Promise<CalibrationInstallOrcaProfileResponse> =>
+    ipcSchemas[IpcChannel.CalibrationInstallOrcaProfile].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationInstallOrcaProfile,
+        request,
+      ),
+    ),
+  restoreOrcaProfile: async (
+    request: CalibrationRestoreOrcaProfileRequest,
+  ): Promise<CalibrationRestoreOrcaProfileResponse> =>
+    ipcSchemas[IpcChannel.CalibrationRestoreOrcaProfile].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationRestoreOrcaProfile,
         request,
       ),
     ),
