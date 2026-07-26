@@ -276,7 +276,19 @@ export function registerIpcHandlers(
       } catch {
         ok = false;
       }
-      if (ok) await sceneCache.adoptRecipe(sceneCacheRecipe);
+      // Adoption is deliberately outside the health `try`: a cache failure is
+      // not a sidecar failure, and running it inside let a healthy sidecar be
+      // reported as down (#84 review, N9). Its own guard is what makes that
+      // separation total rather than positional - without it the handler
+      // rejects instead of reporting health, which is a worse outcome than the
+      // one the move fixed. Startup adoption is guarded the same way above.
+      if (ok) {
+        try {
+          await sceneCache.adoptRecipe(sceneCacheRecipe);
+        } catch (error) {
+          console.error('[scene-cache] recipe adoption failed', error);
+        }
+      }
       const response: SidecarPingResponse = {
         ok,
         nonce: request.nonce,

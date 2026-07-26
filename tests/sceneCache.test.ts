@@ -674,4 +674,156 @@ describe('SceneCacheService', () => {
     await expect(cache.loadScene(filePath)).resolves.toEqual(scene(2));
     expect(sidecar.loadSceneWithRecipe).toHaveBeenCalledTimes(2);
   });
+
+  it('shares one derivation between concurrent loads of the same model', async () => {
+    // The `inFlight` map's whole purpose, and nothing asserted it: removing the
+    // map entirely left all 692 tests green. The neighbouring test above pins
+    // only when dedup must *not* happen, which a cache that never dedupes also
+    // satisfies. Two callers, one sidecar derivation, both served.
+    const userDataPath = await temporaryDirectory();
+    const filePath = await modelFile(userDataPath);
+    const sidecarEntered = deferred();
+    const releaseSidecar = deferred();
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    sidecar.returnedRecipe = 'scene/v2.2';
+    sidecar.loadSceneWithRecipe.mockImplementation(async () => {
+      sidecarEntered.resolve();
+      await releaseSidecar.promise;
+      return { scene: scene(1), cacheRecipe: 'scene/v2.2' };
+    });
+    const cache = new SceneCacheService({ userDataPath, sidecar });
+
+    const first = cache.loadScene(filePath);
+    await sidecarEntered.promise;
+    const second = cache.loadScene(filePath);
+    releaseSidecar.resolve();
+
+    await expect(first).resolves.toEqual(scene(1));
+    await expect(second).resolves.toEqual(scene(1));
+    expect(sidecar.loadSceneWithRecipe).toHaveBeenCalledOnce();
+  });
+
+  it('does not share a derivation between concurrent loads when hashing fails', async () => {
+    // Characterization pin, flagged deliberately: `loadScene` returns to the
+    // unstored path before the `inFlight` map is consulted, so while the
+    // filesystem is failing each concurrent caller drives its own sidecar
+    // derivation. #99 (N12) leaves open whether to share here instead. This
+    // records what ships today so that changing it is a visible decision
+    // rather than an unobserved one - if a later change makes this share, this
+    // test is the thing that says so, and it should be rewritten, not deleted.
+    const userDataPath = await temporaryDirectory();
+    const filePath = await modelFile(userDataPath);
+    const sidecarEntered = deferred();
+    const releaseSidecar = deferred();
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    sidecar.returnedRecipe = 'scene/v2.2';
+    sidecar.loadSceneWithRecipe.mockImplementation(async () => {
+      sidecarEntered.resolve();
+      await releaseSidecar.promise;
+      return { scene: scene(1), cacheRecipe: 'scene/v2.2' };
+    });
+    const fileSystem: SceneCacheFileSystem = {
+      ...testFileSystem(),
+      hashFile: () =>
+        Promise.reject(Object.assign(new Error('io'), { code: 'EIO' })),
+    };
+    const cache = new SceneCacheService({
+      userDataPath,
+      sidecar,
+      fileSystem,
+      reportError: vi.fn(),
+    });
+
+    const first = cache.loadScene(filePath);
+    await sidecarEntered.promise;
+    const second = cache.loadScene(filePath);
+    releaseSidecar.resolve();
+
+    await expect(first).resolves.toEqual(scene(1));
+    await expect(second).resolves.toEqual(scene(1));
+    expect(sidecar.loadSceneWithRecipe).toHaveBeenCalledTimes(2);
+  });
+
+  it('evicts persisted entries when hashing fails and the sidecar reports no recipe', async () => {
+    // `deriveWithoutStore` was broadened from `if (loaded.cacheRecipe)` to
+    // `loaded.cacheRecipe ?? null`, which only changes behaviour on the path
+    // reached when hashing fails while a recipe is active: the sidecar
+    // answering with no recipe now adopts `null`, and adopting `null` is what
+    // evicts an unversioned cache. Restoring the old guard left the suite
+    // green, so the one semantic change the #84 refactor made was untested.
+    const userDataPath = await temporaryDirectory();
+    const filePath = await modelFile(userDataPath);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    sidecar.returnedRecipe = 'scene/v2.2';
+    const baseFileSystem = testFileSystem();
+    let hashFails = false;
+    const fileSystem: SceneCacheFileSystem = {
+      ...baseFileSystem,
+      hashFile: (targetPath) =>
+        hashFails
+          ? Promise.reject(Object.assign(new Error('io'), { code: 'EIO' }))
+          : baseFileSystem.hashFile(targetPath),
+    };
+    const cache = new SceneCacheService({
+      userDataPath,
+      sidecar,
+      fileSystem,
+      reportError: vi.fn(),
+    });
+
+    await expect(cache.loadScene(filePath)).resolves.toEqual(scene(1));
+    expect(await cachedSceneFiles(userDataPath)).toHaveLength(1);
+
+    hashFails = true;
+    sidecar.returnedRecipe = undefined;
+    await expect(cache.loadScene(filePath)).resolves.toEqual(scene(2));
+
+    expect(await cachedSceneFiles(userDataPath)).toEqual([]);
+    await expect(
+      readFile(path.join(userDataPath, CACHE_DIRECTORY, 'recipe.json'), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('keeps persisted entries when hashing fails but the sidecar still reports its recipe', async () => {
+    // The direction that keeps the test above honest. Eviction must key on the
+    // sidecar dropping its recipe, not on the hash failure that routed the load
+    // down this path - a cache that evicted on every hash failure would satisfy
+    // the assertion above and destroy a valid cache every time a file was
+    // briefly locked.
+    const userDataPath = await temporaryDirectory();
+    const filePath = await modelFile(userDataPath);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    sidecar.returnedRecipe = 'scene/v2.2';
+    const baseFileSystem = testFileSystem();
+    let hashFails = false;
+    const fileSystem: SceneCacheFileSystem = {
+      ...baseFileSystem,
+      hashFile: (targetPath) =>
+        hashFails
+          ? Promise.reject(Object.assign(new Error('io'), { code: 'EIO' }))
+          : baseFileSystem.hashFile(targetPath),
+    };
+    const cache = new SceneCacheService({
+      userDataPath,
+      sidecar,
+      fileSystem,
+      reportError: vi.fn(),
+    });
+
+    await expect(cache.loadScene(filePath)).resolves.toEqual(scene(1));
+    const [primed] = await cachedSceneFiles(userDataPath);
+    expect(primed).toBeDefined();
+
+    hashFails = true;
+    await expect(cache.loadScene(filePath)).resolves.toEqual(scene(2));
+
+    expect(await cachedSceneFiles(userDataPath)).toEqual([primed]);
+    await expect(
+      readFile(path.join(userDataPath, CACHE_DIRECTORY, 'recipe.json'), 'utf8'),
+    ).resolves.toContain('scene/v2.2');
+  });
 });
