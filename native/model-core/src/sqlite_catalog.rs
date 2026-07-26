@@ -17,21 +17,25 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
+use crate::calibration::{
+    CalibrationConflictDto, CalibrationCursorStateDto, CalibrationPendingOpDto,
+};
 use crate::catalog::{new_collection_id, normalize_tag};
 use crate::catalog::{
     CatalogStore, Collection, LocationUpsert, LogicalModel, ModelLocation, StoredLocation, Tag,
 };
 use crate::model::{FileFingerprint, ModelFormat};
 use crate::schema::{
-    SCHEMA_V1, SCHEMA_V10, SCHEMA_V11, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6,
-    SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_VERSION,
+    SCHEMA_V1, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5,
+    SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_VERSION,
 };
 use crate::sync::{
-    self, ApplyPullBatchDto, ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution,
-    DisposeFailedBatchDto, EnqueueOutboundOperationDto, EntityRevisionDto, FailOutboundBatchDto,
-    OutboundFailureOutcome, OutboundOperationDto, OutboundState, ReconcileUncertainBatchDto,
-    RemoteModelLinkDto, RemoteUploadStatus, SettleOutboundBatchDto, SettledOutboundBatchDto,
-    SyncConflictDto, SyncEntityType, SyncStatusDto, SyncVisibility, UnknownOutcomeResolution,
+    self, ApplyPullBatchDto, CalibrationEntityType, CalibrationOutboxState,
+    ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution, DisposeFailedBatchDto,
+    EnqueueOutboundOperationDto, EntityRevisionDto, FailOutboundBatchDto, OutboundFailureOutcome,
+    OutboundOperationDto, OutboundState, ReconcileUncertainBatchDto, RemoteModelLinkDto,
+    RemoteUploadStatus, SettleOutboundBatchDto, SettledOutboundBatchDto, SyncConflictDto,
+    SyncEntityType, SyncStatusDto, SyncVisibility, UnknownOutcomeResolution,
 };
 
 /// A SQLite-backed catalog. Wraps one connection; use single-threaded per the
@@ -102,6 +106,9 @@ impl SqliteCatalog {
                 }
                 if version < 11 {
                     conn.execute_batch(SCHEMA_V11)?;
+                }
+                if version < 12 {
+                    conn.execute_batch(SCHEMA_V12)?;
                 }
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 conn.execute_batch("COMMIT")
@@ -2827,6 +2834,429 @@ impl CatalogStore for SqliteCatalog {
         })();
         self.finish_batch(result)
     }
+
+    // --- Calibration persistence (issue #52) ---------------------------------
+
+    fn list_calibration_pending_ops(
+        &self,
+        profile_id: &str,
+        project_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<CalibrationPendingOpDto>, String> {
+        let pending = CalibrationOutboxState::Pending.as_db();
+        let mut stmt = if project_id.is_some() {
+            self.conn
+                .prepare(
+                    "SELECT operation_id, profile_id, project_id, kind, sequence,
+                            base_revision, idempotency_key, entity_type, entity_id,
+                            operation_kind, payload_json, depends_on_json
+                     FROM calibration_outbox
+                     WHERE profile_id = ?1 AND project_id = ?2
+                       AND state = ?3
+                     ORDER BY sequence ASC
+                     LIMIT ?4",
+                )
+                .map_err(sql_error)?
+        } else {
+            self.conn
+                .prepare(
+                    "SELECT operation_id, profile_id, project_id, kind, sequence,
+                            base_revision, idempotency_key, entity_type, entity_id,
+                            operation_kind, payload_json, depends_on_json
+                     FROM calibration_outbox
+                     WHERE profile_id = ?1 AND state = ?2
+                     ORDER BY sequence ASC
+                     LIMIT ?3",
+                )
+                .map_err(sql_error)?
+        };
+        let limit_i64 = limit as i64;
+        let rows: Vec<CalibrationPendingOpDto> = if let Some(pid) = project_id {
+            stmt.query_map(
+                params![profile_id, pid, pending, limit_i64],
+                calibration_pending_op_from_row,
+            )
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?
+        } else {
+            stmt.query_map(
+                params![profile_id, pending, limit_i64],
+                calibration_pending_op_from_row,
+            )
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?
+        };
+        Ok(rows)
+    }
+
+    fn settle_calibration_op(
+        &mut self,
+        profile_id: &str,
+        operation_id: &str,
+        server_revision: i64,
+    ) -> Result<(), String> {
+        let now = now_ts();
+        self.conn
+            .execute(
+                "UPDATE calibration_outbox
+                 SET state = ?3, server_revision = ?4, settled_at = ?5, updated_at = ?5
+                 WHERE profile_id = ?1 AND operation_id = ?2",
+                params![
+                    profile_id,
+                    operation_id,
+                    CalibrationOutboxState::Settled.as_db(),
+                    server_revision,
+                    now
+                ],
+            )
+            .map(|_| ())
+            .map_err(sql_error)
+    }
+
+    fn replay_calibration_op(
+        &mut self,
+        profile_id: &str,
+        operation_id: &str,
+    ) -> Result<(), String> {
+        let now = now_ts();
+        self.conn
+            .execute(
+                "UPDATE calibration_outbox
+                 SET state = ?3, settled_at = ?4, updated_at = ?4
+                 WHERE profile_id = ?1 AND operation_id = ?2",
+                params![
+                    profile_id,
+                    operation_id,
+                    CalibrationOutboxState::Replayed.as_db(),
+                    now
+                ],
+            )
+            .map(|_| ())
+            .map_err(sql_error)
+    }
+
+    fn record_calibration_conflict(
+        &mut self,
+        profile_id: &str,
+        operation_id: &str,
+        entity_type: &str,
+        entity_id: &str,
+        reason: &str,
+        server_revision: i64,
+    ) -> Result<(), String> {
+        // Look up the project_id from the outbox operation.
+        let project_id: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT project_id FROM calibration_outbox
+                 WHERE profile_id = ?1 AND operation_id = ?2",
+                params![profile_id, operation_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?
+            .flatten();
+        let project_id = project_id.unwrap_or_default();
+        let conflict_id = format!("conflict-{}", uuid_v4_placeholder());
+        let now = now_ts();
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO calibration_conflicts
+                     (profile_id, conflict_id, project_id, kind, entity_id,
+                      operation_id, server_revision, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    profile_id,
+                    conflict_id,
+                    project_id,
+                    entity_type,
+                    entity_id,
+                    operation_id,
+                    server_revision,
+                    now
+                ],
+            )
+            .map(|_| ())
+            .map_err(sql_error)?;
+        // Also mark the outbox operation as conflicted
+        self.conn
+            .execute(
+                "UPDATE calibration_outbox
+                 SET state = 'conflict', last_error = ?3, updated_at = ?4
+                 WHERE profile_id = ?1 AND operation_id = ?2",
+                params![profile_id, operation_id, reason, now],
+            )
+            .map(|_| ())
+            .map_err(sql_error)
+    }
+
+    fn get_calibration_cursor_state(
+        &self,
+        profile_id: &str,
+        project_id: Option<&str>,
+    ) -> Result<CalibrationCursorStateDto, String> {
+        if let Some(pid) = project_id {
+            let row = self
+                .conn
+                .query_row(
+                    "SELECT change_feed_cursor, base_revision, checkpoint_generation
+                     FROM calibration_projects
+                     WHERE profile_id = ?1 AND project_id = ?2",
+                    params![profile_id, pid],
+                    |row| {
+                        Ok(CalibrationCursorStateDto {
+                            cursor: row.get(0)?,
+                            server_revision: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                            checkpoint_generation: row.get(2)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(sql_error)?;
+            Ok(row.unwrap_or(CalibrationCursorStateDto {
+                cursor: None,
+                server_revision: 0,
+                checkpoint_generation: 0,
+            }))
+        } else {
+            // Profile-wide cursor: use the minimum revision across all projects.
+            let row = self
+                .conn
+                .query_row(
+                    "SELECT MIN(base_revision), MIN(checkpoint_generation)
+                     FROM calibration_projects WHERE profile_id = ?1",
+                    params![profile_id],
+                    |row| {
+                        Ok(CalibrationCursorStateDto {
+                            cursor: None,
+                            server_revision: row.get::<_, Option<i64>>(0)?.unwrap_or(0),
+                            checkpoint_generation: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                        })
+                    },
+                )
+                .optional()
+                .map_err(sql_error)?;
+            Ok(row.unwrap_or(CalibrationCursorStateDto {
+                cursor: None,
+                server_revision: 0,
+                checkpoint_generation: 0,
+            }))
+        }
+    }
+
+    fn commit_calibration_cursor(
+        &mut self,
+        profile_id: &str,
+        project_id: Option<&str>,
+        cursor: Option<&str>,
+        server_revision: i64,
+        checkpoint_generation: i64,
+    ) -> Result<(), String> {
+        let now = now_ts();
+        if let Some(pid) = project_id {
+            self.conn
+                .execute(
+                    "UPDATE calibration_projects
+                     SET change_feed_cursor = ?3, base_revision = ?4,
+                         checkpoint_generation = ?5, updated_at = ?6
+                     WHERE profile_id = ?1 AND project_id = ?2",
+                    params![
+                        profile_id,
+                        pid,
+                        cursor,
+                        server_revision,
+                        checkpoint_generation,
+                        now
+                    ],
+                )
+                .map(|_| ())
+                .map_err(sql_error)
+        } else {
+            // Profile-wide cursor update: update all projects for this profile.
+            self.conn
+                .execute(
+                    "UPDATE calibration_projects
+                     SET change_feed_cursor = ?2, base_revision = ?3,
+                         checkpoint_generation = ?4, updated_at = ?5
+                     WHERE profile_id = ?1",
+                    params![
+                        profile_id,
+                        cursor,
+                        server_revision,
+                        checkpoint_generation,
+                        now
+                    ],
+                )
+                .map(|_| ())
+                .map_err(sql_error)
+        }
+    }
+
+    fn apply_calibration_snapshot(
+        &mut self,
+        profile_id: &str,
+        entity_type: &str,
+        entity_id: &str,
+        snapshot: Option<&serde_json::Value>,
+        tombstone: bool,
+        server_revision: i64,
+    ) -> Result<(), String> {
+        let now = now_ts();
+        // For CalibrationProject entities, update the project record.
+        // For other entity types, update the project's is_synced and base_revision
+        // from the remote snapshot metadata if available.
+        match entity_type {
+            et if et == CalibrationEntityType::CalibrationProject.as_db() => {
+                if tombstone {
+                    // Tombstone: mark the project as deleted (if it exists locally)
+                    // We don't physically delete; leave it for the UI to handle.
+                    self.conn
+                        .execute(
+                            "UPDATE calibration_projects
+                             SET is_synced = 0, status = 'deleted', base_revision = ?3, updated_at = ?4
+                             WHERE profile_id = ?1 AND (project_id = ?2 OR remote_project_id = ?2)",
+                            params![profile_id, entity_id, server_revision, now],
+                        )
+                        .map_err(sql_error)?;
+                } else if let Some(snap) = snapshot {
+                    // Update the project with the authoritative remote revision.
+                    let remote_project_id =
+                        snap.get("id").and_then(|v| v.as_str()).unwrap_or(entity_id);
+                    let display_name = snap
+                        .get("displayName")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unnamed Project");
+                    let status = snap
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("inProgress");
+                    self.conn
+                        .execute(
+                            "UPDATE calibration_projects
+                             SET display_name = ?3, status = ?4, is_synced = 1,
+                                 remote_project_id = ?5, base_revision = ?6, updated_at = ?7
+                             WHERE profile_id = ?1
+                               AND (project_id = ?2 OR remote_project_id = ?2)",
+                            params![
+                                profile_id,
+                                entity_id,
+                                display_name,
+                                status,
+                                remote_project_id,
+                                server_revision,
+                                now
+                            ],
+                        )
+                        .map_err(sql_error)?;
+                }
+            }
+            _ => {
+                // For other entity types, just mark the project as synced
+                // (we track the high-water revision in the project row).
+                if let Some(snap) = snapshot {
+                    let project_id = snap.get("projectId").and_then(|v| v.as_str()).unwrap_or("");
+                    if !project_id.is_empty() {
+                        self.conn
+                            .execute(
+                                "UPDATE calibration_projects
+                                 SET base_revision = MAX(COALESCE(base_revision, 0), ?3),
+                                     updated_at = ?4
+                                 WHERE profile_id = ?1
+                                   AND (project_id = ?2 OR remote_project_id = ?2)",
+                                params![profile_id, project_id, server_revision, now],
+                            )
+                            .map_err(sql_error)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn list_calibration_conflicts(
+        &self,
+        profile_id: &str,
+        project_id: Option<&str>,
+    ) -> Result<Vec<CalibrationConflictDto>, String> {
+        let mut stmt = if project_id.is_some() {
+            self.conn
+                .prepare(
+                    "SELECT conflict_id, profile_id, project_id, kind, entity_id,
+                            operation_id, local_payload_json, server_payload_json,
+                            server_revision, created_at
+                     FROM calibration_conflicts
+                     WHERE profile_id = ?1 AND project_id = ?2 AND resolved_at IS NULL
+                     ORDER BY created_at ASC",
+                )
+                .map_err(sql_error)?
+        } else {
+            self.conn
+                .prepare(
+                    "SELECT conflict_id, profile_id, project_id, kind, entity_id,
+                            operation_id, local_payload_json, server_payload_json,
+                            server_revision, created_at
+                     FROM calibration_conflicts
+                     WHERE profile_id = ?1 AND resolved_at IS NULL
+                     ORDER BY created_at ASC",
+                )
+                .map_err(sql_error)?
+        };
+        let rows = if let Some(pid) = project_id {
+            stmt.query_map(params![profile_id, pid], calibration_conflict_from_row)
+                .map_err(sql_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(sql_error)?
+        } else {
+            stmt.query_map(params![profile_id], calibration_conflict_from_row)
+                .map_err(sql_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(sql_error)?
+        };
+        Ok(rows)
+    }
+
+    fn count_calibration_pending_ops(
+        &self,
+        profile_id: &str,
+        project_id: Option<&str>,
+    ) -> Result<i64, String> {
+        let pending = CalibrationOutboxState::Pending.as_db();
+        if let Some(pid) = project_id {
+            self.conn
+                .query_row(
+                    "SELECT COUNT(*) FROM calibration_outbox
+                     WHERE profile_id = ?1 AND project_id = ?2 AND state = ?3",
+                    params![profile_id, pid, pending],
+                    |row| row.get(0),
+                )
+                .map_err(sql_error)
+        } else {
+            self.conn
+                .query_row(
+                    "SELECT COUNT(*) FROM calibration_outbox
+                     WHERE profile_id = ?1 AND state = ?2",
+                    params![profile_id, pending],
+                    |row| row.get(0),
+                )
+                .map_err(sql_error)
+        }
+    }
+
+    fn is_printer_context_fresh(&self, profile_id: &str, project_id: &str) -> Result<bool, String> {
+        let result: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT is_printer_context_fresh FROM calibration_projects
+                 WHERE profile_id = ?1 AND project_id = ?2",
+                params![profile_id, project_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        Ok(result.unwrap_or(0) != 0)
+    }
 }
 
 /// Whole seconds since the Unix epoch, as text, for `*_at` columns.
@@ -2953,6 +3383,73 @@ fn invalid_db_value() -> rusqlite::Error {
 fn json_string(value: &serde_json::Value) -> Result<String, String> {
     serde_json::to_string(value)
         .map_err(|error| format!("failed to serialize JSON payload: {error}"))
+}
+
+// --- Calibration row helpers -------------------------------------------------
+
+fn calibration_pending_op_from_row(row: &Row<'_>) -> rusqlite::Result<CalibrationPendingOpDto> {
+    let payload_json: String = row.get(10)?;
+    let depends_on_json: String = row.get(11)?;
+    let payload = serde_json::from_str(&payload_json)
+        .unwrap_or(serde_json::Value::Object(Default::default()));
+    let depends_on: Vec<String> = serde_json::from_str(&depends_on_json).unwrap_or_default();
+    Ok(CalibrationPendingOpDto {
+        operation_id: row.get(0)?,
+        profile_id: row.get(1)?,
+        project_id: row.get(2)?,
+        kind: row.get(3)?,
+        sequence: row.get(4)?,
+        base_revision: row.get(5)?,
+        idempotency_key: row.get(6)?,
+        entity_type: row.get(7)?,
+        entity_id: row.get(8)?,
+        operation_kind: row.get(9)?,
+        payload,
+        depends_on,
+    })
+}
+
+fn calibration_conflict_from_row(row: &Row<'_>) -> rusqlite::Result<CalibrationConflictDto> {
+    let local_payload_json: Option<String> = row.get(6)?;
+    let server_payload_json: Option<String> = row.get(7)?;
+    let local_payload = local_payload_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok());
+    let server_payload = server_payload_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok());
+    Ok(CalibrationConflictDto {
+        conflict_id: row.get(0)?,
+        profile_id: row.get(1)?,
+        project_id: row.get(2)?,
+        kind: row.get(3)?,
+        entity_id: row.get(4)?,
+        operation_id: row.get(5)?,
+        local_payload,
+        server_payload,
+        server_revision: row.get(8)?,
+        created_at: row.get(9)?,
+    })
+}
+
+/// Simple UUID v4 placeholder for conflict IDs.
+/// Uses a combination of the current time and a counter for uniqueness.
+fn uuid_v4_placeholder() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+        (nanos >> 32) as u32,
+        (nanos >> 16) as u16,
+        nanos as u16 & 0x0fff,
+        (seq & 0x3fff) | 0x8000,
+        seq & 0x0000_ffff_ffff
+    )
 }
 
 fn optional_json(value: &Option<serde_json::Value>) -> Result<Option<String>, String> {

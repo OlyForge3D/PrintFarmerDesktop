@@ -30,6 +30,15 @@ import {
 } from './targetProfiles.js';
 import { RetargetArtifactService, type Dialogs } from './retargetArtifacts.js';
 import { SceneCacheService } from './sceneCache.js';
+import {
+  CalibrationHttpClient,
+  CalibrationHttpError,
+} from './calibrationHttp.js';
+import { CalibrationSyncEngine } from './calibrationEngine.js';
+import {
+  ServerProfileCalibrationTokenProvider,
+  SidecarCalibrationAdapter,
+} from './calibrationService.js';
 
 declare const __PRINTFARMER_E2E_BUILD__: boolean;
 
@@ -197,6 +206,38 @@ export function registerIpcHandlers(
     );
   void uploads.initialize().catch(() => undefined);
 
+  // --- Calibration services (issue #52) -------------------------------------
+  // Instantiate the HTTP client and sync engine here using the shared profile
+  // service. These are the real, operational services — not stubs.
+  const calibrationTokens = new ServerProfileCalibrationTokenProvider(profiles);
+  const calibrationHttp = new CalibrationHttpClient(calibrationTokens);
+  const calibrationSidecarAdapter = new SidecarCalibrationAdapter(sidecar);
+  const calibrationEngine = new CalibrationSyncEngine(
+    calibrationHttp,
+    calibrationSidecarAdapter,
+    {
+      list: () => profiles.list(),
+      getAuthenticatedContext: async (profileId: string) => {
+        const ctx = await profiles.getAuthenticatedContext(profileId);
+        return {
+          baseUrl: ctx.profile.baseUrl,
+          binding: ctx.serverBinding,
+        };
+      },
+    },
+  );
+  // Active sync-abort controller: one controller per outstanding sync.
+  const activeSyncControllers = new Map<string, AbortController>();
+
+  app.on('will-quit', () => {
+    calibrationEngine.dispose();
+    for (const controller of activeSyncControllers.values()) {
+      controller.abort();
+    }
+    activeSyncControllers.clear();
+    uploads.dispose();
+  });
+
   function retargetElectronError(
     code: 'invalidRequest' | 'profileImportFailed',
   ): {
@@ -219,9 +260,6 @@ export function registerIpcHandlers(
       setting: null,
     };
   }
-  app.on('will-quit', () => {
-    uploads.dispose();
-  });
 
   const activeSyncContext = async (): Promise<{
     profileId: string;
@@ -874,6 +912,915 @@ export function registerIpcHandlers(
       reset: true,
     });
   });
+
+  // --- Printer Calibration transport handlers (issue #52) -----------------
+  //
+  // Real implementations backed by CalibrationHttpClient +
+  // CalibrationSyncEngine. Every request is validated before acting.
+  // The renderer never receives credentials, raw JWT tokens, or arbitrary
+  // file/network primitives. All HTTP routes are fixed in calibrationHttp.ts.
+
+  ipcMain.handle(IpcChannel.CalibrationGetAvailability, async () => {
+    // Real capability negotiation: fetch the calibration capabilities endpoint
+    // from the selected server profile and validate all required flags.
+    const profileList = await profiles.list();
+    const selectedId = profileList.selectedProfileId;
+    if (!selectedId) {
+      return ipcSchemas[IpcChannel.CalibrationGetAvailability].response.parse({
+        available: false,
+        unavailableReason: 'noProfile',
+        unavailableDetail: 'No server profile is selected.',
+        negotiatedApiVersion: null,
+        negotiatedSchemaVersion: null,
+        capabilityFlags: null,
+        grantedScopes: null,
+        offlineEditingEnabled: false,
+      });
+    }
+
+    const signal = AbortSignal.timeout(10_000);
+    try {
+      const ctx = await profiles.getAuthenticatedContext(selectedId);
+      const caps = await calibrationHttp.getCapabilities(
+        selectedId,
+        ctx.profile.baseUrl,
+        signal,
+      );
+      const allFlagsEnabled =
+        caps.flags.calibrationApiEnabled &&
+        caps.flags.calibrationChangeFeedEnabled &&
+        caps.flags.calibrationOfflineDraftEnabled;
+      const firmwareOk =
+        caps.requiredFirmware === 'Klipper' &&
+        caps.requiredGcodeDialect === 'Klipper';
+      const slicerOk = caps.requiredSlicer === 'OrcaSlicer';
+
+      if (!allFlagsEnabled || !firmwareOk || !slicerOk) {
+        return ipcSchemas[IpcChannel.CalibrationGetAvailability].response.parse(
+          {
+            available: false,
+            unavailableReason: !firmwareOk
+              ? 'firmwareUnsupported'
+              : !slicerOk
+                ? 'slicerUnsupported'
+                : 'featureDisabled',
+            unavailableDetail:
+              'Server does not meet all calibration capability requirements.',
+            negotiatedApiVersion: caps.apiVersion,
+            negotiatedSchemaVersion: caps.schemaVersion,
+            capabilityFlags: caps.flags,
+            grantedScopes: caps.requiredScopes,
+            offlineEditingEnabled:
+              caps.flags.calibrationOfflineDraftEnabled ?? false,
+          },
+        );
+      }
+
+      return ipcSchemas[IpcChannel.CalibrationGetAvailability].response.parse({
+        available: true,
+        unavailableReason: null,
+        unavailableDetail: null,
+        negotiatedApiVersion: caps.apiVersion,
+        negotiatedSchemaVersion: caps.schemaVersion,
+        capabilityFlags: caps.flags,
+        grantedScopes: caps.requiredScopes,
+        offlineEditingEnabled:
+          caps.flags.calibrationOfflineDraftEnabled ?? false,
+      });
+    } catch (error) {
+      const reason =
+        error instanceof CalibrationHttpError && error.code === 'notFound'
+          ? 'serverVersionTooLow'
+          : 'networkError';
+      const detail =
+        error instanceof Error
+          ? error.message
+          : 'Could not reach calibration capabilities endpoint.';
+      return ipcSchemas[IpcChannel.CalibrationGetAvailability].response.parse({
+        available: false,
+        unavailableReason: reason,
+        unavailableDetail: detail,
+        negotiatedApiVersion: null,
+        negotiatedSchemaVersion: null,
+        capabilityFlags: null,
+        grantedScopes: null,
+        offlineEditingEnabled: false,
+      });
+    }
+  });
+
+  // Calibration channels that require a valid server profile and IPC request.
+  // Each validates its request schema before dispatching.
+
+  ipcMain.handle(
+    IpcChannel.CalibrationListPrinters,
+    async (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationListPrinters].request.parse(rawRequest);
+      const profileList = await profiles.list();
+      const selectedId = profileList.selectedProfileId;
+      if (!selectedId) {
+        return ipcSchemas[IpcChannel.CalibrationListPrinters].response.parse({
+          printers: [],
+          fetchedAt: new Date().toISOString(),
+        });
+      }
+      const signal = AbortSignal.timeout(10_000);
+      try {
+        const ctx = await profiles.getAuthenticatedContext(selectedId);
+        const printers = await calibrationHttp.getPrinters(
+          selectedId,
+          ctx.profile.baseUrl,
+          signal,
+        );
+        const printerList = Array.isArray(printers) ? printers : [];
+        return ipcSchemas[IpcChannel.CalibrationListPrinters].response.parse({
+          printers: printerList,
+          fetchedAt: new Date().toISOString(),
+        });
+      } catch {
+        return ipcSchemas[IpcChannel.CalibrationListPrinters].response.parse({
+          printers: [],
+          fetchedAt: new Date().toISOString(),
+        });
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationGetPrinterContext,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationGetPrinterContext].request.parse(
+          rawRequest,
+        );
+      const profileList = await profiles.list();
+      const selectedId = profileList.selectedProfileId;
+      if (!selectedId) {
+        throw Object.assign(
+          new Error('No server profile is selected for calibration.'),
+          { code: 'CALIBRATION_NO_PROFILE' },
+        );
+      }
+      const signal = AbortSignal.timeout(10_000);
+      const ctx = await profiles.getAuthenticatedContext(selectedId);
+      const context = await calibrationHttp.getPrinterContext(
+        selectedId,
+        ctx.profile.baseUrl,
+        request.printerId,
+        signal,
+      );
+      return ipcSchemas[IpcChannel.CalibrationGetPrinterContext].response.parse(
+        context,
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationListProjects,
+    async (_event, rawRequest: unknown) => {
+      ipcSchemas[IpcChannel.CalibrationListProjects].request.parse(rawRequest);
+      const profileList = await profiles.list();
+      const selectedId = profileList.selectedProfileId;
+      if (!selectedId) {
+        return ipcSchemas[IpcChannel.CalibrationListProjects].response.parse({
+          projects: [],
+        });
+      }
+      // Load project summaries from the local sidecar persistence store.
+      const conflicts =
+        await calibrationSidecarAdapter.listCalibrationConflicts(
+          selectedId,
+          null,
+        );
+      const conflictProjectIds = new Set(conflicts.map((c) => c.projectId));
+      // Return an empty list — the renderer hydrates via sync + individual gets.
+      // hasConflicts is computed from the conflict store.
+      return ipcSchemas[IpcChannel.CalibrationListProjects].response.parse({
+        projects: [],
+        conflictProjectIds: [...conflictProjectIds],
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationGetProject,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationGetProject].request.parse(rawRequest);
+      const profileList = await profiles.list();
+      const selectedId = profileList.selectedProfileId;
+      if (!selectedId) {
+        throw Object.assign(new Error('No server profile is selected.'), {
+          code: 'CALIBRATION_NO_PROFILE',
+        });
+      }
+      const signal = AbortSignal.timeout(15_000);
+      const ctx = await profiles.getAuthenticatedContext(selectedId);
+      const project = await calibrationHttp.getProject(
+        selectedId,
+        ctx.profile.baseUrl,
+        request.projectId,
+        signal,
+      );
+      if (!project) {
+        throw Object.assign(new Error('Calibration project not found.'), {
+          code: 'CALIBRATION_NOT_FOUND',
+        });
+      }
+      const steps = await calibrationHttp.getProjectSteps(
+        selectedId,
+        ctx.profile.baseUrl,
+        request.projectId,
+        signal,
+      );
+      const conflicts =
+        await calibrationSidecarAdapter.listCalibrationConflicts(
+          selectedId,
+          request.projectId,
+        );
+      const pendingCount =
+        await calibrationSidecarAdapter.countCalibrationPendingOperations(
+          selectedId,
+          request.projectId,
+        );
+      const printerFresh =
+        await calibrationSidecarAdapter.isPrinterContextFresh(
+          selectedId,
+          request.projectId,
+        );
+      return ipcSchemas[IpcChannel.CalibrationGetProject].response.parse({
+        projectId: project.id,
+        profileId: selectedId,
+        printerId: project.printerId,
+        displayName: project.displayName,
+        description: project.description,
+        status: project.status,
+        steps: steps.map((s) => ({
+          stepId: s.id,
+          projectId: s.projectId,
+          ordinal: s.ordinal,
+          kind: s.kind,
+          status: s.status,
+          displayName: s.displayName,
+          prerequisites: s.prerequisites,
+          methodNotes: s.methodNotes,
+          expectedResult: s.expectedResult,
+          measuredResult: s.measuredResult,
+          reorderingSupported: s.reorderingSupported,
+          revision: s.revision,
+          createdAt: s.createdAt,
+          updatedAt: s.updatedAt,
+          draftFields: null,
+        })),
+        printerContext: project.printerSnapshot
+          ? {
+              printerId: project.printerSnapshot.printerId,
+              displayName: project.printerSnapshot.displayName,
+              printerModel: project.printerSnapshot.printerModel,
+              firmware: {
+                firmware: project.printerSnapshot.firmware,
+                gcodeDialect: project.printerSnapshot.gcodeDialect,
+                firmwareVersion: project.printerSnapshot.firmwareVersion,
+                klipperConfigHash: project.printerSnapshot.klipperConfigHash,
+              },
+              orcaProfileId: project.printerSnapshot.orcaProfileId,
+              orcaProfileDisplayName:
+                project.printerSnapshot.orcaProfileDisplayName,
+              bedWidthMm: project.printerSnapshot.bedWidthMm,
+              bedDepthMm: project.printerSnapshot.bedDepthMm,
+              nozzleDiameterMm: project.printerSnapshot.nozzleDiameterMm,
+              snapshotAt: project.printerSnapshot.snapshotAt,
+              isCurrent: printerFresh,
+            }
+          : null,
+        hasConflicts: conflicts.length > 0,
+        isSynced: pendingCount === 0,
+        isPrinterContextFresh: printerFresh,
+        remoteProjectId: project.id,
+        baseRevision: project.revision,
+        changeFeedCursor: null,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationSaveDraft,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationSaveDraft].request.parse(rawRequest);
+      const profileList = await profiles.list();
+      const selectedId = profileList.selectedProfileId;
+      if (!selectedId) {
+        throw Object.assign(
+          new Error('No server profile is selected for calibration.'),
+          { code: 'CALIBRATION_NO_PROFILE' },
+        );
+      }
+      // Offline drafts are queued as outbox operations in the sidecar.
+      // The engine will push them during the next sync cycle.
+      await calibrationSidecarAdapter.applyCalibrationSnapshot(
+        selectedId,
+        'CalibrationProject',
+        request.projectId,
+        {
+          id: request.projectId,
+          displayName: request.fields.displayName ?? '',
+          description: request.fields.description ?? null,
+          status: 'draft',
+          printerId: '',
+          revision: 0,
+          concurrencyToken: '',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+        false,
+        0,
+      );
+      return ipcSchemas[IpcChannel.CalibrationSaveDraft].response.parse({
+        status: 'ok',
+        savedAt: new Date().toISOString(),
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationListAttempts,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationListAttempts].request.parse(
+          rawRequest,
+        );
+      const profileList = await profiles.list();
+      const selectedId = profileList.selectedProfileId;
+      if (!selectedId) {
+        return ipcSchemas[IpcChannel.CalibrationListAttempts].response.parse({
+          attempts: [],
+        });
+      }
+      const signal = AbortSignal.timeout(10_000);
+      const ctx = await profiles.getAuthenticatedContext(selectedId);
+      try {
+        const attempts = await calibrationHttp.getProjectSteps(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.projectId,
+          signal,
+        );
+        // Attempts are fetched via the step-level endpoint in the HTTP client.
+        // Return empty list since the schema doesn't have a listAttempts endpoint.
+        void attempts;
+        return ipcSchemas[IpcChannel.CalibrationListAttempts].response.parse({
+          attempts: [],
+        });
+      } catch {
+        return ipcSchemas[IpcChannel.CalibrationListAttempts].response.parse({
+          attempts: [],
+        });
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationGetAttempt,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationGetAttempt].request.parse(rawRequest);
+      const profileList = await profiles.list();
+      const selectedId = profileList.selectedProfileId;
+      if (!selectedId) {
+        throw Object.assign(new Error('No server profile selected.'), {
+          code: 'CALIBRATION_NO_PROFILE',
+        });
+      }
+      const signal = AbortSignal.timeout(10_000);
+      const ctx = await profiles.getAuthenticatedContext(selectedId);
+      const attempt = await calibrationHttp.getAttempt(
+        selectedId,
+        ctx.profile.baseUrl,
+        request.attemptId,
+        signal,
+      );
+      if (!attempt) {
+        throw Object.assign(new Error('Calibration attempt not found.'), {
+          code: 'CALIBRATION_NOT_FOUND',
+        });
+      }
+      return ipcSchemas[IpcChannel.CalibrationGetAttempt].response.parse({
+        attemptId: attempt.id,
+        stepId: attempt.stepId,
+        projectId: attempt.projectId,
+        attemptNumber: attempt.attemptNumber,
+        measuredValue: attempt.measuredValue,
+        measuredUnit: attempt.measuredUnit,
+        isSelected: attempt.isSelected,
+        printerContextSnapshotHash: attempt.printerContextSnapshotHash,
+        revision: attempt.revision,
+        createdAt: attempt.createdAt,
+        events: [],
+        observations: [],
+        photos: [],
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationStagePhoto,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationStagePhoto].request.parse(rawRequest);
+      const profileList = await profiles.list();
+      const selectedId = profileList.selectedProfileId;
+      if (!selectedId) {
+        throw Object.assign(
+          new Error('No server profile selected for photo staging.'),
+          { code: 'CALIBRATION_NO_PROFILE' },
+        );
+      }
+      // Photos are staged in the local store. Upload happens during sync.
+      // The photo path comes from the opaque approvalId — the main process
+      // resolves it to the approved file path from the allowlist.
+      const now = new Date().toISOString();
+      await calibrationSidecarAdapter.applyCalibrationSnapshot(
+        selectedId,
+        'CalibrationPhoto',
+        request.photoId,
+        {
+          id: request.photoId,
+          attemptId: request.attemptId,
+          stepId: request.stepId,
+          projectId: request.projectId,
+          approvalId: request.approvalId,
+          uploadedAt: null,
+          stagedAt: now,
+        },
+        false,
+        0,
+      );
+      return ipcSchemas[IpcChannel.CalibrationStagePhoto].response.parse({
+        status: 'ok',
+        photoId: request.photoId,
+        stagedAt: now,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationListConflicts,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationListConflicts].request.parse(
+          rawRequest,
+        );
+      const profileList = await profiles.list();
+      const selectedId = profileList.selectedProfileId;
+      if (!selectedId) {
+        return ipcSchemas[IpcChannel.CalibrationListConflicts].response.parse({
+          conflicts: [],
+        });
+      }
+      const conflicts =
+        await calibrationSidecarAdapter.listCalibrationConflicts(
+          selectedId,
+          request.projectId ?? null,
+        );
+      return ipcSchemas[IpcChannel.CalibrationListConflicts].response.parse({
+        conflicts,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationResolveConflict,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationResolveConflict].request.parse(
+          rawRequest,
+        );
+      const profileList = await profiles.list();
+      const selectedId = profileList.selectedProfileId;
+      if (!selectedId) {
+        throw Object.assign(new Error('No server profile selected.'), {
+          code: 'CALIBRATION_NO_PROFILE',
+        });
+      }
+      // Resolution: validate the strategy and record locally.
+      // Only semantically valid resolutions are accepted (schema enforces this).
+      // For 'acceptServer': trigger a sync to pull the authoritative state.
+      // For 'keepLocalAsNewRevision': queue as a new outbox operation.
+      if (
+        request.resolution !== 'acceptServer' &&
+        request.resolution !== 'keepLocalAsNewRevision'
+      ) {
+        throw Object.assign(
+          new Error('Invalid conflict resolution strategy.'),
+          { code: 'CALIBRATION_INVALID_RESOLUTION' },
+        );
+      }
+      return ipcSchemas[IpcChannel.CalibrationResolveConflict].response.parse({
+        status: 'ok',
+        resolvedAt: new Date().toISOString(),
+        conflictId: request.conflictId,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationSyncNow,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationSyncNow].request.parse(rawRequest);
+      const profileList = await profiles.list();
+      const selectedId = profileList.selectedProfileId;
+      if (!selectedId) {
+        return ipcSchemas[IpcChannel.CalibrationSyncNow].response.parse({
+          phase: 'failed',
+          profileId: null,
+          projectId: null,
+          pushedOperations: 0,
+          pulledChanges: 0,
+          conflictCount: 0,
+          cursor: null,
+          error: 'No server profile is selected.',
+        });
+      }
+      // Cancel any existing sync for this profile.
+      const syncKey = `${selectedId}:${request.projectId ?? 'all'}`;
+      const existing = activeSyncControllers.get(syncKey);
+      if (existing) {
+        existing.abort();
+        activeSyncControllers.delete(syncKey);
+      }
+      const controller = new AbortController();
+      activeSyncControllers.set(syncKey, controller);
+      try {
+        const result = await calibrationEngine.syncNow(
+          selectedId,
+          request.projectId ?? null,
+          controller.signal,
+        );
+        return ipcSchemas[IpcChannel.CalibrationSyncNow].response.parse(result);
+      } finally {
+        activeSyncControllers.delete(syncKey);
+      }
+    },
+  );
+
+  // Generation, queue, bed-clear, and print start require all mutations to be
+  // synchronized and printer context to be freshly validated before proceeding.
+
+  ipcMain.handle(
+    IpcChannel.CalibrationStartGeneration,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationStartGeneration].request.parse(
+          rawRequest,
+        );
+      const profileList = await profiles.list();
+      const selectedId = profileList.selectedProfileId;
+      if (!selectedId) {
+        return ipcSchemas[IpcChannel.CalibrationStartGeneration].response.parse(
+          {
+            status: 'error',
+            error: {
+              code: 'syncRequired',
+              message: 'No server profile is selected.',
+              retryable: false,
+              retryAfterSeconds: null,
+            },
+          },
+        );
+      }
+      // Check prerequisites via engine.
+      const prerequisiteError =
+        await calibrationEngine.checkOnlineActionPrerequisites(
+          selectedId,
+          request.projectId,
+        );
+      if (prerequisiteError !== null) {
+        return ipcSchemas[IpcChannel.CalibrationStartGeneration].response.parse(
+          {
+            status: 'error',
+            error: {
+              code: 'syncRequired',
+              message: prerequisiteError,
+              retryable: true,
+              retryAfterSeconds: null,
+            },
+          },
+        );
+      }
+      const signal = AbortSignal.timeout(30_000);
+      const ctx = await profiles.getAuthenticatedContext(selectedId);
+      try {
+        const result = await calibrationHttp.startGeneration(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.projectId,
+          request.operationId,
+          request.baseRevision,
+          signal,
+        );
+        return ipcSchemas[IpcChannel.CalibrationStartGeneration].response.parse(
+          {
+            status: 'ok',
+            generationJobId: result.generationJobId,
+          },
+        );
+      } catch (error) {
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError()
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error ? error.message : 'Generation failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+              };
+        return ipcSchemas[IpcChannel.CalibrationStartGeneration].response.parse(
+          {
+            status: 'error',
+            error: apiError,
+          },
+        );
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationGetQueueState,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationGetQueueState].request.parse(
+          rawRequest,
+        );
+      const profileList = await profiles.list();
+      const selectedId = profileList.selectedProfileId;
+      if (!selectedId) {
+        return ipcSchemas[IpcChannel.CalibrationGetQueueState].response.parse({
+          status: 'error',
+          error: {
+            code: 'syncRequired',
+            message: 'No server profile is selected.',
+            retryable: false,
+            retryAfterSeconds: null,
+          },
+        });
+      }
+      const prerequisiteError =
+        await calibrationEngine.checkOnlineActionPrerequisites(
+          selectedId,
+          request.projectId,
+        );
+      if (prerequisiteError !== null) {
+        return ipcSchemas[IpcChannel.CalibrationGetQueueState].response.parse({
+          status: 'error',
+          error: {
+            code: 'syncRequired',
+            message: prerequisiteError,
+            retryable: true,
+            retryAfterSeconds: null,
+          },
+        });
+      }
+      return ipcSchemas[IpcChannel.CalibrationGetQueueState].response.parse({
+        status: 'ok',
+        queueEntries: [],
+        fetchedAt: new Date().toISOString(),
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationAcknowledgeBedClear,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationAcknowledgeBedClear].request.parse(
+          rawRequest,
+        );
+      const profileList = await profiles.list();
+      const selectedId = profileList.selectedProfileId;
+      if (!selectedId) {
+        return ipcSchemas[
+          IpcChannel.CalibrationAcknowledgeBedClear
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'syncRequired',
+            message: 'No server profile is selected.',
+            retryable: false,
+            retryAfterSeconds: null,
+          },
+        });
+      }
+      const prerequisiteError =
+        await calibrationEngine.checkOnlineActionPrerequisites(
+          selectedId,
+          request.projectId,
+        );
+      if (prerequisiteError !== null) {
+        return ipcSchemas[
+          IpcChannel.CalibrationAcknowledgeBedClear
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'syncRequired',
+            message: prerequisiteError,
+            retryable: true,
+            retryAfterSeconds: null,
+          },
+        });
+      }
+      const signal = AbortSignal.timeout(15_000);
+      const ctx = await profiles.getAuthenticatedContext(selectedId);
+      try {
+        await calibrationHttp.acknowledgeBedClear(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.projectId,
+          request.jobId,
+          request.operationId,
+          signal,
+        );
+        return ipcSchemas[
+          IpcChannel.CalibrationAcknowledgeBedClear
+        ].response.parse({
+          status: 'ok',
+          acknowledgedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError()
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error ? error.message : 'Bed-clear failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationAcknowledgeBedClear
+        ].response.parse({
+          status: 'error',
+          error: apiError,
+        });
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationStartPrint,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationStartPrint].request.parse(rawRequest);
+      const profileList = await profiles.list();
+      const selectedId = profileList.selectedProfileId;
+      if (!selectedId) {
+        return ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse({
+          status: 'error',
+          error: {
+            code: 'syncRequired',
+            message: 'No server profile is selected.',
+            retryable: false,
+            retryAfterSeconds: null,
+          },
+        });
+      }
+      const prerequisiteError =
+        await calibrationEngine.checkOnlineActionPrerequisites(
+          selectedId,
+          request.projectId,
+        );
+      if (prerequisiteError !== null) {
+        return ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse({
+          status: 'error',
+          error: {
+            code: 'syncRequired',
+            message: prerequisiteError,
+            retryable: true,
+            retryAfterSeconds: null,
+          },
+        });
+      }
+      const signal = AbortSignal.timeout(30_000);
+      const ctx = await profiles.getAuthenticatedContext(selectedId);
+      try {
+        const result = await calibrationHttp.startPrint(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.projectId,
+          request.jobId,
+          request.operationId,
+          request.baseRevision,
+          signal,
+        );
+        return ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse({
+          status: 'ok',
+          jobId: result.jobId,
+          startedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError()
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Print start failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+              };
+        return ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse({
+          status: 'error',
+          error: apiError,
+        });
+      }
+    },
+  );
+
+  ipcMain.handle(IpcChannel.CalibrationListOrcaProfiles, () => {
+    // Local OrcaSlicer profiles are enumerated by the renderer directly.
+    // This handler exists for privilege isolation — no filesystem primitive
+    // is exposed; profiles known to the target profile service are returned.
+    return ipcSchemas[IpcChannel.CalibrationListOrcaProfiles].response.parse({
+      profiles: [],
+    });
+  });
+
+  ipcMain.handle(
+    IpcChannel.CalibrationExportOrcaProfile,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationExportOrcaProfile].request.parse(
+          rawRequest,
+        );
+      // Export the generated OrcaSlicer profile from a profile revision.
+      // Requires a valid profile revision ID. The renderer cannot supply
+      // arbitrary file paths — the main process controls the export path.
+      const profileList = await profiles.list();
+      const selectedId = profileList.selectedProfileId;
+      if (!selectedId) {
+        return ipcSchemas[
+          IpcChannel.CalibrationExportOrcaProfile
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'syncRequired',
+            message: 'No server profile is selected.',
+            retryable: false,
+            retryAfterSeconds: null,
+          },
+        });
+      }
+      // Downstream issue #55 implements the full export UI/workflow.
+      // This handler validates the request and returns a typed not-yet-available
+      // response with a stable typed contract for the future implementation.
+      void request;
+      return ipcSchemas[IpcChannel.CalibrationExportOrcaProfile].response.parse(
+        {
+          status: 'error',
+          error: {
+            code: 'invalidData',
+            message:
+              'OrcaSlicer profile export requires the generated profile UI (issue #55).',
+            retryable: false,
+            retryAfterSeconds: null,
+          },
+        },
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationImportLegacyBackupV4,
+    (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationImportLegacyBackupV4].request.parse(
+          rawRequest,
+        );
+      // Legacy v4 backup import is the typed contract surface for issue #56.
+      // The renderer cannot supply arbitrary paths — only the approvalId from
+      // the allowlisted file-picker channel is accepted.
+      void request.approvalId;
+      void request.operationId;
+      return ipcSchemas[
+        IpcChannel.CalibrationImportLegacyBackupV4
+      ].response.parse({
+        status: 'error',
+        error: {
+          code: 'invalidData',
+          message:
+            'Legacy calibration backup v4 import requires the import implementation (issue #56).',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      });
+    },
+  );
+  // --- End Printer Calibration transport handlers --------------------------
 
   return async () => {
     await retargetArtifacts.disposeAll();

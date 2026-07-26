@@ -8,7 +8,7 @@
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 12;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -381,6 +381,274 @@ DROP TABLE remote_model_links;
 ALTER TABLE remote_model_links_v11 RENAME TO remote_model_links;
 "#;
 
+/// Additive v12 Printer Calibration persistence (issue #52).
+///
+/// All tables are profile-scoped and contain no server URLs, JWT tokens,
+/// API keys, or password material. Profile identities are opaque
+/// Electron-owned UUIDs; `project_id` / `step_id` etc. are client-generated
+/// UUIDs. Server-assigned remote IDs are cached projections only.
+///
+/// PrintFarmer is authoritative for completed attempts, profile revisions, and
+/// uploaded photos. PFD never silently promotes a local cached version of these
+/// to server authority.
+pub const SCHEMA_V12: &str = r#"
+-- Cached calibration project aggregates. `is_synced` is 0 until all outbox
+-- operations are settled. `is_printer_context_fresh` is 0 until printer
+-- context has been revalidated post-mutation.
+CREATE TABLE calibration_projects (
+    profile_id                TEXT NOT NULL,
+    project_id                TEXT NOT NULL,
+    display_name              TEXT NOT NULL,
+    description               TEXT,
+    status                    TEXT NOT NULL DEFAULT 'draft',
+    printer_id                TEXT NOT NULL,
+    is_synced                 INTEGER NOT NULL DEFAULT 0,
+    is_printer_context_fresh  INTEGER NOT NULL DEFAULT 0,
+    has_conflicts             INTEGER NOT NULL DEFAULT 0,
+    remote_project_id         TEXT,
+    base_revision             INTEGER,
+    change_feed_cursor        TEXT,
+    checkpoint_generation     INTEGER NOT NULL DEFAULT 0,
+    created_at                TEXT NOT NULL,
+    updated_at                TEXT NOT NULL,
+    PRIMARY KEY (profile_id, project_id)
+);
+
+CREATE INDEX idx_calibration_projects_profile
+    ON calibration_projects(profile_id, status, updated_at);
+
+-- Ordered calibration steps. Steps are strictly ordered by `ordinal`.
+-- The `draft_ordinal` field captures pending user reordering before sync.
+CREATE TABLE calibration_steps (
+    profile_id        TEXT NOT NULL,
+    project_id        TEXT NOT NULL,
+    step_id           TEXT NOT NULL,
+    ordinal           INTEGER NOT NULL,
+    draft_ordinal     INTEGER,
+    kind              TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'pending',
+    display_name      TEXT NOT NULL,
+    prerequisites     TEXT,
+    method_notes      TEXT,
+    expected_result   TEXT,
+    measured_result   TEXT,
+    reordering_supported INTEGER NOT NULL DEFAULT 0,
+    remote_step_id    TEXT,
+    revision          INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    PRIMARY KEY (profile_id, step_id),
+    FOREIGN KEY (profile_id, project_id)
+        REFERENCES calibration_projects(profile_id, project_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_calibration_steps_project
+    ON calibration_steps(profile_id, project_id, ordinal);
+
+-- Immutable calibration attempts. Once recorded, attempts are never
+-- overwritten. `is_selected` marks the user-chosen outcome for the step.
+CREATE TABLE calibration_attempts (
+    profile_id                    TEXT NOT NULL,
+    attempt_id                    TEXT NOT NULL,
+    step_id                       TEXT NOT NULL,
+    project_id                    TEXT NOT NULL,
+    attempt_number                INTEGER NOT NULL,
+    measured_value                REAL,
+    measured_unit                 TEXT,
+    is_selected                   INTEGER NOT NULL DEFAULT 0,
+    printer_context_snapshot_hash TEXT,
+    remote_attempt_id             TEXT,
+    remote_revision               INTEGER,
+    created_at                    TEXT NOT NULL,
+    PRIMARY KEY (profile_id, attempt_id),
+    FOREIGN KEY (profile_id, project_id)
+        REFERENCES calibration_projects(profile_id, project_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_calibration_attempts_step
+    ON calibration_attempts(profile_id, step_id, attempt_number);
+
+-- Immutable events attached to an attempt. Append-only.
+CREATE TABLE calibration_events (
+    profile_id      TEXT NOT NULL,
+    event_id        TEXT NOT NULL,
+    attempt_id      TEXT NOT NULL,
+    step_id         TEXT NOT NULL,
+    project_id      TEXT NOT NULL,
+    kind            TEXT NOT NULL,
+    payload_json    TEXT NOT NULL DEFAULT '{}',
+    remote_event_id TEXT,
+    occurred_at     TEXT NOT NULL,
+    PRIMARY KEY (profile_id, event_id),
+    FOREIGN KEY (profile_id, project_id)
+        REFERENCES calibration_projects(profile_id, project_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_calibration_events_attempt
+    ON calibration_events(profile_id, attempt_id, occurred_at);
+
+-- Immutable physical measurement observations. Append-only.
+-- Measurements are never silently merged or overwritten.
+CREATE TABLE calibration_observations (
+    profile_id            TEXT NOT NULL,
+    observation_id        TEXT NOT NULL,
+    attempt_id            TEXT NOT NULL,
+    step_id               TEXT NOT NULL,
+    project_id            TEXT NOT NULL,
+    parameter_key         TEXT NOT NULL,
+    numeric_value         REAL,
+    unit                  TEXT,
+    note                  TEXT,
+    remote_observation_id TEXT,
+    observed_at           TEXT NOT NULL,
+    PRIMARY KEY (profile_id, observation_id),
+    FOREIGN KEY (profile_id, project_id)
+        REFERENCES calibration_projects(profile_id, project_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_calibration_observations_attempt
+    ON calibration_observations(profile_id, attempt_id, parameter_key);
+
+-- Staged offline photos. Bytes are stored on disk (path managed by main
+-- process); this table tracks metadata, hash, and upload state.
+-- Successfully uploaded photos are cleaned up deterministically.
+-- Conflicted/unresolved photos are retained until explicitly resolved.
+CREATE TABLE staged_calibration_photos (
+    profile_id      TEXT NOT NULL,
+    photo_id        TEXT NOT NULL,
+    attempt_id      TEXT NOT NULL,
+    step_id         TEXT NOT NULL,
+    project_id      TEXT NOT NULL,
+    content_hash    TEXT NOT NULL,
+    mime_type       TEXT NOT NULL,
+    byte_size       INTEGER NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'staged',
+    upload_attempts INTEGER NOT NULL DEFAULT 0,
+    remote_photo_id TEXT,
+    remote_url      TEXT,
+    staged_at       TEXT NOT NULL,
+    uploaded_at     TEXT,
+    PRIMARY KEY (profile_id, photo_id),
+    FOREIGN KEY (profile_id, project_id)
+        REFERENCES calibration_projects(profile_id, project_id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX idx_staged_photos_hash
+    ON staged_calibration_photos(profile_id, attempt_id, content_hash);
+CREATE INDEX idx_staged_photos_status
+    ON staged_calibration_photos(profile_id, status, staged_at);
+
+-- Generated OrcaSlicer profile revisions. Exact profile JSON is not stored
+-- here; only identity metadata is cached. PrintFarmer is authoritative for
+-- the content of generated revisions.
+CREATE TABLE calibration_profile_revisions (
+    profile_id             TEXT NOT NULL,
+    revision_id            TEXT NOT NULL,
+    project_id             TEXT NOT NULL,
+    revision_label         TEXT NOT NULL,
+    is_promoted            INTEGER NOT NULL DEFAULT 0,
+    target_orca_profile_id TEXT,
+    profile_json_hash      TEXT,
+    remote_revision_id     TEXT,
+    generated_at           TEXT NOT NULL,
+    promoted_at            TEXT,
+    PRIMARY KEY (profile_id, revision_id),
+    FOREIGN KEY (profile_id, project_id)
+        REFERENCES calibration_projects(profile_id, project_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_calibration_profile_revisions_project
+    ON calibration_profile_revisions(profile_id, project_id, generated_at);
+
+-- Ordered outbox of pending calibration operations. Operations are pushed in
+-- stable `sequence` order. `depends_on_json` lists operation IDs that must
+-- be settled before this one can be pushed.
+-- `idempotency_key` is the canonical request hash.
+-- Settled/replayed operations are retained for a bounded period then cleaned.
+CREATE TABLE calibration_outbox (
+    profile_id        TEXT NOT NULL,
+    operation_id      TEXT NOT NULL,
+    project_id        TEXT NOT NULL,
+    kind              TEXT NOT NULL,
+    sequence          INTEGER NOT NULL,
+    entity_type       TEXT NOT NULL,
+    entity_id         TEXT NOT NULL,
+    operation_kind    TEXT NOT NULL,
+    payload_json      TEXT NOT NULL,
+    idempotency_key   TEXT NOT NULL,
+    base_revision     INTEGER,
+    depends_on_json   TEXT NOT NULL DEFAULT '[]',
+    state             TEXT NOT NULL DEFAULT 'pending',
+    attempt_count     INTEGER NOT NULL DEFAULT 0,
+    last_error        TEXT,
+    retry_at          TEXT,
+    lease_until       TEXT,
+    lease_token       TEXT,
+    settled_at        TEXT,
+    server_revision   INTEGER,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    PRIMARY KEY (profile_id, operation_id),
+    FOREIGN KEY (profile_id, project_id)
+        REFERENCES calibration_projects(profile_id, project_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_calibration_outbox_claim
+    ON calibration_outbox(profile_id, state, retry_at, lease_until, sequence);
+CREATE UNIQUE INDEX idx_calibration_outbox_sequence
+    ON calibration_outbox(profile_id, project_id, sequence);
+
+-- Conflict records. Only semantically safe resolutions are allowed; no
+-- last-write-wins path exists in this schema.
+CREATE TABLE calibration_conflicts (
+    profile_id             TEXT NOT NULL,
+    conflict_id            TEXT NOT NULL,
+    project_id             TEXT NOT NULL,
+    kind                   TEXT NOT NULL,
+    entity_id              TEXT NOT NULL,
+    operation_id           TEXT,
+    local_payload_json     TEXT,
+    server_payload_json    TEXT,
+    server_revision        INTEGER NOT NULL,
+    created_at             TEXT NOT NULL,
+    resolved_at            TEXT,
+    resolution             TEXT,
+    PRIMARY KEY (profile_id, conflict_id),
+    FOREIGN KEY (profile_id, project_id)
+        REFERENCES calibration_projects(profile_id, project_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_calibration_conflicts_unresolved
+    ON calibration_conflicts(profile_id, resolved_at, created_at);
+CREATE INDEX idx_calibration_conflicts_project
+    ON calibration_conflicts(profile_id, project_id, resolved_at);
+
+-- Cached printer context snapshots bound to calibration projects.
+-- Stale snapshots (is_current = 0) trigger a required rebase before
+-- generation, bed-clear, or print start actions are enabled.
+CREATE TABLE calibration_printer_snapshots (
+    profile_id           TEXT NOT NULL,
+    project_id           TEXT NOT NULL,
+    printer_id           TEXT NOT NULL,
+    display_name         TEXT NOT NULL,
+    printer_model        TEXT,
+    firmware             TEXT NOT NULL,
+    gcode_dialect        TEXT NOT NULL,
+    firmware_version     TEXT,
+    klipper_config_hash  TEXT,
+    orca_profile_id      TEXT,
+    orca_profile_name    TEXT,
+    bed_width_mm         REAL,
+    bed_depth_mm         REAL,
+    nozzle_diameter_mm   REAL,
+    snapshot_at          TEXT NOT NULL,
+    is_current           INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (profile_id, project_id),
+    FOREIGN KEY (profile_id, project_id)
+        REFERENCES calibration_projects(profile_id, project_id) ON DELETE CASCADE
+);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,7 +675,7 @@ mod tests {
     #[test]
     fn sync_schema_contains_no_transport_or_secret_fields() {
         let sync_schema = format!(
-            "{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}\n{SCHEMA_V6}\n{SCHEMA_V7}\n{SCHEMA_V8}\n{SCHEMA_V9}\n{SCHEMA_V10}\n{SCHEMA_V11}"
+            "{SCHEMA_V2}\n{SCHEMA_V3}\n{SCHEMA_V4}\n{SCHEMA_V5}\n{SCHEMA_V6}\n{SCHEMA_V7}\n{SCHEMA_V8}\n{SCHEMA_V9}\n{SCHEMA_V10}\n{SCHEMA_V11}\n{SCHEMA_V12}"
         )
         .to_lowercase();
         for forbidden in ["server_url", "auth_token", "api_key", "password", "jwt"] {
@@ -434,5 +702,62 @@ mod tests {
     fn upload_link_schema_adds_server_binding() {
         assert!(SCHEMA_V11.contains("server_binding"));
         assert!(SCHEMA_V11.contains("legacy-unbound"));
+    }
+
+    #[test]
+    fn calibration_schema_v12_declares_required_tables() {
+        for table in [
+            "calibration_projects",
+            "calibration_steps",
+            "calibration_attempts",
+            "calibration_events",
+            "calibration_observations",
+            "staged_calibration_photos",
+            "calibration_profile_revisions",
+            "calibration_outbox",
+            "calibration_conflicts",
+            "calibration_printer_snapshots",
+        ] {
+            assert!(
+                SCHEMA_V12.contains(table),
+                "SCHEMA_V12 missing table {table}"
+            );
+        }
+    }
+
+    #[test]
+    fn calibration_schema_contains_no_secret_fields() {
+        let schema = SCHEMA_V12.to_lowercase();
+        for forbidden in ["server_url", "auth_token", "api_key", "password", "jwt"] {
+            assert!(
+                !schema.contains(forbidden),
+                "SCHEMA_V12 must not contain secret field '{forbidden}'"
+            );
+        }
+    }
+
+    #[test]
+    fn calibration_outbox_has_idempotency_key_and_sequence() {
+        assert!(SCHEMA_V12.contains("idempotency_key"));
+        assert!(SCHEMA_V12.contains("sequence"));
+        assert!(SCHEMA_V12.contains("depends_on_json"));
+    }
+
+    #[test]
+    fn calibration_attempts_are_append_only_by_design() {
+        // There is no UPDATE trigger in the schema — append-only is enforced
+        // by application code. Verify the primary key guarantees stable identity.
+        assert!(SCHEMA_V12.contains("PRIMARY KEY (profile_id, attempt_id)"));
+    }
+
+    #[test]
+    fn staged_photos_have_content_hash_uniqueness() {
+        assert!(SCHEMA_V12.contains("UNIQUE INDEX idx_staged_photos_hash"));
+    }
+
+    #[test]
+    fn schema_version_matches_number_of_migrations() {
+        // Each migration from V1..=V12 must be represented.
+        assert_eq!(SCHEMA_VERSION, 12);
     }
 }

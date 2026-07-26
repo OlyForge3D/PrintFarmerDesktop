@@ -788,6 +788,146 @@ export class SidecarClient {
     channel?.close();
   }
 
+  // --- Calibration persistence RPC (issue #52) ------------------------------
+  // These delegate to the sidecar's calibration_outbox and calibration_*
+  // tables added in schema v12. No server URLs or credentials are involved.
+
+  async listCalibrationPendingOps(
+    profileId: string,
+    projectId: string | null,
+    limit: number,
+  ): Promise<unknown[]> {
+    return (await this.request('listCalibrationPendingOps', {
+      profileId,
+      projectId,
+      limit,
+    })) as unknown[];
+  }
+
+  async settleCalibrationOp(
+    profileId: string,
+    operationId: string,
+    serverRevision: number,
+  ): Promise<void> {
+    await this.mutationRequest('settleCalibrationOp', {
+      profileId,
+      operationId,
+      serverRevision,
+    });
+  }
+
+  async replayCalibrationOp(
+    profileId: string,
+    operationId: string,
+  ): Promise<void> {
+    await this.mutationRequest('replayCalibrationOp', {
+      profileId,
+      operationId,
+    });
+  }
+
+  async recordCalibrationConflict(
+    profileId: string,
+    operationId: string,
+    entityType: string,
+    entityId: string,
+    reason: string,
+    serverRevision: number,
+  ): Promise<void> {
+    await this.mutationRequest('recordCalibrationConflict', {
+      profileId,
+      operationId,
+      entityType,
+      entityId,
+      reason,
+      serverRevision,
+    });
+  }
+
+  async getCalibrationCursorState(
+    profileId: string,
+    projectId: string | null,
+  ): Promise<{
+    cursor: string | null;
+    serverRevision: number;
+    checkpointGeneration: number;
+  }> {
+    return (await this.request('getCalibrationCursorState', {
+      profileId,
+      projectId,
+    })) as {
+      cursor: string | null;
+      serverRevision: number;
+      checkpointGeneration: number;
+    };
+  }
+
+  async commitCalibrationCursor(
+    profileId: string,
+    projectId: string | null,
+    cursor: string | null,
+    serverRevision: number,
+    checkpointGeneration: number,
+  ): Promise<void> {
+    await this.mutationRequest('commitCalibrationCursor', {
+      profileId,
+      projectId,
+      cursor,
+      serverRevision,
+      checkpointGeneration,
+    });
+  }
+
+  async applyCalibrationSnapshot(
+    profileId: string,
+    entityType: string,
+    entityId: string,
+    snapshot: unknown,
+    tombstone: boolean,
+    serverRevision: number,
+  ): Promise<void> {
+    await this.mutationRequest('applyCalibrationSnapshot', {
+      profileId,
+      entityType,
+      entityId,
+      snapshot,
+      tombstone,
+      serverRevision,
+    });
+  }
+
+  async listCalibrationConflicts(
+    profileId: string,
+    projectId: string | null,
+  ): Promise<unknown[]> {
+    return (await this.request('listCalibrationConflicts', {
+      profileId,
+      projectId,
+    })) as unknown[];
+  }
+
+  async countCalibrationPendingOps(
+    profileId: string,
+    projectId: string | null,
+  ): Promise<number> {
+    const result = (await this.request('countCalibrationPendingOps', {
+      profileId,
+      projectId,
+    })) as { count: number };
+    return result.count;
+  }
+
+  async isCalibrationPrinterContextFresh(
+    profileId: string,
+    projectId: string,
+  ): Promise<boolean> {
+    const result = (await this.request('isPrinterContextFresh', {
+      profileId,
+      projectId,
+    })) as { fresh: boolean };
+    return result.fresh;
+  }
+
   private mutationRequest(method: string, params: unknown): Promise<unknown> {
     return this.request(method, params, {
       timeoutMs: this.mutationTimeoutMs,
