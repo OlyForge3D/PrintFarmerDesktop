@@ -62,6 +62,19 @@ export interface SidecarClientOptions {
   requireProtocolHandshake?: boolean;
 }
 
+export interface SidecarHandshake {
+  protocolVersion: number;
+  sidecarVersion: string;
+  sceneDtoVersion?: number;
+  parserSemanticsVersion?: number;
+  sceneCacheRecipe?: string;
+}
+
+export interface RecipeBoundScene {
+  scene: unknown;
+  cacheRecipe?: string;
+}
+
 /** Private main-process-only native target reference. Never expose this to IPC. */
 export type RetargetTargetReference =
   | { kind: 'bundled'; targetProfileId: string }
@@ -195,7 +208,7 @@ export class SidecarClient {
   private readonly requireProtocolHandshake: boolean;
   private serializedQueue: Promise<void> = Promise.resolve();
   private protocolChannel: SidecarChannel | null = null;
-  private protocolReady: Promise<void> | null = null;
+  private protocolReady: Promise<SidecarHandshake> | null = null;
 
   constructor(
     private readonly createChannel: ChannelFactory,
@@ -214,27 +227,43 @@ export class SidecarClient {
   }
 
   /** Confirm the sidecar is alive and report its protocol/version. */
-  async handshake(): Promise<{
-    protocolVersion: number;
-    sidecarVersion: string;
-    sceneDtoVersion?: number;
-    parserSemanticsVersion?: number;
-    sceneCacheRecipe?: string;
-  }> {
-    const result = (await this.request('handshake', {})) as {
-      protocolVersion: number;
-      sidecarVersion: string;
-      sceneDtoVersion?: number;
-      parserSemanticsVersion?: number;
-      sceneCacheRecipe?: string;
-    };
+  async handshake(): Promise<SidecarHandshake> {
+    const result = await this.request('handshake', {});
     validateHandshake(result);
     return result;
+  }
+
+  async sceneCacheRecipe(): Promise<string | undefined> {
+    return this.enqueue(
+      async () => (await this.ensureProtocol()).sceneCacheRecipe,
+    );
   }
 
   /** Parse a model file into a normalized scene mesh (raw wire object). */
   async loadScene(filePath: string): Promise<unknown> {
     return this.request('loadScene', { path: filePath });
+  }
+
+  async loadSceneWithRecipe(filePath: string): Promise<RecipeBoundScene> {
+    return this.enqueue(async () => {
+      const handshake = await this.ensureProtocol();
+      const channel = this.protocolChannel;
+      if (!channel || channel !== this.channel) {
+        throw new Error('sidecar restarted before the scene request');
+      }
+      const scene = await this.dispatchRequest(
+        'loadScene',
+        { path: filePath },
+        {
+          timeoutMs: this.requestTimeoutMs,
+          terminateOnTimeout: false,
+        },
+        channel,
+      );
+      return handshake.sceneCacheRecipe
+        ? { scene, cacheRecipe: handshake.sceneCacheRecipe }
+        : { scene };
+    });
   }
 
   async loadRetargetScene(filePath: string): Promise<unknown> {
@@ -781,12 +810,15 @@ export class SidecarClient {
       terminateOnTimeout: false,
     },
   ): Promise<unknown> {
-    const dispatch = async (): Promise<unknown> => {
+    return this.enqueue(async (): Promise<unknown> => {
       if (this.requireProtocolHandshake && method !== 'handshake') {
         await this.ensureProtocol();
       }
       return this.dispatchRequest(method, params, policy);
-    };
+    });
+  }
+
+  private enqueue<T>(dispatch: () => Promise<T>): Promise<T> {
     if (!this.serializeRequests) {
       return dispatch();
     }
@@ -798,7 +830,7 @@ export class SidecarClient {
     return result;
   }
 
-  private async ensureProtocol(): Promise<void> {
+  private async ensureProtocol(): Promise<SidecarHandshake> {
     const channel = this.ensureChannel();
     if (this.protocolChannel !== channel || !this.protocolReady) {
       this.protocolChannel = channel;
@@ -809,12 +841,15 @@ export class SidecarClient {
           timeoutMs: this.requestTimeoutMs,
           terminateOnTimeout: false,
         },
-      ).then((result) => {
+        channel,
+      ).then((result): SidecarHandshake => {
         validateHandshake(result);
+        return result;
       });
     }
+    let handshake: SidecarHandshake;
     try {
-      await this.protocolReady;
+      handshake = await this.protocolReady;
     } catch (error) {
       if (this.protocolChannel === channel) {
         this.protocolChannel = null;
@@ -823,14 +858,16 @@ export class SidecarClient {
       throw error;
     }
     if (this.channel !== channel) {
-      await this.ensureProtocol();
+      return this.ensureProtocol();
     }
+    return handshake;
   }
 
   private dispatchRequest(
     method: string,
     params: unknown,
     policy: RequestPolicy,
+    expectedChannel?: SidecarChannel,
   ): Promise<unknown> {
     if (this.disposed) {
       return Promise.reject(new Error('sidecar client disposed'));
@@ -844,7 +881,12 @@ export class SidecarClient {
     }
     let channel: SidecarChannel;
     try {
-      channel = this.ensureChannel();
+      channel = expectedChannel ?? this.ensureChannel();
+      if (expectedChannel && this.channel !== expectedChannel) {
+        return Promise.reject(
+          new Error('sidecar restarted before the request could be sent'),
+        );
+      }
     } catch (error) {
       return Promise.reject(
         error instanceof Error ? error : new Error(String(error)),
@@ -1018,15 +1060,30 @@ export class SidecarClient {
 function validateHandshake(value: unknown): asserts value is {
   protocolVersion: number;
   sidecarVersion: string;
+  sceneDtoVersion?: number;
+  parserSemanticsVersion?: number;
+  sceneCacheRecipe?: string;
 } {
   const result = value as {
     protocolVersion?: unknown;
     sidecarVersion?: unknown;
+    sceneDtoVersion?: unknown;
+    parserSemanticsVersion?: unknown;
+    sceneCacheRecipe?: unknown;
   } | null;
   if (
     result?.protocolVersion !== SIDECAR_RPC_PROTOCOL_VERSION ||
     typeof result.sidecarVersion !== 'string' ||
-    result.sidecarVersion.length === 0
+    result.sidecarVersion.length === 0 ||
+    (result.sceneDtoVersion !== undefined &&
+      (!Number.isInteger(result.sceneDtoVersion) ||
+        (result.sceneDtoVersion as number) < 1)) ||
+    (result.parserSemanticsVersion !== undefined &&
+      (!Number.isInteger(result.parserSemanticsVersion) ||
+        (result.parserSemanticsVersion as number) < 1)) ||
+    (result.sceneCacheRecipe !== undefined &&
+      (typeof result.sceneCacheRecipe !== 'string' ||
+        result.sceneCacheRecipe.length === 0))
   ) {
     throw new Error(
       `sidecar protocol mismatch: expected ${SIDECAR_RPC_PROTOCOL_VERSION}, received ${String(result?.protocolVersion)}`,

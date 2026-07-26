@@ -82,6 +82,28 @@ describe('fitPerspectiveDistance', () => {
   it('is robust to a zero radius', () => {
     expect(fitPerspectiveDistance(45, 1, 0)).toBeGreaterThan(0);
   });
+
+  it('matches a hand-derived absolute distance for the unit sphere', () => {
+    // Hand derivation (independent of the function under test):
+    //   vFov = 45° = π/4,  aspect = 1,  radius = 1,  padding = 1.15
+    //   hFov = 2·atan(tan(π/8)·1) = π/4  (same as vFov at aspect 1)
+    //   limitingFov = min(π/4, π/4) = π/4
+    //   distance = (radius / sin(limitingFov/2)) × padding
+    //            = (1 / sin(π/8)) × 1.15
+    //            = (1 / 0.382683…) × 1.15
+    //            = 2.613126… × 1.15
+    //            ≈ 3.005095
+    //
+    // NOTE on the PERSPECTIVE_FOV mutation (45 → 20): it is benign and
+    // this test intentionally does NOT kill it. The mechanism:
+    // fitPerspectiveDistance ∝ 1/sin(fov/2), and the apparent-size formula
+    // carries tan(fov/2), so the two cancel under FOV change — perspective
+    // framing is self-correcting. Orthographic is linear in its frustum
+    // multiplier and has nothing to cancel against, which is why
+    // ORTHO_FRUSTUM_MULTIPLIER is the dangerous constant that must be
+    // pinned. Do not "fix" the surviving FOV mutation.
+    expect(fitPerspectiveDistance(45, 1, 1)).toBeCloseTo(3.005095, 4);
+  });
 });
 
 describe('defaultCameraPosition', () => {

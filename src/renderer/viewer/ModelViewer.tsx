@@ -38,7 +38,8 @@ export interface ModelViewerProps {
   resetToken?: number;
 }
 
-const PERSPECTIVE_FOV = 45;
+export const PERSPECTIVE_FOV = 45;
+export const ORTHO_FRUSTUM_MULTIPLIER = 1.2;
 type ViewerMesh = THREE.Mesh<
   THREE.BufferGeometry,
   THREE.Material | THREE.Material[]
@@ -333,7 +334,7 @@ function applyOrthoFrustum(
   radius: number,
   aspect: number,
 ): void {
-  const halfHeight = radius * 1.2;
+  const halfHeight = radius * ORTHO_FRUSTUM_MULTIPLIER;
   const halfWidth = halfHeight * aspect;
   camera.left = -halfWidth;
   camera.right = halfWidth;
