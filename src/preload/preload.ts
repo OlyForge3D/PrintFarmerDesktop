@@ -114,6 +114,7 @@ import {
   type CalibrationListOrcaProfilesResponse,
   type CalibrationExportOrcaProfileRequest,
   type CalibrationExportOrcaProfileResponse,
+  type CalibrationPickLegacyBackupV4Response,
   type CalibrationImportLegacyBackupV4Request,
   type CalibrationImportLegacyBackupV4Response,
   // --- Upstream Orca filament profiles (issue #55) -------------------------
@@ -536,6 +537,11 @@ const api: PrintFarmerApi = {
         request,
       ),
     ),
+  pickLegacyCalibrationBackupV4:
+    async (): Promise<CalibrationPickLegacyBackupV4Response> =>
+      ipcSchemas[IpcChannel.CalibrationPickLegacyBackupV4].response.parse(
+        await ipcRenderer.invoke(IpcChannel.CalibrationPickLegacyBackupV4),
+      ),
   importLegacyCalibrationBackupV4: async (
     request: CalibrationImportLegacyBackupV4Request,
   ): Promise<CalibrationImportLegacyBackupV4Response> =>

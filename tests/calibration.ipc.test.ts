@@ -899,6 +899,7 @@ describe('ipcSchemas calibration channel registry', () => {
       profileId: PROFILE_UUID,
       approvalId: ATTEMPT_UUID,
       operationId: ATTEMPT_UUID,
+      printerMappings: [],
     });
     expect(result.approvalId).toBe(ATTEMPT_UUID);
   });

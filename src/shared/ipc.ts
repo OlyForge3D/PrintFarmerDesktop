@@ -36,6 +36,7 @@ export const IpcChannel = {
   CalibrationStartPrint: 'calibration:startPrint',
   CalibrationListOrcaProfiles: 'calibration:listOrcaProfiles',
   CalibrationExportOrcaProfile: 'calibration:exportOrcaProfile',
+  CalibrationPickLegacyBackupV4: 'calibration:pickLegacyBackupV4',
   CalibrationImportLegacyBackupV4: 'calibration:importLegacyBackupV4',
   // --- Upstream Orca filament profiles (issue #55) -------------------------
   CalibrationGenerateOrcaProfile: 'calibration:generateOrcaProfile',
@@ -3470,16 +3471,138 @@ export type LegacyCalibrationBackupSummary = z.infer<
 >;
 
 /**
+ * Per-project preflight outcome for a legacy calibration backup v4 file.
+ * Each project is classified as importable, unsupported, or corrupt,
+ * with explicit reasons for non-importable records.
+ */
+export const LegacyBackupProjectOutcome = z
+  .object({
+    legacyProjectId: z.string().max(256),
+    name: z.string().max(512),
+    /** Deterministic import classification determined by preflight. */
+    outcome: z.enum(['importable', 'unsupported', 'corrupt', 'requiresAction']),
+    /** Structured issue codes for non-importable records. */
+    issues: z.array(z.string().max(512)).max(50),
+    stepCount: z.number().int().nonnegative().max(100),
+    attemptCount: z.number().int().nonnegative().max(10_000),
+    photoCount: z.number().int().nonnegative().max(10_000),
+    /** Legacy printer model/name snapshot (no credentials; for user display only). */
+    legacyPrinterName: z.string().max(256).nullable(),
+    /** Whether the project requires explicit printer/toolhead mapping. */
+    requiresPrinterMapping: z.boolean(),
+    /** Source-to-target project ID (deterministic, collision-safe). */
+    targetProjectId: z.string().uuid().nullable(),
+  })
+  .strict();
+export type LegacyBackupProjectOutcome = z.infer<
+  typeof LegacyBackupProjectOutcome
+>;
+
+/**
+ * Bounded preflight result returned by the CalibrationPickLegacyBackupV4 channel.
+ * Preflight is deterministic, fail-closed, and never claims import completion.
+ * It does not modify the source file or contact the backend.
+ */
+export const LegacyBackupPreflight = z
+  .object({
+    summary: LegacyCalibrationBackupSummary,
+    projectOutcomes: z.array(LegacyBackupProjectOutcome).max(10_000),
+    importableCount: z.number().int().nonnegative(),
+    unsupportedCount: z.number().int().nonnegative(),
+    corruptCount: z.number().int().nonnegative(),
+    requiresActionCount: z.number().int().nonnegative(),
+    /** Global warnings that apply to the whole backup (not per-project). */
+    warnings: z.array(z.string().max(512)).max(100),
+  })
+  .strict();
+export type LegacyBackupPreflight = z.infer<typeof LegacyBackupPreflight>;
+
+/**
+ * Per-project printer mapping: the renderer supplies one mapping per project
+ * that requiresPrinterMapping=true. Eligibility is enforced by the main process;
+ * the renderer never receives or forwards raw printer data.
+ */
+export const LegacyBackupPrinterMapping = z
+  .object({
+    /** Legacy project ID from the backup. */
+    legacyProjectId: z.string().max(256),
+    /** Authoritative PrintFarmer printer ID to map to. */
+    targetPrinterId: z.string().min(1).max(256),
+    /** Authoritative PrintFarmer tool ID for the physical toolhead/nozzle. */
+    targetToolId: z.string().min(1).max(256),
+  })
+  .strict();
+export type LegacyBackupPrinterMapping = z.infer<
+  typeof LegacyBackupPrinterMapping
+>;
+
+/**
+ * Per-project import result returned after a successful backend operation.
+ */
+export const LegacyBackupProjectResult = z
+  .object({
+    legacyProjectId: z.string().max(256),
+    targetProjectId: z.string().uuid(),
+    outcome: z.enum(['created', 'skipped', 'unsupported', 'corrupt', 'error']),
+    detail: z.string().max(512).nullable(),
+    importedAttemptCount: z.number().int().nonnegative(),
+    importedPhotoCount: z.number().int().nonnegative(),
+  })
+  .strict();
+export type LegacyBackupProjectResult = z.infer<
+  typeof LegacyBackupProjectResult
+>;
+
+/**
+ * Picker channel: shows a native file dialog for a .pfdbak / .json backup file,
+ * runs bounded local preflight validation, and returns an approvalId that the
+ * renderer passes to CalibrationImportLegacyBackupV4.
+ *
+ * The renderer never receives a filesystem path; the main process owns the
+ * approved path for the lifetime of the operation.
+ */
+export const CalibrationPickLegacyBackupV4Request = z.void();
+export type CalibrationPickLegacyBackupV4Request = z.infer<
+  typeof CalibrationPickLegacyBackupV4Request
+>;
+export const CalibrationPickLegacyBackupV4Response = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        /** Opaque approval token; pass to CalibrationImportLegacyBackupV4. */
+        approvalId: z.string().uuid(),
+        preflight: LegacyBackupPreflight,
+      })
+      .strict(),
+    z.object({ status: z.literal('cancelled') }).strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationPickLegacyBackupV4Response = z.infer<
+  typeof CalibrationPickLegacyBackupV4Response
+>;
+
+/**
  * Import request for a legacy calibration backup v4 file.
- * The file is identified by an approvalId from an open-file dialog;
+ * The file is identified by an approvalId from CalibrationPickLegacyBackupV4;
  * the renderer cannot supply an arbitrary path.
  */
 export const CalibrationImportLegacyBackupV4Request = z
   .object({
     profileId: z.string().uuid(),
-    /** Approval from dialog:openModelFile (reuses the existing allowlisted channel). */
+    /** Approval from CalibrationPickLegacyBackupV4. */
     approvalId: z.string().uuid(),
+    /** Client-generated stable idempotency key for the entire import operation. */
     operationId: z.string().uuid(),
+    /**
+     * Explicit printer/toolhead mappings for every project where
+     * requiresPrinterMapping=true. Missing mappings cause an error.
+     */
+    printerMappings: z.array(LegacyBackupPrinterMapping).max(10_000),
   })
   .strict();
 export type CalibrationImportLegacyBackupV4Request = z.infer<
@@ -3493,6 +3616,8 @@ export const CalibrationImportLegacyBackupV4Response = z.discriminatedUnion(
         status: z.literal('ok'),
         summary: LegacyCalibrationBackupSummary,
         importedProjectCount: z.number().int().nonnegative(),
+        /** Per-project results for audit/report. */
+        projectResults: z.array(LegacyBackupProjectResult).max(10_000),
       })
       .strict(),
     z
@@ -4309,6 +4434,10 @@ export const ipcSchemas = {
     request: CalibrationExportOrcaProfileRequest,
     response: CalibrationExportOrcaProfileResponse,
   },
+  [IpcChannel.CalibrationPickLegacyBackupV4]: {
+    request: CalibrationPickLegacyBackupV4Request,
+    response: CalibrationPickLegacyBackupV4Response,
+  },
   [IpcChannel.CalibrationImportLegacyBackupV4]: {
     request: CalibrationImportLegacyBackupV4Request,
     response: CalibrationImportLegacyBackupV4Response,
@@ -4480,6 +4609,7 @@ export interface PrintFarmerApi {
   exportOrcaProfile(
     request: CalibrationExportOrcaProfileRequest,
   ): Promise<CalibrationExportOrcaProfileResponse>;
+  pickLegacyCalibrationBackupV4(): Promise<CalibrationPickLegacyBackupV4Response>;
   importLegacyCalibrationBackupV4(
     request: CalibrationImportLegacyBackupV4Request,
   ): Promise<CalibrationImportLegacyBackupV4Response>;

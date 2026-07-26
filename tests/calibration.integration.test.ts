@@ -1414,16 +1414,18 @@ describe('Calibration IPC schema privilege denial', () => {
         profileId: PROFILE_ID,
         operationId: OP_ID,
         approvalId: OP_ID,
+        printerMappings: [],
         // Extra field not allowed
         backupFilePath: 'C:\\sensitive\\data.json',
       }),
     ).toThrow();
-    // Valid form
+    // Valid form with required printerMappings
     expect(() =>
       ipcSchemas[IpcChannel.CalibrationImportLegacyBackupV4].request.parse({
         profileId: PROFILE_ID,
         operationId: OP_ID,
         approvalId: OP_ID,
+        printerMappings: [],
       }),
     ).not.toThrow();
   });

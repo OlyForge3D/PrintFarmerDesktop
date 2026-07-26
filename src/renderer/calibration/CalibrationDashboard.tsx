@@ -1,5 +1,8 @@
+import React, { useState } from 'react';
 import { useCalibrationWorkspaceStore } from './CalibrationWorkspaceStore';
 import { formatTimestamp } from './workspaceTypes';
+import { ImportLegacyBackup } from './ImportLegacyBackup';
+import { browserCalibrationEnvironment } from './api';
 
 const availabilityCopy = {
   serverVersionTooLow:
@@ -18,6 +21,7 @@ const availabilityCopy = {
 
 export function CalibrationDashboard(): React.JSX.Element {
   const store = useCalibrationWorkspaceStore();
+  const [showImport, setShowImport] = useState(false);
   const active = store.records.filter(
     (record) => record.status !== 'complete' && record.status !== 'archived',
   );
@@ -79,6 +83,15 @@ export function CalibrationDashboard(): React.JSX.Element {
             aria-describedby="new-project-gate"
           >
             New calibration project
+          </button>
+          <button
+            type="button"
+            className="cal-button"
+            onClick={() => setShowImport(true)}
+            disabled={store.profileId === null || store.disabled}
+            aria-label="Import a legacy calibration backup file"
+          >
+            Import backup…
           </button>
         </div>
       </header>
@@ -333,6 +346,16 @@ export function CalibrationDashboard(): React.JSX.Element {
           </section>
         </aside>
       </div>
+      {showImport && store.profileId !== null && (
+        <div className="cal-modal-overlay" role="presentation">
+          <ImportLegacyBackup
+            profileId={store.profileId}
+            env={browserCalibrationEnvironment}
+            onClose={() => setShowImport(false)}
+            onImportComplete={() => void store.refresh()}
+          />
+        </div>
+      )}
     </section>
   );
 }
