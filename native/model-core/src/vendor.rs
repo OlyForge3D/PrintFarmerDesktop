@@ -562,7 +562,7 @@ pub fn is_vendor_project(data: &[u8]) -> Result<bool, ThreeMfError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Cursor;
     use std::io::Write;
@@ -586,7 +586,16 @@ mod tests {
         buf
     }
 
-    fn patch_declared_uncompressed_size(zip: &mut [u8], part_name: &str, fake_size: u32) {
+    /// Rewrite an entry's *declared* uncompressed size in both the local and
+    /// central headers, leaving the real payload intact - the shape of an
+    /// archive that lies about what it will expand to. Shared with the
+    /// `threemf` tests, which need the same lie to reach the running
+    /// accumulator without the declared-total preflight seeing it first.
+    pub(crate) fn patch_declared_uncompressed_size(
+        zip: &mut [u8],
+        part_name: &str,
+        fake_size: u32,
+    ) {
         patch_local_uncompressed_size(zip, part_name, fake_size);
         patch_central_uncompressed_size(zip, part_name, fake_size);
     }

@@ -1920,7 +1920,27 @@ fn resolve_material(model: &RawModel, object: &RawObject) -> ResolvedMaterial {
             // triangle or none at all, and dropping the array is the only
             // honest way to say "some of these faces have no colour we can
             // vouch for" without inventing values for them.
-            resolved.filter(|colors| colors.len() == triangles.len())
+            //
+            // Dropping it is still a loss the caller has to hear about, so
+            // every path that drops it reports through `unresolved`. The length
+            // arm is unreachable while the array is grown in lockstep with the
+            // triangles above, which is what the assert pins - but the assert
+            // cannot be the defence: `debug_assert` compiles out in release and
+            // the packaged sidecar is a release build, so in every binary a
+            // user runs the colours would vanish with a clean status. The
+            // assert tells the developer; `unresolved` tells the user.
+            debug_assert_eq!(
+                triangle_appearance.len(),
+                triangles.len(),
+                "per-face appearance must be grown in lockstep with the triangles"
+            );
+            match resolved {
+                Some(colors) if colors.len() == triangles.len() => Some(colors),
+                _ => {
+                    unresolved = true;
+                    None
+                }
+            }
         }
         _ => None,
     };
@@ -4298,5 +4318,169 @@ mod tests {
             plate_block(1, Some("Left"), &[(1, 0), (2, 0)]),
             plate_block(2, Some("Right"), &[(1, 1), (2, 1)]),
         ])
+    }
+
+    #[test]
+    fn cancellation_is_not_lost_by_the_advisory_plate_layout_read() {
+        // `read_plate_layout` degrades on *every* error, including a guard trip.
+        // This pins the property that makes that sound end to end: a cancelled
+        // parse never returns a scene, no matter which read observes the trip
+        // first. (That a trip is monotonic, so a later checkpoint still sees
+        // it, is pinned separately by `guard_reports_cancellation_immediately`.)
+        let token = crate::limits::CancellationToken::new();
+        token.cancel();
+        let bytes = package_with_model_settings(&four_instance_model(), &two_plates());
+
+        let error =
+            parse_bytes_with_limits(&bytes, ParseLimits::default().with_cancellation(token))
+                .expect_err("a cancelled parse must not return a scene");
+        assert!(matches!(
+            error,
+            ThreeMfError::Limit(LimitViolation::Cancelled)
+        ));
+
+        // Control: the identical package parses, and with both plates, when
+        // nothing cancels it - so the rejection above is the cancellation and
+        // not something wrong with the fixture.
+        assert_eq!(parse_bytes(&bytes).unwrap().plates.len(), 2);
+    }
+
+    /// A mesh whose faces carry per-face colour references, on an object that
+    /// declares no material of its own. `every_face_referenced` controls the
+    /// one thing under test: whether a face is left to inherit a material that
+    /// does not exist.
+    fn per_face_colour_model(every_face_referenced: bool) -> String {
+        let second_face = if every_face_referenced {
+            r#"<triangle v1="0" v2="1" v3="3" pid="10" p1="1"/>"#
+        } else {
+            r#"<triangle v1="0" v2="1" v3="3"/>"#
+        };
+        format!(
+            r##"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <resources>
+    <colorgroup id="10">
+      <color color="#FF0000"/>
+      <color color="#00FF00"/>
+    </colorgroup>
+    <object id="1" type="model">
+      <mesh>
+        <vertices>
+          <vertex x="0" y="0" z="0"/>
+          <vertex x="1" y="0" z="0"/>
+          <vertex x="0" y="1" z="0"/>
+          <vertex x="0" y="0" z="1"/>
+        </vertices>
+        <triangles>
+          <triangle v1="0" v2="1" v3="2" pid="10" p1="0"/>
+          {second_face}
+        </triangles>
+      </mesh>
+    </object>
+  </resources>
+  <build>
+    <item objectid="1"/>
+  </build>
+</model>"##
+        )
+    }
+
+    #[test]
+    fn dropping_the_face_colour_array_is_reported_as_unresolved() {
+        // The array is all-or-nothing, so one face with no colour to inherit
+        // drops every face's colour. Dropping them is defensible; dropping them
+        // while reporting Complete is not - that is the colours vanishing with
+        // a clean status, which is the failure the caller can neither see nor
+        // act on.
+        let mesh = parse_bytes(&package(
+            &per_face_colour_model(false),
+            true,
+            DEFAULT_MODEL_PART,
+        ))
+        .unwrap();
+
+        assert!(mesh.parts.iter().all(|part| part.material_label.is_none()));
+        assert_eq!(mesh.status, SceneLoadStatus::Partial);
+        assert!(mesh
+            .status_messages
+            .iter()
+            .any(|message| message.contains("could not be resolved to a colour")));
+    }
+
+    #[test]
+    fn a_fully_referenced_face_colour_array_still_loads_complete() {
+        // The legitimate maximum for the check above. Without it, that test
+        // would pass just as well against a build that reported every mesh
+        // carrying per-face colours as Partial.
+        let mesh = parse_bytes(&package(
+            &per_face_colour_model(true),
+            true,
+            DEFAULT_MODEL_PART,
+        ))
+        .unwrap();
+
+        assert_eq!(mesh.status, SceneLoadStatus::Complete);
+        assert!(mesh.status_messages.is_empty());
+    }
+
+    /// The total expansion the archive admits to - the only figure the
+    /// preflight gets to see.
+    fn declared_archive_total(bytes: &[u8]) -> u64 {
+        let mut archive = ZipArchive::new(Cursor::new(bytes.to_vec())).unwrap();
+        (0..archive.len())
+            .map(|index| archive.by_index(index).unwrap().size())
+            .sum()
+    }
+
+    #[test]
+    fn a_budget_tripped_by_the_advisory_plate_read_is_not_degraded_away() {
+        // The vendor plate part is advisory and degrades on a documented
+        // allowlist, but a security-budget violation is not on that list.
+        //
+        // Getting the violation to arise *inside* the plate read is the whole
+        // difficulty, and it is why the sibling test that drives a pre-cancelled
+        // parse cannot pin this arm: that trips at the first checkpoint, in the
+        // archive preflight, long before the plate part is opened. An honest
+        // archive cannot do it either - the declared-total preflight sees the
+        // sum of every declared size up front, and the running accumulator can
+        // only ever charge that same sum, so the preflight always fires first.
+        // The entry therefore has to under-declare, which the preflight cannot
+        // detect and only the post-read charge against real bytes can.
+        let mut bytes = package_with_model_settings(&four_instance_model(), &two_plates());
+        crate::vendor::tests::patch_declared_uncompressed_size(&mut bytes, MODEL_SETTINGS_PART, 1);
+
+        // Exactly the total the archive now claims, so the preflight passes and
+        // every honest read stays inside it. Only the settings part's real
+        // bytes, charged once it has been inflated, can push past.
+        let limits = ParseLimits {
+            max_total_decompressed_bytes: declared_archive_total(&bytes),
+            ..ParseLimits::default().without_timeout()
+        };
+
+        let error = parse_bytes_with_limits(&bytes, limits)
+            .expect_err("a budget trip inside the advisory read must fail the package");
+        assert!(
+            matches!(
+                error,
+                ThreeMfError::Limit(LimitViolation::TotalDecompressedBytes { .. })
+            ),
+            "expected the running accumulator, got {error:?}"
+        );
+
+        // Control: the same package unpatched, under a budget derived the same
+        // way, parses and still yields both plates - so the rejection above is
+        // the budget trip and not a fixture that never parsed.
+        let honest = package_with_model_settings(&four_instance_model(), &two_plates());
+        let honest_limits = ParseLimits {
+            max_total_decompressed_bytes: declared_archive_total(&honest),
+            ..ParseLimits::default().without_timeout()
+        };
+        assert_eq!(
+            parse_bytes_with_limits(&honest, honest_limits)
+                .unwrap()
+                .plates
+                .len(),
+            2
+        );
     }
 }
