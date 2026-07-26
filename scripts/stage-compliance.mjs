@@ -22,6 +22,14 @@ const complianceFiles = [
     destination: 'THIRD_PARTY_NOTICES.md',
     source: path.join(repoRoot, 'THIRD_PARTY_NOTICES.md'),
   },
+  // Generated rather than committed, so it cannot drift from the lockfiles.
+  // `scripts/generate-sbom.mjs` writes it; `scripts/verify-sbom.mjs` proves the
+  // staged copy matches a fresh generation.
+  {
+    destination: 'sbom.cdx.json',
+    source: path.join(repoRoot, 'build', 'sbom.cdx.json'),
+    hint: 'run `npm run sbom` first',
+  },
   {
     destination: 'CORRESPONDING_SOURCE.md',
     source: path.join(
@@ -60,7 +68,7 @@ const complianceFiles = [
 for (const file of complianceFiles) {
   if (!existsSync(file.source)) {
     throw new Error(
-      `required compliance source is missing: ${file.source}; run npm ci without disabling Electron's install script`,
+      `required compliance source is missing: ${file.source}; ${file.hint ?? "run npm ci without disabling Electron's install script"}`,
     );
   }
 }

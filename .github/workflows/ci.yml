@@ -115,6 +115,13 @@ jobs:
           PRINTFARMER_BUILD_E2E: '1'
         run: npm run package
 
+      - name: Verify SBOM reproduces from the lockfiles
+        # Runs here rather than in `desktop` because this is the only job with
+        # both toolchains, so it is the only one where the cargo half of the
+        # SBOM is derived from a real `cargo metadata` resolution at the
+        # feature set a release builds.
+        run: npm run verify:sbom
+
       - name: Verify packaged sidecar and compliance resources
         run: node scripts/verify-packaged-sidecar.mjs
 

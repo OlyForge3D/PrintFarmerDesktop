@@ -46,6 +46,9 @@ const config: ForgeConfig = {
     prePackage: () => {
       runBuildScript('verify-target-profiles.mjs', 'verifying target profiles');
       runBuildScript('stage-sidecar.mjs', 'staging the sidecar');
+      // The SBOM is generated before staging so the packaged copy is derived
+      // from the lockfiles at build time rather than from a committed snapshot.
+      runBuildScript('generate-sbom.mjs', 'generating the SBOM');
       runBuildScript('stage-compliance.mjs', 'staging compliance resources');
       return Promise.resolve();
     },

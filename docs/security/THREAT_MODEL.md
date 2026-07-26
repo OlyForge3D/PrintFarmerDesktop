@@ -772,23 +772,66 @@ which is precisely the class of invariant that decays silently as new call sites
 
 ### T4.1 — Malicious or licence-incompatible dependency
 
-**Controls. None.** There is no `deny.toml`, no `cargo-audit`, no `npm audit` gate, and no
-SBOM. Both lockfiles (`package-lock.json`, `native/Cargo.lock`) are committed and CI installs
-with `npm ci`, so builds are reproducible — but nothing checks _what_ is being reproduced.
+**Controls. Partial — enumeration only.** `scripts/generate-sbom.mjs` produces a CycloneDX
+SBOM covering both dependency trees, staged into `resources/compliance/` and verified in the
+Package job by `scripts/verify-sbom.mjs`. That establishes _what_ is being reproduced. It does
+**not** check whether any of it is acceptable: there is still no `deny.toml`, no `cargo-audit`,
+and no `npm audit` gate, so a malicious or licence-incompatible dependency still enters
+undetected. Both lockfiles (`package-lock.json`, `native/Cargo.lock`) are committed and CI
+installs with `npm ci`, so builds are reproducible.
 
 Two specifics raise the stakes:
 
 - `lib3mf-ffi` is a **git** dependency pinned to rev
-  `0f12d3c25c861198f80a34abf3699102529b6e87` (`native/model-core/Cargo.toml:45`), not published
+  `0f12d3c25c861198f80a34abf3699102529b6e87` (`native/model-core/Cargo.toml`), not published
   on crates.io. The rev pin is the right call, but a git source bypasses crates.io's
-  publication controls entirely, and this is the one dependency reached over `unsafe` FFI.
+  publication controls entirely, and this is the one dependency reached over `unsafe` FFI. The
+  SBOM now reports any non-`registry+` source (`nonRegistrySources`), so such a dependency is
+  at least visible; at the shipped feature set there are currently none, because `lib3mf` is
+  not enabled.
 - The product is **AGPL-3.0-only**. `docs/compliance/CORRESPONDING_SOURCE.md` requires notices
   to ship under `resources/compliance/`, and `THIRD_PARTY_NOTICES.md` currently discharges that
   by pointing at the lockfiles rather than enumerating licences. A GPL-2.0-**only** dependency
   would be licence-incompatible with AGPL-3.0-only outbound, and nothing today would detect one
-  entering the graph.
+  entering the graph. The SBOM records each component's declared licence, which is the input a
+  policy check needs, but no policy consumes it yet.
 
-→ PR B.
+→ Enumeration: PR B1. Policy, notices and gates: PR B2.
+
+### T4.3 — An SBOM that presents as complete while describing part of the product
+
+An SBOM is a claim about coverage, and it is consumed by people who cannot cheaply audit it —
+the same shape as a test name. A document listing two components reads as a finished artifact,
+not as a broken one, so an under-enumerating generator retires the concern it was meant to
+address. Measured on this tree at `fb1f1c2`: `npm sbom --sbom-format=cyclonedx --omit=dev`
+emits **2** components and contains zero occurrences of `react`, `react-dom` or `scheduler`,
+while `npm ls --omit=dev --all` resolves **7** from the same lockfile and `package.json`
+declares all four of `react`, `react-dom`, `three` and `zod` as runtime dependencies.
+
+The enumeration fails in **three independent directions**, which is why neither ecosystem is
+filtered by manifest section:
+
+1. **npm under-claims.** `electron` is a `devDependency` and ships as the entire Chromium/Node
+   runtime. Any "production dependencies" filter omits the largest shipped component.
+2. **cargo over-claims.** `rusqlite`, `truck-*` and `lib3mf-ffi` are optional; the shipped
+   build enables `--features sqlite` only. Resolving with `--all-features` would list crates
+   the release binary does not contain.
+3. **Both miss a category entirely.** `rusqlite`'s `bundled` feature vendors C SQLite, which is
+   a component of neither package graph. It is derived from cargo's own `links` metadata rather
+   than from a maintained list, so a newly introduced `-sys` crate appears without anyone
+   remembering to add it.
+
+**Controls.** The derivation is proven, not asserted. `tests/supplyChain.test.ts` reconciles the
+lockfile closure against `npm ls` as an independent second mechanism, and proves the derivation
+is _sound_ by requiring every bare specifier under `src/` to resolve to a shipped package, a
+first-party alias, or a `node:` builtin — with a guard that a zero-offender result came from a
+non-empty scan. `scripts/verify-sbom.mjs` runs the cargo half against real `cargo metadata` in
+the Package job and requires the feature-bound closure to be a strict superset of a featureless
+resolve, so a closure that ignores features cannot pass.
+
+**Residual.** The shipped npm set is the import graph, and the soundness check reads `src/`
+statically. A specifier assembled at runtime (`require(someVariable)`) would not be seen. No
+such construct exists in `src/` today; the check would not notice one being added.
 
 ### T4.2 — The gate itself becomes the weak point
 
@@ -801,13 +844,14 @@ production-scoped audit against the committed lockfile) from live-database check
 
 Note also that adding a job to `.github/workflows/ci.yml` does **not** make it a required
 check. Branch protection lists the six required checks and must be updated separately by
-someone with administrative rights. → PR B.
+someone with administrative rights. → PR B2.
 
 ## 9. Open work derived from this model
 
 | Threat     | Gap                                                                            | Where       |
 | ---------- | ------------------------------------------------------------------------------ | ----------- |
-| T4.1, T4.2 | No SBOM, licence, or vulnerability gate                                        | PR B (#21)  |
+| T4.1       | Licence policy, advisory gates and enumerated third-party notices              | PR B2 (#21) |
+| T4.2       | Deterministic vs live-database gate split; branch protection                   | PR B2 (#21) |
 | T1.2       | Owner teardown on `webContents` destroy (`ipc.ts:338-344`) still unproven      | PR C2 (#21) |
 | T1.3, T3.3 | Credential non-egress asserted nowhere                                         | PR C2 (#21) |
 | T1.5       | Packaged fuses (`forge.config.ts:92-100`) unasserted                           | PR C2 (#21) |
