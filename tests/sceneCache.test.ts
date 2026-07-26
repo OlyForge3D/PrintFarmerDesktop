@@ -826,4 +826,155 @@ describe('SceneCacheService', () => {
       readFile(path.join(userDataPath, CACHE_DIRECTORY, 'recipe.json'), 'utf8'),
     ).resolves.toContain('scene/v2.2');
   });
+
+  it('shreds every derived scene and the recipe manifest on purge', async () => {
+    // #102 N2. Derived scenes are artifacts of a filesystem grant; when the
+    // grant is revoked they must not survive it. Nothing asserted this before,
+    // so a `purge` that did nothing at all would have been indistinguishable
+    // from one that worked.
+    const userDataPath = await temporaryDirectory();
+    const filePath = await modelFile(userDataPath);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    sidecar.returnedRecipe = 'scene/v2.2';
+    const cache = new SceneCacheService({ userDataPath, sidecar });
+
+    await expect(cache.loadScene(filePath)).resolves.toEqual(scene(1));
+    expect(await cachedSceneFiles(userDataPath)).toHaveLength(1);
+    await expect(
+      readFile(path.join(userDataPath, CACHE_DIRECTORY, 'recipe.json'), 'utf8'),
+    ).resolves.toContain('scene/v2.2');
+
+    await cache.purge();
+
+    expect(await cachedSceneFiles(userDataPath)).toEqual([]);
+    await expect(
+      readFile(path.join(userDataPath, CACHE_DIRECTORY, 'recipe.json'), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('evicts entries that survived a purge whose directory removal failed', async () => {
+    // The manifest lives inside the directory being shredded, so removing it
+    // separately is redundant whenever the shred succeeds. It is not redundant
+    // when the shred fails part-way, which on Windows is an ordinary outcome
+    // for a file another process has open. Removing the manifest first makes a
+    // partial failure degrade toward eviction: the next adoption finds no
+    // persisted recipe and clears whatever survived, instead of recognising the
+    // recipe and resuming on top of scenes derived under a revoked grant.
+    const userDataPath = await temporaryDirectory();
+    const filePath = await modelFile(userDataPath);
+    const cacheDirectoryPath = path.join(userDataPath, CACHE_DIRECTORY);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    sidecar.returnedRecipe = 'scene/v2.2';
+
+    let directoryRemovalFails = false;
+    const realFileSystem = testFileSystem();
+    const fileSystem: SceneCacheFileSystem = {
+      ...realFileSystem,
+      remove: async (targetPath) => {
+        if (directoryRemovalFails && targetPath === cacheDirectoryPath) {
+          throw Object.assign(new Error('directory in use'), { code: 'EPERM' });
+        }
+        await realFileSystem.remove(targetPath);
+      },
+    };
+    const cache = new SceneCacheService({ userDataPath, sidecar, fileSystem });
+
+    await expect(cache.loadScene(filePath)).resolves.toEqual(scene(1));
+    expect(await cachedSceneFiles(userDataPath)).toHaveLength(1);
+
+    // Something takes hold of the directory, then lets go again.
+    directoryRemovalFails = true;
+    await expect(cache.purge()).rejects.toMatchObject({ code: 'EPERM' });
+    expect(
+      await cachedSceneFiles(userDataPath),
+      'the derived scene should survive a failed directory removal',
+    ).toHaveLength(1);
+
+    directoryRemovalFails = false;
+    await expect(cache.loadScene(filePath)).resolves.toEqual(scene(2));
+    expect(sidecar.loadSceneWithRecipe).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-derives rather than serving a scene that was cached before a purge', async () => {
+    // The shred has to be real on the read path too. Checking only that the
+    // directory is empty cannot tell a shredded cache from one whose entries
+    // moved; asking for the same model again and watching the sidecar be
+    // called a second time can.
+    const userDataPath = await temporaryDirectory();
+    const filePath = await modelFile(userDataPath);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    sidecar.returnedRecipe = 'scene/v2.2';
+    const cache = new SceneCacheService({ userDataPath, sidecar });
+
+    await expect(cache.loadScene(filePath)).resolves.toEqual(scene(1));
+    await expect(cache.loadScene(filePath)).resolves.toEqual(scene(1));
+    expect(sidecar.loadSceneWithRecipe).toHaveBeenCalledOnce();
+
+    await cache.purge();
+
+    await expect(cache.loadScene(filePath)).resolves.toEqual(scene(2));
+    expect(sidecar.loadSceneWithRecipe).toHaveBeenCalledTimes(2);
+  });
+
+  it('caches again after a purge instead of disabling persistence', async () => {
+    // The legitimate-maximum direction. A `purge` that permanently disabled
+    // storage - or that ran on every load - would satisfy both tests above and
+    // silently turn the cache off for the rest of the session. Revocation is
+    // supposed to degrade caching momentarily, not end it.
+    const userDataPath = await temporaryDirectory();
+    const filePath = await modelFile(userDataPath);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    sidecar.returnedRecipe = 'scene/v2.2';
+    const cache = new SceneCacheService({ userDataPath, sidecar });
+
+    await cache.loadScene(filePath);
+    await cache.purge();
+
+    await expect(cache.loadScene(filePath)).resolves.toEqual(scene(2));
+    expect(await cachedSceneFiles(userDataPath)).toHaveLength(1);
+
+    await expect(cache.loadScene(filePath)).resolves.toEqual(scene(2));
+    expect(sidecar.loadSceneWithRecipe).toHaveBeenCalledTimes(2);
+    await expect(
+      readFile(path.join(userDataPath, CACHE_DIRECTORY, 'recipe.json'), 'utf8'),
+    ).resolves.toContain('scene/v2.2');
+  });
+
+  it('does not let a derivation in flight during a purge write its entry afterwards', async () => {
+    // Without a purge generation on the lease this passes for the wrong reason:
+    // the write is blocked only until the next load re-adopts the same recipe,
+    // after which the pre-purge lease looks current again and the entry lands
+    // in the directory that was supposed to have been shredded.
+    const userDataPath = await temporaryDirectory();
+    const filePath = await modelFile(userDataPath);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    sidecar.returnedRecipe = 'scene/v2.2';
+    const gate = deferred();
+    const entered = deferred();
+    sidecar.loadSceneWithRecipe.mockImplementationOnce(async () => {
+      entered.resolve();
+      await gate.promise;
+      return { scene: scene(1), cacheRecipe: 'scene/v2.2' };
+    });
+    const cache = new SceneCacheService({ userDataPath, sidecar });
+
+    const inFlight = cache.loadScene(filePath);
+    // Wait until the sidecar is actually running before revoking. Purging while
+    // the load is still queued behind the mutation lock tests nothing: the load
+    // would take its lease after the purge and be legitimately current.
+    await entered.promise;
+    await cache.purge();
+    // Re-adopt the same recipe, which is what the next real load does. This is
+    // the step that makes the stale lease look current again.
+    await cache.adoptRecipe('scene/v2.2');
+    gate.resolve();
+    await expect(inFlight).resolves.toEqual(scene(1));
+
+    expect(await cachedSceneFiles(userDataPath)).toEqual([]);
+  });
 });

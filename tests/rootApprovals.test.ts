@@ -1,4 +1,5 @@
 import path from 'node:path';
+import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import type { BigIntStats } from 'node:fs';
@@ -292,5 +293,57 @@ describe('main-owned root approvals', () => {
       .join('');
     expect(persisted).toContain('"deviceId":"1"');
     expect(persisted).toContain('"fileId":"2"');
+  });
+});
+
+describe('picker-allowlist re-binding premise (#102 N3)', () => {
+  // This does not test our code, and it is not a behaviour pin. It records, as
+  // something that can fail, the platform measurement behind a decision *not*
+  // to re-bind the picker allowlist to filesystem identity.
+  //
+  // `ipc.ts` admits a picked file by canonical-string membership. Binding the
+  // entry to device+inode at admission instead would refuse the file whenever
+  // its identity changed. The question is whether that discriminates a hostile
+  // post-pick swap from a benign save, and on this platform it does not: it
+  // gets the two backwards. A save that writes a sibling and renames over the
+  // original - the atomic-save pattern - changes identity, so the user would be
+  // forced back to the picker after an ordinary edit. A rewrite in place does
+  // not change identity, so the swap that needs no elevated access at all goes
+  // straight through.
+  //
+  // If this ever stops holding, the recorded rationale is no longer true and
+  // the decision should be revisited rather than inherited.
+  it('cannot tell an atomic save from a swap, and misses an in-place rewrite', async () => {
+    const directory = await fs.mkdtemp(
+      path.join(await fs.realpath(os.tmpdir()), 'pf-n3-'),
+    );
+    try {
+      const file = path.join(directory, 'model.3mf');
+      const identity = async () => {
+        const stats = await fs.stat(file, { bigint: true });
+        return `${stats.dev}:${stats.ino}`;
+      };
+
+      await fs.writeFile(file, 'original model bytes');
+      const atPick = await identity();
+      expect(atPick.endsWith(':0')).toBe(false);
+
+      await fs.truncate(file, 0);
+      await fs.writeFile(file, 'different bytes, rewritten in place');
+      expect(
+        await identity(),
+        'an in-place rewrite would slip past an identity check',
+      ).toBe(atPick);
+
+      const sibling = `${file}.tmp`;
+      await fs.writeFile(sibling, 'different bytes, written alongside');
+      await fs.rename(sibling, file);
+      expect(
+        await identity(),
+        'an ordinary atomic save would be refused by an identity check',
+      ).not.toBe(atPick);
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
   });
 });

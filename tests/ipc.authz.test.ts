@@ -125,7 +125,19 @@ interface Harness {
   downstream: DownstreamCall[];
 }
 
-function harness(): Harness {
+interface HarnessOptions {
+  /**
+   * Overrides the fake `realpath`. Handlers are expected to re-resolve a
+   * renderer-supplied string on every admission, so a test that changes what a
+   * path resolves to between the pick and the load can tell a live resolution
+   * from a remembered one.
+   */
+  canonicalize?: (requested: string) => Promise<string>;
+  /** Lets a test hold the scene-cache shred open and observe what waits on it. */
+  purge?: () => Promise<void>;
+}
+
+function harness(options: HarnessOptions = {}): Harness {
   electronState.handlers.clear();
   electronState.owners.length = 0;
   electronState.pickerResult = { canceled: true, filePaths: [] };
@@ -165,6 +177,10 @@ function harness(): Harness {
     loadScene: record('sceneCache', 'loadScene'),
     initialize: () => Promise.resolve(),
     adoptRecipe: () => Promise.resolve(),
+    purge: (...args: unknown[]) => {
+      downstream.push({ target: 'sceneCache', method: 'purge', args });
+      return options.purge ? options.purge() : Promise.resolve();
+    },
     dispose: () => undefined,
   };
 
@@ -181,7 +197,9 @@ function harness(): Harness {
   // two steps distinguishable in what the handlers forward.
   const approvals = {
     canonicalizePickerFile: (requested: string) =>
-      Promise.resolve(realpathOf(requested)),
+      options.canonicalize
+        ? options.canonicalize(requested)
+        : Promise.resolve(realpathOf(requested)),
     authorizeFile: (requested: string) => {
       if (requested === RENDERER_PATH) {
         return Promise.resolve({
@@ -425,6 +443,153 @@ describe('IPC handler layer: renderer-supplied filesystem paths', () => {
         ),
       ).rejects.toThrow(DENIED);
       expect(h.downstream).toEqual([]);
+    });
+
+    it('refuses a picked path whose canonical target changed after the pick', async () => {
+      // #102 N3. The allowlist stores the canonical form captured at pick time
+      // and admits by string membership, so what makes that bound sufficient is
+      // that admission re-resolves the renderer's string every time: if the
+      // path is redirected afterwards it no longer resolves into the set.
+      //
+      // Nothing pinned that re-resolution. Remembering the pick-time canonical
+      // form is an obvious thing to do while removing redundant work - which is
+      // exactly what #91 is queued to do elsewhere in this path - and every
+      // other test here resolves each string to one fixed value, so a memoized
+      // canonicalization is invisible to all of them.
+      let redirected = false;
+      const local = harness({
+        canonicalize: (requested) =>
+          Promise.resolve(
+            redirected && requested === PICKED_PATH
+              ? '/attacker/substituted.3mf'
+              : realpathOf(requested),
+          ),
+      });
+
+      electronState.pickerResult = {
+        canceled: false,
+        filePaths: [PICKED_PATH],
+      };
+      await expect(
+        Promise.resolve(
+          local.handlers.get(IpcChannel.OpenModelFile)!(
+            senderEvent(1),
+            undefined,
+          ),
+        ),
+      ).resolves.toEqual({ path: realpathOf(PICKED_PATH) });
+      // Open it once before the redirect, so a canonical form remembered at
+      // either the pick or the first admission is populated by now.
+      await Promise.resolve(
+        local.handlers.get(IpcChannel.LoadScene)!(senderEvent(1), {
+          path: PICKED_PATH,
+        }),
+      );
+      local.downstream.length = 0;
+
+      // The same string the user picked, now resolving somewhere else.
+      redirected = true;
+      await expect(
+        Promise.resolve(
+          local.handlers.get(IpcChannel.LoadScene)!(senderEvent(1), {
+            path: PICKED_PATH,
+          }),
+        ),
+      ).rejects.toThrow(DENIED);
+      expect(local.downstream).toEqual([]);
+    });
+  });
+
+  describe('revoking approvals', () => {
+    // `ResetApprovedRoots` clears both grant sources. Vasquez measured the
+    // revocation behaviour by hand during the #96 composition review, but
+    // measured is not pinned: with this describe removed, deleting
+    // `approvedPickerFiles.clear()` outright changes no test result.
+    const reset = (h: Harness) =>
+      Promise.resolve(
+        h.handlers.get(IpcChannel.ResetApprovedRoots)!(senderEvent(1), {}),
+      );
+
+    it('refuses a previously picked file afterwards and reaches nothing downstream', async () => {
+      electronState.pickerResult = {
+        canceled: false,
+        filePaths: [PICKED_PATH],
+      };
+      await Promise.resolve(
+        h.handlers.get(IpcChannel.OpenModelFile)!(senderEvent(1), undefined),
+      );
+      await Promise.resolve(
+        h.handlers.get(IpcChannel.LoadScene)!(senderEvent(1), {
+          path: PICKED_PATH,
+        }),
+      );
+      expect(
+        h.downstream.some((call) => call.method === 'loadScene'),
+        'the picked file should load before the reset',
+      ).toBe(true);
+
+      await expect(reset(h)).resolves.toEqual({ reset: true });
+      h.downstream.length = 0;
+
+      await expect(
+        Promise.resolve(
+          h.handlers.get(IpcChannel.LoadScene)!(senderEvent(1), {
+            path: PICKED_PATH,
+          }),
+        ),
+      ).rejects.toThrow(DENIED);
+      expect(h.downstream).toEqual([]);
+    });
+
+    it('shreds the derived scene cache', async () => {
+      // The asymmetry #102 N2 records: one grant source is wiped and the other
+      // one's derived artifacts are not. That the shred actually empties the
+      // directory is proven against a real filesystem in
+      // `tests/sceneCache.test.ts`; what is pinned here is that revocation
+      // reaches it at all.
+      await expect(reset(h)).resolves.toEqual({ reset: true });
+      expect(
+        h.downstream.filter((call) => call.method === 'purge'),
+      ).toHaveLength(1);
+    });
+
+    it('reports the reset only once the shred has finished', async () => {
+      // The legitimate-looking version of this fix is a fire-and-forget call,
+      // which passes the test above while reporting a completed reset over a
+      // cache that is still being emptied.
+      let releaseShred: () => void = () => undefined;
+      const shredding = new Promise<void>((resolve) => {
+        releaseShred = resolve;
+      });
+      const local = harness({ purge: () => shredding });
+
+      let settled = false;
+      const pending = reset(local).then((value) => {
+        settled = true;
+        return value;
+      });
+      await new Promise((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(
+        settled,
+        'the reset resolved while the shred was still running',
+      ).toBe(false);
+
+      releaseShred();
+      await expect(pending).resolves.toEqual({ reset: true });
+    });
+
+    it('does not shred the cache on an ordinary load', async () => {
+      // A shredder wired into the load path would empty the directory often
+      // enough to satisfy every assertion above while destroying the cache.
+      await Promise.resolve(
+        h.handlers.get(IpcChannel.LoadScene)!(senderEvent(1), {
+          path: RENDERER_PATH,
+        }),
+      );
+
+      expect(h.downstream.map((call) => call.method)).toEqual(['loadScene']);
     });
   });
 });

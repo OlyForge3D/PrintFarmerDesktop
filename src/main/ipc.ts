@@ -860,6 +860,12 @@ export function registerIpcHandlers(
   ipcMain.handle(IpcChannel.ResetApprovedRoots, async () => {
     await approvals.reset();
     approvedPickerFiles.clear();
+    // Both grant sources are cleared above; scenes derived under them are
+    // artifacts of those grants and are shredded here for symmetry. Awaited
+    // rather than fired off, and unguarded rather than best-effort: a reset
+    // that reports success while derived scenes remain on disk is reporting
+    // something that did not happen.
+    await sceneCache.purge();
     await retargetArtifacts.disposeArtifacts();
     return ipcSchemas[IpcChannel.ResetApprovedRoots].response.parse({
       reset: true,
