@@ -355,9 +355,9 @@ The shipped fix was already the working variant — the mock now returns a disti
 
 ### A mutation result is evidence only if the failure set changes
 
-**This is a fourth instrument-failure shape, and the only one that returns an alarm.** Three are already on record, at two citations and under no name until this entry supplied one: `:299` describes a single instrument failing in both directions — over-inclusive, counting a foreign reference as internal, and over-exclusive, dropping a genuine one because its line held a second address — and `:305` records the false zero. Note what does **not** separate those three from this one: volume. Over-inclusive returned _more_ than the truth, not less. What separates them is that none of the three returned the **affirmative evidence** its operator was after — two returned a miscount and one returned nothing, so in each case the operator had to notice an absence. This one returns **RED**, and RED _is_ the affirmative evidence. A per-file or count-based reading scores it as a successful fix; it carries no information whatever.
+**This is a fourth failure shape, and the first that is not a broken instrument at all.** Three are already on record, at two citations and under no name until this entry supplied one: `:299` describes a single instrument failing in both directions — over-inclusive, counting a foreign reference as internal, and over-exclusive, dropping a genuine one because its line held a second address — and `:305` records the false zero. All three are **broken instruments returning wrong values**, and a wrong value has a right value to disagree with, which is why re-measuring by a second mechanism exposes every one of them: that is `:305`'s control working exactly as specified. This case is different in kind. The instrument is **sound** — a mutation table reading `4 failed / 15` is correct, and it reproduces every time it is run. What is invalid is the **inference**, because the same four fail without the mutant. Re-measuring the same quantity therefore cannot expose it, however many independent mechanisms are used, and `:305`'s control cannot reach it. Exposing it requires a **different quantity**: the unmutated failure set.
 
-A broken instrument that produces the expected failure is harder to catch than one that produces a silent zero, for the reason `:305` already gives about agreement: the result arrives in exactly the shape you expected. **Compare mutated and unmutated failure sets, not their cardinalities** — which is `:299`'s "the count is not the check" reaching the one place it had not yet been applied, the mutation table itself.
+Nothing about it looks wrong, and that is the difficulty: the result arrives in exactly the shape you expected — `:305`'s point about agreement — except that here the shape is an **alarm**, so a per-file or count-based reading scores it as the control working rather than as a result still needing to be checked. **Compare mutated and unmutated failure sets, not their cardinalities** — which is `:299`'s "the count is not the check" reaching the one place it had not yet been applied, the mutation table itself.
 
 ## 2026-07-26 — An identifier can be authentic and still resolve to the wrong namespace
 
@@ -371,9 +371,9 @@ Nothing was invented and nothing was expanded from a prefix. **The value was aut
 
 **Why:** `:289` locates the fail-open/fail-closed boundary at whether a machine must resolve the reference. This extends it: **being authentic is not the property that saves an identifier; being resolved is.** A genuine value in the wrong namespace fails exactly like a fabricated one, and that is the good case.
 
-## 2026-07-26 — A referent resolved by proximity rather than against the record
+## 2026-07-26 — Declining to resolve a pointer, by proximity or by inherited authority
 
-**Decision:** A pronoun or a bare cross-reference is derived work. Resolve it against the record, not against whatever is nearest in the current context.
+**Decision:** A pronoun or a bare cross-reference is derived work. Resolve it against the record — never against whatever is nearest in the current context, and never on the authority of whoever handed it to you.
 
 **Context.** Two instances, one on each side of the same exchange.
 
@@ -381,7 +381,7 @@ A reviewer resolved the phrase _"the reviewer who was sent it"_ to **himself**, 
 
 Neither was a misreading of the record. **Neither party consulted the record at all**, because the referent felt already determined. This is the same operation as `:281`'s misattributed quotation, which arrived already agreed with, and `:293`'s retelling, which resolves against the plausibility of the story rather than the record.
 
-**Why:** a wrong pointer announces itself when resolved and is invisible when read, and a pronoun is the cheapest pointer there is. Proximity is a plausible resolver and it is not the record.
+**Why:** a wrong pointer announces itself when resolved and is invisible when read, and a pronoun is the cheapest pointer there is. Both instances are one operation — the referent felt already settled, so the record was never consulted — and they differ only in what settled it. **Proximity and inherited authority are both plausible resolvers, and neither is the record.** Proximity carries one instance here and is the narrower case, so it must not be cited as though it had two; the two-instance claim is the general one above.
 
 ## 2026-07-26 — Two renderings of one incident disagreeing is a detector nothing runs
 
@@ -396,7 +396,7 @@ Both are now repaired. What matters is the shape: **it is not that one document 
 
 The second was found by treating `:190`'s finding as a **falsifiable prediction** and testing it — extracting every numeric token shared by the two documents and comparing the claims around each — rather than restating it. Six figures were shared, and at `37459df` five agreed; the sixth is the divergence above. **Both repairs have since landed, so re-running that extraction at `fb1f1c2` returns six of six** — the check reproduces only against a pre-repair head. That is `:401` applying to this very paragraph: written in the present tense, the sentence would have been falsified by the merge of the fix it describes.
 
-**Why:** this is not `:305`. `:305` says two _agreeing_ measurements do not corroborate unless the mechanisms are independent. This is the converse and a distinct proposition: **two renderings of one incident disagreeing is a detector**, and no process currently runs it. Two documents written from one incident in two separate edits will keep producing these, so the check belongs to whoever maintains the pair, not to either file's reviewer.
+**Why — the generalization below is unratified, and this label is part of the entry.** It was formulated by the reviewer of the PR that recorded it, who therefore could not ratify it and said so; no third party has ruled on whether two instances warrant it. The two instances are verified at the objects and cited above; the inference drawn from them is not yet independently sanctioned. With that stated: this is not `:305`. `:305` says two _agreeing_ measurements do not corroborate unless the mechanisms are independent. This is the converse and a distinct proposition: **two renderings of one incident disagreeing is a detector**, and no process currently runs it. Two documents written from one incident in two separate edits will keep producing these, so the check belongs to whoever maintains the pair, not to either file's reviewer.
 
 **A corrected figure that cannot be reproduced from its source is the next defect.** The repair to the second instance therefore names the relationship rather than only the number, because a reader checking `49,150` against the fixture's `32,767` doc comment would otherwise conclude the corrected file is the wrong one. The same hazard was flagged on a verified figure elsewhere in this log: _"six commits drawn from two branches"_ is true at the objects but no longer reproducible, since that branch now has nine commits. **Only the past tense keeps it true.**
 
