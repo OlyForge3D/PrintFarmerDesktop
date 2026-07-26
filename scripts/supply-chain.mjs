@@ -31,6 +31,29 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 
+/**
+ * Locale-independent string ordering.
+ *
+ * Every ordered field this module emits — the component array and the serial
+ * number derived from it — feeds `scripts/verify-sbom.mjs`, whose only check is
+ * that a fresh regeneration is BYTE-IDENTICAL to the staged file. `localeCompare`
+ * is not that: its result depends on the runner's ICU version and default
+ * locale, so two machines can sort the same inputs into two byte-different,
+ * semantically-identical documents. That divergence is invisible here because
+ * verify-sbom regenerates and compares inside a single job, so the one check
+ * that would catch it is the one check that structurally cannot. Ordering by
+ * UTF-16 code unit is defined by the language and identical on every platform.
+ *
+ * Masked today only because every current bom-ref is ASCII, where code-unit and
+ * en-US collation happen to agree; one non-ASCII package name, or one ICU update
+ * on a runner image, ends that coincidence.
+ */
+export function compareByCodeUnit(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 const SOURCE_EXTENSIONS = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
 
 /**
@@ -386,14 +409,14 @@ export function deriveShippedCargoComponents(metadata) {
     // without anyone remembering to add it.
     nativeLibraries: [...components.values()]
       .filter((component) => component.links !== null)
-      .sort((a, b) => a.name.localeCompare(b.name)),
+      .sort((a, b) => compareByCodeUnit(a.name, b.name)),
     nonRegistrySources: [...components.values()]
       .filter(
         (component) =>
           component.source === null ||
           !component.source.startsWith('registry+'),
       )
-      .sort((a, b) => a.name.localeCompare(b.name)),
+      .sort((a, b) => compareByCodeUnit(a.name, b.name)),
   };
 }
 
@@ -487,7 +510,7 @@ export function buildSbom({ lock, repoRoot, cargoMetadata, features }) {
     });
   }
 
-  components.sort((a, b) => a['bom-ref'].localeCompare(b['bom-ref']));
+  components.sort((a, b) => compareByCodeUnit(a['bom-ref'], b['bom-ref']));
 
   const rootManifest = JSON.parse(
     readFileSync(path.join(repoRoot, 'package.json'), 'utf8'),

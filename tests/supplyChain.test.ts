@@ -21,6 +21,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   buildSbom,
+  compareByCodeUnit,
   deriveShippedCargoComponents,
   deriveShippedNpmComponents,
   isAliasedSpecifier,
@@ -365,5 +366,118 @@ describe('the SBOM document covers both ecosystems in one file', () => {
     expect(JSON.stringify(sbom().metadata.component.licenses)).toContain(
       'AGPL-3.0-only',
     );
+  });
+});
+
+describe('component ordering is locale-independent, so the document is byte-reproducible across runners', () => {
+  // The SBOM's entire verification model is byte-identical regeneration: the CI
+  // gate regenerates the document and fails unless it matches the staged file
+  // exactly. `localeCompare` breaks that silently — its result depends on the
+  // runner's ICU version and default locale, so two machines can sort identical
+  // inputs into two byte-different, semantically-identical SBOMs. verify-sbom
+  // regenerates and compares inside ONE job, so the single check that would
+  // notice the drift is the one check that structurally cannot. These pin the
+  // ordering to UTF-16 code units, which the language defines identically on
+  // every platform.
+  const byCodeUnitInline = (a: string, b: string): number =>
+    a < b ? -1 : a > b ? 1 : 0;
+
+  it('orders non-ASCII identifiers by UTF-16 code unit, not by host locale collation', () => {
+    // Scrambled input. The expected result is Unicode code-unit order — the same
+    // on every platform. `\u00C4` (196) and `\u00FC` (252) sort AFTER every
+    // ASCII letter by code unit, and uppercase `Z` (90) sorts before lowercase
+    // `a` (97); en-US collation instead folds case and diacritics, producing a
+    // different order (asserted distinct below so the expectation is not
+    // vacuous).
+    const scrambled = [
+      '\u00C4ht\u00E4ri', // Ähtäri
+      'banana',
+      'Zephyr',
+      'apple',
+      'Z\u00FCrich', // Zürich
+    ];
+
+    const byCodeUnit = [...scrambled].sort(compareByCodeUnit);
+    expect(byCodeUnit).toEqual([
+      'Zephyr',
+      'Z\u00FCrich',
+      'apple',
+      'banana',
+      '\u00C4ht\u00E4ri',
+    ]);
+
+    // The teeth: en-US collation orders the same list differently, so reverting
+    // the comparator to `localeCompare` would produce THIS and fail the
+    // assertion above. Confirmed distinct here rather than assumed.
+    const byLocale = [...scrambled].sort((a, b) => a.localeCompare(b));
+    expect(byLocale).not.toEqual(byCodeUnit);
+  });
+
+  it('emits SBOM components in code-unit order when a crate name diverges under locale collation', () => {
+    // A crate whose name begins with U+00C4 sorts LAST among these three by code
+    // unit but FIRST under en-US collation (which folds it to 'a'). The emitted
+    // order must be the former; otherwise two runners with different ICU builds
+    // regenerate byte-different documents that verify-sbom cannot distinguish.
+    const crate = (name: string) => ({
+      id: `${name} 1.0.0`,
+      name,
+      version: '1.0.0',
+      license: 'MIT',
+      source: 'registry+https://github.com/rust-lang/crates.io-index',
+      targets: [{ kind: ['lib'], name }],
+    });
+    const metadata = {
+      packages: [
+        {
+          id: 'root 1.0.0',
+          name: 'root',
+          version: '1.0.0',
+          license: 'MIT',
+          source: null,
+          targets: [{ kind: ['lib'], name: 'root' }],
+        },
+        crate('Zephyr'),
+        crate('apple'),
+        crate('\u00C4ht\u00E4ri'),
+      ],
+      resolve: {
+        root: 'root 1.0.0',
+        nodes: [
+          {
+            id: 'root 1.0.0',
+            deps: [
+              { pkg: 'Zephyr 1.0.0', dep_kinds: [{ kind: null }] },
+              { pkg: 'apple 1.0.0', dep_kinds: [{ kind: null }] },
+              { pkg: '\u00C4ht\u00E4ri 1.0.0', dep_kinds: [{ kind: null }] },
+            ],
+          },
+          { id: 'Zephyr 1.0.0', deps: [] },
+          { id: 'apple 1.0.0', deps: [] },
+          { id: '\u00C4ht\u00E4ri 1.0.0', deps: [] },
+        ],
+      },
+    };
+
+    const built = buildSbom({
+      lock: readLock(),
+      repoRoot,
+      cargoMetadata: metadata,
+      features: ['sqlite'],
+    });
+    const refs = built.components.map((component) => component['bom-ref']);
+
+    // The whole document is in code-unit order. The expectation is computed with
+    // an independent inline comparator so it does not lean on the code under
+    // test to define correctness.
+    expect(refs).toEqual([...refs].sort(byCodeUnitInline));
+
+    // And the diverging cargo names specifically land in code-unit order rather
+    // than the locale order, which would put the U+00C4 crate first.
+    const cargoRefs = refs.filter((ref) => ref.startsWith('pkg:cargo/'));
+    expect(cargoRefs).toEqual([
+      'pkg:cargo/Zephyr@1.0.0',
+      'pkg:cargo/apple@1.0.0',
+      'pkg:cargo/\u00C4ht\u00E4ri@1.0.0',
+    ]);
   });
 });
