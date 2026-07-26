@@ -1,6 +1,6 @@
 {
   "goal_id": "calibration-transport-sync",
-  "status": "inspecting",
+  "status": "completed",
   "iteration": 3,
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
