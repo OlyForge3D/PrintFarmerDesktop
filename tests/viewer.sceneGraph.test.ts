@@ -1,13 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 
-import { buildViewerSceneGraph } from '../src/renderer/viewer/sceneGraph';
+import {
+  buildViewerSceneGraph,
+  lodCameraOf,
+} from '../src/renderer/viewer/sceneGraph';
 import {
   summarizeSceneMaterials,
   toHex,
 } from '../src/renderer/library/sceneMaterials';
 import {
   LOD_MIN_TRIANGLES,
+  LOD_SWITCH_SCREEN_FRACTION,
+  apparentRadiusFraction,
+  boundsRadius as meshBoundsRadius,
   simplifyMesh,
   triangleCount,
 } from '../src/renderer/viewer/lod';
@@ -15,6 +21,7 @@ import {
   boundsCenter,
   boundsRadius,
   defaultCameraPosition,
+  fitPerspectiveDistance,
 } from '../src/renderer/viewer/geometry';
 import {
   ORTHO_FRUSTUM_MULTIPLIER,
@@ -427,32 +434,74 @@ describe('buildViewerSceneGraph level of detail', () => {
 });
 
 /**
+ * Every number this helper feeds into a camera, checked for finiteness first.
+ *
+ * A named import that does not resolve is `undefined` here rather than a load
+ * error, and `undefined` arithmetic yields `NaN` frustum bounds.
+ * `apparentRadiusFraction` deliberately reports a non-finite frustum as
+ * "fills the view" so an unusable camera keeps full detail - which means the
+ * tests that assert full detail pass identically for a camera that has no
+ * framing at all. When the exports were briefly missing, 18 of these 21 tests
+ * stayed green that way. Failing loudly here is what stops a broken harness
+ * reading as a passing one.
+ */
+function framingInput(label: string, value: number): number {
+  if (!Number.isFinite(value)) {
+    throw new Error(
+      `framedCamera: ${label} is ${String(value)}, not a finite number. ` +
+        'A framing constant is missing or unresolvable, and the cameras built ' +
+        'from it would silently keep full detail rather than fail.',
+    );
+  }
+  return value;
+}
+
+/**
  * Reproduce exactly how `ModelViewer` frames a scene, so these tests fail if
  * either the framing or the LOD policy moves out from under the other. The
  * first version of the policy used a fixed multiple of the object radius that
  * happened to sit inside the default framing distance, so the proxy was showing
  * the instant a model loaded and every shape-only assertion still passed.
+ *
+ * `verticalFovDeg` is threaded into *both* the lens and the framing distance,
+ * exactly as `ModelViewer.frameCamera` does. Leaving it off the
+ * `defaultCameraPosition` call let it fall back to that function's own
+ * hardcoded `45` - the same "exported constant beside a duplicated literal"
+ * shape this helper exists to delete, and a camera pairing a new lens with the
+ * old lens's distance, which production never builds.
  */
 function framedCamera(
   projection: 'perspective' | 'orthographic',
   mesh: SceneMesh,
   aspect = 16 / 9,
+  verticalFovDeg = PERSPECTIVE_FOV,
 ): THREE.PerspectiveCamera | THREE.OrthographicCamera {
+  const fov = framingInput('verticalFovDeg', verticalFovDeg);
+  const multiplier = framingInput(
+    'ORTHO_FRUSTUM_MULTIPLIER',
+    ORTHO_FRUSTUM_MULTIPLIER,
+  );
   const center = boundsCenter(mesh.bounds);
   const radius = Math.max(boundsRadius(mesh.bounds), 0.001);
   const far = radius * 100 + 1000;
   const camera =
     projection === 'perspective'
-      ? new THREE.PerspectiveCamera(PERSPECTIVE_FOV, aspect, 0.01, far)
+      ? new THREE.PerspectiveCamera(fov, aspect, 0.01, far)
       : new THREE.OrthographicCamera(
-          -radius * ORTHO_FRUSTUM_MULTIPLIER * aspect,
-          radius * ORTHO_FRUSTUM_MULTIPLIER * aspect,
-          radius * ORTHO_FRUSTUM_MULTIPLIER,
-          -radius * ORTHO_FRUSTUM_MULTIPLIER,
+          -radius * multiplier * aspect,
+          radius * multiplier * aspect,
+          radius * multiplier,
+          -radius * multiplier,
           0.01,
           far,
         );
-  const [x, y, z] = defaultCameraPosition(center, radius, aspect, projection);
+  const [x, y, z] = defaultCameraPosition(
+    center,
+    radius,
+    aspect,
+    projection,
+    fov,
+  );
   camera.position.set(x, y, z);
   camera.lookAt(center[0], center[1], center[2]);
   camera.updateMatrixWorld(true);
@@ -612,6 +661,150 @@ describe('ViewerSceneGraph.updateLod', () => {
       graph.updateLod(framedCamera('perspective', multiObjectScene())),
     ).not.toThrow();
     graph.dispose();
+  });
+});
+
+/**
+ * Half the frustum height in world units at the model's centre - the quantity
+ * `apparentRadiusFraction` divides an object's radius by, and therefore the one
+ * common currency in which the two projections' framings can be compared.
+ */
+function framedHalfHeight(
+  camera: THREE.PerspectiveCamera | THREE.OrthographicCamera,
+  center: readonly [number, number, number],
+): number {
+  const zoom = camera.zoom > 0 ? camera.zoom : 1;
+  if (camera instanceof THREE.OrthographicCamera) {
+    return Math.abs(camera.top - camera.bottom) / 2 / zoom;
+  }
+  const distance = camera.position.distanceTo(new THREE.Vector3(...center));
+  return (distance * Math.tan((camera.fov * Math.PI) / 360)) / zoom;
+}
+
+/**
+ * What the default framing constants are allowed to be, rather than what they
+ * happen to be.
+ *
+ * The behavioural LOD tests above leave `ORTHO_FRUSTUM_MULTIPLIER` a very wide
+ * berth: measured by bisection, anything in `(0.272167, 5.443341]` - a 20x
+ * window - keeps the whole suite green, because the switch fires only once the
+ * model has shrunk past 15% of the viewport half-height. Both cliffs are
+ * artefacts of the fixture's radii, not statements about the constant.
+ *
+ * These pin the constant against limits that are *derived* rather than chosen,
+ * so they admit every value that frames the model correctly and reject the
+ * drift. Deliberately not `=== 1.2`: the multiplier is free to move with the
+ * framing policy, and pinning the literal would over-constrain it the same way
+ * pinning `PERSPECTIVE_FOV` would (see #86).
+ */
+describe('default framing bounds', () => {
+  const aspect = 16 / 9;
+
+  it('frames at the distance the exported FOV implies, not a duplicated literal', () => {
+    const scene = heavyScene();
+    const center = boundsCenter(scene.bounds);
+    const radius = Math.max(boundsRadius(scene.bounds), 0.001);
+    const camera = framedCamera(
+      'perspective',
+      scene,
+      aspect,
+    ) as THREE.PerspectiveCamera;
+
+    expect(camera.fov).toBe(PERSPECTIVE_FOV);
+    // Delegation, not magnitude: the absolute value of `fitPerspectiveDistance`
+    // is pinned by hand in `viewer.geometry.test.ts`. What this catches is the
+    // framing being computed from some *other* FOV than the lens it was built
+    // with - which is what happened while the 5th argument was left off the
+    // `defaultCameraPosition` call and it fell back to its own hardcoded 45.
+    expect(camera.position.x - center[0]).toBeCloseTo(
+      fitPerspectiveDistance(PERSPECTIVE_FOV, aspect, radius),
+      12,
+    );
+  });
+
+  it('moves the framing distance when the FOV it frames with changes', () => {
+    // The test that would have caught the missing argument: change the FOV the
+    // helper is handed and the distance has to follow. A narrower lens sees
+    // less, so it must be framed from further out. Equal distances for
+    // different lenses is a camera `ModelViewer` never builds.
+    const scene = heavyScene();
+    const center = boundsCenter(scene.bounds);
+    const wide = framedCamera(
+      'perspective',
+      scene,
+      aspect,
+      PERSPECTIVE_FOV,
+    ) as THREE.PerspectiveCamera;
+    const narrow = framedCamera(
+      'perspective',
+      scene,
+      aspect,
+      PERSPECTIVE_FOV / 2,
+    ) as THREE.PerspectiveCamera;
+
+    expect(narrow.fov).toBeLessThan(wide.fov);
+    expect(narrow.position.x - center[0]).toBeGreaterThan(
+      wide.position.x - center[0],
+    );
+  });
+
+  it('keeps the whole model inside the default orthographic frustum', () => {
+    // Floor on ORTHO_FRUSTUM_MULTIPLIER, and the one end that needs no chosen
+    // number at all: below 1 the bounding sphere does not fit and the model is
+    // clipped at the view the user is handed on load. Nothing above catches
+    // that - 0.3 and 0.6 both leave the suite green, because a clipped model is
+    // still a *large* model and the LOD switch is the only thing watching.
+    const scene = heavyScene();
+    const radius = Math.max(boundsRadius(scene.bounds), 0.001);
+    const camera = framedCamera(
+      'orthographic',
+      scene,
+      aspect,
+    ) as THREE.OrthographicCamera;
+
+    expect(
+      framedHalfHeight(camera, boundsCenter(scene.bounds)),
+    ).toBeGreaterThanOrEqual(radius);
+  });
+
+  it('never frames orthographic looser than perspective frames the same model', () => {
+    // Cap on ORTHO_FRUSTUM_MULTIPLIER, derived rather than chosen: toggling
+    // projection must not shrink the model. The perspective half-height is
+    // `sqrt(3) * padding * radius / cos(fov/2)`, which is at least
+    // `sqrt(3) * 1.15 = 1.9919` radii for *every* FOV - so this cap can never
+    // kill the benign `PERSPECTIVE_FOV` mutation #86 requires to survive, and
+    // it is not a disguised FOV pin. At 45 degrees it admits any multiplier up
+    // to 2.155972; combined with the floor above that is a 2.16x window, down
+    // from the measured 20x.
+    const scene = heavyScene();
+    const center = boundsCenter(scene.bounds);
+    const ortho = framedCamera('orthographic', scene, aspect);
+    const perspective = framedCamera('perspective', scene, aspect);
+
+    expect(framedHalfHeight(ortho, center)).toBeLessThanOrEqual(
+      framedHalfHeight(perspective, center),
+    );
+  });
+
+  it('sizes the default orthographic framing from a real frustum, not the degenerate-frustum fallback', () => {
+    // `apparentRadiusFraction` reports a frustum it cannot size as Infinity, so
+    // full detail is kept for a camera that has no framing at all. That makes
+    // "shows full detail at the default orthographic framing" true for a camera
+    // with NaN bounds as well as for a correctly framed one, which is how 18 of
+    // the 21 tests in this file stayed green while ORTHO_FRUSTUM_MULTIPLIER was
+    // unresolvable. Requiring a finite fraction is what makes that assertion a
+    // measurement rather than a fallback.
+    const scene = heavyScene();
+    const dense = scene.objects.find((object) => object.id === 'dense')!.mesh!;
+    const camera = framedCamera('orthographic', scene, aspect);
+    const fraction = apparentRadiusFraction(
+      lodCameraOf(camera),
+      0,
+      meshBoundsRadius(dense),
+    );
+
+    expect(Number.isFinite(fraction)).toBe(true);
+    expect(fraction).toBeGreaterThan(LOD_SWITCH_SCREEN_FRACTION);
   });
 });
 
