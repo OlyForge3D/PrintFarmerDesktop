@@ -1,6 +1,6 @@
 {
   "goal_id": "orca-filament-profiles",
-  "status": "inspecting",
+  "status": "completed",
   "iteration": 1,
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
@@ -9,7 +9,8 @@
   "history": [
     {
       "iteration": 1,
-      "verdict": "PASS"
+      "verdict": "PASS",
+      "summary": "All 20 acceptance criteria passed independent inspection; all six Windows/macOS CI jobs passed."
     }
   ]
 }
