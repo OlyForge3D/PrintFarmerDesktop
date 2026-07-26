@@ -43,7 +43,7 @@ A security control that cannot be reached is untested no matter how many tests s
 - The archive entry ceiling was structurally unreachable — a 16-bit ZIP EOCD caps at 65535 entries, below `MAX_ARCHIVE_PARTS` — so it was only exercisable by forging a ZIP64 trailer.
 - The running decompression accumulator could never fire for an **honest** archive: the declared-total preflight sums _every_ entry while the accumulator counts only entries actually _read_, so declared >= charged and the preflight always wins the race. The accumulator fires only when an entry **lies** — declares small, delivers large — which is exactly the case it exists for, since declared sizes are attacker-controlled.
 
-  That second one rests on a precondition worth naming, because deleting one line would silently invalidate it: **no entry may be read twice.** The charge per entry is `max(declared, actual)`, so a part read twice is charged twice and `charged` can exceed `declared_total` on a perfectly honest archive — which would make the accumulator reachable on honest input and this whole analysis wrong. Today it holds because `threemf.rs:560` removes the root model part from `referenced_parts` before the second pass, and because the relationship parts are distinct by construction (`_rels/.rels` vs `3D/_rels/3dmodel.model.rels`) and `[Content_Types].xml` is read once. Only the first is a deliberate guard; the others hold by accident of structure, which makes them the easier ones to break. When you record a structural argument, record everything it depends on — not just the part that looks like a control.
+  That second one rests on a precondition worth naming, because deleting one line would silently invalidate it: **no entry may be read twice.** The charge per entry is `max(declared, actual)`, so a part read twice is charged twice and `charged` can exceed `declared_total` on a perfectly honest archive — which would make the accumulator reachable on honest input and this whole analysis wrong. Today it holds because `referenced_parts.remove(&root_part_key)` removes the root model part from `referenced_parts` before the second pass (`threemf.rs:635` as of `8c0b4ba` — grep the expression, not the line; it has moved twice already), and because the relationship parts are distinct by construction (`_rels/.rels` vs `3D/_rels/3dmodel.model.rels`), `[Content_Types].xml` is read once, and `Metadata/model_settings.config` is read once, at the single production call site of `read_plate_layout`. Only the first is a deliberate guard; the other three hold by accident of structure, which makes them the easier ones to break. When you record a structural argument, record everything it depends on — not just the part that looks like a control, and not just the dependencies that existed when you wrote it. That last one is not hypothetical: the `model_settings.config` read landed on `development` two hours after this paragraph did, and it charges both of the counters the analysis turns on. And cite the guard by something greppable: this line said `threemf.rs:560` for eighty minutes on `development` before the merge of the PR it was describing falsified it, leaving a security precondition pointing at unrelated code. Not a day — eighty minutes, which is inside a single review round.
 
 The general shape: **when two guards defend the same budget, the cheaper one usually shadows the stricter one on all honest input.** The stricter guard is then live, correct, and untested. Reaching it requires constructing input that is dishonest in precisely the way the shadowing guard trusts — and the test must _prove_ the shadowing guard could not have fired, by asserting its own threshold was never crossed. A test where both guards could plausibly have rejected proves nothing about either.
 
@@ -62,11 +62,29 @@ For anything walking attacker-supplied structure (scene graphs, archives, XML), 
 - hostile identifiers — `__proto__`, `constructor`, `prototype` as object IDs,
 - structures whose _output_ size is superlinear in input size.
 
-A 29-node diamond DAG expanded to 32,767 rows in `partTreeModel.ts` precisely because tests only covered an ancestor cycle.
+A 29-node diamond DAG expanded to 49,150 rows in `partTreeModel.ts` precisely because tests only covered an ancestor cycle. (The fixture's doc comment reports `2^15-1 = 32,767`; that is paths through the `m` chain alone, not the row total.)
 
 ## Do not let a test pin a bug
 
 If fixture-writing reveals behavior that contradicts the issue text, do not silently encode current behavior as correct. Two legitimate options: fix it, or pin it **and flag it explicitly** for the reviewer to rule on. Pinning without flagging converts an open question into a permanent contract by accident.
+
+## A name is a claim, and it is the claim least likely to be audited
+
+Names and comments are what the next reader greps for. They find a hit, conclude the risk is covered, and stop. So a name that overstates is worse than no name at all: it does not merely fail to help, it actively stops the search that would have found the gap.
+
+That mechanism is an inference about how people read code, not something the repository can prove. What the repository does show is the pattern — three instances landed in one week, each wrong in the direction that ends the audit rather than the direction that trips it:
+
+- `rejects_an_unbounded_appearance_table` measured the appearance _entry_ axis only. The structure had two axes, and the uncapped one — group count — sat behind a passing test aimed at exactly the right risk.
+- A comment reading "instances beyond the cap are dropped" was true of the internal map and false of what the user sees: those instances fall through to plate 0. Anyone auditing "where does over-cap geometry end up?" would have read it and stopped.
+- `malformed_colour_values_are_ignored_rather_than_fatal` asserted `Some([0,0,0])`. Its own message said "fall back rather than poison the scene" — but black _is_ a poisoned colour. The name described the intent; the assertion pinned the opposite.
+
+Two checks, applied to the name rather than the code:
+
+**Name the axis you varied, not the risk you had in mind.** A test aimed at the right risk still only measures the axis you thought to vary. "Is there a test for this risk?" is nearly as weak a question as "is there a test?" — both are answered by the name, and the name is what is wrong.
+
+**When a name states a dichotomy, check whether a third option exists.** This one comes from a single case, but a sharp one. `a_malformed_appearance_index_is_reported_not_silently_dropped` encodes a choice between fatal and silently-dropped. The correct behaviour was neither: appearance explicitly absent, geometry preserved, diagnostic surfaced. A name that forecloses the right answer will actively resist the right fix, because changing the behaviour now means admitting the test was misnamed. The other two instances above are the axis problem, not this one — do not read them as three examples of the same trap.
+
+Corollary for reviewers: read the assertion before the name. If they disagree, the name is the defect — and it is the half that propagates.
 
 ## Mocks hide missing production code
 
