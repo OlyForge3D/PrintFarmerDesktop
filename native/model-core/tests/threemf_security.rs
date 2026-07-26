@@ -85,6 +85,17 @@ fn small_highly_compressible_parts_stay_allowed() {
 
 #[test]
 fn vendor_thumbnail_extraction_rejects_a_bomb() {
+    // What this proves is that the *entry point* rejects the bomb, which is the
+    // property worth having. What it does not prove - despite reading that way -
+    // is that the thumbnail-specific ratio check in `read_plate_thumbnails` does
+    // the rejecting. That check is unreachable: the `open_package` preflight
+    // already ran the identical `check_ratio` over every entry, so deleting the
+    // thumbnail one leaves this test, and the whole suite, green.
+    //
+    // Left as is rather than renamed. The name is accurate about the entry
+    // point, and the alternative - pinning the thumbnail check itself - is not
+    // possible while the preflight subsumes it. Same shape as the vendor
+    // metadata ratio test; see the note in `vendor.rs` beside the dead check.
     let bomb = vec![0u8; 16 * 1024 * 1024];
     let data = package_with(vec![Part::bytes("Metadata/plate_1.png", bomb)]);
     let error = vendor::read_plate_thumbnails(&data)

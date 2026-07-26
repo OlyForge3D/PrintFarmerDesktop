@@ -784,6 +784,16 @@ fn read_text_entry_limited<R: Read + Seek>(
             if file.size() > max_bytes {
                 return Err(ThreeMfError::TooLarge);
             }
+            // Only the budget half of this can fail. `check_ratio` is a pure
+            // function of its three arguments, and `validate_archive_parts`
+            // already ran it over *every* entry with these same two accessors
+            // during the `open_package` preflight - which every entry point
+            // goes through - so an entry that reached this line has already
+            // been cleared at the identical ratio. Confirmed by mutation:
+            // deleting the ratio half of `charge_entry` leaves the whole suite
+            // green. It stays because that argument depends on the preflight
+            // continuing to check every entry, not on the check being redundant
+            // by nature.
             guard.charge_entry(name, file.compressed_size(), file.size())?;
             let bytes = read_entry_guarded(&mut file, max_bytes, 0, guard)?;
             if bytes.len() as u64 > max_bytes {
@@ -1155,6 +1165,9 @@ pub(crate) fn read_entry_bytes<R: Read + Seek, F: Fn() -> ThreeMfError>(
             if file.size() > max_bytes {
                 return Err(too_large());
             }
+            // As in `read_text_entry_limited`: only the budget half can fail
+            // here, because the preflight already cleared every entry at this
+            // exact ratio.
             guard.charge_entry(name, file.compressed_size(), file.size())?;
             // Preallocate from the *declared* size only up to a modest cap: the
             // declaration is attacker-controlled, so trusting it would let a
@@ -4253,10 +4266,19 @@ mod tests {
         // mutation: adding `| Err(ThreeMfError::Limit(_))` to the swallow list
         // in `read_plate_layout` leaves this test green.
         //
-        // The read arm of that swallow list is pinned instead by
-        // `a_limit_tripped_by_the_advisory_plate_read_is_not_swallowed` in
-        // `tests/threemf_security.rs`, which reaches a `Limit` the preflight
-        // cannot shadow.
+        // Ratio enforcement *on the metadata read path* is not merely untested
+        // here, it is unreachable, so no test can pin it. `check_ratio` is a
+        // pure function of its arguments; the preflight has already run it over
+        // every entry with the same `compressed_size()`/`size()` pair; and every
+        // entry point reaches the reads through `open_package`. So the
+        // `charge_entry` call in `read_text_entry_limited` cannot fail on ratio
+        // for an entry that got that far. Confirmed by mutation: deleting the
+        // ratio half of `charge_entry` leaves the entire suite green.
+        //
+        // What *is* reachable on that path is the running byte accumulator, and
+        // that is what `a_limit_tripped_by_the_advisory_plate_read_is_not_
+        // swallowed` in `tests/threemf_security.rs` uses to pin the read arm of
+        // the swallow list.
         let mut settings = String::from("<config><!--");
         settings.push_str(&"x".repeat(crate::limits::COMPRESSION_RATIO_FLOOR_BYTES as usize + 1));
         settings.push_str("--></config>");
