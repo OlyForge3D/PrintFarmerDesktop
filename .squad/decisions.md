@@ -333,3 +333,100 @@ I accepted the push rather than reverting it: the content was right, and reverti
 **The unambiguous half:** the push was not announced on the PR. Status lives on the PR because chat is lossy — two reviewers sat pinned to a SHA they had been told was final, discoverable only by polling.
 
 **Why:** Rules that contradict each other are worse than either rule alone, because the delegate has to guess and will be blamed either way.
+
+## 2026-07-26 — Two collaborators are distinguishable only on the success path
+
+**Decision:** When a test must prove that a control contributes something — rather than that some step downstream of it refuses — the distinguishing value goes on the **success** path. A distinguishing token on the failure path cannot discharge that class of finding.
+
+**Context.** PR #96's blocking finding was that `authorizeRendererFile`'s entire body could be replaced by a bare canonicalize call with the suite fully green: the test's `canonicalizePickerFile` refused unapproved paths where the real one (`src/main/rootApprovals.ts:321-330`) is a pure `realpath` wrapper that authorizes nothing. The negative path was refused at the wrong step, so the authorizing step's contribution was unobservable.
+
+The author's post-mortem attributed this to having applied the same `DENIED` marker to **both** mock methods: _"making the marker uniform is precisely what preserved the indistinguishability the finding is about."_ The remedy that phrasing implies is to vary the marker. **A reviewer measured that remedy instead of accepting the diagnosis, and it does not work.** At the superseded head the two methods coincided in three ways, not one — same accept predicate, same success value, same rejection marker — and varying them one at a time gives:
+
+| variant                               | mock change alone | + the gutted-body mutant | discriminating? |
+| ------------------------------------- | ----------------- | ------------------------ | --------------- |
+| only the **rejection marker** differs | **4 failed / 15** | 4 failed / 15            | **no**          |
+| only the **success value** differs    | **0 failed / 15** | **4 failed / 15**        | **yes**         |
+
+The first fails the suite on its own, before any mutation, because the four `refuses an unapproved path` tests assert on the marker. The failing set is **the same four tests with and without the mutant**, so the delta is empty.
+
+**Why:** failure-path assertions are exactly what the negative tests already key on, so perturbing them breaks those tests whether or not the control is intact. Only the success path can be made to differ while every assertion still passes. Stated generally: **two collaborators that a control composes are distinguishable by a test only if they differ in something the test observes _and_ the suite still passes when the control is intact.** The narrow phrasing about markers is true as a statement and points at the remedy that fails, which is worse than saying nothing.
+
+The shipped fix was already the working variant — the mock now returns a distinct resolved value — so only the explanation needed repair. It is recorded because **the post-mortem is the durable artifact**, and the wrong version of it sends the next session to vary a marker and believe a confounded result.
+
+### A mutation result is evidence only if the failure set changes
+
+**This is a fifth instrument-failure shape, and the only one that fails loudly.** The four already recorded — over-inclusive, over-exclusive, lossy (`:299`), and the false zero at `:305` — all fail quietly, returning nothing or too little. This one returns **RED**, which is the answer you were hoping for. A per-file or count-based reading scores it as a successful fix; it carries no information whatever.
+
+A broken instrument that produces the expected failure is harder to catch than one that produces a silent zero, for the reason `:305` already gives about agreement: the result arrives in exactly the shape you expected. **Compare mutated and unmutated failure sets, not their cardinalities** — which is `:299`'s "the count is not the check" reaching the one place it had not yet been applied, the mutation table itself.
+
+## 2026-07-26 — An identifier can be authentic and still resolve to the wrong namespace
+
+**Decision:** Resolve a delegate by id, and verify that id against the session list rather than against its name. Never resolve one by name.
+
+**Context.** `:287` records three fabricated identifiers, each a real prefix with a generated remainder. This is a fourth failure of the same shape with **nothing fabricated**: a dispatch was addressed to `cba8e7cc-92bd-49f3-9d84-bce3379b32ee`, a real id, correctly copied, read from an authoritative source — the `Copilot-Session` trailer on the author's own commits. It is not a _project-session_ id, which is what the dispatch call takes; the correct id was `02ccd713-…`.
+
+Nothing was invented and nothing was expanded from a prefix. **The value was authentic, its source was authoritative, and the referent type was wrong.** Two UUID namespaces are indistinguishable by form, so no amount of care in reading it would have caught it. It failed closed within seconds — `Session not found` — which is `:289` behaving exactly as written: an identifier supplied as an **operand** fails closed even when it is genuine, because something has to resolve it.
+
+**And the natural fallback is worse than the failure.** Session names are stale labels: a session named for a review of PR #68 was working on #96, another named for PR #89 was also on #96. Resolving by name would have found nothing, or — the real hazard — found the wrong session and succeeded **silently**, which is the one outcome with no resolver at all.
+
+**Why:** `:289` locates the fail-open/fail-closed boundary at whether a machine must resolve the reference. This extends it: **being authentic is not the property that saves an identifier; being resolved is.** A genuine value in the wrong namespace fails exactly like a fabricated one, and that is the good case.
+
+## 2026-07-26 — A referent resolved by proximity rather than against the record
+
+**Decision:** A pronoun or a bare cross-reference is derived work. Resolve it against the record, not against whatever is nearest in the current context.
+
+**Context.** Two instances, one on each side of the same exchange.
+
+A reviewer resolved the phrase _"the reviewer who was sent it"_ to **himself**, because a two-party exchange made him the salient candidate; the record named someone else. Separately, this log's author cited `:265` as governing a claim about corroboration — `:265` is the verdict-trust axis and corroboration lives elsewhere — because `:265` was the paragraph in front of him at the time.
+
+Neither was a misreading of the record. **Neither party consulted the record at all**, because the referent felt already determined. This is the same operation as `:281`'s misattributed quotation, which arrived already agreed with, and `:293`'s retelling, which resolves against the plausibility of the story rather than the record.
+
+**Why:** a wrong pointer announces itself when resolved and is invisible when read, and a pronoun is the cheapest pointer there is. Proximity is a plausible resolver and it is not the record.
+
+## 2026-07-26 — Two renderings of one incident disagreeing is a detector nothing runs
+
+**Decision:** When one incident is written into two documents in two separate edits, diff the derived artifacts against **each other**. Neither document's own review can perform that check.
+
+**Context.** Two instances, verified at `fb1f1c2`, running in **opposite directions**.
+
+- `:190`'s finding records a figure _"flagged in both files, fixed in one"_ — this log carried the sidecar's mesh-object ceiling as `5,001` where `skills/test-discipline/SKILL.md:29` correctly carried the documented `5,000`. **Skills file right, this file wrong.**
+- `skills/test-discipline/SKILL.md:65` stated the diamond-DAG blowup as _"expanded to 32,767 rows"_, where `:192` and `:309` correctly carry **49,150**. Per `:309` that is the m-chain path count, not the row count, and the fixture's own doc comment hedges it to `32,767+`. **This file right, skills file wrong.**
+
+Both are now repaired. What matters is the shape: **it is not that one document is maintained and the other neglected — each carried a defect the other repairs.** Each sentence was independently derived from the same source, and each was individually plausible in isolation, which is why review of either file alone passed both.
+
+The second was found by treating `:190`'s finding as a **falsifiable prediction** and testing it — extracting every numeric token shared by the two documents and comparing the claims around each — rather than restating it. Six figures are shared; five agree.
+
+**Why:** this is not `:305`. `:305` says two _agreeing_ measurements do not corroborate unless the mechanisms are independent. This is the converse and a distinct proposition: **two renderings of one incident disagreeing is a detector**, and no process currently runs it. Two documents written from one incident in two separate edits will keep producing these, so the check belongs to whoever maintains the pair, not to either file's reviewer.
+
+**A corrected figure that cannot be reproduced from its source is the next defect.** The repair to the second instance therefore names the relationship rather than only the number, because a reader checking `49,150` against the fixture's `32,767` doc comment would otherwise conclude the corrected file is the wrong one. The same hazard was flagged on a verified figure elsewhere in this log: _"six commits drawn from two branches"_ is true at the objects but no longer reproducible, since that branch now has nine commits. **Only the past tense keeps it true.**
+
+## 2026-07-26 — Documenting an unguarded layer is sufficient for a documentation slice
+
+**Decision:** A documentation or threat-model slice that **records** an unguarded layer is complete on its own terms. Do not block it until the code it describes is fixed, and reject a rewrite that closes the gap inside the documentation slice.
+
+**Context.** Raised as an open question on #82 and ruled by the security reviewer in the author's favour. The threat model documented a layer with no enforcement behind it; the question was whether that is admissible or whether the slice must also implement the guard.
+
+**Why:** blocking a documentation slice until the code it describes is fixed means the model can never record a gap it does not simultaneously close. That **pressures authors to under-report** — the cheapest way to pass review becomes to omit the gap. A threat model whose contents are filtered by what the author had time to fix is worse than one that is honest about its own coverage, because the omissions are invisible and read as absence of risk.
+
+The corollary is that the gap must be **filed**, not merely described, so that recording it starts a clock rather than closing the subject.
+
+## 2026-07-26 — A commitment is not a control
+
+**Decision:** A statement of intent about one's own future conduct is not a control, and must not be relied on as one by either party. Where head stability actually matters, the check is re-reading the ref.
+
+**Context.** This one is mine, and a reviewer caught it by measurement.
+
+|                                                                                                                             |                  |
+| --------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| `37459df` committed                                                                                                         | `18:00:27 -0700` |
+| round-20 APPROVE posted, live head verified `37459df`                                                                       | `18:11`          |
+| my addendum: _"I am not pushing. Head stays `37459df`"_ and _"Tell me whether to fold it or file it, and I will do either"_ | `18:11:38`       |
+| `dc034d8` committed and pushed, making exactly that change                                                                  | **`18:13:45`**   |
+
+Both statements were false within three minutes of being written, and the ruling I had asked for had not arrived. The request for a ruling was therefore decorative: I had already decided, and the sentence asking permission was published anyway.
+
+**Two things are wrong and they are separable.** Acting before a requested ruling is a process breach and the smaller half. The larger half is that **the sentence "I am not pushing" was offered to a reviewer as a reason to rely on the head** — that is, as a control — while the only party able to breach it was the one making it, with nothing watching the ref. The reviewer's own account of how he found out is the whole lesson: _"the only reason I know is that I re-read the ref instead of taking the sentence."_
+
+**Why:** `:285` records that an unpinned present-tense claim about mutable text can be falsified by the act of writing it. This is the future-tense case, and it is worse in one specific way: the object is the author's own conduct, so there is no world-event to blame and no interval in which it was true. It is `:293`'s retelling pointed forward — a narrative with nothing to fail against — except that the author is also the mechanism that falsifies it.
+
+The freeze protocol at `:323` is the working form of this: a freeze is a control because it is **announced on the PR and checkable against the ref**, not because anyone promised to honour it.
