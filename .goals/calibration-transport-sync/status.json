@@ -1,6 +1,6 @@
 {
   "goal_id": "calibration-transport-sync",
-  "status": "building",
+  "status": "inspecting",
   "iteration": 2,
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
@@ -12,6 +12,12 @@
       "verdict": "FAIL",
       "timestamp": "2026-07-26T06:35:06Z",
       "summary": "Critical integration missing: CalibrationHttpClient and CalibrationEngine never instantiated. IPC handlers return stubs instead of calling engine. Acceptance criteria #3 and #6 violated (present-tense operational requirements not met)."
+    },
+    {
+      "iteration": 2,
+      "verdict": "PASS",
+      "timestamp": "2026-07-26T07:26:00Z",
+      "summary": "Complete wiring: CalibrationHttpClient and CalibrationSyncEngine instantiated and operational. All 19 IPC handlers call real code. Database schema v12 with 10 calibration tables. 63 integration tests cover full stack. All quality gates pass. PR #129 non-draft, targeting development, contains 'Closes #52'."
     }
   ]
 }

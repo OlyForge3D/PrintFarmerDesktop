@@ -823,25 +823,23 @@ describe('CalibrationSyncEngine integration', () => {
 
 describe('CalibrationHttpClient identity fencing and error mapping', () => {
   it('sends JWT in Authorization header (never in logs)', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        json({
-          apiVersion: '2.0',
-          schemaVersion: 1,
-          requiredScopes: [],
-          requiredFirmware: 'Klipper',
-          requiredGcodeDialect: 'Klipper',
-          requiredSlicer: 'OrcaSlicer',
-          flags: {
-            calibrationApiEnabled: true,
-            calibrationChangeFeedEnabled: true,
-            calibrationOfflineDraftEnabled: true,
-            calibrationPhotoUploadEnabled: true,
-            calibrationGenerationEnabled: true,
-          },
-        }),
-      );
+    const fetchMock = vi.fn().mockResolvedValue(
+      json({
+        apiVersion: '2.0',
+        schemaVersion: 1,
+        requiredScopes: [],
+        requiredFirmware: 'Klipper',
+        requiredGcodeDialect: 'Klipper',
+        requiredSlicer: 'OrcaSlicer',
+        flags: {
+          calibrationApiEnabled: true,
+          calibrationChangeFeedEnabled: true,
+          calibrationOfflineDraftEnabled: true,
+          calibrationPhotoUploadEnabled: true,
+          calibrationGenerationEnabled: true,
+        },
+      }),
+    );
     const tokens = fakeTokenProvider();
     const client = new CalibrationHttpClient(tokens, { fetch: fetchMock });
     await client.getCapabilities(
