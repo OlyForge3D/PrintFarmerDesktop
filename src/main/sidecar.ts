@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import type { CalibrationWorkspaceStageId } from '@shared/ipc';
 
 /**
  * Supervised client for the Rust `model-core` sidecar.
@@ -184,6 +185,85 @@ export interface SidecarClaimedOutboundBatch {
   attemptToken: string;
   leaseUntil: number;
   operations: SidecarOutboundOperation[];
+}
+
+export type SidecarCalibrationProjectStatus =
+  | 'draft'
+  | 'inProgress'
+  | 'awaitingGeneration'
+  | 'generated'
+  | 'complete'
+  | 'archived';
+
+export interface SaveCalibrationWorkspaceStateInput {
+  profileId: string;
+  projectId: string;
+  displayName: string;
+  description?: string | null;
+  printerId: string;
+  status: SidecarCalibrationProjectStatus;
+  completedStepCount: number;
+  totalStepCount: number;
+  printerContextFresh: boolean;
+  baseRevision?: number | null;
+  operationId: string;
+  idempotencyKey: string;
+  workspaceState: unknown;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SidecarCalibrationWorkspaceState {
+  profileId: string;
+  projectId: string;
+  displayName: string;
+  description: string | null;
+  printerId: string;
+  status: SidecarCalibrationProjectStatus;
+  completedStepCount: number;
+  totalStepCount: number;
+  isSynced: boolean;
+  isPrinterContextFresh: boolean;
+  hasConflicts: boolean;
+  remoteProjectId: string | null;
+  baseRevision: number | null;
+  createdAt: string;
+  updatedAt: string;
+  workspaceState: unknown;
+}
+
+export interface StageCalibrationPhotoInput {
+  photoId: string;
+  attemptId: string;
+  stageId: CalibrationWorkspaceStageId;
+  projectId: string;
+  profileId: string;
+  contentHash: string;
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+  byteSize: number;
+  localPath: string;
+  stagedAt: string;
+  caption: string;
+  order: number;
+}
+
+export interface SidecarStagedCalibrationPhoto {
+  photoId: string;
+  attemptId: string;
+  stageId: CalibrationWorkspaceStageId;
+  projectId: string;
+  profileId: string;
+  contentHash: string;
+  mimeType: string;
+  byteSize: number;
+  status: string;
+  uploadAttempts: number;
+  remotePhotoId: string | null;
+  remoteUrl: string | null;
+  stagedAt: string;
+  uploadedAt: string | null;
+  caption: string;
+  order: number;
 }
 
 interface RequestPolicy {
@@ -790,7 +870,51 @@ export class SidecarClient {
 
   // --- Calibration persistence RPC (issue #52) ------------------------------
   // These delegate to the sidecar's calibration_outbox and calibration_*
-  // tables added in schema v12. No server URLs or credentials are involved.
+  // tables added in schema v12/v13. No server URLs or credentials are involved.
+
+  async saveCalibrationWorkspaceState(
+    input: SaveCalibrationWorkspaceStateInput,
+  ): Promise<SidecarCalibrationWorkspaceState> {
+    return (await this.mutationRequest(
+      'saveCalibrationWorkspaceState',
+      input,
+    )) as SidecarCalibrationWorkspaceState;
+  }
+
+  async listCalibrationWorkspaceStates(
+    profileId: string,
+  ): Promise<SidecarCalibrationWorkspaceState[]> {
+    return (await this.request('listCalibrationWorkspaceStates', {
+      profileId,
+    })) as SidecarCalibrationWorkspaceState[];
+  }
+
+  async listCalibrationUnhydratedProjects(
+    profileId: string,
+  ): Promise<import('@shared/ipc').CalibrationUnhydratedProject[]> {
+    return (await this.request('listCalibrationUnhydratedProjects', {
+      profileId,
+    })) as import('@shared/ipc').CalibrationUnhydratedProject[];
+  }
+
+  async getCalibrationWorkspaceState(
+    profileId: string,
+    projectId: string,
+  ): Promise<SidecarCalibrationWorkspaceState | null> {
+    return (await this.request('getCalibrationWorkspaceState', {
+      profileId,
+      projectId,
+    })) as SidecarCalibrationWorkspaceState | null;
+  }
+
+  async stageCalibrationPhoto(
+    input: StageCalibrationPhotoInput,
+  ): Promise<SidecarStagedCalibrationPhoto> {
+    return (await this.mutationRequest(
+      'stageCalibrationPhoto',
+      input,
+    )) as SidecarStagedCalibrationPhoto;
+  }
 
   async listCalibrationPendingOps(
     profileId: string,

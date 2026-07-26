@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 
 use crate::calibration::{
     CalibrationConflictDto, CalibrationCursorStateDto, CalibrationPendingOpDto,
+    CalibrationUnhydratedProjectDto, CalibrationWorkspaceStateDto,
+    SaveCalibrationWorkspaceStateParams,
 };
 use crate::hash::{hash_file, ContentHash};
 use crate::model::{FileFingerprint, ModelFormat};
@@ -758,6 +760,55 @@ pub trait CatalogStore {
     ) -> Result<SyncConflictDto, String>;
 
     // --- Calibration persistence (issue #52) ---------------------------------
+
+    /// Save the exact local workspace state and enqueue its immutable draft
+    /// mutation. Non-persistent stores conservatively return an unsynced
+    /// projection without retaining it.
+    fn save_calibration_workspace_state(
+        &mut self,
+        params: &SaveCalibrationWorkspaceStateParams,
+    ) -> Result<CalibrationWorkspaceStateDto, String> {
+        Ok(params.unsynced_dto())
+    }
+
+    /// List all locally persisted workspace states for a profile, newest first.
+    fn list_calibration_workspace_states(
+        &self,
+        profile_id: &str,
+    ) -> Result<Vec<CalibrationWorkspaceStateDto>, String> {
+        let _ = profile_id;
+        Ok(vec![])
+    }
+
+    /// List authoritative remote project summaries that cannot yet be hydrated
+    /// as exact local workspace state.
+    fn list_calibration_unhydrated_projects(
+        &self,
+        profile_id: &str,
+    ) -> Result<Vec<CalibrationUnhydratedProjectDto>, String> {
+        let _ = profile_id;
+        Ok(vec![])
+    }
+
+    /// Fetch one profile-scoped local workspace state.
+    fn get_calibration_workspace_state(
+        &self,
+        profile_id: &str,
+        project_id: &str,
+    ) -> Result<Option<CalibrationWorkspaceStateDto>, String> {
+        let _ = (profile_id, project_id);
+        Ok(None)
+    }
+
+    /// Persist metadata for a securely staged calibration photo. The local
+    /// filesystem path is accepted from Electron main but never returned.
+    fn stage_calibration_photo(
+        &mut self,
+        params: &crate::calibration::StageCalibrationPhotoParams,
+    ) -> Result<crate::calibration::StagedCalibrationPhotoDto, String> {
+        let _ = params;
+        Err("staged calibration photos require a persistent catalog".to_string())
+    }
 
     /// List pending calibration outbox operations in stable sequence order.
     /// Returns at most `limit` operations that are dependency-ready.

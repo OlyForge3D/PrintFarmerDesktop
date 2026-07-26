@@ -9,6 +9,7 @@ import {
   type ExtractVendorPlateThumbnailsResponse,
   type LoadSceneRequest,
   type LoadSceneResponse,
+  type OpenCalibrationPhotoResponse,
   type OpenModelFileResponse,
   type OpenFolderResponse,
   type PrintFarmerApi,
@@ -77,6 +78,12 @@ import {
   type CalibrationListPrintersResponse,
   type CalibrationGetPrinterContextRequest,
   type CalibrationGetPrinterContextResponse,
+  type CalibrationListWorkspaceStatesRequest,
+  type CalibrationListWorkspaceStatesResponse,
+  type CalibrationGetWorkspaceStateRequest,
+  type CalibrationGetWorkspaceStateResponse,
+  type CalibrationSaveWorkspaceStateRequest,
+  type CalibrationSaveWorkspaceStateResponse,
   type CalibrationListProjectsRequest,
   type CalibrationListProjectsResponse,
   type CalibrationGetProjectRequest,
@@ -103,6 +110,7 @@ import {
   type CalibrationAcknowledgeBedClearResponse,
   type CalibrationStartPrintRequest,
   type CalibrationStartPrintResponse,
+  type CalibrationListOrcaProfilesRequest,
   type CalibrationListOrcaProfilesResponse,
   type CalibrationExportOrcaProfileRequest,
   type CalibrationExportOrcaProfileResponse,
@@ -132,6 +140,10 @@ const api: PrintFarmerApi = {
     ipcRenderer.invoke(
       IpcChannel.OpenModelFile,
     ) as Promise<OpenModelFileResponse>,
+  openCalibrationPhoto: async (): Promise<OpenCalibrationPhotoResponse> =>
+    ipcSchemas[IpcChannel.OpenCalibrationPhoto].response.parse(
+      await ipcRenderer.invoke(IpcChannel.OpenCalibrationPhoto),
+    ),
   extractVendorMetadata: (
     request: ExtractVendorMetadataRequest,
   ): Promise<ExtractVendorMetadataResponse> =>
@@ -394,6 +406,33 @@ const api: PrintFarmerApi = {
         request,
       ),
     ),
+  listCalibrationWorkspaceStates: async (
+    request: CalibrationListWorkspaceStatesRequest,
+  ): Promise<CalibrationListWorkspaceStatesResponse> =>
+    ipcSchemas[IpcChannel.CalibrationListWorkspaceStates].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationListWorkspaceStates,
+        request,
+      ),
+    ),
+  getCalibrationWorkspaceState: async (
+    request: CalibrationGetWorkspaceStateRequest,
+  ): Promise<CalibrationGetWorkspaceStateResponse> =>
+    ipcSchemas[IpcChannel.CalibrationGetWorkspaceState].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationGetWorkspaceState,
+        request,
+      ),
+    ),
+  saveCalibrationWorkspaceState: async (
+    request: CalibrationSaveWorkspaceStateRequest,
+  ): Promise<CalibrationSaveWorkspaceStateResponse> =>
+    ipcSchemas[IpcChannel.CalibrationSaveWorkspaceState].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationSaveWorkspaceState,
+        request,
+      ),
+    ),
   listCalibrationProjects: async (
     request: CalibrationListProjectsRequest,
   ): Promise<CalibrationListProjectsResponse> =>
@@ -475,9 +514,11 @@ const api: PrintFarmerApi = {
     ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse(
       await ipcRenderer.invoke(IpcChannel.CalibrationStartPrint, request),
     ),
-  listOrcaProfiles: async (): Promise<CalibrationListOrcaProfilesResponse> =>
+  listOrcaProfiles: async (
+    request: CalibrationListOrcaProfilesRequest,
+  ): Promise<CalibrationListOrcaProfilesResponse> =>
     ipcSchemas[IpcChannel.CalibrationListOrcaProfiles].response.parse(
-      await ipcRenderer.invoke(IpcChannel.CalibrationListOrcaProfiles),
+      await ipcRenderer.invoke(IpcChannel.CalibrationListOrcaProfiles, request),
     ),
   exportOrcaProfile: async (
     request: CalibrationExportOrcaProfileRequest,

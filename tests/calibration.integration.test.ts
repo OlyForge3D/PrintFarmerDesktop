@@ -1251,7 +1251,7 @@ describe('Photo staging behavior', () => {
       {
         id: 'photo-111',
         attemptId: ATTEMPT_ID,
-        stepId: STEP_ID,
+        stageId: 'temperature',
         projectId: PROJECT_ID,
       },
       false,
@@ -1331,10 +1331,12 @@ describe('Calibration IPC schema privilege denial', () => {
       ipcSchemas[IpcChannel.CalibrationStagePhoto].request.parse({
         profileId: PROFILE_ID,
         projectId: PROJECT_ID,
-        stepId: STEP_ID,
+        stageId: 'temperature',
         attemptId: ATTEMPT_ID,
         photoId: OP_ID,
         approvalId: OP_ID,
+        caption: 'Front view',
+        order: 1,
         // Renderer cannot supply arbitrary file path
         photoPath: 'C:\\private\\secret.jpg',
       }),

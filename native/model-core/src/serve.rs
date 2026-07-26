@@ -52,9 +52,12 @@ use serde_json::Value;
 
 use crate::calibration::{
     ApplyCalibrationSnapshotParams, CommitCalibrationCursorParams,
-    CountCalibrationPendingOpsParams, GetCalibrationCursorParams, IsPrinterContextFreshParams,
+    CountCalibrationPendingOpsParams, GetCalibrationCursorParams,
+    GetCalibrationWorkspaceStateParams, IsPrinterContextFreshParams,
     ListCalibrationConflictsParams, ListCalibrationPendingOpsParams,
-    RecordCalibrationConflictParams, ReplayCalibrationOpParams, SettleCalibrationOpParams,
+    ListCalibrationWorkspaceStatesParams, RecordCalibrationConflictParams,
+    ReplayCalibrationOpParams, SaveCalibrationWorkspaceStateParams, SettleCalibrationOpParams,
+    StageCalibrationPhotoParams,
 };
 use crate::catalog::{reconcile_root, CatalogStore, InMemoryCatalog};
 use crate::retarget::{
@@ -1118,8 +1121,43 @@ fn dispatch(
         }
 
         // --- Calibration persistence RPC (issue #52) -------------------------
-        // These handlers read/write the calibration tables added in schema v12.
+        // These handlers read/write the calibration tables added in schema v12/v13.
         // No server URLs, JWT tokens, or credentials are stored here.
+        "saveCalibrationWorkspaceState" => {
+            let p: SaveCalibrationWorkspaceStateParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid saveCalibrationWorkspaceState params: {e}"))?;
+            let state = store.save_calibration_workspace_state(&p)?;
+            serde_json::to_value(state)
+                .map_err(|e| format!("failed to serialize calibration workspace state: {e}"))
+        }
+        "listCalibrationWorkspaceStates" => {
+            let p: ListCalibrationWorkspaceStatesParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid listCalibrationWorkspaceStates params: {e}"))?;
+            let states = store.list_calibration_workspace_states(&p.profile_id)?;
+            serde_json::to_value(states)
+                .map_err(|e| format!("failed to serialize calibration workspace states: {e}"))
+        }
+        "listCalibrationUnhydratedProjects" => {
+            let p: ListCalibrationWorkspaceStatesParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid listCalibrationUnhydratedProjects params: {e}"))?;
+            let projects = store.list_calibration_unhydrated_projects(&p.profile_id)?;
+            serde_json::to_value(projects)
+                .map_err(|e| format!("failed to serialize unhydrated calibration projects: {e}"))
+        }
+        "getCalibrationWorkspaceState" => {
+            let p: GetCalibrationWorkspaceStateParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid getCalibrationWorkspaceState params: {e}"))?;
+            let state = store.get_calibration_workspace_state(&p.profile_id, &p.project_id)?;
+            serde_json::to_value(state)
+                .map_err(|e| format!("failed to serialize calibration workspace state: {e}"))
+        }
+        "stageCalibrationPhoto" => {
+            let p: StageCalibrationPhotoParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid stageCalibrationPhoto params: {e}"))?;
+            let photo = store.stage_calibration_photo(&p)?;
+            serde_json::to_value(photo)
+                .map_err(|e| format!("failed to serialize staged calibration photo: {e}"))
+        }
         "listCalibrationPendingOps" => {
             let p: ListCalibrationPendingOpsParams = serde_json::from_value(params)
                 .map_err(|e| format!("invalid listCalibrationPendingOps params: {e}"))?;
@@ -1990,7 +2028,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("future.sqlite3");
         let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.pragma_update(None, "user_version", crate::schema::SCHEMA_VERSION + 1)
+        conn.pragma_update(None, "user_version", crate::schema::SCHEMA_VERSION + 2)
             .unwrap();
         drop(conn);
         assert!(build_store(Some(path)).is_err());

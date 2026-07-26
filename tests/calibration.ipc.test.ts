@@ -210,6 +210,17 @@ describe('CalibrationPrinterCandidate schema', () => {
       orcaProfileId: 'orca-pla',
       isOnline: true,
       updatedAt: NOW,
+      eligibility: {
+        firmwareFamily: 'Klipper',
+        gcodeDialect: 'Klipper',
+        slicerFamily: 'OrcaSlicer',
+        slicerDistribution: 'upstream',
+        slicerIdentity: 'OrcaSlicer',
+        hardwareContextComplete: true,
+        safetyContextComplete: true,
+        permissionsComplete: true,
+        reasons: [],
+      },
     });
     expect(result.printerId).toBe(PRINTER_ID);
     expect(result.firmwareCompatible).toBe(true);
@@ -306,6 +317,7 @@ describe('CalibrationProjectSummary schema', () => {
       isPrinterContextFresh: true,
       remoteProjectId: null,
       baseRevision: null,
+      recoveryState: null,
       createdAt: NOW,
       updatedAt: NOW,
     });
@@ -477,7 +489,7 @@ describe('StagedPhoto schema (privilege denial)', () => {
     const result = StagedPhoto.parse({
       photoId: ATTEMPT_UUID,
       attemptId: ATTEMPT_UUID,
-      stepId: STEP_UUID,
+      stageId: 'temperature',
       projectId: PROJECT_UUID,
       profileId: PROFILE_UUID,
       contentHash: SHA256,
@@ -489,6 +501,8 @@ describe('StagedPhoto schema (privilege denial)', () => {
       remoteUrl: null,
       stagedAt: NOW,
       uploadedAt: null,
+      caption: 'Flow sample',
+      order: 1,
     });
     expect(result.status).toBe('staged');
   });
@@ -498,7 +512,7 @@ describe('StagedPhoto schema (privilege denial)', () => {
       StagedPhoto.parse({
         photoId: ATTEMPT_UUID,
         attemptId: ATTEMPT_UUID,
-        stepId: STEP_UUID,
+        stageId: 'temperature',
         projectId: PROJECT_UUID,
         profileId: PROFILE_UUID,
         contentHash: 'not-a-sha256',
@@ -519,7 +533,7 @@ describe('StagedPhoto schema (privilege denial)', () => {
       StagedPhoto.parse({
         photoId: ATTEMPT_UUID,
         attemptId: ATTEMPT_UUID,
-        stepId: STEP_UUID,
+        stageId: 'temperature',
         projectId: PROJECT_UUID,
         profileId: PROFILE_UUID,
         contentHash: SHA256,
@@ -540,7 +554,7 @@ describe('StagedPhoto schema (privilege denial)', () => {
       StagedPhoto.parse({
         photoId: ATTEMPT_UUID,
         attemptId: ATTEMPT_UUID,
-        stepId: STEP_UUID,
+        stageId: 'temperature',
         projectId: PROJECT_UUID,
         profileId: PROFILE_UUID,
         contentHash: SHA256,
@@ -704,6 +718,7 @@ describe('CalibrationApiError schema (typed HTTP error states)', () => {
 
 describe('ipcSchemas calibration channel registry', () => {
   const calibrationChannels = [
+    IpcChannel.OpenCalibrationPhoto,
     IpcChannel.CalibrationGetAvailability,
     IpcChannel.CalibrationListPrinters,
     IpcChannel.CalibrationGetPrinterContext,
@@ -764,13 +779,43 @@ describe('ipcSchemas calibration channel registry', () => {
     ).toThrow();
   });
 
+  it('CalibrationSyncNow remains the strict profile/project request without operationId', () => {
+    expect(
+      ipcSchemas[IpcChannel.CalibrationSyncNow].request.parse({
+        profileId: PROFILE_UUID,
+        projectId: PROJECT_UUID,
+      }),
+    ).toEqual({ profileId: PROFILE_UUID, projectId: PROJECT_UUID });
+    expect(() =>
+      ipcSchemas[IpcChannel.CalibrationSyncNow].request.parse({
+        profileId: PROFILE_UUID,
+        projectId: PROJECT_UUID,
+        operationId: ATTEMPT_UUID,
+      }),
+    ).toThrow();
+  });
+
+  it('OpenCalibrationPhoto returns only an opaque nullable approval', () => {
+    expect(
+      ipcSchemas[IpcChannel.OpenCalibrationPhoto].response.parse({
+        approvalId: ATTEMPT_UUID,
+      }),
+    ).toEqual({ approvalId: ATTEMPT_UUID });
+    expect(() =>
+      ipcSchemas[IpcChannel.OpenCalibrationPhoto].response.parse({
+        approvalId: ATTEMPT_UUID,
+        path: 'C:\\private\\photo.png',
+      }),
+    ).toThrow();
+  });
+
   it('CalibrationStagePhoto rejects renderer-supplied file path', () => {
     // The request schema uses approvalId (UUID) not a raw file path
     expect(() =>
       ipcSchemas[IpcChannel.CalibrationStagePhoto].request.parse({
         profileId: PROFILE_UUID,
         projectId: PROJECT_UUID,
-        stepId: STEP_UUID,
+        stageId: 'temperature',
         attemptId: ATTEMPT_UUID,
         path: 'C:\\Users\\user\\Desktop\\photo.jpg', // Not allowed
         photoId: ATTEMPT_UUID,
@@ -782,12 +827,49 @@ describe('ipcSchemas calibration channel registry', () => {
     const result = ipcSchemas[IpcChannel.CalibrationStagePhoto].request.parse({
       profileId: PROFILE_UUID,
       projectId: PROJECT_UUID,
-      stepId: STEP_UUID,
+      stageId: 'temperature',
       attemptId: ATTEMPT_UUID,
       approvalId: ATTEMPT_UUID, // Opaque UUID from dialog
       photoId: ATTEMPT_UUID,
+      caption: 'Flow sample',
+      order: 1,
     });
     expect(result.approvalId).toBe(ATTEMPT_UUID);
+  });
+
+  it('CalibrationStagePhoto response never exposes a local path', () => {
+    expect(() =>
+      ipcSchemas[IpcChannel.CalibrationStagePhoto].response.parse({
+        photoId: ATTEMPT_UUID,
+        attemptId: ATTEMPT_UUID,
+        stageId: 'temperature',
+        projectId: PROJECT_UUID,
+        profileId: PROFILE_UUID,
+        contentHash: SHA256,
+        mimeType: 'image/jpeg',
+        byteSize: 1024,
+        status: 'staged',
+        uploadAttempts: 0,
+        remotePhotoId: null,
+        remoteUrl: null,
+        stagedAt: NOW,
+        uploadedAt: null,
+        caption: 'Flow sample',
+        order: 1,
+        localPath: 'C:\\private\\calibration-photo.png',
+      }),
+    ).toThrow();
+  });
+
+  it('CalibrationListOrcaProfiles requires the selected profile fence', () => {
+    expect(
+      ipcSchemas[IpcChannel.CalibrationListOrcaProfiles].request.parse({
+        profileId: PROFILE_UUID,
+      }),
+    ).toEqual({ profileId: PROFILE_UUID });
+    expect(() =>
+      ipcSchemas[IpcChannel.CalibrationListOrcaProfiles].request.parse({}),
+    ).toThrow();
   });
 
   it('CalibrationResolveConflict rejects invalid resolution strategy', () => {
@@ -835,6 +917,16 @@ describe('additive compatibility (remote DTOs accept extra fields)', () => {
         vendor: 'Generic',
         material: 'PLA',
         source: 'systemInstall',
+        upstreamVerified: false,
+        printerId: PRINTER_ID,
+        configurationRevision: 1,
+        snapshotId: 'snapshot-1',
+        toolId: 'tool-1',
+        toolheadId: 'toolhead-1',
+        nozzleId: 'nozzle-1',
+        nozzleDiameterMm: 0.4,
+        profileRevision: null,
+        contentHash: null,
         exportable: true,
         unknownFutureField: 'should-reject',
       }),

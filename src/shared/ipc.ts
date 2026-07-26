@@ -17,11 +17,15 @@ export const IpcChannel = {
   CalibrationGetAvailability: 'calibration:getAvailability',
   CalibrationListPrinters: 'calibration:listPrinters',
   CalibrationGetPrinterContext: 'calibration:getPrinterContext',
+  CalibrationListWorkspaceStates: 'calibration:listWorkspaceStates',
+  CalibrationGetWorkspaceState: 'calibration:getWorkspaceState',
+  CalibrationSaveWorkspaceState: 'calibration:saveWorkspaceState',
   CalibrationListProjects: 'calibration:listProjects',
   CalibrationGetProject: 'calibration:getProject',
   CalibrationSaveDraft: 'calibration:saveDraft',
   CalibrationListAttempts: 'calibration:listAttempts',
   CalibrationGetAttempt: 'calibration:getAttempt',
+  OpenCalibrationPhoto: 'calibration:openPhoto',
   CalibrationStagePhoto: 'calibration:stagePhoto',
   CalibrationListConflicts: 'calibration:listConflicts',
   CalibrationResolveConflict: 'calibration:resolveConflict',
@@ -239,9 +243,26 @@ export type OpenModelFileRequest = z.infer<typeof OpenModelFileRequest>;
  * never gets to name an arbitrary path itself.
  */
 export const OpenModelFileResponse = z
-  .object({ path: z.string().min(1) })
+  .object({
+    path: z.string().min(1),
+    approvalId: z.string().uuid().optional(),
+  })
   .nullable();
 export type OpenModelFileResponse = z.infer<typeof OpenModelFileResponse>;
+
+// --- calibration:openPhoto -------------------------------------------------
+
+export const OpenCalibrationPhotoRequest = z.void();
+export type OpenCalibrationPhotoRequest = z.infer<
+  typeof OpenCalibrationPhotoRequest
+>;
+export const OpenCalibrationPhotoResponse = z
+  .object({ approvalId: z.string().uuid() })
+  .strict()
+  .nullable();
+export type OpenCalibrationPhotoResponse = z.infer<
+  typeof OpenCalibrationPhotoResponse
+>;
 
 // --- model:extractVendorMetadata ------------------------------------------
 
@@ -1025,6 +1046,27 @@ export const KlipperFirmwareInfo = z
   .strict();
 export type KlipperFirmwareInfo = z.infer<typeof KlipperFirmwareInfo>;
 
+/**
+ * PrintFarmer's complete, explicit calibration eligibility assertion.
+ * Anything incomplete or carrying a different literal is represented as null.
+ */
+export const CalibrationPrinterEligibility = z
+  .object({
+    firmwareFamily: z.literal('Klipper'),
+    gcodeDialect: z.literal('Klipper'),
+    slicerFamily: z.literal('OrcaSlicer'),
+    slicerDistribution: z.literal('upstream'),
+    slicerIdentity: z.literal('OrcaSlicer'),
+    hardwareContextComplete: z.literal(true),
+    safetyContextComplete: z.literal(true),
+    permissionsComplete: z.literal(true),
+    reasons: z.array(z.never()).max(0),
+  })
+  .strict();
+export type CalibrationPrinterEligibility = z.infer<
+  typeof CalibrationPrinterEligibility
+>;
+
 /** Summary of one PrintFarmer-managed printer that can be selected for calibration. */
 export const CalibrationPrinterCandidate = z
   .object({
@@ -1040,8 +1082,21 @@ export const CalibrationPrinterCandidate = z
     /** Whether PrintFarmer considers this printer currently online. */
     isOnline: z.boolean(),
     updatedAt: z.string().datetime(),
+    eligibility: CalibrationPrinterEligibility.nullable()
+      .optional()
+      .default(null),
   })
-  .strict();
+  .strict()
+  .superRefine((candidate, context) => {
+    if (candidate.firmwareCompatible !== (candidate.eligibility !== null)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['firmwareCompatible'],
+        message:
+          'Firmware compatibility must be backed by complete explicit eligibility.',
+      });
+    }
+  });
 export type CalibrationPrinterCandidate = z.infer<
   typeof CalibrationPrinterCandidate
 >;
@@ -1085,6 +1140,98 @@ export const CalibrationPrinterContext = z
     snapshotAt: z.string().datetime(),
     /** Whether this snapshot is still current (false = stale, needs rebase). */
     isCurrent: z.boolean(),
+    configurationId: z
+      .string()
+      .min(1)
+      .max(256)
+      .nullable()
+      .optional()
+      .default(null),
+    configurationRevision: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullable()
+      .optional()
+      .default(null),
+    snapshotId: z.string().min(1).max(256).nullable().optional().default(null),
+    snapshotRevision: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullable()
+      .optional()
+      .default(null),
+    slicerIdentity: z.literal('OrcaSlicer').nullable().optional().default(null),
+    slicerDistribution: z
+      .literal('upstream')
+      .nullable()
+      .optional()
+      .default(null),
+    profileRevision: z
+      .string()
+      .min(1)
+      .max(256)
+      .nullable()
+      .optional()
+      .default(null),
+    contentHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable()
+      .optional()
+      .default(null),
+    toolheads: z
+      .array(
+        z
+          .object({
+            toolId: z.string().min(1).max(256),
+            toolheadId: z.string().min(1).max(256),
+            extruderType: z.enum(['directDrive', 'bowden']),
+            nozzle: z
+              .object({
+                id: z.string().min(1).max(256),
+                diameterMm: z.number().positive().max(10),
+                material: z.string().min(1).max(256),
+              })
+              .strict(),
+          })
+          .strict(),
+      )
+      .max(32)
+      .optional()
+      .default([]),
+    safety: z
+      .object({
+        buildVolumeMm: z
+          .object({
+            x: z.number().positive().max(10_000),
+            y: z.number().positive().max(10_000),
+            z: z.number().positive().max(10_000),
+          })
+          .strict(),
+        maximumNozzleTemperatureC: z.number().positive().max(2_000),
+        maximumBedTemperatureC: z.number().nonnegative().max(1_000),
+        maximumVolumetricRateMm3S: z.number().positive().max(10_000),
+        emergencyStopAvailable: z.boolean(),
+        thermalProtectionConfirmed: z.boolean(),
+        ventilationAssessed: z.boolean(),
+      })
+      .strict()
+      .nullable()
+      .optional()
+      .default(null),
+    permissions: z
+      .object({
+        readPrinter: z.boolean(),
+        writeCalibration: z.boolean(),
+        generateCalibration: z.boolean(),
+        startPrint: z.boolean(),
+      })
+      .strict()
+      .nullable()
+      .optional()
+      .default(null),
   })
   .strict();
 export type CalibrationPrinterContext = z.infer<
@@ -1103,6 +1250,1316 @@ export type CalibrationGetPrinterContextRequest = z.infer<
 export const CalibrationGetPrinterContextResponse = CalibrationPrinterContext;
 export type CalibrationGetPrinterContextResponse = z.infer<
   typeof CalibrationGetPrinterContextResponse
+>;
+
+// --- Exact local workspace state (issue #53) --------------------------------
+
+export const CalibrationWorkspaceStageId = z.enum([
+  'temperature',
+  'flowPass1',
+  'flowPass2',
+  'pressureAdvance',
+  'flowVerification',
+  'retraction',
+  'maximumVolumetricSpeed',
+  'shrinkage',
+  'finalVerification',
+]);
+export type CalibrationWorkspaceStageId = z.infer<
+  typeof CalibrationWorkspaceStageId
+>;
+
+const WorkspaceId = z.string().min(1).max(256);
+const WorkspaceTimestamp = z.string().datetime();
+const WorkspaceBoundedText = z.string().max(4_096);
+
+export const CalibrationMethod = z.enum([
+  'temperatureTower',
+  'flowStandard',
+  'flowCoarse',
+  'flowYolo',
+  'flowFine',
+  'pressureAdvanceTower',
+  'pressureAdvanceLine',
+  'pressureAdvancePattern',
+  'verificationPrint',
+  'retractionTower',
+  'volumetricSpeedTower',
+  'dimensionalCoupon',
+]);
+export type CalibrationMethod = z.infer<typeof CalibrationMethod>;
+
+const WorkspaceDiagnostic = z
+  .object({
+    code: WorkspaceId,
+    severity: z.enum(['warning', 'error']),
+    message: z.string().min(1).max(4_096),
+    field: z.string().max(256).optional(),
+    stageId: CalibrationWorkspaceStageId.optional(),
+    eventId: WorkspaceId.optional(),
+  })
+  .strict();
+
+const WorkspaceBaseline = z
+  .object({
+    nozzleTemperatureC: z.number().finite().min(0).max(2_000),
+    flowRatio: z.number().finite().positive().max(10),
+    pressureAdvance: z.number().finite().nonnegative().max(10),
+    retractionLengthMm: z.number().finite().nonnegative().max(100),
+    maximumVolumetricRateMm3S: z.number().finite().positive().max(10_000),
+    shrinkageCompensationXPercent: z.number().finite().min(-100).max(100),
+    shrinkageCompensationYPercent: z.number().finite().min(-100).max(100),
+    shrinkageCompensationZPercent: z.number().finite().min(-100).max(100),
+  })
+  .strict();
+
+const WorkspaceNozzle = z
+  .object({
+    nozzleId: WorkspaceId,
+    diameterMm: z.number().finite().positive().max(10),
+    material: z.string().trim().min(1).max(256),
+  })
+  .strict();
+const WorkspaceToolhead = z
+  .object({
+    toolId: WorkspaceId,
+    toolheadId: WorkspaceId,
+    nozzle: WorkspaceNozzle,
+    extruderType: z.enum(['directDrive', 'bowden']),
+  })
+  .strict();
+const WorkspaceSafety = z
+  .object({
+    buildVolumeMm: z
+      .object({
+        x: z.number().finite().positive().max(10_000),
+        y: z.number().finite().positive().max(10_000),
+        z: z.number().finite().positive().max(10_000),
+      })
+      .strict(),
+    maximumNozzleTemperatureC: z.number().finite().positive().max(2_000),
+    maximumBedTemperatureC: z.number().finite().nonnegative().max(1_000),
+    maximumVolumetricRateMm3S: z.number().finite().positive().max(10_000),
+    emergencyStopAvailable: z.boolean(),
+    thermalProtectionConfirmed: z.boolean(),
+    ventilationAssessed: z.boolean(),
+  })
+  .strict();
+const WorkspaceSnapshot = z
+  .object({
+    snapshotId: WorkspaceId,
+    snapshotRevision: z.number().int().nonnegative(),
+    capturedAt: WorkspaceTimestamp,
+    configurationRevision: z.number().int().nonnegative(),
+    toolheads: z.array(WorkspaceToolhead).min(1).max(32),
+    safety: WorkspaceSafety,
+  })
+  .strict();
+const WorkspaceFilament = z
+  .object({
+    filamentProjectId: WorkspaceId,
+    provider: z.string().trim().min(1).max(256),
+    product: z.string().trim().min(1).max(256),
+    sku: z.string().trim().min(1).max(256),
+    spoolId: z.string().trim().min(1).max(256).optional(),
+  })
+  .strict();
+const WorkspaceBinding = z
+  .object({
+    printer: z
+      .object({
+        backendProfileId: WorkspaceId,
+        backendPrinterId: WorkspaceId,
+        printerConfigurationId: WorkspaceId,
+        printerConfigurationRevision: z.number().int().nonnegative(),
+      })
+      .strict(),
+    snapshot: WorkspaceSnapshot,
+    selectedToolId: WorkspaceId,
+    selectedToolheadId: WorkspaceId,
+    selectedNozzleId: WorkspaceId,
+    filament: WorkspaceFilament,
+  })
+  .strict();
+
+const WorkspaceObservationBase = {
+  observationId: WorkspaceId,
+  attemptId: WorkspaceId,
+  observedAt: WorkspaceTimestamp,
+  notes: WorkspaceBoundedText,
+};
+const WorkspaceTemperatureObservation = z
+  .object({
+    ...WorkspaceObservationBase,
+    stageId: z.literal('temperature'),
+    temperatureC: z.number().finite().min(0).max(2_000),
+    quality: z.number().finite().min(0).max(100),
+  })
+  .strict();
+const WorkspaceFlowPass1Observation = z
+  .object({
+    ...WorkspaceObservationBase,
+    stageId: z.literal('flowPass1'),
+    adjustmentPercent: z.number().finite().min(-100).max(100),
+    quality: z.number().finite().min(0).max(100),
+  })
+  .strict();
+const WorkspaceFlowPass2Observation = z
+  .object({
+    ...WorkspaceObservationBase,
+    stageId: z.literal('flowPass2'),
+    adjustmentPercent: z.number().finite().min(-100).max(100),
+    quality: z.number().finite().min(0).max(100),
+  })
+  .strict();
+const WorkspacePressureAdvanceObservation = z
+  .object({
+    ...WorkspaceObservationBase,
+    stageId: z.literal('pressureAdvance'),
+    pressureAdvance: z.number().finite().nonnegative().max(10),
+    quality: z.number().finite().min(0).max(100),
+  })
+  .strict();
+const WorkspaceFlowVerificationObservation = z
+  .object({
+    ...WorkspaceObservationBase,
+    stageId: z.literal('flowVerification'),
+    passed: z.boolean(),
+    defectCount: z.number().int().nonnegative().max(10_000),
+  })
+  .strict();
+const WorkspaceRetractionObservation = z
+  .object({
+    ...WorkspaceObservationBase,
+    stageId: z.literal('retraction'),
+    retractionLengthMm: z.number().finite().nonnegative().max(100),
+    quality: z.number().finite().min(0).max(100),
+  })
+  .strict();
+const WorkspaceVolumetricSpeedObservation = z
+  .object({
+    ...WorkspaceObservationBase,
+    stageId: z.literal('maximumVolumetricSpeed'),
+    stableVolumetricRateMm3S: z.number().finite().positive().max(10_000),
+    quality: z.number().finite().min(0).max(100),
+  })
+  .strict();
+const WorkspaceShrinkageObservation = z
+  .object({
+    ...WorkspaceObservationBase,
+    stageId: z.literal('shrinkage'),
+    nominalXmm: z.number().finite().positive().max(10_000),
+    nominalYmm: z.number().finite().positive().max(10_000),
+    nominalZmm: z.number().finite().positive().max(10_000),
+    measuredXmm: z.number().finite().positive().max(10_000),
+    measuredYmm: z.number().finite().positive().max(10_000),
+    measuredZmm: z.number().finite().positive().max(10_000),
+  })
+  .strict();
+const WorkspaceFinalVerificationObservation = z
+  .object({
+    ...WorkspaceObservationBase,
+    stageId: z.literal('finalVerification'),
+    passed: z.boolean(),
+    defectCount: z.number().int().nonnegative().max(10_000),
+  })
+  .strict();
+
+const WorkspaceRecommendation = z
+  .object({
+    summary: z.string().min(1).max(4_096),
+    rationale: z.string().min(1).max(4_096),
+    values: z
+      .array(
+        z
+          .object({
+            key: WorkspaceId,
+            value: z.union([z.number().finite(), z.boolean()]),
+            unit: z.enum([
+              'celsius',
+              'millimeter',
+              'millimeterPerSecond',
+              'cubicMillimeterPerSecond',
+              'second',
+              'percent',
+              'ratio',
+              'count',
+              'boolean',
+            ]),
+          })
+          .strict(),
+      )
+      .max(100),
+  })
+  .strict();
+const WorkspaceAttemptScope = z
+  .object({
+    backendProfileId: WorkspaceId,
+    backendPrinterId: WorkspaceId,
+    printerConfigurationId: WorkspaceId,
+    printerConfigurationRevision: z.number().int().nonnegative(),
+    snapshotId: WorkspaceId,
+    snapshotRevision: z.number().int().nonnegative(),
+    toolId: WorkspaceId,
+    toolheadId: WorkspaceId,
+    nozzleId: WorkspaceId,
+    filamentProjectId: WorkspaceId,
+    filamentProvider: z.string().min(1).max(256),
+    filamentProduct: z.string().min(1).max(256),
+    filamentSku: z.string().min(1).max(256),
+    spoolId: z.string().min(1).max(256).optional(),
+  })
+  .strict();
+const WorkspaceAttemptBase = {
+  attemptId: WorkspaceId,
+  scope: WorkspaceAttemptScope,
+  ordinal: z.number().int().positive().max(10_000),
+  status: z.enum(['inProgress', 'completed', 'abandoned']),
+  startedAt: WorkspaceTimestamp,
+  completedAt: WorkspaceTimestamp.optional(),
+  selectedObservationId: WorkspaceId.optional(),
+  confidence: z.enum(['low', 'medium', 'high']).optional(),
+  recommendation: WorkspaceRecommendation.optional(),
+  diagnostics: z.array(WorkspaceDiagnostic).max(2_000),
+};
+const WorkspaceAttempt = z.discriminatedUnion('stageId', [
+  z
+    .object({
+      ...WorkspaceAttemptBase,
+      stageId: z.literal('temperature'),
+      method: z.literal('temperatureTower'),
+      observations: z.array(WorkspaceTemperatureObservation).max(2_000),
+    })
+    .strict(),
+  z
+    .object({
+      ...WorkspaceAttemptBase,
+      stageId: z.literal('flowPass1'),
+      method: z.enum(['flowStandard', 'flowCoarse', 'flowYolo']),
+      observations: z.array(WorkspaceFlowPass1Observation).max(2_000),
+    })
+    .strict(),
+  z
+    .object({
+      ...WorkspaceAttemptBase,
+      stageId: z.literal('flowPass2'),
+      method: z.literal('flowFine'),
+      observations: z.array(WorkspaceFlowPass2Observation).max(2_000),
+    })
+    .strict(),
+  z
+    .object({
+      ...WorkspaceAttemptBase,
+      stageId: z.literal('pressureAdvance'),
+      method: z.enum([
+        'pressureAdvanceTower',
+        'pressureAdvanceLine',
+        'pressureAdvancePattern',
+      ]),
+      observations: z.array(WorkspacePressureAdvanceObservation).max(2_000),
+    })
+    .strict(),
+  z
+    .object({
+      ...WorkspaceAttemptBase,
+      stageId: z.literal('flowVerification'),
+      method: z.literal('verificationPrint'),
+      observations: z.array(WorkspaceFlowVerificationObservation).max(2_000),
+    })
+    .strict(),
+  z
+    .object({
+      ...WorkspaceAttemptBase,
+      stageId: z.literal('retraction'),
+      method: z.literal('retractionTower'),
+      observations: z.array(WorkspaceRetractionObservation).max(2_000),
+    })
+    .strict(),
+  z
+    .object({
+      ...WorkspaceAttemptBase,
+      stageId: z.literal('maximumVolumetricSpeed'),
+      method: z.literal('volumetricSpeedTower'),
+      observations: z.array(WorkspaceVolumetricSpeedObservation).max(2_000),
+    })
+    .strict(),
+  z
+    .object({
+      ...WorkspaceAttemptBase,
+      stageId: z.literal('shrinkage'),
+      method: z.literal('dimensionalCoupon'),
+      observations: z.array(WorkspaceShrinkageObservation).max(2_000),
+    })
+    .strict(),
+  z
+    .object({
+      ...WorkspaceAttemptBase,
+      stageId: z.literal('finalVerification'),
+      method: z.literal('verificationPrint'),
+      observations: z.array(WorkspaceFinalVerificationObservation).max(2_000),
+    })
+    .strict(),
+]);
+
+const WorkspaceStageProgress = z
+  .object({
+    stageId: CalibrationWorkspaceStageId,
+    status: z.enum([
+      'notStarted',
+      'inProgress',
+      'completed',
+      'skipped',
+      'needsRetest',
+    ]),
+    attemptIds: z.array(WorkspaceId).max(1_000),
+    selectedAttemptId: WorkspaceId.optional(),
+    skip: z
+      .object({
+        skipId: WorkspaceId,
+        reason: z.string().trim().min(1).max(4_096),
+        skippedAt: WorkspaceTimestamp,
+      })
+      .strict()
+      .optional(),
+    retestReason: z.string().trim().min(1).max(4_096).optional(),
+  })
+  .strict();
+const WorkspaceStages = z
+  .object({
+    temperature: WorkspaceStageProgress,
+    flowPass1: WorkspaceStageProgress,
+    flowPass2: WorkspaceStageProgress,
+    pressureAdvance: WorkspaceStageProgress,
+    flowVerification: WorkspaceStageProgress,
+    retraction: WorkspaceStageProgress,
+    maximumVolumetricSpeed: WorkspaceStageProgress,
+    shrinkage: WorkspaceStageProgress,
+    finalVerification: WorkspaceStageProgress,
+  })
+  .strict();
+
+const WorkspaceEventBase = {
+  eventId: WorkspaceId,
+  timestamp: WorkspaceTimestamp,
+};
+const WorkspaceHistoryEvent = z.discriminatedUnion('type', [
+  z
+    .object({
+      ...WorkspaceEventBase,
+      type: z.literal('setMode'),
+      mode: z.enum(['coach', 'expert']),
+    })
+    .strict(),
+  z
+    .object({
+      ...WorkspaceEventBase,
+      type: z.literal('navigate'),
+      stageId: CalibrationWorkspaceStageId,
+    })
+    .strict(),
+  z
+    .object({
+      ...WorkspaceEventBase,
+      type: z.literal('beginAttempt'),
+      attemptId: WorkspaceId,
+      stageId: CalibrationWorkspaceStageId,
+      method: CalibrationMethod,
+    })
+    .strict(),
+  z
+    .object({
+      ...WorkspaceEventBase,
+      type: z.literal('recordObservation'),
+      attemptId: WorkspaceId,
+      observation: z.discriminatedUnion('stageId', [
+        WorkspaceTemperatureObservation,
+        WorkspaceFlowPass1Observation,
+        WorkspaceFlowPass2Observation,
+        WorkspacePressureAdvanceObservation,
+        WorkspaceFlowVerificationObservation,
+        WorkspaceRetractionObservation,
+        WorkspaceVolumetricSpeedObservation,
+        WorkspaceShrinkageObservation,
+        WorkspaceFinalVerificationObservation,
+      ]),
+    })
+    .strict(),
+  z
+    .object({
+      ...WorkspaceEventBase,
+      type: z.literal('selectObservation'),
+      attemptId: WorkspaceId,
+      observationId: WorkspaceId,
+    })
+    .strict(),
+  z
+    .object({
+      ...WorkspaceEventBase,
+      type: z.literal('completeAttempt'),
+      attemptId: WorkspaceId,
+      confidence: z.enum(['low', 'medium', 'high']),
+    })
+    .strict(),
+  z
+    .object({
+      ...WorkspaceEventBase,
+      type: z.literal('skipStage'),
+      stageId: CalibrationWorkspaceStageId,
+      skipId: WorkspaceId,
+      reason: z.string().trim().min(1).max(4_096),
+    })
+    .strict(),
+  z
+    .object({
+      ...WorkspaceEventBase,
+      type: z.literal('redoStage'),
+      stageId: CalibrationWorkspaceStageId,
+      attemptId: WorkspaceId,
+      method: CalibrationMethod,
+      reason: z.string().trim().min(1).max(4_096),
+    })
+    .strict(),
+  z
+    .object({
+      ...WorkspaceEventBase,
+      type: z.literal('rebaseSnapshot'),
+      binding: WorkspaceBinding,
+      retestStages: z.array(CalibrationWorkspaceStageId).min(1).max(9),
+      reason: z.string().trim().min(1).max(4_096),
+    })
+    .strict(),
+]);
+
+function workspaceIssue(
+  context: z.RefinementCtx,
+  path: (string | number)[],
+  message: string,
+): void {
+  context.addIssue({ code: z.ZodIssueCode.custom, path, message });
+}
+
+const WorkspaceDomainState = z
+  .object({
+    schemaVersion: z.literal(1),
+    projectId: WorkspaceId,
+    createdAt: WorkspaceTimestamp,
+    mode: z.enum(['coach', 'expert']),
+    baseline: WorkspaceBaseline,
+    binding: WorkspaceBinding,
+    snapshotHistory: z.array(WorkspaceSnapshot).min(1).max(1_000),
+    currentStageId: CalibrationWorkspaceStageId,
+    stages: WorkspaceStages,
+    attempts: z.array(WorkspaceAttempt).max(2_000),
+    history: z.array(WorkspaceHistoryEvent).max(10_000),
+    diagnostics: z.array(WorkspaceDiagnostic).max(2_000),
+  })
+  .strict()
+  .superRefine((state, context) => {
+    for (const stageId of CalibrationWorkspaceStageId.options) {
+      if (state.stages[stageId].stageId !== stageId) {
+        workspaceIssue(
+          context,
+          ['stages', stageId, 'stageId'],
+          'Stage key must match its stage identity.',
+        );
+      }
+    }
+
+    const attemptById = new Map(
+      state.attempts.map((attempt) => [attempt.attemptId, attempt]),
+    );
+    if (attemptById.size !== state.attempts.length) {
+      workspaceIssue(
+        context,
+        ['attempts'],
+        'Attempt identities must be unique.',
+      );
+    }
+    const eventIds = new Set(state.history.map((event) => event.eventId));
+    if (eventIds.size !== state.history.length) {
+      workspaceIssue(context, ['history'], 'Event identities must be unique.');
+    }
+
+    const observationById = new Map<
+      string,
+      (typeof state.attempts)[number]['observations'][number]
+    >();
+    for (const [attemptIndex, attempt] of state.attempts.entries()) {
+      const stage = state.stages[attempt.stageId];
+      const references = stage.attemptIds.filter(
+        (attemptId) => attemptId === attempt.attemptId,
+      ).length;
+      if (references !== 1) {
+        workspaceIssue(
+          context,
+          ['attempts', attemptIndex, 'attemptId'],
+          'Each attempt must be referenced exactly once by its stage.',
+        );
+      }
+      const historicalSnapshot = state.snapshotHistory.find(
+        (snapshot) =>
+          snapshot.snapshotId === attempt.scope.snapshotId &&
+          snapshot.snapshotRevision === attempt.scope.snapshotRevision,
+      );
+      const scopedTool = historicalSnapshot?.toolheads.find(
+        (toolhead) => toolhead.toolId === attempt.scope.toolId,
+      );
+      if (
+        historicalSnapshot === undefined ||
+        historicalSnapshot.configurationRevision !==
+          attempt.scope.printerConfigurationRevision ||
+        scopedTool?.toolheadId !== attempt.scope.toolheadId ||
+        scopedTool.nozzle.nozzleId !== attempt.scope.nozzleId
+      ) {
+        workspaceIssue(
+          context,
+          ['attempts', attemptIndex, 'scope'],
+          'Attempt scope must match an immutable snapshot and tool identity.',
+        );
+      }
+      if (
+        attempt.scope.backendProfileId !==
+          state.binding.printer.backendProfileId ||
+        attempt.scope.backendPrinterId !==
+          state.binding.printer.backendPrinterId ||
+        attempt.scope.printerConfigurationId !==
+          state.binding.printer.printerConfigurationId ||
+        attempt.scope.filamentProjectId !==
+          state.binding.filament.filamentProjectId ||
+        attempt.scope.filamentProvider !== state.binding.filament.provider ||
+        attempt.scope.filamentProduct !== state.binding.filament.product ||
+        attempt.scope.filamentSku !== state.binding.filament.sku ||
+        attempt.scope.spoolId !== state.binding.filament.spoolId
+      ) {
+        workspaceIssue(
+          context,
+          ['attempts', attemptIndex, 'scope'],
+          'Attempt scope must retain project printer and filament identity.',
+        );
+      }
+      for (const [
+        observationIndex,
+        observation,
+      ] of attempt.observations.entries()) {
+        if (
+          observation.attemptId !== attempt.attemptId ||
+          observation.stageId !== attempt.stageId
+        ) {
+          workspaceIssue(
+            context,
+            ['attempts', attemptIndex, 'observations', observationIndex],
+            'Observation identity must match its attempt and stage.',
+          );
+        }
+        if (observationById.has(observation.observationId)) {
+          workspaceIssue(
+            context,
+            [
+              'attempts',
+              attemptIndex,
+              'observations',
+              observationIndex,
+              'observationId',
+            ],
+            'Observation identities must be unique.',
+          );
+        }
+        observationById.set(observation.observationId, observation);
+      }
+      if (
+        attempt.selectedObservationId !== undefined &&
+        !attempt.observations.some(
+          (observation) =>
+            observation.observationId === attempt.selectedObservationId,
+        )
+      ) {
+        workspaceIssue(
+          context,
+          ['attempts', attemptIndex, 'selectedObservationId'],
+          'Selected observation must belong to its attempt.',
+        );
+      }
+      if (
+        attempt.status === 'completed' &&
+        (attempt.completedAt === undefined ||
+          attempt.selectedObservationId === undefined ||
+          attempt.confidence === undefined ||
+          attempt.recommendation === undefined)
+      ) {
+        workspaceIssue(
+          context,
+          ['attempts', attemptIndex, 'status'],
+          'Completed attempts require a selected result, confidence, recommendation, and completion time.',
+        );
+      }
+      if (
+        attempt.status !== 'completed' &&
+        (attempt.completedAt !== undefined ||
+          attempt.confidence !== undefined ||
+          attempt.recommendation !== undefined)
+      ) {
+        workspaceIssue(
+          context,
+          ['attempts', attemptIndex, 'status'],
+          'Only completed attempts may carry completion metadata.',
+        );
+      }
+    }
+
+    for (const stageId of CalibrationWorkspaceStageId.options) {
+      const stage = state.stages[stageId];
+      const uniqueAttemptIds = new Set(stage.attemptIds);
+      const expectedAttemptIds = state.attempts
+        .filter((attempt) => attempt.stageId === stageId)
+        .map((attempt) => attempt.attemptId);
+      if (
+        uniqueAttemptIds.size !== stage.attemptIds.length ||
+        expectedAttemptIds.length !== stage.attemptIds.length ||
+        expectedAttemptIds.some((attemptId) => !uniqueAttemptIds.has(attemptId))
+      ) {
+        workspaceIssue(
+          context,
+          ['stages', stageId, 'attemptIds'],
+          'Stage attempt references must be exact and unique.',
+        );
+      }
+      const selected =
+        stage.selectedAttemptId === undefined
+          ? undefined
+          : attemptById.get(stage.selectedAttemptId);
+      if (
+        stage.selectedAttemptId !== undefined &&
+        (selected === undefined ||
+          selected.stageId !== stageId ||
+          selected.status !== 'completed')
+      ) {
+        workspaceIssue(
+          context,
+          ['stages', stageId, 'selectedAttemptId'],
+          'Selected attempt must be a completed attempt from this stage.',
+        );
+      }
+      const activeCount = expectedAttemptIds.filter(
+        (attemptId) => attemptById.get(attemptId)?.status === 'inProgress',
+      ).length;
+      if (
+        (stage.status === 'inProgress' && activeCount !== 1) ||
+        (stage.status !== 'inProgress' && activeCount !== 0)
+      ) {
+        workspaceIssue(
+          context,
+          ['stages', stageId, 'status'],
+          'Stage status must match its in-progress attempt.',
+        );
+      }
+      if (stage.status === 'completed' && selected === undefined) {
+        workspaceIssue(
+          context,
+          ['stages', stageId, 'selectedAttemptId'],
+          'Completed stages require a completed selected attempt.',
+        );
+      }
+      if (stage.status === 'skipped' && stage.skip === undefined) {
+        workspaceIssue(
+          context,
+          ['stages', stageId, 'skip'],
+          'Skipped stages require an auditable skip record.',
+        );
+      }
+      if (stage.status !== 'skipped' && stage.skip !== undefined) {
+        workspaceIssue(
+          context,
+          ['stages', stageId, 'skip'],
+          'Only skipped stages may carry a skip record.',
+        );
+      }
+      if (stage.status === 'needsRetest' && stage.retestReason === undefined) {
+        workspaceIssue(
+          context,
+          ['stages', stageId, 'retestReason'],
+          'Stages needing retest require a reason.',
+        );
+      }
+      if (
+        stage.status === 'notStarted' &&
+        (stage.attemptIds.length !== 0 || stage.selectedAttemptId !== undefined)
+      ) {
+        workspaceIssue(
+          context,
+          ['stages', stageId],
+          'A not-started stage cannot reference attempts.',
+        );
+      }
+    }
+
+    const snapshotKeys = new Set<string>();
+    for (const [snapshotIndex, snapshot] of state.snapshotHistory.entries()) {
+      const snapshotKey = `${snapshot.snapshotId}:${snapshot.snapshotRevision}`;
+      if (snapshotKeys.has(snapshotKey)) {
+        workspaceIssue(
+          context,
+          ['snapshotHistory', snapshotIndex],
+          'Snapshot history identities must be unique.',
+        );
+      }
+      snapshotKeys.add(snapshotKey);
+      const toolIds = new Set(
+        snapshot.toolheads.map((toolhead) => toolhead.toolId),
+      );
+      const toolheadIds = new Set(
+        snapshot.toolheads.map((toolhead) => toolhead.toolheadId),
+      );
+      const nozzleIds = new Set(
+        snapshot.toolheads.map((toolhead) => toolhead.nozzle.nozzleId),
+      );
+      if (
+        toolIds.size !== snapshot.toolheads.length ||
+        toolheadIds.size !== snapshot.toolheads.length ||
+        nozzleIds.size !== snapshot.toolheads.length
+      ) {
+        workspaceIssue(
+          context,
+          ['snapshotHistory', snapshotIndex, 'toolheads'],
+          'Tool, toolhead, and nozzle identities must be unique in a snapshot.',
+        );
+      }
+    }
+    const latestSnapshot = state.snapshotHistory.at(-1);
+    if (
+      latestSnapshot?.snapshotId !== state.binding.snapshot.snapshotId ||
+      latestSnapshot.snapshotRevision !==
+        state.binding.snapshot.snapshotRevision ||
+      JSON.stringify(latestSnapshot) !==
+        JSON.stringify(state.binding.snapshot) ||
+      state.binding.printer.printerConfigurationRevision !==
+        state.binding.snapshot.configurationRevision
+    ) {
+      workspaceIssue(
+        context,
+        ['snapshotHistory'],
+        'Current binding must match the latest snapshot and configuration revision.',
+      );
+    }
+    const selectedTool = state.binding.snapshot.toolheads.find(
+      (toolhead) => toolhead.toolId === state.binding.selectedToolId,
+    );
+    if (
+      selectedTool?.toolheadId !== state.binding.selectedToolheadId ||
+      selectedTool.nozzle.nozzleId !== state.binding.selectedNozzleId
+    ) {
+      workspaceIssue(
+        context,
+        ['binding', 'selectedToolId'],
+        'Selected tool identity must be present in the current snapshot.',
+      );
+    }
+
+    for (const [eventIndex, event] of state.history.entries()) {
+      if (
+        event.type === 'beginAttempt' ||
+        event.type === 'redoStage' ||
+        event.type === 'completeAttempt'
+      ) {
+        const attempt = attemptById.get(event.attemptId);
+        if (
+          attempt === undefined ||
+          ('stageId' in event && attempt.stageId !== event.stageId) ||
+          ('method' in event && attempt.method !== event.method) ||
+          (event.type === 'completeAttempt' &&
+            (attempt.status !== 'completed' ||
+              attempt.confidence !== event.confidence))
+        ) {
+          workspaceIssue(
+            context,
+            ['history', eventIndex],
+            'History attempt reference does not match a persisted attempt.',
+          );
+        }
+      } else if (event.type === 'recordObservation') {
+        const attempt = attemptById.get(event.attemptId);
+        const observation = observationById.get(
+          event.observation.observationId,
+        );
+        if (
+          attempt === undefined ||
+          observation === undefined ||
+          event.observation.attemptId !== event.attemptId ||
+          observation.attemptId !== event.attemptId ||
+          observation.stageId !== attempt.stageId ||
+          JSON.stringify(event.observation) !== JSON.stringify(observation)
+        ) {
+          workspaceIssue(
+            context,
+            ['history', eventIndex],
+            'History observation reference does not match a persisted observation.',
+          );
+        }
+      } else if (event.type === 'selectObservation') {
+        const attempt = attemptById.get(event.attemptId);
+        if (
+          attempt === undefined ||
+          !attempt.observations.some(
+            (observation) => observation.observationId === event.observationId,
+          )
+        ) {
+          workspaceIssue(
+            context,
+            ['history', eventIndex],
+            'History selected observation must belong to its attempt.',
+          );
+        }
+      } else if (event.type === 'skipStage') {
+        const stage = state.stages[event.stageId];
+        if (
+          stage.status !== 'skipped' ||
+          stage.skip?.skipId !== event.skipId ||
+          stage.skip.reason !== event.reason
+        ) {
+          workspaceIssue(
+            context,
+            ['history', eventIndex],
+            'History skip reference must match the persisted stage skip.',
+          );
+        }
+      }
+    }
+    for (const [diagnosticIndex, diagnostic] of state.diagnostics.entries()) {
+      if (
+        diagnostic.eventId !== undefined &&
+        !eventIds.has(diagnostic.eventId)
+      ) {
+        workspaceIssue(
+          context,
+          ['diagnostics', diagnosticIndex, 'eventId'],
+          'Diagnostic event reference must exist in history.',
+        );
+      }
+    }
+  });
+
+const WorkspaceStepDraft = z
+  .object({
+    prerequisites: z.string().max(2_048),
+    methodNotes: z.string().max(4_096),
+    expectedResult: z.string().max(2_048),
+  })
+  .strict();
+const WorkspaceStepDrafts = z
+  .object({
+    temperature: WorkspaceStepDraft.optional(),
+    flowPass1: WorkspaceStepDraft.optional(),
+    flowPass2: WorkspaceStepDraft.optional(),
+    pressureAdvance: WorkspaceStepDraft.optional(),
+    flowVerification: WorkspaceStepDraft.optional(),
+    retraction: WorkspaceStepDraft.optional(),
+    maximumVolumetricSpeed: WorkspaceStepDraft.optional(),
+    shrinkage: WorkspaceStepDraft.optional(),
+    finalVerification: WorkspaceStepDraft.optional(),
+  })
+  .strict();
+
+const WorkspaceWorkflowDraft = z
+  .object({
+    method: CalibrationMethod.nullable(),
+    observation: z
+      .object({
+        primary: z.string().max(128),
+        quality: z.string().max(128),
+        notes: z.string().max(4_096),
+        passed: z.boolean(),
+        nominalXmm: z.string().max(128),
+        nominalYmm: z.string().max(128),
+        nominalZmm: z.string().max(128),
+        measuredXmm: z.string().max(128),
+        measuredYmm: z.string().max(128),
+        measuredZmm: z.string().max(128),
+      })
+      .strict(),
+    confidence: z.enum(['low', 'medium', 'high']).nullable(),
+    reason: z.string().max(4_096),
+    photoAttemptId: z.string().uuid().nullable(),
+    photoCaption: z.string().max(512),
+    photoOrder: z.number().int().min(1).max(1_000),
+  })
+  .strict();
+const WorkspaceWorkflowDrafts = z
+  .object({
+    temperature: WorkspaceWorkflowDraft,
+    flowPass1: WorkspaceWorkflowDraft,
+    flowPass2: WorkspaceWorkflowDraft,
+    pressureAdvance: WorkspaceWorkflowDraft,
+    flowVerification: WorkspaceWorkflowDraft,
+    retraction: WorkspaceWorkflowDraft,
+    maximumVolumetricSpeed: WorkspaceWorkflowDraft,
+    shrinkage: WorkspaceWorkflowDraft,
+    finalVerification: WorkspaceWorkflowDraft,
+  })
+  .strict();
+
+const WorkspacePhotoMetadata = z
+  .object({
+    photoId: z.string().uuid(),
+    attemptId: z.string().uuid(),
+    stageId: CalibrationWorkspaceStageId,
+    contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+    byteSize: z.number().int().positive().max(20_000_000),
+    status: z.enum(['staged', 'uploading', 'uploaded', 'failed', 'conflicted']),
+    caption: z.string().min(1).max(512),
+    order: z.number().int().min(1).max(1_000),
+    stagedAt: z.string().datetime(),
+  })
+  .strict();
+
+export const CalibrationSelectedBaseProfile = z
+  .object({
+    orcaProfileId: z.string().min(1).max(512),
+    displayName: z.string().min(1).max(512),
+    source: z.literal('printFarmer'),
+    upstreamVerified: z.literal(true),
+    printerId: WorkspaceId,
+    configurationRevision: z.number().int().nonnegative(),
+    snapshotId: WorkspaceId,
+    toolId: WorkspaceId,
+    toolheadId: WorkspaceId,
+    nozzleId: WorkspaceId,
+    nozzleDiameterMm: z.number().finite().positive().max(10),
+    profileRevision: z.string().min(1).max(256).nullable(),
+    contentHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable(),
+  })
+  .strict();
+export type CalibrationSelectedBaseProfile = z.infer<
+  typeof CalibrationSelectedBaseProfile
+>;
+
+export const CalibrationWorkspacePayload = z
+  .object({
+    schemaVersion: z.literal(1),
+    domainState: WorkspaceDomainState,
+    metadata: z
+      .object({
+        displayName: z.string().trim().min(1).max(256),
+        description: z.string().max(4_096),
+      })
+      .strict(),
+    stepDrafts: WorkspaceStepDrafts,
+    workflowDrafts: WorkspaceWorkflowDrafts,
+    photos: z.array(WorkspacePhotoMetadata).max(1_000),
+    physicalMatch: z
+      .object({
+        snapshotId: z.string().min(1).max(256),
+        toolId: z.string().min(1).max(256),
+        toolheadId: z.string().min(1).max(256),
+        nozzleId: z.string().min(1).max(256),
+        nozzleDiameterMm: z.number().positive().max(10),
+        confirmedAt: z.string().datetime(),
+      })
+      .strict()
+      .nullable(),
+    selectedBaseProfile: CalibrationSelectedBaseProfile,
+    /** Compatibility alias; must equal selectedBaseProfile.orcaProfileId. */
+    selectedBaseProfileId: z.string().min(1).max(512),
+    autosaveRevision: z.number().int().nonnegative(),
+  })
+  .strict()
+  .superRefine((payload, context) => {
+    const binding = payload.domainState.binding;
+    const selectedTool = binding.snapshot.toolheads.find(
+      (toolhead) => toolhead.toolId === binding.selectedToolId,
+    );
+    if (
+      payload.selectedBaseProfileId !==
+        payload.selectedBaseProfile.orcaProfileId ||
+      payload.selectedBaseProfile.printerId !==
+        binding.printer.backendPrinterId ||
+      payload.selectedBaseProfile.configurationRevision !==
+        binding.printer.printerConfigurationRevision ||
+      payload.selectedBaseProfile.snapshotId !== binding.snapshot.snapshotId ||
+      payload.selectedBaseProfile.toolId !== binding.selectedToolId ||
+      payload.selectedBaseProfile.toolheadId !== binding.selectedToolheadId ||
+      payload.selectedBaseProfile.nozzleId !== binding.selectedNozzleId ||
+      payload.selectedBaseProfile.nozzleDiameterMm !==
+        selectedTool?.nozzle.diameterMm
+    ) {
+      workspaceIssue(
+        context,
+        ['selectedBaseProfile'],
+        'Selected base profile must match the current printer, snapshot, tool, and nozzle binding.',
+      );
+    }
+    if (payload.physicalMatch !== null) {
+      if (
+        payload.physicalMatch.snapshotId !== binding.snapshot.snapshotId ||
+        payload.physicalMatch.toolId !== binding.selectedToolId ||
+        payload.physicalMatch.toolheadId !== binding.selectedToolheadId ||
+        payload.physicalMatch.nozzleId !== binding.selectedNozzleId ||
+        payload.physicalMatch.nozzleDiameterMm !==
+          selectedTool?.nozzle.diameterMm
+      ) {
+        workspaceIssue(
+          context,
+          ['physicalMatch'],
+          'Physical match confirmation must match the current binding.',
+        );
+      }
+    }
+    const attemptById = new Map(
+      payload.domainState.attempts.map((attempt) => [
+        attempt.attemptId,
+        attempt,
+      ]),
+    );
+    const photoIds = new Set<string>();
+    for (const [photoIndex, photo] of payload.photos.entries()) {
+      const attempt = attemptById.get(photo.attemptId);
+      if (photoIds.has(photo.photoId)) {
+        workspaceIssue(
+          context,
+          ['photos', photoIndex, 'photoId'],
+          'Photo identities must be unique.',
+        );
+      }
+      photoIds.add(photo.photoId);
+      if (attempt === undefined || attempt.stageId !== photo.stageId) {
+        workspaceIssue(
+          context,
+          ['photos', photoIndex],
+          'Photo metadata must reference an attempt from the same stage.',
+        );
+      }
+    }
+    for (const stageId of CalibrationWorkspaceStageId.options) {
+      const photoAttemptId = payload.workflowDrafts[stageId].photoAttemptId;
+      if (photoAttemptId === null) continue;
+      const attempt = attemptById.get(photoAttemptId);
+      if (attempt === undefined || attempt.stageId !== stageId) {
+        workspaceIssue(
+          context,
+          ['workflowDrafts', stageId, 'photoAttemptId'],
+          'Photo draft attempt must reference an attempt from the same stage.',
+        );
+      }
+    }
+  });
+export type CalibrationWorkspacePayload = z.infer<
+  typeof CalibrationWorkspacePayload
+>;
+
+export function deriveCalibrationWorkspaceProjection(
+  domainState: z.infer<typeof WorkspaceDomainState>,
+): {
+  completedStepCount: number;
+  totalStepCount: 9;
+  status: 'draft' | 'inProgress' | 'complete';
+} {
+  const stages = CalibrationWorkspaceStageId.options.map(
+    (stageId) => domainState.stages[stageId].status,
+  );
+  const completedStepCount = stages.filter(
+    (status) => status === 'completed',
+  ).length;
+  const resolved = stages.every(
+    (status) => status === 'completed' || status === 'skipped',
+  );
+  return {
+    completedStepCount,
+    totalStepCount: 9,
+    status: resolved
+      ? 'complete'
+      : domainState.attempts.length > 0 || domainState.history.length > 0
+        ? 'inProgress'
+        : 'draft',
+  };
+}
+
+export const CalibrationWorkspaceStateRecord = z
+  .object({
+    profileId: z.string().uuid(),
+    projectId: z.string().uuid(),
+    displayName: z.string().trim().min(1).max(256),
+    description: z.string().max(4_096).nullable(),
+    printerId: z.string().min(1).max(256),
+    status: z.enum([
+      'draft',
+      'inProgress',
+      'awaitingGeneration',
+      'generated',
+      'complete',
+      'archived',
+    ]),
+    completedStepCount: z.number().int().nonnegative().max(9),
+    totalStepCount: z.number().int().nonnegative().max(9),
+    isSynced: z.boolean(),
+    isPrinterContextFresh: z.boolean(),
+    hasConflicts: z.boolean(),
+    remoteProjectId: z.string().uuid().nullable(),
+    baseRevision: z.number().int().nonnegative().nullable(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+    workspaceState: CalibrationWorkspacePayload,
+  })
+  .strict();
+export type CalibrationWorkspaceStateRecord = z.infer<
+  typeof CalibrationWorkspaceStateRecord
+>;
+
+export const CalibrationListWorkspaceStatesRequest = z
+  .object({ profileId: z.string().uuid() })
+  .strict();
+export type CalibrationListWorkspaceStatesRequest = z.infer<
+  typeof CalibrationListWorkspaceStatesRequest
+>;
+export const CalibrationUnhydratedProject = z
+  .object({
+    profileId: z.string().uuid(),
+    projectId: z.string().uuid(),
+    displayName: z.string().trim().min(1).max(256),
+    description: z.string().max(4_096).nullable(),
+    printerId: z.string().min(1).max(256),
+    status: CalibrationWorkspaceStateRecord.shape.status,
+    isSynced: z.literal(true),
+    isPrinterContextFresh: z.literal(false),
+    hasConflicts: z.boolean(),
+    remoteProjectId: z.string().uuid(),
+    baseRevision: z.number().int().nonnegative(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+    recoveryState: z.literal('migrationRequired'),
+  })
+  .strict();
+export type CalibrationUnhydratedProject = z.infer<
+  typeof CalibrationUnhydratedProject
+>;
+export const CalibrationListWorkspaceStatesResponse = z
+  .object({
+    states: z.array(CalibrationWorkspaceStateRecord).max(500),
+    unhydratedProjects: z.array(CalibrationUnhydratedProject).max(500),
+  })
+  .strict();
+export type CalibrationListWorkspaceStatesResponse = z.infer<
+  typeof CalibrationListWorkspaceStatesResponse
+>;
+
+export const CalibrationGetWorkspaceStateRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    projectId: z.string().uuid(),
+  })
+  .strict();
+export type CalibrationGetWorkspaceStateRequest = z.infer<
+  typeof CalibrationGetWorkspaceStateRequest
+>;
+export const CalibrationGetWorkspaceStateResponse =
+  CalibrationWorkspaceStateRecord.nullable();
+export type CalibrationGetWorkspaceStateResponse = z.infer<
+  typeof CalibrationGetWorkspaceStateResponse
+>;
+
+export const CalibrationSaveWorkspaceStateRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    projectId: z.string().uuid(),
+    displayName: z.string().trim().min(1).max(256),
+    description: z.string().max(4_096).nullable().optional(),
+    printerId: z.string().min(1).max(256),
+    status: CalibrationWorkspaceStateRecord.shape.status,
+    completedStepCount: z.number().int().nonnegative().max(9),
+    totalStepCount: z.number().int().min(1).max(9),
+    baseRevision: z.number().int().nonnegative().nullable().optional(),
+    operationId: z.string().uuid(),
+    workspaceState: CalibrationWorkspacePayload,
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const workspace = value.workspaceState;
+    const binding = workspace.domainState.binding.printer;
+    const projection = deriveCalibrationWorkspaceProjection(
+      workspace.domainState,
+    );
+    if (workspace.domainState.projectId !== value.projectId) {
+      workspaceIssue(
+        context,
+        ['workspaceState', 'domainState', 'projectId'],
+        'Workspace project identity must match the request.',
+      );
+    }
+    if (binding.backendProfileId !== value.profileId) {
+      workspaceIssue(
+        context,
+        [
+          'workspaceState',
+          'domainState',
+          'binding',
+          'printer',
+          'backendProfileId',
+        ],
+        'Workspace profile identity must match the request.',
+      );
+    }
+    if (binding.backendPrinterId !== value.printerId) {
+      workspaceIssue(
+        context,
+        [
+          'workspaceState',
+          'domainState',
+          'binding',
+          'printer',
+          'backendPrinterId',
+        ],
+        'Workspace printer identity must match the request.',
+      );
+    }
+    if (
+      workspace.metadata.displayName !== value.displayName ||
+      workspace.metadata.description !== (value.description ?? '')
+    ) {
+      workspaceIssue(
+        context,
+        ['workspaceState', 'metadata'],
+        'Workspace metadata must match the request projection.',
+      );
+    }
+    if (workspace.domainState.createdAt !== value.createdAt) {
+      workspaceIssue(
+        context,
+        ['workspaceState', 'domainState', 'createdAt'],
+        'Workspace creation time must match the request.',
+      );
+    }
+    if (
+      value.completedStepCount !== projection.completedStepCount ||
+      value.totalStepCount !== projection.totalStepCount
+    ) {
+      workspaceIssue(
+        context,
+        ['completedStepCount'],
+        'Workspace step counts must be derived from domain stage state.',
+      );
+    }
+    if (value.status !== projection.status) {
+      workspaceIssue(
+        context,
+        ['status'],
+        'Workspace status must be derived from domain stage state.',
+      );
+    }
+  });
+export type CalibrationSaveWorkspaceStateRequest = z.infer<
+  typeof CalibrationSaveWorkspaceStateRequest
+>;
+export const CalibrationSaveWorkspaceStateResponse = z
+  .object({
+    state: CalibrationWorkspaceStateRecord,
+    queued: z.literal(true),
+  })
+  .strict();
+export type CalibrationSaveWorkspaceStateResponse = z.infer<
+  typeof CalibrationSaveWorkspaceStateResponse
 >;
 
 // --- Calibration step stages -----------------------------------------------
@@ -1190,6 +2647,8 @@ export const CalibrationProjectSummary = z
     isPrinterContextFresh: z.boolean(),
     remoteProjectId: z.string().uuid().nullable(),
     baseRevision: z.number().int().nonnegative().nullable(),
+    /** Remote summaries without an exact workspace remain recoverable. */
+    recoveryState: z.literal('migrationRequired').nullable(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
@@ -1424,7 +2883,7 @@ export const StagedPhoto = z
   .object({
     photoId: z.string().uuid(),
     attemptId: z.string().uuid(),
-    stepId: z.string().uuid(),
+    stageId: CalibrationWorkspaceStageId,
     projectId: z.string().uuid(),
     profileId: z.string().uuid(),
     /** SHA-256 hash of the photo bytes (stable content identity). */
@@ -1438,6 +2897,8 @@ export const StagedPhoto = z
     remoteUrl: z.string().max(4096).nullable(),
     stagedAt: z.string().datetime(),
     uploadedAt: z.string().datetime().nullable(),
+    caption: z.string().min(1).max(512),
+    order: z.number().int().min(1).max(1_000),
   })
   .strict();
 export type StagedPhoto = z.infer<typeof StagedPhoto>;
@@ -1450,12 +2911,14 @@ export const CalibrationStagePhotoRequest = z
   .object({
     profileId: z.string().uuid(),
     projectId: z.string().uuid(),
-    stepId: z.string().uuid(),
+    stageId: CalibrationWorkspaceStageId,
     attemptId: z.string().uuid(),
-    /** Opaque approval ID from a dialog:openModelFile result. Reuses the existing allowlisted channel. */
+    /** Opaque, sender-bound approval ID from calibration:openPhoto. */
     approvalId: z.string().uuid(),
     /** Client-generated stable photo ID for idempotency. */
     photoId: z.string().uuid(),
+    caption: z.string().min(1).max(512),
+    order: z.number().int().min(1).max(1_000),
   })
   .strict();
 export type CalibrationStagePhotoRequest = z.infer<
@@ -1854,6 +3317,8 @@ export const OrcaProfileSource = z.enum([
   'systemInstall',
   /** Profile imported manually by the user. */
   'userImported',
+  /** Explicit upstream profile and compatibility scope supplied by PrintFarmer. */
+  'printFarmer',
 ]);
 export type OrcaProfileSource = z.infer<typeof OrcaProfileSource>;
 
@@ -1865,13 +3330,28 @@ export const OrcaProfileEntry = z
     vendor: z.string().max(256).nullable(),
     material: z.string().max(256).nullable(),
     source: OrcaProfileSource,
+    upstreamVerified: z.boolean(),
+    printerId: z.string().min(1).max(256),
+    configurationRevision: z.number().int().nonnegative(),
+    snapshotId: z.string().min(1).max(256),
+    toolId: z.string().min(1).max(256),
+    toolheadId: z.string().min(1).max(256),
+    nozzleId: z.string().min(1).max(256),
+    nozzleDiameterMm: z.number().finite().positive().max(10),
+    profileRevision: z.string().min(1).max(256).nullable(),
+    contentHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable(),
     /** Whether PFD can export this profile for calibration use. */
     exportable: z.boolean(),
   })
   .strict();
 export type OrcaProfileEntry = z.infer<typeof OrcaProfileEntry>;
 
-export const CalibrationListOrcaProfilesRequest = z.void();
+export const CalibrationListOrcaProfilesRequest = z
+  .object({ profileId: z.string().uuid() })
+  .strict();
 export type CalibrationListOrcaProfilesRequest = z.infer<
   typeof CalibrationListOrcaProfilesRequest
 >;
@@ -2369,6 +3849,10 @@ export const ipcSchemas = {
     request: OpenModelFileRequest,
     response: OpenModelFileResponse,
   },
+  [IpcChannel.OpenCalibrationPhoto]: {
+    request: OpenCalibrationPhotoRequest,
+    response: OpenCalibrationPhotoResponse,
+  },
   [IpcChannel.ExtractVendorMetadata]: {
     request: ExtractVendorMetadataRequest,
     response: ExtractVendorMetadataResponse,
@@ -2554,6 +4038,18 @@ export const ipcSchemas = {
     request: CalibrationGetPrinterContextRequest,
     response: CalibrationGetPrinterContextResponse,
   },
+  [IpcChannel.CalibrationListWorkspaceStates]: {
+    request: CalibrationListWorkspaceStatesRequest,
+    response: CalibrationListWorkspaceStatesResponse,
+  },
+  [IpcChannel.CalibrationGetWorkspaceState]: {
+    request: CalibrationGetWorkspaceStateRequest,
+    response: CalibrationGetWorkspaceStateResponse,
+  },
+  [IpcChannel.CalibrationSaveWorkspaceState]: {
+    request: CalibrationSaveWorkspaceStateRequest,
+    response: CalibrationSaveWorkspaceStateResponse,
+  },
   [IpcChannel.CalibrationListProjects]: {
     request: CalibrationListProjectsRequest,
     response: CalibrationListProjectsResponse,
@@ -2628,6 +4124,7 @@ export interface PrintFarmerApi {
   pingSidecar(request: SidecarPingRequest): Promise<SidecarPingResponse>;
   loadScene(request: LoadSceneRequest): Promise<LoadSceneResponse>;
   openModelFile(): Promise<OpenModelFileResponse>;
+  openCalibrationPhoto(): Promise<OpenCalibrationPhotoResponse>;
   extractVendorMetadata(
     request: ExtractVendorMetadataRequest,
   ): Promise<ExtractVendorMetadataResponse>;
@@ -2717,6 +4214,15 @@ export interface PrintFarmerApi {
   getCalibrationPrinterContext(
     request: CalibrationGetPrinterContextRequest,
   ): Promise<CalibrationGetPrinterContextResponse>;
+  listCalibrationWorkspaceStates(
+    request: CalibrationListWorkspaceStatesRequest,
+  ): Promise<CalibrationListWorkspaceStatesResponse>;
+  getCalibrationWorkspaceState(
+    request: CalibrationGetWorkspaceStateRequest,
+  ): Promise<CalibrationGetWorkspaceStateResponse>;
+  saveCalibrationWorkspaceState(
+    request: CalibrationSaveWorkspaceStateRequest,
+  ): Promise<CalibrationSaveWorkspaceStateResponse>;
   listCalibrationProjects(
     request: CalibrationListProjectsRequest,
   ): Promise<CalibrationListProjectsResponse>;
@@ -2756,7 +4262,9 @@ export interface PrintFarmerApi {
   startCalibrationPrint(
     request: CalibrationStartPrintRequest,
   ): Promise<CalibrationStartPrintResponse>;
-  listOrcaProfiles(): Promise<CalibrationListOrcaProfilesResponse>;
+  listOrcaProfiles(
+    request: CalibrationListOrcaProfilesRequest,
+  ): Promise<CalibrationListOrcaProfilesResponse>;
   exportOrcaProfile(
     request: CalibrationExportOrcaProfileRequest,
   ): Promise<CalibrationExportOrcaProfileResponse>;
