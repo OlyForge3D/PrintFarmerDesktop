@@ -65,6 +65,8 @@ interface MockWebGLRendererLike {
 
 interface MockOrbitControlsLike {
   dispatchEvent(event: { type: 'change' }): void;
+  addEventListener(type: 'change', listener: () => void): void;
+  update(): boolean;
 }
 
 async function loadHarness() {
@@ -292,6 +294,41 @@ describe('<ModelViewer />', () => {
       unmount();
     });
 
+    it('reports movement to the viewer only when the camera actually moved', async () => {
+      const { ModelViewer, lastRenderer, lastControls } = await loadHarness();
+      const { unmount } = render(<ModelViewer mesh={simpleMesh('m')} />);
+      const renderer = lastRenderer();
+      const camera = renderer.render.mock.calls[0]?.[1] as
+        ThreeNs.Camera | undefined;
+      if (!camera) throw new Error('the viewer never drew a first frame');
+      const controls = lastControls();
+      settle(renderer);
+
+      const changes: string[] = [];
+      controls.addEventListener('change', () => changes.push('change'));
+
+      // The stub this double replaced returned `false` unconditionally and
+      // never dispatched. Every keyboard test tolerates that stub, because
+      // `requestRender` fires for a handled key whether or not the controls
+      // say anything - so those tests would keep passing against a double that
+      // reports nothing at all, and the camera cases below would no longer be
+      // controls. Asserting the discrimination here is what stops the harness
+      // regressing to that fiction unnoticed.
+      expect(controls.update()).toBe(false);
+      expect(changes).toEqual([]);
+
+      camera.position.x += 1;
+
+      expect(controls.update()).toBe(true);
+      expect(changes).toEqual(['change']);
+
+      // Settles again rather than latching, matching the real controls. A
+      // double that stayed `true` would hide any missing invalidation.
+      expect(controls.update()).toBe(false);
+      expect(changes).toEqual(['change']);
+      unmount();
+    });
+
     it('draws again when the wireframe toggle changes', async () => {
       const { ModelViewer, lastRenderer } = await loadHarness();
       const mesh = simpleMesh('m');
@@ -473,6 +510,26 @@ describe('<ModelViewer />', () => {
         // showing the zoomed image forever.
         expect(camera.zoom).toBe(1);
         expect(renderer.render).toHaveBeenCalledTimes(1);
+        unmount();
+      });
+
+      it('leaves the viewport alone for keys it does not handle', async () => {
+        const { ModelViewer, lastRenderer } = await loadHarness();
+        const { unmount } = render(<ModelViewer mesh={simpleMesh('m')} />);
+        const renderer = lastRenderer();
+        settle(renderer);
+
+        pressKey('Tab');
+        pressKey('a');
+        pressKey('Escape');
+        runFrame();
+
+        // `requestRender` sits below the `viewerKeyAction` guard on purpose:
+        // above it, every keystroke reaching the container buys a frame, which
+        // is the on-demand gate #88 set out to preserve. Every other key press
+        // in this file is a handled one, so without a negative case the call
+        // could move above the guard and no test would change colour.
+        expect(renderer.render).not.toHaveBeenCalled();
         unmount();
       });
     });
