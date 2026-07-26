@@ -14,8 +14,10 @@
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { requireCargoSbomCoverage } from '../scripts/audit-advisories.mjs';
 import { buildSbom } from '../scripts/supply-chain.mjs';
 import {
+  evaluateCargoSbomCoverage,
   evaluateAdvisories,
   evaluateLicensePolicy,
   isExpressionAllowed,
@@ -480,6 +482,121 @@ describe('the advisory gate brackets its threshold from both sides', () => {
     expect(result.belowThreshold).toEqual([]);
     expect(result.couldNotRun).toEqual([]);
   });
+});
+
+describe('the advisory gate fails closed when Cargo SBOM coverage degrades', () => {
+  const cargoPackages = [
+    { name: 'quick-xml', version: '0.36.2' },
+    ...Array.from({ length: 80 }, (_, index) => ({
+      name: `crate-${String(index).padStart(2, '0')}`,
+      version: '1.0.0',
+    })),
+  ];
+  const excludedPackages = [
+    { name: 'build-only', version: '1.0.0', kind: 'build' },
+    { name: 'dev-only', version: '1.0.0', kind: 'dev' },
+  ];
+  const packageId = (pkg: { name: string; version: string }): string =>
+    `registry+https://github.com/rust-lang/crates.io-index#${pkg.name}@${pkg.version}`;
+  const rootId = 'path+file:///repo/native/model-core#0.1.0';
+  const metadata = {
+    packages: [
+      { id: rootId, name: 'model-core', version: '0.1.0' },
+      ...[...cargoPackages, ...excludedPackages].map((pkg) => ({
+        ...pkg,
+        id: packageId(pkg),
+      })),
+    ],
+    resolve: {
+      root: rootId,
+      nodes: [
+        {
+          id: rootId,
+          deps: [
+            ...cargoPackages.map((pkg) => ({
+              pkg: packageId(pkg),
+              dep_kinds: [{ kind: null }],
+            })),
+            ...excludedPackages.map((pkg) => ({
+              pkg: packageId(pkg),
+              dep_kinds: [{ kind: pkg.kind }],
+            })),
+          ],
+        },
+        ...[...cargoPackages, ...excludedPackages].map((pkg) => ({
+          id: packageId(pkg),
+          deps: [],
+        })),
+      ],
+    },
+  };
+  const fixedComponents = [
+    ...Array.from({ length: 8 }, (_, index) =>
+      comp(`npm-${index}`, 'MIT', 'npm'),
+    ),
+    comp('sqlite3', undefined, 'native'),
+  ];
+  const cargoComponents = cargoPackages.map((pkg) => ({
+    ...comp(pkg.name, 'MIT', 'cargo'),
+    version: pkg.version,
+    'bom-ref': `pkg:cargo/${pkg.name}@${pkg.version}`,
+  }));
+  const withCargo = (components: SbomComponent[]): Sbom =>
+    sbomWith([...fixedComponents, ...components]);
+
+  it('accepts all 90 components when all 81 feature-resolved crates are present', () => {
+    const sbom = withCargo([...cargoComponents].reverse());
+    expect(sbom.components).toHaveLength(90);
+    expect(evaluateCargoSbomCoverage(sbom, metadata)).toEqual({
+      complete: true,
+      expectedCount: 81,
+      actualCount: 81,
+      missing: [],
+      unexpected: [],
+      duplicates: [],
+      malformed: [],
+      diagnostic: null,
+    });
+  });
+
+  it('rejects the near-complete 89/90 document and names quick-xml', () => {
+    const sbom = withCargo(
+      cargoComponents.filter((component) => component.name !== 'quick-xml'),
+    );
+    expect(sbom.components).toHaveLength(89);
+
+    const result = evaluateCargoSbomCoverage(sbom, metadata);
+    expect(result).toMatchObject({
+      complete: false,
+      expectedCount: 81,
+      actualCount: 80,
+      missing: ['quick-xml@0.36.2'],
+    });
+    const diagnostic =
+      'cargo SBOM completeness check expected 81 feature-resolved shipped component(s) from cargo metadata but found 80; missing: quick-xml@0.36.2';
+    expect(result.diagnostic).toBe(diagnostic);
+    expect(() => requireCargoSbomCoverage(sbom, metadata)).toThrowError(
+      diagnostic,
+    );
+  });
+
+  it.each([
+    ['one Cargo component', cargoComponents.slice(1, 2), 10, 1, 80],
+    ['no Cargo components', [], 9, 0, 81],
+  ])(
+    'rejects a document with %s',
+    (_label, degradedCargo, totalCount, actualCount, missingCount) => {
+      const sbom = withCargo(degradedCargo);
+      expect(sbom.components).toHaveLength(totalCount);
+
+      const result = evaluateCargoSbomCoverage(sbom, metadata);
+      expect(result.complete).toBe(false);
+      expect(result.actualCount).toBe(actualCount);
+      expect(result.missing).toHaveLength(missingCount);
+      expect(result.missing).toContain('quick-xml@0.36.2');
+      expect(result.diagnostic).toContain('cargo SBOM completeness check');
+    },
+  );
 });
 
 describe('advisories are scoped to the shipped closure by name', () => {

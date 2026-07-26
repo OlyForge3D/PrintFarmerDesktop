@@ -249,6 +249,136 @@ export function evaluateLicensePolicy(sbom, policy) {
 // Advisory policy
 // ---------------------------------------------------------------------------
 
+/**
+ * Compare the SBOM's Cargo identities with an independent walk of raw,
+ * feature-resolved `cargo metadata`.
+ *
+ * This deliberately does not call `deriveShippedCargoComponents`: that function
+ * feeds the SBOM generator, so reusing it here would let the generator and its
+ * completeness check agree on the same under-enumeration. Both walks follow
+ * normal edges and exclude the root, but this one only produces an unordered
+ * identity set for the advisory gate to compare.
+ */
+export function evaluateCargoSbomCoverage(sbom, metadata) {
+  if (
+    !Array.isArray(metadata?.packages) ||
+    !Array.isArray(metadata?.resolve?.nodes) ||
+    typeof metadata.resolve.root !== 'string'
+  ) {
+    throw new Error(
+      'cargo SBOM completeness check requires feature-resolved cargo metadata with packages, resolve.nodes, and resolve.root',
+    );
+  }
+
+  const packagesById = new Map(metadata.packages.map((pkg) => [pkg.id, pkg]));
+  const nodesById = new Map(
+    metadata.resolve.nodes.map((node) => [node.id, node]),
+  );
+  const reached = new Set();
+  const queue = [metadata.resolve.root];
+
+  while (queue.length > 0) {
+    const id = queue.shift();
+    if (reached.has(id)) continue;
+    const node = nodesById.get(id);
+    if (!node) {
+      throw new Error(
+        `cargo SBOM completeness check cannot find resolve node ${id}`,
+      );
+    }
+    reached.add(id);
+    for (const dependency of node.deps ?? []) {
+      const isNormal = (dependency.dep_kinds ?? []).some(
+        (entry) => (entry.kind ?? 'normal') === 'normal',
+      );
+      if (isNormal && !reached.has(dependency.pkg)) {
+        queue.push(dependency.pkg);
+      }
+    }
+  }
+  reached.delete(metadata.resolve.root);
+
+  const expected = new Set();
+  for (const id of reached) {
+    const pkg = packagesById.get(id);
+    if (typeof pkg?.name !== 'string' || typeof pkg?.version !== 'string') {
+      throw new Error(
+        `cargo SBOM completeness check cannot identify resolved package ${id}`,
+      );
+    }
+    expected.add(`${pkg.name}@${pkg.version}`);
+  }
+
+  const actualCounts = new Map();
+  const malformed = [];
+  for (const component of sbom?.components ?? []) {
+    const ecosystem = component?.properties?.find(
+      (property) => property.name === 'printfarmer:ecosystem',
+    )?.value;
+    if (ecosystem !== 'cargo') continue;
+    if (
+      typeof component.name !== 'string' ||
+      typeof component.version !== 'string'
+    ) {
+      malformed.push(String(component?.['bom-ref'] ?? '<missing bom-ref>'));
+      continue;
+    }
+    const identity = `${component.name}@${component.version}`;
+    actualCounts.set(identity, (actualCounts.get(identity) ?? 0) + 1);
+  }
+
+  const actual = new Set(actualCounts.keys());
+  const missing = [...expected]
+    .filter((identity) => !actual.has(identity))
+    .sort(compareByCodeUnit);
+  const unexpected = [...actual]
+    .filter((identity) => !expected.has(identity))
+    .sort(compareByCodeUnit);
+  const duplicates = [...actualCounts]
+    .filter(([, count]) => count > 1)
+    .map(([identity]) => identity)
+    .sort(compareByCodeUnit);
+  malformed.sort(compareByCodeUnit);
+
+  const actualCount = [...actualCounts.values()].reduce(
+    (total, count) => total + count,
+    0,
+  );
+  const complete =
+    expected.size > 0 &&
+    missing.length === 0 &&
+    unexpected.length === 0 &&
+    duplicates.length === 0 &&
+    malformed.length === 0;
+  const details = [];
+  if (expected.size === 0) {
+    details.push('feature-resolved cargo metadata contains no shipped crates');
+  }
+  if (missing.length > 0) details.push(`missing: ${missing.join(', ')}`);
+  if (unexpected.length > 0) {
+    details.push(`unexpected: ${unexpected.join(', ')}`);
+  }
+  if (duplicates.length > 0) {
+    details.push(`duplicated: ${duplicates.join(', ')}`);
+  }
+  if (malformed.length > 0) {
+    details.push(`malformed cargo components: ${malformed.join(', ')}`);
+  }
+
+  return {
+    complete,
+    expectedCount: expected.size,
+    actualCount,
+    missing,
+    unexpected,
+    duplicates,
+    malformed,
+    diagnostic: complete
+      ? null
+      : `cargo SBOM completeness check expected ${expected.size} feature-resolved shipped component(s) from cargo metadata but found ${actualCount}; ${details.join('; ')}`,
+  };
+}
+
 const SEVERITY_RANK = { info: 0, low: 1, moderate: 2, high: 3, critical: 4 };
 
 /** Numeric rank for a severity label; unknown labels rank as `high` (3). */

@@ -24,11 +24,13 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
+  evaluateCargoSbomCoverage,
   evaluateAdvisories,
   normalizeCargoAudit,
   normalizeNpmAudit,
   scopeToShippedClosure,
 } from './supply-chain-policy.mjs';
+import { readCargoMetadata, resolveShippedFeatures } from './generate-sbom.mjs';
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -89,6 +91,12 @@ function capture(command, args, cwd, useShell = false) {
   }
 }
 
+export function requireCargoSbomCoverage(sbom, cargoMetadata) {
+  const coverage = evaluateCargoSbomCoverage(sbom, cargoMetadata);
+  if (!coverage.complete) throw new Error(coverage.diagnostic);
+  return coverage;
+}
+
 function main() {
   const options = parseArgs(process.argv.slice(2));
 
@@ -128,6 +136,34 @@ function main() {
     if (ecosystem === 'npm') shipped.npm.add(component.name);
     else if (ecosystem === 'cargo') shipped.cargo.add(component.name);
   }
+
+  // The advisory scope is only meaningful if the SBOM is complete. Re-resolve
+  // raw metadata here and compare exact identities before consulting either
+  // advisory database; this catches a generator that silently drops one crate
+  // as well as an empty Cargo section. The independent walk lives in the policy
+  // module rather than reusing the generator's derivation, so the two cannot
+  // agree on the same serialization defect.
+  let cargoMetadata;
+  try {
+    const features = resolveShippedFeatures(repoRoot);
+    cargoMetadata = readCargoMetadata(features, repoRoot);
+  } catch (error) {
+    console.error(
+      `[audit-advisories] FAILED: cargo SBOM completeness check could not resolve the shipped graph: ${error.message}`,
+    );
+    process.exit(1);
+  }
+
+  let cargoCoverage;
+  try {
+    cargoCoverage = requireCargoSbomCoverage(sbom, cargoMetadata);
+  } catch (error) {
+    console.error(`[audit-advisories] FAILED: ${error.message}`);
+    process.exit(1);
+  }
+  console.log(
+    `[audit-advisories] OK: cargo SBOM completeness check matched ${cargoCoverage.expectedCount} feature-resolved shipped component(s)`,
+  );
 
   const advisories = [];
   const couldNotRun = [];

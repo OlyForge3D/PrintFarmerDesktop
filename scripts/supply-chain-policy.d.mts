@@ -51,6 +51,17 @@ export interface AdvisoryEvaluation {
   couldNotRun: string[];
 }
 
+export interface CargoSbomCoverage {
+  complete: boolean;
+  expectedCount: number;
+  actualCount: number;
+  missing: string[];
+  unexpected: string[];
+  duplicates: string[];
+  malformed: string[];
+  diagnostic: string | null;
+}
+
 export function licenseExpressionsOf(component: unknown): string[];
 export function isExpressionAllowed(
   expression: string,
@@ -65,6 +76,10 @@ export function severityRank(severity: string): number;
 export function severityFromCvss(vector: string | undefined): string;
 export function normalizeNpmAudit(report: unknown): Advisory[];
 export function normalizeCargoAudit(report: unknown): Advisory[];
+export function evaluateCargoSbomCoverage(
+  sbom: Sbom,
+  cargoMetadata: unknown,
+): CargoSbomCoverage;
 export function scopeToShippedClosure(
   advisories: Advisory[],
   shippedPackageNames: Iterable<string>,

@@ -850,7 +850,11 @@ is _sound_ by requiring every bare specifier under `src/` to resolve to a shippe
 first-party alias, or a `node:` builtin — with a guard that a zero-offender result came from a
 non-empty scan. `scripts/verify-sbom.mjs` runs the cargo half against real `cargo metadata` in
 the Package job and requires the feature-bound closure to be a strict superset of a featureless
-resolve, so a closure that ignores features cannot pass.
+resolve, so a closure that ignores features cannot pass. The separate advisory job does not trust
+the generated SBOM as its own completeness oracle: before auditing, `audit-advisories.mjs` walks
+the raw feature-resolved metadata independently and requires the exact unordered Cargo
+`name@version` set to match. Missing one crate, including `quick-xml`, fails the job before an
+empty advisory result can be reported as success.
 
 **Residual.** The shipped npm set is the import graph, and the soundness check reads `src/`
 statically. A specifier assembled at runtime (`require(someVariable)`) would not be seen. No
@@ -874,7 +878,9 @@ any blocking advisory, and the threshold/waiver logic is unit-tested from both s
 run the audit — tool missing, unparseable output, registry unreachable — exits non-zero in
 **both** modes, so "could not check" reads as a red job rather than a silent pass. Converting a
 loud failure into a quiet one is the failure mode this control exists to avoid. Waivers are
-per-advisory-id with a written reason; there is no blanket ignore.
+per-advisory-id with a written reason; there is no blanket ignore. A mismatch between the
+feature-resolved Cargo graph and the SBOM is also fatal in both modes, independent of whether
+the live advisory databases report findings.
 
 At the current shipped feature set the audit reports `quick-xml` (RUSTSEC-2026-0194/-0195, high)
 in the 3MF parser closure. It is surfaced, not waived: the remediation is an upstream-parser

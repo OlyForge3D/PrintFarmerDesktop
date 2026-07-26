@@ -165,6 +165,8 @@ jobs:
       # retroactively fail an unrelated pull request. Findings surface as
       # `::warning::` annotations and the job stays green. An inability to run
       # the audit — tool missing, unparseable output, registry unreachable —
-      # still fails the job loudly rather than passing in silence.
+      # still fails the job loudly rather than passing in silence. Before either
+      # audit runs, the gate independently walks feature-resolved cargo metadata
+      # and requires its exact name@version set to match the generated SBOM.
       - name: Audit shipped dependencies for known advisories
         run: npm run audit:advisories
