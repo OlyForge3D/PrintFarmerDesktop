@@ -1,6 +1,6 @@
 {
   "goal_id": "import-legacy-calibration-v4",
-  "status": "complete",
+  "status": "completed",
   "iteration": 1,
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
