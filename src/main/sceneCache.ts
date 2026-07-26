@@ -49,6 +49,14 @@ export interface SceneCacheServiceOptions {
 interface RecipeLease {
   recipe: string | null;
   storageReady: boolean;
+  /**
+   * Which purge era the lease was issued in. A purge bumps the counter, so a
+   * derivation already in flight when the user revoked their grants cannot
+   * write its entry into the shredded directory afterwards — comparing only
+   * the recipe would let it back in as soon as the next load re-adopted the
+   * same recipe.
+   */
+  generation: number;
 }
 
 const nodeFileSystem: SceneCacheFileSystem = {
@@ -84,6 +92,7 @@ export class SceneCacheService {
   private readonly reportError: (message: string, error: unknown) => void;
   private activeRecipe: string | null | typeof UNINITIALIZED = UNINITIALIZED;
   private storageReady = false;
+  private generation = 0;
   private mutationTail: Promise<void> = Promise.resolve();
   private readonly inFlight = new Map<string, Promise<Scene>>();
 
@@ -109,6 +118,31 @@ export class SceneCacheService {
 
   async adoptRecipe(recipe: string | undefined): Promise<void> {
     await this.withMutationLock(() => this.adoptRecipeLocked(recipe ?? null));
+  }
+
+  /**
+   * Removes every derived scene from disk.
+   *
+   * Called when the user revokes filesystem grants. `ResetApprovedRoots` clears
+   * both grant sources at once — the stored root approvals and the picker
+   * allowlist — and scenes derived under those grants are artifacts of them, so
+   * they must not outlive them. The entries are owner-only and are never served
+   * without a fresh authorization pass, so this is symmetry rather than a
+   * containment fix.
+   *
+   * The manifest is removed before the directory so a partial failure degrades
+   * toward eviction: the next adoption finds no persisted recipe, and evicts
+   * whatever survived instead of resuming on top of it. A failure is allowed to
+   * propagate, because a reset that could not shred is not a reset.
+   */
+  async purge(): Promise<void> {
+    await this.withMutationLock(async () => {
+      this.generation += 1;
+      this.activeRecipe = UNINITIALIZED;
+      this.storageReady = false;
+      await this.fileSystem.remove(this.manifestPath);
+      await this.fileSystem.remove(this.cacheDirectory);
+    });
   }
 
   async loadScene(filePath: string): Promise<Scene> {
@@ -369,12 +403,15 @@ export class SceneCacheService {
     return {
       recipe: this.activeRecipe,
       storageReady: this.storageReady,
+      generation: this.generation,
     };
   }
 
   private isCurrent(lease: RecipeLease): boolean {
     return (
-      this.activeRecipe !== UNINITIALIZED && this.activeRecipe === lease.recipe
+      this.generation === lease.generation &&
+      this.activeRecipe !== UNINITIALIZED &&
+      this.activeRecipe === lease.recipe
     );
   }
 
