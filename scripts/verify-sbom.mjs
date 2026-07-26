@@ -41,9 +41,14 @@ try {
 }
 
 const features = resolveShippedFeatures(repoRoot);
-const lock = JSON.parse(
-  readFileSync(path.join(repoRoot, 'package-lock.json'), 'utf8'),
-);
+let lock;
+try {
+  lock = JSON.parse(
+    readFileSync(path.join(repoRoot, 'package-lock.json'), 'utf8'),
+  );
+} catch (error) {
+  fail(`package-lock.json could not be read as JSON: ${error.message}`);
+}
 const regenerated = `${JSON.stringify(
   buildSbom({
     lock,
@@ -56,9 +61,20 @@ const regenerated = `${JSON.stringify(
 )}\n`;
 
 if (regenerated !== staged) {
+  const regeneratedLines = regenerated.split('\n');
+  const stagedLines = staged.split('\n');
+  const at = stagedLines.findIndex(
+    (line, index) => line !== regeneratedLines[index],
+  );
+  const detail =
+    at === -1
+      ? `the two agree line-for-line but differ in length (staged ${stagedLines.length}, regenerated ${regeneratedLines.length})`
+      : `first difference at line ${at + 1}: staged ${JSON.stringify(
+          stagedLines[at],
+        )} vs regenerated ${JSON.stringify(regeneratedLines[at])}`;
   fail(
     `the staged SBOM does not match one regenerated from the committed lockfiles. ` +
-      `A dependency changed without the SBOM being regenerated, or the staged file was edited by hand.`,
+      `A dependency changed without the SBOM being regenerated, or the staged file was edited by hand. ${detail}`,
   );
 }
 console.log(
