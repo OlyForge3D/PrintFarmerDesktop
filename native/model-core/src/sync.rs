@@ -1123,7 +1123,9 @@ pub enum CalibrationEntityType {
 }
 
 impl CalibrationEntityType {
-    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
+    /// Returns the canonical string stored in the `entity_type` column of
+    /// calibration tables (used by the SQLite-backed catalog).
+    #[cfg(feature = "sqlite")]
     pub(crate) fn as_db(self) -> &'static str {
         match self {
             Self::CalibrationProject => "CalibrationProject",
@@ -1134,23 +1136,6 @@ impl CalibrationEntityType {
             Self::CalibrationPhoto => "CalibrationPhoto",
             Self::CalibrationProfileRevision => "CalibrationProfileRevision",
             Self::CalibrationPrinterSnapshot => "CalibrationPrinterSnapshot",
-        }
-    }
-
-    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
-    pub(crate) fn from_db(value: &str) -> Result<Self, String> {
-        match value {
-            "CalibrationProject" => Ok(Self::CalibrationProject),
-            "CalibrationStep" => Ok(Self::CalibrationStep),
-            "CalibrationAttempt" => Ok(Self::CalibrationAttempt),
-            "CalibrationEvent" => Ok(Self::CalibrationEvent),
-            "CalibrationObservation" => Ok(Self::CalibrationObservation),
-            "CalibrationPhoto" => Ok(Self::CalibrationPhoto),
-            "CalibrationProfileRevision" => Ok(Self::CalibrationProfileRevision),
-            "CalibrationPrinterSnapshot" => Ok(Self::CalibrationPrinterSnapshot),
-            _ => Err(format!(
-                "invalid persisted calibration entity type: {value}"
-            )),
         }
     }
 }
@@ -1174,7 +1159,9 @@ pub enum CalibrationOutboxState {
 }
 
 impl CalibrationOutboxState {
-    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
+    /// Returns the canonical string stored in the `state` column of the
+    /// calibration outbox (used by the SQLite-backed catalog).
+    #[cfg(feature = "sqlite")]
     pub(crate) fn as_db(self) -> &'static str {
         match self {
             Self::Pending => "pending",
@@ -1183,21 +1170,6 @@ impl CalibrationOutboxState {
             Self::Failed => "failed",
             Self::Replayed => "replayed",
             Self::Superseded => "superseded",
-        }
-    }
-
-    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
-    pub(crate) fn from_db(value: &str) -> Result<Self, String> {
-        match value {
-            "pending" => Ok(Self::Pending),
-            "leased" => Ok(Self::Leased),
-            "settled" => Ok(Self::Settled),
-            "failed" => Ok(Self::Failed),
-            "replayed" => Ok(Self::Replayed),
-            "superseded" => Ok(Self::Superseded),
-            _ => Err(format!(
-                "invalid persisted calibration outbox state: {value}"
-            )),
         }
     }
 
@@ -1233,33 +1205,6 @@ pub enum CalibrationConflictKind {
 }
 
 impl CalibrationConflictKind {
-    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
-    pub(crate) fn as_db(self) -> &'static str {
-        match self {
-            Self::ProjectMetadata => "projectMetadata",
-            Self::StepOrdering => "stepOrdering",
-            Self::StepDraft => "stepDraft",
-            Self::OutcomeSelection => "outcomeSelection",
-            Self::StalePrinterSnapshot => "stalePrinterSnapshot",
-            Self::DeletionVsLocalEdit => "deletionVsLocalEdit",
-        }
-    }
-
-    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
-    pub(crate) fn from_db(value: &str) -> Result<Self, String> {
-        match value {
-            "projectMetadata" => Ok(Self::ProjectMetadata),
-            "stepOrdering" => Ok(Self::StepOrdering),
-            "stepDraft" => Ok(Self::StepDraft),
-            "outcomeSelection" => Ok(Self::OutcomeSelection),
-            "stalePrinterSnapshot" => Ok(Self::StalePrinterSnapshot),
-            "deletionVsLocalEdit" => Ok(Self::DeletionVsLocalEdit),
-            _ => Err(format!(
-                "invalid persisted calibration conflict kind: {value}"
-            )),
-        }
-    }
-
     /// Return the semantically valid resolution strategies for this conflict kind.
     ///
     /// Append-only data (attempts, events, observations, photos, profile
@@ -1299,29 +1244,6 @@ pub enum CalibrationConflictResolutionKind {
     KeepLocalAsNewRevision,
     /// Manual field-level merge (only for metadata/draft conflicts).
     ManualFieldMerge,
-}
-
-impl CalibrationConflictResolutionKind {
-    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
-    pub(crate) fn as_db(self) -> &'static str {
-        match self {
-            Self::AcceptServer => "acceptServer",
-            Self::KeepLocalAsNewRevision => "keepLocalAsNewRevision",
-            Self::ManualFieldMerge => "manualFieldMerge",
-        }
-    }
-
-    #[cfg_attr(not(feature = "sqlite"), allow(dead_code))]
-    pub(crate) fn from_db(value: &str) -> Result<Self, String> {
-        match value {
-            "acceptServer" => Ok(Self::AcceptServer),
-            "keepLocalAsNewRevision" => Ok(Self::KeepLocalAsNewRevision),
-            "manualFieldMerge" => Ok(Self::ManualFieldMerge),
-            _ => Err(format!(
-                "invalid persisted calibration conflict resolution: {value}"
-            )),
-        }
-    }
 }
 
 /// Cursor state for the calibration sync change feed.

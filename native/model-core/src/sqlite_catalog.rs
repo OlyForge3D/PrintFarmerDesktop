@@ -30,11 +30,12 @@ use crate::schema::{
     SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_VERSION,
 };
 use crate::sync::{
-    self, ApplyPullBatchDto, ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution,
-    DisposeFailedBatchDto, EnqueueOutboundOperationDto, EntityRevisionDto, FailOutboundBatchDto,
-    OutboundFailureOutcome, OutboundOperationDto, OutboundState, ReconcileUncertainBatchDto,
-    RemoteModelLinkDto, RemoteUploadStatus, SettleOutboundBatchDto, SettledOutboundBatchDto,
-    SyncConflictDto, SyncEntityType, SyncStatusDto, SyncVisibility, UnknownOutcomeResolution,
+    self, ApplyPullBatchDto, CalibrationEntityType, CalibrationOutboxState,
+    ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution, DisposeFailedBatchDto,
+    EnqueueOutboundOperationDto, EntityRevisionDto, FailOutboundBatchDto, OutboundFailureOutcome,
+    OutboundOperationDto, OutboundState, ReconcileUncertainBatchDto, RemoteModelLinkDto,
+    RemoteUploadStatus, SettleOutboundBatchDto, SettledOutboundBatchDto, SyncConflictDto,
+    SyncEntityType, SyncStatusDto, SyncVisibility, UnknownOutcomeResolution,
 };
 
 /// A SQLite-backed catalog. Wraps one connection; use single-threaded per the
@@ -2842,6 +2843,7 @@ impl CatalogStore for SqliteCatalog {
         project_id: Option<&str>,
         limit: usize,
     ) -> Result<Vec<CalibrationPendingOpDto>, String> {
+        let pending = CalibrationOutboxState::Pending.as_db();
         let mut stmt = if project_id.is_some() {
             self.conn
                 .prepare(
@@ -2850,9 +2852,9 @@ impl CatalogStore for SqliteCatalog {
                             operation_kind, payload_json, depends_on_json
                      FROM calibration_outbox
                      WHERE profile_id = ?1 AND project_id = ?2
-                       AND state = 'pending'
+                       AND state = ?3
                      ORDER BY sequence ASC
-                     LIMIT ?3",
+                     LIMIT ?4",
                 )
                 .map_err(sql_error)?
         } else {
@@ -2862,7 +2864,7 @@ impl CatalogStore for SqliteCatalog {
                             base_revision, idempotency_key, entity_type, entity_id,
                             operation_kind, payload_json, depends_on_json
                      FROM calibration_outbox
-                     WHERE profile_id = ?1 AND state = 'pending'
+                     WHERE profile_id = ?1 AND state = ?2
                      ORDER BY sequence ASC
                      LIMIT ?3",
                 )
@@ -2871,7 +2873,7 @@ impl CatalogStore for SqliteCatalog {
         let limit_i64 = limit as i64;
         let rows: Vec<CalibrationPendingOpDto> = if let Some(pid) = project_id {
             stmt.query_map(
-                params![profile_id, pid, limit_i64],
+                params![profile_id, pid, pending, limit_i64],
                 calibration_pending_op_from_row,
             )
             .map_err(sql_error)?
@@ -2879,7 +2881,7 @@ impl CatalogStore for SqliteCatalog {
             .map_err(sql_error)?
         } else {
             stmt.query_map(
-                params![profile_id, limit_i64],
+                params![profile_id, pending, limit_i64],
                 calibration_pending_op_from_row,
             )
             .map_err(sql_error)?
@@ -2899,9 +2901,15 @@ impl CatalogStore for SqliteCatalog {
         self.conn
             .execute(
                 "UPDATE calibration_outbox
-                 SET state = 'settled', server_revision = ?3, settled_at = ?4, updated_at = ?4
+                 SET state = ?3, server_revision = ?4, settled_at = ?5, updated_at = ?5
                  WHERE profile_id = ?1 AND operation_id = ?2",
-                params![profile_id, operation_id, server_revision, now],
+                params![
+                    profile_id,
+                    operation_id,
+                    CalibrationOutboxState::Settled.as_db(),
+                    server_revision,
+                    now
+                ],
             )
             .map(|_| ())
             .map_err(sql_error)
@@ -2916,9 +2924,14 @@ impl CatalogStore for SqliteCatalog {
         self.conn
             .execute(
                 "UPDATE calibration_outbox
-                 SET state = 'settled', settled_at = ?3, updated_at = ?3
+                 SET state = ?3, settled_at = ?4, updated_at = ?4
                  WHERE profile_id = ?1 AND operation_id = ?2",
-                params![profile_id, operation_id, now],
+                params![
+                    profile_id,
+                    operation_id,
+                    CalibrationOutboxState::Replayed.as_db(),
+                    now
+                ],
             )
             .map(|_| ())
             .map_err(sql_error)
@@ -3095,7 +3108,7 @@ impl CatalogStore for SqliteCatalog {
         // For other entity types, update the project's is_synced and base_revision
         // from the remote snapshot metadata if available.
         match entity_type {
-            "CalibrationProject" => {
+            et if et == CalibrationEntityType::CalibrationProject.as_db() => {
                 if tombstone {
                     // Tombstone: mark the project as deleted (if it exists locally)
                     // We don't physically delete; leave it for the UI to handle.
@@ -3209,12 +3222,13 @@ impl CatalogStore for SqliteCatalog {
         profile_id: &str,
         project_id: Option<&str>,
     ) -> Result<i64, String> {
+        let pending = CalibrationOutboxState::Pending.as_db();
         if let Some(pid) = project_id {
             self.conn
                 .query_row(
                     "SELECT COUNT(*) FROM calibration_outbox
-                     WHERE profile_id = ?1 AND project_id = ?2 AND state = 'pending'",
-                    params![profile_id, pid],
+                     WHERE profile_id = ?1 AND project_id = ?2 AND state = ?3",
+                    params![profile_id, pid, pending],
                     |row| row.get(0),
                 )
                 .map_err(sql_error)
@@ -3222,8 +3236,8 @@ impl CatalogStore for SqliteCatalog {
             self.conn
                 .query_row(
                     "SELECT COUNT(*) FROM calibration_outbox
-                     WHERE profile_id = ?1 AND state = 'pending'",
-                    params![profile_id],
+                     WHERE profile_id = ?1 AND state = ?2",
+                    params![profile_id, pending],
                     |row| row.get(0),
                 )
                 .map_err(sql_error)
