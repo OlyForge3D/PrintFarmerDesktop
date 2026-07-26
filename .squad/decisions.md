@@ -355,7 +355,7 @@ The shipped fix was already the working variant — the mock now returns a disti
 
 ### A mutation result is evidence only if the failure set changes
 
-**This is a fifth instrument-failure shape, and the only one that fails loudly.** The four already recorded — over-inclusive, over-exclusive, lossy (`:299`), and the false zero at `:305` — all fail quietly, returning nothing or too little. This one returns **RED**, which is the answer you were hoping for. A per-file or count-based reading scores it as a successful fix; it carries no information whatever.
+**This is a fourth instrument-failure shape, and the only one that returns an alarm.** Three are already on record, at two citations and under no name until this entry supplied one: `:299` describes a single instrument failing in both directions — over-inclusive, counting a foreign reference as internal, and over-exclusive, dropping a genuine one because its line held a second address — and `:305` records the false zero. Note what does **not** separate those three from this one: volume. Over-inclusive returned _more_ than the truth, not less. What separates them is that none of the three returned the **affirmative evidence** its operator was after — two returned a miscount and one returned nothing, so in each case the operator had to notice an absence. This one returns **RED**, and RED _is_ the affirmative evidence. A per-file or count-based reading scores it as a successful fix; it carries no information whatever.
 
 A broken instrument that produces the expected failure is harder to catch than one that produces a silent zero, for the reason `:305` already gives about agreement: the result arrives in exactly the shape you expected. **Compare mutated and unmutated failure sets, not their cardinalities** — which is `:299`'s "the count is not the check" reaching the one place it had not yet been applied, the mutation table itself.
 
@@ -377,7 +377,7 @@ Nothing was invented and nothing was expanded from a prefix. **The value was aut
 
 **Context.** Two instances, one on each side of the same exchange.
 
-A reviewer resolved the phrase _"the reviewer who was sent it"_ to **himself**, because a two-party exchange made him the salient candidate; the record named someone else. Separately, this log's author cited `:265` as governing a claim about corroboration — `:265` is the verdict-trust axis and corroboration lives elsewhere — because `:265` was the paragraph in front of him at the time.
+A reviewer resolved the phrase _"the reviewer who was sent it"_ to **himself**, because a two-party exchange made him the salient candidate; the record named someone else. The second is this log's author citing `:265` as governing a claim about corroboration, where `:265` is the verdict-trust axis and corroboration lives elsewhere — and its cause is **not** proximity, though it was twice written up that way. The address was inherited: the reviewer's verdict said _"the corroboration failure at `:265`"_ and it was adopted unresolved, which that reviewer has since confirmed originated with him. So the proximity mechanism rests on the **first instance alone**, and the second belongs to `:281`'s class. Both are kept here because they are one failure — declining to resolve a pointer — differing only in where the pointer came from: nearest in the current context, or handed over by someone who had just been right about something else.
 
 Neither was a misreading of the record. **Neither party consulted the record at all**, because the referent felt already determined. This is the same operation as `:281`'s misattributed quotation, which arrived already agreed with, and `:293`'s retelling, which resolves against the plausibility of the story rather than the record.
 
@@ -394,7 +394,7 @@ Neither was a misreading of the record. **Neither party consulted the record at 
 
 Both are now repaired. What matters is the shape: **it is not that one document is maintained and the other neglected — each carried a defect the other repairs.** Each sentence was independently derived from the same source, and each was individually plausible in isolation, which is why review of either file alone passed both.
 
-The second was found by treating `:190`'s finding as a **falsifiable prediction** and testing it — extracting every numeric token shared by the two documents and comparing the claims around each — rather than restating it. Six figures are shared; five agree.
+The second was found by treating `:190`'s finding as a **falsifiable prediction** and testing it — extracting every numeric token shared by the two documents and comparing the claims around each — rather than restating it. Six figures were shared, and at `37459df` five agreed; the sixth is the divergence above. **Both repairs have since landed, so re-running that extraction at `fb1f1c2` returns six of six** — the check reproduces only against a pre-repair head. That is `:401` applying to this very paragraph: written in the present tense, the sentence would have been falsified by the merge of the fix it describes.
 
 **Why:** this is not `:305`. `:305` says two _agreeing_ measurements do not corroborate unless the mechanisms are independent. This is the converse and a distinct proposition: **two renderings of one incident disagreeing is a detector**, and no process currently runs it. Two documents written from one incident in two separate edits will keep producing these, so the check belongs to whoever maintains the pair, not to either file's reviewer.
 
@@ -408,7 +408,7 @@ The second was found by treating `:190`'s finding as a **falsifiable prediction*
 
 **Why:** blocking a documentation slice until the code it describes is fixed means the model can never record a gap it does not simultaneously close. That **pressures authors to under-report** — the cheapest way to pass review becomes to omit the gap. A threat model whose contents are filtered by what the author had time to fix is worse than one that is honest about its own coverage, because the omissions are invisible and read as absence of risk.
 
-The corollary is that the gap must be **filed**, not merely described, so that recording it starts a clock rather than closing the subject.
+**What follows is my own extension and forms no part of the ruling.** The reviewer settled admissibility only — recording the gap is sufficient — and imposed no further obligation; a sweep of every comment on #82 returns zero for `filed`, `file an issue`, `starts a clock` and `track`, against a `threat model` control of four. As TL I add that the gap should also be **filed**, so that recording it starts a clock rather than closing the subject. The tension is worth stating rather than hiding: any obligation attached to recording a gap is a tax on honesty, and that pressure is precisely what the ruling exists to remove. A tracking issue is a far smaller tax than a fix, but it is not zero, and it must never become a merge gate on the documentation slice itself.
 
 ## 2026-07-26 — A commitment is not a control
 
@@ -416,12 +416,12 @@ The corollary is that the gap must be **filed**, not merely described, so that r
 
 **Context.** This one is mine, and a reviewer caught it by measurement.
 
-|                                                                                                                             |                  |
-| --------------------------------------------------------------------------------------------------------------------------- | ---------------- |
-| `37459df` committed                                                                                                         | `18:00:27 -0700` |
-| round-20 APPROVE posted, live head verified `37459df`                                                                       | `18:11`          |
-| my addendum: _"I am not pushing. Head stays `37459df`"_ and _"Tell me whether to fold it or file it, and I will do either"_ | `18:11:38`       |
-| `dc034d8` committed and pushed, making exactly that change                                                                  | **`18:13:45`**   |
+|                                                                                                                                                           |                  |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| `37459df` committed                                                                                                                                       | `18:00:27 -0700` |
+| round-20 APPROVE posted, live head verified `37459df`                                                                                                     | `18:11`          |
+| my addendum: _"I am not pushing. Head stays `37459df`."_ and _"Tell me whether to fold it into the round-20 fix commit or file it, and I will do either"_ | `18:11:38`       |
+| `dc034d8` committed and pushed, making exactly that change                                                                                                | **`18:13:45`**   |
 
 Both statements were false within three minutes of being written, and the ruling I had asked for had not arrived. The request for a ruling was therefore decorative: I had already decided, and the sentence asking permission was published anyway.
 
