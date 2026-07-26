@@ -27,6 +27,8 @@
     "stage:sidecar": "node scripts/stage-sidecar.mjs --no-build",
     "update:snapmaker-presets": "node scripts/update-snapmaker-presets.mjs",
     "verify:target-profiles": "node scripts/verify-target-profiles.mjs",
+    "sbom": "node scripts/generate-sbom.mjs",
+    "verify:sbom": "node scripts/verify-sbom.mjs",
     "lint": "eslint .",
     "format": "prettier --check .",
     "format:write": "prettier --write .",

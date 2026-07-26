@@ -24,6 +24,11 @@ Cargo.lock.orig
 resources/sidecar/
 resources/compliance/
 
+# Generated SBOM. Derived from the lockfiles at build time and staged into
+# resources/compliance/; committing it would let it drift from the tree it
+# claims to describe.
+build/
+
 # TypeScript build artifacts
 *.tsbuildinfo
 
