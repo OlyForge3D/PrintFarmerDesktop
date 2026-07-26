@@ -12,6 +12,10 @@ export type CalibrationApi = Pick<
   | 'listOrcaProfiles'
   | 'openCalibrationPhoto'
   | 'stageCalibrationPhoto'
+  | 'generateOrcaProfile'
+  | 'exportOrcaProfile'
+  | 'installOrcaProfile'
+  | 'restoreOrcaProfile'
 >;
 
 /** The preload bridge is already runtime-validated; calibration only narrows it. */

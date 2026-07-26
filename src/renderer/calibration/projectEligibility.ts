@@ -127,9 +127,13 @@ export function orcaProfileScopeBlockers(
     return ['Select a physical tool from the current printer snapshot.'];
   }
   const blockers: string[] = [];
-  if (profile.source !== 'printFarmer' || !profile.upstreamVerified) {
+  // Accept printFarmer-verified profiles and locally-verified systemInstall profiles.
+  const isEligibleSource =
+    (profile.source === 'printFarmer' && profile.upstreamVerified) ||
+    (profile.source === 'systemInstall' && profile.upstreamVerified);
+  if (!isEligibleSource) {
     blockers.push(
-      'The base profile must be PrintFarmer-supplied and upstream verified.',
+      'The base profile must be PrintFarmer-supplied or a locally verified upstream system install.',
     );
   }
   if (profile.printerId !== context.printerId) {
@@ -159,12 +163,14 @@ export function orcaProfileScopeBlockers(
 export function selectedBaseProfileFromEntry(
   profile: OrcaProfileEntry,
 ): CalibrationSelectedBaseProfile | null {
-  if (profile.source !== 'printFarmer' || !profile.upstreamVerified)
-    return null;
+  const isEligible =
+    (profile.source === 'printFarmer' || profile.source === 'systemInstall') &&
+    profile.upstreamVerified;
+  if (!isEligible) return null;
   return {
     orcaProfileId: profile.orcaProfileId,
     displayName: profile.displayName,
-    source: 'printFarmer',
+    source: profile.source as 'printFarmer' | 'systemInstall',
     upstreamVerified: true,
     printerId: profile.printerId,
     configurationRevision: profile.configurationRevision,
@@ -190,11 +196,13 @@ export function profileMatchesProject(
   const tool = binding.snapshot.toolheads.find(
     (item) => item.toolId === binding.selectedToolId,
   );
+  const isEligibleSource =
+    (profile.source === 'printFarmer' || profile.source === 'systemInstall') &&
+    profile.upstreamVerified;
   return (
     tool !== undefined &&
     profile.orcaProfileId === selectedProfile.orcaProfileId &&
-    profile.source === 'printFarmer' &&
-    profile.upstreamVerified &&
+    isEligibleSource &&
     profile.printerId === binding.printer.backendPrinterId &&
     profile.configurationRevision ===
       binding.printer.printerConfigurationRevision &&

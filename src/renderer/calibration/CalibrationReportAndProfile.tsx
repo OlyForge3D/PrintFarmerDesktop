@@ -559,23 +559,118 @@ export function CalibrationProfileEntry(): React.JSX.Element {
 
         <aside className="cal-profile-aside">
           <section className="cal-pane cal-detail-pane">
-            <h2>Profile workflow handoff</h2>
-            <button
-              type="button"
-              className="cal-button cal-button--primary"
-              disabled
-              aria-describedby="profile-install-gate"
-            >
-              Install patch transactionally
-            </button>
-            <p id="profile-install-gate">
-              This workspace previews only. Installation, rollback, and
-              promotion must run in the transactional profile workflow and are
-              not implemented here.
-            </p>
-            <p>
-              No profile was exported, installed, or promoted by this preview.
-            </p>
+            <h2>Profile actions</h2>
+            {store.generatedProfile ? (
+              <>
+                <p>
+                  <strong>Generated:</strong>{' '}
+                  {store.generatedProfile.displayName}
+                </p>
+                <p>
+                  <strong>Hash:</strong>{' '}
+                  <code>
+                    {store.generatedProfile.profileJsonHash.slice(0, 16)}…
+                  </code>
+                </p>
+                <p>
+                  <strong>Fields patched:</strong>{' '}
+                  {store.generatedProfile.patchedFieldCount}
+                </p>
+                {store.generatedProfile.warnings.length > 0 && (
+                  <ul className="cal-blocker-list">
+                    {store.generatedProfile.warnings.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                )}
+                {store.generatedProfile.installedHash ? (
+                  <p className="cal-success">
+                    Installed. Hash:{' '}
+                    <code>
+                      {store.generatedProfile.installedHash.slice(0, 16)}…
+                    </code>
+                  </p>
+                ) : null}
+                {store.generatedProfile.exportedHash ? (
+                  <p className="cal-success">
+                    Exported. Hash:{' '}
+                    <code>
+                      {store.generatedProfile.exportedHash.slice(0, 16)}…
+                    </code>
+                  </p>
+                ) : null}
+                <div className="cal-actions">
+                  {typeof window !== 'undefined' &&
+                  // Check navigator.platform only on darwin/linux for export
+                  (navigator.platform.startsWith('Mac') ||
+                    navigator.platform.startsWith('Linux')) ? (
+                    <button
+                      type="button"
+                      className="cal-button cal-button--primary"
+                      disabled={profileBlockers.length > 0}
+                      onClick={() => void store.exportProfile()}
+                    >
+                      Export profile…
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="cal-button cal-button--primary"
+                        disabled={profileBlockers.length > 0}
+                        onClick={() => void store.installProfile()}
+                      >
+                        Install transactionally
+                      </button>
+                      {store.generatedProfile.backupHash ? (
+                        <button
+                          type="button"
+                          className="cal-button"
+                          onClick={() => void store.restoreProfile()}
+                        >
+                          Restore from backup
+                        </button>
+                      ) : null}
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    className="cal-button"
+                    disabled={profileBlockers.length > 0}
+                    onClick={() => void store.generateProfile()}
+                  >
+                    Regenerate
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="cal-button cal-button--primary"
+                  disabled={profileBlockers.length > 0}
+                  aria-describedby="profile-generate-gate"
+                  onClick={() => void store.generateProfile()}
+                >
+                  Generate OrcaSlicer profile
+                </button>
+                {profileBlockers.length > 0 ? (
+                  <p
+                    id="profile-generate-gate"
+                    className="cal-alert cal-alert--warning"
+                    role="alert"
+                  >
+                    Resolve blockers before generating a profile.
+                  </p>
+                ) : (
+                  <p id="profile-generate-gate">
+                    Generates a deterministic, calibrated OrcaSlicer filament
+                    profile from selected completed observations. Explicit
+                    confirmation is required before any write.
+                  </p>
+                )}
+              </>
+            )}
           </section>
         </aside>
       </div>
