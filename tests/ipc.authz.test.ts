@@ -14,7 +14,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { IpcChannel } from '@shared/ipc';
+import { IpcChannel, ipcSchemas } from '@shared/ipc';
 
 type Handler = (event: unknown, request: unknown) => unknown;
 
@@ -84,41 +84,69 @@ const RENDERER_PATH = '/renderer/claimed/model.3mf';
 const CANONICAL_PATH = '/approved/real/model.3mf';
 /** A path the approval store refuses. */
 const UNAPPROVED_PATH = '/etc/shadow';
+/**
+ * Marker carried by every refusal the fake approval store issues. Assertions
+ * match on it rather than on "any rejection", so a handler that blew up for an
+ * unrelated reason — a missing collaborator method, say — cannot be mistaken
+ * for a handler that refused.
+ */
+const DENIED = 'TEST_APPROVAL_DENIED';
 
 class TestApprovalError extends Error {
   readonly code = 'APPROVAL_REQUIRED';
 }
 
+/** A call the handler layer made to something downstream of authorization. */
+interface DownstreamCall {
+  target: 'sidecar' | 'sceneCache';
+  method: string;
+  args: unknown[];
+}
+
 interface Harness {
   handlers: Map<string, Handler>;
-  sidecarCalls: { method: string; args: unknown[] }[];
+  downstream: DownstreamCall[];
 }
 
 function harness(): Harness {
   electronState.handlers.clear();
   electronState.owners.length = 0;
-  const sidecarCalls: { method: string; args: unknown[] }[] = [];
+  const downstream: DownstreamCall[] = [];
 
   const record =
-    (method: string, result: unknown = {}) =>
+    (target: DownstreamCall['target'], method: string, result: unknown = {}) =>
     (...args: unknown[]) => {
-      sidecarCalls.push({ method, args });
+      downstream.push({ target, method, args });
       return Promise.resolve(result);
     };
 
   const sidecar = {
-    loadScene: record('loadScene'),
-    extractVendorMetadata: record('extractVendorMetadata'),
-    extractVendorPlateThumbnails: record('extractVendorPlateThumbnails', {
-      thumbnails: [],
-    }),
-    renderThumbnail: record('renderThumbnail', {
+    loadScene: record('sidecar', 'loadScene'),
+    extractVendorMetadata: record('sidecar', 'extractVendorMetadata'),
+    extractVendorPlateThumbnails: record(
+      'sidecar',
+      'extractVendorPlateThumbnails',
+      { thumbnails: [] },
+    ),
+    renderThumbnail: record('sidecar', 'renderThumbnail', {
       width: 1,
       height: 1,
       pngBase64: 'AA==',
     }),
-    scanRoot: record('scanRoot'),
+    scanRoot: record('sidecar', 'scanRoot'),
     handshake: () => Promise.resolve({ sidecarVersion: '0' }),
+    dispose: () => undefined,
+  };
+
+  // #84 moved `LoadScene` behind SceneCacheService, so the sidecar is no longer
+  // the only thing downstream of authorization. Both are recorded into one
+  // list: the security property is "nothing downstream is reached", not
+  // "the sidecar is not reached", and tracking only the sidecar is what let the
+  // pre-rebase version of this test go vacuous when the collaborator moved.
+  const sceneCache = {
+    loadScene: record('sceneCache', 'loadScene'),
+    initialize: () => Promise.resolve(),
+    adoptRecipe: () => Promise.resolve(),
     dispose: () => undefined,
   };
 
@@ -127,7 +155,7 @@ function harness(): Harness {
   const approvals = {
     canonicalizePickerFile: (requested: string) => {
       if (requested === RENDERER_PATH) return Promise.resolve(CANONICAL_PATH);
-      return Promise.reject(new TestApprovalError('not a picker file'));
+      return Promise.reject(new TestApprovalError(DENIED));
     },
     authorizeFile: (requested: string) => {
       if (requested === RENDERER_PATH) {
@@ -136,10 +164,10 @@ function harness(): Harness {
           canonicalPath: CANONICAL_PATH,
         });
       }
-      return Promise.reject(new TestApprovalError('not approved'));
+      return Promise.reject(new TestApprovalError(DENIED));
     },
-    resolve: () => Promise.reject(new TestApprovalError('no approval')),
-    approveFromPicker: () => Promise.reject(new TestApprovalError('no picker')),
+    resolve: () => Promise.reject(new TestApprovalError(DENIED)),
+    approveFromPicker: () => Promise.reject(new TestApprovalError(DENIED)),
     reset: () => Promise.resolve(),
   };
 
@@ -152,9 +180,10 @@ function harness(): Harness {
     sidecar as never,
     { initialize: () => Promise.resolve(), dispose: () => undefined } as never,
     approvals as never,
+    sceneCache as never,
   );
 
-  return { handlers: new Map(electronState.handlers), sidecarCalls };
+  return { handlers: new Map(electronState.handlers), downstream };
 }
 
 function senderEvent(id: number) {
@@ -167,38 +196,72 @@ function senderEvent(id: number) {
 }
 
 /**
+ * Channels whose *request schema* exposes a `path` key, derived from
+ * `ipcSchemas` at run time rather than transcribed from the handler bodies.
+ *
+ * A hand-maintained list is the same manual derivation that let
+ * `ExtractVendorPlateThumbnails` ship unauthorized: it records what someone
+ * read once, and a channel added later simply never appears in it. Reading the
+ * contract instead means a new path-bearing channel joins this set on the run
+ * that introduces it.
+ */
+function pathBearingChannels(): string[] {
+  const found: string[] = [];
+  for (const [channel, pair] of Object.entries(ipcSchemas)) {
+    const request = (pair as { request: unknown }).request;
+    const shape = (request as { shape?: Record<string, unknown> } | undefined)
+      ?.shape;
+    if (shape && Object.prototype.hasOwnProperty.call(shape, 'path')) {
+      found.push(channel);
+    }
+  }
+  return found;
+}
+
+/**
  * Every channel whose request carries a renderer-supplied filesystem path, and
- * the sidecar method each is expected to forward the *authorized* path to.
- * Derived by reading each `ipcMain.handle` body in `src/main/ipc.ts` that
- * dereferences `request.path`.
+ * the collaborator method each is expected to forward the *authorized* path to.
+ * The membership of this list is checked against {@link pathBearingChannels}
+ * below, so it cannot silently drift behind the contract; what it adds is the
+ * per-channel detail that cannot be derived — which collaborator receives the
+ * path.
  */
 const PATH_CHANNELS: {
   channel: string;
-  sidecarMethod: string;
+  target: DownstreamCall['target'];
+  method: string;
   pathArgIndex: number;
   request: (path: string) => unknown;
 }[] = [
   {
     channel: IpcChannel.LoadScene,
-    sidecarMethod: 'loadScene',
+    // #84 routed this through SceneCacheService; `sidecar.loadScene` is no
+    // longer called. The property is unchanged — the canonical path, not the
+    // renderer's string, is what the collaborator receives — but the
+    // collaborator moved.
+    target: 'sceneCache',
+    method: 'loadScene',
     pathArgIndex: 0,
     request: (path) => ({ path }),
   },
   {
     channel: IpcChannel.ExtractVendorMetadata,
-    sidecarMethod: 'extractVendorMetadata',
+    target: 'sidecar',
+    method: 'extractVendorMetadata',
     pathArgIndex: 0,
     request: (path) => ({ path }),
   },
   {
     channel: IpcChannel.ExtractVendorPlateThumbnails,
-    sidecarMethod: 'extractVendorPlateThumbnails',
+    target: 'sidecar',
+    method: 'extractVendorPlateThumbnails',
     pathArgIndex: 0,
     request: (path) => ({ path }),
   },
   {
     channel: IpcChannel.RenderThumbnail,
-    sidecarMethod: 'renderThumbnail',
+    target: 'sidecar',
+    method: 'renderThumbnail',
     pathArgIndex: 0,
     request: (path) => ({ path }),
   },
@@ -217,27 +280,41 @@ describe('IPC handler layer: renderer-supplied filesystem paths', () => {
     expect(h.handlers.size).toBe(Object.keys(IpcChannel).length);
   });
 
+  it('covers exactly the channels whose request schema carries a path', () => {
+    // Reads the contract rather than trusting the table above. A new
+    // path-bearing channel fails here on the run that adds it, instead of
+    // waiting for someone to notice it is missing from a hand-written list.
+    expect([...pathBearingChannels()].sort()).toEqual(
+      PATH_CHANNELS.map((entry) => entry.channel).sort(),
+    );
+  });
+
+  it.each(pathBearingChannels())(
+    '%s refuses an unapproved path and reaches nothing downstream of authorization',
+    async (channel) => {
+      // Driven by the derived set, not the table, and asserting only properties
+      // that hold for *any* path channel. A path-bearing channel added without
+      // authorization fails this without anyone having to describe it first.
+      const handler = h.handlers.get(channel);
+      expect(handler).toBeTypeOf('function');
+
+      await expect(
+        Promise.resolve(handler!(senderEvent(1), { path: UNAPPROVED_PATH })),
+      ).rejects.toThrow(DENIED);
+
+      // The load-bearing half. Rejecting is not enough on its own: a handler
+      // that forwarded the path and *then* failed on the reply would also
+      // reject. Asserting nothing downstream was touched — rather than naming
+      // one collaborator — is what keeps this meaningful when a handler is
+      // rewired, which is exactly what #84 did to LoadScene.
+      expect(h.downstream).toEqual([]);
+    },
+  );
+
   describe.each(PATH_CHANNELS)(
     '$channel',
-    ({ channel, sidecarMethod, pathArgIndex, request }) => {
-      it('refuses a path the approval store does not approve, without invoking the sidecar', async () => {
-        const handler = h.handlers.get(channel);
-        expect(handler).toBeTypeOf('function');
-
-        await expect(
-          Promise.resolve(handler!(senderEvent(1), request(UNAPPROVED_PATH))),
-        ).rejects.toThrow();
-
-        // The load-bearing assertion. Rejecting is not enough on its own: a
-        // handler that forwarded the path and *then* failed to parse the
-        // sidecar's reply would also reject. This proves the refusal happened
-        // before the filesystem was touched.
-        expect(
-          h.sidecarCalls.filter((call) => call.method === sidecarMethod),
-        ).toHaveLength(0);
-      });
-
-      it('forwards the canonicalized path rather than the string the renderer supplied', async () => {
+    ({ channel, target, method, pathArgIndex, request }) => {
+      it(`forwards the canonicalized path to ${target}.${method}, not the string the renderer supplied`, async () => {
         const handler = h.handlers.get(channel);
         expect(handler).toBeTypeOf('function');
 
@@ -245,10 +322,14 @@ describe('IPC handler layer: renderer-supplied filesystem paths', () => {
           handler!(senderEvent(1), request(RENDERER_PATH)),
         ).catch(() => undefined);
 
-        const call = h.sidecarCalls.find(
-          (candidate) => candidate.method === sidecarMethod,
+        const call = h.downstream.find(
+          (candidate) =>
+            candidate.target === target && candidate.method === method,
         );
-        expect(call, `${channel} never reached the sidecar`).toBeDefined();
+        expect(
+          call,
+          `${channel} never reached ${target}.${method}`,
+        ).toBeDefined();
         expect(call!.args[pathArgIndex]).toBe(CANONICAL_PATH);
         expect(call!.args[pathArgIndex]).not.toBe(RENDERER_PATH);
       });
