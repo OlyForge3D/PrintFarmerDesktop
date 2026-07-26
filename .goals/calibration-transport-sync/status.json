@@ -1,6 +1,6 @@
 {
   "goal_id": "calibration-transport-sync",
-  "status": "building",
+  "status": "inspecting",
   "iteration": 3,
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
@@ -18,6 +18,12 @@
       "verdict": "PASS",
       "timestamp": "2026-07-26T07:26:00Z",
       "summary": "Complete wiring: CalibrationHttpClient and CalibrationSyncEngine instantiated and operational. All 19 IPC handlers call real code. Database schema v12 with 10 calibration tables. 63 integration tests cover full stack. All quality gates pass. PR #129 non-draft, targeting development, contains 'Closes #52'."
+    },
+    {
+      "iteration": 3,
+      "verdict": "PASS",
+      "timestamp": "2026-07-26T07:46:31Z",
+      "summary": "Prettier fix committed/verified. Dead-code eliminated: CalibrationEntityType::as_db and CalibrationOutboxState::as_db gated with #[cfg(feature=\"sqlite\")] + 4 call sites in sqlite_catalog.rs; unused from_db methods removed. Replay semantic state bug fixed: replay_calibration_op now stores 'replayed' (correct) not 'settled' (incorrect). All 12 quality gates pass (cargo clippy --all-targets --features sqlite -- -D warnings clean). PR #129 verified: non-draft, base=development, Closes #52, unmerged, open. No main-branch interaction. All 968 tests pass (zero regressions)."
     }
   ]
 }
