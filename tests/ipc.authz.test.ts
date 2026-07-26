@@ -24,6 +24,7 @@ const electronState = vi.hoisted(() => ({
   owners: [] as { method: string; owner: unknown }[],
   /** What the OS file picker returns for the next OpenModelFile call. */
   pickerResult: { canceled: true, filePaths: [] as string[] },
+  pickerCalls: [] as unknown[][],
 }));
 
 vi.mock('../src/main/retargetArtifacts.js', () => {
@@ -70,7 +71,10 @@ vi.mock('electron', () => ({
   },
   BrowserWindow: { fromWebContents: () => ({ id: 'window-stub' }) },
   dialog: {
-    showOpenDialog: () => Promise.resolve(electronState.pickerResult),
+    showOpenDialog: (...args: unknown[]) => {
+      electronState.pickerCalls.push(args);
+      return Promise.resolve(electronState.pickerResult);
+    },
   },
   safeStorage: {
     isEncryptionAvailable: () => false,
@@ -159,6 +163,7 @@ interface HarnessOptions {
 function harness(options: HarnessOptions = {}): Harness {
   electronState.handlers.clear();
   electronState.owners.length = 0;
+  electronState.pickerCalls.length = 0;
   electronState.pickerResult = { canceled: true, filePaths: [] };
   const downstream: DownstreamCall[] = [];
 
@@ -480,6 +485,42 @@ describe('IPC handler layer: renderer-supplied filesystem paths', () => {
   );
 
   describe('the picker allowlist', () => {
+    it('uses a dedicated opaque photo picker without granting model access', async () => {
+      electronState.pickerResult = {
+        canceled: false,
+        filePaths: [PICKED_PATH],
+      };
+      const openPhoto = h.handlers.get(IpcChannel.OpenCalibrationPhoto);
+      expect(openPhoto).toBeTypeOf('function');
+
+      const picked = ipcSchemas[IpcChannel.OpenCalibrationPhoto].response.parse(
+        await Promise.resolve(openPhoto!(senderEvent(7), undefined)),
+      );
+      expect(picked).not.toBeNull();
+      expect(Object.keys(picked!)).toEqual(['approvalId']);
+
+      const options = electronState.pickerCalls.at(-1)?.at(-1) as {
+        title: string;
+        filters: { name: string; extensions: string[] }[];
+      };
+      expect(options.title).toMatch(/calibration photo/i);
+      expect(options.filters).toEqual([
+        {
+          name: 'Calibration photos',
+          extensions: ['jpg', 'jpeg', 'png', 'webp'],
+        },
+      ]);
+
+      await expect(
+        Promise.resolve(
+          h.handlers.get(IpcChannel.LoadScene)!(senderEvent(7), {
+            path: PICKED_PATH,
+          }),
+        ),
+      ).rejects.toThrow(DENIED);
+      expect(h.downstream).toEqual([]);
+    });
+
     // The legitimate-maximum direction. Everything above pushes from the
     // hostile side, which cannot tell a correct bound from a control that
     // refuses everything — or, for the fast path at ipc.ts:187, from a branch
@@ -506,9 +547,13 @@ describe('IPC handler layer: renderer-supplied filesystem paths', () => {
         canceled: false,
         filePaths: [PICKED_PATH],
       };
-      await expect(
-        Promise.resolve(openModelFile!(senderEvent(1), undefined)),
-      ).resolves.toEqual({ path: realpathOf(PICKED_PATH) });
+      const picked = ipcSchemas[IpcChannel.OpenModelFile].response.parse(
+        await Promise.resolve(openModelFile!(senderEvent(1), undefined)),
+      );
+      expect(picked?.path).toBe(realpathOf(PICKED_PATH));
+      expect(picked?.approvalId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      );
 
       // After the pick: admitted, and admitted as the canonicalized form rather
       // than the string the renderer sent.
@@ -570,14 +615,18 @@ describe('IPC handler layer: renderer-supplied filesystem paths', () => {
         canceled: false,
         filePaths: [PICKED_PATH],
       };
-      await expect(
-        Promise.resolve(
+      const picked = ipcSchemas[IpcChannel.OpenModelFile].response.parse(
+        await Promise.resolve(
           local.handlers.get(IpcChannel.OpenModelFile)!(
             senderEvent(1),
             undefined,
           ),
         ),
-      ).resolves.toEqual({ path: realpathOf(PICKED_PATH) });
+      );
+      expect(picked?.path).toBe(realpathOf(PICKED_PATH));
+      expect(picked?.approvalId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      );
       // Open it once before the redirect, so a canonical form remembered at
       // either the pick or the first admission is populated by now.
       await Promise.resolve(

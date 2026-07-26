@@ -28,6 +28,8 @@ import type {
   RemoteCalibrationAttempt,
   RemoteCalibrationPhoto,
   RemoteCalibrationCapabilities,
+  RemoteCalibrationPrinters,
+  RemoteCalibrationPrinterContext,
 } from './calibrationWire.js';
 import {
   RemoteCalibrationApplySuccess,
@@ -38,6 +40,8 @@ import {
   RemoteCalibrationStep as StepSchema,
   RemoteCalibrationAttempt as AttemptSchema,
   RemoteCalibrationPhoto as PhotoSchema,
+  RemoteCalibrationPrinters as PrintersSchema,
+  RemoteCalibrationPrinterContext as PrinterContextSchema,
 } from './calibrationWire.js';
 
 // --- Fixed API route constants ---------------------------------------------
@@ -320,8 +324,14 @@ export class CalibrationHttpClient {
     profileId: string,
     baseUrl: string,
     signal: AbortSignal,
-  ): Promise<unknown> {
-    return this.get(profileId, baseUrl, ROUTES.printers, z.unknown(), signal);
+  ): Promise<RemoteCalibrationPrinters> {
+    return this.get(
+      profileId,
+      baseUrl,
+      ROUTES.printers,
+      PrintersSchema,
+      signal,
+    );
   }
 
   async getPrinterContext(
@@ -329,12 +339,12 @@ export class CalibrationHttpClient {
     baseUrl: string,
     printerId: string,
     signal: AbortSignal,
-  ): Promise<unknown> {
+  ): Promise<RemoteCalibrationPrinterContext> {
     return this.get(
       profileId,
       baseUrl,
       ROUTES.printerContext(printerId),
-      z.unknown(),
+      PrinterContextSchema,
       signal,
     );
   }
@@ -464,6 +474,22 @@ export class CalibrationHttpClient {
       baseUrl,
       ROUTES.attempt(attemptId),
       AttemptSchema,
+      signal,
+    );
+  }
+
+  async getProjectAttempts(
+    profileId: string,
+    baseUrl: string,
+    projectId: string,
+    stepId: string,
+    signal: AbortSignal,
+  ): Promise<RemoteCalibrationAttempt[]> {
+    return this.get(
+      profileId,
+      baseUrl,
+      ROUTES.projectAttempts(projectId, stepId),
+      z.array(AttemptSchema).max(999),
       signal,
     );
   }

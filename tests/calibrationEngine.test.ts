@@ -150,6 +150,66 @@ function createEngine(
 // ==========================================================================
 
 describe('CalibrationSyncEngine outbox push', () => {
+  it.each([
+    { label: 'new', operationKind: 'Create' as const, baseRevision: null },
+    { label: 'existing', operationKind: 'Update' as const, baseRevision: 8 },
+  ])(
+    'syncs only the latest coalesced $label-project autosave',
+    async ({ operationKind, baseRevision }) => {
+      // SQLite preserves all three rows but exposes only operation 3 as pending.
+      const latest = makeOp(3, {
+        operationKind,
+        baseRevision,
+        payload: { displayName: 'Draft 3', autosaveRevision: 3 },
+      });
+      const sidecar = fakeSidecar({
+        listCalibrationPendingOperations: vi
+          .fn()
+          .mockResolvedValueOnce([latest])
+          .mockResolvedValueOnce([]),
+      });
+      let remoteCreates = 0;
+      const apply = vi.fn().mockImplementation(
+        (
+          _profileId: string,
+          _baseUrl: string,
+          request: {
+            operations: Array<{
+              operationKind: 'Create' | 'Update';
+              payload: unknown;
+            }>;
+          },
+        ) => {
+          if (request.operations[0]!.operationKind === 'Create') {
+            remoteCreates += 1;
+          }
+          return Promise.resolve({
+            kind: 'success',
+            value: { serverRevision: 9, appliedOperationIds: ['op-3'] },
+          });
+        },
+      );
+      const engine = createEngine(fakeHttp({ apply }), sidecar);
+
+      const status = await engine.syncNow(
+        PROFILE_ID,
+        PROJECT_ID,
+        AbortSignal.timeout(5_000),
+      );
+
+      expect(status.pushedOperations).toBe(1);
+      expect(apply).toHaveBeenCalledTimes(1);
+      const applyRequest = apply.mock.calls[0]![2] as {
+        operations: Array<{ payload: unknown }>;
+      };
+      expect(applyRequest.operations[0]!.payload).toEqual({
+        displayName: 'Draft 3',
+        autosaveRevision: 3,
+      });
+      expect(remoteCreates).toBe(operationKind === 'Create' ? 1 : 0);
+    },
+  );
+
   it('pushes operations in stable sequence order', async () => {
     const ops = [makeOp(1), makeOp(2), makeOp(3)];
     const listOps = vi

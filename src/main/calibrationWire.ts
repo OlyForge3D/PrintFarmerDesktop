@@ -12,11 +12,666 @@
  */
 
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
+import { lstat, open } from 'node:fs/promises';
+import {
+  CalibrationPrinterContext as CalibrationPrinterContextSchema,
+  CalibrationPrinterEligibility,
+  CalibrationWorkspacePayload,
+  OrcaProfileEntry,
+  deriveCalibrationWorkspaceProjection,
+  type CalibrationPrinterContext,
+  type CalibrationSaveWorkspaceStateRequest,
+} from '@shared/ipc';
+import type { SaveCalibrationWorkspaceStateInput } from './sidecar.js';
+
+const MAX_CALIBRATION_WORKSPACE_BYTES = 512 * 1024;
+export const MAX_CALIBRATION_PHOTO_BYTES = 20_000_000;
+
+function calibrationPhotoType(bytes: Buffer): {
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+  extension: 'jpg' | 'png' | 'webp';
+} | null {
+  if (
+    bytes.length >= 3 &&
+    bytes[0] === 0xff &&
+    bytes[1] === 0xd8 &&
+    bytes[2] === 0xff
+  ) {
+    return { mimeType: 'image/jpeg', extension: 'jpg' };
+  }
+  if (
+    bytes.length >= 8 &&
+    bytes
+      .subarray(0, 8)
+      .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  ) {
+    return { mimeType: 'image/png', extension: 'png' };
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    bytes.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return { mimeType: 'image/webp', extension: 'webp' };
+  }
+  return null;
+}
+
+export async function inspectCalibrationPhoto(approvedPath: string): Promise<{
+  bytes: Buffer;
+  contentHash: string;
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+  extension: 'jpg' | 'png' | 'webp';
+}> {
+  const linkInfo = await lstat(approvedPath);
+  if (linkInfo.isSymbolicLink() || !linkInfo.isFile()) {
+    throw new Error('The approved photo must be a regular, non-symlink file.');
+  }
+  const file = await open(
+    approvedPath,
+    fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+  );
+  let bytes: Buffer;
+  try {
+    const before = await file.stat();
+    if (
+      !before.isFile() ||
+      before.size <= 0 ||
+      before.size > MAX_CALIBRATION_PHOTO_BYTES
+    ) {
+      throw new Error('The approved photo has an invalid size.');
+    }
+    bytes = await file.readFile();
+    const after = await file.stat();
+    if (
+      before.size !== after.size ||
+      before.mtimeMs !== after.mtimeMs ||
+      (before.ino !== 0 && after.ino !== before.ino)
+    ) {
+      throw new Error('The approved photo changed while it was being read.');
+    }
+  } finally {
+    await file.close();
+  }
+  const detected = calibrationPhotoType(bytes);
+  if (!detected) {
+    throw new Error('Only JPEG, PNG, and WebP photo bytes are accepted.');
+  }
+  return {
+    bytes,
+    contentHash: createHash('sha256').update(bytes).digest('hex'),
+    ...detected,
+  };
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(',')}]`;
+  }
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function prepareCalibrationWorkspaceSave(
+  request: CalibrationSaveWorkspaceStateRequest,
+  selectedProfileId: string | null,
+  printerContextFresh: boolean,
+): SaveCalibrationWorkspaceStateInput {
+  if (selectedProfileId === null || request.profileId !== selectedProfileId) {
+    throw Object.assign(
+      new Error('Calibration request does not match the selected profile.'),
+      { code: 'CALIBRATION_PROFILE_MISMATCH' },
+    );
+  }
+  if (request.workspaceState.domainState.projectId !== request.projectId) {
+    throw Object.assign(
+      new Error('Workspace project identity does not match the request.'),
+      { code: 'CALIBRATION_PROJECT_MISMATCH' },
+    );
+  }
+  if (
+    request.workspaceState.domainState.binding.printer.backendProfileId !==
+    selectedProfileId
+  ) {
+    throw Object.assign(
+      new Error('Workspace binding does not match the selected profile.'),
+      { code: 'CALIBRATION_PROFILE_MISMATCH' },
+    );
+  }
+  if (
+    Buffer.byteLength(JSON.stringify(request.workspaceState), 'utf8') >
+    MAX_CALIBRATION_WORKSPACE_BYTES
+  ) {
+    throw Object.assign(
+      new Error('Calibration workspace exceeds the 512 KiB limit.'),
+      { code: 'CALIBRATION_WORKSPACE_TOO_LARGE' },
+    );
+  }
+  const projection = deriveCalibrationWorkspaceProjection(
+    request.workspaceState.domainState,
+  );
+  return {
+    profileId: selectedProfileId,
+    projectId: request.projectId,
+    displayName: request.displayName,
+    description: request.description ?? null,
+    printerId: request.printerId,
+    status: projection.status,
+    completedStepCount: projection.completedStepCount,
+    totalStepCount: projection.totalStepCount,
+    printerContextFresh,
+    baseRevision: request.baseRevision ?? null,
+    operationId: request.operationId,
+    idempotencyKey: createHash('sha256')
+      .update(canonicalJson(request))
+      .digest('hex'),
+    workspaceState: request.workspaceState,
+    createdAt: request.createdAt,
+    updatedAt: request.updatedAt,
+  };
+}
 
 // --- Identifiers -----------------------------------------------------------
 
 const ServerGuid = z.string().uuid();
 const Cursor = z.string().max(4096);
+
+const RemotePrinterEligibility = z
+  .object({
+    firmwareFamily: z
+      .string()
+      .min(1)
+      .max(128)
+      .nullish()
+      .transform((value) => value ?? null),
+    gcodeDialect: z
+      .string()
+      .min(1)
+      .max(128)
+      .nullish()
+      .transform((value) => value ?? null),
+    slicerFamily: z
+      .string()
+      .min(1)
+      .max(128)
+      .nullish()
+      .transform((value) => value ?? null),
+    slicerDistribution: z
+      .string()
+      .min(1)
+      .max(256)
+      .nullish()
+      .transform((value) => value ?? null),
+    slicerIdentity: z
+      .string()
+      .min(1)
+      .max(128)
+      .nullish()
+      .transform((value) => value ?? null),
+    hardwareContextComplete: z
+      .boolean()
+      .nullish()
+      .transform((value) => value ?? null),
+    safetyContextComplete: z
+      .boolean()
+      .nullish()
+      .transform((value) => value ?? null),
+    permissionsComplete: z
+      .boolean()
+      .nullish()
+      .transform((value) => value ?? null),
+    reasons: z
+      .array(z.string().min(1).max(512))
+      .max(32)
+      .nullish()
+      .transform((value) => value ?? null),
+  })
+  .passthrough();
+
+export const RemoteCalibrationPrinterCandidate = z
+  .object({
+    printerId: z.string().min(1).max(256),
+    displayName: z.string().min(1).max(256),
+    printerModel: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((value) => value ?? null),
+    firmwareCompatible: z.boolean().optional().default(false),
+    orcaProfileId: z
+      .string()
+      .max(512)
+      .nullish()
+      .transform((value) => value ?? null),
+    isOnline: z.boolean().optional().default(false),
+    updatedAt: z.string().datetime(),
+    eligibility: RemotePrinterEligibility.nullish().transform(
+      (value) => value ?? null,
+    ),
+  })
+  .passthrough();
+export type RemoteCalibrationPrinterCandidate = z.infer<
+  typeof RemoteCalibrationPrinterCandidate
+>;
+
+export const RemoteCalibrationPrinters = z.union([
+  z.array(RemoteCalibrationPrinterCandidate).max(200),
+  z
+    .object({
+      printers: z.array(RemoteCalibrationPrinterCandidate).max(200),
+    })
+    .passthrough()
+    .transform((value) => value.printers),
+]);
+export type RemoteCalibrationPrinters = z.infer<
+  typeof RemoteCalibrationPrinters
+>;
+
+const RemoteToolhead = z
+  .object({
+    toolId: z.string().min(1).max(256),
+    toolheadId: z.string().min(1).max(256),
+    extruderType: z.enum(['directDrive', 'bowden']),
+    nozzle: z
+      .object({
+        id: z.string().min(1).max(256),
+        diameterMm: z.number().positive().max(10),
+        material: z.string().min(1).max(256),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
+const RemoteSafetyContext = z
+  .object({
+    buildVolumeMm: z
+      .object({
+        x: z.number().positive().max(10_000),
+        y: z.number().positive().max(10_000),
+        z: z.number().positive().max(10_000),
+      })
+      .passthrough(),
+    maximumNozzleTemperatureC: z.number().positive().max(2_000),
+    maximumBedTemperatureC: z.number().nonnegative().max(1_000),
+    maximumVolumetricRateMm3S: z.number().positive().max(10_000),
+    emergencyStopAvailable: z.boolean(),
+    thermalProtectionConfirmed: z.boolean(),
+    ventilationAssessed: z.boolean(),
+  })
+  .passthrough();
+
+const RemoteCalibrationPermissions = z
+  .object({
+    readPrinter: z.boolean(),
+    writeCalibration: z.boolean(),
+    generateCalibration: z.boolean(),
+    startPrint: z.boolean(),
+  })
+  .passthrough();
+
+export const RemoteCalibrationPrinterContext = z
+  .object({
+    printerId: z.string().min(1).max(256),
+    displayName: z.string().min(1).max(256),
+    printerModel: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((value) => value ?? null),
+    firmware: z
+      .object({
+        firmware: z.literal('Klipper'),
+        gcodeDialect: z.literal('Klipper'),
+        firmwareVersion: z
+          .string()
+          .max(128)
+          .nullish()
+          .transform((value) => value ?? null),
+        klipperConfigHash: z
+          .string()
+          .max(256)
+          .nullish()
+          .transform((value) => value ?? null),
+      })
+      .passthrough(),
+    orcaProfileId: z
+      .string()
+      .max(512)
+      .nullish()
+      .transform((value) => value ?? null),
+    orcaProfileDisplayName: z
+      .string()
+      .max(512)
+      .nullish()
+      .transform((value) => value ?? null),
+    bedWidthMm: z
+      .number()
+      .positive()
+      .max(10_000)
+      .nullish()
+      .transform((value) => value ?? null),
+    bedDepthMm: z
+      .number()
+      .positive()
+      .max(10_000)
+      .nullish()
+      .transform((value) => value ?? null),
+    nozzleDiameterMm: z
+      .number()
+      .positive()
+      .max(10)
+      .nullish()
+      .transform((value) => value ?? null),
+    snapshotAt: z.string().datetime(),
+    isCurrent: z.boolean().optional().default(false),
+    configurationId: z
+      .string()
+      .min(1)
+      .max(256)
+      .nullish()
+      .transform((value) => value ?? null),
+    configurationRevision: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullish()
+      .transform((value) => value ?? null),
+    snapshotId: z
+      .string()
+      .min(1)
+      .max(256)
+      .nullish()
+      .transform((value) => value ?? null),
+    snapshotRevision: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullish()
+      .transform((value) => value ?? null),
+    slicerIdentity: z
+      .string()
+      .min(1)
+      .max(128)
+      .nullish()
+      .transform((value) => value ?? null),
+    slicerDistribution: z
+      .string()
+      .min(1)
+      .max(256)
+      .nullish()
+      .transform((value) => value ?? null),
+    profileRevision: z
+      .string()
+      .min(1)
+      .max(256)
+      .nullish()
+      .transform((value) => value ?? null),
+    contentHash: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((value) => value ?? null),
+    toolheads: z.array(RemoteToolhead).max(32).optional().default([]),
+    safety: RemoteSafetyContext.nullish().transform((value) => value ?? null),
+    permissions: RemoteCalibrationPermissions.nullish().transform(
+      (value) => value ?? null,
+    ),
+  })
+  .passthrough();
+export type RemoteCalibrationPrinterContext = z.infer<
+  typeof RemoteCalibrationPrinterContext
+>;
+
+export function isExplicitCalibrationEligibilityComplete(
+  candidate: RemoteCalibrationPrinterCandidate,
+): boolean {
+  return projectCalibrationEligibility(candidate) !== null;
+}
+
+export function projectCalibrationEligibility(
+  candidate: RemoteCalibrationPrinterCandidate,
+): z.infer<typeof CalibrationPrinterEligibility> | null {
+  if (candidate.eligibility === null) return null;
+  const result = CalibrationPrinterEligibility.safeParse({
+    firmwareFamily: candidate.eligibility.firmwareFamily,
+    gcodeDialect: candidate.eligibility.gcodeDialect,
+    slicerFamily: candidate.eligibility.slicerFamily,
+    slicerDistribution: candidate.eligibility.slicerDistribution,
+    slicerIdentity: candidate.eligibility.slicerIdentity,
+    hardwareContextComplete: candidate.eligibility.hardwareContextComplete,
+    safetyContextComplete: candidate.eligibility.safetyContextComplete,
+    permissionsComplete: candidate.eligibility.permissionsComplete,
+    reasons: candidate.eligibility.reasons,
+  });
+  return result.success ? result.data : null;
+}
+
+export function isExplicitCalibrationContextComplete(
+  context: RemoteCalibrationPrinterContext,
+): boolean {
+  return (
+    context.configurationId !== null &&
+    context.configurationRevision !== null &&
+    context.snapshotId !== null &&
+    context.snapshotRevision !== null &&
+    context.slicerIdentity === 'OrcaSlicer' &&
+    context.slicerDistribution === 'upstream' &&
+    context.orcaProfileId !== null &&
+    context.orcaProfileDisplayName !== null &&
+    context.profileRevision !== null &&
+    context.toolheads.length > 0 &&
+    context.safety !== null &&
+    context.safety.emergencyStopAvailable &&
+    context.safety.thermalProtectionConfirmed &&
+    context.safety.ventilationAssessed &&
+    context.permissions !== null &&
+    context.permissions.readPrinter &&
+    context.permissions.writeCalibration &&
+    context.permissions.generateCalibration &&
+    context.permissions.startPrint
+  );
+}
+
+export function projectPrintFarmerOrcaProfile(
+  candidate: RemoteCalibrationPrinterCandidate,
+  context: RemoteCalibrationPrinterContext,
+): OrcaProfileEntry | null {
+  if (
+    !candidate.isOnline ||
+    !isExplicitCalibrationEligibilityComplete(candidate) ||
+    !context.isCurrent ||
+    !isExplicitCalibrationContextComplete(context) ||
+    candidate.printerId !== context.printerId ||
+    candidate.orcaProfileId === null ||
+    candidate.orcaProfileId !== context.orcaProfileId ||
+    context.configurationRevision === null ||
+    context.snapshotId === null ||
+    context.nozzleDiameterMm === null ||
+    context.profileRevision === null
+  ) {
+    return null;
+  }
+  const matchingToolheads = context.toolheads.filter(
+    (toolhead) => toolhead.nozzle.diameterMm === context.nozzleDiameterMm,
+  );
+  if (matchingToolheads.length !== 1) {
+    return null;
+  }
+  const toolhead = matchingToolheads[0]!;
+  return OrcaProfileEntry.parse({
+    orcaProfileId: context.orcaProfileId,
+    displayName: context.orcaProfileDisplayName,
+    vendor: null,
+    material: null,
+    source: 'printFarmer',
+    upstreamVerified: true,
+    printerId: context.printerId,
+    configurationRevision: context.configurationRevision,
+    snapshotId: context.snapshotId,
+    toolId: toolhead.toolId,
+    toolheadId: toolhead.toolheadId,
+    nozzleId: toolhead.nozzle.id,
+    nozzleDiameterMm: toolhead.nozzle.diameterMm,
+    profileRevision: context.profileRevision,
+    contentHash:
+      context.contentHash !== null && /^[a-f0-9]{64}$/.test(context.contentHash)
+        ? context.contentHash
+        : null,
+    exportable: false,
+  });
+}
+
+export function projectCalibrationPrinterContext(
+  context: RemoteCalibrationPrinterContext,
+): CalibrationPrinterContext {
+  const complete = isExplicitCalibrationContextComplete(context);
+  return CalibrationPrinterContextSchema.parse({
+    printerId: context.printerId,
+    displayName: context.displayName,
+    printerModel: context.printerModel,
+    firmware: {
+      firmware: context.firmware.firmware,
+      gcodeDialect: context.firmware.gcodeDialect,
+      firmwareVersion: context.firmware.firmwareVersion,
+      klipperConfigHash: context.firmware.klipperConfigHash,
+    },
+    orcaProfileId: context.orcaProfileId,
+    orcaProfileDisplayName: context.orcaProfileDisplayName,
+    bedWidthMm: context.bedWidthMm,
+    bedDepthMm: context.bedDepthMm,
+    nozzleDiameterMm: context.nozzleDiameterMm,
+    snapshotAt: context.snapshotAt,
+    isCurrent: context.isCurrent && complete,
+    configurationId: context.configurationId,
+    configurationRevision: context.configurationRevision,
+    snapshotId: context.snapshotId,
+    snapshotRevision: context.snapshotRevision,
+    slicerIdentity:
+      context.slicerIdentity === 'OrcaSlicer' ? 'OrcaSlicer' : null,
+    slicerDistribution:
+      context.slicerDistribution === 'upstream' ? 'upstream' : null,
+    profileRevision: context.profileRevision,
+    contentHash:
+      context.contentHash !== null && /^[a-f0-9]{64}$/.test(context.contentHash)
+        ? context.contentHash
+        : null,
+    toolheads: context.toolheads.map((toolhead) => ({
+      toolId: toolhead.toolId,
+      toolheadId: toolhead.toolheadId,
+      extruderType: toolhead.extruderType,
+      nozzle: {
+        id: toolhead.nozzle.id,
+        diameterMm: toolhead.nozzle.diameterMm,
+        material: toolhead.nozzle.material,
+      },
+    })),
+    safety:
+      context.safety === null
+        ? null
+        : {
+            buildVolumeMm: {
+              x: context.safety.buildVolumeMm.x,
+              y: context.safety.buildVolumeMm.y,
+              z: context.safety.buildVolumeMm.z,
+            },
+            maximumNozzleTemperatureC: context.safety.maximumNozzleTemperatureC,
+            maximumBedTemperatureC: context.safety.maximumBedTemperatureC,
+            maximumVolumetricRateMm3S: context.safety.maximumVolumetricRateMm3S,
+            emergencyStopAvailable: context.safety.emergencyStopAvailable,
+            thermalProtectionConfirmed:
+              context.safety.thermalProtectionConfirmed,
+            ventilationAssessed: context.safety.ventilationAssessed,
+          },
+    permissions:
+      context.permissions === null
+        ? null
+        : {
+            readPrinter: context.permissions.readPrinter,
+            writeCalibration: context.permissions.writeCalibration,
+            generateCalibration: context.permissions.generateCalibration,
+            startPrint: context.permissions.startPrint,
+          },
+  });
+}
+
+export function doesCalibrationWorkspaceMatchContext(
+  request: CalibrationSaveWorkspaceStateRequest,
+  context: RemoteCalibrationPrinterContext,
+): boolean {
+  if (!context.isCurrent || !isExplicitCalibrationContextComplete(context)) {
+    return false;
+  }
+  const binding = request.workspaceState.domainState.binding;
+  const printer = binding.printer;
+  const snapshot = binding.snapshot;
+  const selectedProfile = request.workspaceState.selectedBaseProfile;
+  const selectedToolhead = snapshot.toolheads.find(
+    (toolhead) =>
+      toolhead.toolId === binding.selectedToolId &&
+      toolhead.toolheadId === binding.selectedToolheadId &&
+      toolhead.nozzle.nozzleId === binding.selectedNozzleId,
+  );
+  const remoteToolhead = context.toolheads.find(
+    (toolhead) =>
+      toolhead.toolId === binding.selectedToolId &&
+      toolhead.toolheadId === binding.selectedToolheadId &&
+      toolhead.nozzle.id === binding.selectedNozzleId,
+  );
+  const remoteSafety = context.safety;
+  if (remoteSafety === null) return false;
+  return (
+    context.printerId === printer.backendPrinterId &&
+    context.configurationId === printer.printerConfigurationId &&
+    context.configurationRevision === printer.printerConfigurationRevision &&
+    context.snapshotId === snapshot.snapshotId &&
+    context.snapshotRevision === snapshot.snapshotRevision &&
+    context.snapshotAt === snapshot.capturedAt &&
+    context.configurationRevision === snapshot.configurationRevision &&
+    remoteSafety.buildVolumeMm.x === snapshot.safety.buildVolumeMm.x &&
+    remoteSafety.buildVolumeMm.y === snapshot.safety.buildVolumeMm.y &&
+    remoteSafety.buildVolumeMm.z === snapshot.safety.buildVolumeMm.z &&
+    remoteSafety.maximumNozzleTemperatureC ===
+      snapshot.safety.maximumNozzleTemperatureC &&
+    remoteSafety.maximumBedTemperatureC ===
+      snapshot.safety.maximumBedTemperatureC &&
+    remoteSafety.maximumVolumetricRateMm3S ===
+      snapshot.safety.maximumVolumetricRateMm3S &&
+    remoteSafety.emergencyStopAvailable ===
+      snapshot.safety.emergencyStopAvailable &&
+    remoteSafety.thermalProtectionConfirmed ===
+      snapshot.safety.thermalProtectionConfirmed &&
+    remoteSafety.ventilationAssessed === snapshot.safety.ventilationAssessed &&
+    selectedToolhead !== undefined &&
+    remoteToolhead !== undefined &&
+    selectedToolhead.extruderType === remoteToolhead.extruderType &&
+    selectedToolhead.nozzle.diameterMm === remoteToolhead.nozzle.diameterMm &&
+    selectedToolhead.nozzle.material === remoteToolhead.nozzle.material &&
+    context.nozzleDiameterMm === remoteToolhead.nozzle.diameterMm &&
+    selectedProfile.orcaProfileId === context.orcaProfileId &&
+    selectedProfile.displayName === context.orcaProfileDisplayName &&
+    selectedProfile.printerId === context.printerId &&
+    selectedProfile.configurationRevision === context.configurationRevision &&
+    selectedProfile.snapshotId === context.snapshotId &&
+    selectedProfile.toolId === remoteToolhead.toolId &&
+    selectedProfile.toolheadId === remoteToolhead.toolheadId &&
+    selectedProfile.nozzleId === remoteToolhead.nozzle.id &&
+    selectedProfile.nozzleDiameterMm === remoteToolhead.nozzle.diameterMm &&
+    selectedProfile.profileRevision === context.profileRevision &&
+    selectedProfile.contentHash ===
+      (context.contentHash !== null &&
+      /^[a-f0-9]{64}$/.test(context.contentHash)
+        ? context.contentHash
+        : null)
+  );
+}
 
 // --- Capability negotiation wire types ------------------------------------
 
@@ -124,8 +779,8 @@ export const RemotePrinterSnapshot = z
       .max(256)
       .nullish()
       .transform((v) => v ?? null),
-    firmware: z.string().min(1).max(64),
-    gcodeDialect: z.string().min(1).max(64),
+    firmware: z.literal('Klipper'),
+    gcodeDialect: z.literal('Klipper'),
     firmwareVersion: z
       .string()
       .max(128)
@@ -179,17 +834,39 @@ export const RemoteCalibrationProject = z
       .max(4096)
       .nullish()
       .transform((v) => v ?? null),
-    status: z.string().min(1).max(64),
+    status: z.enum([
+      'draft',
+      'inProgress',
+      'awaitingGeneration',
+      'generated',
+      'complete',
+      'archived',
+    ]),
     printerId: z.string().min(1).max(256),
     printerSnapshot: RemotePrinterSnapshot.nullish().transform(
       (v) => v ?? null,
     ),
     revision: z.number().int().nonnegative(),
     concurrencyToken: z.string().min(1).max(256),
+    /** Exact domain workspace when the server has one; invalid legacy shapes are not hydrated. */
+    workspaceState: CalibrationWorkspacePayload.nullish()
+      .catch(null)
+      .transform((value) => value ?? null),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
-  .passthrough();
+  .passthrough()
+  .transform((project) => {
+    const workspace = project.workspaceState;
+    return workspace !== null &&
+      (Buffer.byteLength(JSON.stringify(workspace), 'utf8') >
+        MAX_CALIBRATION_WORKSPACE_BYTES ||
+        workspace.domainState.projectId !== project.id ||
+        workspace.domainState.binding.printer.backendPrinterId !==
+          project.printerId)
+      ? { ...project, workspaceState: null }
+      : project;
+  });
 export type RemoteCalibrationProject = z.infer<typeof RemoteCalibrationProject>;
 
 /** Remote calibration step from `GET /api/calibration-projects/{id}/steps`. */
@@ -198,8 +875,24 @@ export const RemoteCalibrationStep = z
     id: ServerGuid,
     projectId: ServerGuid,
     ordinal: z.number().int().nonnegative().max(99),
-    kind: z.string().min(1).max(64),
-    status: z.string().min(1).max(64),
+    kind: z.enum([
+      'temperatureTower',
+      'retraction',
+      'flowRate',
+      'pressureAdvance',
+      'firstLayerHeight',
+      'firstLayerWidth',
+      'overhangAngle',
+      'toleranceTest',
+      'speedTest',
+    ]),
+    status: z.enum([
+      'pending',
+      'inProgress',
+      'observationRequired',
+      'complete',
+      'skipped',
+    ]),
     displayName: z.string().min(1).max(128),
     prerequisites: z
       .string()

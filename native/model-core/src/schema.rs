@@ -8,7 +8,7 @@
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 12;
+pub const SCHEMA_VERSION: u32 = 14;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -649,6 +649,40 @@ CREATE TABLE calibration_printer_snapshots (
 );
 "#;
 
+/// Additive v13 persistence for the exact renderer calibration workspace state.
+///
+/// The state is profile-scoped and tied to its v12 project aggregate. It stores
+/// only the serialized calibration workspace DTO and progress counters; no
+/// credentials, server locations, or filesystem locations are modeled.
+pub const SCHEMA_V13: &str = r#"
+CREATE TABLE calibration_workspace_states (
+    profile_id             TEXT NOT NULL,
+    project_id             TEXT NOT NULL,
+    workspace_state_json   TEXT NOT NULL,
+    completed_step_count   INTEGER NOT NULL,
+    total_step_count       INTEGER NOT NULL,
+    updated_at             TEXT NOT NULL,
+    PRIMARY KEY (profile_id, project_id),
+    FOREIGN KEY (profile_id, project_id)
+        REFERENCES calibration_projects(profile_id, project_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_calibration_workspace_states_profile
+    ON calibration_workspace_states(profile_id, updated_at DESC);
+"#;
+
+/// Additive v14 private photo storage and canonical workspace-stage identity.
+///
+/// `local_path` is native-only metadata. It is intentionally absent from every
+/// renderer-facing DTO. The former `step_id` column held workspace stage names,
+/// not UUID step identities, and is renamed to make that contract explicit.
+pub const SCHEMA_V14: &str = r#"
+ALTER TABLE staged_calibration_photos RENAME COLUMN step_id TO stage_id;
+ALTER TABLE staged_calibration_photos ADD COLUMN local_path TEXT;
+ALTER TABLE staged_calibration_photos ADD COLUMN caption TEXT NOT NULL DEFAULT '';
+ALTER TABLE staged_calibration_photos ADD COLUMN photo_order INTEGER NOT NULL DEFAULT 1;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -727,7 +761,7 @@ mod tests {
 
     #[test]
     fn calibration_schema_contains_no_secret_fields() {
-        let schema = SCHEMA_V12.to_lowercase();
+        let schema = format!("{SCHEMA_V12}\n{SCHEMA_V13}\n{SCHEMA_V14}").to_lowercase();
         for forbidden in ["server_url", "auth_token", "api_key", "password", "jwt"] {
             assert!(
                 !schema.contains(forbidden),
@@ -737,10 +771,78 @@ mod tests {
     }
 
     #[test]
+    fn calibration_schema_v13_declares_workspace_state_without_sensitive_columns() {
+        assert!(SCHEMA_V13.contains("calibration_workspace_states"));
+        for required in [
+            "profile_id",
+            "project_id",
+            "workspace_state_json",
+            "completed_step_count",
+            "total_step_count",
+            "updated_at",
+            "REFERENCES calibration_projects",
+        ] {
+            assert!(
+                SCHEMA_V13.contains(required),
+                "SCHEMA_V13 missing {required}"
+            );
+        }
+        let schema = SCHEMA_V13.to_lowercase();
+        for forbidden in [
+            "credential",
+            "server_url",
+            "auth_token",
+            "api_key",
+            "password",
+            "jwt",
+            "filesystem_path",
+            "file_path",
+        ] {
+            assert!(
+                !schema.contains(forbidden),
+                "SCHEMA_V13 must not contain sensitive field '{forbidden}'"
+            );
+        }
+    }
+
+    #[test]
     fn calibration_outbox_has_idempotency_key_and_sequence() {
         assert!(SCHEMA_V12.contains("idempotency_key"));
         assert!(SCHEMA_V12.contains("sequence"));
         assert!(SCHEMA_V12.contains("depends_on_json"));
+    }
+
+    #[test]
+    fn calibration_schema_v14_keeps_photo_paths_native_only() {
+        assert!(SCHEMA_V14.contains("RENAME COLUMN step_id TO stage_id"));
+        assert!(SCHEMA_V14.contains("local_path"));
+        let dto = crate::calibration::StagedCalibrationPhotoDto {
+            photo_id: "photo".into(),
+            attempt_id: "attempt".into(),
+            stage_id: crate::calibration::CalibrationWorkspaceStageId::Temperature,
+            project_id: "project".into(),
+            profile_id: "profile".into(),
+            content_hash: "a".repeat(64),
+            mime_type: "image/png".into(),
+            byte_size: 1,
+            status: "staged".into(),
+            upload_attempts: 0,
+            remote_photo_id: None,
+            remote_url: None,
+            staged_at: "2026-01-01T00:00:00Z".into(),
+            uploaded_at: None,
+            caption: "caption".into(),
+            order: 1,
+        };
+        let mut value = serde_json::to_value(&dto).unwrap();
+        assert_eq!(value["stageId"], "temperature");
+        let serialized = serde_json::to_string(&value).unwrap();
+        assert!(!serialized.contains("localPath"));
+        assert!(!serialized.contains("local_path"));
+        value["stageId"] = serde_json::json!("11111111-1111-4111-8111-111111111111");
+        assert!(
+            serde_json::from_value::<crate::calibration::StagedCalibrationPhotoDto>(value).is_err()
+        );
     }
 
     #[test]
@@ -757,7 +859,7 @@ mod tests {
 
     #[test]
     fn schema_version_matches_number_of_migrations() {
-        // Each migration from V1..=V12 must be represented.
-        assert_eq!(SCHEMA_VERSION, 12);
+        // Each migration from V1..=V14 must be represented.
+        assert_eq!(SCHEMA_VERSION, 14);
     }
 }
