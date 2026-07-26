@@ -109,6 +109,14 @@ const realpathOf = (requested: string) => `${requested}#realpath`;
  */
 const DENIED = 'TEST_APPROVAL_DENIED';
 
+/**
+ * Approval id the fake picker hands back. The `OpenFolder` response schema
+ * validates it as a UUID, so a placeholder string fails the contract rather
+ * than the authorization — which is the schema doing its job, and the reason
+ * this is a real one.
+ */
+const ROOT_APPROVAL_ID = '0f9c9f4e-3f1a-4c2f-9b7d-6a1b2c3d4e5f';
+
 class TestApprovalError extends Error {
   readonly code = 'APPROVAL_REQUIRED';
 }
@@ -206,13 +214,22 @@ function harness(options: HarnessOptions = {}): Harness {
   // authorizing line at ipc.ts:188 could then be deleted with the suite still
   // green. Returning a value distinct from the authorized one is what makes the
   // two steps distinguishable in what the handlers forward.
+  //
+  // `reset` and `approveFromPicker` mutate `rootApproved` because the real
+  // store's do: `reset()` unlinks the persisted store (rootApprovals.ts:338)
+  // and `authorizeFile` then finds no root to match against, while
+  // `approveFromPicker` writes one back. #118 NB1 is the consequence of the
+  // earlier fake, where `reset` was `() => Promise.resolve()`: with no
+  // observable effect there was no assertion that could reach
+  // `await approvals.reset()`, and deleting that line left all 739 tests green.
+  let rootApproved = true;
   const approvals = {
     canonicalizePickerFile: (requested: string) =>
       options.canonicalize
         ? options.canonicalize(requested)
         : Promise.resolve(realpathOf(requested)),
     authorizeFile: (requested: string) => {
-      if (requested === RENDERER_PATH) {
+      if (rootApproved && requested === RENDERER_PATH) {
         return Promise.resolve({
           sourcePath: requested,
           canonicalPath: CANONICAL_PATH,
@@ -221,8 +238,17 @@ function harness(options: HarnessOptions = {}): Harness {
       return Promise.reject(new TestApprovalError(DENIED));
     },
     resolve: () => Promise.reject(new TestApprovalError(DENIED)),
-    approveFromPicker: () => Promise.reject(new TestApprovalError(DENIED)),
-    reset: () => Promise.resolve(),
+    approveFromPicker: (selectedPath: string) => {
+      rootApproved = true;
+      return Promise.resolve({
+        id: ROOT_APPROVAL_ID,
+        canonicalPath: realpathOf(selectedPath),
+      });
+    },
+    reset: () => {
+      rootApproved = false;
+      return Promise.resolve();
+    },
   };
 
   registerIpcHandlers(
@@ -613,6 +639,64 @@ describe('IPC handler layer: renderer-supplied filesystem paths', () => {
         ),
       ).rejects.toThrow(DENIED);
       expect(h.downstream).toEqual([]);
+    });
+
+    it('refuses a root-approved file afterwards, with the picker allowlist never involved', async () => {
+      // #118 NB1. The test above revokes through the picker allowlist, so it
+      // dies when `approvedPickerFiles.clear()` is dropped and is indifferent to
+      // `await approvals.reset()`. This one is the mirror: RENDERER_PATH is
+      // admitted by `approvals.authorizeFile` at ipc.ts:188 and has never been
+      // through the picker, so the allowlist branch at :187 is not on its path
+      // at all. Dropping either clear kills exactly one of the two.
+      const loadScene = h.handlers.get(IpcChannel.LoadScene)!;
+      await Promise.resolve(loadScene(senderEvent(1), { path: RENDERER_PATH }));
+      expect(
+        h.downstream.map((call) => call.method),
+        'the root-approved file should load before the reset',
+      ).toEqual(['loadScene']);
+
+      await expect(reset(h)).resolves.toEqual({ reset: true });
+      h.downstream.length = 0;
+
+      await expect(
+        Promise.resolve(loadScene(senderEvent(1), { path: RENDERER_PATH })),
+      ).rejects.toThrow(DENIED);
+      expect(h.downstream).toEqual([]);
+    });
+
+    it('still admits a root approved after the reset', async () => {
+      // The legitimate-maximum direction for both clears. Everything else in
+      // this describe pushes from the revocation side, and a `ResetApprovedRoots`
+      // that wedged authorization permanently — or a handler that simply threw
+      // before reaching anything — satisfies all of it. What a user does after
+      // revoking is grant again, and nothing said that still worked.
+      await expect(reset(h)).resolves.toEqual({ reset: true });
+      const loadScene = h.handlers.get(IpcChannel.LoadScene)!;
+      await expect(
+        Promise.resolve(loadScene(senderEvent(1), { path: RENDERER_PATH })),
+      ).rejects.toThrow(DENIED);
+
+      electronState.pickerResult = {
+        canceled: false,
+        filePaths: ['/approved/real'],
+      };
+      await expect(
+        Promise.resolve(
+          h.handlers.get(IpcChannel.OpenFolder)!(senderEvent(1), undefined),
+        ),
+      ).resolves.toEqual({
+        path: realpathOf('/approved/real'),
+        approvalId: ROOT_APPROVAL_ID,
+      });
+
+      h.downstream.length = 0;
+      await Promise.resolve(loadScene(senderEvent(1), { path: RENDERER_PATH }));
+      const call = h.downstream.find((c) => c.method === 'loadScene');
+      expect(
+        call,
+        'a root approved after the reset was still refused',
+      ).toBeDefined();
+      expect(call!.args[0]).toBe(CANONICAL_PATH);
     });
 
     it('shreds the derived scene cache', async () => {

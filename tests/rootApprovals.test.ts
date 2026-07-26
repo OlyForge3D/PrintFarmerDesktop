@@ -340,12 +340,19 @@ describe('picker-allowlist re-binding premise (#102 N3)', () => {
   // `ipc.ts` admits a picked file by canonical-string membership. Binding the
   // entry to device+inode at admission instead would refuse the file whenever
   // its identity changed. The question is whether that discriminates a hostile
-  // post-pick swap from a benign save, and on this platform it does not: it
-  // gets the two backwards. A save that writes a sibling and renames over the
-  // original - the atomic-save pattern - changes identity, so the user would be
-  // forced back to the picker after an ordinary edit. A rewrite in place does
-  // not change identity, so the swap that needs no elevated access at all goes
-  // straight through.
+  // post-pick swap from a benign save, and it does not: it gets the two
+  // backwards. A save that writes a sibling and renames over the original - the
+  // atomic-save pattern - changes identity, so the user would be forced back to
+  // the picker after an ordinary edit. A rewrite in place does not change
+  // identity, so the swap that needs no elevated access at all goes straight
+  // through.
+  //
+  // This holds on both shipped platforms, and the evidence is this test rather
+  // than a claim about it: it carries no platform guard, so CI runs it on
+  // `Desktop (windows-latest)` and `Desktop (macos-latest)` alike, and it
+  // passed on APFS in the #114 verification run. The earlier write-up tagged
+  // the result `win32` because it came from a throwaway probe script; that tag
+  // was narrower than the evidence and is not repeated here.
   //
   // If this ever stops holding, the recorded rationale is no longer true and
   // the decision should be revisited rather than inherited.

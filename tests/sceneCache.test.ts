@@ -7,6 +7,7 @@ import {
   rename,
   rm,
   stat,
+  utimes,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -976,5 +977,268 @@ describe('SceneCacheService', () => {
     await expect(inFlight).resolves.toEqual(scene(1));
 
     expect(await cachedSceneFiles(userDataPath)).toEqual([]);
+  });
+
+  it('resolves a load whose recipe moved under it while it was the in-flight entry', async () => {
+    // #118 NB2. `deriveAndStore` restarts when the recipe it assumed is no
+    // longer current, and the restart used to be `return this.loadScene(...)`
+    // issued from inside the promise already registered in `inFlight`. It
+    // recomputed the same key, found that promise, and awaited itself. Measured
+    // as a hang rather than a rejection, so the assertion has to be a bounded
+    // wait: an unresolved promise is not a failed one, and
+    // `await expect(...).resolves` would sit here until the runner gave up and
+    // attributed the timeout to the file rather than to this test.
+    //
+    // Both conditions are required. The purge makes the lease stale, and the
+    // sidecar returning a recipe other than the one it advertised is what sends
+    // the load down the restart branch in the first place.
+    const userDataPath = await temporaryDirectory();
+    const filePath = await modelFile(userDataPath);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const gate = deferred();
+    const entered = deferred();
+    sidecar.loadSceneWithRecipe.mockImplementationOnce(async () => {
+      entered.resolve();
+      await gate.promise;
+      return { scene: scene(1), cacheRecipe: 'scene/v2.3' };
+    });
+    const cache = new SceneCacheService({ userDataPath, sidecar });
+
+    const inFlight = cache.loadScene(filePath);
+    await entered.promise;
+    await cache.purge();
+    gate.resolve();
+
+    const timeout = Symbol('timed-out');
+    const settled = await Promise.race([
+      inFlight,
+      new Promise((resolve) => setTimeout(() => resolve(timeout), 2000)),
+    ]);
+    expect(settled, 'the restarted load never resolved').not.toBe(timeout);
+    // The restart re-derives rather than returning the scene from the
+    // derivation whose recipe turned out to be stale.
+    expect(settled).toEqual(scene(2));
+  });
+
+  it('resolves a second caller that attached to a derivation which then restarted', async () => {
+    // The sharing branch has to handle the restart too. A caller that attaches
+    // at `inFlight.get(key)` receives whatever that derivation produces, so if
+    // the restart is signalled rather than performed, the attached caller has to
+    // recognise the signal instead of returning it to the renderer as a scene.
+    //
+    // The second caller must be *past* the `inFlight` lookup before the purge.
+    // The first version of this test simply called `loadScene` and purged, and
+    // was GREEN against the mutation it exists to catch: the second load was
+    // still inside its own hashing when the generation bumped, so it took the
+    // stale-lease restart at the top of `loadScene` and never attached to
+    // anything. `size` is the last await before the lookup — awaiting its
+    // second call and then draining to a macrotask puts the caller where the
+    // test says it is, and hangs the test rather than passing vacuously if it
+    // never gets there.
+    const userDataPath = await temporaryDirectory();
+    const filePath = await modelFile(userDataPath);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    const gate = deferred();
+    const entered = deferred();
+    sidecar.loadSceneWithRecipe.mockImplementationOnce(async () => {
+      entered.resolve();
+      await gate.promise;
+      return { scene: scene(1), cacheRecipe: 'scene/v2.3' };
+    });
+
+    const fileSystem = testFileSystem();
+    const secondLookedUp = deferred();
+    let lookups = 0;
+    const cache = new SceneCacheService({
+      userDataPath,
+      sidecar,
+      fileSystem: {
+        ...fileSystem,
+        size: async (entryPath) => {
+          lookups += 1;
+          try {
+            return await fileSystem.size(entryPath);
+          } finally {
+            if (lookups === 2) secondLookedUp.resolve();
+          }
+        },
+      },
+    });
+
+    const first = cache.loadScene(filePath);
+    await entered.promise;
+    const second = cache.loadScene(filePath);
+    await secondLookedUp.promise;
+    await new Promise((resolve) => setImmediate(resolve));
+    await cache.purge();
+    gate.resolve();
+
+    const timeout = Symbol('timed-out');
+    const settled = await Promise.race([
+      Promise.all([first, second]),
+      new Promise((resolve) => setTimeout(() => resolve(timeout), 2000)),
+    ]);
+    expect(settled, 'a shared restarted load never resolved').not.toBe(timeout);
+    for (const value of settled as LoadSceneResponse[]) {
+      expect(
+        typeof value,
+        'a caller received the restart signal instead of a scene',
+      ).toBe('object');
+      expect(value.sceneVersion).toBe(2);
+      expect(value.status).toBe('complete');
+    }
+  });
+
+  it('still shares one derivation between concurrent loads that do not restart', async () => {
+    // The legitimate-maximum direction for the restart signal. Turning the
+    // shared promise into `Promise<Scene | RESTART>` is invisible to a test that
+    // only checks a restart resolves; a change that made every attached caller
+    // re-derive would satisfy the two tests above while quietly removing the
+    // deduplication `inFlight` exists for.
+    const userDataPath = await temporaryDirectory();
+    const filePath = await modelFile(userDataPath);
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    sidecar.returnedRecipe = 'scene/v2.2';
+    const gate = deferred();
+    const entered = deferred();
+    sidecar.loadSceneWithRecipe.mockImplementationOnce(async () => {
+      entered.resolve();
+      await gate.promise;
+      return { scene: scene(1), cacheRecipe: 'scene/v2.2' };
+    });
+    const cache = new SceneCacheService({ userDataPath, sidecar });
+
+    const first = cache.loadScene(filePath);
+    await entered.promise;
+    const second = cache.loadScene(filePath);
+    gate.resolve();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      scene(1),
+      scene(1),
+    ]);
+    expect(sidecar.loadSceneWithRecipe).toHaveBeenCalledOnce();
+  });
+});
+
+describe('SceneCacheService: model identity (#91)', () => {
+  // These tests use the shipped default filesystem rather than
+  // `testFileSystem()`. Every test above injects its own `hashFile`, so the real
+  // one at `sceneCache.ts` was reached by no test at all: it could have been
+  // deleted outright with the suite green. Driving it through the public API
+  // instead of exporting it keeps the assertion on observable behaviour — the
+  // digest determines the cache entry's filename, so a wrong digest is visible
+  // as a wrong name.
+
+  const digestOf = async (filePath: string) =>
+    createHash('sha256')
+      .update(await readFile(filePath))
+      .digest('hex');
+
+  const entryNameFor = async (userDataPath: string) => {
+    const files = await cachedSceneFiles(userDataPath);
+    expect(files).toHaveLength(1);
+    return files[0]!.replace(/\.scene\.json$/, '');
+  };
+
+  // Sizes chosen around the 4 MiB read buffer, because the interesting failure
+  // is the short final read. Below the buffer the read fills it exactly and the
+  // partial branch never runs, so a test that only used small models would pass
+  // against an implementation that hashed the whole buffer every time and
+  // folded stale bytes into every large model's digest.
+  for (const [label, size] of [
+    ['empty', 0],
+    ['smaller than one read', 100],
+    ['exactly one read', 4 * 1024 * 1024],
+    ['one read plus a short one', 4 * 1024 * 1024 + 1234],
+  ] as const) {
+    it(`hashes a model ${label} to its true SHA-256`, async () => {
+      const userDataPath = await temporaryDirectory();
+      const filePath = path.join(userDataPath, 'part.stl');
+      // Position-dependent bytes: a constant fill hashes the same whether or
+      // not a chunk boundary is handled correctly.
+      const bytes = Buffer.allocUnsafe(size);
+      for (let i = 0; i < size; i += 1) bytes[i] = (i * 31 + 7) & 0xff;
+      await writeFile(filePath, bytes);
+
+      const sidecar = fakeSidecar();
+      sidecar.advertisedRecipe = 'scene/v2.2';
+      sidecar.returnedRecipe = 'scene/v2.2';
+      const cache = new SceneCacheService({ userDataPath, sidecar });
+
+      await expect(cache.loadScene(filePath)).resolves.toEqual(scene(1));
+      expect(await entryNameFor(userDataPath)).toBe(
+        sceneCacheKey(await digestOf(filePath), 'scene/v2.2'),
+      );
+    });
+  }
+
+  it('cannot be replaced by a (size, mtime) key, because metadata does not determine content', async () => {
+    // #91 proposes keying on `(path, size, mtime)` to skip the read: a `stat`
+    // costs 0.048 ms against 117.7 ms to hash 112 MiB. The reason that is not
+    // taken is this, and it is committed as a test rather than written down so
+    // that it fails if the premise ever stops holding, instead of being
+    // inherited as a comment nobody re-measures.
+    //
+    // Restoring a timestamp across a rewrite is what `cp -p`, `rsync --times`
+    // and `tar -x` all do. A second, independent route is timestamp
+    // granularity: on win32 two back-to-back 4 KiB rewrites collided on
+    // `(dev, ino, size, mtimeNs)` at the second attempt, because the clock
+    // advances at ~64 Hz. That one is not asserted here — it would be a
+    // clock-speed race in CI — but it means this is not a single exotic case.
+    const directory = await temporaryDirectory();
+    const filePath = path.join(directory, 'part.stl');
+    const pinned = new Date(Date.UTC(2020, 0, 1, 12, 0, 0));
+    const metadata = async () => {
+      const s = await stat(filePath, { bigint: true });
+      return `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}`;
+    };
+
+    await writeFile(filePath, Buffer.alloc(65536, 0x41));
+    await utimes(filePath, pinned, pinned);
+    const before = { meta: await metadata(), digest: await digestOf(filePath) };
+
+    await writeFile(filePath, Buffer.alloc(65536, 0x42));
+    await utimes(filePath, pinned, pinned);
+    const after = { meta: await metadata(), digest: await digestOf(filePath) };
+
+    expect(after.meta).toBe(before.meta);
+    expect(after.digest).not.toBe(before.digest);
+
+    // The control. Without it the assertion above is satisfied by a `metadata`
+    // that returns a constant, which is indistinguishable from a real
+    // collision and would make the finding look stronger than it is.
+    await writeFile(filePath, Buffer.alloc(4096, 0x43));
+    expect(await metadata()).not.toBe(before.meta);
+  });
+
+  it('serves a rewritten model a scene derived from its own bytes', async () => {
+    // The consequence the collision above would have if the key were metadata,
+    // stated as behaviour: same path, same size, same mtime, different bytes
+    // must not return the first model's scene. This is the legitimate-maximum
+    // direction too — it fails equally for a cache that never hits, so it is
+    // paired with a hit assertion.
+    const userDataPath = await temporaryDirectory();
+    const filePath = path.join(userDataPath, 'part.stl');
+    const pinned = new Date(Date.UTC(2020, 0, 1, 12, 0, 0));
+    const sidecar = fakeSidecar();
+    sidecar.advertisedRecipe = 'scene/v2.2';
+    sidecar.returnedRecipe = 'scene/v2.2';
+    const cache = new SceneCacheService({ userDataPath, sidecar });
+
+    await writeFile(filePath, Buffer.alloc(2048, 0x41));
+    await utimes(filePath, pinned, pinned);
+    await expect(cache.loadScene(filePath)).resolves.toEqual(scene(1));
+    // The hit: unchanged bytes are served without a second derivation.
+    await expect(cache.loadScene(filePath)).resolves.toEqual(scene(1));
+    expect(sidecar.loadSceneWithRecipe).toHaveBeenCalledOnce();
+
+    await writeFile(filePath, Buffer.alloc(2048, 0x42));
+    await utimes(filePath, pinned, pinned);
+    await expect(cache.loadScene(filePath)).resolves.toEqual(scene(2));
+    expect(sidecar.loadSceneWithRecipe).toHaveBeenCalledTimes(2);
   });
 });
