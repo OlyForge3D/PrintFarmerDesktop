@@ -50,6 +50,12 @@ use std::sync::atomic::AtomicBool;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::calibration::{
+    ApplyCalibrationSnapshotParams, CommitCalibrationCursorParams,
+    CountCalibrationPendingOpsParams, GetCalibrationCursorParams, IsPrinterContextFreshParams,
+    ListCalibrationConflictsParams, ListCalibrationPendingOpsParams,
+    RecordCalibrationConflictParams, ReplayCalibrationOpParams, SettleCalibrationOpParams,
+};
 use crate::catalog::{reconcile_root, CatalogStore, InMemoryCatalog};
 use crate::retarget::{
     PreflightReport, RetargetEngine, RetargetError, RetargetOptions, RetargetRpcOutcome,
@@ -1110,6 +1116,101 @@ fn dispatch(
             serde_json::to_value(collections)
                 .map_err(|e| format!("failed to serialize collections: {e}"))
         }
+
+        // --- Calibration persistence RPC (issue #52) -------------------------
+        // These handlers read/write the calibration tables added in schema v12.
+        // No server URLs, JWT tokens, or credentials are stored here.
+        "listCalibrationPendingOps" => {
+            let p: ListCalibrationPendingOpsParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid listCalibrationPendingOps params: {e}"))?;
+            let ops = store.list_calibration_pending_ops(
+                &p.profile_id,
+                p.project_id.as_deref(),
+                p.limit,
+            )?;
+            serde_json::to_value(ops)
+                .map_err(|e| format!("failed to serialize calibration pending ops: {e}"))
+        }
+        "settleCalibrationOp" => {
+            let p: SettleCalibrationOpParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid settleCalibrationOp params: {e}"))?;
+            store.settle_calibration_op(&p.profile_id, &p.operation_id, p.server_revision)?;
+            Ok(serde_json::json!({ "settled": true }))
+        }
+        "replayCalibrationOp" => {
+            let p: ReplayCalibrationOpParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid replayCalibrationOp params: {e}"))?;
+            store.replay_calibration_op(&p.profile_id, &p.operation_id)?;
+            Ok(serde_json::json!({ "replayed": true }))
+        }
+        "recordCalibrationConflict" => {
+            let p: RecordCalibrationConflictParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid recordCalibrationConflict params: {e}"))?;
+            store.record_calibration_conflict(
+                &p.profile_id,
+                &p.operation_id,
+                &p.entity_type,
+                &p.entity_id,
+                &p.reason,
+                p.server_revision,
+            )?;
+            Ok(serde_json::json!({ "recorded": true }))
+        }
+        "getCalibrationCursorState" => {
+            let p: GetCalibrationCursorParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid getCalibrationCursorState params: {e}"))?;
+            let state =
+                store.get_calibration_cursor_state(&p.profile_id, p.project_id.as_deref())?;
+            serde_json::to_value(state)
+                .map_err(|e| format!("failed to serialize calibration cursor state: {e}"))
+        }
+        "commitCalibrationCursor" => {
+            let p: CommitCalibrationCursorParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid commitCalibrationCursor params: {e}"))?;
+            store.commit_calibration_cursor(
+                &p.profile_id,
+                p.project_id.as_deref(),
+                p.cursor.as_deref(),
+                p.server_revision,
+                p.checkpoint_generation,
+            )?;
+            Ok(serde_json::json!({ "committed": true }))
+        }
+        "applyCalibrationSnapshot" => {
+            let p: ApplyCalibrationSnapshotParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid applyCalibrationSnapshot params: {e}"))?;
+            store.apply_calibration_snapshot(
+                &p.profile_id,
+                &p.entity_type,
+                &p.entity_id,
+                p.snapshot.as_ref(),
+                p.tombstone,
+                p.server_revision,
+            )?;
+            Ok(serde_json::json!({ "applied": true }))
+        }
+        "listCalibrationConflicts" => {
+            let p: ListCalibrationConflictsParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid listCalibrationConflicts params: {e}"))?;
+            let conflicts =
+                store.list_calibration_conflicts(&p.profile_id, p.project_id.as_deref())?;
+            serde_json::to_value(conflicts)
+                .map_err(|e| format!("failed to serialize calibration conflicts: {e}"))
+        }
+        "countCalibrationPendingOps" => {
+            let p: CountCalibrationPendingOpsParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid countCalibrationPendingOps params: {e}"))?;
+            let count =
+                store.count_calibration_pending_ops(&p.profile_id, p.project_id.as_deref())?;
+            Ok(serde_json::json!({ "count": count }))
+        }
+        "isPrinterContextFresh" => {
+            let p: IsPrinterContextFreshParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid isPrinterContextFresh params: {e}"))?;
+            let fresh = store.is_printer_context_fresh(&p.profile_id, &p.project_id)?;
+            Ok(serde_json::json!({ "fresh": fresh }))
+        }
+
         other => Err(format!("unknown method: {other}")),
     }
 }

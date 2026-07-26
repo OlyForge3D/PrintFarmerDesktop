@@ -13,6 +13,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::calibration::{
+    CalibrationConflictDto, CalibrationCursorStateDto, CalibrationPendingOpDto,
+};
 use crate::hash::{hash_file, ContentHash};
 use crate::model::{FileFingerprint, ModelFormat};
 use crate::scan::ScanResult;
@@ -753,6 +756,142 @@ pub trait CatalogStore {
         resolved_at: i64,
         failed_disposition: Option<DisposeFailedBatchDto>,
     ) -> Result<SyncConflictDto, String>;
+
+    // --- Calibration persistence (issue #52) ---------------------------------
+
+    /// List pending calibration outbox operations in stable sequence order.
+    /// Returns at most `limit` operations that are dependency-ready.
+    fn list_calibration_pending_ops(
+        &self,
+        profile_id: &str,
+        project_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<CalibrationPendingOpDto>, String> {
+        let _ = (profile_id, project_id, limit);
+        Ok(vec![])
+    }
+
+    /// Mark a calibration outbox operation as settled (server accepted it).
+    fn settle_calibration_op(
+        &mut self,
+        profile_id: &str,
+        operation_id: &str,
+        server_revision: i64,
+    ) -> Result<(), String> {
+        let _ = (profile_id, operation_id, server_revision);
+        Ok(())
+    }
+
+    /// Mark a calibration outbox operation as exact-replay success (idempotent re-send).
+    fn replay_calibration_op(
+        &mut self,
+        profile_id: &str,
+        operation_id: &str,
+    ) -> Result<(), String> {
+        let _ = (profile_id, operation_id);
+        Ok(())
+    }
+
+    /// Record a calibration conflict for an outbox operation.
+    fn record_calibration_conflict(
+        &mut self,
+        profile_id: &str,
+        operation_id: &str,
+        entity_type: &str,
+        entity_id: &str,
+        reason: &str,
+        server_revision: i64,
+    ) -> Result<(), String> {
+        let _ = (
+            profile_id,
+            operation_id,
+            entity_type,
+            entity_id,
+            reason,
+            server_revision,
+        );
+        Ok(())
+    }
+
+    /// Get the current cursor/checkpoint state for a profile+project pair.
+    fn get_calibration_cursor_state(
+        &self,
+        profile_id: &str,
+        project_id: Option<&str>,
+    ) -> Result<CalibrationCursorStateDto, String> {
+        let _ = (profile_id, project_id);
+        Ok(CalibrationCursorStateDto {
+            cursor: None,
+            server_revision: 0,
+            checkpoint_generation: 0,
+        })
+    }
+
+    /// Atomically commit a new cursor after a successful pull page.
+    fn commit_calibration_cursor(
+        &mut self,
+        profile_id: &str,
+        project_id: Option<&str>,
+        cursor: Option<&str>,
+        server_revision: i64,
+        checkpoint_generation: i64,
+    ) -> Result<(), String> {
+        let _ = (
+            profile_id,
+            project_id,
+            cursor,
+            server_revision,
+            checkpoint_generation,
+        );
+        Ok(())
+    }
+
+    /// Store a hydrated remote aggregate snapshot (or tombstone).
+    fn apply_calibration_snapshot(
+        &mut self,
+        profile_id: &str,
+        entity_type: &str,
+        entity_id: &str,
+        snapshot: Option<&serde_json::Value>,
+        tombstone: bool,
+        server_revision: i64,
+    ) -> Result<(), String> {
+        let _ = (
+            profile_id,
+            entity_type,
+            entity_id,
+            snapshot,
+            tombstone,
+            server_revision,
+        );
+        Ok(())
+    }
+
+    /// List unresolved calibration conflicts for a profile+project.
+    fn list_calibration_conflicts(
+        &self,
+        profile_id: &str,
+        project_id: Option<&str>,
+    ) -> Result<Vec<CalibrationConflictDto>, String> {
+        let _ = (profile_id, project_id);
+        Ok(vec![])
+    }
+
+    /// Count pending outbox operations that are not yet settled.
+    fn count_calibration_pending_ops(
+        &self,
+        profile_id: &str,
+        project_id: Option<&str>,
+    ) -> Result<i64, String> {
+        let _ = (profile_id, project_id);
+        Ok(0)
+    }
+
+    /// Check whether the printer context for a project is freshly validated.
+    fn is_printer_context_fresh(&self, profile_id: &str, project_id: &str) -> Result<bool, String> {
+        let _ = (profile_id, project_id);
+        Ok(false)
+    }
 }
 
 /// Summary of a reconciliation pass over one root.
