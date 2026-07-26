@@ -70,6 +70,14 @@ import {
   clearProfileCache,
   OrcaInstallError,
 } from './orcaProfileInstall.js';
+import {
+  LegacyBackupApprovalStore,
+  runLegacyBackupPreflight,
+  executeLegacyBackupImport,
+  mapImportError,
+} from './calibrationImportV4.js';
+import type { PreflightResult } from './calibrationImportV4.js';
+import { LegacyBackupProjectOutcome } from '@shared/ipc';
 
 declare const __PRINTFARMER_E2E_BUILD__: boolean;
 
@@ -221,6 +229,7 @@ export function registerIpcHandlers(
   const retargetOwnerCleanup = new WeakSet<WebContents>();
   const approvedPickerFiles = new Set<string>();
   const calibrationPhotoApprovals = new CalibrationPhotoApprovalStore();
+  const legacyBackupApprovals = new LegacyBackupApprovalStore();
   const calibrationPhotoRoot = path.join(
     app.getPath('userData'),
     'calibration-photos',
@@ -297,6 +306,7 @@ export function registerIpcHandlers(
     activeSyncControllers.clear();
     uploads.dispose();
     clearProfileCache();
+    legacyBackupApprovals.clear();
   });
 
   function retargetElectronError(
@@ -890,6 +900,68 @@ export function registerIpcHandlers(
         }
       : null;
     return ipcSchemas[IpcChannel.OpenCalibrationPhoto].response.parse(response);
+  });
+
+  // --- CalibrationPickLegacyBackupV4: native file picker + local preflight ---
+  // The renderer never receives a filesystem path; it only gets an approvalId
+  // and the bounded preflight summary. Preflight does not contact the backend.
+
+  ipcMain.handle(IpcChannel.CalibrationPickLegacyBackupV4, async (event) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const options = {
+      title: 'Open PrintFarmer Calibration Backup',
+      properties: ['openFile' as const],
+      filters: [
+        {
+          name: 'Calibration backup',
+          extensions: ['pfdbak', 'json'],
+        },
+      ],
+    };
+    const result = owner
+      ? await dialog.showOpenDialog(owner, options)
+      : await dialog.showOpenDialog(options);
+
+    const selectedPath =
+      result.canceled || result.filePaths.length === 0
+        ? null
+        : result.filePaths[0]!;
+
+    if (!selectedPath) {
+      return ipcSchemas[
+        IpcChannel.CalibrationPickLegacyBackupV4
+      ].response.parse({ status: 'cancelled' });
+    }
+
+    try {
+      const preflight = await runLegacyBackupPreflight(selectedPath);
+      const approvalId = legacyBackupApprovals.approve(
+        selectedPath,
+        event.sender.id,
+      );
+      return ipcSchemas[
+        IpcChannel.CalibrationPickLegacyBackupV4
+      ].response.parse({
+        status: 'ok',
+        approvalId,
+        preflight: {
+          summary: preflight.summary,
+          projectOutcomes: preflight.projectOutcomes,
+          importableCount: preflight.importableCount,
+          unsupportedCount: preflight.unsupportedCount,
+          corruptCount: preflight.corruptCount,
+          requiresActionCount: preflight.requiresActionCount,
+          warnings: preflight.warnings,
+        },
+      });
+    } catch (error) {
+      return ipcSchemas[
+        IpcChannel.CalibrationPickLegacyBackupV4
+      ].response.parse({
+        status: 'error',
+        error: mapImportError(error),
+      });
+    }
   });
 
   ipcMain.handle(IpcChannel.ListServerProfiles, async () => {
@@ -2052,29 +2124,135 @@ export function registerIpcHandlers(
 
   ipcMain.handle(
     IpcChannel.CalibrationImportLegacyBackupV4,
-    async (_event, rawRequest: unknown) => {
+    async (event, rawRequest: unknown) => {
       const request =
         ipcSchemas[IpcChannel.CalibrationImportLegacyBackupV4].request.parse(
           rawRequest,
         );
-      // Legacy v4 backup import is the typed contract surface for issue #56.
-      // The renderer cannot supply arbitrary paths — only the approvalId from
-      // the allowlisted file-picker channel is accepted.
-      await requireSelectedCalibrationProfile(request.profileId);
-      void request.approvalId;
-      void request.operationId;
-      return ipcSchemas[
-        IpcChannel.CalibrationImportLegacyBackupV4
-      ].response.parse({
-        status: 'error',
-        error: {
-          code: 'invalidData',
-          message:
-            'Legacy calibration backup v4 import requires the import implementation (issue #56).',
-          retryable: false,
-          retryAfterSeconds: null,
-        },
-      });
+      // Security: verify profile identity before any file access.
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+
+      // Consume the approval — this resolves the approvalId to a file path and
+      // removes it from the store (single-use). If expired or wrong owner, throws.
+      let filePath: string;
+      try {
+        filePath = legacyBackupApprovals.consume(
+          request.approvalId,
+          event.sender.id,
+        );
+      } catch (error) {
+        return ipcSchemas[
+          IpcChannel.CalibrationImportLegacyBackupV4
+        ].response.parse({
+          status: 'error',
+          error: mapImportError(error),
+        });
+      }
+
+      // Re-run preflight to get the parsed backup structure (the approval store
+      // only remembers the path, not the parsed content, to avoid memory leaks).
+      let preflight: PreflightResult;
+      try {
+        preflight = await runLegacyBackupPreflight(filePath);
+      } catch (error) {
+        return ipcSchemas[
+          IpcChannel.CalibrationImportLegacyBackupV4
+        ].response.parse({
+          status: 'error',
+          error: mapImportError(error),
+        });
+      }
+
+      if (preflight.parsedBackup === null) {
+        return ipcSchemas[
+          IpcChannel.CalibrationImportLegacyBackupV4
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'invalidData',
+            message: 'Backup preflight failed; no valid data to import.',
+            retryable: false,
+            retryAfterSeconds: null,
+          },
+        });
+      }
+
+      // Validate printer mappings: every importable project that requires
+      // mapping must have an explicit entry.
+      type ProjectOutcome = z.infer<typeof LegacyBackupProjectOutcome>;
+      const allOutcomes: ProjectOutcome[] = preflight.projectOutcomes;
+      const requiringMapping = allOutcomes.filter(
+        (o: ProjectOutcome) =>
+          o.requiresPrinterMapping &&
+          (o.outcome === 'importable' || o.outcome === 'requiresAction'),
+      );
+      const providedMappingIds = new Set(
+        request.printerMappings.map((m) => m.legacyProjectId),
+      );
+      const missingMappings = requiringMapping.filter(
+        (o: ProjectOutcome) => !providedMappingIds.has(o.legacyProjectId),
+      );
+      if (missingMappings.length > 0) {
+        const missingIds = missingMappings
+          .slice(0, 5)
+          .map((o: ProjectOutcome) => o.legacyProjectId)
+          .join(', ');
+        return ipcSchemas[
+          IpcChannel.CalibrationImportLegacyBackupV4
+        ].response.parse({
+          status: 'error',
+          error: {
+            code: 'invalidData',
+            message: `Missing explicit printer/toolhead mappings for ${missingMappings.length} project(s): ${missingIds}`,
+            retryable: false,
+            retryAfterSeconds: null,
+          },
+        });
+      }
+
+      // Execute the authenticated backend import.
+      const signal = AbortSignal.timeout(120_000);
+      let authCtx: Awaited<ReturnType<typeof profiles.getAuthenticatedContext>>;
+      try {
+        authCtx = await profiles.getAuthenticatedContext(selectedId);
+      } catch (error) {
+        return ipcSchemas[
+          IpcChannel.CalibrationImportLegacyBackupV4
+        ].response.parse({
+          status: 'error',
+          error: mapImportError(error),
+        });
+      }
+
+      try {
+        const result = await executeLegacyBackupImport(
+          selectedId,
+          authCtx.profile.baseUrl,
+          preflight.parsedBackup,
+          preflight.summary.fileHash,
+          request.printerMappings,
+          request.operationId,
+          signal,
+          { tokens: calibrationTokens },
+        );
+        return ipcSchemas[
+          IpcChannel.CalibrationImportLegacyBackupV4
+        ].response.parse({
+          status: 'ok',
+          summary: result.summary,
+          importedProjectCount: result.importedProjectCount,
+          projectResults: result.projectResults,
+        });
+      } catch (error) {
+        return ipcSchemas[
+          IpcChannel.CalibrationImportLegacyBackupV4
+        ].response.parse({
+          status: 'error',
+          error: mapImportError(error),
+        });
+      }
     },
   );
 
