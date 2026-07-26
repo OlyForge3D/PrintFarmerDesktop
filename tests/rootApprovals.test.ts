@@ -151,6 +151,42 @@ describe('main-owned root approvals', () => {
     });
   });
 
+  it('canonicalizes a picked file without authorizing it, and reports a missing one as INVALID_ROOT', async () => {
+    const fileSystem = fakeFileSystem();
+    const picked = path.resolve('nowhere', 'picked.3mf');
+    const resolved = path.resolve('nowhere', 'picked-resolved.3mf');
+    const absent = path.resolve('nowhere', 'absent.3mf');
+    fileSystem.realpaths.set(picked, resolved);
+    const store = new RootApprovalStore({
+      userDataPath: path.resolve('user-data'),
+      fileSystem,
+      createId: () => '11111111-1111-4111-8111-111111111111',
+      now: () => 0,
+    });
+
+    // The legitimate maximum: no root has ever been approved and this still
+    // resolves. `canonicalizePickerFile` is a `realpath` wrapper that performs
+    // no authorization — the property `tests/ipc.authz.test.ts` depends on when
+    // it requires every refusal to originate at `authorizeFile`. Pinned here,
+    // against the real implementation, so the fake over there cannot drift from
+    // it unnoticed in both places at once.
+    await expect(store.canonicalizePickerFile(picked)).resolves.toBe(resolved);
+
+    // And it is emphatically not an approval: the same path is still refused by
+    // the step that does authorize. Without this, a `canonicalizePickerFile`
+    // that started admitting paths would look identical to one that does not.
+    await expect(store.authorizeFile(picked)).rejects.toMatchObject({
+      code: 'APPROVAL_REQUIRED',
+    });
+
+    // The one input it does refuse. Untested repo-wide until now, which is what
+    // made "the fake never throws where the real one does" impossible to check
+    // against anything.
+    await expect(store.canonicalizePickerFile(absent)).rejects.toMatchObject({
+      code: 'INVALID_ROOT',
+    });
+  });
+
   it('rejects sibling-prefix paths and renderer-invented approvals', async () => {
     const root = path.resolve('models');
     expect(isWithinRoot(root, path.join(root, 'part.stl'))).toBe(true);

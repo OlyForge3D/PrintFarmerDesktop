@@ -120,9 +120,20 @@ interface DownstreamCall {
   args: unknown[];
 }
 
+/**
+ * The part of the approval-store fake the tests assert against directly. Only
+ * `canonicalizePickerFile` is exposed: it is the step whose production fidelity
+ * the refusal tests silently depend on, so it is the one that has to be pinned
+ * rather than merely described.
+ */
+interface ApprovalStoreFake {
+  canonicalizePickerFile: (requested: string) => Promise<string>;
+}
+
 interface Harness {
   handlers: Map<string, Handler>;
   downstream: DownstreamCall[];
+  approvals: ApprovalStoreFake;
 }
 
 function harness(): Harness {
@@ -208,7 +219,11 @@ function harness(): Harness {
     sceneCache as never,
   );
 
-  return { handlers: new Map(electronState.handlers), downstream };
+  return {
+    handlers: new Map(electronState.handlers),
+    downstream,
+    approvals,
+  };
 }
 
 function senderEvent(id: number) {
@@ -312,6 +327,44 @@ describe('IPC handler layer: renderer-supplied filesystem paths', () => {
     expect([...pathBearingChannels()].sort()).toEqual(
       PATH_CHANNELS.map((entry) => entry.channel).sort(),
     );
+  });
+
+  it('canonicalizes an unapproved path instead of refusing it, as the real store does', async () => {
+    // Guards the fake rather than the product, like the two tests above — but
+    // this fake is load-bearing. The real `canonicalizePickerFile`
+    // (rootApprovals.ts:321-330) is a bare `realpath` wrapper that performs no
+    // authorization, so every refusal in this file has to originate at the
+    // authorizing step. The comment above the fake explains that; nothing
+    // asserted it, and regressing the fake back to its pre-#96 shape restored
+    // the bypass with this file still green.
+    //
+    // Two assertions because the fake has two independent properties, and
+    // measurement says B3 only becomes invisible when *both* are gone:
+    //
+    //   removing only "resolves"        -> gutting ipc.ts:188 still kills 6
+    //   removing only "distinct value"  -> gutting ipc.ts:188 still kills 4
+    //   removing both (the round-2 fake)-> gutting ipc.ts:188 kills nothing new
+    //
+    // So neither property alone is what makes the authorizing step observable,
+    // and asserting only one of them would leave the other free to drift.
+    //
+    // Both are asserted on the *success* path deliberately. Distinguishing the
+    // steps by giving the fake's refusal a different marker looks equivalent and
+    // is not: the refusal tests key on DENIED, so perturbing it fails them
+    // whether or not the control is intact, and the mutated and unmutated
+    // failure sets come out identical — detection-shaped, carrying no
+    // information.
+
+    // (a) resolves rather than refuses: no authorization happens at this step.
+    await expect(
+      h.approvals.canonicalizePickerFile(UNAPPROVED_PATH),
+    ).resolves.toBe(realpathOf(UNAPPROVED_PATH));
+
+    // (b) and returns something authorization would not, so the two steps stay
+    // distinguishable in what the handlers forward.
+    await expect(
+      h.approvals.canonicalizePickerFile(UNAPPROVED_PATH),
+    ).resolves.not.toBe(CANONICAL_PATH);
   });
 
   it.each(pathBearingChannels())(
