@@ -8,18 +8,24 @@
  * so there is no update artifact to verify a signature over. That gap — code
  * signing and update-artifact verification — needs signing certificates and is
  * dispositioned out of this epic in `docs/security/THREAT_MODEL.md`, tracked by
- * #22. These tests therefore pin the integrity control that DOES exist in the
- * shipped binary: the Electron fuses that lock the packaged runtime. They are
- * NOT a substitute for update signing; they are the adjacent, currently
- * unproven control (`packaging.test.ts` asserts icons and installers but never
- * the fuses, so any of them could be flipped and CI would stay green).
+ * #22. These tests therefore pin the integrity control that DOES exist: the
+ * Electron fuses that lock the packaged runtime. They are NOT a substitute for
+ * update signing; they are the adjacent, currently unproven control
+ * (`packaging.test.ts` asserts icons and installers but never the fuses, so any
+ * of them could be flipped and CI would stay green). SCOPE: these assert the
+ * fuse values declared in `forge.config.ts` (build-time config), not that the
+ * shipped binary was actually built with them — there is no launch-time tamper
+ * check, and verifying the packaged artifact carries these fuses is also #22.
  *
  * Each fuse is asserted by its semantic `FuseV1Options` name rather than the
  * numeric key electron-forge stores it under, so reordering the config cannot
- * make an assertion silently target the wrong fuse. Non-vacuity: flip any fuse
- * in `forge.config.ts:97-102` and its row here turns RED (the two ASAR fuses
- * additionally trip the redundant pairing assertion below — they are never
- * sole-detected by it, by design).
+ * make an assertion silently target the wrong fuse. Non-vacuity (config axis):
+ * flip any fuse in `forge.config.ts:97-102` and its row here turns RED. The two
+ * ASAR fuses additionally trip the redundant pairing assertion below, so while
+ * their `it.each` rows exist they are never sole-detected by it — but that
+ * scope matters: delete an ASAR fuse's row (a silent edit) and the pairing
+ * assertion becomes the *only* detector left for that fuse (measured; see its
+ * comment below).
  */
 
 import { describe, expect, it } from 'vitest';
@@ -51,7 +57,8 @@ describe('packaged runtime fuses', () => {
     // turns every per-fuse row below RED on its own (measured: dropping the
     // plugin fails all 8 tests, none pass vacuously against `undefined`). This
     // row names that cause up front so the failure reads as "no fuses plugin"
-    // rather than six identical `fuseConfig` throws.
+    // rather than seven identical `fuseConfig` throws (the six `it.each` rows
+    // plus the pairing test below, which also calls `fuseConfig()`).
     expect(() => fuseConfig()).not.toThrow();
   });
 
@@ -68,14 +75,19 @@ describe('packaged runtime fuses', () => {
   });
 
   it('pairs ASAR integrity validation with only-load-from-ASAR', () => {
-    // Redundant assertion that documents intent, not an added guard: each of
-    // these two fuses already has its own row in the table above, so dropping
-    // either turns that row AND this one RED together (measured: flipping ASAR
-    // integrity validation fails "fuse 4" and this test, never this alone). Its
-    // value is naming the invariant in one place — validating the embedded ASAR
-    // hash is meaningless if the runtime still loads app code from outside it,
-    // and refusing off-ASAR code is meaningless if the ASAR itself is
-    // unvalidated — with a clearer label than two separate `fuse N` failures.
+    // Intent-documenting assertion AND the file's only cross-check. On the
+    // config axis it is redundant: each of these two fuses has its own row in
+    // the table above, so flipping either in `forge.config.ts` turns that row
+    // AND this one RED together. On the test-file axis it is NOT redundant — it
+    // is the sole backstop (measured: delete the fuse-4 or fuse-5 `it.each` row,
+    // a completely silent edit, then flip that fuse, and only "pairs ASAR…"
+    // goes RED). That is not true of the other four fuses, which have no
+    // cross-check at all: delete their row and flip them and the suite stays
+    // GREEN. So do not read "redundant" as "safe to delete" — deleting this
+    // assertion drops fuses 4 and 5 to that same zero-backup state. Its value is
+    // naming the invariant in one place — validating the embedded ASAR hash is
+    // meaningless if the runtime still loads app code from outside it, and
+    // refusing off-ASAR code is meaningless if the ASAR itself is unvalidated.
     const fuses = fuseConfig();
     expect(fuses[FuseV1Options.EnableEmbeddedAsarIntegrityValidation]).toBe(
       true,
