@@ -73,7 +73,7 @@ export function resolveShippedFeatures(root = repoRoot) {
   return fromStagingScript;
 }
 
-export function readCargoMetadata(features, root = repoRoot) {
+export function cargoMetadataArgs(features, root = repoRoot) {
   const args = [
     'metadata',
     '--format-version',
@@ -83,8 +83,12 @@ export function readCargoMetadata(features, root = repoRoot) {
     '--locked',
   ];
   if (features.length > 0) args.push('--features', features.join(','));
+  return args;
+}
+
+export function readCargoMetadata(features, root = repoRoot) {
   return JSON.parse(
-    execFileSync('cargo', args, {
+    execFileSync('cargo', cargoMetadataArgs(features, root), {
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
     }),

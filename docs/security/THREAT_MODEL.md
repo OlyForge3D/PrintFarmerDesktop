@@ -786,18 +786,21 @@ policies now consume it so that _acceptability_ is checked too:
   not on the allowlist, so it is rejected.
 - **Advisory audit — live-database, report mode.** `scripts/audit-advisories.mjs` runs
   `npm audit` over the full installed graph (including the shipped Electron devDependency) and
-  `cargo audit`, normalises both into one shape, scopes findings to the shipped SBOM closure by
-  package name, and reports those at or above a severity threshold. Per T4.2 it does not block a
-  pull request, but an inability to run the audit or an invalid/missing runtime enforcement mode
-  fails loudly (see T4.2).
+  `cargo audit`, normalises both into one shape, scopes versioned Cargo findings to exact shipped
+  `name@version` identities, and conservatively falls back to package-name scope when a source
+  such as npm does not report a reliable installed version. Per T4.2 it does not block a pull
+  request, but an inability to run the audit or an invalid/missing runtime enforcement mode fails
+  loudly (see T4.2).
 - **Third-party notices.** `scripts/generate-notices.mjs` enumerates the SBOM into
   `build/third-party-licenses.md`, staged and verified by regenerate-and-compare
   (`scripts/verify-notices.mjs`) in both package smoke and release builds before any artifact can
   be uploaded or published; the enumeration is code-unit ordered so it is byte-identical across
   runners.
 
-Both lockfiles (`package-lock.json`, `native/Cargo.lock`) are committed and CI installs with
-`npm ci`, so builds are reproducible.
+Both lockfiles (`package-lock.json`, `native/Cargo.lock`) are committed. CI installs with
+`npm ci`; every workspace Cargo build, test and clippy command uses `--locked`; and package/release
+jobs fail if either lockfile changes after packaging but before artifacts proceed. A build cannot
+silently resolve a different graph and then verify an SBOM against its own rewritten lock.
 
 Two specifics raise the stakes:
 

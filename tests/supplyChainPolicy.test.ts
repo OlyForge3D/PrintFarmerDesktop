@@ -19,7 +19,11 @@ import {
   requireCargoSbomCoverage,
   requireNpmSbomCoverage,
 } from '../scripts/audit-advisories.mjs';
-import { readNpmProductionTree } from '../scripts/generate-sbom.mjs';
+import {
+  cargoMetadataArgs,
+  readNpmProductionTree,
+} from '../scripts/generate-sbom.mjs';
+import { SIDECAR_BUILD_ARGS } from '../scripts/stage-sidecar.mjs';
 import {
   buildSbom,
   deriveShippedNpmComponents,
@@ -67,6 +71,10 @@ const releaseWorkflow = readFileSync(
   path.join(repoRoot, '.github', 'workflows', 'release.yml'),
   'utf8',
 );
+const ciWorkflow = readFileSync(
+  path.join(repoRoot, '.github', 'workflows', 'ci.yml'),
+  'utf8',
+);
 
 interface WorkflowStep {
   name?: string;
@@ -75,14 +83,14 @@ interface WorkflowStep {
   continueOnError?: string;
 }
 
-function parseWorkflowSteps(workflow: string): WorkflowStep[] {
+function parseWorkflowSteps(workflow: string, jobName: string): WorkflowStep[] {
   const steps: WorkflowStep[] = [];
   let current: WorkflowStep | null = null;
   let inMakeJob = false;
   let inSteps = false;
 
   for (const line of workflow.split(/\r?\n/)) {
-    if (line === '  make:') {
+    if (line === `  ${jobName}:`) {
       inMakeJob = true;
       continue;
     }
@@ -120,6 +128,29 @@ function parseWorkflowSteps(workflow: string): WorkflowStep[] {
   }
 
   return steps;
+}
+
+function requireLockedWorkspaceCargoCommands(
+  workflows: Array<{ contents: string; jobs: string[] }>,
+): string[] {
+  const commands = workflows.flatMap(({ contents, jobs }) =>
+    jobs.flatMap((job) =>
+      parseWorkflowSteps(contents, job)
+        .map((step) => step.run)
+        .filter(
+          (run): run is string =>
+            typeof run === 'string' &&
+            /^cargo (?:build|test|clippy)(?:\s|$)/.test(run),
+        ),
+    ),
+  );
+  const unlocked = commands.filter(
+    (command) => !/(?:^|\s)--locked(?:\s|$)/.test(command),
+  );
+  if (unlocked.length > 0) {
+    throw new Error(`workspace Cargo command is not locked: ${unlocked[0]}`);
+  }
+  return commands;
 }
 
 function readLock(): unknown {
@@ -313,8 +344,11 @@ describe('the shipped supply-chain policy is the validated source of truth', () 
 });
 
 describe('the release workflow enforces compliance before publication', () => {
-  it('runs SBOM, licence, and notice checks after make and before upload/release', () => {
-    const steps = parseWorkflowSteps(releaseWorkflow);
+  const lockGuard =
+    'git diff --exit-code -- native/Cargo.lock package-lock.json';
+
+  it('runs compliance and the lock guard after make and before upload/release', () => {
+    const steps = parseWorkflowSteps(releaseWorkflow, 'make');
     const indexOfRun = (run: string): number =>
       steps.findIndex((step) => step.run === run);
     const indexOfUse = (uses: string): number =>
@@ -329,14 +363,23 @@ describe('the release workflow enforces compliance before publication', () => {
       indexOfRun('npm run verify:notices'),
     ];
     const packaged = indexOfRun('node scripts/verify-packaged-sidecar.mjs');
+    const immutableLocks = indexOfRun(lockGuard);
     const collect = indexOfName('Collect artifacts');
     const upload = indexOfUse('actions/upload-artifact@v4');
     const publish = indexOfUse('softprops/action-gh-release@v2');
-    const ordered = [make, ...compliance, packaged, collect, upload, publish];
+    const ordered = [
+      make,
+      ...compliance,
+      packaged,
+      immutableLocks,
+      collect,
+      upload,
+      publish,
+    ];
 
     expect(ordered.every((index) => index >= 0)).toBe(true);
     expect(ordered).toEqual([...ordered].sort((left, right) => left - right));
-    for (const index of [...compliance, packaged]) {
+    for (const index of [...compliance, packaged, immutableLocks]) {
       expect(steps[index]?.continueOnError).not.toBe('true');
     }
 
@@ -345,10 +388,78 @@ describe('the release workflow enforces compliance before publication', () => {
       '        # run: npm run verify:notices',
     );
     expect(
-      parseWorkflowSteps(commentedNotices).some(
+      parseWorkflowSteps(commentedNotices, 'make').some(
         (step) => step.run === 'npm run verify:notices',
       ),
     ).toBe(false);
+
+    const commentedGuard = releaseWorkflow.replace(
+      `        run: ${lockGuard}`,
+      `        # run: ${lockGuard}`,
+    );
+    expect(
+      parseWorkflowSteps(commentedGuard, 'make').some(
+        (step) => step.run === lockGuard,
+      ),
+    ).toBe(false);
+  });
+
+  it('mirrors the lockfile guard after package verification in CI', () => {
+    const steps = parseWorkflowSteps(ciWorkflow, 'package');
+    const indexOfRun = (run: string): number =>
+      steps.findIndex((step) => step.run === run);
+    const immutableLocks = indexOfRun(lockGuard);
+    const ordered = [
+      indexOfRun('npm run package'),
+      indexOfRun('node scripts/verify-packaged-sidecar.mjs'),
+      immutableLocks,
+      indexOfRun('npx playwright test'),
+    ];
+
+    expect(ordered.every((index) => index >= 0)).toBe(true);
+    expect(ordered).toEqual([...ordered].sort((left, right) => left - right));
+    expect(steps.at(immutableLocks)?.continueOnError).not.toBe('true');
+  });
+
+  it('locks every workspace Cargo command and detects a stripped flag', () => {
+    const workflows = [
+      { contents: ciWorkflow, jobs: ['sidecar', 'package'] },
+      { contents: releaseWorkflow, jobs: ['make'] },
+    ];
+    expect(requireLockedWorkspaceCargoCommands(workflows)).toHaveLength(8);
+
+    const unlockedCi = ciWorkflow.replace(
+      'run: cargo test --locked',
+      'run: cargo test',
+    );
+    expect(() =>
+      requireLockedWorkspaceCargoCommands([
+        { contents: unlockedCi, jobs: ['sidecar', 'package'] },
+        { contents: releaseWorkflow, jobs: ['make'] },
+      ]),
+    ).toThrow('workspace Cargo command is not locked: cargo test');
+  });
+
+  it('pins locked Cargo metadata and sidecar staging arguments', () => {
+    expect(cargoMetadataArgs(['sqlite'], repoRoot)).toEqual([
+      'metadata',
+      '--format-version',
+      '1',
+      '--manifest-path',
+      path.join(repoRoot, 'native', 'model-core', 'Cargo.toml'),
+      '--locked',
+      '--features',
+      'sqlite',
+    ]);
+    expect(SIDECAR_BUILD_ARGS).toEqual([
+      'build',
+      '--locked',
+      '--release',
+      '-p',
+      'model-core',
+      '--features',
+      'sqlite',
+    ]);
   });
 });
 
@@ -943,7 +1054,7 @@ describe('the advisory gate fails closed when Cargo SBOM coverage degrades', () 
   );
 });
 
-describe('advisories are scoped to the shipped closure by name', () => {
+describe('advisories are scoped conservatively to the shipped closure', () => {
   it('drops an advisory whose package does not ship', () => {
     const scoped = scopeToShippedClosure(
       [
@@ -953,6 +1064,62 @@ describe('advisories are scoped to the shipped closure by name', () => {
       ['quick-xml', 'serde'],
     );
     expect(scoped.map((a) => a.package)).toEqual(['quick-xml']);
+  });
+
+  it('keeps only the shipped Cargo version when one advisory affects two locked versions', () => {
+    const item = (version: string) => ({
+      advisory: {
+        id: 'RUSTSEC-2026-0194',
+        title: 'quick-xml',
+        cvss: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H',
+      },
+      package: { name: 'quick-xml', version },
+      versions: { patched: ['>=0.37.5'], unaffected: [] },
+    });
+    const scoped = scopeToShippedClosure(
+      normalizeCargoAudit({
+        vulnerabilities: {
+          list: [item('0.22.0'), item('0.36.2')],
+        },
+      }),
+      ['quick-xml'],
+      ['quick-xml@0.36.2'],
+    );
+
+    expect(scoped).toHaveLength(1);
+    expect(scoped[0]).toMatchObject({
+      id: 'RUSTSEC-2026-0194',
+      package: 'quick-xml',
+      version: '0.36.2',
+    });
+    expect(
+      evaluateAdvisories({ advisories: scoped }, advisoryPolicy).blocking,
+    ).toHaveLength(1);
+  });
+
+  it('retains an npm advisory without a reliable version by package name', () => {
+    const normalized = normalizeNpmAudit({
+      vulnerabilities: {
+        electron: {
+          name: 'electron',
+          severity: 'high',
+          via: [
+            {
+              source: 1,
+              name: 'electron',
+              title: 'Shipped runtime advisory',
+              url: 'https://github.com/advisories/GHSA-electron',
+              severity: 'high',
+            },
+          ],
+          fixAvailable: true,
+        },
+      },
+    });
+    expect(normalized[0]).not.toHaveProperty('version');
+    expect(
+      scopeToShippedClosure(normalized, ['electron'], ['electron@0.0.0']),
+    ).toEqual(normalized);
   });
 
   it('audits the full npm graph, keeps shipped Electron, and drops dev-only tooling', () => {
@@ -1058,6 +1225,7 @@ describe('audit reports normalise into one shape', () => {
         id: 'RUSTSEC-2026-0194',
         title: 'quick-xml',
         package: 'quick-xml',
+        version: '0.22.0',
         severity: 'high',
         fixAvailable: true,
       },

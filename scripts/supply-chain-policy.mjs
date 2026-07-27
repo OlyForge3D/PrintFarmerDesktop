@@ -628,11 +628,13 @@ export function normalizeCargoAudit(report) {
   const advisories = [];
   for (const item of report?.vulnerabilities?.list ?? []) {
     const patched = item?.versions?.patched ?? [];
+    const version = item?.package?.version;
     advisories.push({
       ecosystem: 'cargo',
       id: item?.advisory?.id,
       title: item?.advisory?.title,
       package: item?.package?.name,
+      version: isNonEmptyString(version) ? version : undefined,
       severity: severityFromCvss(item?.advisory?.cvss),
       fixAvailable: Array.isArray(patched) && patched.length > 0,
     });
@@ -641,16 +643,25 @@ export function normalizeCargoAudit(report) {
 }
 
 /**
- * Keep only advisories whose package ships. The shipped set is matched by NAME,
- * not by SBOM order: `verify-sbom` already proves the closure, and #112 records
- * that its ordering is locale-dependent, so a gate keyed off order would inherit
- * that. `cargo audit` reads the whole `Cargo.lock`, so without this an advisory
- * on an unshipped crate (a `truck-*` or `lib3mf` dependency) would gate a
- * release that does not contain it.
+ * Keep only advisories whose package ships. Versioned records (cargo-audit)
+ * match exact `name@version` identities; records without a reliable installed
+ * version (npm audit) conservatively fall back to package name so a shipped
+ * finding can never be dropped. Matching is independent of SBOM order.
  */
-export function scopeToShippedClosure(advisories, shippedPackageNames) {
-  const shipped = new Set(shippedPackageNames);
-  return advisories.filter((advisory) => shipped.has(advisory.package));
+export function scopeToShippedClosure(
+  advisories,
+  shippedPackageNames,
+  shippedPackageIdentities = [],
+) {
+  const shippedNames = new Set(shippedPackageNames);
+  const shippedIdentities = new Set(shippedPackageIdentities);
+  return advisories.filter((advisory) => {
+    if (!shippedNames.has(advisory.package)) return false;
+    if (!isNonEmptyString(advisory.version) || shippedIdentities.size === 0) {
+      return true;
+    }
+    return shippedIdentities.has(`${advisory.package}@${advisory.version}`);
+  });
 }
 
 /**

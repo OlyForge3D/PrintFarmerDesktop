@@ -44,7 +44,7 @@ jobs:
 
       - name: Build sidecar (release)
         working-directory: native
-        run: cargo build --release -p model-core --features sqlite
+        run: cargo build --locked --release -p model-core --features sqlite
 
       - name: Make unsigned artifacts
         env:
@@ -64,6 +64,9 @@ jobs:
 
       - name: Verify packaged sidecar and compliance resources
         run: node scripts/verify-packaged-sidecar.mjs
+
+      - name: Verify committed lockfiles are unchanged
+        run: git diff --exit-code -- native/Cargo.lock package-lock.json
 
       - name: Collect artifacts
         shell: bash

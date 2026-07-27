@@ -7,6 +7,10 @@ export const NPM_PRODUCTION_TREE_ARGS: readonly [
 ];
 
 export function resolveShippedFeatures(root?: string): string[];
+export function cargoMetadataArgs(
+  features: readonly string[],
+  root?: string,
+): string[];
 export function readCargoMetadata(
   features: readonly string[],
   root?: string,

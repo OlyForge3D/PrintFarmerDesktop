@@ -24,6 +24,7 @@ export interface Advisory {
   id: string | undefined;
   title?: string;
   package: string | undefined;
+  version?: string;
   severity: string;
   fixAvailable: boolean;
 }
@@ -98,6 +99,7 @@ export function evaluateCargoSbomCoverage(
 export function scopeToShippedClosure(
   advisories: Advisory[],
   shippedPackageNames: Iterable<string>,
+  shippedPackageIdentities?: Iterable<string>,
 ): Advisory[];
 export function evaluateAdvisories(
   input: AdvisoryInput,

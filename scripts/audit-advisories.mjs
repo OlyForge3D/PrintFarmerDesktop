@@ -15,8 +15,9 @@
 //     "could not check" reads as a red job, not a green one. Converting a loud
 //     failure into a quiet one is the exact anti-pattern this repo has ruled out.
 //
-// Advisories are SCOPED to the shipped SBOM closure by package NAME: `cargo
-// audit` reads the whole workspace lock, which contains crates (truck-*,
+// Advisories are SCOPED to the shipped SBOM closure. Cargo findings carry an
+// exact package version; npm findings conservatively fall back to package name.
+// `cargo audit` reads the whole workspace lock, which contains crates (truck-*,
 // lib3mf-ffi) the shipped feature set never compiles in.
 
 import { execFileSync } from 'node:child_process';
@@ -155,13 +156,20 @@ function main() {
     );
     process.exit(1);
   }
-  const shipped = { npm: new Set(), cargo: new Set() };
+  const shipped = {
+    npm: new Set(),
+    cargo: new Set(),
+    cargoIdentities: new Set(),
+  };
   for (const component of sbom.components ?? []) {
     const ecosystem = component.properties?.find(
       (property) => property.name === 'printfarmer:ecosystem',
     )?.value;
     if (ecosystem === 'npm') shipped.npm.add(component.name);
-    else if (ecosystem === 'cargo') shipped.cargo.add(component.name);
+    else if (ecosystem === 'cargo') {
+      shipped.cargo.add(component.name);
+      shipped.cargoIdentities.add(`${component.name}@${component.version}`);
+    }
   }
 
   // The advisory scope is only meaningful if the SBOM is complete. Re-resolve
@@ -249,7 +257,11 @@ function main() {
       );
     } else {
       advisories.push(
-        ...scopeToShippedClosure(normalizeCargoAudit(report), shipped.cargo),
+        ...scopeToShippedClosure(
+          normalizeCargoAudit(report),
+          shipped.cargo,
+          shipped.cargoIdentities,
+        ),
       );
     }
   }

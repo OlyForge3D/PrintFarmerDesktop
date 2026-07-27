@@ -61,24 +61,24 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Clippy (sqlite feature)
-        run: cargo clippy --all-targets --features sqlite -- -D warnings
+        run: cargo clippy --locked --all-targets --features sqlite -- -D warnings
 
       - name: Test
-        run: cargo test
+        run: cargo test --locked
 
       - name: Test (sqlite feature)
-        run: cargo test --features sqlite
+        run: cargo test --locked --features sqlite
 
       - name: Build (lib3mf feature)
         if: runner.os == 'Windows'
-        run: cargo build --features lib3mf
+        run: cargo build --locked --features lib3mf
 
       - name: Test (lib3mf feature)
         if: runner.os == 'Windows'
-        run: cargo test --features lib3mf
+        run: cargo test --locked --features lib3mf
 
   package:
     name: Package smoke (${{ matrix.os }})
@@ -103,7 +103,7 @@ jobs:
 
       - name: Build sidecar (release)
         working-directory: native
-        run: cargo build --release -p model-core --features sqlite
+        run: cargo build --locked --release -p model-core --features sqlite
 
       - name: Package app (bundles the prebuilt sidecar)
         env:
@@ -133,6 +133,9 @@ jobs:
 
       - name: Verify packaged sidecar and compliance resources
         run: node scripts/verify-packaged-sidecar.mjs
+
+      - name: Verify committed lockfiles are unchanged
+        run: git diff --exit-code -- native/Cargo.lock package-lock.json
 
       - name: Packaged Electron end-to-end tests
         run: npx playwright test

@@ -18,6 +18,7 @@
 /.github/workflows/release.yml @jpapiez
 /scripts/check-calibration-provenance.mjs @jpapiez
 /scripts/stage-compliance.mjs @jpapiez
+/scripts/stage-sidecar.* @jpapiez
 /scripts/audit-advisories.* @jpapiez
 /scripts/generate-sbom.* @jpapiez
 /scripts/generate-notices.mjs @jpapiez
