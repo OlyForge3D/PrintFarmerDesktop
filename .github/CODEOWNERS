@@ -7,6 +7,7 @@
 /package.json @jpapiez
 /package-lock.json @jpapiez
 /native/Cargo.toml @jpapiez
+/native/Cargo.lock @jpapiez
 /native/model-core/Cargo.toml @jpapiez
 /compliance/ @jpapiez
 /docs/CONTRIBUTING.md @jpapiez
