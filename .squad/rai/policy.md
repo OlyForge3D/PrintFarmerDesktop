@@ -100,10 +100,11 @@ These are recommendations. Work proceeds with suggestions attached.
 1. **🟢 Green** — No action needed. Work proceeds.
 2. **🟡 Yellow** — Suggestions attached to work output. Author decides.
 3. **🔴 Red** — Work blocked. Reviewer Rejection Protocol activates:
-   - Original author locked out of revision
-   - Rai recommends fix agent
-   - Rai provides pair-mode guidance during revision
+   - The original author fixes their own work — the revision is not reassigned
+   - Rai supplies the citations and counter-evidence the author needs to revise with grounding
    - Re-review required before work can ship
+
+> Governing decision: `.squad/decisions.md` → **2026-07-24: Rejection-lockout policy DISMISSED — original authors fix their own rejected work**. Cited by heading, not line number.
 
 ## Policy Updates
 
