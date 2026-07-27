@@ -12,8 +12,16 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildSbom } from './supply-chain.mjs';
-import { readCargoMetadata, resolveShippedFeatures } from './generate-sbom.mjs';
+import { buildSbom, readImportedNpmComponents } from './supply-chain.mjs';
+import {
+  readCargoMetadata,
+  readNpmProductionTree,
+  resolveShippedFeatures,
+} from './generate-sbom.mjs';
+import {
+  evaluateCargoSbomCoverage,
+  evaluateNpmSbomCoverage,
+} from './supply-chain-policy.mjs';
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -49,11 +57,25 @@ try {
 } catch (error) {
   fail(`package-lock.json could not be read as JSON: ${error.message}`);
 }
+
+let cargoMetadata;
+let npmProductionTree;
+let importedNpmComponents;
+try {
+  cargoMetadata = readCargoMetadata(features, repoRoot);
+  npmProductionTree = readNpmProductionTree(repoRoot);
+  importedNpmComponents = readImportedNpmComponents(repoRoot);
+} catch (error) {
+  fail(
+    `could not resolve independent SBOM coverage evidence: ${error.message}`,
+  );
+}
+
 const regenerated = `${JSON.stringify(
   buildSbom({
     lock,
     repoRoot,
-    cargoMetadata: readCargoMetadata(features, repoRoot),
+    cargoMetadata,
     features,
   }),
   null,
@@ -83,6 +105,16 @@ console.log(
 
 const sbom = JSON.parse(staged);
 
+for (const coverage of [
+  evaluateNpmSbomCoverage(sbom, npmProductionTree, importedNpmComponents),
+  evaluateCargoSbomCoverage(sbom, cargoMetadata),
+]) {
+  if (!coverage.complete) fail(coverage.diagnostic);
+  console.log(
+    `[verify-sbom] OK: independent completeness check matched ${coverage.expectedCount} shipped component(s)`,
+  );
+}
+
 // Both trees must be represented. A single-ecosystem SBOM is the failure this
 // check exists for: it presents as complete while describing half the product.
 const byEcosystem = new Map();
@@ -103,8 +135,7 @@ for (const ecosystem of ['npm', 'cargo']) {
 // Every crate that links a native library must appear as its own component.
 // Those libraries are compiled into the binary but are packages in neither
 // ecosystem, so nothing else in the pipeline would notice their absence.
-const metadata = readCargoMetadata(features, repoRoot);
-const linkedCrates = metadata.packages.filter((pkg) => pkg.links);
+const linkedCrates = cargoMetadata.packages.filter((pkg) => pkg.links);
 const nativeNames = new Set(
   sbom.components
     .filter(
@@ -153,7 +184,7 @@ if (declaredFeatures !== [...features].sort().join(',')) {
 const bare = new Set(
   readCargoMetadata([], repoRoot).resolve.nodes.map((node) => node.id),
 );
-const shipped = new Set(metadata.resolve.nodes.map((node) => node.id));
+const shipped = new Set(cargoMetadata.resolve.nodes.map((node) => node.id));
 const enabled = [...shipped].filter((id) => !bare.has(id));
 const dropped = [...bare].filter((id) => !shipped.has(id));
 

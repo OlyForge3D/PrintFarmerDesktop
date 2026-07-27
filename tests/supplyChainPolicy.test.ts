@@ -17,16 +17,20 @@ import { describe, expect, it } from 'vitest';
 import {
   NPM_AUDIT_ARGS,
   requireCargoSbomCoverage,
+  requireNpmSbomCoverage,
 } from '../scripts/audit-advisories.mjs';
+import { readNpmProductionTree } from '../scripts/generate-sbom.mjs';
 import {
   buildSbom,
   deriveShippedNpmComponents,
+  readImportedNpmComponents,
 } from '../scripts/supply-chain.mjs';
 import {
   advisoryEnforcement,
   evaluateCargoSbomCoverage,
   evaluateAdvisories,
   evaluateLicensePolicy,
+  evaluateNpmSbomCoverage,
   isExpressionAllowed,
   licenseExpressionsOf,
   normalizeCargoAudit,
@@ -63,6 +67,60 @@ const releaseWorkflow = readFileSync(
   path.join(repoRoot, '.github', 'workflows', 'release.yml'),
   'utf8',
 );
+
+interface WorkflowStep {
+  name?: string;
+  run?: string;
+  uses?: string;
+  continueOnError?: string;
+}
+
+function parseWorkflowSteps(workflow: string): WorkflowStep[] {
+  const steps: WorkflowStep[] = [];
+  let current: WorkflowStep | null = null;
+  let inMakeJob = false;
+  let inSteps = false;
+
+  for (const line of workflow.split(/\r?\n/)) {
+    if (line === '  make:') {
+      inMakeJob = true;
+      continue;
+    }
+    if (!inMakeJob) continue;
+    if (/^ {2}[A-Za-z0-9_-]+:/.test(line)) break;
+    if (line === '    steps:') {
+      inSteps = true;
+      continue;
+    }
+    if (!inSteps) continue;
+
+    const start = /^ {6}- (name|uses):\s*(.+)$/.exec(line);
+    if (start) {
+      const key = start[1];
+      const value = start[2];
+      if ((key !== 'name' && key !== 'uses') || value === undefined) continue;
+      current = {};
+      steps.push(current);
+      current[key] = value.trim();
+      continue;
+    }
+    if (current === null) continue;
+
+    const property = /^ {8}(name|run|uses|continue-on-error):\s*(.+)$/.exec(
+      line,
+    );
+    if (!property) continue;
+    const value = property[2];
+    if (value === undefined) continue;
+    const key =
+      property[1] === 'continue-on-error'
+        ? 'continueOnError'
+        : (property[1] as 'name' | 'run' | 'uses');
+    current[key] = value.trim();
+  }
+
+  return steps;
+}
 
 function readLock(): unknown {
   return JSON.parse(
@@ -256,32 +314,41 @@ describe('the shipped supply-chain policy is the validated source of truth', () 
 
 describe('the release workflow enforces compliance before publication', () => {
   it('runs SBOM, licence, and notice checks after make and before upload/release', () => {
-    const make = releaseWorkflow.indexOf('run: npm run make');
-    const upload = releaseWorkflow.indexOf('uses: actions/upload-artifact@v4');
-    const publish = releaseWorkflow.indexOf(
-      'uses: softprops/action-gh-release@v2',
-    );
-    expect(make).toBeGreaterThan(-1);
-    expect(upload).toBeGreaterThan(make);
-    expect(publish).toBeGreaterThan(upload);
+    const steps = parseWorkflowSteps(releaseWorkflow);
+    const indexOfRun = (run: string): number =>
+      steps.findIndex((step) => step.run === run);
+    const indexOfUse = (uses: string): number =>
+      steps.findIndex((step) => step.uses === uses);
+    const indexOfName = (name: string): number =>
+      steps.findIndex((step) => step.name === name);
 
-    for (const command of [
-      'run: npm run verify:sbom',
-      'run: npm run verify:licenses',
-      'run: npm run verify:notices',
-    ]) {
-      const at = releaseWorkflow.indexOf(command);
-      expect(at).toBeGreaterThan(make);
-      expect(at).toBeLessThan(upload);
+    const make = indexOfRun('npm run make');
+    const compliance = [
+      indexOfRun('npm run verify:sbom'),
+      indexOfRun('npm run verify:licenses'),
+      indexOfRun('npm run verify:notices'),
+    ];
+    const packaged = indexOfRun('node scripts/verify-packaged-sidecar.mjs');
+    const collect = indexOfName('Collect artifacts');
+    const upload = indexOfUse('actions/upload-artifact@v4');
+    const publish = indexOfUse('softprops/action-gh-release@v2');
+    const ordered = [make, ...compliance, packaged, collect, upload, publish];
 
-      const stepStart = releaseWorkflow.lastIndexOf('\n      - name:', at);
-      const stepEnd = releaseWorkflow.indexOf('\n      - name:', at);
-      const step = releaseWorkflow.slice(
-        stepStart,
-        stepEnd === -1 ? undefined : stepEnd,
-      );
-      expect(step).not.toContain('continue-on-error');
+    expect(ordered.every((index) => index >= 0)).toBe(true);
+    expect(ordered).toEqual([...ordered].sort((left, right) => left - right));
+    for (const index of [...compliance, packaged]) {
+      expect(steps[index]?.continueOnError).not.toBe('true');
     }
+
+    const commentedNotices = releaseWorkflow.replace(
+      '        run: npm run verify:notices',
+      '        # run: npm run verify:notices',
+    );
+    expect(
+      parseWorkflowSteps(commentedNotices).some(
+        (step) => step.run === 'npm run verify:notices',
+      ),
+    ).toBe(false);
   });
 });
 
@@ -360,6 +427,12 @@ describe('the licence gate admits the legitimate maximum and rejects the rest', 
       'UNKNOWN',
       'SEE LICENSE IN LICENSE',
       'MIT AND',
+      '(MIT',
+      'MIT)',
+      '()',
+      'MIT OR OR Apache-2.0',
+      'MIT WITH',
+      'MIT WITH OR',
       '',
     ]) {
       expect(isExpressionAllowed(expression, licensePolicy.allowed)).toBe(
@@ -690,6 +763,65 @@ describe('the advisory gate brackets its threshold from both sides', () => {
     expect(result.waived).toEqual([]);
     expect(result.belowThreshold).toEqual([]);
     expect(result.couldNotRun).toEqual([]);
+  });
+});
+
+describe('the advisory gate fails closed when npm SBOM coverage degrades', () => {
+  it('requires the exact production and imported package identities, including Electron', () => {
+    const sbom = buildSbom({
+      lock: readLock(),
+      repoRoot,
+      cargoMetadata: linkedNativeCargoMetadata('sqlite3'),
+      features: ['sqlite'],
+    });
+    const npmProductionTree = readNpmProductionTree(repoRoot);
+    const importedComponents = readImportedNpmComponents(repoRoot);
+    const coverage = evaluateNpmSbomCoverage(
+      sbom,
+      npmProductionTree,
+      importedComponents,
+    );
+
+    expect(coverage).toMatchObject({
+      complete: true,
+      expectedCount: 8,
+      actualCount: 8,
+      missing: [],
+      unexpected: [],
+      duplicates: [],
+      malformed: [],
+      diagnostic: null,
+    });
+
+    const electron = sbom.components.find(
+      (component) =>
+        component.name === 'electron' &&
+        component.properties.some(
+          (property) =>
+            property.name === 'printfarmer:ecosystem' &&
+            property.value === 'npm',
+        ),
+    );
+    expect(electron).toBeDefined();
+    const degraded = {
+      ...sbom,
+      components: sbom.components.filter((component) => component !== electron),
+    };
+    const result = evaluateNpmSbomCoverage(
+      degraded,
+      npmProductionTree,
+      importedComponents,
+    );
+
+    expect(result).toMatchObject({
+      complete: false,
+      expectedCount: 8,
+      actualCount: 7,
+      missing: [`electron@${electron?.version}`],
+    });
+    expect(() =>
+      requireNpmSbomCoverage(degraded, npmProductionTree, importedComponents),
+    ).toThrow('missing: electron@');
   });
 });
 

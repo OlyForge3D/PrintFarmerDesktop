@@ -56,7 +56,7 @@ export interface SupplyChainPolicy {
   advisories: AdvisoryPolicy;
 }
 
-export interface CargoSbomCoverage {
+export interface SbomCoverage {
   complete: boolean;
   expectedCount: number;
   actualCount: number;
@@ -66,6 +66,9 @@ export interface CargoSbomCoverage {
   malformed: string[];
   diagnostic: string | null;
 }
+
+export type NpmSbomCoverage = SbomCoverage;
+export type CargoSbomCoverage = SbomCoverage;
 
 export function licenseExpressionsOf(component: unknown): string[];
 export function isExpressionAllowed(
@@ -83,6 +86,11 @@ export function severityRank(severity: string): number;
 export function severityFromCvss(vector: string | undefined): string;
 export function normalizeNpmAudit(report: unknown): Advisory[];
 export function normalizeCargoAudit(report: unknown): Advisory[];
+export function evaluateNpmSbomCoverage(
+  sbom: Sbom,
+  npmProductionTree: unknown,
+  importedComponents: Iterable<readonly [string, string]>,
+): NpmSbomCoverage;
 export function evaluateCargoSbomCoverage(
   sbom: Sbom,
   cargoMetadata: unknown,

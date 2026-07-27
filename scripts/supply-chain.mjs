@@ -114,6 +114,45 @@ export function scanBareImports(directory) {
 }
 
 /**
+ * Exact installed identities of npm packages imported by shipped source.
+ *
+ * This is deliberately independent of the SBOM generator's root selection:
+ * source imports expose runtime-provided packages such as Electron even though
+ * npm classifies them as dev dependencies.
+ */
+export function readImportedNpmComponents(repoRoot) {
+  const aliases = readViteAliases(repoRoot);
+  const components = new Map();
+  for (const specifier of scanBareImports(path.join(repoRoot, 'src')).keys()) {
+    if (isAliasedSpecifier(specifier, aliases)) continue;
+    const name = packageNameFromSpecifier(specifier);
+    if (name === null || components.has(name)) continue;
+
+    const manifestPath = path.join(
+      repoRoot,
+      'node_modules',
+      ...name.split('/'),
+      'package.json',
+    );
+    let manifest;
+    try {
+      manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    } catch (error) {
+      throw new Error(
+        `supply-chain: imported package "${name}" has no readable installed manifest at ${manifestPath}: ${error.message}`,
+      );
+    }
+    if (manifest.name !== name || typeof manifest.version !== 'string') {
+      throw new Error(
+        `supply-chain: installed manifest for imported package "${name}" has invalid name/version identity`,
+      );
+    }
+    components.set(name, manifest.version);
+  }
+  return components;
+}
+
+/**
  * Resolve `name` as required from the package installed at `fromPath`, using
  * npm's own lookup order: the importer's own `node_modules` first, then each
  * ancestor's, ending at the root.

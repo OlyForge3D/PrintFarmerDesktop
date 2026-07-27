@@ -852,13 +852,13 @@ filtered by manifest section:
 lockfile closure against `npm ls` as an independent second mechanism, and proves the derivation
 is _sound_ by requiring every bare specifier under `src/` to resolve to a shipped package, a
 first-party alias, or a `node:` builtin — with a guard that a zero-offender result came from a
-non-empty scan. `scripts/verify-sbom.mjs` runs the cargo half against real `cargo metadata` in
-the Package job and requires the feature-bound closure to be a strict superset of a featureless
-resolve, so a closure that ignores features cannot pass. The separate advisory job does not trust
-the generated SBOM as its own completeness oracle: before auditing, `audit-advisories.mjs` walks
-the raw feature-resolved metadata independently and requires the exact unordered Cargo
-`name@version` set to match. Missing one crate, including `quick-xml`, fails the job before an
-empty advisory result can be reported as success.
+non-empty scan. Both `scripts/verify-sbom.mjs` and the advisory job compare exact SBOM identities
+against independent evidence before trusting the document: npm's own installed production tree
+plus packages imported by shipped source (which independently recovers Electron), and a raw walk
+of feature-resolved `cargo metadata`. The Package job also requires the feature-bound Cargo
+closure to be a strict superset of a featureless resolve, so a closure that ignores features
+cannot pass. Missing Electron or one crate, including `quick-xml`, fails before an incomplete
+artifact can be published or an empty advisory result can be reported as success.
 
 **Residual.** The shipped npm set is the import graph, and the soundness check reads `src/`
 statically. A specifier assembled at runtime (`require(someVariable)`) would not be seen. No

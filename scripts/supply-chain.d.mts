@@ -45,6 +45,9 @@ export interface ShippedCargoFeatures {
 export function compareByCodeUnit(a: string, b: string): number;
 export function packageNameFromSpecifier(specifier: string): string | null;
 export function scanBareImports(directory: string): Map<string, string[]>;
+export function readImportedNpmComponents(
+  repoRoot: string,
+): Map<string, string>;
 export function readRollupExternals(repoRoot: string): Set<string>;
 export function readViteAliases(repoRoot: string): Set<string>;
 export function isAliasedSpecifier(

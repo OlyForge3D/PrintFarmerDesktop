@@ -27,12 +27,18 @@ import {
   advisoryEnforcement,
   evaluateCargoSbomCoverage,
   evaluateAdvisories,
+  evaluateNpmSbomCoverage,
   normalizeCargoAudit,
   normalizeNpmAudit,
   scopeToShippedClosure,
   validateSupplyChainPolicy,
 } from './supply-chain-policy.mjs';
-import { readCargoMetadata, resolveShippedFeatures } from './generate-sbom.mjs';
+import {
+  readCargoMetadata,
+  readNpmProductionTree,
+  resolveShippedFeatures,
+} from './generate-sbom.mjs';
+import { readImportedNpmComponents } from './supply-chain.mjs';
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -69,21 +75,17 @@ function parseArgs(argv) {
  * the exit status cannot be read as failure. A truly failed run is detected by
  * the absence of a parseable report, never by the exit code.
  *
- * `useShell` is set for npm on Windows, where the executable is `npm.cmd`:
- * Node's `execFile` refuses to run `.cmd` files directly since the CVE-2024-27980
- * fix, so it must go through the shell or it reads as ENOENT ("not installed").
- * The npm arguments are all fixed literals, so the shell carries no injection
- * risk; cargo resolves as `cargo.exe` and needs no shell, keeping its lockfile
- * path argument out of shell parsing entirely.
+ * On Windows npm is invoked through `cmd.exe /c` because Node's `execFile`
+ * refuses to execute `npm.cmd` directly since the CVE-2024-27980 fix. The
+ * command string is a fixed literal; cargo resolves directly as `cargo.exe`.
  */
-function capture(command, args, cwd, useShell = false) {
+function capture(command, args, cwd) {
   try {
     const stdout = execFileSync(command, args, {
       cwd,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'pipe'],
-      shell: useShell,
     });
     return { stdout, stderr: '' };
   } catch (error) {
@@ -96,6 +98,20 @@ function capture(command, args, cwd, useShell = false) {
 
 export function requireCargoSbomCoverage(sbom, cargoMetadata) {
   const coverage = evaluateCargoSbomCoverage(sbom, cargoMetadata);
+  if (!coverage.complete) throw new Error(coverage.diagnostic);
+  return coverage;
+}
+
+export function requireNpmSbomCoverage(
+  sbom,
+  npmProductionTree,
+  importedComponents,
+) {
+  const coverage = evaluateNpmSbomCoverage(
+    sbom,
+    npmProductionTree,
+    importedComponents,
+  );
   if (!coverage.complete) throw new Error(coverage.diagnostic);
   return coverage;
 }
@@ -149,11 +165,23 @@ function main() {
   }
 
   // The advisory scope is only meaningful if the SBOM is complete. Re-resolve
-  // raw metadata here and compare exact identities before consulting either
-  // advisory database; this catches a generator that silently drops one crate
-  // as well as an empty Cargo section. The independent walk lives in the policy
-  // module rather than reusing the generator's derivation, so the two cannot
-  // agree on the same serialization defect.
+  // both shipped graphs independently and compare exact identities before
+  // consulting either advisory database.
+  let npmCoverage;
+  try {
+    npmCoverage = requireNpmSbomCoverage(
+      sbom,
+      readNpmProductionTree(repoRoot),
+      readImportedNpmComponents(repoRoot),
+    );
+  } catch (error) {
+    console.error(`[audit-advisories] FAILED: ${error.message}`);
+    process.exit(1);
+  }
+  console.log(
+    `[audit-advisories] OK: npm SBOM completeness check matched ${npmCoverage.expectedCount} shipped component(s)`,
+  );
+
   let cargoMetadata;
   try {
     const features = resolveShippedFeatures(repoRoot);
@@ -183,12 +211,13 @@ function main() {
   // Audit the installed graph without a manifest-section filter. Electron is a
   // devDependency but ships as the runtime; the SBOM closure below, not
   // `--omit=dev`, removes unshipped tooling findings.
-  const npm = capture(
-    'npm',
-    NPM_AUDIT_ARGS,
-    repoRoot,
-    process.platform === 'win32',
-  );
+  const npmCommand =
+    process.platform === 'win32' ? (process.env.ComSpec ?? 'cmd.exe') : 'npm';
+  const npmArgs =
+    process.platform === 'win32'
+      ? ['/d', '/s', '/c', 'npm audit --json']
+      : NPM_AUDIT_ARGS;
+  const npm = capture(npmCommand, npmArgs, repoRoot);
   if (npm.missing) {
     couldNotRun.push(npm.message);
   } else {

@@ -206,46 +206,68 @@ function parseSpdx(expression, allowed) {
   const peek = () => tokens[position];
   const next = () => tokens[position++];
 
+  const failure = () => ({ wellFormed: false, value: false });
+  const isAtom = (token) =>
+    typeof token === 'string' &&
+    token !== 'OR' &&
+    token !== 'AND' &&
+    token !== 'WITH' &&
+    token !== '(' &&
+    token !== ')';
+
   // expr := term (OR term)*
   function parseExpr() {
-    let value = parseTerm();
+    const first = parseTerm();
+    if (!first.wellFormed) return first;
+    let value = first.value;
     while (peek() === 'OR') {
       next();
       const right = parseTerm();
-      value = value || right;
+      if (!right.wellFormed) return right;
+      value = value || right.value;
     }
-    return value;
+    return { wellFormed: true, value };
   }
   // term := factor (AND factor)*
   function parseTerm() {
-    let value = parseFactor();
+    const first = parseFactor();
+    if (!first.wellFormed) return first;
+    let value = first.value;
     while (peek() === 'AND') {
       next();
       const right = parseFactor();
-      value = value && right;
+      if (!right.wellFormed) return right;
+      value = value && right.value;
     }
-    return value;
+    return { wellFormed: true, value };
   }
   // factor := '(' expr ')' | atom ('WITH' atom)?
   function parseFactor() {
     if (peek() === '(') {
       next();
-      const value = parseExpr();
-      if (peek() === ')') next();
-      return value;
+      const inner = parseExpr();
+      if (!inner.wellFormed || peek() !== ')') return failure();
+      next();
+      return inner;
     }
-    const atom = next();
-    if (atom === undefined) return false;
+    const atom = peek();
+    if (!isAtom(atom)) return failure();
+    next();
     const value = allowedSet.has(atom);
     if (peek() === 'WITH') {
       next();
-      next(); // consume the exception id; a WITH exception only loosens the base
+      const exception = peek();
+      if (!isAtom(exception)) return failure();
+      next(); // a WITH exception only loosens the base licence
     }
-    return value;
+    return { wellFormed: true, value };
   }
 
-  const value = parseExpr();
-  return { wellFormed: position === tokens.length, value };
+  const result = parseExpr();
+  return {
+    wellFormed: result.wellFormed && position === tokens.length,
+    value: result.value,
+  };
 }
 
 /**
@@ -398,6 +420,134 @@ export function evaluateLicensePolicy(sbom, policy) {
 // Advisory policy
 // ---------------------------------------------------------------------------
 
+function evaluateSbomIdentityCoverage(
+  sbom,
+  ecosystem,
+  expected,
+  expectedSource,
+  emptyDetail,
+) {
+  const actualCounts = new Map();
+  const malformed = [];
+  for (const component of sbom?.components ?? []) {
+    const componentEcosystem = component?.properties?.find(
+      (property) => property.name === 'printfarmer:ecosystem',
+    )?.value;
+    if (componentEcosystem !== ecosystem) continue;
+    if (
+      typeof component.name !== 'string' ||
+      typeof component.version !== 'string'
+    ) {
+      malformed.push(String(component?.['bom-ref'] ?? '<missing bom-ref>'));
+      continue;
+    }
+    const identity = `${component.name}@${component.version}`;
+    actualCounts.set(identity, (actualCounts.get(identity) ?? 0) + 1);
+  }
+
+  const actual = new Set(actualCounts.keys());
+  const missing = [...expected]
+    .filter((identity) => !actual.has(identity))
+    .sort(compareByCodeUnit);
+  const unexpected = [...actual]
+    .filter((identity) => !expected.has(identity))
+    .sort(compareByCodeUnit);
+  const duplicates = [...actualCounts]
+    .filter(([, count]) => count > 1)
+    .map(([identity]) => identity)
+    .sort(compareByCodeUnit);
+  malformed.sort(compareByCodeUnit);
+
+  const actualCount = [...actualCounts.values()].reduce(
+    (total, count) => total + count,
+    0,
+  );
+  const complete =
+    expected.size > 0 &&
+    missing.length === 0 &&
+    unexpected.length === 0 &&
+    duplicates.length === 0 &&
+    malformed.length === 0;
+  const details = [];
+  if (expected.size === 0) details.push(emptyDetail);
+  if (missing.length > 0) details.push(`missing: ${missing.join(', ')}`);
+  if (unexpected.length > 0) {
+    details.push(`unexpected: ${unexpected.join(', ')}`);
+  }
+  if (duplicates.length > 0) {
+    details.push(`duplicated: ${duplicates.join(', ')}`);
+  }
+  if (malformed.length > 0) {
+    details.push(`malformed ${ecosystem} components: ${malformed.join(', ')}`);
+  }
+
+  return {
+    complete,
+    expectedCount: expected.size,
+    actualCount,
+    missing,
+    unexpected,
+    duplicates,
+    malformed,
+    diagnostic: complete
+      ? null
+      : `${ecosystem} SBOM completeness check expected ${expected.size} ${expectedSource} but found ${actualCount}; ${details.join('; ')}`,
+  };
+}
+
+/**
+ * Compare npm SBOM identities with two mechanisms independent of generation:
+ * npm's installed production tree and the packages imported by shipped source.
+ */
+export function evaluateNpmSbomCoverage(
+  sbom,
+  npmProductionTree,
+  importedComponents,
+) {
+  if (!isRecord(npmProductionTree)) {
+    throw new Error(
+      'npm SBOM completeness check requires an npm ls production tree',
+    );
+  }
+
+  const expected = new Set();
+  const walk = (node) => {
+    if (!isRecord(node)) {
+      throw new Error(
+        'npm SBOM completeness check found a malformed npm ls dependency node',
+      );
+    }
+    for (const [name, child] of Object.entries(node.dependencies ?? {})) {
+      if (!isRecord(child) || !isNonEmptyString(child.version)) {
+        throw new Error(
+          `npm SBOM completeness check cannot identify npm ls package ${name}`,
+        );
+      }
+      expected.add(`${name}@${child.version}`);
+      walk(child);
+    }
+  };
+  walk(npmProductionTree);
+
+  for (const entry of importedComponents ?? []) {
+    const [name, version] = entry;
+    if (!isNonEmptyString(name) || !isNonEmptyString(version)) {
+      throw new Error(
+        'npm SBOM completeness check found an imported package without a name/version identity',
+      );
+    }
+    expected.add(`${name}@${version}`);
+  }
+
+  return evaluateSbomIdentityCoverage(
+    sbom,
+    'npm',
+    expected,
+    'shipped component(s) from npm ls plus shipped source imports',
+    'npm ls and shipped source imports contain no shipped packages',
+  );
+}
+
 /**
  * Compare the SBOM's Cargo identities with an independent walk of raw,
  * feature-resolved `cargo metadata`.
@@ -458,74 +608,13 @@ export function evaluateCargoSbomCoverage(sbom, metadata) {
     expected.add(`${pkg.name}@${pkg.version}`);
   }
 
-  const actualCounts = new Map();
-  const malformed = [];
-  for (const component of sbom?.components ?? []) {
-    const ecosystem = component?.properties?.find(
-      (property) => property.name === 'printfarmer:ecosystem',
-    )?.value;
-    if (ecosystem !== 'cargo') continue;
-    if (
-      typeof component.name !== 'string' ||
-      typeof component.version !== 'string'
-    ) {
-      malformed.push(String(component?.['bom-ref'] ?? '<missing bom-ref>'));
-      continue;
-    }
-    const identity = `${component.name}@${component.version}`;
-    actualCounts.set(identity, (actualCounts.get(identity) ?? 0) + 1);
-  }
-
-  const actual = new Set(actualCounts.keys());
-  const missing = [...expected]
-    .filter((identity) => !actual.has(identity))
-    .sort(compareByCodeUnit);
-  const unexpected = [...actual]
-    .filter((identity) => !expected.has(identity))
-    .sort(compareByCodeUnit);
-  const duplicates = [...actualCounts]
-    .filter(([, count]) => count > 1)
-    .map(([identity]) => identity)
-    .sort(compareByCodeUnit);
-  malformed.sort(compareByCodeUnit);
-
-  const actualCount = [...actualCounts.values()].reduce(
-    (total, count) => total + count,
-    0,
+  return evaluateSbomIdentityCoverage(
+    sbom,
+    'cargo',
+    expected,
+    'feature-resolved shipped component(s) from cargo metadata',
+    'feature-resolved cargo metadata contains no shipped crates',
   );
-  const complete =
-    expected.size > 0 &&
-    missing.length === 0 &&
-    unexpected.length === 0 &&
-    duplicates.length === 0 &&
-    malformed.length === 0;
-  const details = [];
-  if (expected.size === 0) {
-    details.push('feature-resolved cargo metadata contains no shipped crates');
-  }
-  if (missing.length > 0) details.push(`missing: ${missing.join(', ')}`);
-  if (unexpected.length > 0) {
-    details.push(`unexpected: ${unexpected.join(', ')}`);
-  }
-  if (duplicates.length > 0) {
-    details.push(`duplicated: ${duplicates.join(', ')}`);
-  }
-  if (malformed.length > 0) {
-    details.push(`malformed cargo components: ${malformed.join(', ')}`);
-  }
-
-  return {
-    complete,
-    expectedCount: expected.size,
-    actualCount,
-    missing,
-    unexpected,
-    duplicates,
-    malformed,
-    diagnostic: complete
-      ? null
-      : `cargo SBOM completeness check expected ${expected.size} feature-resolved shipped component(s) from cargo metadata but found ${actualCount}; ${details.join('; ')}`,
-  };
 }
 
 const SEVERITY_RANK = { info: 0, low: 1, moderate: 2, high: 3, critical: 4 };
