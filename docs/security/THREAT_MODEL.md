@@ -773,24 +773,28 @@ which is precisely the class of invariant that decays silently as new call sites
 ### T4.1 — Malicious or licence-incompatible dependency
 
 **Controls. Enforced.** `scripts/generate-sbom.mjs` produces a CycloneDX SBOM covering both
-dependency trees, staged into `resources/compliance/` and verified in the Package job by
-`scripts/verify-sbom.mjs`. That establishes _what_ is being reproduced. Three policies now
-consume it so that _acceptability_ is checked too:
+dependency trees, staged into `resources/compliance/` and verified in both the Package and
+release jobs by `scripts/verify-sbom.mjs`. That establishes _what_ is being reproduced. Three
+policies now consume it so that _acceptability_ is checked too:
 
 - **Licence policy — deterministic, blocking.** `scripts/verify-licenses.mjs` evaluates every
   shipped component's SPDX licence (handling `OR`/`AND`/`WITH`, parentheses and cargo's legacy
   `/`) against `scripts/supply-chain-policy.json`, and fails the Package job on any licence not
   compatible with the AGPL-3.0-only outbound licence or covered by a reviewed component
-  exception. A missing or unparseable licence fails **closed**. A GPL-2.0-only dependency is not
-  on the allowlist, so it is rejected.
+  exception. The policy document itself is validated before use; a missing/renamed outbound key,
+  reasonless exception, or stale exception identity fails **closed**. A GPL-2.0-only dependency is
+  not on the allowlist, so it is rejected.
 - **Advisory audit — live-database, report mode.** `scripts/audit-advisories.mjs` runs
-  `npm audit` and `cargo audit`, normalises both into one shape, scopes findings to the shipped
-  SBOM closure by package name, and reports those at or above a severity threshold. Per T4.2 it
-  does not block a pull request, but an inability to run the audit fails loudly (see T4.2).
+  `npm audit` over the full installed graph (including the shipped Electron devDependency) and
+  `cargo audit`, normalises both into one shape, scopes findings to the shipped SBOM closure by
+  package name, and reports those at or above a severity threshold. Per T4.2 it does not block a
+  pull request, but an inability to run the audit or an invalid/missing runtime enforcement mode
+  fails loudly (see T4.2).
 - **Third-party notices.** `scripts/generate-notices.mjs` enumerates the SBOM into
   `build/third-party-licenses.md`, staged and verified by regenerate-and-compare
-  (`scripts/verify-notices.mjs`); the enumeration is code-unit ordered so it is byte-identical
-  across runners.
+  (`scripts/verify-notices.mjs`) in both package smoke and release builds before any artifact can
+  be uploaded or published; the enumeration is code-unit ordered so it is byte-identical across
+  runners.
 
 Both lockfiles (`package-lock.json`, `native/Cargo.lock`) are committed and CI installs with
 `npm ci`, so builds are reproducible.
@@ -882,9 +886,10 @@ per-advisory-id with a written reason; there is no blanket ignore. A mismatch be
 feature-resolved Cargo graph and the SBOM is also fatal in both modes, independent of whether
 the live advisory databases report findings.
 
-At the current shipped feature set the audit reports `quick-xml` (RUSTSEC-2026-0194/-0195, high)
-in the 3MF parser closure. It is surfaced, not waived: the remediation is an upstream-parser
-decision outside this tooling slice and is tracked for a human risk call.
+At the current lockfile revisions the live audit reports high-severity findings in both Electron
+and `quick-xml` (including RUSTSEC-2026-0194/-0195 in the 3MF parser closure). They are surfaced,
+not waived: dependency remediation is outside this tooling slice and remains a human risk call
+rather than retroactively blocking unrelated changes.
 
 Note also that adding a job to `.github/workflows/ci.yml` does **not** make it a required check.
 As of this writing `development` has **no branch protection and no rulesets** (issue #111), so no

@@ -53,6 +53,15 @@ jobs:
           PRINTFARMER_SKIP_SIDECAR_BUILD: '1'
         run: npm run make
 
+      - name: Verify SBOM reproduces from the lockfiles
+        run: npm run verify:sbom
+
+      - name: Verify third-party licence policy
+        run: npm run verify:licenses
+
+      - name: Verify third-party notices reproduce from the SBOM
+        run: npm run verify:notices
+
       - name: Verify packaged sidecar and compliance resources
         run: node scripts/verify-packaged-sidecar.mjs
 

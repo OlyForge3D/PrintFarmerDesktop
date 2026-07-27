@@ -11,7 +11,10 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { evaluateLicensePolicy } from './supply-chain-policy.mjs';
+import {
+  evaluateLicensePolicy,
+  validateSupplyChainPolicy,
+} from './supply-chain-policy.mjs';
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -42,8 +45,9 @@ try {
 let policy;
 try {
   policy = JSON.parse(readFileSync(policyPath, 'utf8'));
+  validateSupplyChainPolicy(policy);
 } catch (error) {
-  fail(`policy ${policyPath} could not be read as JSON: ${error.message}`);
+  fail(`policy ${policyPath} is invalid: ${error.message}`);
 }
 
 const { violations } = evaluateLicensePolicy(sbom, policy.licenses ?? {});

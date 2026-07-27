@@ -15,7 +15,7 @@ export interface LicenseException {
 export interface LicenseViolation {
   ref: string;
   name: string;
-  reason: 'missing' | 'disallowed' | 'unresolved' | 'outbound';
+  reason: 'missing' | 'disallowed' | 'unresolved' | 'outbound' | 'policy';
   detail: string;
 }
 
@@ -51,6 +51,11 @@ export interface AdvisoryEvaluation {
   couldNotRun: string[];
 }
 
+export interface SupplyChainPolicy {
+  licenses: LicensePolicy;
+  advisories: AdvisoryPolicy;
+}
+
 export interface CargoSbomCoverage {
   complete: boolean;
   expectedCount: number;
@@ -71,6 +76,8 @@ export function evaluateLicensePolicy(
   sbom: Sbom,
   policy: LicensePolicy,
 ): { violations: LicenseViolation[] };
+export function advisoryEnforcement(policy: unknown): 'block' | 'report';
+export function validateSupplyChainPolicy(policy: unknown): SupplyChainPolicy;
 
 export function severityRank(severity: string): number;
 export function severityFromCvss(vector: string | undefined): string;

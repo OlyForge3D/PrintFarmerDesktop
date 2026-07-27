@@ -24,11 +24,13 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
+  advisoryEnforcement,
   evaluateCargoSbomCoverage,
   evaluateAdvisories,
   normalizeCargoAudit,
   normalizeNpmAudit,
   scopeToShippedClosure,
+  validateSupplyChainPolicy,
 } from './supply-chain-policy.mjs';
 import { readCargoMetadata, resolveShippedFeatures } from './generate-sbom.mjs';
 
@@ -39,6 +41,7 @@ const repoRoot = path.resolve(
 
 const DEFAULT_SBOM = path.join(repoRoot, 'build', 'sbom.cdx.json');
 const cargoLock = path.join(repoRoot, 'native', 'Cargo.lock');
+export const NPM_AUDIT_ARGS = Object.freeze(['audit', '--json']);
 
 function parseArgs(argv) {
   const options = { mode: null, sbom: DEFAULT_SBOM };
@@ -100,22 +103,30 @@ export function requireCargoSbomCoverage(sbom, cargoMetadata) {
 function main() {
   const options = parseArgs(process.argv.slice(2));
 
-  let policy = {};
+  let policyDocument;
   try {
-    policy =
-      JSON.parse(
-        readFileSync(
-          path.join(repoRoot, 'scripts', 'supply-chain-policy.json'),
-          'utf8',
-        ),
-      ).advisories ?? {};
+    policyDocument = JSON.parse(
+      readFileSync(
+        path.join(repoRoot, 'scripts', 'supply-chain-policy.json'),
+        'utf8',
+      ),
+    );
   } catch (error) {
     console.error(
       `[audit-advisories] FAILED: policy unreadable: ${error.message}`,
     );
     process.exit(1);
   }
-  const mode = options.mode ?? policy.enforcement ?? 'report';
+
+  let policy;
+  let mode;
+  try {
+    policy = validateSupplyChainPolicy(policyDocument).advisories;
+    mode = options.mode ?? advisoryEnforcement(policy);
+  } catch (error) {
+    console.error(`[audit-advisories] FAILED: ${error.message}`);
+    process.exit(1);
+  }
 
   // Shipped closure, by ecosystem, from the SBOM. Without it the gate cannot
   // scope, so a missing SBOM fails closed rather than auditing the whole lock.
@@ -169,9 +180,12 @@ function main() {
   const couldNotRun = [];
 
   // --- npm ---
+  // Audit the installed graph without a manifest-section filter. Electron is a
+  // devDependency but ships as the runtime; the SBOM closure below, not
+  // `--omit=dev`, removes unshipped tooling findings.
   const npm = capture(
     'npm',
-    ['audit', '--json', '--omit=dev'],
+    NPM_AUDIT_ARGS,
     repoRoot,
     process.platform === 'win32',
   );

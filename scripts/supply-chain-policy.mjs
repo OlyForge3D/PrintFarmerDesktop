@@ -21,6 +21,126 @@
 
 import { compareByCodeUnit } from './supply-chain.mjs';
 
+const ADVISORY_ENFORCEMENT = new Set(['block', 'report']);
+const ADVISORY_SEVERITIES = new Set([
+  'info',
+  'low',
+  'moderate',
+  'high',
+  'critical',
+]);
+
+function isRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+/** Read the required advisory enforcement mode without silently defaulting. */
+export function advisoryEnforcement(policy) {
+  const enforcement = policy?.enforcement;
+  if (!ADVISORY_ENFORCEMENT.has(enforcement)) {
+    throw new Error(
+      'advisories.enforcement must be exactly "block" or "report"',
+    );
+  }
+  return enforcement;
+}
+
+/**
+ * Validate the committed policy source of truth before any runner consumes it.
+ *
+ * Required blocks and arrays are explicit so a renamed or deleted key cannot
+ * degrade into an empty allowlist, an unscoped exception, or a default mode.
+ */
+export function validateSupplyChainPolicy(policy) {
+  const errors = [];
+  if (!isRecord(policy)) {
+    throw new Error('invalid supply-chain policy: root must be an object');
+  }
+
+  const licenses = policy.licenses;
+  if (!isRecord(licenses)) {
+    errors.push('licenses must be an object');
+  } else {
+    if (!isNonEmptyString(licenses.outbound)) {
+      errors.push('licenses.outbound must be a non-empty string');
+    }
+    if (
+      !Array.isArray(licenses.allowed) ||
+      licenses.allowed.length === 0 ||
+      licenses.allowed.some((entry) => !isNonEmptyString(entry))
+    ) {
+      errors.push(
+        'licenses.allowed must be a non-empty array of non-empty strings',
+      );
+    }
+    if (!Array.isArray(licenses.componentExceptions)) {
+      errors.push('licenses.componentExceptions must be an array');
+    } else {
+      for (const [index, exception] of licenses.componentExceptions.entries()) {
+        if (!isRecord(exception)) {
+          errors.push(
+            `licenses.componentExceptions[${index}] must be an object`,
+          );
+          continue;
+        }
+        if (
+          !isNonEmptyString(exception.purl) &&
+          !isNonEmptyString(exception.bomRef)
+        ) {
+          errors.push(
+            `licenses.componentExceptions[${index}] must have a non-empty purl or bomRef`,
+          );
+        }
+        if (!isNonEmptyString(exception.reason)) {
+          errors.push(
+            `licenses.componentExceptions[${index}].reason must be non-empty`,
+          );
+        }
+      }
+    }
+  }
+
+  const advisories = policy.advisories;
+  if (!isRecord(advisories)) {
+    errors.push('advisories must be an object');
+  } else {
+    if (!ADVISORY_SEVERITIES.has(advisories.severityThreshold)) {
+      errors.push(
+        'advisories.severityThreshold must be one of info, low, moderate, high, or critical',
+      );
+    }
+    try {
+      advisoryEnforcement(advisories);
+    } catch (error) {
+      errors.push(error.message);
+    }
+    if (!Array.isArray(advisories.waivers)) {
+      errors.push('advisories.waivers must be an array');
+    } else {
+      for (const [index, waiver] of advisories.waivers.entries()) {
+        if (
+          !isRecord(waiver) ||
+          !isNonEmptyString(waiver.id) ||
+          !isNonEmptyString(waiver.reason)
+        ) {
+          errors.push(
+            `advisories.waivers[${index}] must have non-empty id and reason strings`,
+          );
+        }
+      }
+    }
+  }
+
+  if (errors.length > 0) {
+    throw new Error(`invalid supply-chain policy: ${errors.join('; ')}`);
+  }
+  return policy;
+}
+
 // ---------------------------------------------------------------------------
 // Licence policy
 // ---------------------------------------------------------------------------
@@ -167,8 +287,9 @@ function tokenizeSpdx(expression) {
 function exceptionFor(component, exceptions) {
   return (exceptions ?? []).find(
     (exception) =>
-      (exception.bomRef && exception.bomRef === component['bom-ref']) ||
-      (exception.purl && exception.purl === component.purl),
+      (isNonEmptyString(exception?.bomRef) &&
+        exception.bomRef === component['bom-ref']) ||
+      (isNonEmptyString(exception?.purl) && exception.purl === component.purl),
   );
 }
 
@@ -190,15 +311,16 @@ export function evaluateLicensePolicy(sbom, policy) {
   const allowed = new Set(policy?.allowed ?? []);
   const exceptions = policy?.componentExceptions ?? [];
   const violations = [];
+  const components = sbom?.components ?? [];
 
-  for (const component of sbom?.components ?? []) {
+  for (const component of components) {
     const expressions = licenseExpressionsOf(component);
     const exception = exceptionFor(component, exceptions);
 
     if (expressions.length === 0) {
       // No licence recorded. Fail closed unless a reviewed exception explains it
       // (the native SQLite library carries no SPDX id in cargo metadata).
-      if (!exception || !exception.reason) {
+      if (!exception || !isNonEmptyString(exception.reason)) {
         violations.push({
           ref: component['bom-ref'],
           name: component.name,
@@ -209,7 +331,7 @@ export function evaluateLicensePolicy(sbom, policy) {
       continue;
     }
 
-    if (exception && exception.reason) continue; // reviewed and accepted
+    if (exception && isNonEmptyString(exception.reason)) continue;
 
     for (const expression of expressions) {
       if (isExpressionAllowed(expression, allowed)) continue;
@@ -225,10 +347,37 @@ export function evaluateLicensePolicy(sbom, policy) {
     }
   }
 
+  // A stale exception is itself a policy defect: it may be a typo that was
+  // intended to waive a real component. Verification over the staged SBOM must
+  // prove every reviewed identity resolves to what actually ships.
+  for (const exception of exceptions) {
+    if (!isRecord(exception) || !isNonEmptyString(exception.reason)) continue;
+    if (components.some((component) => exceptionFor(component, [exception]))) {
+      continue;
+    }
+    const identity =
+      (isNonEmptyString(exception.purl) && exception.purl) ||
+      (isNonEmptyString(exception.bomRef) && exception.bomRef) ||
+      '(missing identity)';
+    violations.push({
+      ref: '(policy)',
+      name: identity,
+      reason: 'policy',
+      detail: `reviewed component exception "${identity}" does not match any SBOM component`,
+    });
+  }
+
   // The outbound licence is the premise of the whole allowlist; if it changes,
   // the allowlist was chosen for a different obligation and must be revisited.
   const outbound = policy?.outbound;
-  if (outbound) {
+  if (!isNonEmptyString(outbound)) {
+    violations.push({
+      ref: sbom?.metadata?.component?.['bom-ref'] ?? '(root)',
+      name: sbom?.metadata?.component?.name ?? '(root)',
+      reason: 'policy',
+      detail: 'licence policy is missing required non-empty "outbound"',
+    });
+  } else {
     const declared = licenseExpressionsOf(sbom?.metadata?.component);
     if (declared.length === 0 || !declared.includes(outbound)) {
       violations.push({
@@ -508,10 +657,14 @@ export function scopeToShippedClosure(advisories, shippedPackageNames) {
  * through untouched: an inability to audit is never an empty-and-clean result.
  */
 export function evaluateAdvisories(input, policy) {
+  advisoryEnforcement(policy);
   const threshold = severityRank(policy?.severityThreshold ?? 'high');
   const waivers = new Map(
     (policy?.waivers ?? [])
-      .filter((waiver) => waiver && waiver.id && waiver.reason)
+      .filter(
+        (waiver) =>
+          isNonEmptyString(waiver?.id) && isNonEmptyString(waiver?.reason),
+      )
       .map((waiver) => [waiver.id, waiver]),
   );
   const blocking = [];

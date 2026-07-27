@@ -17,8 +17,15 @@
 /.github/workflows/release.yml @jpapiez
 /scripts/check-calibration-provenance.mjs @jpapiez
 /scripts/stage-compliance.mjs @jpapiez
+/scripts/audit-advisories.* @jpapiez
+/scripts/generate-notices.mjs @jpapiez
+/scripts/supply-chain-policy.* @jpapiez
+/scripts/supply-chain-policy.json @jpapiez
+/scripts/verify-licenses.mjs @jpapiez
+/scripts/verify-notices.mjs @jpapiez
 /scripts/verify-packaged-sidecar.mjs @jpapiez
 /tests/licensing.test.ts @jpapiez
 /tests/packaging.test.ts @jpapiez
 /tests/provenance.test.ts @jpapiez
+/tests/supplyChainPolicy.test.ts @jpapiez
 /.github/CODEOWNERS @jpapiez

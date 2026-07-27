@@ -14,9 +14,16 @@
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { requireCargoSbomCoverage } from '../scripts/audit-advisories.mjs';
-import { buildSbom } from '../scripts/supply-chain.mjs';
 import {
+  NPM_AUDIT_ARGS,
+  requireCargoSbomCoverage,
+} from '../scripts/audit-advisories.mjs';
+import {
+  buildSbom,
+  deriveShippedNpmComponents,
+} from '../scripts/supply-chain.mjs';
+import {
+  advisoryEnforcement,
   evaluateCargoSbomCoverage,
   evaluateAdvisories,
   evaluateLicensePolicy,
@@ -28,15 +35,34 @@ import {
   scopeToShippedClosure,
   severityFromCvss,
   severityRank,
+  validateSupplyChainPolicy,
 } from '../scripts/supply-chain-policy.mjs';
 import type {
   Advisory,
   AdvisoryPolicy,
   Sbom,
   SbomComponent,
+  SupplyChainPolicy,
 } from '../scripts/supply-chain-policy.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
+const packageManifest = JSON.parse(
+  readFileSync(path.join(repoRoot, 'package.json'), 'utf8'),
+) as {
+  license?: string;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+};
+const shippedPolicy = JSON.parse(
+  readFileSync(
+    path.join(repoRoot, 'scripts', 'supply-chain-policy.json'),
+    'utf8',
+  ),
+) as SupplyChainPolicy;
+const releaseWorkflow = readFileSync(
+  path.join(repoRoot, '.github', 'workflows', 'release.yml'),
+  'utf8',
+);
 
 function readLock(): unknown {
   return JSON.parse(
@@ -93,11 +119,171 @@ function sbomWith(
   };
 }
 
+function linkedNativeCargoMetadata(links: string): unknown {
+  const rootId = 'path+file:///repo/native/model-core#0.1.0';
+  const crateId =
+    'registry+https://github.com/rust-lang/crates.io-index#libsqlite3-sys@0.30.1';
+  return {
+    packages: [
+      {
+        id: rootId,
+        name: 'model-core',
+        version: '0.1.0',
+        license: 'AGPL-3.0-only',
+        source: null,
+        targets: [{ kind: ['lib'], name: 'model_core' }],
+      },
+      {
+        id: crateId,
+        name: 'libsqlite3-sys',
+        version: '0.30.1',
+        license: 'MIT',
+        source: 'registry+https://github.com/rust-lang/crates.io-index',
+        links,
+        targets: [{ kind: ['lib'], name: 'libsqlite3_sys' }],
+      },
+    ],
+    resolve: {
+      root: rootId,
+      nodes: [
+        {
+          id: rootId,
+          deps: [{ pkg: crateId, dep_kinds: [{ kind: null }] }],
+        },
+        { id: crateId, deps: [] },
+      ],
+    },
+  };
+}
+
 const licensePolicy = {
   outbound: 'AGPL-3.0-only',
   allowed: ['MIT', 'Apache-2.0', 'BSD-2-Clause', 'Unicode-3.0'],
   componentExceptions: [],
 };
+
+describe('the shipped supply-chain policy is the validated source of truth', () => {
+  it('has every required block and key and matches the package outbound licence', () => {
+    expect(() => validateSupplyChainPolicy(shippedPolicy)).not.toThrow();
+    expect(typeof shippedPolicy.licenses.outbound).toBe('string');
+    expect(Array.isArray(shippedPolicy.licenses.allowed)).toBe(true);
+    expect(Array.isArray(shippedPolicy.licenses.componentExceptions)).toBe(
+      true,
+    );
+    expect(typeof shippedPolicy.advisories.severityThreshold).toBe('string');
+    expect(typeof shippedPolicy.advisories.enforcement).toBe('string');
+    expect(Array.isArray(shippedPolicy.advisories.waivers)).toBe(true);
+    expect(packageManifest.license).toBe('AGPL-3.0-only');
+    expect(shippedPolicy.licenses.outbound).toBe(packageManifest.license);
+    expect(advisoryEnforcement(shippedPolicy.advisories)).toBe('report');
+    for (const exception of shippedPolicy.licenses.componentExceptions ?? []) {
+      expect(exception.reason.trim()).not.toBe('');
+    }
+  });
+
+  it('matches the native SQLite identity emitted by the production SBOM builder', () => {
+    const sbom = buildSbom({
+      lock: readLock(),
+      repoRoot,
+      cargoMetadata: linkedNativeCargoMetadata('sqlite3'),
+      features: ['sqlite'],
+    });
+    const sqlite = sbom.components.find(
+      (component) =>
+        component.properties.some(
+          (property) =>
+            property.name === 'printfarmer:ecosystem' &&
+            property.value === 'native',
+        ) && component.name === 'sqlite3',
+    );
+    const sqliteException = (
+      shippedPolicy.licenses.componentExceptions ?? []
+    ).find((exception) => exception.purl === 'pkg:generic/sqlite3');
+
+    expect(sqlite).toMatchObject({
+      purl: 'pkg:generic/sqlite3',
+      'bom-ref': 'pkg:generic/sqlite3?vendored-by=libsqlite3-sys@0.30.1',
+    });
+    expect(sqliteException?.purl).toBe(sqlite?.purl);
+    expect(
+      evaluateLicensePolicy(sbom, shippedPolicy.licenses).violations,
+    ).toEqual([]);
+  });
+
+  it.each([undefined, null, 'warn', 'REPORT'])(
+    'rejects malformed runtime advisory enforcement %s',
+    (enforcement) => {
+      const advisories = {
+        ...shippedPolicy.advisories,
+        enforcement,
+      };
+      expect(() => advisoryEnforcement(advisories)).toThrow(
+        'advisories.enforcement must be exactly "block" or "report"',
+      );
+      expect(() =>
+        evaluateAdvisories({ advisories: [] }, advisories as AdvisoryPolicy),
+      ).toThrow('advisories.enforcement must be exactly "block" or "report"');
+      expect(() =>
+        validateSupplyChainPolicy({
+          ...shippedPolicy,
+          advisories,
+        }),
+      ).toThrow('invalid supply-chain policy');
+    },
+  );
+
+  it('rejects missing policy blocks and a renamed outbound key', () => {
+    expect(() =>
+      validateSupplyChainPolicy({ advisories: shippedPolicy.advisories }),
+    ).toThrow('licenses must be an object');
+    expect(() =>
+      validateSupplyChainPolicy({ licenses: shippedPolicy.licenses }),
+    ).toThrow('advisories must be an object');
+
+    const withoutOutbound = { ...shippedPolicy.licenses };
+    delete withoutOutbound.outbound;
+    expect(() =>
+      validateSupplyChainPolicy({
+        ...shippedPolicy,
+        licenses: {
+          ...withoutOutbound,
+          outboundLicense: packageManifest.license,
+        },
+      }),
+    ).toThrow('licenses.outbound must be a non-empty string');
+  });
+});
+
+describe('the release workflow enforces compliance before publication', () => {
+  it('runs SBOM, licence, and notice checks after make and before upload/release', () => {
+    const make = releaseWorkflow.indexOf('run: npm run make');
+    const upload = releaseWorkflow.indexOf('uses: actions/upload-artifact@v4');
+    const publish = releaseWorkflow.indexOf(
+      'uses: softprops/action-gh-release@v2',
+    );
+    expect(make).toBeGreaterThan(-1);
+    expect(upload).toBeGreaterThan(make);
+    expect(publish).toBeGreaterThan(upload);
+
+    for (const command of [
+      'run: npm run verify:sbom',
+      'run: npm run verify:licenses',
+      'run: npm run verify:notices',
+    ]) {
+      const at = releaseWorkflow.indexOf(command);
+      expect(at).toBeGreaterThan(make);
+      expect(at).toBeLessThan(upload);
+
+      const stepStart = releaseWorkflow.lastIndexOf('\n      - name:', at);
+      const stepEnd = releaseWorkflow.indexOf('\n      - name:', at);
+      const step = releaseWorkflow.slice(
+        stepStart,
+        stepEnd === -1 ? undefined : stepEnd,
+      );
+      expect(step).not.toContain('continue-on-error');
+    }
+  });
+});
 
 // --- licence: SPDX expression evaluation ----------------------------------
 
@@ -299,6 +485,29 @@ describe('evaluateLicensePolicy names the offending component and why', () => {
     );
     expect(changed.violations).toHaveLength(1);
     expect(changed.violations[0]).toMatchObject({ reason: 'outbound' });
+  });
+
+  it.each([
+    ['missing', { allowed: licensePolicy.allowed, componentExceptions: [] }],
+    [
+      'renamed',
+      {
+        outboundLicense: 'AGPL-3.0-only',
+        allowed: licensePolicy.allowed,
+        componentExceptions: [],
+      },
+    ],
+  ])('fails closed when outbound is %s', (_label, policy) => {
+    const { violations } = evaluateLicensePolicy(
+      sbomWith([comp('a', 'MIT')]),
+      policy,
+    );
+    expect(violations).toContainEqual(
+      expect.objectContaining({
+        reason: 'policy',
+        detail: 'licence policy is missing required non-empty "outbound"',
+      }),
+    );
   });
 });
 
@@ -609,6 +818,57 @@ describe('advisories are scoped to the shipped closure by name', () => {
       ['quick-xml', 'serde'],
     );
     expect(scoped.map((a) => a.package)).toEqual(['quick-xml']);
+  });
+
+  it('audits the full npm graph, keeps shipped Electron, and drops dev-only tooling', () => {
+    expect(packageManifest.dependencies).not.toHaveProperty('electron');
+    expect(packageManifest.devDependencies).toHaveProperty('electron');
+    expect(packageManifest.devDependencies).toHaveProperty('vitest');
+    expect(NPM_AUDIT_ARGS).toEqual(['audit', '--json']);
+
+    const { components } = deriveShippedNpmComponents(readLock(), repoRoot);
+    const shippedNames = new Set(
+      [...components.values()].map((component) => component.name),
+    );
+    expect(shippedNames).toContain('electron');
+    expect(shippedNames).not.toContain('vitest');
+
+    const normalized = normalizeNpmAudit({
+      vulnerabilities: {
+        electron: {
+          name: 'electron',
+          severity: 'high',
+          via: [
+            {
+              source: 1,
+              name: 'electron',
+              title: 'Shipped runtime advisory',
+              url: 'https://github.com/advisories/GHSA-electron',
+              severity: 'high',
+            },
+          ],
+          fixAvailable: true,
+        },
+        vitest: {
+          name: 'vitest',
+          severity: 'high',
+          via: [
+            {
+              source: 2,
+              name: 'vitest',
+              title: 'Unshipped test-tool advisory',
+              url: 'https://github.com/advisories/GHSA-vitest',
+              severity: 'high',
+            },
+          ],
+          fixAvailable: true,
+        },
+      },
+    });
+    const scoped = scopeToShippedClosure(normalized, shippedNames);
+
+    expect(scoped.map((entry) => entry.package)).toEqual(['electron']);
+    expect(scoped.map((entry) => entry.id)).toEqual(['GHSA-electron']);
   });
 });
 
