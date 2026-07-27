@@ -781,31 +781,21 @@ fn read_text_entry_limited<R: Read + Seek>(
     guard.check_now()?;
     match archive.by_name(name) {
         Ok(mut file) => {
-            if file.size() > max_bytes {
+            let declared = file.size();
+            if declared > max_bytes {
                 return Err(ThreeMfError::TooLarge);
             }
-            // Only the budget half of this can fail. `check_ratio` is a pure
-            // function of its three arguments, and `validate_archive_parts`
-            // already ran it over *every* entry with these same two accessors
-            // during the `open_package` preflight - which every entry point
-            // goes through - so an entry that reached this line has already
-            // been cleared at the identical ratio. Confirmed by mutation:
-            // deleting the ratio half of `charge_entry` leaves the whole suite
-            // green. It stays because that argument depends on the preflight
-            // continuing to check every entry, not on the check being redundant
-            // by nature.
-            guard.charge_entry(name, file.compressed_size(), file.size())?;
+            // Defence in depth: the package preflight already checked this
+            // ratio, while the guarded reader below charges actual output.
+            guard.check_ratio(name, file.compressed_size(), declared)?;
             let bytes = read_entry_guarded(&mut file, max_bytes, 0, guard)?;
-            if bytes.len() as u64 > max_bytes {
+            let actual = bytes.len() as u64;
+            if actual > max_bytes {
                 return Err(ThreeMfError::TooLarge);
             }
             // Matches what `read_to_string` would have produced for non-UTF-8.
             let contents = String::from_utf8(bytes)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            // The declared size is attacker-controlled, so charge whatever the
-            // entry actually produced beyond what was already budgeted.
-            let actual = contents.len() as u64;
-            guard.charge_decompressed(actual.saturating_sub(file.size()))?;
             Ok(Some(contents))
         }
         Err(ZipError::FileNotFound) => Ok(None),
@@ -813,14 +803,18 @@ fn read_text_entry_limited<R: Read + Seek>(
     }
 }
 
-/// Read an entry to completion with the deadline observed *during* the read.
+/// Read an entry to completion with deadlines and decompression budget observed
+/// *during* the read.
 ///
 /// A single `read_to_end` is one uninterruptible blocking call: decompressing a
 /// large entry can consume the entire time budget inside it and still return
 /// success, because the surrounding checkpoints only sample the clock every so
 /// many calls and an entry with few XML events may never reach another sample.
-/// Chunking gives the guard a checkpoint per chunk, and the unsampled check
-/// after the loop means an expiry is never reported as a successful parse.
+/// Chunking gives the guard a checkpoint and an actual-byte charge per chunk.
+/// Charging before the next read matters because a ZIP reader can emit the
+/// complete payload and report a CRC failure only when that next read observes
+/// EOF. The unsampled check after the loop means an expiry is never reported as
+/// a successful parse.
 fn read_entry_guarded(
     reader: &mut impl Read,
     max_bytes: u64,
@@ -847,7 +841,10 @@ fn read_entry_guarded(
             .min(CHUNK_BYTES);
         match reader.read(&mut chunk[..want]) {
             Ok(0) => break,
-            Ok(read) => contents.extend_from_slice(&chunk[..read]),
+            Ok(read) => {
+                guard.charge_decompressed(read as u64)?;
+                contents.extend_from_slice(&chunk[..read]);
+            }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(e.into()),
         }
@@ -1162,26 +1159,24 @@ pub(crate) fn read_entry_bytes<R: Read + Seek, F: Fn() -> ThreeMfError>(
     guard.check_now()?;
     match archive.by_name(name) {
         Ok(mut file) => {
-            if file.size() > max_bytes {
+            let declared = file.size();
+            if declared > max_bytes {
                 return Err(too_large());
             }
-            // As in `read_text_entry_limited`: only the budget half can fail
-            // here, because the preflight already cleared every entry at this
-            // exact ratio.
-            guard.charge_entry(name, file.compressed_size(), file.size())?;
+            // As in `read_text_entry_limited`, this repeats the preflight ratio
+            // check while the guarded reader charges actual output per chunk.
+            guard.check_ratio(name, file.compressed_size(), declared)?;
             // Preallocate from the *declared* size only up to a modest cap: the
             // declaration is attacker-controlled, so trusting it would let a
             // few hundred bytes of archive reserve gigabytes. Beyond the cap the
             // Vec grows against real bytes, which `take` already bounds.
             const MAX_PREALLOCATED_BYTES: u64 = 1024 * 1024;
-            let capacity = usize::try_from(file.size().min(MAX_PREALLOCATED_BYTES))
-                .map_err(|_| too_large())?;
+            let capacity =
+                usize::try_from(declared.min(MAX_PREALLOCATED_BYTES)).map_err(|_| too_large())?;
             let contents = read_entry_guarded(&mut file, max_bytes, capacity, guard)?;
             if contents.len() as u64 > max_bytes {
                 return Err(too_large());
             }
-            let actual = contents.len() as u64;
-            guard.charge_decompressed(actual.saturating_sub(file.size()))?;
             Ok(Some(contents))
         }
         Err(ZipError::FileNotFound) => Ok(None),
@@ -1933,7 +1928,27 @@ fn resolve_material(model: &RawModel, object: &RawObject) -> ResolvedMaterial {
             // triangle or none at all, and dropping the array is the only
             // honest way to say "some of these faces have no colour we can
             // vouch for" without inventing values for them.
-            resolved.filter(|colors| colors.len() == triangles.len())
+            //
+            // Dropping it is still a loss the caller has to hear about, so
+            // every path that drops it reports through `unresolved`. The length
+            // arm is unreachable while the array is grown in lockstep with the
+            // triangles above, which is what the assert pins - but the assert
+            // cannot be the defence: `debug_assert` compiles out in release and
+            // the packaged sidecar is a release build, so in every binary a
+            // user runs the colours would vanish with a clean status. The
+            // assert tells the developer; `unresolved` tells the user.
+            debug_assert_eq!(
+                triangle_appearance.len(),
+                triangles.len(),
+                "per-face appearance must be grown in lockstep with the triangles"
+            );
+            match resolved {
+                Some(colors) if colors.len() == triangles.len() => Some(colors),
+                _ => {
+                    unresolved = true;
+                    None
+                }
+            }
         }
         _ => None,
     };
@@ -3718,6 +3733,141 @@ mod tests {
         buf
     }
 
+    fn forged_single_entry(
+        part: &str,
+        contents: &[u8],
+        declared: u32,
+        corrupt_crc: bool,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let options =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            writer.start_file(part, options).unwrap();
+            writer.write_all(contents).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let name = part.as_bytes();
+        let mut patched = false;
+        for index in 0..bytes.len().saturating_sub(46) {
+            if &bytes[index..index + 4] != b"PK\x01\x02" {
+                continue;
+            }
+            let name_len = u16::from_le_bytes([bytes[index + 28], bytes[index + 29]]) as usize;
+            if bytes.get(index + 46..index + 46 + name_len) != Some(name) {
+                continue;
+            }
+            let local_offset = u32::from_le_bytes([
+                bytes[index + 42],
+                bytes[index + 43],
+                bytes[index + 44],
+                bytes[index + 45],
+            ]) as usize;
+            bytes[index + 24..index + 28].copy_from_slice(&declared.to_le_bytes());
+            bytes[local_offset + 22..local_offset + 26].copy_from_slice(&declared.to_le_bytes());
+            if corrupt_crc {
+                bytes[index + 16] ^= 0xff;
+                bytes[local_offset + 14] ^= 0xff;
+            }
+            patched = true;
+        }
+        assert!(patched, "forged fixture must contain {part}");
+        bytes
+    }
+
+    #[test]
+    fn limited_entry_read_charges_actual_bytes_once() {
+        let contents = b"<config/>";
+        let bytes = forged_single_entry(MODEL_SETTINGS_PART, contents, 1, false);
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let budget = contents.len() as u64;
+        let mut guard = ParseGuard::new(ParseLimits {
+            max_total_decompressed_bytes: budget,
+            ..ParseLimits::default().without_timeout()
+        });
+
+        assert_eq!(
+            read_text_entry_limited(
+                &mut archive,
+                MODEL_SETTINGS_PART,
+                contents.len() as u64,
+                &mut guard,
+            )
+            .unwrap()
+            .as_deref(),
+            Some("<config/>")
+        );
+        assert_eq!(guard.decompressed_bytes(), budget);
+    }
+
+    #[test]
+    fn limited_entry_read_charges_bytes_before_reporting_too_large() {
+        let contents = b"12345";
+        let bytes = forged_single_entry(MODEL_SETTINGS_PART, contents, 1, false);
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let budget = contents.len() as u64;
+        let mut guard = ParseGuard::new(ParseLimits {
+            max_total_decompressed_bytes: budget,
+            ..ParseLimits::default().without_timeout()
+        });
+
+        let error =
+            read_text_entry_limited(&mut archive, MODEL_SETTINGS_PART, budget - 1, &mut guard)
+                .unwrap_err();
+
+        assert!(matches!(error, ThreeMfError::TooLarge));
+        assert_eq!(guard.decompressed_bytes(), budget);
+    }
+
+    #[test]
+    fn limited_entry_read_charges_bytes_before_reporting_invalid_utf8() {
+        let contents = [0xff, b'x'];
+        let bytes = forged_single_entry(MODEL_SETTINGS_PART, &contents, 1, false);
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let budget = contents.len() as u64;
+        let mut guard = ParseGuard::new(ParseLimits {
+            max_total_decompressed_bytes: budget,
+            ..ParseLimits::default().without_timeout()
+        });
+
+        let error = read_text_entry_limited(&mut archive, MODEL_SETTINGS_PART, budget, &mut guard)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ThreeMfError::Io(ref source) if source.kind() == io::ErrorKind::InvalidData
+        ));
+        assert_eq!(guard.decompressed_bytes(), budget);
+    }
+
+    #[test]
+    fn limited_entry_read_charges_bytes_before_reporting_bad_crc() {
+        let contents = b"<config>crc checked after payload</config>";
+        let bytes = forged_single_entry(MODEL_SETTINGS_PART, contents, 1, true);
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let budget = contents.len() as u64;
+        let mut guard = ParseGuard::new(ParseLimits {
+            max_total_decompressed_bytes: budget,
+            ..ParseLimits::default().without_timeout()
+        });
+
+        let error = read_text_entry_limited(
+            &mut archive,
+            MODEL_SETTINGS_PART,
+            contents.len() as u64,
+            &mut guard,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ThreeMfError::Io(ref source) if source.kind() == io::ErrorKind::InvalidData
+        ));
+        assert_eq!(guard.decompressed_bytes(), budget);
+    }
+
     fn plate_block(plater_id: u32, name: Option<&str>, instances: &[(u32, u32)]) -> String {
         let name_row = match name {
             Some(name) => format!("    <metadata key=\"plater_name\" value=\"{name}\"/>\n"),
@@ -4409,5 +4559,89 @@ mod tests {
             plate_block(1, Some("Left"), &[(1, 0), (2, 0)]),
             plate_block(2, Some("Right"), &[(1, 1), (2, 1)]),
         ])
+    }
+
+    /// A mesh whose faces carry per-face colour references, on an object that
+    /// declares no material of its own. `every_face_referenced` controls the
+    /// one thing under test: whether a face is left to inherit a material that
+    /// does not exist.
+    fn per_face_colour_model(every_face_referenced: bool) -> String {
+        let second_face = if every_face_referenced {
+            r#"<triangle v1="0" v2="1" v3="3" pid="10" p1="1"/>"#
+        } else {
+            r#"<triangle v1="0" v2="1" v3="3"/>"#
+        };
+        format!(
+            r##"<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <resources>
+    <colorgroup id="10">
+      <color color="#FF0000"/>
+      <color color="#00FF00"/>
+    </colorgroup>
+    <object id="1" type="model">
+      <mesh>
+        <vertices>
+          <vertex x="0" y="0" z="0"/>
+          <vertex x="1" y="0" z="0"/>
+          <vertex x="0" y="1" z="0"/>
+          <vertex x="0" y="0" z="1"/>
+        </vertices>
+        <triangles>
+          <triangle v1="0" v2="1" v3="2" pid="10" p1="0"/>
+          {second_face}
+        </triangles>
+      </mesh>
+    </object>
+  </resources>
+  <build>
+    <item objectid="1"/>
+  </build>
+</model>"##
+        )
+    }
+
+    #[test]
+    fn dropping_the_face_colour_array_is_reported_as_unresolved() {
+        // The array is all-or-nothing, so one face with no colour to inherit
+        // drops every face's colour. Dropping them is defensible; dropping them
+        // while reporting Complete is not - that is the colours vanishing with
+        // a clean status, which is the failure the caller can neither see nor
+        // act on.
+        let mesh = parse_bytes(&package(
+            &per_face_colour_model(false),
+            true,
+            DEFAULT_MODEL_PART,
+        ))
+        .unwrap();
+
+        assert_eq!(mesh.objects.len(), 1);
+        assert!(mesh.objects[0].material.face_colors.is_none());
+        assert_eq!(mesh.status, SceneLoadStatus::Partial);
+        assert!(mesh
+            .status_messages
+            .iter()
+            .any(|message| message.contains("could not be resolved to a colour")));
+    }
+
+    #[test]
+    fn a_fully_referenced_face_colour_array_still_loads_complete() {
+        // The legitimate maximum for the check above. Without it, that test
+        // would pass just as well against a build that reported every mesh
+        // carrying per-face colours as Partial.
+        let mesh = parse_bytes(&package(
+            &per_face_colour_model(true),
+            true,
+            DEFAULT_MODEL_PART,
+        ))
+        .unwrap();
+
+        assert_eq!(mesh.objects.len(), 1);
+        assert_eq!(
+            mesh.objects[0].material.face_colors.as_deref(),
+            Some([[255, 0, 0], [0, 255, 0]].as_slice())
+        );
+        assert_eq!(mesh.status, SceneLoadStatus::Complete);
+        assert!(mesh.status_messages.is_empty());
     }
 }
