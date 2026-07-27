@@ -6,6 +6,7 @@
 //! private transport. Only the version/handshake surface exists so far.
 
 pub mod cache;
+pub mod calibration;
 pub mod catalog;
 pub mod geometry;
 pub mod hash;

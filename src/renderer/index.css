@@ -2779,3 +2779,94 @@ select:disabled {
   overflow: hidden;
   clip: rect(0 0 0 0);
 }
+
+/* Persistent first-class workspace navigation */
+.skip-link {
+  position: fixed;
+  z-index: 10000;
+  top: 5px;
+  left: 8px;
+  padding: 6px 10px;
+  transform: translateY(-160%);
+  border: 2px solid var(--focus, #86c7f2);
+  border-radius: 4px;
+  background: #101318;
+  color: #e6e9ed;
+  text-decoration: none;
+  -webkit-app-region: no-drag;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+.workspace-switcher {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid #2a3039;
+  border-radius: 5px;
+  background: #15191f;
+  -webkit-app-region: no-drag;
+}
+
+.workspace-switcher button {
+  min-height: 27px;
+  padding: 3px 11px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: #aeb6c0;
+  cursor: pointer;
+}
+
+.workspace-switcher button:hover:not(:disabled) {
+  background: #202630;
+  color: #edf1f4;
+}
+
+.workspace-switcher button[aria-current='page'] {
+  border-color: #4a5968;
+  background: #173247;
+  color: #edf1f4;
+}
+
+.workspace-switch-explanation {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.workspace.calibration-shell {
+  display: block;
+  overflow: hidden;
+}
+
+[data-library-heading]:focus {
+  outline: none;
+}
+
+[data-library-heading]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+
+textarea {
+  font: inherit;
+}
+
+@media (max-width: 720px) {
+  .product-identity {
+    flex-basis: 174px;
+  }
+
+  .workspace-switcher button {
+    padding-inline: 7px;
+    font-size: 11px;
+  }
+}

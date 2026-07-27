@@ -433,6 +433,14 @@ fn collect_thumbnail_part_names<R: Read + Seek>(
         }
         // A PNG that claims an impossible expansion ratio is a decompression
         // bomb aimed at the thumbnail RPC, not a plate preview.
+        //
+        // Defence in depth only: this cannot fail in practice. `check_ratio` is
+        // pure, and the `open_package` preflight above already ran it over every
+        // entry with these same two accessors, so a thumbnail that reached this
+        // line was cleared at the identical ratio. Deleting this call leaves the
+        // whole suite green - including
+        // `vendor_thumbnail_extraction_rejects_a_bomb`, which is satisfied by
+        // the preflight rather than by this check.
         guard.check_ratio(&part_name, file.compressed_size(), file.size())?;
         total_thumbnail_bytes =
             total_thumbnail_bytes

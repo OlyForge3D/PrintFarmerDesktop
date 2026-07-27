@@ -85,6 +85,17 @@ fn small_highly_compressible_parts_stay_allowed() {
 
 #[test]
 fn vendor_thumbnail_extraction_rejects_a_bomb() {
+    // What this proves is that the *entry point* rejects the bomb, which is the
+    // property worth having. What it does not prove - despite reading that way -
+    // is that the thumbnail-specific ratio check in `read_plate_thumbnails` does
+    // the rejecting. That check is unreachable: the `open_package` preflight
+    // already ran the identical `check_ratio` over every entry, so deleting the
+    // thumbnail one leaves this test, and the whole suite, green.
+    //
+    // Left as is rather than renamed. The name is accurate about the entry
+    // point, and the alternative - pinning the thumbnail check itself - is not
+    // possible while the preflight subsumes it. Same shape as the vendor
+    // metadata ratio test; see the note in `vendor.rs` beside the dead check.
     let bomb = vec![0u8; 16 * 1024 * 1024];
     let data = package_with(vec![Part::bytes("Metadata/plate_1.png", bomb)]);
     let error = vendor::read_plate_thumbnails(&data)
@@ -860,6 +871,133 @@ fn declared_total(data: &[u8]) -> u64 {
     (0..archive.len())
         .map(|i| archive.by_index(i).expect("entry").size())
         .sum()
+}
+
+const MODEL_SETTINGS_PART: &str = "Metadata/model_settings.config";
+
+/// Two objects placed four times: the shape a vendor layout splits across two
+/// plates. `instance_id` counts each object's build items in document order, so
+/// object 1 owns instances 0 and 1 at items 0 and 2, and object 2 the same at
+/// items 1 and 3.
+fn two_object_four_item_model() -> String {
+    model_document(
+        "millimeter",
+        &format!(
+            "{}\n{}",
+            triangle_object("1", "Left"),
+            triangle_object("2", "Right")
+        ),
+        r#"    <item objectid="1"/>
+    <item objectid="2"/>
+    <item objectid="1"/>
+    <item objectid="2"/>"#,
+    )
+}
+
+/// A well-formed two-plate `model_settings.config` padded out to roughly
+/// `padding` bytes of filler inside an XML comment.
+///
+/// The filler is pseudo-random rather than repetitive on purpose. A compressible
+/// pad would hand the entry a bomb-like expansion ratio and leave a reader
+/// unable to tell which control a rejection came from; at roughly 1.3:1 no ratio
+/// guard is plausibly in play. (It is exempt regardless — the pad sits far below
+/// `COMPRESSION_RATIO_FLOOR_BYTES` — but a fixture should not need that argument
+/// to look innocent.)
+fn padded_two_plate_settings(padding: usize) -> String {
+    const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut state = 0x2f6d_1c04_9b31_ea57u64;
+    let mut filler = String::with_capacity(padding);
+    for _ in 0..padding {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        filler.push(ALPHANUMERIC[state as usize % ALPHANUMERIC.len()] as char);
+    }
+    format!(
+        r#"<?xml version="1.0"?>
+<config>
+  <!--{filler}-->
+  <plate>
+    <metadata key="plater_id" value="1"/>
+    <metadata key="plater_name" value="Left"/>
+    <model_instance><metadata key="object_id" value="1"/><metadata key="instance_id" value="0"/></model_instance>
+    <model_instance><metadata key="object_id" value="2"/><metadata key="instance_id" value="0"/></model_instance>
+  </plate>
+  <plate>
+    <metadata key="plater_id" value="2"/>
+    <metadata key="plater_name" value="Right"/>
+    <model_instance><metadata key="object_id" value="1"/><metadata key="instance_id" value="1"/></model_instance>
+    <model_instance><metadata key="object_id" value="2"/><metadata key="instance_id" value="1"/></model_instance>
+  </plate>
+</config>"#
+    )
+}
+
+#[test]
+fn a_limit_tripped_by_the_advisory_plate_read_is_not_swallowed() {
+    // `read_plate_layout` degrades on a fixed allowlist - missing, oversized,
+    // unreadable, malformed - and propagates everything else. Its two match
+    // arms had very different coverage: the *parse* arm is pinned by the
+    // DOCTYPE test, while the *read* arm was pinned by nothing. Adding
+    // `| Err(ThreeMfError::Limit(_))` beside `TooLarge` - the single most
+    // plausible future edit, because it looks like it belongs there - left the
+    // entire suite green. That matters because `Limit` carries deadline expiry,
+    // cancellation and budget exhaustion, none of which may degrade into a
+    // successfully returned scene.
+    //
+    // Reaching that arm needs a `Limit` the archive preflight cannot shadow.
+    // Ratio is out - the preflight checks every entry archive-wide, which is
+    // exactly why the test that used to claim this coverage passed without ever
+    // running the metadata path. The declared-total preflight is out for the
+    // same reason. What remains is the running accumulator, and it fires only
+    // when an entry *lies*: the preflight sums declared sizes over every entry
+    // while the accumulator counts only entries actually read, so on an honest
+    // archive declared >= charged and the preflight always wins the race.
+    //
+    // So the metadata part declares a kilobyte and delivers a quarter of a
+    // megabyte, and `read_text_entry_limited` charges the difference.
+    let model = two_object_four_item_model();
+    let settings = padded_two_plate_settings(256 * 1024);
+    let honest = package(&model, vec![Part::text(MODEL_SETTINGS_PART, &settings)]);
+    let declared = 1024;
+    let forged = forge_declared_size(&honest, MODEL_SETTINGS_PART, declared);
+
+    let limits = ParseLimits {
+        max_total_decompressed_bytes: 64 * 1024,
+        ..ParseLimits::default().without_timeout()
+    };
+
+    // First control. The rejection cannot be the declared-size preflight: what
+    // the forged archive *declares* fits inside the budget many times over, and
+    // the preflight reads nothing but declarations.
+    assert!(
+        declared_total(&forged) < limits.max_total_decompressed_bytes,
+        "the forged declaration must leave the preflight no reason to object"
+    );
+
+    // Second control. It cannot be the ratio guard or the 8 MB metadata ceiling
+    // either: the identical forged bytes parse cleanly, with both vendor plates
+    // intact, once the budget accommodates them. Every input is held fixed
+    // except `max_total_decompressed_bytes`. This doubles as the vacuity check -
+    // a fixture that never yielded two plates could not show a degradation.
+    let control =
+        threemf::parse_bytes_with_limits(&forged, ParseLimits::default().without_timeout())
+            .expect("the forged package must parse under a budget that accommodates it");
+    assert_eq!(
+        control.plates.len(),
+        2,
+        "the fixture must genuinely declare two plates"
+    );
+
+    // Third control. Everything read *before* the advisory plate read fits well
+    // inside the budget, so the overflow can only be charged by the plate read
+    // itself. Without this the trip site would be unattributable.
+    threemf::parse_bytes_with_limits(&package(&model, Vec::new()), limits.clone())
+        .expect("the same package without the vendor part must fit the budget comfortably");
+
+    let error = threemf::parse_bytes_with_limits(&forged, limits)
+        .expect_err("a budget tripped during the advisory plate read must abort the parse");
+    assert_eq!(error.code(), "limit.total_decompressed_bytes", "{error}");
 }
 
 // --- ratio cap boundary -----------------------------------------------------
