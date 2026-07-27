@@ -20,6 +20,7 @@
 //     is only the CI wiring that is non-required.
 
 import { compareByCodeUnit } from './supply-chain.mjs';
+import parseSpdxExpression from 'spdx-expression-parse';
 
 const ADVISORY_ENFORCEMENT = new Set(['block', 'report']);
 const ADVISORY_SEVERITIES = new Set([
@@ -171,17 +172,15 @@ export function licenseExpressionsOf(component) {
   return expressions;
 }
 
-const SPDX_ATOM = /^[A-Za-z0-9.\-+]+$/;
-
 /**
  * Is a single SPDX expression satisfied by the allowlist?
  *
  * Supports the operators that appear in real npm and cargo metadata: `OR`
  * (satisfied if any operand is), `AND` (only if all are), `WITH` (an exception
  * only loosens, so the base id governs), parentheses, and cargo's legacy `/`
- * dual-licence spelling (equivalent to `OR`). An atom that is not a well-formed
- * SPDX token — `UNKNOWN`, or the words of `SEE LICENSE IN LICENSE` — is simply
- * not in the allowlist, so the expression fails closed.
+ * dual-licence spelling (equivalent to `OR`). Unknown licence or exception ids,
+ * and text such as `SEE LICENSE IN LICENSE`, are rejected by the SPDX parser so
+ * the expression fails closed.
  */
 export function isExpressionAllowed(expression, allowed) {
   const allowedSet = allowed instanceof Set ? allowed : new Set(allowed);
@@ -194,115 +193,33 @@ export function isExpressionAllowed(expression, allowed) {
  *
  * Returns `wellFormed` (the token stream is a complete, valid SPDX expression)
  * separately from `value` (it evaluates to an allowed licence), so a caller can
- * tell an unparseable input — `SEE LICENSE IN LICENSE`, which tokenises into
- * bare words the grammar cannot connect — apart from a merely disallowed one.
+ * tell an unparseable input — `SEE LICENSE IN LICENSE`, which is not an SPDX
+ * expression — apart from a merely disallowed one.
  */
 function parseSpdx(expression, allowed) {
   const allowedSet = allowed instanceof Set ? allowed : new Set(allowed);
-  const tokens = tokenizeSpdx(expression);
-  if (tokens === null) return { wellFormed: false, value: false };
-  let position = 0;
-
-  const peek = () => tokens[position];
-  const next = () => tokens[position++];
-
-  const failure = () => ({ wellFormed: false, value: false });
-  const isAtom = (token) =>
-    typeof token === 'string' &&
-    token !== 'OR' &&
-    token !== 'AND' &&
-    token !== 'WITH' &&
-    token !== '(' &&
-    token !== ')';
-
-  // expr := term (OR term)*
-  function parseExpr() {
-    const first = parseTerm();
-    if (!first.wellFormed) return first;
-    let value = first.value;
-    while (peek() === 'OR') {
-      next();
-      const right = parseTerm();
-      if (!right.wellFormed) return right;
-      value = value || right.value;
-    }
-    return { wellFormed: true, value };
-  }
-  // term := factor (AND factor)*
-  function parseTerm() {
-    const first = parseFactor();
-    if (!first.wellFormed) return first;
-    let value = first.value;
-    while (peek() === 'AND') {
-      next();
-      const right = parseFactor();
-      if (!right.wellFormed) return right;
-      value = value && right.value;
-    }
-    return { wellFormed: true, value };
-  }
-  // factor := '(' expr ')' | atom ('WITH' atom)?
-  function parseFactor() {
-    if (peek() === '(') {
-      next();
-      const inner = parseExpr();
-      if (!inner.wellFormed || peek() !== ')') return failure();
-      next();
-      return inner;
-    }
-    const atom = peek();
-    if (!isAtom(atom)) return failure();
-    next();
-    const value = allowedSet.has(atom);
-    if (peek() === 'WITH') {
-      next();
-      const exception = peek();
-      if (!isAtom(exception)) return failure();
-      next(); // a WITH exception only loosens the base licence
-    }
-    return { wellFormed: true, value };
+  if (typeof expression !== 'string' || expression.trim() === '') {
+    return { wellFormed: false, value: false };
   }
 
-  const result = parseExpr();
-  return {
-    wellFormed: result.wellFormed && position === tokens.length,
-    value: result.value,
+  let parsed;
+  try {
+    parsed = parseSpdxExpression(expression.replace(/\//g, ' OR '));
+  } catch {
+    return { wellFormed: false, value: false };
+  }
+
+  const evaluate = (node) => {
+    if (node.conjunction === 'or') {
+      return evaluate(node.left) || evaluate(node.right);
+    }
+    if (node.conjunction === 'and') {
+      return evaluate(node.left) && evaluate(node.right);
+    }
+    return allowedSet.has(node.license);
   };
-}
 
-/**
- * Split an SPDX expression into a token stream, or `null` if a character
- * outside the SPDX grammar appears. `/` is normalised to `OR` first.
- */
-function tokenizeSpdx(expression) {
-  if (typeof expression !== 'string') return null;
-  const normalized = expression.replace(/\//g, ' OR ');
-  const tokens = [];
-  for (const piece of normalized.split(/\s+/)) {
-    if (piece === '') continue;
-    let rest = piece;
-    // Parentheses can hug an atom (`(MIT`); peel them off as their own tokens.
-    while (rest.startsWith('(')) {
-      tokens.push('(');
-      rest = rest.slice(1);
-    }
-    const trailing = [];
-    while (rest.endsWith(')')) {
-      trailing.push(')');
-      rest = rest.slice(0, -1);
-    }
-    if (rest !== '') {
-      if (rest === 'OR' || rest === 'AND' || rest === 'WITH') {
-        tokens.push(rest);
-      } else if (SPDX_ATOM.test(rest)) {
-        tokens.push(rest);
-      } else {
-        return null;
-      }
-    }
-    tokens.push(...trailing);
-  }
-  return tokens;
+  return { wellFormed: true, value: evaluate(parsed) };
 }
 
 /** Does an SBOM component match a policy exception (by bom-ref or purl)? */

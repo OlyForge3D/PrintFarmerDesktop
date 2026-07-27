@@ -433,6 +433,9 @@ describe('the licence gate admits the legitimate maximum and rejects the rest', 
       'MIT OR OR Apache-2.0',
       'MIT WITH',
       'MIT WITH OR',
+      'MIT WITH MIT',
+      'MIT WITH GPL-2.0-only',
+      'MIT WITH NotAnSpdxException',
       '',
     ]) {
       expect(isExpressionAllowed(expression, licensePolicy.allowed)).toBe(
