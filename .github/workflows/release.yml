@@ -44,7 +44,7 @@ jobs:
 
       - name: Build sidecar (release)
         working-directory: native
-        run: cargo build --release -p model-core --features sqlite
+        run: cargo build --locked --release -p model-core --features sqlite
 
       - name: Make unsigned artifacts
         env:
@@ -53,8 +53,20 @@ jobs:
           PRINTFARMER_SKIP_SIDECAR_BUILD: '1'
         run: npm run make
 
+      - name: Verify SBOM reproduces from the lockfiles
+        run: npm run verify:sbom
+
+      - name: Verify third-party licence policy
+        run: npm run verify:licenses
+
+      - name: Verify third-party notices reproduce from the SBOM
+        run: npm run verify:notices
+
       - name: Verify packaged sidecar and compliance resources
         run: node scripts/verify-packaged-sidecar.mjs
+
+      - name: Verify committed lockfiles are unchanged
+        run: git diff --exit-code -- native/Cargo.lock package-lock.json
 
       - name: Collect artifacts
         shell: bash

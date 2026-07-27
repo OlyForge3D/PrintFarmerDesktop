@@ -49,6 +49,9 @@ const config: ForgeConfig = {
       // The SBOM is generated before staging so the packaged copy is derived
       // from the lockfiles at build time rather than from a committed snapshot.
       runBuildScript('generate-sbom.mjs', 'generating the SBOM');
+      // The notice enumerates the SBOM, so it is generated after it and before
+      // staging, keeping the packaged copy in step with what ships.
+      runBuildScript('generate-notices.mjs', 'generating third-party notices');
       runBuildScript('stage-compliance.mjs', 'staging compliance resources');
       return Promise.resolve();
     },

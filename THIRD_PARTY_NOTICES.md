@@ -34,6 +34,8 @@ bundled.
 ## Package dependencies
 
 JavaScript and Rust dependencies retain their respective licenses and notices.
-Exact dependency versions are recorded in `package-lock.json` and
-`native/Cargo.lock`; packaged Electron distributions also retain Electron and
-Chromium notices.
+The full enumerated list of shipped dependencies and their SPDX licences is
+generated from the CycloneDX SBOM into `third-party-licenses.md` (staged beside
+this file under `resources/compliance/` in packaged builds). Exact dependency
+versions are recorded in `package-lock.json` and `native/Cargo.lock`; packaged
+Electron distributions also retain Electron and Chromium notices.

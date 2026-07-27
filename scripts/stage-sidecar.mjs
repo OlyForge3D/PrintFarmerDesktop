@@ -4,7 +4,7 @@
 // `src/main/sidecar.ts` (`<resources>/sidecar/<binary>`).
 //
 // Usage:
-//   node scripts/stage-sidecar.mjs            # cargo build --release, then stage
+//   node scripts/stage-sidecar.mjs            # cargo build --locked --release
 //   node scripts/stage-sidecar.mjs --no-build # stage an existing release binary
 //
 // Set PRINTFARMER_SKIP_SIDECAR_BUILD=1 to skip the cargo build (equivalent to
@@ -19,7 +19,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, copyFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..');
@@ -30,18 +30,23 @@ const binaryName =
 const builtBinary = path.join(nativeDir, 'target', 'release', binaryName);
 const stageDir = path.join(repoRoot, 'resources', 'sidecar');
 const stagedBinary = path.join(stageDir, binaryName);
+export const SIDECAR_BUILD_ARGS = Object.freeze([
+  'build',
+  '--locked',
+  '--release',
+  '-p',
+  'model-core',
+  '--features',
+  'sqlite',
+]);
 
 function buildSidecar() {
   console.log('[stage-sidecar] building model-core (release)…');
-  const result = spawnSync(
-    'cargo',
-    ['build', '--release', '-p', 'model-core', '--features', 'sqlite'],
-    {
-      cwd: nativeDir,
-      stdio: 'inherit',
-      shell: false,
-    },
-  );
+  const result = spawnSync('cargo', SIDECAR_BUILD_ARGS, {
+    cwd: nativeDir,
+    stdio: 'inherit',
+    shell: false,
+  });
   if (result.status !== 0) {
     throw new Error(
       `cargo build failed with exit code ${result.status ?? 'unknown'}`,
@@ -62,10 +67,19 @@ function stage() {
   console.log(`[stage-sidecar] staged ${binaryName} -> ${stagedBinary}`);
 }
 
-const skipBuild =
-  process.argv.includes('--no-build') ||
-  process.env.PRINTFARMER_SKIP_SIDECAR_BUILD === '1';
-if (!skipBuild) {
-  buildSidecar();
+function main() {
+  const skipBuild =
+    process.argv.includes('--no-build') ||
+    process.env.PRINTFARMER_SKIP_SIDECAR_BUILD === '1';
+  if (!skipBuild) {
+    buildSidecar();
+  }
+  stage();
 }
-stage();
+
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main();
+}

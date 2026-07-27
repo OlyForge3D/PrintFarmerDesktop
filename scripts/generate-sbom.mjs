@@ -32,6 +32,12 @@ const repoRoot = path.resolve(
 );
 
 export const DEFAULT_OUTPUT = path.join(repoRoot, 'build', 'sbom.cdx.json');
+export const NPM_PRODUCTION_TREE_ARGS = Object.freeze([
+  'ls',
+  '--omit=dev',
+  '--all',
+  '--json',
+]);
 
 function parseArgs(argv) {
   const options = { out: DEFAULT_OUTPUT };
@@ -67,7 +73,7 @@ export function resolveShippedFeatures(root = repoRoot) {
   return fromStagingScript;
 }
 
-export function readCargoMetadata(features, root = repoRoot) {
+export function cargoMetadataArgs(features, root = repoRoot) {
   const args = [
     'metadata',
     '--format-version',
@@ -77,12 +83,57 @@ export function readCargoMetadata(features, root = repoRoot) {
     '--locked',
   ];
   if (features.length > 0) args.push('--features', features.join(','));
+  return args;
+}
+
+export function readCargoMetadata(features, root = repoRoot) {
   return JSON.parse(
-    execFileSync('cargo', args, {
+    execFileSync('cargo', cargoMetadataArgs(features, root), {
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
     }),
   );
+}
+
+/**
+ * Resolve the installed production npm graph with npm's own implementation.
+ *
+ * npm exits non-zero for an extraneous package or unmet peer while still
+ * emitting the complete JSON tree, so parse stdout whenever it exists.
+ */
+export function readNpmProductionTree(root = repoRoot) {
+  const command =
+    process.platform === 'win32' ? (process.env.ComSpec ?? 'cmd.exe') : 'npm';
+  const args =
+    process.platform === 'win32'
+      ? ['/d', '/s', '/c', 'npm ls --omit=dev --all --json']
+      : NPM_PRODUCTION_TREE_ARGS;
+  let stdout;
+  let stderr = '';
+  try {
+    stdout = execFileSync(command, args, {
+      cwd: root,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (error) {
+    stdout = error.stdout ?? '';
+    stderr = error.stderr ?? '';
+  }
+  if (!stdout.trim()) {
+    const detail = stderr.trim().split(/\r?\n/, 1)[0];
+    throw new Error(
+      `generate-sbom: npm ls produced no JSON output${detail ? `: ${detail}` : ''}`,
+    );
+  }
+  try {
+    return JSON.parse(stdout);
+  } catch (error) {
+    throw new Error(
+      `generate-sbom: npm ls output was not valid JSON: ${error.message}`,
+    );
+  }
 }
 
 function main() {

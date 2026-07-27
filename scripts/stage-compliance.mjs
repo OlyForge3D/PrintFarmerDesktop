@@ -30,6 +30,14 @@ const complianceFiles = [
     source: path.join(repoRoot, 'build', 'sbom.cdx.json'),
     hint: 'run `npm run sbom` first',
   },
+  // Enumerated dependency licences, generated from the SBOM by
+  // `scripts/generate-notices.mjs`; `scripts/verify-notices.mjs` proves the
+  // staged copy matches a fresh render.
+  {
+    destination: 'third-party-licenses.md',
+    source: path.join(repoRoot, 'build', 'third-party-licenses.md'),
+    hint: 'run `npm run notices` first',
+  },
   {
     destination: 'CORRESPONDING_SOURCE.md',
     source: path.join(
