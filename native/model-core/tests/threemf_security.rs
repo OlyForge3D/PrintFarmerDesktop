@@ -748,6 +748,14 @@ fn rejects_an_archive_whose_declared_expansion_blows_the_budget_in_aggregate() {
 /// under-declares what it will produce. Declared sizes are attacker-controlled,
 /// so a package can promise a kilobyte and deliver megabytes.
 fn forge_declared_size(data: &[u8], part: &str, declared: u32) -> Vec<u8> {
+    forge_entry_metadata(data, part, declared, false)
+}
+
+fn forge_declared_size_with_bad_crc(data: &[u8], part: &str, declared: u32) -> Vec<u8> {
+    forge_entry_metadata(data, part, declared, true)
+}
+
+fn forge_entry_metadata(data: &[u8], part: &str, declared: u32, corrupt_crc: bool) -> Vec<u8> {
     let mut out = data.to_vec();
     let name = part.as_bytes();
     let mut patched = false;
@@ -763,6 +771,10 @@ fn forge_declared_size(data: &[u8], part: &str, declared: u32) -> Vec<u8> {
             u32::from_le_bytes([out[i + 42], out[i + 43], out[i + 44], out[i + 45]]) as usize;
         out[i + 24..i + 28].copy_from_slice(&declared.to_le_bytes());
         out[local_offset + 22..local_offset + 26].copy_from_slice(&declared.to_le_bytes());
+        if corrupt_crc {
+            out[i + 16] ^= 0xff;
+            out[local_offset + 14] ^= 0xff;
+        }
         patched = true;
     }
     assert!(patched, "forged fixture must actually contain {part}");
@@ -998,6 +1010,93 @@ fn a_limit_tripped_by_the_advisory_plate_read_is_not_swallowed() {
     let error = threemf::parse_bytes_with_limits(&forged, limits)
         .expect_err("a budget tripped during the advisory plate read must abort the parse");
     assert_eq!(error.code(), "limit.total_decompressed_bytes", "{error}");
+}
+
+#[test]
+fn an_oversized_underdeclared_advisory_part_cannot_bypass_the_budget() {
+    const METADATA_LIMIT: usize = 8 * 1024 * 1024;
+
+    let model = two_object_four_item_model();
+    let settings = padded_two_plate_settings(METADATA_LIMIT + 1);
+    assert!(
+        settings.len() > METADATA_LIMIT,
+        "the metadata payload must exceed the per-entry ceiling"
+    );
+    let honest = package(&model, vec![Part::text(MODEL_SETTINGS_PART, &settings)]);
+    let forged = forge_declared_size(&honest, MODEL_SETTINGS_PART, 1);
+    let limits = ParseLimits {
+        max_total_decompressed_bytes: 4 * 1024 * 1024,
+        ..ParseLimits::default().without_timeout()
+    };
+
+    assert!(
+        declared_total(&forged) < limits.max_total_decompressed_bytes,
+        "the forged declaration must pass the archive preflight"
+    );
+    threemf::parse_bytes_with_limits(&package(&model, Vec::new()), limits.clone())
+        .expect("everything before the advisory part must fit the budget");
+
+    let error = threemf::parse_bytes_with_limits(&forged, limits)
+        .expect_err("actual bytes must exhaust the budget before TooLarge can degrade");
+    assert_eq!(error.code(), "limit.total_decompressed_bytes", "{error}");
+
+    let degraded =
+        threemf::parse_bytes_with_limits(&forged, ParseLimits::default().without_timeout())
+            .expect("a generous budget must preserve the documented oversized-part degradation");
+    assert_eq!(degraded.plates.len(), 1);
+    assert_eq!(degraded.plates[0].name, "Plate 1");
+    assert_eq!(degraded.plates[0].root_object_ids.len(), 4);
+
+    let control = threemf::parse_bytes(&package(
+        &model,
+        vec![Part::text(
+            MODEL_SETTINGS_PART,
+            &padded_two_plate_settings(1024),
+        )],
+    ))
+    .expect("the same layout below the metadata ceiling must remain usable");
+    assert_eq!(control.plates.len(), 2);
+}
+
+#[test]
+fn a_bad_crc_advisory_part_cannot_hide_emitted_bytes_from_the_budget() {
+    const MIB: usize = 1024 * 1024;
+    const METADATA_LIMIT: usize = 8 * MIB;
+
+    let model = two_object_four_item_model();
+    let settings = padded_two_plate_settings(6 * MIB);
+    assert!(
+        settings.len() > 4 * MIB && settings.len() < METADATA_LIMIT,
+        "the payload must exceed the package budget but remain below the entry ceiling"
+    );
+    let honest = package(&model, vec![Part::text(MODEL_SETTINGS_PART, &settings)]);
+    let forged = forge_declared_size_with_bad_crc(&honest, MODEL_SETTINGS_PART, 1);
+    let limits = ParseLimits {
+        max_total_decompressed_bytes: 4 * MIB as u64,
+        ..ParseLimits::default().without_timeout()
+    };
+
+    assert!(
+        declared_total(&forged) < limits.max_total_decompressed_bytes,
+        "the forged declaration must pass the archive preflight"
+    );
+    threemf::parse_bytes_with_limits(&package(&model, Vec::new()), limits.clone())
+        .expect("everything before the advisory part must fit the budget");
+
+    let error = threemf::parse_bytes_with_limits(&forged, limits)
+        .expect_err("bytes emitted before a CRC error must still exhaust the package budget");
+    assert_eq!(error.code(), "limit.total_decompressed_bytes", "{error}");
+
+    let degraded =
+        threemf::parse_bytes_with_limits(&forged, ParseLimits::default().without_timeout())
+            .expect("a corrupt advisory part may degrade when its emitted bytes fit the budget");
+    assert_eq!(degraded.plates.len(), 1);
+    assert_eq!(degraded.plates[0].name, "Plate 1");
+    assert_eq!(degraded.plates[0].root_object_ids.len(), 4);
+
+    let control = threemf::parse_bytes(&honest)
+        .expect("the identical advisory payload with a valid CRC must remain usable");
+    assert_eq!(control.plates.len(), 2);
 }
 
 // --- ratio cap boundary -----------------------------------------------------
