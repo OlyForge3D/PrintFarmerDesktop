@@ -46,6 +46,8 @@ import { ServerProfilesDialog } from './serverProfiles/ServerProfilesDialog';
 import { UploadQueueDialog } from './uploads/UploadQueueDialog';
 import { RetargetWorkflow } from './retarget/RetargetWorkflow';
 import type { RetargetTarget } from './retarget/useRetargetWorkflow';
+import { CalibrationWorkspace } from './calibration';
+import type { CalibrationWorkspaceFlush } from './calibration';
 
 interface PreviewTarget {
   path: string;
@@ -66,6 +68,11 @@ type ModalOwner =
   | 'retarget';
 
 export function App(): React.JSX.Element {
+  const [activeWorkspace, setActiveWorkspace] = useState<
+    'library' | 'calibration'
+  >('library');
+  const [workspaceSwitching, setWorkspaceSwitching] = useState(false);
+  const calibrationFlushRef = useRef<CalibrationWorkspaceFlush | null>(null);
   const [info, setInfo] = useState<AppInfoResponse | null>(null);
   const [appError, setAppError] = useState<string | null>(null);
   const [serverProfiles, setServerProfiles] =
@@ -129,6 +136,7 @@ export function App(): React.JSX.Element {
   const previewRequestRef = useRef(0);
   const profilesListRequestRef = useRef(0);
   const titlebarRef = useRef<HTMLElement | null>(null);
+  const workspaceFocusReadyRef = useRef(false);
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const statusbarRef = useRef<HTMLElement | null>(null);
 
@@ -194,6 +202,7 @@ export function App(): React.JSX.Element {
     [releaseModal],
   );
   const onboardingOpen =
+    activeWorkspace === 'library' &&
     !onboardingDismissed &&
     library.status !== 'loading' &&
     !profilesOpen &&
@@ -499,7 +508,7 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     const focusSearch = (event: KeyboardEvent): void => {
-      if (modalOpen) {
+      if (activeWorkspace !== 'library' || modalOpen) {
         return;
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
@@ -525,7 +534,7 @@ export function App(): React.JSX.Element {
     };
     document.addEventListener('keydown', focusSearch);
     return () => document.removeEventListener('keydown', focusSearch);
-  }, [modalOpen, presentation.visibleModels]);
+  }, [activeWorkspace, modalOpen, presentation.visibleModels]);
 
   useEffect(() => {
     for (const element of [
@@ -1034,6 +1043,63 @@ export function App(): React.JSX.Element {
     });
   }, []);
 
+  const registerCalibrationFlush = useCallback(
+    (flush: CalibrationWorkspaceFlush | null): void => {
+      calibrationFlushRef.current = flush;
+    },
+    [],
+  );
+
+  const switchWorkspace = useCallback(
+    async (destination: 'library' | 'calibration'): Promise<void> => {
+      if (
+        destination === activeWorkspace ||
+        workspaceSwitching ||
+        modalOpen ||
+        modalOwnerRef.current !== 'none'
+      ) {
+        return;
+      }
+      setAppError(null);
+      setWorkspaceSwitching(true);
+      try {
+        if (activeWorkspace === 'calibration') {
+          const flush = calibrationFlushRef.current;
+          if (flush === null) {
+            throw new Error(
+              'Calibration is still preparing its local save queue. Try again.',
+            );
+          }
+          await flush();
+        }
+        setActiveWorkspace(destination);
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        setAppError(
+          `Could not leave Printer Calibration because its local save failed: ${message}`,
+        );
+      } finally {
+        setWorkspaceSwitching(false);
+      }
+    },
+    [activeWorkspace, modalOpen, workspaceSwitching],
+  );
+
+  useEffect(() => {
+    if (!workspaceFocusReadyRef.current) {
+      workspaceFocusReadyRef.current = true;
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      const heading =
+        activeWorkspace === 'library'
+          ? document.querySelector<HTMLElement>('[data-library-heading]')
+          : document.querySelector<HTMLElement>('[data-cal-heading]');
+      heading?.focus();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeWorkspace]);
+
   useEffect(() => {
     if (!onboardingOpen) return;
     onboardingReturnFocusRef.current =
@@ -1044,6 +1110,19 @@ export function App(): React.JSX.Element {
 
   return (
     <div className={`app-root${info ? ` platform-${info.platform}` : ''}`}>
+      <a
+        className="skip-link"
+        aria-hidden={backgroundExcluded ? 'true' : undefined}
+        tabIndex={backgroundExcluded ? -1 : undefined}
+        href={
+          activeWorkspace === 'library' ? '#library-main' : '#calibration-main'
+        }
+      >
+        Skip to{' '}
+        {activeWorkspace === 'library'
+          ? 'model library'
+          : 'printer calibration'}
+      </a>
       <header
         ref={titlebarRef}
         className="window-titlebar"
@@ -1060,305 +1139,370 @@ export function App(): React.JSX.Element {
           />
           <h1>PrintFarmer Desktop</h1>
         </div>
+        <nav className="workspace-switcher" aria-label="Workspaces">
+          <button
+            type="button"
+            aria-current={activeWorkspace === 'library' ? 'page' : undefined}
+            aria-describedby={
+              modalOpen || modalOwner !== 'none' || workspaceSwitching
+                ? 'workspace-switch-explanation'
+                : undefined
+            }
+            disabled={modalOpen || modalOwner !== 'none' || workspaceSwitching}
+            onClick={() => {
+              void switchWorkspace('library');
+            }}
+          >
+            Library
+          </button>
+          <button
+            type="button"
+            aria-current={
+              activeWorkspace === 'calibration' ? 'page' : undefined
+            }
+            aria-describedby={
+              modalOpen || modalOwner !== 'none' || workspaceSwitching
+                ? 'workspace-switch-explanation'
+                : undefined
+            }
+            disabled={modalOpen || modalOwner !== 'none' || workspaceSwitching}
+            onClick={() => {
+              void switchWorkspace('calibration');
+            }}
+          >
+            Printer Calibration
+          </button>
+        </nav>
+        <span
+          id="workspace-switch-explanation"
+          className="workspace-switch-explanation"
+        >
+          {workspaceSwitching
+            ? 'Saving calibration changes before switching workspaces.'
+            : 'Workspace switching is unavailable while a dialog is open.'}
+        </span>
         <div className="titlebar-drag-region" aria-hidden="true" />
       </header>
 
       <div
         ref={workspaceRef}
-        className="workspace"
+        className={`workspace${activeWorkspace === 'calibration' ? ' calibration-shell' : ''}`}
         aria-hidden={backgroundExcluded ? 'true' : undefined}
       >
-        <LibrarySidebar
-          query={query}
-          filter={filter}
-          counts={counts}
-          scanningFolder={scanningFolder}
-          lastReport={library.lastReport}
-          lastImport={library.lastImport}
-          busy={workspaceActionsDisabled}
-          sourceRoots={library.sourceRoots}
-          scanActivity={library.scanActivity}
-          onQueryChange={setQuery}
-          onFilterChange={setFilter}
-          onAddFolder={beginImport}
-          onRefresh={() => {
-            void library.refresh();
-          }}
-          onRescanRoot={(rootId) => {
-            void library.rescanRoot(rootId);
-          }}
-          onRemoveRoot={library.removeRoot}
-          serverProfile={activeServer}
-          serverProfilesDisabled={serverProfilesDisabled}
-          onManageServerProfiles={openProfiles}
-        />
-
-        <main className="library-pane" aria-label="Model library">
-          <header className="library-commandbar">
-            <div>
-              <p className="pane-eyebrow">Model library</p>
-              <h2>{FILTER_LABELS[filter]}</h2>
-              <span className="library-result-count">
-                {presentation.visibleModels.length} of {library.models.length}
-              </span>
-              <span className="library-selection-count" aria-live="polite">
-                {selectedHashes.size} selected
-              </span>
-            </div>
-            <div className="library-command-actions">
-              <label className="sort-control">
-                <span>Sort by</span>
-                <select
-                  aria-label="Sort models"
-                  value={sort}
-                  onChange={(event) => setSort(event.target.value as SortKey)}
-                >
-                  <option value="name-asc">Name (A-Z)</option>
-                  <option value="name-desc">Name (Z-A)</option>
-                  <option value="size-asc">Size (smallest first)</option>
-                  <option value="size-desc">Size (largest first)</option>
-                  <option value="date-desc">Date (newest first)</option>
-                  <option value="date-asc">Date (oldest first)</option>
-                </select>
-              </label>
-              <button
-                type="button"
-                className="command-button"
-                disabled={workspaceActionsDisabled}
-                onClick={() => {
-                  void openModelFile();
-                }}
-              >
-                <Icon name="folder" />
-                Open file
-              </button>
-              <button
-                type="button"
-                className="command-button upload-selected"
-                disabled={
-                  workspaceActionsDisabled ||
-                  selectedForUpload.length === 0 ||
-                  !activeServer ||
-                  !activeServer.availability.modelUpload.available
-                }
-                onClick={startUpload}
-                title={
-                  !activeServer
-                    ? 'Connect a PrintFarmer server profile first.'
-                    : !activeServer.availability.modelUpload.available
-                      ? (activeServer.availability.modelUpload.reason ??
-                        'Model upload is unavailable.')
-                      : activeServer.availability.modelUpload.mode ===
-                          'legacyModelOnly'
-                        ? 'Legacy model-only upload; interrupted retries can create duplicates.'
-                        : 'Upload selected models with idempotent retry protection.'
-                }
-              >
-                Upload to PrintFarmer
-              </button>
-              <button
-                type="button"
-                className="command-button open-upload-queue"
-                disabled={workspaceActionsDisabled}
-                onClick={openUploadQueue}
-              >
-                Upload queue{queuedUploadCount ? ` (${queuedUploadCount})` : ''}
-              </button>
-            </div>
-          </header>
-
-          <div
-            className="selection-toolbar"
-            aria-label="Model selection actions"
-          >
-            <button
-              type="button"
-              onClick={() => {
-                const allHashes = presentation.visibleModels.map(
-                  (model) => model.hash,
-                );
-                const hashes = allHashes.slice(0, MAX_UPLOAD_SELECTION);
-                if (allHashes.length > MAX_UPLOAD_SELECTION) {
-                  setAppError(
-                    'Selected the first 500 visible models. Start another job for the remainder.',
-                  );
-                }
-                setSelectedHashes(new Set(hashes));
-                setSelectedHash(hashes[0] ?? null);
-                selectionAnchorRef.current = hashes[0] ?? null;
+        {activeWorkspace === 'library' ? (
+          <>
+            <LibrarySidebar
+              query={query}
+              filter={filter}
+              counts={counts}
+              scanningFolder={scanningFolder}
+              lastReport={library.lastReport}
+              lastImport={library.lastImport}
+              busy={workspaceActionsDisabled}
+              sourceRoots={library.sourceRoots}
+              scanActivity={library.scanActivity}
+              onQueryChange={setQuery}
+              onFilterChange={setFilter}
+              onAddFolder={beginImport}
+              onRefresh={() => {
+                void library.refresh();
               }}
-              disabled={presentation.visibleModels.length === 0}
-            >
-              Select all visible
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedHashes(new Set());
-                setSelectedHash(null);
-                selectionAnchorRef.current = null;
+              onRescanRoot={(rootId) => {
+                void library.rescanRoot(rootId);
               }}
-              disabled={selectedHashes.size === 0}
-            >
-              Clear selection
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (
-                  !window.confirm(
-                    'Reset all approved folders? Catalog files will require reauthorization before they can be opened or uploaded.',
-                  )
-                ) {
-                  return;
-                }
-                void window.printFarmer
-                  .resetApprovedRoots()
-                  .then(() => library.refresh())
-                  .catch((err: unknown) =>
-                    setAppError(
-                      err instanceof Error ? err.message : String(err),
-                    ),
-                  );
-              }}
-              disabled={workspaceActionsDisabled}
-            >
-              Reset approved folders
-            </button>
-            {activeServer?.availability.modelUpload.mode ===
-              'legacyModelOnly' && selectedHashes.size > 0 ? (
-              <span className="upload-warning">
-                Legacy upload: server thumbnails only; interrupted retries may
-                duplicate models.
-              </span>
-            ) : null}
-          </div>
-
-          <div
-            ref={scanStatusRef}
-            tabIndex={-1}
-            className="library-live-status"
-            role="status"
-            aria-live="polite"
-            aria-busy={isScanning}
-          >
-            {isScanning ? (
-              <>
-                <strong>
-                  {library.scanActivity.label ??
-                    `Scanning ${scanningFolder ?? 'selected folder'}`}
-                </strong>
-                <span>
-                  {library.scanActivity.estimatedTotal !== null
-                    ? `${library.scanActivity.estimatedTotal} known models queued`
-                    : 'Progress will update when the scan completes'}
-                </span>
-                <progress aria-label="Current scan progress" />
-              </>
-            ) : library.lastReport ? (
-              <>
-                <strong>
-                  {library.lastReport.missing > 0
-                    ? `${library.lastReport.missing} files missing`
-                    : library.lastReport.added > 0 ||
-                        library.lastReport.changed > 0
-                      ? 'Library updated'
-                      : 'Library is up to date'}
-                </strong>
-                <span>
-                  {library.lastReport.added} added •{' '}
-                  {library.lastReport.changed} changed •{' '}
-                  {library.lastReport.missing} missing
-                </span>
-              </>
-            ) : null}
-          </div>
-
-          {library.error ? (
-            <div className="library-alert" role="alert">
-              <Icon name="missing" />
-              <span>{library.error}</span>
-              <button
-                type="button"
-                onClick={() => {
-                  void library.refresh();
-                }}
-              >
-                Retry
-              </button>
-            </div>
-          ) : null}
-
-          <div className="library-content">
-            <ModelGrid
-              models={presentation.visibleModels}
-              selectedHashes={selectedHashes}
-              onSelect={handleModelSelection}
-              onPreview={previewModel}
-              previewDisabled={workspaceActionsDisabled}
-              isFavorite={isFavorite}
-              onToggleFavorite={(model) => {
-                void toggleFavorite(model.hash);
-              }}
-              emptyLabel={emptyState({
-                state: presentation.state,
-                query,
-                busy: workspaceActionsDisabled,
-                showOnboardingAction: !onboardingOpen,
-                onAddFolder: () => {
-                  beginImport();
-                },
-                onClear: () => {
-                  setQuery('');
-                  setFilter('all');
-                },
-                serverProfile: activeServer,
-                serverConnectDisabled: serverProfilesDisabled,
-                onConnectServer: openProfiles,
-              })}
+              onRemoveRoot={library.removeRoot}
+              serverProfile={activeServer}
+              serverProfilesDisabled={serverProfilesDisabled}
+              onManageServerProfiles={openProfiles}
             />
-          </div>
-        </main>
 
-        <PropertiesInspector
-          model={selectedModel}
-          favorite={selectedModel ? isFavorite(selectedModel.hash) : false}
-          stats={inspectedStats}
-          vendorMetadata={inspectedVendor}
-          tags={modelTags.tags}
-          collections={modelCollections.all}
-          collectionMembership={modelCollections.membership}
-          organizationError={organizationError}
-          previewDisabled={workspaceActionsDisabled}
-          retargetEligible={
-            selectedModel ? retargetIdentity(selectedModel) !== null : false
-          }
-          onToggleFavorite={() => {
-            if (selectedModel) {
-              void toggleFavorite(selectedModel.hash);
-            }
-          }}
-          onPreview={() => {
-            if (selectedModel) {
-              previewModel(selectedModel);
-            }
-          }}
-          onRetarget={() => {
-            if (selectedModel) openRetarget(selectedModel);
-          }}
-          onAddTag={(name) => {
-            void modelTags.add(name);
-          }}
-          onRemoveTag={(tagId) => {
-            void modelTags.remove(tagId);
-          }}
-          onToggleCollection={(id) => {
-            void modelCollections.toggle(id);
-          }}
-          onCreateCollection={(name) => {
-            void modelCollections.createAndAdd(name);
-          }}
-        />
+            <main
+              id="library-main"
+              className="library-pane"
+              aria-label="Model library"
+            >
+              <header className="library-commandbar">
+                <div>
+                  <p className="pane-eyebrow">Model library</p>
+                  <h2 data-library-heading tabIndex={-1}>
+                    {FILTER_LABELS[filter]}
+                  </h2>
+                  <span className="library-result-count">
+                    {presentation.visibleModels.length} of{' '}
+                    {library.models.length}
+                  </span>
+                  <span className="library-selection-count" aria-live="polite">
+                    {selectedHashes.size} selected
+                  </span>
+                </div>
+                <div className="library-command-actions">
+                  <label className="sort-control">
+                    <span>Sort by</span>
+                    <select
+                      aria-label="Sort models"
+                      value={sort}
+                      onChange={(event) =>
+                        setSort(event.target.value as SortKey)
+                      }
+                    >
+                      <option value="name-asc">Name (A-Z)</option>
+                      <option value="name-desc">Name (Z-A)</option>
+                      <option value="size-asc">Size (smallest first)</option>
+                      <option value="size-desc">Size (largest first)</option>
+                      <option value="date-desc">Date (newest first)</option>
+                      <option value="date-asc">Date (oldest first)</option>
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className="command-button"
+                    disabled={workspaceActionsDisabled}
+                    onClick={() => {
+                      void openModelFile();
+                    }}
+                  >
+                    <Icon name="folder" />
+                    Open file
+                  </button>
+                  <button
+                    type="button"
+                    className="command-button upload-selected"
+                    disabled={
+                      workspaceActionsDisabled ||
+                      selectedForUpload.length === 0 ||
+                      !activeServer ||
+                      !activeServer.availability.modelUpload.available
+                    }
+                    onClick={startUpload}
+                    title={
+                      !activeServer
+                        ? 'Connect a PrintFarmer server profile first.'
+                        : !activeServer.availability.modelUpload.available
+                          ? (activeServer.availability.modelUpload.reason ??
+                            'Model upload is unavailable.')
+                          : activeServer.availability.modelUpload.mode ===
+                              'legacyModelOnly'
+                            ? 'Legacy model-only upload; interrupted retries can create duplicates.'
+                            : 'Upload selected models with idempotent retry protection.'
+                    }
+                  >
+                    Upload to PrintFarmer
+                  </button>
+                  <button
+                    type="button"
+                    className="command-button open-upload-queue"
+                    disabled={workspaceActionsDisabled}
+                    onClick={openUploadQueue}
+                  >
+                    Upload queue
+                    {queuedUploadCount ? ` (${queuedUploadCount})` : ''}
+                  </button>
+                </div>
+              </header>
+
+              <div
+                className="selection-toolbar"
+                aria-label="Model selection actions"
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    const allHashes = presentation.visibleModels.map(
+                      (model) => model.hash,
+                    );
+                    const hashes = allHashes.slice(0, MAX_UPLOAD_SELECTION);
+                    if (allHashes.length > MAX_UPLOAD_SELECTION) {
+                      setAppError(
+                        'Selected the first 500 visible models. Start another job for the remainder.',
+                      );
+                    }
+                    setSelectedHashes(new Set(hashes));
+                    setSelectedHash(hashes[0] ?? null);
+                    selectionAnchorRef.current = hashes[0] ?? null;
+                  }}
+                  disabled={presentation.visibleModels.length === 0}
+                >
+                  Select all visible
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedHashes(new Set());
+                    setSelectedHash(null);
+                    selectionAnchorRef.current = null;
+                  }}
+                  disabled={selectedHashes.size === 0}
+                >
+                  Clear selection
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (
+                      !window.confirm(
+                        'Reset all approved folders? Catalog files will require reauthorization before they can be opened or uploaded.',
+                      )
+                    ) {
+                      return;
+                    }
+                    void window.printFarmer
+                      .resetApprovedRoots()
+                      .then(() => library.refresh())
+                      .catch((err: unknown) =>
+                        setAppError(
+                          err instanceof Error ? err.message : String(err),
+                        ),
+                      );
+                  }}
+                  disabled={workspaceActionsDisabled}
+                >
+                  Reset approved folders
+                </button>
+                {activeServer?.availability.modelUpload.mode ===
+                  'legacyModelOnly' && selectedHashes.size > 0 ? (
+                  <span className="upload-warning">
+                    Legacy upload: server thumbnails only; interrupted retries
+                    may duplicate models.
+                  </span>
+                ) : null}
+              </div>
+
+              <div
+                ref={scanStatusRef}
+                tabIndex={-1}
+                className="library-live-status"
+                role="status"
+                aria-live="polite"
+                aria-busy={isScanning}
+              >
+                {isScanning ? (
+                  <>
+                    <strong>
+                      {library.scanActivity.label ??
+                        `Scanning ${scanningFolder ?? 'selected folder'}`}
+                    </strong>
+                    <span>
+                      {library.scanActivity.estimatedTotal !== null
+                        ? `${library.scanActivity.estimatedTotal} known models queued`
+                        : 'Progress will update when the scan completes'}
+                    </span>
+                    <progress aria-label="Current scan progress" />
+                  </>
+                ) : library.lastReport ? (
+                  <>
+                    <strong>
+                      {library.lastReport.missing > 0
+                        ? `${library.lastReport.missing} files missing`
+                        : library.lastReport.added > 0 ||
+                            library.lastReport.changed > 0
+                          ? 'Library updated'
+                          : 'Library is up to date'}
+                    </strong>
+                    <span>
+                      {library.lastReport.added} added •{' '}
+                      {library.lastReport.changed} changed •{' '}
+                      {library.lastReport.missing} missing
+                    </span>
+                  </>
+                ) : null}
+              </div>
+
+              {library.error ? (
+                <div className="library-alert" role="alert">
+                  <Icon name="missing" />
+                  <span>{library.error}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void library.refresh();
+                    }}
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : null}
+
+              <div className="library-content">
+                <ModelGrid
+                  models={presentation.visibleModels}
+                  selectedHashes={selectedHashes}
+                  onSelect={handleModelSelection}
+                  onPreview={previewModel}
+                  previewDisabled={workspaceActionsDisabled}
+                  isFavorite={isFavorite}
+                  onToggleFavorite={(model) => {
+                    void toggleFavorite(model.hash);
+                  }}
+                  emptyLabel={emptyState({
+                    state: presentation.state,
+                    query,
+                    busy: workspaceActionsDisabled,
+                    showOnboardingAction: !onboardingOpen,
+                    onAddFolder: () => {
+                      beginImport();
+                    },
+                    onClear: () => {
+                      setQuery('');
+                      setFilter('all');
+                    },
+                    serverProfile: activeServer,
+                    serverConnectDisabled: serverProfilesDisabled,
+                    onConnectServer: openProfiles,
+                  })}
+                />
+              </div>
+            </main>
+
+            <PropertiesInspector
+              model={selectedModel}
+              favorite={selectedModel ? isFavorite(selectedModel.hash) : false}
+              stats={inspectedStats}
+              vendorMetadata={inspectedVendor}
+              tags={modelTags.tags}
+              collections={modelCollections.all}
+              collectionMembership={modelCollections.membership}
+              organizationError={organizationError}
+              previewDisabled={workspaceActionsDisabled}
+              retargetEligible={
+                selectedModel ? retargetIdentity(selectedModel) !== null : false
+              }
+              onToggleFavorite={() => {
+                if (selectedModel) {
+                  void toggleFavorite(selectedModel.hash);
+                }
+              }}
+              onPreview={() => {
+                if (selectedModel) {
+                  previewModel(selectedModel);
+                }
+              }}
+              onRetarget={() => {
+                if (selectedModel) openRetarget(selectedModel);
+              }}
+              onAddTag={(name) => {
+                void modelTags.add(name);
+              }}
+              onRemoveTag={(tagId) => {
+                void modelTags.remove(tagId);
+              }}
+              onToggleCollection={(id) => {
+                void modelCollections.toggle(id);
+              }}
+              onCreateCollection={(name) => {
+                void modelCollections.createAndAdd(name);
+              }}
+            />
+          </>
+        ) : (
+          <CalibrationWorkspace
+            selectedProfileId={serverProfiles.selectedProfileId}
+            selectedProfileName={activeServer?.displayName ?? ''}
+            disabled={modalOwner !== 'none'}
+            onManageProfiles={openProfiles}
+            onReportError={setAppError}
+            onFlushReady={registerCalibrationFlush}
+          />
+        )}
       </div>
 
       <footer
@@ -1368,13 +1512,15 @@ export function App(): React.JSX.Element {
         aria-hidden={backgroundExcluded ? 'true' : undefined}
       >
         <span>
-          {library.status === 'loading'
-            ? 'Loading catalog'
-            : library.status === 'preparing'
-              ? 'Analyzing source'
-              : isScanning
-                ? 'Scanning source'
-                : 'Ready'}
+          {activeWorkspace === 'calibration'
+            ? 'Printer Calibration'
+            : library.status === 'loading'
+              ? 'Loading catalog'
+              : library.status === 'preparing'
+                ? 'Analyzing source'
+                : isScanning
+                  ? 'Scanning source'
+                  : 'Ready'}
         </span>
         {appError ? (
           <span className="statusbar-error" role="alert">

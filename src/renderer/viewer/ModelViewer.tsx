@@ -17,6 +17,7 @@ import {
   boundsRadius,
   defaultCameraPosition,
   viewerKeyAction,
+  type FramingLens,
 } from './geometry';
 import type { SceneMesh } from './types';
 import { buildViewerSceneGraph, type ViewerSceneGraph } from './sceneGraph';
@@ -315,7 +316,11 @@ function applyWireframe(object: THREE.Object3D, wireframe: boolean): void {
   }
 }
 
-function createCamera(
+/**
+ * Build the camera for a projection. Exported so the tests can frame a scene
+ * through the same code the viewer uses instead of reproducing it.
+ */
+export function createCamera(
   projection: Projection,
   aspect: number,
   radius: number,
@@ -329,7 +334,22 @@ function createCamera(
   return new THREE.PerspectiveCamera(PERSPECTIVE_FOV, aspect, 0.01, far);
 }
 
-function applyOrthoFrustum(
+/**
+ * Size an orthographic frustum to the model. Exported so the tests can assert
+ * against the frustum the viewer actually builds rather than rebuilding it:
+ * a test that recomputes `radius * ORTHO_FRUSTUM_MULTIPLIER` itself pins the
+ * constant while leaving this function free to change underneath it.
+ *
+ * The projection matrix is rebuilt here because this function is the thing that
+ * invalidated it. Without that, `createCamera('orthographic', …)` returned a
+ * camera whose `top` was `radius * ORTHO_FRUSTUM_MULTIPLIER` while its matrix
+ * still held the `-1..1` placeholder from the constructor - measured at
+ * radius 4, `top = 4.8` against a matrix half-height of `1`, so anything drawn
+ * with it appeared at 0.208x the framed size. The viewer never saw it only
+ * because `resize()` runs immediately afterwards and calls
+ * `updateProjectionMatrix()` itself.
+ */
+export function applyOrthoFrustum(
   camera: THREE.OrthographicCamera,
   radius: number,
   aspect: number,
@@ -340,25 +360,46 @@ function applyOrthoFrustum(
   camera.right = halfWidth;
   camera.top = halfHeight;
   camera.bottom = -halfHeight;
+  camera.updateProjectionMatrix();
 }
 
-function frameCamera(
+/**
+ * Place a camera so it frames a model of `radius` at `center`. Exported so the
+ * tests can frame through production rather than restating it.
+ *
+ * The framing distance comes from the camera's *own* lens, not from
+ * `PERSPECTIVE_FOV` directly. Today those are identical - `createCamera` is the
+ * only thing that builds a perspective camera and it uses the constant - so
+ * this is a no-op for the viewer. It matters because "frame this camera" is the
+ * contract: a camera framed from a FOV other than the one it is looking through
+ * is mis-framed, and reading the constant instead of the lens is the same
+ * duplicated-literal shape #86 exists to delete.
+ *
+ * Because the framing is read off the live lens, the projection matrix is
+ * rebuilt to match it. A caller that sets `fov` and then frames would otherwise
+ * get a correct position against a matrix still holding the old lens: measured
+ * at 45 -> 22.5 degrees, the model draws at 0.4802x the intended size, and the
+ * LOD policy disagrees with the picture because `lodCameraOf` reads `fov` live
+ * while the renderer reads the matrix.
+ *
+ * On why `PERSPECTIVE_FOV` is nonetheless left unpinned, see
+ * `fitPerspectiveDistance` - the framing distance is *not* FOV-free, and the
+ * reason #86 AC4 still holds is measured there rather than assumed here.
+ */
+export function frameCamera(
   camera: THREE.PerspectiveCamera | THREE.OrthographicCamera,
   center: [number, number, number],
   radius: number,
   aspect: number,
 ): void {
-  const projection: Projection =
-    camera instanceof THREE.PerspectiveCamera ? 'perspective' : 'orthographic';
-  const [x, y, z] = defaultCameraPosition(
-    center,
-    radius,
-    aspect,
-    projection,
-    PERSPECTIVE_FOV,
-  );
+  const lens: FramingLens =
+    camera instanceof THREE.PerspectiveCamera
+      ? { projection: 'perspective', verticalFovDeg: camera.fov }
+      : { projection: 'orthographic' };
+  const [x, y, z] = defaultCameraPosition(center, radius, aspect, lens);
   camera.position.set(x, y, z);
   camera.lookAt(center[0], center[1], center[2]);
+  if (lens.projection === 'perspective') camera.updateProjectionMatrix();
 }
 
 const MIN_POLAR = 0.01;

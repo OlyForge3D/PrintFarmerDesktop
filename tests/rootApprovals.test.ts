@@ -1,4 +1,5 @@
 import path from 'node:path';
+import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import type { BigIntStats } from 'node:fs';
@@ -151,6 +152,42 @@ describe('main-owned root approvals', () => {
     });
   });
 
+  it('canonicalizes a picked file without authorizing it, and reports a missing one as INVALID_ROOT', async () => {
+    const fileSystem = fakeFileSystem();
+    const picked = path.resolve('nowhere', 'picked.3mf');
+    const resolved = path.resolve('nowhere', 'picked-resolved.3mf');
+    const absent = path.resolve('nowhere', 'absent.3mf');
+    fileSystem.realpaths.set(picked, resolved);
+    const store = new RootApprovalStore({
+      userDataPath: path.resolve('user-data'),
+      fileSystem,
+      createId: () => '11111111-1111-4111-8111-111111111111',
+      now: () => 0,
+    });
+
+    // The legitimate maximum: no root has ever been approved and this still
+    // resolves. `canonicalizePickerFile` is a `realpath` wrapper that performs
+    // no authorization — the property `tests/ipc.authz.test.ts` depends on when
+    // it requires every refusal to originate at `authorizeFile`. Pinned here,
+    // against the real implementation, so the fake over there cannot drift from
+    // it unnoticed in both places at once.
+    await expect(store.canonicalizePickerFile(picked)).resolves.toBe(resolved);
+
+    // And it is emphatically not an approval: the same path is still refused by
+    // the step that does authorize. Without this, a `canonicalizePickerFile`
+    // that started admitting paths would look identical to one that does not.
+    await expect(store.authorizeFile(picked)).rejects.toMatchObject({
+      code: 'APPROVAL_REQUIRED',
+    });
+
+    // The one input it does refuse. Untested repo-wide until now, which is what
+    // made "the fake never throws where the real one does" impossible to check
+    // against anything.
+    await expect(store.canonicalizePickerFile(absent)).rejects.toMatchObject({
+      code: 'INVALID_ROOT',
+    });
+  });
+
   it('rejects sibling-prefix paths and renderer-invented approvals', async () => {
     const root = path.resolve('models');
     expect(isWithinRoot(root, path.join(root, 'part.stl'))).toBe(true);
@@ -292,5 +329,64 @@ describe('main-owned root approvals', () => {
       .join('');
     expect(persisted).toContain('"deviceId":"1"');
     expect(persisted).toContain('"fileId":"2"');
+  });
+});
+
+describe('picker-allowlist re-binding premise (#102 N3)', () => {
+  // This does not test our code, and it is not a behaviour pin. It records, as
+  // something that can fail, the platform measurement behind a decision *not*
+  // to re-bind the picker allowlist to filesystem identity.
+  //
+  // `ipc.ts` admits a picked file by canonical-string membership. Binding the
+  // entry to device+inode at admission instead would refuse the file whenever
+  // its identity changed. The question is whether that discriminates a hostile
+  // post-pick swap from a benign save, and it does not: it gets the two
+  // backwards. A save that writes a sibling and renames over the original - the
+  // atomic-save pattern - changes identity, so the user would be forced back to
+  // the picker after an ordinary edit. A rewrite in place does not change
+  // identity, so the swap that needs no elevated access at all goes straight
+  // through.
+  //
+  // This holds on both shipped platforms, and the evidence is this test rather
+  // than a claim about it: it carries no platform guard, so CI runs it on
+  // `Desktop (windows-latest)` and `Desktop (macos-latest)` alike, and it
+  // passed on APFS in the #114 verification run. The earlier write-up tagged
+  // the result `win32` because it came from a throwaway probe script; that tag
+  // was narrower than the evidence and is not repeated here.
+  //
+  // If this ever stops holding, the recorded rationale is no longer true and
+  // the decision should be revisited rather than inherited.
+  it('cannot tell an atomic save from a swap, and misses an in-place rewrite', async () => {
+    const directory = await fs.mkdtemp(
+      path.join(await fs.realpath(os.tmpdir()), 'pf-n3-'),
+    );
+    try {
+      const file = path.join(directory, 'model.3mf');
+      const identity = async () => {
+        const stats = await fs.stat(file, { bigint: true });
+        return `${stats.dev}:${stats.ino}`;
+      };
+
+      await fs.writeFile(file, 'original model bytes');
+      const atPick = await identity();
+      expect(atPick.endsWith(':0')).toBe(false);
+
+      await fs.truncate(file, 0);
+      await fs.writeFile(file, 'different bytes, rewritten in place');
+      expect(
+        await identity(),
+        'an in-place rewrite would slip past an identity check',
+      ).toBe(atPick);
+
+      const sibling = `${file}.tmp`;
+      await fs.writeFile(sibling, 'different bytes, written alongside');
+      await fs.rename(sibling, file);
+      expect(
+        await identity(),
+        'an ordinary atomic save would be refused by an identity check',
+      ).not.toBe(atPick);
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
   });
 });

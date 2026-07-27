@@ -24,6 +24,7 @@ const electronState = vi.hoisted(() => ({
   owners: [] as { method: string; owner: unknown }[],
   /** What the OS file picker returns for the next OpenModelFile call. */
   pickerResult: { canceled: true, filePaths: [] as string[] },
+  pickerCalls: [] as unknown[][],
 }));
 
 vi.mock('../src/main/retargetArtifacts.js', () => {
@@ -70,7 +71,10 @@ vi.mock('electron', () => ({
   },
   BrowserWindow: { fromWebContents: () => ({ id: 'window-stub' }) },
   dialog: {
-    showOpenDialog: () => Promise.resolve(electronState.pickerResult),
+    showOpenDialog: (...args: unknown[]) => {
+      electronState.pickerCalls.push(args);
+      return Promise.resolve(electronState.pickerResult);
+    },
   },
   safeStorage: {
     isEncryptionAvailable: () => false,
@@ -109,6 +113,14 @@ const realpathOf = (requested: string) => `${requested}#realpath`;
  */
 const DENIED = 'TEST_APPROVAL_DENIED';
 
+/**
+ * Approval id the fake picker hands back. The `OpenFolder` response schema
+ * validates it as a UUID, so a placeholder string fails the contract rather
+ * than the authorization — which is the schema doing its job, and the reason
+ * this is a real one.
+ */
+const ROOT_APPROVAL_ID = '0f9c9f4e-3f1a-4c2f-9b7d-6a1b2c3d4e5f';
+
 class TestApprovalError extends Error {
   readonly code = 'APPROVAL_REQUIRED';
 }
@@ -120,14 +132,38 @@ interface DownstreamCall {
   args: unknown[];
 }
 
+/**
+ * The part of the approval-store fake the tests assert against directly. Only
+ * `canonicalizePickerFile` is exposed: it is the step whose production fidelity
+ * the refusal tests silently depend on, so it is the one that has to be pinned
+ * rather than merely described.
+ */
+interface ApprovalStoreFake {
+  canonicalizePickerFile: (requested: string) => Promise<string>;
+}
+
 interface Harness {
   handlers: Map<string, Handler>;
   downstream: DownstreamCall[];
+  approvals: ApprovalStoreFake;
 }
 
-function harness(): Harness {
+interface HarnessOptions {
+  /**
+   * Overrides the fake `realpath`. Handlers are expected to re-resolve a
+   * renderer-supplied string on every admission, so a test that changes what a
+   * path resolves to between the pick and the load can tell a live resolution
+   * from a remembered one.
+   */
+  canonicalize?: (requested: string) => Promise<string>;
+  /** Lets a test hold the scene-cache shred open and observe what waits on it. */
+  purge?: () => Promise<void>;
+}
+
+function harness(options: HarnessOptions = {}): Harness {
   electronState.handlers.clear();
   electronState.owners.length = 0;
+  electronState.pickerCalls.length = 0;
   electronState.pickerResult = { canceled: true, filePaths: [] };
   const downstream: DownstreamCall[] = [];
 
@@ -165,6 +201,10 @@ function harness(): Harness {
     loadScene: record('sceneCache', 'loadScene'),
     initialize: () => Promise.resolve(),
     adoptRecipe: () => Promise.resolve(),
+    purge: (...args: unknown[]) => {
+      downstream.push({ target: 'sceneCache', method: 'purge', args });
+      return options.purge ? options.purge() : Promise.resolve();
+    },
     dispose: () => undefined,
   };
 
@@ -179,11 +219,22 @@ function harness(): Harness {
   // authorizing line at ipc.ts:188 could then be deleted with the suite still
   // green. Returning a value distinct from the authorized one is what makes the
   // two steps distinguishable in what the handlers forward.
+  //
+  // `reset` and `approveFromPicker` mutate `rootApproved` because the real
+  // store's do: `reset()` unlinks the persisted store (rootApprovals.ts:338)
+  // and `authorizeFile` then finds no root to match against, while
+  // `approveFromPicker` writes one back. #118 NB1 is the consequence of the
+  // earlier fake, where `reset` was `() => Promise.resolve()`: with no
+  // observable effect there was no assertion that could reach
+  // `await approvals.reset()`, and deleting that line left all 739 tests green.
+  let rootApproved = true;
   const approvals = {
     canonicalizePickerFile: (requested: string) =>
-      Promise.resolve(realpathOf(requested)),
+      options.canonicalize
+        ? options.canonicalize(requested)
+        : Promise.resolve(realpathOf(requested)),
     authorizeFile: (requested: string) => {
-      if (requested === RENDERER_PATH) {
+      if (rootApproved && requested === RENDERER_PATH) {
         return Promise.resolve({
           sourcePath: requested,
           canonicalPath: CANONICAL_PATH,
@@ -192,8 +243,17 @@ function harness(): Harness {
       return Promise.reject(new TestApprovalError(DENIED));
     },
     resolve: () => Promise.reject(new TestApprovalError(DENIED)),
-    approveFromPicker: () => Promise.reject(new TestApprovalError(DENIED)),
-    reset: () => Promise.resolve(),
+    approveFromPicker: (selectedPath: string) => {
+      rootApproved = true;
+      return Promise.resolve({
+        id: ROOT_APPROVAL_ID,
+        canonicalPath: realpathOf(selectedPath),
+      });
+    },
+    reset: () => {
+      rootApproved = false;
+      return Promise.resolve();
+    },
   };
 
   registerIpcHandlers(
@@ -208,7 +268,11 @@ function harness(): Harness {
     sceneCache as never,
   );
 
-  return { handlers: new Map(electronState.handlers), downstream };
+  return {
+    handlers: new Map(electronState.handlers),
+    downstream,
+    approvals,
+  };
 }
 
 function senderEvent(id: number) {
@@ -314,6 +378,65 @@ describe('IPC handler layer: renderer-supplied filesystem paths', () => {
     );
   });
 
+  it('canonicalizes an unapproved path instead of refusing it, as the real store does', async () => {
+    // Guards the fake rather than the product, like the two tests above — but
+    // this fake is load-bearing. The real `canonicalizePickerFile`
+    // (rootApprovals.ts:321-330) is a bare `realpath` wrapper that performs no
+    // authorization, so every refusal in this file has to originate at the
+    // authorizing step (ipc.ts:188). The comment above the fake says so;
+    // nothing asserted it.
+    //
+    // What this test does NOT do is stop B3 going undetected. Measured on
+    // `development` with this test absent, across seven drifted renderings of
+    // `canonicalizePickerFile`, gutting ipc.ts:186-188 to a bare
+    // `return await approvals.canonicalizePickerFile(requestedPath)` is caught
+    // every time — smallest delta +1, never 0. That is structural rather than
+    // luck: under the gutted body `authorizeRendererFile(P)` *is*
+    // `canonicalizePickerFile(P)`, and the picker-allowlist test needs the same
+    // P refused before the pick and admitted after it. No fake that is a pure
+    // function of the path can do both, so that test is red under the mutant
+    // for any such fake.
+    //
+    // What it does do is move the failure to the drift. Same seven renderings,
+    // one basis — number red *unmutated*, i.e. named at the fake instead of
+    // surfacing obliquely through a test whose name is about the allowlist:
+    //
+    //   test absent:  1 of 7
+    //   test present: 7 of 7
+    //
+    // To re-run a row: swap the `canonicalizePickerFile` line in the fake
+    // above, run the full suite unmutated, run it again with ipc.ts:186-188
+    // replaced by the gutted body, and diff the failing-test-name *sets*. A
+    // delta is only meaningful when the unmutated set is empty (decisions.md
+    // :224); several of these renderings have a non-empty one.
+    //
+    // Two properties are asserted because either can drift alone, and (b) is
+    // asserted at both paths because the handlers only ever compare
+    // canonicalization against authorization at RENDERER_PATH — asserting it
+    // solely at UNAPPROVED_PATH left `RENDERER_PATH -> CANONICAL_PATH` green.
+    //
+    // Both are asserted on the *success* path deliberately. Distinguishing the
+    // steps by giving the fake's refusal a different marker looks equivalent and
+    // is not: the refusal tests key on DENIED, so perturbing it fails them
+    // whether or not the control is intact, and the mutated and unmutated
+    // failure sets come out identical — detection-shaped, carrying no
+    // information.
+
+    // (a) resolves rather than refuses: no authorization happens at this step.
+    await expect(
+      h.approvals.canonicalizePickerFile(UNAPPROVED_PATH),
+    ).resolves.toBe(realpathOf(UNAPPROVED_PATH));
+
+    // (b) and returns something authorization would not, so the two steps stay
+    // distinguishable in what the handlers forward.
+    await expect(
+      h.approvals.canonicalizePickerFile(UNAPPROVED_PATH),
+    ).resolves.not.toBe(CANONICAL_PATH);
+    await expect(
+      h.approvals.canonicalizePickerFile(RENDERER_PATH),
+    ).resolves.not.toBe(CANONICAL_PATH);
+  });
+
   it.each(pathBearingChannels())(
     '%s refuses an unapproved path and reaches nothing downstream of authorization',
     async (channel) => {
@@ -362,6 +485,42 @@ describe('IPC handler layer: renderer-supplied filesystem paths', () => {
   );
 
   describe('the picker allowlist', () => {
+    it('uses a dedicated opaque photo picker without granting model access', async () => {
+      electronState.pickerResult = {
+        canceled: false,
+        filePaths: [PICKED_PATH],
+      };
+      const openPhoto = h.handlers.get(IpcChannel.OpenCalibrationPhoto);
+      expect(openPhoto).toBeTypeOf('function');
+
+      const picked = ipcSchemas[IpcChannel.OpenCalibrationPhoto].response.parse(
+        await Promise.resolve(openPhoto!(senderEvent(7), undefined)),
+      );
+      expect(picked).not.toBeNull();
+      expect(Object.keys(picked!)).toEqual(['approvalId']);
+
+      const options = electronState.pickerCalls.at(-1)?.at(-1) as {
+        title: string;
+        filters: { name: string; extensions: string[] }[];
+      };
+      expect(options.title).toMatch(/calibration photo/i);
+      expect(options.filters).toEqual([
+        {
+          name: 'Calibration photos',
+          extensions: ['jpg', 'jpeg', 'png', 'webp'],
+        },
+      ]);
+
+      await expect(
+        Promise.resolve(
+          h.handlers.get(IpcChannel.LoadScene)!(senderEvent(7), {
+            path: PICKED_PATH,
+          }),
+        ),
+      ).rejects.toThrow(DENIED);
+      expect(h.downstream).toEqual([]);
+    });
+
     // The legitimate-maximum direction. Everything above pushes from the
     // hostile side, which cannot tell a correct bound from a control that
     // refuses everything — or, for the fast path at ipc.ts:187, from a branch
@@ -388,9 +547,13 @@ describe('IPC handler layer: renderer-supplied filesystem paths', () => {
         canceled: false,
         filePaths: [PICKED_PATH],
       };
-      await expect(
-        Promise.resolve(openModelFile!(senderEvent(1), undefined)),
-      ).resolves.toEqual({ path: realpathOf(PICKED_PATH) });
+      const picked = ipcSchemas[IpcChannel.OpenModelFile].response.parse(
+        await Promise.resolve(openModelFile!(senderEvent(1), undefined)),
+      );
+      expect(picked?.path).toBe(realpathOf(PICKED_PATH));
+      expect(picked?.approvalId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      );
 
       // After the pick: admitted, and admitted as the canonicalized form rather
       // than the string the renderer sent.
@@ -425,6 +588,215 @@ describe('IPC handler layer: renderer-supplied filesystem paths', () => {
         ),
       ).rejects.toThrow(DENIED);
       expect(h.downstream).toEqual([]);
+    });
+
+    it('refuses a picked path whose canonical target changed after the pick', async () => {
+      // #102 N3. The allowlist stores the canonical form captured at pick time
+      // and admits by string membership, so what makes that bound sufficient is
+      // that admission re-resolves the renderer's string every time: if the
+      // path is redirected afterwards it no longer resolves into the set.
+      //
+      // Nothing pinned that re-resolution. Remembering the pick-time canonical
+      // form is an obvious thing to do while removing redundant work - which is
+      // exactly what #91 is queued to do elsewhere in this path - and every
+      // other test here resolves each string to one fixed value, so a memoized
+      // canonicalization is invisible to all of them.
+      let redirected = false;
+      const local = harness({
+        canonicalize: (requested) =>
+          Promise.resolve(
+            redirected && requested === PICKED_PATH
+              ? '/attacker/substituted.3mf'
+              : realpathOf(requested),
+          ),
+      });
+
+      electronState.pickerResult = {
+        canceled: false,
+        filePaths: [PICKED_PATH],
+      };
+      const picked = ipcSchemas[IpcChannel.OpenModelFile].response.parse(
+        await Promise.resolve(
+          local.handlers.get(IpcChannel.OpenModelFile)!(
+            senderEvent(1),
+            undefined,
+          ),
+        ),
+      );
+      expect(picked?.path).toBe(realpathOf(PICKED_PATH));
+      expect(picked?.approvalId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+      );
+      // Open it once before the redirect, so a canonical form remembered at
+      // either the pick or the first admission is populated by now.
+      await Promise.resolve(
+        local.handlers.get(IpcChannel.LoadScene)!(senderEvent(1), {
+          path: PICKED_PATH,
+        }),
+      );
+      local.downstream.length = 0;
+
+      // The same string the user picked, now resolving somewhere else.
+      redirected = true;
+      await expect(
+        Promise.resolve(
+          local.handlers.get(IpcChannel.LoadScene)!(senderEvent(1), {
+            path: PICKED_PATH,
+          }),
+        ),
+      ).rejects.toThrow(DENIED);
+      expect(local.downstream).toEqual([]);
+    });
+  });
+
+  describe('revoking approvals', () => {
+    // `ResetApprovedRoots` clears both grant sources. Vasquez measured the
+    // revocation behaviour by hand during the #96 composition review, but
+    // measured is not pinned: with this describe removed, deleting
+    // `approvedPickerFiles.clear()` outright changes no test result.
+    const reset = (h: Harness) =>
+      Promise.resolve(
+        h.handlers.get(IpcChannel.ResetApprovedRoots)!(senderEvent(1), {}),
+      );
+
+    it('refuses a previously picked file afterwards and reaches nothing downstream', async () => {
+      electronState.pickerResult = {
+        canceled: false,
+        filePaths: [PICKED_PATH],
+      };
+      await Promise.resolve(
+        h.handlers.get(IpcChannel.OpenModelFile)!(senderEvent(1), undefined),
+      );
+      await Promise.resolve(
+        h.handlers.get(IpcChannel.LoadScene)!(senderEvent(1), {
+          path: PICKED_PATH,
+        }),
+      );
+      expect(
+        h.downstream.some((call) => call.method === 'loadScene'),
+        'the picked file should load before the reset',
+      ).toBe(true);
+
+      await expect(reset(h)).resolves.toEqual({ reset: true });
+      h.downstream.length = 0;
+
+      await expect(
+        Promise.resolve(
+          h.handlers.get(IpcChannel.LoadScene)!(senderEvent(1), {
+            path: PICKED_PATH,
+          }),
+        ),
+      ).rejects.toThrow(DENIED);
+      expect(h.downstream).toEqual([]);
+    });
+
+    it('refuses a root-approved file afterwards, with the picker allowlist never involved', async () => {
+      // #118 NB1. The test above revokes through the picker allowlist, so it
+      // dies when `approvedPickerFiles.clear()` is dropped and is indifferent to
+      // `await approvals.reset()`. This one is the mirror: RENDERER_PATH is
+      // admitted by `approvals.authorizeFile` at ipc.ts:188 and has never been
+      // through the picker, so the allowlist branch at :187 is not on its path
+      // at all. Dropping either clear kills exactly one of the two.
+      const loadScene = h.handlers.get(IpcChannel.LoadScene)!;
+      await Promise.resolve(loadScene(senderEvent(1), { path: RENDERER_PATH }));
+      expect(
+        h.downstream.map((call) => call.method),
+        'the root-approved file should load before the reset',
+      ).toEqual(['loadScene']);
+
+      await expect(reset(h)).resolves.toEqual({ reset: true });
+      h.downstream.length = 0;
+
+      await expect(
+        Promise.resolve(loadScene(senderEvent(1), { path: RENDERER_PATH })),
+      ).rejects.toThrow(DENIED);
+      expect(h.downstream).toEqual([]);
+    });
+
+    it('still admits a root approved after the reset', async () => {
+      // The legitimate-maximum direction for both clears. Everything else in
+      // this describe pushes from the revocation side, and a `ResetApprovedRoots`
+      // that wedged authorization permanently — or a handler that simply threw
+      // before reaching anything — satisfies all of it. What a user does after
+      // revoking is grant again, and nothing said that still worked.
+      await expect(reset(h)).resolves.toEqual({ reset: true });
+      const loadScene = h.handlers.get(IpcChannel.LoadScene)!;
+      await expect(
+        Promise.resolve(loadScene(senderEvent(1), { path: RENDERER_PATH })),
+      ).rejects.toThrow(DENIED);
+
+      electronState.pickerResult = {
+        canceled: false,
+        filePaths: ['/approved/real'],
+      };
+      await expect(
+        Promise.resolve(
+          h.handlers.get(IpcChannel.OpenFolder)!(senderEvent(1), undefined),
+        ),
+      ).resolves.toEqual({
+        path: realpathOf('/approved/real'),
+        approvalId: ROOT_APPROVAL_ID,
+      });
+
+      h.downstream.length = 0;
+      await Promise.resolve(loadScene(senderEvent(1), { path: RENDERER_PATH }));
+      const call = h.downstream.find((c) => c.method === 'loadScene');
+      expect(
+        call,
+        'a root approved after the reset was still refused',
+      ).toBeDefined();
+      expect(call!.args[0]).toBe(CANONICAL_PATH);
+    });
+
+    it('shreds the derived scene cache', async () => {
+      // The asymmetry #102 N2 records: one grant source is wiped and the other
+      // one's derived artifacts are not. That the shred actually empties the
+      // directory is proven against a real filesystem in
+      // `tests/sceneCache.test.ts`; what is pinned here is that revocation
+      // reaches it at all.
+      await expect(reset(h)).resolves.toEqual({ reset: true });
+      expect(
+        h.downstream.filter((call) => call.method === 'purge'),
+      ).toHaveLength(1);
+    });
+
+    it('reports the reset only once the shred has finished', async () => {
+      // The legitimate-looking version of this fix is a fire-and-forget call,
+      // which passes the test above while reporting a completed reset over a
+      // cache that is still being emptied.
+      let releaseShred: () => void = () => undefined;
+      const shredding = new Promise<void>((resolve) => {
+        releaseShred = resolve;
+      });
+      const local = harness({ purge: () => shredding });
+
+      let settled = false;
+      const pending = reset(local).then((value) => {
+        settled = true;
+        return value;
+      });
+      await new Promise((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(
+        settled,
+        'the reset resolved while the shred was still running',
+      ).toBe(false);
+
+      releaseShred();
+      await expect(pending).resolves.toEqual({ reset: true });
+    });
+
+    it('does not shred the cache on an ordinary load', async () => {
+      // A shredder wired into the load path would empty the directory often
+      // enough to satisfy every assertion above while destroying the cache.
+      await Promise.resolve(
+        h.handlers.get(IpcChannel.LoadScene)!(senderEvent(1), {
+          path: RENDERER_PATH,
+        }),
+      );
+
+      expect(h.downstream.map((call) => call.method)).toEqual(['loadScene']);
     });
   });
 });

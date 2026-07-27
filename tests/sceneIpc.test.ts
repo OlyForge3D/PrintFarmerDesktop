@@ -131,3 +131,126 @@ describe('load-scene IPC handler', () => {
     }
   });
 });
+
+describe('sidecar ping handler', () => {
+  it('reports a healthy sidecar even when scene-cache adoption fails', async () => {
+    // Two behaviours in one assertion, both unpinned before this test.
+    //
+    // 1. Adoption must not decide sidecar health. Running it inside the
+    //    handshake `try` let a cache failure classify a live sidecar as down,
+    //    which is the defect the #84 review recorded as N9.
+    // 2. Adoption must not be able to fail the ping at all. Startup adoption
+    //    has always been guarded (`ipc.ts` wraps `sceneCache.initialize()` in
+    //    `.catch`); the ping-time call was not, so it silently depended on
+    //    `adoptRecipe` never rejecting. Nothing stated that invariant and
+    //    nothing enforced it, so any future throwing path inside adoption
+    //    would have turned health reporting into a rejected IPC call.
+    electronState.userDataPath = await mkdtemp(
+      path.join(tmpdir(), 'printfarmer-scene-ping-'),
+    );
+    electronState.handlers.clear();
+    const approvals = new RootApprovalStore({
+      userDataPath: electronState.userDataPath,
+    });
+    const sceneCache = Object.create(
+      SceneCacheService.prototype,
+    ) as SceneCacheService;
+    sceneCache.initialize = vi.fn(() => Promise.resolve());
+    sceneCache.loadScene = vi.fn(() => Promise.resolve(scene()));
+    const adoptRecipe = vi.fn(() =>
+      Promise.reject(new Error('cache volume detached')),
+    );
+    sceneCache.adoptRecipe = adoptRecipe;
+    const uploads = Object.create(
+      UploadJobService.prototype,
+    ) as UploadJobService;
+    uploads.initialize = vi.fn(() => Promise.resolve());
+    uploads.dispose = vi.fn();
+    const sidecar = Object.create(SidecarClient.prototype) as SidecarClient;
+    sidecar.handshake = vi.fn(() =>
+      Promise.resolve({
+        protocolVersion: 1,
+        sidecarVersion: '9.9.9',
+        sceneCacheRecipe: 'scene/v2.2',
+      }),
+    );
+    const dispose = registerIpcHandlers(
+      undefined,
+      undefined,
+      sidecar,
+      undefined,
+      uploads,
+      approvals,
+      sceneCache,
+    );
+
+    try {
+      const handler = electronState.handlers.get(IpcChannel.SidecarPing);
+      expect(handler).toBeDefined();
+
+      await expect(handler?.({}, { nonce: 'health-check' })).resolves.toEqual({
+        ok: true,
+        nonce: 'health-check',
+        sidecarVersion: '9.9.9',
+      });
+      // The adoption really was attempted with the handshake's recipe, so this
+      // is not green merely because the call was skipped.
+      expect(adoptRecipe).toHaveBeenCalledWith('scene/v2.2');
+    } finally {
+      await dispose();
+      await rm(electronState.userDataPath, { force: true, recursive: true });
+    }
+  });
+
+  it('reports an unreachable sidecar as not ok', async () => {
+    // The other side of the same boundary: the test above must not be able to
+    // pass by reporting `ok: true` unconditionally.
+    electronState.userDataPath = await mkdtemp(
+      path.join(tmpdir(), 'printfarmer-scene-ping-'),
+    );
+    electronState.handlers.clear();
+    const approvals = new RootApprovalStore({
+      userDataPath: electronState.userDataPath,
+    });
+    const sceneCache = Object.create(
+      SceneCacheService.prototype,
+    ) as SceneCacheService;
+    sceneCache.initialize = vi.fn(() => Promise.resolve());
+    sceneCache.loadScene = vi.fn(() => Promise.resolve(scene()));
+    const adoptRecipe = vi.fn(() => Promise.resolve());
+    sceneCache.adoptRecipe = adoptRecipe;
+    const uploads = Object.create(
+      UploadJobService.prototype,
+    ) as UploadJobService;
+    uploads.initialize = vi.fn(() => Promise.resolve());
+    uploads.dispose = vi.fn();
+    const sidecar = Object.create(SidecarClient.prototype) as SidecarClient;
+    sidecar.handshake = vi.fn(() =>
+      Promise.reject(new Error('sidecar did not start')),
+    );
+    const dispose = registerIpcHandlers(
+      undefined,
+      undefined,
+      sidecar,
+      undefined,
+      uploads,
+      approvals,
+      sceneCache,
+    );
+
+    try {
+      const handler = electronState.handlers.get(IpcChannel.SidecarPing);
+      await expect(handler?.({}, { nonce: 'health-check' })).resolves.toEqual({
+        ok: false,
+        nonce: 'health-check',
+        sidecarVersion: null,
+      });
+      // A dead sidecar advertises no recipe, so adoption must not run at all -
+      // otherwise a failed handshake would evict the cache.
+      expect(adoptRecipe).not.toHaveBeenCalled();
+    } finally {
+      await dispose();
+      await rm(electronState.userDataPath, { force: true, recursive: true });
+    }
+  });
+});

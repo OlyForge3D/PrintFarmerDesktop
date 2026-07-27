@@ -84,6 +84,27 @@ export const KEYBOARD_ORBIT_STEP = Math.PI / 18; // 10 degrees
 export const KEYBOARD_DOLLY_STEP = 0.9;
 
 /**
+ * How a projection wants to be framed.
+ *
+ * Perspective framing fits the bounding sphere to a lens, so it needs the FOV.
+ * Orthographic framing is a fixed multiple of the radius and has no lens to
+ * fit, so there is nowhere to put a FOV - and this type is why that is now a
+ * fact about the signature rather than a comment.
+ *
+ * The previous shape took `verticalFovDeg` as a required 5th argument on both
+ * branches. That was itself a correction: it replaced a hardcoded `= 45`
+ * default that agreed with `PERSPECTIVE_FOV` by coincidence. But it fixed a
+ * default that looked meaningful and was not by introducing an *argument* that
+ * looked meaningful and was not - orthographic callers passed `PERSPECTIVE_FOV`
+ * purely to satisfy the compiler, and it was read by nothing. A discriminated
+ * union removes the site instead of documenting it: there is no longer any
+ * expression to write there, so no mutation of it is constructible.
+ */
+export type FramingLens =
+  | { readonly projection: 'perspective'; readonly verticalFovDeg: number }
+  | { readonly projection: 'orthographic' };
+
+/**
  * The default camera position for framing a model: placed along the (1,1,1)
  * diagonal from `center` at a distance that frames the bounding sphere. Shared
  * by the initial framing and the "reset view" action so both agree exactly.
@@ -92,12 +113,11 @@ export function defaultCameraPosition(
   center: readonly [number, number, number],
   radius: number,
   aspect: number,
-  projection: 'perspective' | 'orthographic',
-  verticalFovDeg = 45,
+  lens: FramingLens,
 ): [number, number, number] {
   const distance =
-    projection === 'perspective'
-      ? fitPerspectiveDistance(verticalFovDeg, aspect, radius)
+    lens.projection === 'perspective'
+      ? fitPerspectiveDistance(lens.verticalFovDeg, aspect, radius)
       : Math.max(radius, 0.001) * 4;
   return [center[0] + distance, center[1] + distance, center[2] + distance];
 }

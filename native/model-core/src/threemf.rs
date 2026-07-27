@@ -784,6 +784,16 @@ fn read_text_entry_limited<R: Read + Seek>(
             if file.size() > max_bytes {
                 return Err(ThreeMfError::TooLarge);
             }
+            // Only the budget half of this can fail. `check_ratio` is a pure
+            // function of its three arguments, and `validate_archive_parts`
+            // already ran it over *every* entry with these same two accessors
+            // during the `open_package` preflight - which every entry point
+            // goes through - so an entry that reached this line has already
+            // been cleared at the identical ratio. Confirmed by mutation:
+            // deleting the ratio half of `charge_entry` leaves the whole suite
+            // green. It stays because that argument depends on the preflight
+            // continuing to check every entry, not on the check being redundant
+            // by nature.
             guard.charge_entry(name, file.compressed_size(), file.size())?;
             let bytes = read_entry_guarded(&mut file, max_bytes, 0, guard)?;
             if bytes.len() as u64 > max_bytes {
@@ -1155,6 +1165,9 @@ pub(crate) fn read_entry_bytes<R: Read + Seek, F: Fn() -> ThreeMfError>(
             if file.size() > max_bytes {
                 return Err(too_large());
             }
+            // As in `read_text_entry_limited`: only the budget half can fail
+            // here, because the preflight already cleared every entry at this
+            // exact ratio.
             guard.charge_entry(name, file.compressed_size(), file.size())?;
             // Preallocate from the *declared* size only up to a modest cap: the
             // declaration is attacker-controlled, so trusting it would let a
@@ -2395,6 +2408,15 @@ fn read_plate_layout<R: Read + Seek>(
     };
     match read_text_entry_limited(archive, &part_name, MAX_METADATA_XML_BYTES, guard) {
         Ok(Some(xml)) => parse_plate_layout(&xml, guard),
+        // `Zip` is defence in depth rather than a live path. `validate_archive_parts`
+        // opens every entry with `by_index` during the `open_package` preflight, so an
+        // unsupported compression method or an unreadable central directory fails the
+        // whole package long before this read - confirmed by patching the vendor part's
+        // compression method, which reports `zip` from the preflight rather than a
+        // degraded layout. It stays listed because that argument rests on two things
+        // that could change independently: the preflight continuing to open *every*
+        // entry, and `read_text_entry_limited` continuing to map `FileNotFound` to
+        // `Ok(None)` itself. Either one moving makes this arm live again.
         Ok(None)
         | Err(ThreeMfError::Io(_))
         | Err(ThreeMfError::Zip(_))
@@ -4236,7 +4258,27 @@ mod tests {
     }
 
     #[test]
-    fn vendor_plate_metadata_preserves_compression_ratio_enforcement() {
+    fn the_archive_preflight_rejects_a_compression_bomb_in_the_vendor_part() {
+        // Named for what it actually proves. `validate_archive_parts` calls
+        // `check_ratio` for every entry during the `open_package` preflight,
+        // long before `read_plate_layout` is reached, so this is the preflight
+        // firing - not the metadata path propagating anything. Established by
+        // mutation: adding `| Err(ThreeMfError::Limit(_))` to the swallow list
+        // in `read_plate_layout` leaves this test green.
+        //
+        // Ratio enforcement *on the metadata read path* is not merely untested
+        // here, it is unreachable, so no test can pin it. `check_ratio` is a
+        // pure function of its arguments; the preflight has already run it over
+        // every entry with the same `compressed_size()`/`size()` pair; and every
+        // entry point reaches the reads through `open_package`. So the
+        // `charge_entry` call in `read_text_entry_limited` cannot fail on ratio
+        // for an entry that got that far. Confirmed by mutation: deleting the
+        // ratio half of `charge_entry` leaves the entire suite green.
+        //
+        // What *is* reachable on that path is the running byte accumulator, and
+        // that is what `a_limit_tripped_by_the_advisory_plate_read_is_not_
+        // swallowed` in `tests/threemf_security.rs` uses to pin the read arm of
+        // the swallow list.
         let mut settings = String::from("<config><!--");
         settings.push_str(&"x".repeat(crate::limits::COMPRESSION_RATIO_FLOOR_BYTES as usize + 1));
         settings.push_str("--></config>");
@@ -4289,6 +4331,75 @@ mod tests {
         assert_eq!(mesh.plates.len(), 1);
         assert_eq!(mesh.plates[0].name, "Plate 1");
         assert_eq!(mesh.plates[0].root_object_ids.len(), 4);
+    }
+
+    #[test]
+    fn flatten_degrades_when_the_vendor_part_is_malformed_xml() {
+        // The fourth advertised degradation mode, and until now the only one
+        // proven against `parse_plate_layout` alone. A degradation shown
+        // against an inner function can pass because something upstream
+        // rejected the document first; production reaches the parser through
+        // `parse_bytes` -> `read_plate_layout` -> the metadata read, so that is
+        // where the promise has to hold.
+        //
+        // Note what the degradation costs: the plates parsed before the reader
+        // hit the junk are discarded too, not kept as a partial layout. A
+        // half-applied vendor layout would put geometry on plates the vendor
+        // never assigned it to.
+        // Built from the control layout itself so the two are the same plates
+        // by construction: the only difference is the junk appended below.
+        let settings = format!("{}<unclosed", two_plates());
+
+        // Control: the same two plates, well-formed, do split the scene - so
+        // the single plate below is the degradation and not a layout that never
+        // described two plates in the first place.
+        let control = parse_bytes(&package_with_model_settings(
+            &four_instance_model(),
+            &two_plates(),
+        ))
+        .unwrap();
+        assert_eq!(control.plates.len(), 2);
+
+        let mesh = parse_bytes(&package_with_model_settings(
+            &four_instance_model(),
+            &settings,
+        ))
+        .unwrap();
+
+        assert_eq!(mesh.plates.len(), 1);
+        assert_eq!(mesh.plates[0].name, "Plate 1");
+        assert_eq!(mesh.plates[0].root_object_ids.len(), 4);
+    }
+
+    #[test]
+    fn cancellation_is_not_lost_by_the_advisory_plate_layout_read() {
+        // `read_plate_layout` degrades on *every* error in its allowlist -
+        // missing, oversized, unreadable, malformed. This pins the property
+        // that makes that sound end to end: a cancelled parse never returns a
+        // scene, no matter which read observes the trip first. (That a trip is
+        // monotonic, so a later checkpoint still sees it, is pinned separately
+        // by `limits::tests::guard_reports_cancellation_immediately`.)
+        //
+        // Be precise about the reach: a pre-cancelled token trips at the first
+        // checkpoint, well before the metadata read, so this does *not* isolate
+        // the plate read arm. `a_limit_tripped_by_the_advisory_plate_read_is_
+        // not_swallowed` in `tests/threemf_security.rs` is what pins that arm.
+        let token = crate::limits::CancellationToken::new();
+        token.cancel();
+        let bytes = package_with_model_settings(&four_instance_model(), &two_plates());
+
+        let error =
+            parse_bytes_with_limits(&bytes, ParseLimits::default().with_cancellation(token))
+                .expect_err("a cancelled parse must not return a scene");
+        assert!(matches!(
+            error,
+            ThreeMfError::Limit(LimitViolation::Cancelled)
+        ));
+
+        // Control: the identical package parses, and with both plates, when
+        // nothing cancels it - so the rejection above is attributable to the
+        // cancellation and not to a broken fixture.
+        assert_eq!(parse_bytes(&bytes).unwrap().plates.len(), 2);
     }
 
     /// The known-good two-plate layout for `four_instance_model`, used as the

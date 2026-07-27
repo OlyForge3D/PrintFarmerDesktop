@@ -6,3 +6,4 @@ node_modules
 native
 package-lock.json
 resources/target-profiles/**/profiles
+.goals
