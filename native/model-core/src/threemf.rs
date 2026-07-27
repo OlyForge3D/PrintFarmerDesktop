@@ -781,21 +781,35 @@ fn read_text_entry_limited<R: Read + Seek>(
     guard.check_now()?;
     match archive.by_name(name) {
         Ok(mut file) => {
-            if file.size() > max_bytes {
+            let declared = file.size();
+            if declared > max_bytes {
                 return Err(ThreeMfError::TooLarge);
             }
-            guard.charge_entry(name, file.compressed_size(), file.size())?;
+            // Only the budget half of this can fail. `check_ratio` is a pure
+            // function of its three arguments, and `validate_archive_parts`
+            // already ran it over *every* entry with these same two accessors
+            // during the `open_package` preflight - which every entry point
+            // goes through - so an entry that reached this line has already
+            // been cleared at the identical ratio. Confirmed by mutation:
+            // deleting the ratio half of `charge_entry` leaves the whole suite
+            // green. It stays because that argument depends on the preflight
+            // continuing to check every entry, not on the check being redundant
+            // by nature.
+            guard.charge_entry(name, file.compressed_size(), declared)?;
             let bytes = read_entry_guarded(&mut file, max_bytes, 0, guard)?;
-            if bytes.len() as u64 > max_bytes {
+            // The declaration is attacker-controlled. Account for every byte
+            // actually produced, beyond the declaration already charged above,
+            // before classifying an oversized or non-UTF-8 payload. Advisory
+            // callers may degrade those errors, but they must not degrade away
+            // the package-wide decompression budget.
+            let actual = bytes.len() as u64;
+            guard.charge_decompressed(actual.saturating_sub(declared))?;
+            if actual > max_bytes {
                 return Err(ThreeMfError::TooLarge);
             }
             // Matches what `read_to_string` would have produced for non-UTF-8.
             let contents = String::from_utf8(bytes)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            // The declared size is attacker-controlled, so charge whatever the
-            // entry actually produced beyond what was already budgeted.
-            let actual = contents.len() as u64;
-            guard.charge_decompressed(actual.saturating_sub(file.size()))?;
             Ok(Some(contents))
         }
         Err(ZipError::FileNotFound) => Ok(None),
@@ -1155,6 +1169,9 @@ pub(crate) fn read_entry_bytes<R: Read + Seek, F: Fn() -> ThreeMfError>(
             if file.size() > max_bytes {
                 return Err(too_large());
             }
+            // As in `read_text_entry_limited`: only the budget half can fail
+            // here, because the preflight already cleared every entry at this
+            // exact ratio.
             guard.charge_entry(name, file.compressed_size(), file.size())?;
             // Preallocate from the *declared* size only up to a modest cap: the
             // declaration is attacker-controlled, so trusting it would let a
@@ -2415,6 +2432,15 @@ fn read_plate_layout<R: Read + Seek>(
     };
     match read_text_entry_limited(archive, &part_name, MAX_METADATA_XML_BYTES, guard) {
         Ok(Some(xml)) => parse_plate_layout(&xml, guard),
+        // `Zip` is defence in depth rather than a live path. `validate_archive_parts`
+        // opens every entry with `by_index` during the `open_package` preflight, so an
+        // unsupported compression method or an unreadable central directory fails the
+        // whole package long before this read - confirmed by patching the vendor part's
+        // compression method, which reports `zip` from the preflight rather than a
+        // degraded layout. It stays listed because that argument rests on two things
+        // that could change independently: the preflight continuing to open *every*
+        // entry, and `read_text_entry_limited` continuing to map `FileNotFound` to
+        // `Ok(None)` itself. Either one moving makes this arm live again.
         Ok(None)
         | Err(ThreeMfError::Io(_))
         | Err(ThreeMfError::Zip(_))
@@ -3716,6 +3742,106 @@ mod tests {
         buf
     }
 
+    fn forged_single_entry(part: &str, contents: &[u8], declared: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(Cursor::new(&mut bytes));
+            let options =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            writer.start_file(part, options).unwrap();
+            writer.write_all(contents).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let name = part.as_bytes();
+        let mut patched = false;
+        for index in 0..bytes.len().saturating_sub(46) {
+            if &bytes[index..index + 4] != b"PK\x01\x02" {
+                continue;
+            }
+            let name_len = u16::from_le_bytes([bytes[index + 28], bytes[index + 29]]) as usize;
+            if bytes.get(index + 46..index + 46 + name_len) != Some(name) {
+                continue;
+            }
+            let local_offset = u32::from_le_bytes([
+                bytes[index + 42],
+                bytes[index + 43],
+                bytes[index + 44],
+                bytes[index + 45],
+            ]) as usize;
+            bytes[index + 24..index + 28].copy_from_slice(&declared.to_le_bytes());
+            bytes[local_offset + 22..local_offset + 26].copy_from_slice(&declared.to_le_bytes());
+            patched = true;
+        }
+        assert!(patched, "forged fixture must contain {part}");
+        bytes
+    }
+
+    #[test]
+    fn limited_entry_read_charges_actual_bytes_once() {
+        let contents = b"<config/>";
+        let bytes = forged_single_entry(MODEL_SETTINGS_PART, contents, 1);
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let budget = contents.len() as u64;
+        let mut guard = ParseGuard::new(ParseLimits {
+            max_total_decompressed_bytes: budget,
+            ..ParseLimits::default().without_timeout()
+        });
+
+        assert_eq!(
+            read_text_entry_limited(
+                &mut archive,
+                MODEL_SETTINGS_PART,
+                contents.len() as u64,
+                &mut guard,
+            )
+            .unwrap()
+            .as_deref(),
+            Some("<config/>")
+        );
+        assert_eq!(guard.decompressed_bytes(), budget);
+    }
+
+    #[test]
+    fn limited_entry_read_charges_bytes_before_reporting_too_large() {
+        let contents = b"12345";
+        let bytes = forged_single_entry(MODEL_SETTINGS_PART, contents, 1);
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let budget = contents.len() as u64;
+        let mut guard = ParseGuard::new(ParseLimits {
+            max_total_decompressed_bytes: budget,
+            ..ParseLimits::default().without_timeout()
+        });
+
+        let error =
+            read_text_entry_limited(&mut archive, MODEL_SETTINGS_PART, budget - 1, &mut guard)
+                .unwrap_err();
+
+        assert!(matches!(error, ThreeMfError::TooLarge));
+        assert_eq!(guard.decompressed_bytes(), budget);
+    }
+
+    #[test]
+    fn limited_entry_read_charges_bytes_before_reporting_invalid_utf8() {
+        let contents = [0xff, b'x'];
+        let bytes = forged_single_entry(MODEL_SETTINGS_PART, &contents, 1);
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let budget = contents.len() as u64;
+        let mut guard = ParseGuard::new(ParseLimits {
+            max_total_decompressed_bytes: budget,
+            ..ParseLimits::default().without_timeout()
+        });
+
+        let error = read_text_entry_limited(&mut archive, MODEL_SETTINGS_PART, budget, &mut guard)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ThreeMfError::Io(ref source) if source.kind() == io::ErrorKind::InvalidData
+        ));
+        assert_eq!(guard.decompressed_bytes(), budget);
+    }
+
     fn plate_block(plater_id: u32, name: Option<&str>, instances: &[(u32, u32)]) -> String {
         let name_row = match name {
             Some(name) => format!("    <metadata key=\"plater_name\" value=\"{name}\"/>\n"),
@@ -4256,7 +4382,27 @@ mod tests {
     }
 
     #[test]
-    fn vendor_plate_metadata_preserves_compression_ratio_enforcement() {
+    fn the_archive_preflight_rejects_a_compression_bomb_in_the_vendor_part() {
+        // Named for what it actually proves. `validate_archive_parts` calls
+        // `check_ratio` for every entry during the `open_package` preflight,
+        // long before `read_plate_layout` is reached, so this is the preflight
+        // firing - not the metadata path propagating anything. Established by
+        // mutation: adding `| Err(ThreeMfError::Limit(_))` to the swallow list
+        // in `read_plate_layout` leaves this test green.
+        //
+        // Ratio enforcement *on the metadata read path* is not merely untested
+        // here, it is unreachable, so no test can pin it. `check_ratio` is a
+        // pure function of its arguments; the preflight has already run it over
+        // every entry with the same `compressed_size()`/`size()` pair; and every
+        // entry point reaches the reads through `open_package`. So the
+        // `charge_entry` call in `read_text_entry_limited` cannot fail on ratio
+        // for an entry that got that far. Confirmed by mutation: deleting the
+        // ratio half of `charge_entry` leaves the entire suite green.
+        //
+        // What *is* reachable on that path is the running byte accumulator, and
+        // that is what `a_limit_tripped_by_the_advisory_plate_read_is_not_
+        // swallowed` in `tests/threemf_security.rs` uses to pin the read arm of
+        // the swallow list.
         let mut settings = String::from("<config><!--");
         settings.push_str(&"x".repeat(crate::limits::COMPRESSION_RATIO_FLOOR_BYTES as usize + 1));
         settings.push_str("--></config>");
@@ -4311,22 +4457,57 @@ mod tests {
         assert_eq!(mesh.plates[0].root_object_ids.len(), 4);
     }
 
-    /// The known-good two-plate layout for `four_instance_model`, used as the
-    /// control in the degradation tests.
-    fn two_plates() -> String {
-        model_settings(&[
-            plate_block(1, Some("Left"), &[(1, 0), (2, 0)]),
-            plate_block(2, Some("Right"), &[(1, 1), (2, 1)]),
-        ])
+    #[test]
+    fn flatten_degrades_when_the_vendor_part_is_malformed_xml() {
+        // The fourth advertised degradation mode, and until now the only one
+        // proven against `parse_plate_layout` alone. A degradation shown
+        // against an inner function can pass because something upstream
+        // rejected the document first; production reaches the parser through
+        // `parse_bytes` -> `read_plate_layout` -> the metadata read, so that is
+        // where the promise has to hold.
+        //
+        // Note what the degradation costs: the plates parsed before the reader
+        // hit the junk are discarded too, not kept as a partial layout. A
+        // half-applied vendor layout would put geometry on plates the vendor
+        // never assigned it to.
+        // Built from the control layout itself so the two are the same plates
+        // by construction: the only difference is the junk appended below.
+        let settings = format!("{}<unclosed", two_plates());
+
+        // Control: the same two plates, well-formed, do split the scene - so
+        // the single plate below is the degradation and not a layout that never
+        // described two plates in the first place.
+        let control = parse_bytes(&package_with_model_settings(
+            &four_instance_model(),
+            &two_plates(),
+        ))
+        .unwrap();
+        assert_eq!(control.plates.len(), 2);
+
+        let mesh = parse_bytes(&package_with_model_settings(
+            &four_instance_model(),
+            &settings,
+        ))
+        .unwrap();
+
+        assert_eq!(mesh.plates.len(), 1);
+        assert_eq!(mesh.plates[0].name, "Plate 1");
+        assert_eq!(mesh.plates[0].root_object_ids.len(), 4);
     }
 
     #[test]
     fn cancellation_is_not_lost_by_the_advisory_plate_layout_read() {
-        // `read_plate_layout` degrades on *every* error, including a guard trip.
-        // This pins the property that makes that sound end to end: a cancelled
-        // parse never returns a scene, no matter which read observes the trip
-        // first. (That a trip is monotonic, so a later checkpoint still sees
-        // it, is pinned separately by `guard_reports_cancellation_immediately`.)
+        // `read_plate_layout` degrades on *every* error in its allowlist -
+        // missing, oversized, unreadable, malformed. This pins the property
+        // that makes that sound end to end: a cancelled parse never returns a
+        // scene, no matter which read observes the trip first. (That a trip is
+        // monotonic, so a later checkpoint still sees it, is pinned separately
+        // by `limits::tests::guard_reports_cancellation_immediately`.)
+        //
+        // Be precise about the reach: a pre-cancelled token trips at the first
+        // checkpoint, well before the metadata read, so this does *not* isolate
+        // the plate read arm. `a_limit_tripped_by_the_advisory_plate_read_is_
+        // not_swallowed` in `tests/threemf_security.rs` is what pins that arm.
         let token = crate::limits::CancellationToken::new();
         token.cancel();
         let bytes = package_with_model_settings(&four_instance_model(), &two_plates());
@@ -4340,9 +4521,18 @@ mod tests {
         ));
 
         // Control: the identical package parses, and with both plates, when
-        // nothing cancels it - so the rejection above is the cancellation and
-        // not something wrong with the fixture.
+        // nothing cancels it - so the rejection above is attributable to the
+        // cancellation and not to a broken fixture.
         assert_eq!(parse_bytes(&bytes).unwrap().plates.len(), 2);
+    }
+
+    /// The known-good two-plate layout for `four_instance_model`, used as the
+    /// control in the degradation tests.
+    fn two_plates() -> String {
+        model_settings(&[
+            plate_block(1, Some("Left"), &[(1, 0), (2, 0)]),
+            plate_block(2, Some("Right"), &[(1, 1), (2, 1)]),
+        ])
     }
 
     /// A mesh whose faces carry per-face colour references, on an object that
@@ -4399,7 +4589,8 @@ mod tests {
         ))
         .unwrap();
 
-        assert!(mesh.parts.iter().all(|part| part.material_label.is_none()));
+        assert_eq!(mesh.objects.len(), 1);
+        assert!(mesh.objects[0].material.face_colors.is_none());
         assert_eq!(mesh.status, SceneLoadStatus::Partial);
         assert!(mesh
             .status_messages
@@ -4419,68 +4610,12 @@ mod tests {
         ))
         .unwrap();
 
+        assert_eq!(mesh.objects.len(), 1);
+        assert_eq!(
+            mesh.objects[0].material.face_colors.as_deref(),
+            Some([[255, 0, 0], [0, 255, 0]].as_slice())
+        );
         assert_eq!(mesh.status, SceneLoadStatus::Complete);
         assert!(mesh.status_messages.is_empty());
-    }
-
-    /// The total expansion the archive admits to - the only figure the
-    /// preflight gets to see.
-    fn declared_archive_total(bytes: &[u8]) -> u64 {
-        let mut archive = ZipArchive::new(Cursor::new(bytes.to_vec())).unwrap();
-        (0..archive.len())
-            .map(|index| archive.by_index(index).unwrap().size())
-            .sum()
-    }
-
-    #[test]
-    fn a_budget_tripped_by_the_advisory_plate_read_is_not_degraded_away() {
-        // The vendor plate part is advisory and degrades on a documented
-        // allowlist, but a security-budget violation is not on that list.
-        //
-        // Getting the violation to arise *inside* the plate read is the whole
-        // difficulty, and it is why the sibling test that drives a pre-cancelled
-        // parse cannot pin this arm: that trips at the first checkpoint, in the
-        // archive preflight, long before the plate part is opened. An honest
-        // archive cannot do it either - the declared-total preflight sees the
-        // sum of every declared size up front, and the running accumulator can
-        // only ever charge that same sum, so the preflight always fires first.
-        // The entry therefore has to under-declare, which the preflight cannot
-        // detect and only the post-read charge against real bytes can.
-        let mut bytes = package_with_model_settings(&four_instance_model(), &two_plates());
-        crate::vendor::tests::patch_declared_uncompressed_size(&mut bytes, MODEL_SETTINGS_PART, 1);
-
-        // Exactly the total the archive now claims, so the preflight passes and
-        // every honest read stays inside it. Only the settings part's real
-        // bytes, charged once it has been inflated, can push past.
-        let limits = ParseLimits {
-            max_total_decompressed_bytes: declared_archive_total(&bytes),
-            ..ParseLimits::default().without_timeout()
-        };
-
-        let error = parse_bytes_with_limits(&bytes, limits)
-            .expect_err("a budget trip inside the advisory read must fail the package");
-        assert!(
-            matches!(
-                error,
-                ThreeMfError::Limit(LimitViolation::TotalDecompressedBytes { .. })
-            ),
-            "expected the running accumulator, got {error:?}"
-        );
-
-        // Control: the same package unpatched, under a budget derived the same
-        // way, parses and still yields both plates - so the rejection above is
-        // the budget trip and not a fixture that never parsed.
-        let honest = package_with_model_settings(&four_instance_model(), &two_plates());
-        let honest_limits = ParseLimits {
-            max_total_decompressed_bytes: declared_archive_total(&honest),
-            ..ParseLimits::default().without_timeout()
-        };
-        assert_eq!(
-            parse_bytes_with_limits(&honest, honest_limits)
-                .unwrap()
-                .plates
-                .len(),
-            2
-        );
     }
 }

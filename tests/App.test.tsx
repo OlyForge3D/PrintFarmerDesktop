@@ -9,7 +9,9 @@ import {
 } from '@testing-library/react';
 import { App } from '../src/renderer/App.js';
 import { LibraryOnboarding } from '../src/renderer/library/LibraryOnboarding.js';
+import { CalibrationWorkspacePayload } from '@shared/ipc';
 import type {
+  CalibrationWorkspaceStateRecord,
   LoadSceneResponse,
   LogicalModel,
   PrintFarmerApi,
@@ -20,6 +22,8 @@ import { ALL_PLATES } from '../src/renderer/viewer/plateSelection.js';
 // Typing the mock from the real props means a signature change here is a
 // typecheck error rather than a runtime failure in an unrelated assertion.
 import type { PreviewWorkspaceProps } from '../src/renderer/viewer/PreviewWorkspace.js';
+import { createCalibrationState } from '../src/renderer/calibration/domain';
+import { emptyWorkflowDrafts } from '../src/renderer/calibration/workspaceTypes';
 
 vi.mock('../src/renderer/viewer/PreviewWorkspace.js', () => ({
   PreviewWorkspace: ({
@@ -128,6 +132,126 @@ function serverProfile(id: string, displayName: string): ServerProfile {
     status: 'legacy',
     lastCheckedAt: '2026-07-23T12:00:00.000Z',
     warnings: ['legacy'],
+  };
+}
+
+function appCalibrationRecord(
+  profileId: string,
+): CalibrationWorkspaceStateRecord {
+  const projectId = '22222222-2222-4222-8222-222222222222';
+  const timestamp = '2026-07-26T15:00:00.000Z';
+  const domainState = createCalibrationState({
+    projectId,
+    createdAt: timestamp,
+    mode: 'coach',
+    baseline: {
+      nozzleTemperatureC: 215,
+      flowRatio: 1,
+      pressureAdvance: 0.03,
+      retractionLengthMm: 0.6,
+      maximumVolumetricRateMm3S: 12,
+      shrinkageCompensationXPercent: 100,
+      shrinkageCompensationYPercent: 100,
+      shrinkageCompensationZPercent: 100,
+    },
+    binding: {
+      printer: {
+        backendProfileId: profileId,
+        backendPrinterId: 'printer-app',
+        printerConfigurationId: 'configuration-app',
+        printerConfigurationRevision: 2,
+      },
+      snapshot: {
+        snapshotId: 'snapshot-app',
+        snapshotRevision: 2,
+        capturedAt: timestamp,
+        configurationRevision: 2,
+        toolheads: [
+          {
+            toolId: 'tool-app',
+            toolheadId: 'head-app',
+            nozzle: {
+              nozzleId: 'nozzle-app',
+              diameterMm: 0.4,
+              material: 'brass',
+            },
+            extruderType: 'directDrive',
+          },
+        ],
+        safety: {
+          buildVolumeMm: { x: 220, y: 220, z: 250 },
+          maximumNozzleTemperatureC: 300,
+          maximumBedTemperatureC: 110,
+          maximumVolumetricRateMm3S: 30,
+          emergencyStopAvailable: true,
+          thermalProtectionConfirmed: true,
+          ventilationAssessed: true,
+        },
+      },
+      selectedToolId: 'tool-app',
+      selectedToolheadId: 'head-app',
+      selectedNozzleId: 'nozzle-app',
+      filament: {
+        filamentProjectId: 'filament-app',
+        provider: 'Provider',
+        product: 'PLA',
+        sku: 'PLA-BLK',
+      },
+    },
+  });
+  return {
+    profileId,
+    projectId,
+    displayName: 'App leave flush project',
+    description: null,
+    printerId: 'printer-app',
+    status: 'draft',
+    completedStepCount: 0,
+    totalStepCount: 9,
+    isSynced: true,
+    isPrinterContextFresh: true,
+    hasConflicts: false,
+    remoteProjectId: null,
+    baseRevision: 1,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    workspaceState: CalibrationWorkspacePayload.parse({
+      schemaVersion: 1,
+      domainState,
+      metadata: {
+        displayName: 'App leave flush project',
+        description: '',
+      },
+      stepDrafts: {},
+      workflowDrafts: emptyWorkflowDrafts(),
+      photos: [],
+      physicalMatch: {
+        snapshotId: 'snapshot-app',
+        toolId: 'tool-app',
+        toolheadId: 'head-app',
+        nozzleId: 'nozzle-app',
+        nozzleDiameterMm: 0.4,
+        confirmedAt: timestamp,
+      },
+      selectedBaseProfile: {
+        orcaProfileId: 'orca-app',
+        displayName: 'App profile',
+        source: 'printFarmer',
+        upstreamVerified: true,
+        printerId: 'printer-app',
+        configurationRevision: 2,
+        snapshotId: 'snapshot-app',
+        toolId: 'tool-app',
+        toolheadId: 'head-app',
+        nozzleId: 'nozzle-app',
+        nozzleDiameterMm: 0.4,
+        profileRevision: 'revision-app',
+        contentHash:
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      },
+      selectedBaseProfileId: 'orca-app',
+      autosaveRevision: 0,
+    }),
   };
 }
 
@@ -1600,5 +1724,159 @@ describe('<App />', () => {
       ).toHaveTextContent('obj'),
     );
     expect(screen.queryByText('old preview failed')).not.toBeInTheDocument();
+  });
+
+  it('switches workspaces with focus restoration and blocks switching for shell dialogs', async () => {
+    const profileId = '11111111-1111-4111-8111-111111111111';
+    const profile = serverProfile(profileId, 'Farm server');
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 2,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([]),
+      listServerProfiles: vi.fn().mockResolvedValue({
+        profiles: [profile],
+        selectedProfileId: profileId,
+      }),
+      getCalibrationAvailability: vi.fn().mockResolvedValue({
+        available: true,
+        unavailableReason: null,
+        unavailableDetail: null,
+        negotiatedApiVersion: '2',
+        negotiatedSchemaVersion: 2,
+        capabilityFlags: {
+          calibrationApiEnabled: true,
+          calibrationChangeFeedEnabled: true,
+          calibrationOfflineDraftEnabled: true,
+          calibrationPhotoUploadEnabled: true,
+          calibrationGenerationEnabled: true,
+        },
+        grantedScopes: ['CalibrationRead', 'CalibrationWrite'],
+        offlineEditingEnabled: true,
+      }),
+      listCalibrationWorkspaceStates: vi.fn().mockResolvedValue({
+        states: [],
+        unhydratedProjects: [],
+      }),
+    });
+
+    render(<App />);
+
+    const calibrationSwitch = screen.getByRole('button', {
+      name: 'Printer Calibration',
+    });
+    await screen.findByRole('dialog', { name: 'Set up your model library' });
+    await waitFor(() => expect(calibrationSwitch).toBeDisabled());
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(calibrationSwitch).toBeEnabled());
+    fireEvent.click(calibrationSwitch);
+
+    const calibrationHeading = await screen.findByRole('heading', {
+      name: 'Printer Calibration',
+    });
+    await waitFor(() => expect(calibrationHeading).toHaveFocus());
+    expect(await screen.findByText('Farm server')).toBeInTheDocument();
+
+    const manageProfiles = screen.getByRole('button', {
+      name: 'Manage PrintFarmer profiles',
+    });
+    manageProfiles.focus();
+    fireEvent.click(manageProfiles);
+    expect(
+      await screen.findByRole('dialog', {
+        name: 'Manage PrintFarmer connection',
+      }),
+    ).toBeInTheDocument();
+    expect(calibrationSwitch).toBeDisabled();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Close server profiles' }),
+    );
+    await waitFor(() => expect(manageProfiles).toHaveFocus());
+
+    const librarySwitch = screen.getByRole('button', { name: 'Library' });
+    fireEvent.click(librarySwitch);
+    const libraryHeading = await screen.findByRole('heading', {
+      name: 'All models',
+    });
+    await waitFor(() => expect(libraryHeading).toHaveFocus());
+  });
+
+  it('keeps calibration mounted and announces when its leave flush fails', async () => {
+    const profileId = '11111111-1111-4111-8111-111111111111';
+    const profile = serverProfile(profileId, 'Farm server');
+    const saved = appCalibrationRecord(profileId);
+    const saveCalibrationWorkspaceState = vi
+      .fn<PrintFarmerApi['saveCalibrationWorkspaceState']>()
+      .mockRejectedValue(new Error('local queue unavailable'));
+    installApi({
+      getAppInfo: vi.fn().mockResolvedValue({
+        contractVersion: 2,
+        appVersion: '0.1.0',
+        platform: 'win32',
+        electronVersion: '33.0.0',
+      }),
+      listModels: vi.fn().mockResolvedValue([]),
+      listServerProfiles: vi.fn().mockResolvedValue({
+        profiles: [profile],
+        selectedProfileId: profileId,
+      }),
+      getCalibrationAvailability: vi.fn().mockResolvedValue({
+        available: true,
+        unavailableReason: null,
+        unavailableDetail: null,
+        negotiatedApiVersion: '2',
+        negotiatedSchemaVersion: 2,
+        capabilityFlags: {
+          calibrationApiEnabled: true,
+          calibrationChangeFeedEnabled: true,
+          calibrationOfflineDraftEnabled: true,
+          calibrationPhotoUploadEnabled: true,
+          calibrationGenerationEnabled: true,
+        },
+        grantedScopes: ['CalibrationRead', 'CalibrationWrite'],
+        offlineEditingEnabled: true,
+      }),
+      listCalibrationWorkspaceStates: vi.fn().mockResolvedValue({
+        states: [saved],
+        unhydratedProjects: [],
+      }),
+      getCalibrationWorkspaceState: vi.fn().mockResolvedValue(saved),
+      saveCalibrationWorkspaceState,
+    });
+
+    render(<App />);
+    await screen.findByRole('dialog', { name: 'Set up your model library' });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    const calibrationSwitch = screen.getByRole('button', {
+      name: 'Printer Calibration',
+    });
+    await waitFor(() => expect(calibrationSwitch).toBeEnabled());
+    fireEvent.click(calibrationSwitch);
+    fireEvent.click(
+      await screen.findByRole('button', { name: /App leave flush project/ }),
+    );
+    const projectName = await screen.findByLabelText('Project name');
+    fireEvent.change(projectName, {
+      target: { value: 'Pending local edit' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Library' }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Application status')).toHaveTextContent(
+        /Could not leave Printer Calibration.*local queue unavailable/i,
+      ),
+    );
+    expect(saveCalibrationWorkspaceState).toHaveBeenCalledOnce();
+    expect(
+      screen.getByRole('heading', { name: 'Pending local edit' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: 'All models' }),
+    ).not.toBeInTheDocument();
   });
 });

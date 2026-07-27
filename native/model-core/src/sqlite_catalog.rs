@@ -17,21 +17,27 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
+use crate::calibration::{
+    CalibrationConflictDto, CalibrationCursorStateDto, CalibrationPendingOpDto,
+    CalibrationUnhydratedProjectDto, CalibrationWorkspaceStageId, CalibrationWorkspaceStateDto,
+    SaveCalibrationWorkspaceStateParams, StageCalibrationPhotoParams, StagedCalibrationPhotoDto,
+};
 use crate::catalog::{new_collection_id, normalize_tag};
 use crate::catalog::{
     CatalogStore, Collection, LocationUpsert, LogicalModel, ModelLocation, StoredLocation, Tag,
 };
 use crate::model::{FileFingerprint, ModelFormat};
 use crate::schema::{
-    SCHEMA_V1, SCHEMA_V10, SCHEMA_V11, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6,
-    SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_VERSION,
+    SCHEMA_V1, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V2, SCHEMA_V3,
+    SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_VERSION,
 };
 use crate::sync::{
-    self, ApplyPullBatchDto, ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution,
-    DisposeFailedBatchDto, EnqueueOutboundOperationDto, EntityRevisionDto, FailOutboundBatchDto,
-    OutboundFailureOutcome, OutboundOperationDto, OutboundState, ReconcileUncertainBatchDto,
-    RemoteModelLinkDto, RemoteUploadStatus, SettleOutboundBatchDto, SettledOutboundBatchDto,
-    SyncConflictDto, SyncEntityType, SyncStatusDto, SyncVisibility, UnknownOutcomeResolution,
+    self, ApplyPullBatchDto, CalibrationEntityType, CalibrationOutboxState,
+    ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution, DisposeFailedBatchDto,
+    EnqueueOutboundOperationDto, EntityRevisionDto, FailOutboundBatchDto, OutboundFailureOutcome,
+    OutboundOperationDto, OutboundState, ReconcileUncertainBatchDto, RemoteModelLinkDto,
+    RemoteUploadStatus, SettleOutboundBatchDto, SettledOutboundBatchDto, SyncConflictDto,
+    SyncEntityType, SyncStatusDto, SyncVisibility, UnknownOutcomeResolution,
 };
 
 /// A SQLite-backed catalog. Wraps one connection; use single-threaded per the
@@ -102,6 +108,15 @@ impl SqliteCatalog {
                 }
                 if version < 11 {
                     conn.execute_batch(SCHEMA_V11)?;
+                }
+                if version < 12 {
+                    conn.execute_batch(SCHEMA_V12)?;
+                }
+                if version < 13 {
+                    conn.execute_batch(SCHEMA_V13)?;
+                }
+                if version < 14 {
+                    conn.execute_batch(SCHEMA_V14)?;
                 }
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 conn.execute_batch("COMMIT")
@@ -2827,6 +2842,1019 @@ impl CatalogStore for SqliteCatalog {
         })();
         self.finish_batch(result)
     }
+
+    // --- Calibration persistence (issue #52) ---------------------------------
+
+    fn save_calibration_workspace_state(
+        &mut self,
+        input: &SaveCalibrationWorkspaceStateParams,
+    ) -> Result<CalibrationWorkspaceStateDto, String> {
+        if input.completed_step_count < 0
+            || input.total_step_count < 0
+            || input.completed_step_count > input.total_step_count
+        {
+            return Err("calibration workspace step counts are invalid".to_string());
+        }
+
+        let payload = serde_json::json!({
+            "displayName": input.display_name,
+            "description": input.description,
+            "printerId": input.printer_id,
+            "status": input.status,
+            "workspaceState": input.workspace_state,
+        });
+        let payload_json = json_string(&payload)?;
+        let workspace_state_json = json_string(&input.workspace_state)?;
+        let operation_kind = if input.base_revision.is_some() {
+            "Update"
+        } else {
+            "Create"
+        };
+
+        self.begin_batch()?;
+        let result = (|| {
+            let existing = self
+                .conn
+                .query_row(
+                    "SELECT project_id, kind, entity_type, entity_id, operation_kind,
+                            payload_json, idempotency_key, base_revision, created_at
+                     FROM calibration_outbox
+                     WHERE profile_id = ?1 AND operation_id = ?2",
+                    params![input.profile_id, input.operation_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, String>(5)?,
+                            row.get::<_, String>(6)?,
+                            row.get::<_, Option<i64>>(7)?,
+                            row.get::<_, String>(8)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(sql_error)?;
+
+            if let Some((
+                project_id,
+                kind,
+                entity_type,
+                entity_id,
+                stored_operation_kind,
+                stored_payload_json,
+                idempotency_key,
+                base_revision,
+                created_at,
+            )) = existing
+            {
+                if idempotency_key != input.idempotency_key {
+                    return Err(
+                        "operationId was already used with a different idempotencyKey".to_string(),
+                    );
+                }
+                let stored_payload: serde_json::Value = serde_json::from_str(&stored_payload_json)
+                    .map_err(|error| {
+                        format!("stored calibration outbox payload is invalid: {error}")
+                    })?;
+                if project_id != input.project_id
+                    || kind != "saveProjectDraft"
+                    || entity_type != CalibrationEntityType::CalibrationProject.as_db()
+                    || entity_id != input.project_id
+                    || stored_operation_kind != operation_kind
+                    || stored_payload != payload
+                    || base_revision != input.base_revision
+                    || created_at != input.created_at
+                {
+                    return Err(
+                        "operationId replay does not match the immutable calibration payload"
+                            .to_string(),
+                    );
+                }
+                return self
+                    .get_calibration_workspace_state(&input.profile_id, &input.project_id)?
+                    .ok_or_else(|| {
+                        "calibration operation exists without its workspace state".to_string()
+                    });
+            }
+
+            self.conn
+                .execute(
+                    "INSERT INTO calibration_projects(
+                        profile_id, project_id, display_name, description, status, printer_id,
+                        is_synced, is_printer_context_fresh, base_revision, created_at, updated_at)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8, ?9, ?10)
+                     ON CONFLICT(profile_id, project_id) DO UPDATE SET
+                        display_name = excluded.display_name,
+                        description = excluded.description,
+                        status = excluded.status,
+                        printer_id = excluded.printer_id,
+                        is_synced = 0,
+                        is_printer_context_fresh = excluded.is_printer_context_fresh,
+                        base_revision = COALESCE(
+                            excluded.base_revision, calibration_projects.base_revision),
+                        updated_at = excluded.updated_at",
+                    params![
+                        input.profile_id,
+                        input.project_id,
+                        input.display_name,
+                        input.description,
+                        input.status,
+                        input.printer_id,
+                        input.printer_context_fresh,
+                        input.base_revision,
+                        input.created_at,
+                        input.updated_at,
+                    ],
+                )
+                .map_err(sql_error)?;
+
+            self.conn
+                .execute(
+                    "INSERT INTO calibration_workspace_states(
+                        profile_id, project_id, workspace_state_json,
+                        completed_step_count, total_step_count, updated_at)
+                     VALUES(?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(profile_id, project_id) DO UPDATE SET
+                        workspace_state_json = excluded.workspace_state_json,
+                        completed_step_count = excluded.completed_step_count,
+                        total_step_count = excluded.total_step_count,
+                        updated_at = excluded.updated_at",
+                    params![
+                        input.profile_id,
+                        input.project_id,
+                        workspace_state_json,
+                        input.completed_step_count,
+                        input.total_step_count,
+                        input.updated_at,
+                    ],
+                )
+                .map_err(sql_error)?;
+
+            self.conn
+                .execute(
+                    "UPDATE calibration_outbox
+                     SET state = ?4, settled_at = ?5, updated_at = ?5
+                     WHERE profile_id = ?1 AND project_id = ?2
+                       AND kind = 'saveProjectDraft' AND state = ?3",
+                    params![
+                        input.profile_id,
+                        input.project_id,
+                        CalibrationOutboxState::Pending.as_db(),
+                        CalibrationOutboxState::Superseded.as_db(),
+                        input.updated_at,
+                    ],
+                )
+                .map_err(sql_error)?;
+
+            let sequence: i64 = self
+                .conn
+                .query_row(
+                    "SELECT COALESCE(MAX(sequence), 0) + 1
+                     FROM calibration_outbox
+                     WHERE profile_id = ?1 AND project_id = ?2",
+                    params![input.profile_id, input.project_id],
+                    |row| row.get(0),
+                )
+                .map_err(sql_error)?;
+            self.conn
+                .execute(
+                    "INSERT INTO calibration_outbox(
+                        profile_id, operation_id, project_id, kind, sequence,
+                        entity_type, entity_id, operation_kind, payload_json,
+                        idempotency_key, base_revision, depends_on_json, state,
+                        created_at, updated_at)
+                     VALUES(?1, ?2, ?3, 'saveProjectDraft', ?4,
+                            ?5, ?3, ?6, ?7, ?8, ?9, '[]', 'pending', ?10, ?11)",
+                    params![
+                        input.profile_id,
+                        input.operation_id,
+                        input.project_id,
+                        sequence,
+                        CalibrationEntityType::CalibrationProject.as_db(),
+                        operation_kind,
+                        payload_json,
+                        input.idempotency_key,
+                        input.base_revision,
+                        input.created_at,
+                        input.updated_at,
+                    ],
+                )
+                .map_err(sql_error)?;
+
+            self.get_calibration_workspace_state(&input.profile_id, &input.project_id)?
+                .ok_or_else(|| "saved calibration workspace state could not be read".to_string())
+        })();
+        self.finish_batch(result)
+    }
+
+    fn list_calibration_workspace_states(
+        &self,
+        profile_id: &str,
+    ) -> Result<Vec<CalibrationWorkspaceStateDto>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT p.profile_id, p.project_id, p.display_name, p.description,
+                        p.printer_id, p.status, s.completed_step_count, s.total_step_count,
+                        p.is_synced, p.is_printer_context_fresh, p.has_conflicts,
+                        p.remote_project_id, p.base_revision, p.created_at, p.updated_at,
+                        s.workspace_state_json
+                 FROM calibration_projects p
+                 JOIN calibration_workspace_states s
+                   ON s.profile_id = p.profile_id AND s.project_id = p.project_id
+                 WHERE p.profile_id = ?1
+                 ORDER BY s.updated_at DESC, p.project_id ASC",
+            )
+            .map_err(sql_error)?;
+        let states = stmt
+            .query_map(params![profile_id], calibration_workspace_state_from_row)
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?;
+        Ok(states)
+    }
+
+    fn list_calibration_unhydrated_projects(
+        &self,
+        profile_id: &str,
+    ) -> Result<Vec<CalibrationUnhydratedProjectDto>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT p.profile_id, p.project_id, p.display_name, p.description,
+                        p.printer_id, p.status, p.is_synced,
+                        p.is_printer_context_fresh, p.has_conflicts,
+                        p.remote_project_id, p.base_revision, p.created_at, p.updated_at
+                 FROM calibration_projects p
+                 LEFT JOIN calibration_workspace_states s
+                   ON s.profile_id = p.profile_id AND s.project_id = p.project_id
+                 WHERE p.profile_id = ?1 AND s.project_id IS NULL
+                   AND p.remote_project_id IS NOT NULL
+                   AND p.base_revision IS NOT NULL
+                   AND p.is_synced = 1
+                 ORDER BY p.updated_at DESC, p.project_id ASC",
+            )
+            .map_err(sql_error)?;
+        let projects = stmt
+            .query_map(params![profile_id], |row| {
+                Ok(CalibrationUnhydratedProjectDto {
+                    profile_id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    display_name: row.get(2)?,
+                    description: row.get(3)?,
+                    printer_id: row.get(4)?,
+                    status: row.get(5)?,
+                    is_synced: row.get::<_, i64>(6)? != 0,
+                    is_printer_context_fresh: row.get::<_, i64>(7)? != 0,
+                    has_conflicts: row.get::<_, i64>(8)? != 0,
+                    remote_project_id: row.get(9)?,
+                    base_revision: row.get(10)?,
+                    created_at: row.get(11)?,
+                    updated_at: row.get(12)?,
+                    recovery_state: "migrationRequired".to_string(),
+                })
+            })
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?;
+        Ok(projects)
+    }
+
+    fn get_calibration_workspace_state(
+        &self,
+        profile_id: &str,
+        project_id: &str,
+    ) -> Result<Option<CalibrationWorkspaceStateDto>, String> {
+        self.conn
+            .query_row(
+                "SELECT p.profile_id, p.project_id, p.display_name, p.description,
+                        p.printer_id, p.status, s.completed_step_count, s.total_step_count,
+                        p.is_synced, p.is_printer_context_fresh, p.has_conflicts,
+                        p.remote_project_id, p.base_revision, p.created_at, p.updated_at,
+                        s.workspace_state_json
+                 FROM calibration_projects p
+                 JOIN calibration_workspace_states s
+                   ON s.profile_id = p.profile_id AND s.project_id = p.project_id
+                 WHERE p.profile_id = ?1 AND p.project_id = ?2",
+                params![profile_id, project_id],
+                calibration_workspace_state_from_row,
+            )
+            .optional()
+            .map_err(sql_error)
+    }
+
+    fn stage_calibration_photo(
+        &mut self,
+        input: &StageCalibrationPhotoParams,
+    ) -> Result<StagedCalibrationPhotoDto, String> {
+        if input.byte_size <= 0 || input.byte_size > 20_000_000 {
+            return Err("staged calibration photo size is invalid".to_string());
+        }
+        if input.content_hash.len() != 64
+            || !input
+                .content_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err("staged calibration photo content hash is invalid".to_string());
+        }
+        if !matches!(
+            input.mime_type.as_str(),
+            "image/jpeg" | "image/png" | "image/webp"
+        ) {
+            return Err("staged calibration photo MIME type is invalid".to_string());
+        }
+        if input.local_path.is_empty() {
+            return Err("staged calibration photo private path is missing".to_string());
+        }
+        if input.caption.is_empty() || input.caption.chars().count() > 512 {
+            return Err("staged calibration photo caption is invalid".to_string());
+        }
+        if !(1..=1000).contains(&input.order) {
+            return Err("staged calibration photo order is invalid".to_string());
+        }
+
+        let existing = self
+            .conn
+            .query_row(
+                "SELECT photo_id, attempt_id, stage_id, project_id, profile_id,
+                        content_hash, mime_type, byte_size, status, upload_attempts,
+                        remote_photo_id, remote_url, staged_at, uploaded_at, caption, photo_order
+                 FROM staged_calibration_photos
+                 WHERE profile_id = ?1 AND photo_id = ?2",
+                params![input.profile_id, input.photo_id],
+                staged_calibration_photo_from_row,
+            )
+            .optional()
+            .map_err(sql_error)?;
+        if let Some(photo) = existing {
+            if photo.attempt_id != input.attempt_id
+                || photo.stage_id != input.stage_id
+                || photo.project_id != input.project_id
+                || photo.content_hash != input.content_hash
+                || photo.mime_type != input.mime_type
+                || photo.byte_size != input.byte_size
+                || photo.caption != input.caption
+                || photo.order != input.order
+            {
+                return Err(
+                    "photoId was already staged with different immutable metadata".to_string(),
+                );
+            }
+            return Ok(photo);
+        }
+
+        self.conn
+            .execute(
+                "INSERT INTO staged_calibration_photos(
+                    profile_id, photo_id, attempt_id, stage_id, project_id,
+                    content_hash, mime_type, byte_size, status, upload_attempts,
+                    staged_at, local_path, caption, photo_order)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'staged', 0, ?9, ?10, ?11, ?12)",
+                params![
+                    input.profile_id,
+                    input.photo_id,
+                    input.attempt_id,
+                    input.stage_id.as_str(),
+                    input.project_id,
+                    input.content_hash,
+                    input.mime_type,
+                    input.byte_size,
+                    input.staged_at,
+                    input.local_path,
+                    input.caption,
+                    input.order,
+                ],
+            )
+            .map_err(sql_error)?;
+
+        self.conn
+            .query_row(
+                "SELECT photo_id, attempt_id, stage_id, project_id, profile_id,
+                        content_hash, mime_type, byte_size, status, upload_attempts,
+                        remote_photo_id, remote_url, staged_at, uploaded_at, caption, photo_order
+                 FROM staged_calibration_photos
+                 WHERE profile_id = ?1 AND photo_id = ?2",
+                params![input.profile_id, input.photo_id],
+                staged_calibration_photo_from_row,
+            )
+            .map_err(sql_error)
+    }
+
+    fn list_calibration_pending_ops(
+        &self,
+        profile_id: &str,
+        project_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<CalibrationPendingOpDto>, String> {
+        let pending = CalibrationOutboxState::Pending.as_db();
+        let mut stmt = if project_id.is_some() {
+            self.conn
+                .prepare(
+                    "SELECT operation_id, profile_id, project_id, kind, sequence,
+                            base_revision, idempotency_key, entity_type, entity_id,
+                            operation_kind, payload_json, depends_on_json
+                     FROM calibration_outbox
+                     WHERE profile_id = ?1 AND project_id = ?2
+                       AND state = ?3
+                     ORDER BY sequence ASC
+                     LIMIT ?4",
+                )
+                .map_err(sql_error)?
+        } else {
+            self.conn
+                .prepare(
+                    "SELECT operation_id, profile_id, project_id, kind, sequence,
+                            base_revision, idempotency_key, entity_type, entity_id,
+                            operation_kind, payload_json, depends_on_json
+                     FROM calibration_outbox
+                     WHERE profile_id = ?1 AND state = ?2
+                     ORDER BY sequence ASC
+                     LIMIT ?3",
+                )
+                .map_err(sql_error)?
+        };
+        let limit_i64 = limit as i64;
+        let rows: Vec<CalibrationPendingOpDto> = if let Some(pid) = project_id {
+            stmt.query_map(
+                params![profile_id, pid, pending, limit_i64],
+                calibration_pending_op_from_row,
+            )
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?
+        } else {
+            stmt.query_map(
+                params![profile_id, pending, limit_i64],
+                calibration_pending_op_from_row,
+            )
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?
+        };
+        Ok(rows)
+    }
+
+    fn settle_calibration_op(
+        &mut self,
+        profile_id: &str,
+        operation_id: &str,
+        server_revision: i64,
+    ) -> Result<(), String> {
+        let now = now_ts();
+        self.conn
+            .execute(
+                "UPDATE calibration_outbox
+                 SET state = ?3, server_revision = ?4, settled_at = ?5, updated_at = ?5
+                 WHERE profile_id = ?1 AND operation_id = ?2",
+                params![
+                    profile_id,
+                    operation_id,
+                    CalibrationOutboxState::Settled.as_db(),
+                    server_revision,
+                    now
+                ],
+            )
+            .map(|_| ())
+            .map_err(sql_error)
+    }
+
+    fn replay_calibration_op(
+        &mut self,
+        profile_id: &str,
+        operation_id: &str,
+    ) -> Result<(), String> {
+        let now = now_ts();
+        self.conn
+            .execute(
+                "UPDATE calibration_outbox
+                 SET state = ?3, settled_at = ?4, updated_at = ?4
+                 WHERE profile_id = ?1 AND operation_id = ?2",
+                params![
+                    profile_id,
+                    operation_id,
+                    CalibrationOutboxState::Replayed.as_db(),
+                    now
+                ],
+            )
+            .map(|_| ())
+            .map_err(sql_error)
+    }
+
+    fn record_calibration_conflict(
+        &mut self,
+        profile_id: &str,
+        operation_id: &str,
+        entity_type: &str,
+        entity_id: &str,
+        reason: &str,
+        server_revision: i64,
+    ) -> Result<(), String> {
+        // Look up the project_id from the outbox operation.
+        let project_id: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT project_id FROM calibration_outbox
+                 WHERE profile_id = ?1 AND operation_id = ?2",
+                params![profile_id, operation_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?
+            .flatten();
+        let project_id = project_id.unwrap_or_default();
+        let conflict_id = format!("conflict-{}", uuid_v4_placeholder());
+        let now = now_ts();
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO calibration_conflicts
+                     (profile_id, conflict_id, project_id, kind, entity_id,
+                      operation_id, server_revision, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    profile_id,
+                    conflict_id,
+                    project_id,
+                    entity_type,
+                    entity_id,
+                    operation_id,
+                    server_revision,
+                    now
+                ],
+            )
+            .map(|_| ())
+            .map_err(sql_error)?;
+        // Also mark the outbox operation as conflicted
+        self.conn
+            .execute(
+                "UPDATE calibration_outbox
+                 SET state = 'conflict', last_error = ?3, updated_at = ?4
+                 WHERE profile_id = ?1 AND operation_id = ?2",
+                params![profile_id, operation_id, reason, now],
+            )
+            .map(|_| ())
+            .map_err(sql_error)
+    }
+
+    fn get_calibration_cursor_state(
+        &self,
+        profile_id: &str,
+        project_id: Option<&str>,
+    ) -> Result<CalibrationCursorStateDto, String> {
+        if let Some(pid) = project_id {
+            let row = self
+                .conn
+                .query_row(
+                    "SELECT change_feed_cursor, base_revision, checkpoint_generation
+                     FROM calibration_projects
+                     WHERE profile_id = ?1 AND project_id = ?2",
+                    params![profile_id, pid],
+                    |row| {
+                        Ok(CalibrationCursorStateDto {
+                            cursor: row.get(0)?,
+                            server_revision: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                            checkpoint_generation: row.get(2)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(sql_error)?;
+            Ok(row.unwrap_or(CalibrationCursorStateDto {
+                cursor: None,
+                server_revision: 0,
+                checkpoint_generation: 0,
+            }))
+        } else {
+            // Profile-wide cursor: use the minimum revision across all projects.
+            let row = self
+                .conn
+                .query_row(
+                    "SELECT MIN(base_revision), MIN(checkpoint_generation)
+                     FROM calibration_projects WHERE profile_id = ?1",
+                    params![profile_id],
+                    |row| {
+                        Ok(CalibrationCursorStateDto {
+                            cursor: None,
+                            server_revision: row.get::<_, Option<i64>>(0)?.unwrap_or(0),
+                            checkpoint_generation: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                        })
+                    },
+                )
+                .optional()
+                .map_err(sql_error)?;
+            Ok(row.unwrap_or(CalibrationCursorStateDto {
+                cursor: None,
+                server_revision: 0,
+                checkpoint_generation: 0,
+            }))
+        }
+    }
+
+    fn commit_calibration_cursor(
+        &mut self,
+        profile_id: &str,
+        project_id: Option<&str>,
+        cursor: Option<&str>,
+        server_revision: i64,
+        checkpoint_generation: i64,
+    ) -> Result<(), String> {
+        let now = now_ts();
+        if let Some(pid) = project_id {
+            self.conn
+                .execute(
+                    "UPDATE calibration_projects
+                     SET change_feed_cursor = ?3, base_revision = ?4,
+                         checkpoint_generation = ?5, updated_at = ?6
+                     WHERE profile_id = ?1 AND project_id = ?2",
+                    params![
+                        profile_id,
+                        pid,
+                        cursor,
+                        server_revision,
+                        checkpoint_generation,
+                        now
+                    ],
+                )
+                .map(|_| ())
+                .map_err(sql_error)
+        } else {
+            // Profile-wide cursor update: update all projects for this profile.
+            self.conn
+                .execute(
+                    "UPDATE calibration_projects
+                     SET change_feed_cursor = ?2, base_revision = ?3,
+                         checkpoint_generation = ?4, updated_at = ?5
+                     WHERE profile_id = ?1",
+                    params![
+                        profile_id,
+                        cursor,
+                        server_revision,
+                        checkpoint_generation,
+                        now
+                    ],
+                )
+                .map(|_| ())
+                .map_err(sql_error)
+        }
+    }
+
+    fn apply_calibration_snapshot(
+        &mut self,
+        profile_id: &str,
+        entity_type: &str,
+        entity_id: &str,
+        snapshot: Option<&serde_json::Value>,
+        tombstone: bool,
+        server_revision: i64,
+    ) -> Result<(), String> {
+        let now = now_ts();
+        // For CalibrationProject entities, update the project record.
+        // For other entity types, update the project's is_synced and base_revision
+        // from the remote snapshot metadata if available.
+        match entity_type {
+            et if et == CalibrationEntityType::CalibrationProject.as_db() => {
+                if tombstone {
+                    // Tombstone: mark the project as deleted (if it exists locally)
+                    // We don't physically delete; leave it for the UI to handle.
+                    self.conn
+                        .execute(
+                            "UPDATE calibration_projects
+                             SET is_synced = 0, status = 'deleted', base_revision = ?3, updated_at = ?4
+                             WHERE profile_id = ?1 AND (project_id = ?2 OR remote_project_id = ?2)",
+                            params![profile_id, entity_id, server_revision, now],
+                        )
+                        .map_err(sql_error)?;
+                } else if let Some(snap) = snapshot {
+                    let remote_project_id = snap
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| "remote calibration project is missing id".to_string())?;
+                    if remote_project_id != entity_id {
+                        return Err(
+                            "remote calibration project identity does not match change".to_string()
+                        );
+                    }
+                    let display_name = snap
+                        .get("displayName")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            "remote calibration project is missing displayName".to_string()
+                        })?;
+                    let description = snap.get("description").and_then(|v| v.as_str());
+                    let status = snap.get("status").and_then(|v| v.as_str()).ok_or_else(|| {
+                        "remote calibration project is missing status".to_string()
+                    })?;
+                    let printer_id =
+                        snap.get("printerId")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| {
+                                "remote calibration project is missing printerId".to_string()
+                            })?;
+                    let project_revision = snap
+                        .get("revision")
+                        .and_then(|v| v.as_i64())
+                        .ok_or_else(|| {
+                            "remote calibration project is missing revision".to_string()
+                        })?;
+                    let created_at =
+                        snap.get("createdAt")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| {
+                                "remote calibration project is missing createdAt".to_string()
+                            })?;
+                    let updated_at =
+                        snap.get("updatedAt")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| {
+                                "remote calibration project is missing updatedAt".to_string()
+                            })?;
+                    let updated = self
+                        .conn
+                        .execute(
+                            "UPDATE calibration_projects
+                             SET display_name = ?3, description = ?4, status = ?5,
+                                is_synced = CASE WHEN EXISTS(
+                                    SELECT 1 FROM calibration_outbox o
+                                    WHERE o.profile_id = calibration_projects.profile_id
+                                      AND o.project_id = calibration_projects.project_id
+                                      AND o.state = 'pending'
+                                ) THEN 0 ELSE 1 END,
+                                remote_project_id = ?6, base_revision = ?7, updated_at = ?8
+                             WHERE profile_id = ?1
+                               AND (project_id = ?2 OR remote_project_id = ?2)",
+                            params![
+                                profile_id,
+                                entity_id,
+                                display_name,
+                                description,
+                                status,
+                                remote_project_id,
+                                project_revision,
+                                updated_at,
+                            ],
+                        )
+                        .map_err(sql_error)?;
+                    if updated == 0 {
+                        self.conn
+                            .execute(
+                                "INSERT INTO calibration_projects(
+                                   profile_id, project_id, display_name, description,
+                                   status, printer_id, is_synced,
+                                   is_printer_context_fresh, has_conflicts,
+                                   remote_project_id, base_revision, created_at, updated_at)
+                                VALUES(?1, ?2, ?3, ?4, ?5, ?6, 1, 0, 0, ?2, ?7, ?8, ?9)",
+                                params![
+                                    profile_id,
+                                    remote_project_id,
+                                    display_name,
+                                    description,
+                                    status,
+                                    printer_id,
+                                    project_revision,
+                                    created_at,
+                                    updated_at,
+                                ],
+                            )
+                            .map_err(sql_error)?;
+                    }
+
+                    if let Some(workspace_state) =
+                        snap.get("workspaceState").filter(|value| !value.is_null())
+                    {
+                        let (completed_step_count, total_step_count, derived_status) =
+                            calibration_workspace_projection(workspace_state)?;
+                        let workspace_project_id = workspace_state
+                            .get("domainState")
+                            .and_then(|value| value.get("projectId"))
+                            .and_then(|value| value.as_str())
+                            .ok_or_else(|| {
+                                "remote calibration workspace is missing projectId".to_string()
+                            })?;
+                        if workspace_project_id != remote_project_id {
+                            return Err(
+                                "remote calibration workspace project identity does not match"
+                                    .to_string(),
+                            );
+                        }
+                        let workspace_json = json_string(workspace_state)?;
+                        self.conn
+                            .execute(
+                                "UPDATE calibration_projects
+                                SET status = ?3
+                                WHERE profile_id = ?1
+                                  AND (project_id = ?2 OR remote_project_id = ?2)",
+                                params![profile_id, remote_project_id, derived_status],
+                            )
+                            .map_err(sql_error)?;
+                        let local_project_id: String = self
+                            .conn
+                            .query_row(
+                                "SELECT project_id FROM calibration_projects
+                                WHERE profile_id = ?1
+                                  AND (project_id = ?2 OR remote_project_id = ?2)
+                                LIMIT 1",
+                                params![profile_id, remote_project_id],
+                                |row| row.get(0),
+                            )
+                            .map_err(sql_error)?;
+                        self.conn
+                            .execute(
+                                "INSERT INTO calibration_workspace_states(
+                                   profile_id, project_id, workspace_state_json,
+                                   completed_step_count, total_step_count, updated_at)
+                                VALUES(?1, ?2, ?3, ?4, ?5, ?6)
+                                ON CONFLICT(profile_id, project_id) DO UPDATE SET
+                                   workspace_state_json = excluded.workspace_state_json,
+                                   completed_step_count = excluded.completed_step_count,
+                                   total_step_count = excluded.total_step_count,
+                                   updated_at = excluded.updated_at",
+                                params![
+                                    profile_id,
+                                    local_project_id,
+                                    workspace_json,
+                                    completed_step_count,
+                                    total_step_count,
+                                    updated_at,
+                                ],
+                            )
+                            .map_err(sql_error)?;
+                    }
+                }
+            }
+            _ => {
+                // For other entity types, just mark the project as synced
+                // (we track the high-water revision in the project row).
+                if let Some(snap) = snapshot {
+                    let project_id = snap.get("projectId").and_then(|v| v.as_str()).unwrap_or("");
+                    if !project_id.is_empty() {
+                        self.conn
+                            .execute(
+                                "UPDATE calibration_projects
+                                 SET base_revision = MAX(COALESCE(base_revision, 0), ?3),
+                                     updated_at = ?4
+                                 WHERE profile_id = ?1
+                                   AND (project_id = ?2 OR remote_project_id = ?2)",
+                                params![profile_id, project_id, server_revision, now],
+                            )
+                            .map_err(sql_error)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn list_calibration_conflicts(
+        &self,
+        profile_id: &str,
+        project_id: Option<&str>,
+    ) -> Result<Vec<CalibrationConflictDto>, String> {
+        let mut stmt = if project_id.is_some() {
+            self.conn
+                .prepare(
+                    "SELECT conflict_id, profile_id, project_id, kind, entity_id,
+                            operation_id, local_payload_json, server_payload_json,
+                            server_revision, created_at
+                     FROM calibration_conflicts
+                     WHERE profile_id = ?1 AND project_id = ?2 AND resolved_at IS NULL
+                     ORDER BY created_at ASC",
+                )
+                .map_err(sql_error)?
+        } else {
+            self.conn
+                .prepare(
+                    "SELECT conflict_id, profile_id, project_id, kind, entity_id,
+                            operation_id, local_payload_json, server_payload_json,
+                            server_revision, created_at
+                     FROM calibration_conflicts
+                     WHERE profile_id = ?1 AND resolved_at IS NULL
+                     ORDER BY created_at ASC",
+                )
+                .map_err(sql_error)?
+        };
+        let rows = if let Some(pid) = project_id {
+            stmt.query_map(params![profile_id, pid], calibration_conflict_from_row)
+                .map_err(sql_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(sql_error)?
+        } else {
+            stmt.query_map(params![profile_id], calibration_conflict_from_row)
+                .map_err(sql_error)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(sql_error)?
+        };
+        Ok(rows)
+    }
+
+    fn count_calibration_pending_ops(
+        &self,
+        profile_id: &str,
+        project_id: Option<&str>,
+    ) -> Result<i64, String> {
+        let pending = CalibrationOutboxState::Pending.as_db();
+        if let Some(pid) = project_id {
+            self.conn
+                .query_row(
+                    "SELECT COUNT(*) FROM calibration_outbox
+                     WHERE profile_id = ?1 AND project_id = ?2 AND state = ?3",
+                    params![profile_id, pid, pending],
+                    |row| row.get(0),
+                )
+                .map_err(sql_error)
+        } else {
+            self.conn
+                .query_row(
+                    "SELECT COUNT(*) FROM calibration_outbox
+                     WHERE profile_id = ?1 AND state = ?2",
+                    params![profile_id, pending],
+                    |row| row.get(0),
+                )
+                .map_err(sql_error)
+        }
+    }
+
+    fn is_printer_context_fresh(&self, profile_id: &str, project_id: &str) -> Result<bool, String> {
+        let result: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT is_printer_context_fresh FROM calibration_projects
+                 WHERE profile_id = ?1 AND project_id = ?2",
+                params![profile_id, project_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        Ok(result.unwrap_or(0) != 0)
+    }
+}
+
+fn calibration_workspace_projection(
+    workspace_state: &serde_json::Value,
+) -> Result<(i64, i64, &'static str), String> {
+    const STAGE_IDS: [&str; 9] = [
+        "temperature",
+        "flowPass1",
+        "flowPass2",
+        "pressureAdvance",
+        "flowVerification",
+        "retraction",
+        "maximumVolumetricSpeed",
+        "shrinkage",
+        "finalVerification",
+    ];
+    let domain = workspace_state
+        .get("domainState")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| "remote calibration workspace is missing domainState".to_string())?;
+    let stages = domain
+        .get("stages")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| "remote calibration workspace is missing stages".to_string())?;
+    if stages.len() != STAGE_IDS.len() {
+        return Err("remote calibration workspace must contain exactly nine stages".to_string());
+    }
+    let mut completed = 0_i64;
+    let mut all_resolved = true;
+    for stage_id in STAGE_IDS {
+        let stage = stages
+            .get(stage_id)
+            .and_then(|value| value.as_object())
+            .ok_or_else(|| format!("remote calibration workspace is missing stage {stage_id}"))?;
+        if stage.get("stageId").and_then(|value| value.as_str()) != Some(stage_id) {
+            return Err(format!(
+                "remote calibration workspace stage identity does not match {stage_id}"
+            ));
+        }
+        match stage.get("status").and_then(|value| value.as_str()) {
+            Some("completed") => completed += 1,
+            Some("skipped") => {}
+            Some("notStarted") | Some("inProgress") | Some("needsRetest") => all_resolved = false,
+            _ => {
+                return Err(format!(
+                    "remote calibration workspace stage {stage_id} has invalid status"
+                ))
+            }
+        }
+    }
+    let has_attempts = domain
+        .get("attempts")
+        .and_then(|value| value.as_array())
+        .is_some_and(|attempts| !attempts.is_empty());
+    let has_history = domain
+        .get("history")
+        .and_then(|value| value.as_array())
+        .is_some_and(|history| !history.is_empty());
+    let status = if all_resolved {
+        "complete"
+    } else if has_attempts || has_history {
+        "inProgress"
+    } else {
+        "draft"
+    };
+    Ok((completed, 9, status))
 }
 
 /// Whole seconds since the Unix epoch, as text, for `*_at` columns.
@@ -2953,6 +3981,130 @@ fn invalid_db_value() -> rusqlite::Error {
 fn json_string(value: &serde_json::Value) -> Result<String, String> {
     serde_json::to_string(value)
         .map_err(|error| format!("failed to serialize JSON payload: {error}"))
+}
+
+// --- Calibration row helpers -------------------------------------------------
+
+fn calibration_workspace_state_from_row(
+    row: &Row<'_>,
+) -> rusqlite::Result<CalibrationWorkspaceStateDto> {
+    let workspace_state_json: String = row.get(15)?;
+    let workspace_state = serde_json::from_str(&workspace_state_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(15, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    Ok(CalibrationWorkspaceStateDto {
+        profile_id: row.get(0)?,
+        project_id: row.get(1)?,
+        display_name: row.get(2)?,
+        description: row.get(3)?,
+        printer_id: row.get(4)?,
+        status: row.get(5)?,
+        completed_step_count: row.get(6)?,
+        total_step_count: row.get(7)?,
+        is_synced: row.get::<_, i64>(8)? != 0,
+        is_printer_context_fresh: row.get::<_, i64>(9)? != 0,
+        has_conflicts: row.get::<_, i64>(10)? != 0,
+        remote_project_id: row.get(11)?,
+        base_revision: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+        workspace_state,
+    })
+}
+
+fn calibration_pending_op_from_row(row: &Row<'_>) -> rusqlite::Result<CalibrationPendingOpDto> {
+    let payload_json: String = row.get(10)?;
+    let depends_on_json: String = row.get(11)?;
+    let payload = serde_json::from_str(&payload_json)
+        .unwrap_or(serde_json::Value::Object(Default::default()));
+    let depends_on: Vec<String> = serde_json::from_str(&depends_on_json).unwrap_or_default();
+    Ok(CalibrationPendingOpDto {
+        operation_id: row.get(0)?,
+        profile_id: row.get(1)?,
+        project_id: row.get(2)?,
+        kind: row.get(3)?,
+        sequence: row.get(4)?,
+        base_revision: row.get(5)?,
+        idempotency_key: row.get(6)?,
+        entity_type: row.get(7)?,
+        entity_id: row.get(8)?,
+        operation_kind: row.get(9)?,
+        payload,
+        depends_on,
+    })
+}
+
+fn staged_calibration_photo_from_row(row: &Row<'_>) -> rusqlite::Result<StagedCalibrationPhotoDto> {
+    let raw_stage_id: String = row.get(2)?;
+    let stage_id =
+        CalibrationWorkspaceStageId::try_from(raw_stage_id.as_str()).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                2,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+            )
+        })?;
+    Ok(StagedCalibrationPhotoDto {
+        photo_id: row.get(0)?,
+        attempt_id: row.get(1)?,
+        stage_id,
+        project_id: row.get(3)?,
+        profile_id: row.get(4)?,
+        content_hash: row.get(5)?,
+        mime_type: row.get(6)?,
+        byte_size: row.get(7)?,
+        status: row.get(8)?,
+        upload_attempts: row.get(9)?,
+        remote_photo_id: row.get(10)?,
+        remote_url: row.get(11)?,
+        staged_at: row.get(12)?,
+        uploaded_at: row.get(13)?,
+        caption: row.get(14)?,
+        order: row.get(15)?,
+    })
+}
+
+fn calibration_conflict_from_row(row: &Row<'_>) -> rusqlite::Result<CalibrationConflictDto> {
+    let local_payload_json: Option<String> = row.get(6)?;
+    let server_payload_json: Option<String> = row.get(7)?;
+    let local_payload = local_payload_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok());
+    let server_payload = server_payload_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok());
+    Ok(CalibrationConflictDto {
+        conflict_id: row.get(0)?,
+        profile_id: row.get(1)?,
+        project_id: row.get(2)?,
+        kind: row.get(3)?,
+        entity_id: row.get(4)?,
+        operation_id: row.get(5)?,
+        local_payload,
+        server_payload,
+        server_revision: row.get(8)?,
+        created_at: row.get(9)?,
+    })
+}
+
+/// Simple UUID v4 placeholder for conflict IDs.
+/// Uses a combination of the current time and a counter for uniqueness.
+fn uuid_v4_placeholder() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+        (nanos >> 32) as u32,
+        (nanos >> 16) as u16,
+        nanos as u16 & 0x0fff,
+        (seq & 0x3fff) | 0x8000,
+        seq & 0x0000_ffff_ffff
+    )
 }
 
 fn optional_json(value: &Option<serde_json::Value>) -> Result<Option<String>, String> {
@@ -4437,5 +5589,591 @@ mod tests {
                 .operation_id,
             "pending"
         );
+    }
+
+    fn workspace_input(
+        profile_id: &str,
+        project_id: &str,
+        operation_id: &str,
+        idempotency_key: &str,
+        updated_at: &str,
+    ) -> SaveCalibrationWorkspaceStateParams {
+        SaveCalibrationWorkspaceStateParams {
+            profile_id: profile_id.to_string(),
+            project_id: project_id.to_string(),
+            display_name: "Flow calibration".to_string(),
+            description: Some("Exact local draft".to_string()),
+            printer_id: "printer-1".to_string(),
+            status: "inProgress".to_string(),
+            completed_step_count: 2,
+            total_step_count: 5,
+            printer_context_fresh: false,
+            base_revision: None,
+            operation_id: operation_id.to_string(),
+            idempotency_key: idempotency_key.to_string(),
+            workspace_state: serde_json::json!({
+                "activeStepId": "step-2",
+                "draft": {
+                    "notes": "retain exactly",
+                    "measurements": [0.1, null, 0.3]
+                }
+            }),
+            created_at: "2026-07-26T15:00:00.000Z".to_string(),
+            updated_at: updated_at.to_string(),
+        }
+    }
+
+    #[test]
+    fn upgrades_v12_through_canonical_v14_additively() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("v12-calibration.sqlite3");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(SCHEMA_V12).unwrap();
+            conn.execute(
+                "INSERT INTO calibration_projects(
+                    profile_id, project_id, display_name, status, printer_id,
+                    created_at, updated_at)
+                 VALUES('profile-1', 'project-1', 'Existing', 'draft', 'printer-1', '1', '1')",
+                [],
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 12).unwrap();
+        }
+
+        let store = SqliteCatalog::open(&db).unwrap();
+        let version: u32 = store
+            .conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        let state_table_exists: bool = store
+            .conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name = 'calibration_workspace_states')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let existing_projects: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM calibration_projects", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, 14);
+        assert!(state_table_exists);
+        assert_eq!(existing_projects, 1);
+        let photo_columns: Vec<String> = store
+            .conn
+            .prepare("PRAGMA table_info(staged_calibration_photos)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(photo_columns.contains(&"stage_id".to_string()));
+        assert!(!photo_columns.contains(&"step_id".to_string()));
+        assert!(photo_columns.contains(&"local_path".to_string()));
+        assert!(photo_columns.contains(&"caption".to_string()));
+        assert!(photo_columns.contains(&"photo_order".to_string()));
+    }
+
+    #[test]
+    fn saves_lists_and_gets_exact_workspace_state_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("calibration-workspace.sqlite3");
+        let input = workspace_input(
+            "profile-1",
+            "project-1",
+            "operation-1",
+            &"a".repeat(64),
+            "2026-07-26T15:01:00.000Z",
+        );
+        {
+            let mut store = SqliteCatalog::open(&db).unwrap();
+            let saved = store.save_calibration_workspace_state(&input).unwrap();
+            assert_eq!(saved.workspace_state, input.workspace_state);
+            assert_eq!(saved.completed_step_count, 2);
+            assert_eq!(saved.total_step_count, 5);
+            assert!(!saved.is_synced);
+            assert!(!saved.is_printer_context_fresh);
+        }
+
+        let store = SqliteCatalog::open(&db).unwrap();
+        let fetched = store
+            .get_calibration_workspace_state("profile-1", "project-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched.workspace_state, input.workspace_state);
+        assert_eq!(fetched.description, input.description);
+        assert_eq!(fetched.created_at, input.created_at);
+        assert_eq!(fetched.updated_at, input.updated_at);
+        assert_eq!(
+            store
+                .list_calibration_workspace_states("profile-1")
+                .unwrap(),
+            vec![fetched]
+        );
+    }
+
+    #[test]
+    fn staged_calibration_photo_persists_private_path_and_replays_by_hash() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let workspace = workspace_input(
+            "profile-1",
+            "project-1",
+            "operation-1",
+            &"a".repeat(64),
+            "2026-07-26T15:01:00.000Z",
+        );
+        store.save_calibration_workspace_state(&workspace).unwrap();
+        let photo = StageCalibrationPhotoParams {
+            photo_id: "photo-1".to_string(),
+            attempt_id: "attempt-1".to_string(),
+            stage_id: CalibrationWorkspaceStageId::Temperature,
+            project_id: "project-1".to_string(),
+            profile_id: "profile-1".to_string(),
+            content_hash: "b".repeat(64),
+            mime_type: "image/png".to_string(),
+            byte_size: 128,
+            local_path: r"C:\private\photo-1.png".to_string(),
+            staged_at: "2026-07-26T15:02:00.000Z".to_string(),
+            caption: "Temperature result".to_string(),
+            order: 1,
+        };
+
+        let saved = store.stage_calibration_photo(&photo).unwrap();
+        assert_eq!(saved.content_hash, photo.content_hash);
+        assert_eq!(saved.stage_id, CalibrationWorkspaceStageId::Temperature);
+        assert_eq!(saved.caption, "Temperature result");
+        assert_eq!(saved.order, 1);
+        assert_eq!(store.stage_calibration_photo(&photo).unwrap(), saved);
+        let private_path: String = store
+            .conn
+            .query_row(
+                "SELECT local_path FROM staged_calibration_photos
+                 WHERE profile_id = 'profile-1' AND photo_id = 'photo-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(private_path, photo.local_path);
+        let renderer_json = serde_json::to_value(&saved).unwrap();
+        assert!(renderer_json.get("localPath").is_none());
+
+        let mut changed = photo;
+        changed.content_hash = "c".repeat(64);
+        assert!(store
+            .stage_calibration_photo(&changed)
+            .unwrap_err()
+            .contains("different immutable metadata"));
+    }
+
+    #[test]
+    fn calibration_workspace_save_preserves_projection_and_immutable_outbox_rows() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let first = workspace_input(
+            "profile-1",
+            "project-1",
+            "operation-1",
+            &"b".repeat(64),
+            "2026-07-26T15:01:00.000Z",
+        );
+        store.save_calibration_workspace_state(&first).unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE calibration_projects
+                 SET remote_project_id = 'remote-1', base_revision = 7,
+                     has_conflicts = 1, is_synced = 1, is_printer_context_fresh = 1
+                 WHERE profile_id = 'profile-1' AND project_id = 'project-1'",
+                [],
+            )
+            .unwrap();
+
+        let mut second = workspace_input(
+            "profile-1",
+            "project-1",
+            "operation-2",
+            &"c".repeat(64),
+            "2026-07-26T15:02:00.000Z",
+        );
+        second.display_name = "Updated flow calibration".to_string();
+        second.base_revision = Some(8);
+        second.printer_context_fresh = true;
+        second.workspace_state["activeStepId"] = serde_json::json!("step-3");
+        let saved = store.save_calibration_workspace_state(&second).unwrap();
+
+        assert_eq!(saved.remote_project_id.as_deref(), Some("remote-1"));
+        assert_eq!(saved.base_revision, Some(8));
+        assert!(saved.has_conflicts);
+        assert!(!saved.is_synced);
+        assert!(saved.is_printer_context_fresh);
+
+        let operations = store
+            .list_calibration_pending_ops("profile-1", Some("project-1"), 10)
+            .unwrap();
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].sequence, 2);
+        assert_eq!(operations[0].operation_kind, "Update");
+        assert_eq!(operations[0].kind, "saveProjectDraft");
+        assert_eq!(operations[0].entity_type, "CalibrationProject");
+        assert_eq!(
+            operations[0].payload,
+            serde_json::json!({
+                "displayName": second.display_name,
+                "description": second.description,
+                "printerId": second.printer_id,
+                "status": second.status,
+                "workspaceState": second.workspace_state,
+            })
+        );
+        let superseded: String = store
+            .conn
+            .query_row(
+                "SELECT state FROM calibration_outbox
+                 WHERE profile_id = 'profile-1' AND operation_id = 'operation-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(superseded, "superseded");
+    }
+
+    #[test]
+    fn three_queued_autosaves_coalesce_for_new_and_existing_projects() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        for index in 1..=3 {
+            let mut input = workspace_input(
+                "profile-1",
+                "new-project",
+                &format!("new-operation-{index}"),
+                &format!("{index}").repeat(64),
+                &format!("2026-07-26T15:0{index}:00.000Z"),
+            );
+            input.workspace_state["revision"] = serde_json::json!(index);
+            store.save_calibration_workspace_state(&input).unwrap();
+        }
+        let new_pending = store
+            .list_calibration_pending_ops("profile-1", Some("new-project"), 10)
+            .unwrap();
+        assert_eq!(new_pending.len(), 1);
+        assert_eq!(new_pending[0].operation_id, "new-operation-3");
+        assert_eq!(new_pending[0].operation_kind, "Create");
+        assert_eq!(
+            new_pending[0].payload["workspaceState"]["revision"],
+            serde_json::json!(3)
+        );
+
+        for index in 1..=3 {
+            let mut input = workspace_input(
+                "profile-1",
+                "existing-project",
+                &format!("existing-operation-{index}"),
+                &format!("{}", index + 3).repeat(64),
+                &format!("2026-07-26T16:0{index}:00.000Z"),
+            );
+            input.base_revision = Some(9);
+            input.workspace_state["revision"] = serde_json::json!(index);
+            store.save_calibration_workspace_state(&input).unwrap();
+        }
+        let existing_pending = store
+            .list_calibration_pending_ops("profile-1", Some("existing-project"), 10)
+            .unwrap();
+        assert_eq!(existing_pending.len(), 1);
+        assert_eq!(existing_pending[0].operation_id, "existing-operation-3");
+        assert_eq!(existing_pending[0].operation_kind, "Update");
+        assert_eq!(existing_pending[0].base_revision, Some(9));
+        assert_eq!(
+            existing_pending[0].payload["workspaceState"]["revision"],
+            serde_json::json!(3)
+        );
+
+        let states: Vec<(String, i64)> = store
+            .conn
+            .prepare(
+                "SELECT state, COUNT(*) FROM calibration_outbox
+                 GROUP BY state ORDER BY state",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            states,
+            vec![("pending".to_string(), 2), ("superseded".to_string(), 4)]
+        );
+
+        let replay = workspace_input(
+            "profile-1",
+            "new-project",
+            "new-operation-3",
+            &"3".repeat(64),
+            "2026-07-26T15:03:00.000Z",
+        );
+        let mut replay = replay;
+        replay.workspace_state["revision"] = serde_json::json!(3);
+        store.save_calibration_workspace_state(&replay).unwrap();
+        assert_eq!(
+            store
+                .list_calibration_pending_ops("profile-1", Some("new-project"), 10)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn remote_workspace_needs_retest_is_unresolved() {
+        let mut stages = serde_json::Map::new();
+        for stage_id in [
+            "temperature",
+            "flowPass1",
+            "flowPass2",
+            "pressureAdvance",
+            "flowVerification",
+            "retraction",
+            "maximumVolumetricSpeed",
+            "shrinkage",
+            "finalVerification",
+        ] {
+            stages.insert(
+                stage_id.to_string(),
+                serde_json::json!({
+                    "stageId": stage_id,
+                    "status": if stage_id == "temperature" {
+                        "needsRetest"
+                    } else {
+                        "completed"
+                    },
+                }),
+            );
+        }
+        let workspace = serde_json::json!({
+            "domainState": {
+                "stages": stages,
+                "attempts": [],
+                "history": [{ "type": "rebaseSnapshot" }],
+            },
+        });
+
+        assert_eq!(
+            calibration_workspace_projection(&workspace).unwrap(),
+            (8, 9, "inProgress")
+        );
+    }
+
+    #[test]
+    fn workspace_save_uses_only_main_validated_freshness() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let mut input = workspace_input(
+            "profile-1",
+            "project-1",
+            "operation-1",
+            &"a".repeat(64),
+            "2026-07-26T15:01:00.000Z",
+        );
+        input.printer_context_fresh = true;
+        assert!(
+            store
+                .save_calibration_workspace_state(&input)
+                .unwrap()
+                .is_printer_context_fresh
+        );
+
+        let mut mismatch = input.clone();
+        mismatch.operation_id = "operation-2".to_string();
+        mismatch.idempotency_key = "b".repeat(64);
+        mismatch.updated_at = "2026-07-26T15:02:00.000Z".to_string();
+        mismatch.printer_context_fresh = false;
+        assert!(
+            !store
+                .save_calibration_workspace_state(&mismatch)
+                .unwrap()
+                .is_printer_context_fresh
+        );
+
+        let mut rebased = mismatch;
+        rebased.operation_id = "operation-3".to_string();
+        rebased.idempotency_key = "c".repeat(64);
+        rebased.updated_at = "2026-07-26T15:03:00.000Z".to_string();
+        rebased.printer_context_fresh = true;
+        assert!(
+            store
+                .save_calibration_workspace_state(&rebased)
+                .unwrap()
+                .is_printer_context_fresh
+        );
+    }
+
+    #[test]
+    fn remote_only_project_remains_visible_as_unhydrated_recovery_state() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let snapshot = serde_json::json!({
+            "id": "22222222-2222-4222-8222-222222222222",
+            "displayName": "Remote-only calibration",
+            "description": "Created on another desktop",
+            "status": "inProgress",
+            "printerId": "printer-remote",
+            "revision": 4,
+            "createdAt": "2026-07-26T15:00:00.000Z",
+            "updatedAt": "2026-07-26T16:00:00.000Z"
+        });
+        store
+            .apply_calibration_snapshot(
+                "profile-1",
+                CalibrationEntityType::CalibrationProject.as_db(),
+                "22222222-2222-4222-8222-222222222222",
+                Some(&snapshot),
+                false,
+                20,
+            )
+            .unwrap();
+        store
+            .apply_calibration_snapshot(
+                "profile-1",
+                CalibrationEntityType::CalibrationProject.as_db(),
+                "22222222-2222-4222-8222-222222222222",
+                Some(&snapshot),
+                false,
+                20,
+            )
+            .unwrap();
+
+        assert!(store
+            .list_calibration_workspace_states("profile-1")
+            .unwrap()
+            .is_empty());
+        let projects = store
+            .list_calibration_unhydrated_projects("profile-1")
+            .unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].display_name, "Remote-only calibration");
+        assert_eq!(projects[0].base_revision, 4);
+        assert_eq!(projects[0].recovery_state, "migrationRequired");
+        assert!(projects[0].is_synced);
+        assert!(!projects[0].is_printer_context_fresh);
+    }
+
+    #[test]
+    fn exact_calibration_workspace_replay_does_not_duplicate_outbox() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let input = workspace_input(
+            "profile-1",
+            "project-1",
+            "operation-1",
+            &"d".repeat(64),
+            "2026-07-26T15:01:00.000Z",
+        );
+        let first = store.save_calibration_workspace_state(&input).unwrap();
+        let replay = store.save_calibration_workspace_state(&input).unwrap();
+        assert_eq!(replay, first);
+        assert_eq!(
+            store
+                .count_calibration_pending_ops("profile-1", Some("project-1"))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn calibration_workspace_replay_refuses_payload_or_key_changes_and_rolls_back() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let input = workspace_input(
+            "profile-1",
+            "project-1",
+            "operation-1",
+            &"e".repeat(64),
+            "2026-07-26T15:01:00.000Z",
+        );
+        let original = store.save_calibration_workspace_state(&input).unwrap();
+
+        let mut changed_payload = input.clone();
+        changed_payload.workspace_state["activeStepId"] = serde_json::json!("changed");
+        assert!(store
+            .save_calibration_workspace_state(&changed_payload)
+            .unwrap_err()
+            .contains("immutable"));
+
+        let mut changed_key = input.clone();
+        changed_key.idempotency_key = "f".repeat(64);
+        assert!(store
+            .save_calibration_workspace_state(&changed_key)
+            .unwrap_err()
+            .contains("different idempotencyKey"));
+
+        assert_eq!(
+            store
+                .get_calibration_workspace_state("profile-1", "project-1")
+                .unwrap()
+                .unwrap(),
+            original
+        );
+        assert_eq!(
+            store
+                .count_calibration_pending_ops("profile-1", Some("project-1"))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn calibration_workspace_states_are_profile_isolated_and_newest_first() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let profile_one_old = workspace_input(
+            "profile-1",
+            "shared-project",
+            "operation-1",
+            &"1".repeat(64),
+            "2026-07-26T15:01:00.000Z",
+        );
+        let mut profile_one_new = workspace_input(
+            "profile-1",
+            "new-project",
+            "operation-2",
+            &"2".repeat(64),
+            "2026-07-26T15:02:00.000Z",
+        );
+        profile_one_new.display_name = "Newest".to_string();
+        let mut profile_two = workspace_input(
+            "profile-2",
+            "shared-project",
+            "operation-1",
+            &"3".repeat(64),
+            "2026-07-26T15:03:00.000Z",
+        );
+        profile_two.display_name = "Other profile".to_string();
+
+        store
+            .save_calibration_workspace_state(&profile_one_old)
+            .unwrap();
+        store
+            .save_calibration_workspace_state(&profile_one_new)
+            .unwrap();
+        store
+            .save_calibration_workspace_state(&profile_two)
+            .unwrap();
+
+        let profile_one_states = store
+            .list_calibration_workspace_states("profile-1")
+            .unwrap();
+        assert_eq!(profile_one_states.len(), 2);
+        assert_eq!(profile_one_states[0].project_id, "new-project");
+        assert_eq!(profile_one_states[1].project_id, "shared-project");
+        assert_eq!(
+            store
+                .get_calibration_workspace_state("profile-2", "shared-project")
+                .unwrap()
+                .unwrap()
+                .display_name,
+            "Other profile"
+        );
+        assert!(store
+            .get_calibration_workspace_state("profile-2", "new-project")
+            .unwrap()
+            .is_none());
     }
 }

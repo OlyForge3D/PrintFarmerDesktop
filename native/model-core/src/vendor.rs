@@ -433,6 +433,14 @@ fn collect_thumbnail_part_names<R: Read + Seek>(
         }
         // A PNG that claims an impossible expansion ratio is a decompression
         // bomb aimed at the thumbnail RPC, not a plate preview.
+        //
+        // Defence in depth only: this cannot fail in practice. `check_ratio` is
+        // pure, and the `open_package` preflight above already ran it over every
+        // entry with these same two accessors, so a thumbnail that reached this
+        // line was cleared at the identical ratio. Deleting this call leaves the
+        // whole suite green - including
+        // `vendor_thumbnail_extraction_rejects_a_bomb`, which is satisfied by
+        // the preflight rather than by this check.
         guard.check_ratio(&part_name, file.compressed_size(), file.size())?;
         total_thumbnail_bytes =
             total_thumbnail_bytes
@@ -562,7 +570,7 @@ pub fn is_vendor_project(data: &[u8]) -> Result<bool, ThreeMfError> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
     use std::io::Cursor;
     use std::io::Write;
@@ -586,16 +594,7 @@ pub(crate) mod tests {
         buf
     }
 
-    /// Rewrite an entry's *declared* uncompressed size in both the local and
-    /// central headers, leaving the real payload intact - the shape of an
-    /// archive that lies about what it will expand to. Shared with the
-    /// `threemf` tests, which need the same lie to reach the running
-    /// accumulator without the declared-total preflight seeing it first.
-    pub(crate) fn patch_declared_uncompressed_size(
-        zip: &mut [u8],
-        part_name: &str,
-        fake_size: u32,
-    ) {
+    fn patch_declared_uncompressed_size(zip: &mut [u8], part_name: &str, fake_size: u32) {
         patch_local_uncompressed_size(zip, part_name, fake_size);
         patch_central_uncompressed_size(zip, part_name, fake_size);
     }
