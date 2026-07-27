@@ -347,7 +347,7 @@ describe('the release workflow enforces compliance before publication', () => {
   const lockGuard =
     'git diff --exit-code -- native/Cargo.lock package-lock.json';
 
-  it('runs compliance and the lock guard after make and before upload/release', () => {
+  it('runs compliance before upload, then signs metadata before dependent publication', () => {
     const steps = parseWorkflowSteps(releaseWorkflow, 'make');
     const indexOfRun = (run: string): number =>
       steps.findIndex((step) => step.run === run);
@@ -356,7 +356,9 @@ describe('the release workflow enforces compliance before publication', () => {
     const indexOfName = (name: string): number =>
       steps.findIndex((step) => step.name === name);
 
-    const make = indexOfRun('npm run make');
+    const make = steps.findIndex((step) =>
+      step.run?.startsWith('npm run make'),
+    );
     const compliance = [
       indexOfRun('npm run verify:sbom'),
       indexOfRun('npm run verify:licenses'),
@@ -366,7 +368,6 @@ describe('the release workflow enforces compliance before publication', () => {
     const immutableLocks = indexOfRun(lockGuard);
     const collect = indexOfName('Collect artifacts');
     const upload = indexOfUse('actions/upload-artifact@v4');
-    const publish = indexOfUse('softprops/action-gh-release@v2');
     const ordered = [
       make,
       ...compliance,
@@ -374,7 +375,6 @@ describe('the release workflow enforces compliance before publication', () => {
       immutableLocks,
       collect,
       upload,
-      publish,
     ];
 
     expect(ordered.every((index) => index >= 0)).toBe(true);
@@ -382,6 +382,26 @@ describe('the release workflow enforces compliance before publication', () => {
     for (const index of [...compliance, packaged, immutableLocks]) {
       expect(steps[index]?.continueOnError).not.toBe('true');
     }
+
+    const publishSteps = parseWorkflowSteps(releaseWorkflow, 'publish');
+    const download = publishSteps.findIndex(
+      (step) => step.uses === 'actions/download-artifact@v4',
+    );
+    const metadata = publishSteps.findIndex(
+      (step) => step.name === 'Generate signed update metadata',
+    );
+    const publish = publishSteps.findIndex(
+      (step) => step.uses === 'softprops/action-gh-release@v2',
+    );
+    expect([download, metadata, publish].every((index) => index >= 0)).toBe(
+      true,
+    );
+    expect([download, metadata, publish]).toEqual(
+      [download, metadata, publish].toSorted((left, right) => left - right),
+    );
+    expect(releaseWorkflow).toMatch(
+      / {2}publish:\r?\n(?:.*\r?\n)*? {4}needs: make/,
+    );
 
     const commentedNotices = releaseWorkflow.replace(
       '        run: npm run verify:notices',

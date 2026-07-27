@@ -1,8 +1,4 @@
-name: Release (unsigned)
-
-# Builds unsigned installers on Windows + macOS and publishes them to a GitHub
-# Release. No code-signing certificate or notarization credential is required;
-# end users clear a first-launch SmartScreen / Gatekeeper prompt (see README).
+name: Release (signed)
 
 on:
   push:
@@ -10,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Build artifacts without creating a GitHub Release'
+        description: 'Build unsigned artifacts without creating a GitHub Release'
         type: boolean
         default: true
 
@@ -24,7 +20,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        include:
+          - os: windows-latest
+            platform: win32
+            arch: x64
+          - os: macos-latest
+            platform: darwin
+            arch: universal
     steps:
       - uses: actions/checkout@v4
 
@@ -42,16 +44,130 @@ jobs:
       - name: Calibration provenance
         run: npm run check:provenance
 
-      - name: Build sidecar (release)
+      - name: Prepare Windows release signing
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          UPDATE_PUBLIC_KEY_BASE64: ${{ secrets.UPDATE_SIGNING_PUBLIC_KEY_BASE64 }}
+        run: |
+          $missing = @()
+          if ([string]::IsNullOrWhiteSpace($env:CERTIFICATE_BASE64)) { $missing += 'WINDOWS_CERTIFICATE_P12_BASE64' }
+          if ([string]::IsNullOrWhiteSpace($env:CERTIFICATE_PASSWORD)) { $missing += 'WINDOWS_CERTIFICATE_PASSWORD' }
+          if ([string]::IsNullOrWhiteSpace($env:UPDATE_PUBLIC_KEY_BASE64)) { $missing += 'UPDATE_SIGNING_PUBLIC_KEY_BASE64' }
+          if ($missing.Count -gt 0) { throw "Tagged releases require GitHub secrets: $($missing -join ', ')" }
+          $certificatePath = Join-Path $env:RUNNER_TEMP 'printfarmer-release.p12'
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
+          "PRINTFARMER_REQUIRE_SIGNING=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "WINDOWS_CERTIFICATE_FILE=$certificatePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "WINDOWS_CERTIFICATE_PASSWORD=$env:CERTIFICATE_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PRINTFARMER_UPDATE_PUBLIC_KEY_BASE64=$env:UPDATE_PUBLIC_KEY_BASE64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Prepare Apple release signing
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        shell: bash
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          NOTARIZATION_APPLE_ID: ${{ secrets.APPLE_ID }}
+          NOTARIZATION_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          NOTARIZATION_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          UPDATE_PUBLIC_KEY_BASE64: ${{ secrets.UPDATE_SIGNING_PUBLIC_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "$CERTIFICATE_BASE64" ]] || missing+=(APPLE_CERTIFICATE_P12_BASE64)
+          [[ -n "$CERTIFICATE_PASSWORD" ]] || missing+=(APPLE_CERTIFICATE_PASSWORD)
+          [[ -n "$SIGNING_IDENTITY" ]] || missing+=(APPLE_SIGNING_IDENTITY)
+          [[ -n "$NOTARIZATION_APPLE_ID" ]] || missing+=(APPLE_ID)
+          [[ -n "$NOTARIZATION_PASSWORD" ]] || missing+=(APPLE_APP_SPECIFIC_PASSWORD)
+          [[ -n "$NOTARIZATION_TEAM_ID" ]] || missing+=(APPLE_TEAM_ID)
+          [[ -n "$UPDATE_PUBLIC_KEY_BASE64" ]] || missing+=(UPDATE_SIGNING_PUBLIC_KEY_BASE64)
+          if (( ${#missing[@]} )); then
+            printf 'Tagged releases require GitHub secrets: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+          certificate_path="$RUNNER_TEMP/printfarmer-release.p12"
+          keychain_path="$RUNNER_TEMP/printfarmer-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          printf '%s' "$CERTIFICATE_BASE64" | openssl base64 -d -A -out "$certificate_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" -k "$keychain_path" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          {
+            echo "PRINTFARMER_REQUIRE_SIGNING=1"
+            echo "APPLE_SIGNING_IDENTITY=$SIGNING_IDENTITY"
+            echo "APPLE_SIGNING_KEYCHAIN=$keychain_path"
+            echo "APPLE_ID=$NOTARIZATION_APPLE_ID"
+            echo "APPLE_APP_SPECIFIC_PASSWORD=$NOTARIZATION_PASSWORD"
+            echo "APPLE_TEAM_ID=$NOTARIZATION_TEAM_ID"
+            echo "PRINTFARMER_UPDATE_PUBLIC_KEY_BASE64=$UPDATE_PUBLIC_KEY_BASE64"
+            echo "PRINTFARMER_SIGNING_KEYCHAIN=$keychain_path"
+            echo "PRINTFARMER_SIGNING_CERTIFICATE=$certificate_path"
+          } >> "$GITHUB_ENV"
+
+      - name: Build Windows sidecar (release)
+        if: runner.os == 'Windows'
         working-directory: native
         run: cargo build --locked --release -p model-core --features sqlite
 
-      - name: Make unsigned artifacts
+      - name: Add universal macOS Rust targets
+        if: runner.os == 'macOS'
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+      - name: Build universal macOS sidecar (release)
+        if: runner.os == 'macOS'
+        run: node scripts/build-universal-sidecar.mjs
+
+      - name: Sign universal Rust sidecar before the Electron app
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sidecar="$GITHUB_WORKSPACE/native/target/universal-apple-darwin/release/model-core"
+          codesign --force --timestamp --options runtime --keychain "$APPLE_SIGNING_KEYCHAIN" --sign "$APPLE_SIGNING_IDENTITY" "$sidecar"
+          codesign --verify --strict --verbose=2 "$sidecar"
+
+      - name: Make artifacts
         env:
-          # The sidecar is built in the dedicated step above; the packaging hook
-          # only needs to stage it.
           PRINTFARMER_SKIP_SIDECAR_BUILD: '1'
-        run: npm run make
+          PRINTFARMER_SIDECAR_SOURCE: ${{ matrix.platform == 'darwin' && format('{0}/native/target/universal-apple-darwin/release/model-core', github.workspace) || '' }}
+        run: npm run make -- --platform=${{ matrix.platform }} --arch=${{ matrix.arch }}
+
+      - name: Verify Windows Authenticode signatures
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $files = @(
+            Get-ChildItem out -Recurse -File |
+              Where-Object { $_.Name -eq 'PrintFarmer Desktop.exe' -or $_.Name -like '*Setup.exe' }
+          )
+          if ($files.Count -lt 2) { throw 'Expected both packaged app and Setup.exe for signature verification' }
+          foreach ($file in $files) {
+            $signature = Get-AuthenticodeSignature $file.FullName
+            if ($signature.Status -ne 'Valid') {
+              throw "Invalid Authenticode signature on $($file.FullName): $($signature.Status)"
+            }
+          }
+
+      - name: Verify universal app, nested sidecar, and notarization
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app_path="$(find out -type d -name 'PrintFarmer Desktop.app' -print -quit)"
+          [[ -n "$app_path" ]] || { echo 'Packaged app not found' >&2; exit 1; }
+          sidecar="$app_path/Contents/Resources/sidecar/model-core"
+          lipo -verify_arch x86_64 arm64 "$sidecar"
+          codesign --verify --strict --verbose=2 "$sidecar"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          xcrun stapler validate "$app_path"
+          spctl --assess --type execute --verbose=2 "$app_path"
 
       - name: Verify SBOM reproduces from the lockfiles
         run: npm run verify:sbom
@@ -71,11 +187,16 @@ jobs:
       - name: Collect artifacts
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p dist
-          # Installers / disk images / portable archives, excluding Squirrel's
-          # internal RELEASES/nupkg bookkeeping files.
-          find out/make -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \) -print0 \
-            | xargs -0 -I {} cp "{}" dist/
+          while IFS= read -r -d '' artifact; do
+            file_name="$(basename "$artifact")"
+            safe_name="$(printf '%s' "$file_name" | sed -E 's/[^A-Za-z0-9._-]+/./g; s/^\.+//; s/\.+$//')"
+            [[ -n "$safe_name" ]] || { echo "Artifact name cannot be normalized: $file_name" >&2; exit 1; }
+            [[ ! -e "dist/$safe_name" ]] || { echo "Artifact name collision after normalization: $safe_name" >&2; exit 1; }
+            cp "$artifact" "dist/$safe_name"
+          done < <(find out/make -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.zip' \) -print0)
+          test -n "$(find dist -type f -print -quit)"
           ls -la dist
 
       - name: Upload build artifacts
@@ -85,14 +206,83 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-      - name: Publish to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Clean up Windows release credentials
+        if: always() && startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ($env:WINDOWS_CERTIFICATE_FILE -and (Test-Path $env:WINDOWS_CERTIFICATE_FILE)) {
+            Remove-Item -LiteralPath $env:WINDOWS_CERTIFICATE_FILE -Force
+          }
+
+      - name: Clean up Apple release credentials
+        if: always() && startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        shell: bash
+        run: |
+          if [[ -n "${PRINTFARMER_SIGNING_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$PRINTFARMER_SIGNING_KEYCHAIN" || true
+          fi
+          if [[ -n "${PRINTFARMER_SIGNING_CERTIFICATE:-}" ]]; then
+            rm -f "$PRINTFARMER_SIGNING_CERTIFICATE"
+          fi
+
+  publish:
+    name: Sign metadata and publish
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: make
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download verified platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: printfarmer-desktop-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          [[ "$GITHUB_REF_NAME" == "v$version" ]] || {
+            echo "Release tag $GITHUB_REF_NAME does not match package version $version" >&2
+            exit 1
+          }
+
+      - name: Generate signed update metadata
+        shell: bash
+        env:
+          UPDATE_SIGNING_PRIVATE_KEY_BASE64: ${{ secrets.UPDATE_SIGNING_PRIVATE_KEY_BASE64 }}
+          PRINTFARMER_UPDATE_PUBLIC_KEY_BASE64: ${{ secrets.UPDATE_SIGNING_PUBLIC_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          [[ -n "$UPDATE_SIGNING_PRIVATE_KEY_BASE64" ]] || { echo 'UPDATE_SIGNING_PRIVATE_KEY_BASE64 is required' >&2; exit 1; }
+          [[ -n "$PRINTFARMER_UPDATE_PUBLIC_KEY_BASE64" ]] || { echo 'UPDATE_SIGNING_PUBLIC_KEY_BASE64 is required' >&2; exit 1; }
+          version="$(node -p "require('./package.json').version")"
+          published_at="$(git show -s --format=%cI "$GITHUB_SHA")"
+          node scripts/generate-update-metadata.mjs \
+            --artifacts dist \
+            --version "$version" \
+            --tag "$GITHUB_REF_NAME" \
+            --published-at "$published_at" \
+            --output dist
+
+      - name: Publish signed release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           fail_on_unmatched_files: true
           body: |
-            Unsigned build. On first launch:
-            - Windows (SmartScreen): More info -> Run anyway
-            - macOS (Gatekeeper): right-click -> Open, or
-              `xattr -dr com.apple.quarantine "/Applications/PrintFarmer Desktop.app"`
+            Signed release:
+            - Windows app and installer carry Authenticode signatures.
+            - The universal macOS app and nested Rust sidecar are signed, notarized, and stapled.
+            - `latest.json` is signed by `latest.json.sig`; the app verifies it before staging an update.

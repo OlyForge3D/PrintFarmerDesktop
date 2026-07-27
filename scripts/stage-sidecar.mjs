@@ -9,6 +9,8 @@
 //
 // Set PRINTFARMER_SKIP_SIDECAR_BUILD=1 to skip the cargo build (equivalent to
 // --no-build); CI builds the sidecar in a dedicated step and only stages here.
+// Set PRINTFARMER_SIDECAR_SOURCE to stage a different prebuilt binary, such as
+// the lipo-combined universal macOS release sidecar.
 //
 // The build enables the `sqlite` feature so the shipped sidecar can persist the
 // model catalog on disk (the bundled SQLite driver needs a C toolchain, which CI
@@ -27,7 +29,9 @@ const nativeDir = path.join(repoRoot, 'native');
 
 const binaryName =
   process.platform === 'win32' ? 'model-core.exe' : 'model-core';
-const builtBinary = path.join(nativeDir, 'target', 'release', binaryName);
+const builtBinary = process.env.PRINTFARMER_SIDECAR_SOURCE
+  ? path.resolve(process.env.PRINTFARMER_SIDECAR_SOURCE)
+  : path.join(nativeDir, 'target', 'release', binaryName);
 const stageDir = path.join(repoRoot, 'resources', 'sidecar');
 const stagedBinary = path.join(stageDir, binaryName);
 export const SIDECAR_BUILD_ARGS = Object.freeze([

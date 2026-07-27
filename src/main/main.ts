@@ -18,12 +18,14 @@ import { ServerProfileService } from './serverProfiles.js';
 import { SidecarClient, spawnSidecarChannel } from './sidecar.js';
 import { SyncHttpClient } from './syncHttp.js';
 import { PrintFarmerSyncEngine } from './syncEngine.js';
+import { UpdateManager } from './updates.js';
 
 let syncEngine: PrintFarmerSyncEngine | null = null;
 let sharedSidecar: SidecarClient | null = null;
 let sharedRetargetSidecar: SidecarClient | null = null;
 let sharedProfiles: ServerProfileService | null = null;
 let disposeIpcResources: (() => Promise<void>) | null = null;
+let updateManager: UpdateManager | null = null;
 let shutdownStarted = false;
 let cleanupComplete = false;
 
@@ -225,6 +227,16 @@ if (!enforceSingleInstance()) {
     void syncEngine.start().catch(() => {
       console.error('[sync] scheduler startup failed');
     });
+    if (app.isPackaged && __PRINTFARMER_UPDATE_PUBLIC_KEY__) {
+      updateManager = new UpdateManager({
+        app,
+        publicKeyPem: __PRINTFARMER_UPDATE_PUBLIC_KEY__,
+        metadataUrl: __PRINTFARMER_UPDATE_METADATA_URL__,
+      });
+      void updateManager.initialize().catch((error: unknown) => {
+        console.error('[updates] initialization failed', error);
+      });
+    }
     createMainWindow();
 
     app.on('activate', () => {
@@ -274,7 +286,14 @@ if (!enforceSingleInstance()) {
         sharedProfiles?.clearTokens();
         sharedProfiles = null;
         cleanupComplete = true;
-        app.quit();
+        let updaterOwnsQuit = false;
+        try {
+          updaterOwnsQuit =
+            (await updateManager?.installReadyUpdate()) ?? false;
+        } catch (error) {
+          console.error('[updates] failed to install staged update', error);
+        }
+        if (!updaterOwnsQuit) app.quit();
       }
     })();
   });
