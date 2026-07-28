@@ -6,6 +6,7 @@ import {
   PrivateSnapshotManager,
   SnapshotError,
 } from '../src/main/uploadSnapshot.js';
+import { MAX_UPLOAD_REQUEST_BYTES } from '../src/main/uploadTransport.js';
 
 let fixtureRoot: string;
 let userData: string;
@@ -164,6 +165,47 @@ describe('immutable private upload snapshots', () => {
     await expect(snapshot.cleanup()).rejects.toThrow(/transient/);
     await expect(snapshot.cleanup()).resolves.toBeUndefined();
     expect(cleanupAttempts).toBe(2);
+  });
+
+  it('accepts the 500 MB upload boundary and starts copying before cancellation', async () => {
+    const source = path.join(fixtureRoot, 'max-size.model');
+    await fs.writeFile(source, '');
+    await fs.truncate(source, MAX_UPLOAD_REQUEST_BYTES);
+    const approved = await approvedFile(source);
+    const controller = new AbortController();
+    const manager = new PrivateSnapshotManager(userData, randomUUID, {
+      afterChunk: () => {
+        controller.abort();
+        return Promise.resolve();
+      },
+    });
+
+    await expect(
+      manager.create(
+        approved,
+        'unused-for-abort',
+        '11111111-1111-4111-8111-111111111111',
+        controller.signal,
+      ),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('rejects files larger than the 500 MB upload boundary', async () => {
+    const source = path.join(fixtureRoot, 'over-limit.model');
+    await fs.writeFile(source, '');
+    await fs.truncate(source, MAX_UPLOAD_REQUEST_BYTES + 1);
+    const manager = new PrivateSnapshotManager(userData);
+
+    await expect(
+      manager.create(
+        await approvedFile(source),
+        'not-used',
+        '11111111-1111-4111-8111-111111111111',
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      code: 'SOURCE_TOO_LARGE',
+    });
   });
 });
 
