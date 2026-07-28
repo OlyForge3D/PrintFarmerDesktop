@@ -6,6 +6,7 @@ import {
   RELEASE_SIGNING_FLAG,
   resolveReleaseSigningConfiguration,
   UPDATE_PUBLIC_KEY_ENV,
+  WINDOWS_TIMESTAMP_SERVER,
 } from '../release-signing';
 import {
   UNIVERSAL_MAC_TARGETS,
@@ -53,12 +54,22 @@ describe('release signing configuration', () => {
       windowsSign: {
         certificateFile,
         certificatePassword: 'password',
+        hashes: ['sha256'],
+        timestampServer: WINDOWS_TIMESTAMP_SERVER,
       },
     });
     expect(configuration.squirrelConfig).toEqual({
-      certificateFile,
-      certificatePassword: 'password',
+      windowsSign: {
+        certificateFile,
+        certificatePassword: 'password',
+        hashes: ['sha256'],
+        timestampServer: WINDOWS_TIMESTAMP_SERVER,
+      },
     });
+    expect(configuration.squirrelConfig).not.toHaveProperty('certificateFile');
+    expect(configuration.squirrelConfig).not.toHaveProperty(
+      'certificatePassword',
+    );
   });
 
   it('requires signing, notarization, and update trust for macOS releases', () => {

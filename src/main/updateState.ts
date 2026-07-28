@@ -11,9 +11,8 @@ import { compareVersions } from './updateMetadata.js';
 export type UpdatePhase = 'idle' | 'downloading' | 'downloaded' | 'installing';
 
 export interface UpdateState {
-  schemaVersion: 1;
+  schemaVersion: 2;
   phase: UpdatePhase;
-  highestVersion: string;
   targetVersion?: string;
   artifactFileName?: string;
   artifactSha256?: string;
@@ -29,6 +28,8 @@ export interface ArtifactIdentity {
 function assertPlainFileName(fileName: string): void {
   if (
     fileName.length === 0 ||
+    fileName === '.' ||
+    fileName === '..' ||
     path.posix.basename(fileName) !== fileName ||
     path.win32.basename(fileName) !== fileName
   ) {
@@ -41,7 +42,7 @@ function parseState(value: unknown): UpdateState {
     throw new Error('update state must be an object');
   }
   const state = value as Record<string, unknown>;
-  if (state.schemaVersion !== 1) {
+  if (state.schemaVersion !== 2) {
     throw new Error('unsupported update state schema');
   }
   if (
@@ -52,16 +53,10 @@ function parseState(value: unknown): UpdateState {
   ) {
     throw new Error('update state has an invalid phase');
   }
-  if (typeof state.highestVersion !== 'string') {
-    throw new Error('update state has no trusted version');
-  }
-  compareVersions(state.highestVersion, state.highestVersion);
-
   if (state.phase === 'idle') {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       phase: 'idle',
-      highestVersion: state.highestVersion,
     };
   }
   if (
@@ -78,9 +73,8 @@ function parseState(value: unknown): UpdateState {
   compareVersions(state.targetVersion, state.targetVersion);
   assertPlainFileName(state.artifactFileName);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     phase: state.phase,
-    highestVersion: state.highestVersion,
     targetVersion: state.targetVersion,
     artifactFileName: state.artifactFileName,
     artifactSha256: state.artifactSha256,
@@ -120,12 +114,11 @@ export class UpdateStateStore {
     return `${this.artifactPath(fileName)}.part`;
   }
 
-  async read(currentVersion: string): Promise<UpdateState> {
+  async read(): Promise<UpdateState> {
     if (!existsSync(this.statePath)) {
       return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         phase: 'idle',
-        highestVersion: currentVersion,
       };
     }
     const raw = await fs.readFile(this.statePath, 'utf8');
@@ -152,16 +145,10 @@ export class UpdateStateStore {
   }
 
   async recover(currentVersion: string): Promise<UpdateState> {
-    const state = await this.read(currentVersion);
-    const highestVersion =
-      compareVersions(currentVersion, state.highestVersion) > 0
-        ? currentVersion
-        : state.highestVersion;
+    const state = await this.read();
 
     if (state.phase === 'idle') {
-      const recovered = { ...state, highestVersion };
-      await this.write(recovered);
-      return recovered;
+      return state;
     }
 
     const artifactPath = this.artifactPath(state.artifactFileName!);
@@ -169,9 +156,8 @@ export class UpdateStateStore {
     if (state.phase === 'downloading') {
       await fs.rm(partialPath, { force: true });
       const recovered: UpdateState = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         phase: 'idle',
-        highestVersion,
       };
       await this.write(recovered);
       return recovered;
@@ -183,9 +169,8 @@ export class UpdateStateStore {
         fs.rm(partialPath, { force: true }),
       ]);
       const recovered: UpdateState = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         phase: 'idle',
-        highestVersion,
       };
       await this.write(recovered);
       return recovered;
@@ -204,9 +189,8 @@ export class UpdateStateStore {
         fs.rm(partialPath, { force: true }),
       ]);
       const recovered: UpdateState = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         phase: 'idle',
-        highestVersion,
       };
       await this.write(recovered);
       return recovered;
@@ -215,37 +199,19 @@ export class UpdateStateStore {
     const recovered: UpdateState = {
       ...state,
       phase: 'downloaded',
-      highestVersion,
     };
     await this.write(recovered);
     return recovered;
   }
 
-  async trustVersion(
-    currentState: UpdateState,
-    version: string,
-  ): Promise<UpdateState> {
-    const state = {
-      ...currentState,
-      highestVersion:
-        compareVersions(version, currentState.highestVersion) > 0
-          ? version
-          : currentState.highestVersion,
-    };
-    await this.write(state);
-    return state;
-  }
-
   async beginDownload(
-    currentState: UpdateState,
     targetVersion: string,
     artifact: ArtifactIdentity,
   ): Promise<UpdateState> {
     assertPlainFileName(artifact.fileName);
     const state: UpdateState = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       phase: 'downloading',
-      highestVersion: currentState.highestVersion,
       targetVersion,
       artifactFileName: artifact.fileName,
       artifactSha256: artifact.sha256,
@@ -271,5 +237,40 @@ export class UpdateStateStore {
     const installing: UpdateState = { ...state, phase: 'installing' };
     await this.write(installing);
     return installing;
+  }
+
+  matches(
+    state: UpdateState,
+    targetVersion: string,
+    artifact: ArtifactIdentity,
+  ): boolean {
+    return (
+      state.phase === 'downloaded' &&
+      state.targetVersion === targetVersion &&
+      state.artifactFileName === artifact.fileName &&
+      state.artifactSha256 === artifact.sha256 &&
+      state.artifactSize === artifact.size
+    );
+  }
+
+  async verifyArtifact(artifact: ArtifactIdentity): Promise<boolean> {
+    const artifactPath = this.artifactPath(artifact.fileName);
+    if (!existsSync(artifactPath)) return false;
+    const actual = await hashFile(artifactPath);
+    return actual.sha256 === artifact.sha256 && actual.size === artifact.size;
+  }
+
+  async discard(state: UpdateState): Promise<UpdateState> {
+    if (state.artifactFileName) {
+      await Promise.all([
+        fs.rm(this.artifactPath(state.artifactFileName), { force: true }),
+        fs.rm(this.partialArtifactPath(state.artifactFileName), {
+          force: true,
+        }),
+      ]);
+    }
+    const idle: UpdateState = { schemaVersion: 2, phase: 'idle' };
+    await this.write(idle);
+    return idle;
   }
 }

@@ -110,16 +110,11 @@ describe('signed update metadata', () => {
     ).toThrow('trusted release asset URL');
   });
 
-  it('rejects rollback below the running or highest previously trusted version', () => {
-    expect(() => assertUpdateIsNotRollback('1.9.9', '2.0.0', '2.0.0')).toThrow(
+  it('anchors rollback protection in the trusted running app version', () => {
+    expect(() => assertUpdateIsNotRollback('1.9.9', '2.0.0')).toThrow(
       'rollback from 2.0.0',
     );
-    expect(() => assertUpdateIsNotRollback('2.1.0', '2.0.0', '2.2.0')).toThrow(
-      'previously trusted version 2.2.0',
-    );
-    expect(() =>
-      assertUpdateIsNotRollback('2.2.0', '2.0.0', '2.2.0'),
-    ).not.toThrow();
+    expect(() => assertUpdateIsNotRollback('2.1.0', '2.0.0')).not.toThrow();
   });
 
   it('orders stable and prerelease versions without permitting lexical rollback', () => {

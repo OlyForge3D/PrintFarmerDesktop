@@ -219,16 +219,10 @@ export function selectUpdateArtifact(
 export function assertUpdateIsNotRollback(
   candidateVersion: string,
   currentVersion: string,
-  highestVersion: string,
 ): void {
   if (compareVersions(candidateVersion, currentVersion) < 0) {
     throw new Error(
       `refusing update rollback from ${currentVersion} to ${candidateVersion}`,
-    );
-  }
-  if (compareVersions(candidateVersion, highestVersion) < 0) {
-    throw new Error(
-      `refusing update rollback below previously trusted version ${highestVersion}: ${candidateVersion}`,
     );
   }
 }

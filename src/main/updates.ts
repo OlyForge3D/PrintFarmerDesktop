@@ -1,8 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { createReadStream, promises as fs, statSync } from 'node:fs';
+import { createReadStream, promises as fs } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { pipeline } from 'node:stream/promises';
 import { autoUpdater, type App, type AutoUpdater } from 'electron';
 import {
   assertUpdateIsNotRollback,
@@ -28,10 +29,17 @@ export interface UpdateManagerOptions {
   arch?: string;
   fetchImplementation?: FetchImplementation;
   nativeAutoUpdater?: AutoUpdater;
+  spawnInstaller?: typeof spawn;
+  createArtifactReadStream?: typeof createReadStream;
   onError?: (error: unknown) => void;
 }
 
-async function fetchBoundedText(
+interface TrustedUpdate {
+  metadata: UpdateMetadata;
+  artifact: UpdateArtifact;
+}
+
+export async function fetchBoundedText(
   fetchImplementation: FetchImplementation,
   url: string,
   maximumBytes: number,
@@ -45,20 +53,40 @@ async function fetchBoundedText(
       `update request failed with HTTP ${response.status}: ${url}`,
     );
   }
-  const contentLength = Number(response.headers.get('content-length'));
-  if (Number.isFinite(contentLength) && contentLength > maximumBytes) {
+  const contentLengthHeader = response.headers.get('content-length');
+  const contentLength =
+    contentLengthHeader === null ? null : Number(contentLengthHeader);
+  if (
+    contentLength !== null &&
+    Number.isFinite(contentLength) &&
+    contentLength > maximumBytes
+  ) {
     throw new Error(`update response exceeds ${maximumBytes} bytes: ${url}`);
   }
-  const text = await response.text();
-  if (Buffer.byteLength(text) > maximumBytes) {
-    throw new Error(`update response exceeds ${maximumBytes} bytes: ${url}`);
+  if (!response.body) {
+    throw new Error(`update response has no body: ${url}`);
   }
-  return text;
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    received += chunk.value.byteLength;
+    if (received > maximumBytes) {
+      await reader.cancel();
+      throw new Error(`update response exceeds ${maximumBytes} bytes: ${url}`);
+    }
+    chunks.push(chunk.value);
+  }
+  return Buffer.concat(chunks, received).toString('utf8');
 }
 
 async function closeServer(server: Server): Promise<void> {
   if (!server.listening) return;
   await new Promise<void>((resolve, reject) => {
+    server.closeAllConnections();
     server.close((error) => {
       if (error) reject(error);
       else resolve();
@@ -74,9 +102,12 @@ export class UpdateManager {
   private readonly arch: string;
   private readonly fetchImplementation: FetchImplementation;
   private readonly nativeAutoUpdater: AutoUpdater;
+  private readonly spawnInstaller: typeof spawn;
+  private readonly createArtifactReadStream: typeof createReadStream;
   private readonly onError: (error: unknown) => void;
   private readonly stateStore: UpdateStateStore;
   private state: UpdateState | null = null;
+  private trustedUpdate: TrustedUpdate | null = null;
   private macUpdateStaged = false;
   private checking = false;
 
@@ -88,6 +119,9 @@ export class UpdateManager {
     this.arch = options.arch ?? process.arch;
     this.fetchImplementation = options.fetchImplementation ?? fetch;
     this.nativeAutoUpdater = options.nativeAutoUpdater ?? autoUpdater;
+    this.spawnInstaller = options.spawnInstaller ?? spawn;
+    this.createArtifactReadStream =
+      options.createArtifactReadStream ?? createReadStream;
     this.onError =
       options.onError ??
       ((error) => console.error('[updates] update operation failed', error));
@@ -96,13 +130,7 @@ export class UpdateManager {
 
   async initialize(): Promise<void> {
     this.state = await this.stateStore.recover(this.app.getVersion());
-    if (this.state.phase === 'downloaded') {
-      if (this.platform === 'darwin') {
-        await this.stageMacUpdate(this.state);
-      }
-      return;
-    }
-    void this.checkForUpdates().catch(this.onError);
+    await this.checkForUpdates();
   }
 
   async checkForUpdates(): Promise<void> {
@@ -137,27 +165,36 @@ export class UpdateManager {
     const currentVersion = this.app.getVersion();
     const currentState =
       this.state ?? (await this.stateStore.recover(currentVersion));
-    assertUpdateIsNotRollback(
-      metadata.version,
-      currentVersion,
-      currentState.highestVersion,
-    );
-    this.state = await this.stateStore.trustVersion(
-      currentState,
-      metadata.version,
-    );
-    if (compareVersions(metadata.version, currentVersion) === 0) return;
+    assertUpdateIsNotRollback(metadata.version, currentVersion);
+    if (compareVersions(metadata.version, currentVersion) === 0) {
+      this.trustedUpdate = null;
+      this.state =
+        currentState.phase === 'idle'
+          ? currentState
+          : await this.stateStore.discard(currentState);
+      return;
+    }
 
     const artifact = selectUpdateArtifact(metadata, this.platform, this.arch);
-    this.state = await this.stateStore.beginDownload(
-      this.state,
-      metadata.version,
-      artifact,
-    );
-    await this.downloadArtifact(artifact);
-    this.state = await this.stateStore.completeDownload(this.state);
+    if (
+      this.stateStore.matches(currentState, metadata.version, artifact) &&
+      (await this.stateStore.verifyArtifact(artifact))
+    ) {
+      this.state = currentState;
+    } else {
+      if (currentState.phase !== 'idle') {
+        this.state = await this.stateStore.discard(currentState);
+      }
+      this.state = await this.stateStore.beginDownload(
+        metadata.version,
+        artifact,
+      );
+      await this.downloadArtifact(artifact);
+      this.state = await this.stateStore.completeDownload(this.state);
+    }
+    this.trustedUpdate = { metadata, artifact };
     if (this.platform === 'darwin') {
-      await this.stageMacUpdate(this.state, metadata.publishedAt);
+      await this.stageMacUpdate(this.trustedUpdate);
     }
   }
 
@@ -228,58 +265,85 @@ export class UpdateManager {
     await fs.rename(partial, destination);
   }
 
-  private async stageMacUpdate(
-    state: UpdateState,
-    publishedAt = new Date().toISOString(),
-  ): Promise<void> {
+  private async stageMacUpdate(trustedUpdate: TrustedUpdate): Promise<void> {
+    const { metadata, artifact } = trustedUpdate;
+    const state = this.state;
     if (
-      state.phase !== 'downloaded' ||
-      !state.artifactFileName ||
-      !state.targetVersion
+      !state ||
+      !this.stateStore.matches(state, metadata.version, artifact) ||
+      !(await this.stateStore.verifyArtifact(artifact))
     ) {
-      throw new Error('macOS updater cannot stage an incomplete update');
+      throw new Error(
+        'macOS updater cannot stage an artifact not bound to signed metadata',
+      );
     }
 
-    const artifactPath = this.stateStore.artifactPath(state.artifactFileName);
+    const artifactPath = this.stateStore.artifactPath(artifact.fileName);
     const token = randomBytes(24).toString('hex');
     const server = createServer((request, response) => {
-      const remoteAddress = request.socket.remoteAddress;
-      if (
-        remoteAddress !== '127.0.0.1' &&
-        remoteAddress !== '::1' &&
-        remoteAddress !== '::ffff:127.0.0.1'
-      ) {
-        response.writeHead(403).end();
-        return;
-      }
-      if (request.url === `/${token}/feed`) {
-        const address = server.address() as AddressInfo;
-        const artifactUrl = `http://127.0.0.1:${address.port}/${token}/artifact`;
-        const feed = JSON.stringify({
-          url: artifactUrl,
-          name: state.targetVersion,
-          notes: `PrintFarmer Desktop ${state.targetVersion}`,
-          pub_date: publishedAt,
-        });
-        response.writeHead(200, {
-          'content-type': 'application/json',
-          'content-length': Buffer.byteLength(feed),
-          'cache-control': 'no-store',
-        });
-        response.end(feed);
-        return;
-      }
-      if (request.url === `/${token}/artifact`) {
-        const artifactStat = statSync(artifactPath);
-        response.writeHead(200, {
-          'content-type': 'application/zip',
-          'content-length': artifactStat.size,
-          'cache-control': 'no-store',
-        });
-        createReadStream(artifactPath).pipe(response);
-        return;
-      }
-      response.writeHead(404).end();
+      void (async () => {
+        const remoteAddress = request.socket.remoteAddress;
+        if (
+          remoteAddress !== '127.0.0.1' &&
+          remoteAddress !== '::1' &&
+          remoteAddress !== '::ffff:127.0.0.1'
+        ) {
+          response.writeHead(403).end();
+          return;
+        }
+        if (request.method !== 'GET') {
+          response.writeHead(405, { allow: 'GET' }).end();
+          return;
+        }
+        const pathname = new URL(request.url ?? '/', 'http://127.0.0.1')
+          .pathname;
+        if (pathname === `/${token}/feed`) {
+          const address = server.address() as AddressInfo;
+          const artifactUrl = `http://127.0.0.1:${address.port}/${token}/artifact`;
+          const feed = JSON.stringify({
+            url: artifactUrl,
+            name: metadata.version,
+            notes: `PrintFarmer Desktop ${metadata.version}`,
+            pub_date: metadata.publishedAt,
+          });
+          response.writeHead(200, {
+            'content-type': 'application/json',
+            'content-length': Buffer.byteLength(feed),
+            'cache-control': 'no-store',
+          });
+          response.end(feed);
+          return;
+        }
+        if (pathname === `/${token}/artifact`) {
+          if (!(await this.stateStore.verifyArtifact(artifact))) {
+            throw new Error(
+              'macOS update artifact changed after signed metadata verification',
+            );
+          }
+          const artifactStat = await fs.stat(artifactPath);
+          if (!artifactStat.isFile() || artifactStat.size !== artifact.size) {
+            throw new Error(
+              'macOS update artifact is not a regular signed file',
+            );
+          }
+          const artifactStream = this.createArtifactReadStream(artifactPath);
+          response.writeHead(200, {
+            'content-type': 'application/zip',
+            'content-length': artifactStat.size,
+            'cache-control': 'no-store',
+          });
+          await pipeline(artifactStream, response);
+          return;
+        }
+        response.writeHead(404).end();
+      })().catch((error: unknown) => {
+        this.onError(error);
+        if (response.headersSent) {
+          response.destroy(error instanceof Error ? error : undefined);
+        } else {
+          response.writeHead(500, { 'cache-control': 'no-store' }).end();
+        }
+      });
     });
 
     try {
@@ -323,25 +387,37 @@ export class UpdateManager {
   }
 
   async installReadyUpdate(): Promise<boolean> {
-    if (!this.state || this.state.phase !== 'downloaded') return false;
+    if (!this.state || !this.trustedUpdate) return false;
+    const { metadata, artifact } = this.trustedUpdate;
+    if (!this.stateStore.matches(this.state, metadata.version, artifact)) {
+      return false;
+    }
     if (this.platform === 'darwin') {
       if (!this.macUpdateStaged) return false;
       this.state = await this.stateStore.markInstalling(this.state);
       this.nativeAutoUpdater.quitAndInstall();
       return true;
     }
-    if (this.platform === 'win32' && this.state.artifactFileName) {
-      const installerPath = this.stateStore.artifactPath(
-        this.state.artifactFileName,
-      );
+    if (this.platform === 'win32') {
       this.state = await this.stateStore.markInstalling(this.state);
-      const child = spawn(installerPath, ['--silent'], {
+      if (!(await this.stateStore.verifyArtifact(artifact))) {
+        throw new Error(
+          'Windows update artifact changed after signed metadata verification',
+        );
+      }
+      const installerPath = this.stateStore.artifactPath(artifact.fileName);
+      const child = this.spawnInstaller(installerPath, ['--silent'], {
         detached: true,
         stdio: 'ignore',
         windowsHide: true,
       });
-      child.once('error', this.onError);
+      await new Promise<void>((resolve, reject) => {
+        child.once('spawn', resolve);
+        child.once('error', reject);
+      });
       child.unref();
+      this.app.quit();
+      return true;
     }
     return false;
   }

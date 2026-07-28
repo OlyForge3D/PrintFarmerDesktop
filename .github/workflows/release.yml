@@ -49,20 +49,12 @@ jobs:
         shell: pwsh
         env:
           CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_P12_BASE64 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          UPDATE_PUBLIC_KEY_BASE64: ${{ secrets.UPDATE_SIGNING_PUBLIC_KEY_BASE64 }}
         run: |
-          $missing = @()
-          if ([string]::IsNullOrWhiteSpace($env:CERTIFICATE_BASE64)) { $missing += 'WINDOWS_CERTIFICATE_P12_BASE64' }
-          if ([string]::IsNullOrWhiteSpace($env:CERTIFICATE_PASSWORD)) { $missing += 'WINDOWS_CERTIFICATE_PASSWORD' }
-          if ([string]::IsNullOrWhiteSpace($env:UPDATE_PUBLIC_KEY_BASE64)) { $missing += 'UPDATE_SIGNING_PUBLIC_KEY_BASE64' }
-          if ($missing.Count -gt 0) { throw "Tagged releases require GitHub secrets: $($missing -join ', ')" }
+          if ([string]::IsNullOrWhiteSpace($env:CERTIFICATE_BASE64)) {
+            throw 'Tagged releases require GitHub secret WINDOWS_CERTIFICATE_P12_BASE64'
+          }
           $certificatePath = Join-Path $env:RUNNER_TEMP 'printfarmer-release.p12'
           [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
-          "PRINTFARMER_REQUIRE_SIGNING=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "WINDOWS_CERTIFICATE_FILE=$certificatePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "WINDOWS_CERTIFICATE_PASSWORD=$env:CERTIFICATE_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "PRINTFARMER_UPDATE_PUBLIC_KEY_BASE64=$env:UPDATE_PUBLIC_KEY_BASE64" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Prepare Apple release signing
         if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
@@ -70,21 +62,11 @@ jobs:
         env:
           CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          NOTARIZATION_APPLE_ID: ${{ secrets.APPLE_ID }}
-          NOTARIZATION_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          NOTARIZATION_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          UPDATE_PUBLIC_KEY_BASE64: ${{ secrets.UPDATE_SIGNING_PUBLIC_KEY_BASE64 }}
         run: |
           set -euo pipefail
           missing=()
           [[ -n "$CERTIFICATE_BASE64" ]] || missing+=(APPLE_CERTIFICATE_P12_BASE64)
           [[ -n "$CERTIFICATE_PASSWORD" ]] || missing+=(APPLE_CERTIFICATE_PASSWORD)
-          [[ -n "$SIGNING_IDENTITY" ]] || missing+=(APPLE_SIGNING_IDENTITY)
-          [[ -n "$NOTARIZATION_APPLE_ID" ]] || missing+=(APPLE_ID)
-          [[ -n "$NOTARIZATION_PASSWORD" ]] || missing+=(APPLE_APP_SPECIFIC_PASSWORD)
-          [[ -n "$NOTARIZATION_TEAM_ID" ]] || missing+=(APPLE_TEAM_ID)
-          [[ -n "$UPDATE_PUBLIC_KEY_BASE64" ]] || missing+=(UPDATE_SIGNING_PUBLIC_KEY_BASE64)
           if (( ${#missing[@]} )); then
             printf 'Tagged releases require GitHub secrets: %s\n' "${missing[*]}" >&2
             exit 1
@@ -99,17 +81,6 @@ jobs:
           security import "$certificate_path" -k "$keychain_path" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain_path"
           security list-keychains -d user -s "$keychain_path"
-          {
-            echo "PRINTFARMER_REQUIRE_SIGNING=1"
-            echo "APPLE_SIGNING_IDENTITY=$SIGNING_IDENTITY"
-            echo "APPLE_SIGNING_KEYCHAIN=$keychain_path"
-            echo "APPLE_ID=$NOTARIZATION_APPLE_ID"
-            echo "APPLE_APP_SPECIFIC_PASSWORD=$NOTARIZATION_PASSWORD"
-            echo "APPLE_TEAM_ID=$NOTARIZATION_TEAM_ID"
-            echo "PRINTFARMER_UPDATE_PUBLIC_KEY_BASE64=$UPDATE_PUBLIC_KEY_BASE64"
-            echo "PRINTFARMER_SIGNING_KEYCHAIN=$keychain_path"
-            echo "PRINTFARMER_SIGNING_CERTIFICATE=$certificate_path"
-          } >> "$GITHUB_ENV"
 
       - name: Build Windows sidecar (release)
         if: runner.os == 'Windows'
@@ -127,8 +98,12 @@ jobs:
       - name: Sign universal Rust sidecar before the Electron app
         if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
         shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_SIGNING_KEYCHAIN: ${{ runner.temp }}/printfarmer-signing.keychain-db
         run: |
           set -euo pipefail
+          [[ -n "$APPLE_SIGNING_IDENTITY" ]] || { echo 'APPLE_SIGNING_IDENTITY is required' >&2; exit 1; }
           sidecar="$GITHUB_WORKSPACE/native/target/universal-apple-darwin/release/model-core"
           codesign --force --timestamp --options runtime --keychain "$APPLE_SIGNING_KEYCHAIN" --sign "$APPLE_SIGNING_IDENTITY" "$sidecar"
           codesign --verify --strict --verbose=2 "$sidecar"
@@ -137,12 +112,22 @@ jobs:
         env:
           PRINTFARMER_SKIP_SIDECAR_BUILD: '1'
           PRINTFARMER_SIDECAR_SOURCE: ${{ matrix.platform == 'darwin' && format('{0}/native/target/universal-apple-darwin/release/model-core', github.workspace) || '' }}
+          PRINTFARMER_REQUIRE_SIGNING: ${{ startsWith(github.ref, 'refs/tags/') && '1' || '' }}
+          PRINTFARMER_UPDATE_PUBLIC_KEY_BASE64: ${{ startsWith(github.ref, 'refs/tags/') && secrets.UPDATE_SIGNING_PUBLIC_KEY_BASE64 || '' }}
+          WINDOWS_CERTIFICATE_FILE: ${{ startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows' && format('{0}/printfarmer-release.p12', runner.temp) || '' }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows' && secrets.WINDOWS_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_SIGNING_KEYCHAIN: ${{ startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS' && format('{0}/printfarmer-signing.keychain-db', runner.temp) || '' }}
+          APPLE_ID: ${{ startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
         run: npm run make -- --platform=${{ matrix.platform }} --arch=${{ matrix.arch }}
 
       - name: Verify Windows Authenticode signatures
         if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
         shell: pwsh
         run: |
+          $signTool = Resolve-Path 'node_modules/@electron/windows-sign/vendor/signtool.exe'
           $files = @(
             Get-ChildItem out -Recurse -File |
               Where-Object { $_.Name -eq 'PrintFarmer Desktop.exe' -or $_.Name -like '*Setup.exe' }
@@ -152,6 +137,16 @@ jobs:
             $signature = Get-AuthenticodeSignature $file.FullName
             if ($signature.Status -ne 'Valid') {
               throw "Invalid Authenticode signature on $($file.FullName): $($signature.Status)"
+            }
+            if ($null -eq $signature.TimeStamperCertificate) {
+              throw "Missing RFC 3161 timestamp on $($file.FullName)"
+            }
+            $verification = (& $signTool verify /pa /all /v $file.FullName 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) {
+              throw "SignTool verification failed for $($file.FullName):`n$verification"
+            }
+            if ($verification -notmatch '(?im)^Hash of file \(sha256\):') {
+              throw "Signature on $($file.FullName) does not use a SHA-256 file digest"
             }
           }
 
@@ -210,20 +205,17 @@ jobs:
         if: always() && startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
         shell: pwsh
         run: |
-          if ($env:WINDOWS_CERTIFICATE_FILE -and (Test-Path $env:WINDOWS_CERTIFICATE_FILE)) {
-            Remove-Item -LiteralPath $env:WINDOWS_CERTIFICATE_FILE -Force
+          $certificatePath = Join-Path $env:RUNNER_TEMP 'printfarmer-release.p12'
+          if (Test-Path $certificatePath) {
+            Remove-Item -LiteralPath $certificatePath -Force
           }
 
       - name: Clean up Apple release credentials
         if: always() && startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
         shell: bash
         run: |
-          if [[ -n "${PRINTFARMER_SIGNING_KEYCHAIN:-}" ]]; then
-            security delete-keychain "$PRINTFARMER_SIGNING_KEYCHAIN" || true
-          fi
-          if [[ -n "${PRINTFARMER_SIGNING_CERTIFICATE:-}" ]]; then
-            rm -f "$PRINTFARMER_SIGNING_CERTIFICATE"
-          fi
+          security delete-keychain "$RUNNER_TEMP/printfarmer-signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/printfarmer-release.p12"
 
   publish:
     name: Sign metadata and publish

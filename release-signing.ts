@@ -5,8 +5,10 @@ export const UPDATE_PUBLIC_KEY_ENV = 'PRINTFARMER_UPDATE_PUBLIC_KEY_BASE64';
 
 export interface ReleaseSigningConfiguration {
   packagerConfig: Record<string, unknown>;
-  squirrelConfig: Record<string, string>;
+  squirrelConfig: Record<string, unknown>;
 }
+
+export const WINDOWS_TIMESTAMP_SERVER = 'http://timestamp.digicert.com';
 
 function requireEnvironment(
   environment: NodeJS.ProcessEnv,
@@ -45,17 +47,19 @@ export function resolveReleaseSigningConfiguration(
     );
     const certificateFile = path.resolve(values.WINDOWS_CERTIFICATE_FILE!);
     const certificatePassword = values.WINDOWS_CERTIFICATE_PASSWORD!;
+    const windowsSign = {
+      certificateFile,
+      certificatePassword,
+      hashes: ['sha256'],
+      timestampServer: WINDOWS_TIMESTAMP_SERVER,
+    };
 
     return {
       packagerConfig: {
-        windowsSign: {
-          certificateFile,
-          certificatePassword,
-        },
+        windowsSign,
       },
       squirrelConfig: {
-        certificateFile,
-        certificatePassword,
+        windowsSign,
       },
     };
   }

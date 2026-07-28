@@ -21,9 +21,11 @@ exercise packaging without production credentials.
 | `UPDATE_SIGNING_PUBLIC_KEY_BASE64`  | Base64-encoded Ed25519 SPKI public key                      |
 
 The workflow decodes certificates only into the runner's temporary directory.
-The Apple certificate is imported into a temporary keychain. Cleanup runs even
-after failed builds. Private material is never written into the repository or
-uploaded as an artifact.
+The Apple certificate is imported into a temporary keychain. Passwords and
+notarization credentials are scoped to the individual preparation, signing, or
+packaging step that consumes them; they are never exported through
+`GITHUB_ENV`. Cleanup runs even after failed builds. Private material is never
+written into the repository or uploaded as an artifact.
 
 Generate the detached update-signing key pair on a trusted offline machine:
 
@@ -41,7 +43,8 @@ key embedded into the release build.
 ## Release sequence
 
 1. The Windows job builds the Rust sidecar, signs the packaged application and
-   Squirrel installer, then verifies both with `Get-AuthenticodeSignature`.
+   Squirrel installer with SHA-256 and an RFC 3161 timestamp, then verifies both
+   signatures and timestamp certificates with `Get-AuthenticodeSignature`.
 2. The macOS job builds `model-core` for `x86_64-apple-darwin` and
    `aarch64-apple-darwin`, combines them with `lipo`, and signs that universal
    sidecar before Electron Forge signs the outer universal app.
@@ -63,16 +66,20 @@ requires tag `v1.2.3`).
 ## In-app update trust and recovery
 
 Release builds embed only the Ed25519 public key. On startup the main process
-downloads `latest.json` and `latest.json.sig`, verifies the detached signature,
-requires trusted GitHub release URLs, rejects versions below the running or
-highest previously trusted version, and verifies the selected artifact's signed
-size and SHA-256 digest before staging it.
+downloads `latest.json` and `latest.json.sig`, bounds both responses while
+streaming, verifies the detached signature, requires trusted GitHub release
+URLs, rejects versions below the trusted running app version, and verifies the
+selected artifact's signed size and SHA-256 digest before staging it.
 
 Downloads use a `.part` file and an atomically replaced state journal under
-`userData/updates`. An interrupted download removes the partial file. An
-interrupted install is retried only when the cached artifact still matches the
-signed digest; otherwise it is discarded. A successful upgraded launch clears
-the old artifact and journal state.
+`userData/updates`. The journal is untrusted operational state: it can identify
+a recovery candidate but can never authorize an installation or set the
+rollback floor. Every startup refreshes and verifies signed metadata, rebinds a
+cached candidate to the signed version, file name, size, and digest, and hashes
+the artifact again at the staging or execution boundary. An interrupted
+download removes the partial file. An interrupted install is retried only after
+that fresh signed-metadata validation; otherwise it is discarded. A successful
+upgraded launch clears the old artifact and journal state.
 
 ## Local packaging
 

@@ -38,7 +38,7 @@ describe('signed release workflow', () => {
     expect(workflow).toContain('APPLE_APP_SPECIFIC_PASSWORD');
     expect(workflow).toContain('UPDATE_SIGNING_PRIVATE_KEY_BASE64');
     expect(workflow).toContain('UPDATE_SIGNING_PUBLIC_KEY_BASE64');
-    expect(workflow).toContain('PRINTFARMER_REQUIRE_SIGNING=1');
+    expect(workflow).toContain('PRINTFARMER_REQUIRE_SIGNING: ${{');
   });
 
   it('verifies platform signatures before signing update metadata', () => {
@@ -65,5 +65,29 @@ describe('signed release workflow', () => {
     expect(workflow.indexOf('safe_name=')).toBeLessThan(
       workflow.indexOf('Generate signed update metadata'),
     );
+  });
+
+  it('keeps signing and notarization secrets out of the job environment', () => {
+    expect(workflow).not.toContain(
+      'WINDOWS_CERTIFICATE_PASSWORD=$env:CERTIFICATE_PASSWORD',
+    );
+    expect(workflow).not.toContain(
+      'APPLE_APP_SPECIFIC_PASSWORD=$NOTARIZATION_PASSWORD',
+    );
+    expect(workflow).not.toContain('>> "$GITHUB_ENV"');
+    expect(workflow).toContain(
+      'WINDOWS_CERTIFICATE_PASSWORD: ${{ startsWith(github.ref',
+    );
+    expect(workflow).toContain(
+      'APPLE_APP_SPECIFIC_PASSWORD: ${{ startsWith(github.ref',
+    );
+  });
+
+  it('requires durable Windows timestamps before publishing', () => {
+    expect(workflow).toContain('TimeStamperCertificate');
+    expect(workflow).toContain('Missing RFC 3161 timestamp');
+    expect(workflow).toContain('signtool.exe');
+    expect(workflow).toContain('verify /pa /all /v');
+    expect(workflow).toContain('Hash of file \\(sha256\\)');
   });
 });
