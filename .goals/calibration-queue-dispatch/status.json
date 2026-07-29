@@ -1,8 +1,8 @@
 {
   "goal_id": "calibration-queue-dispatch",
   "issue": "OlyForge3D/PrintFarmerDesktop#54",
-  "status": "inspecting",
-  "iteration": 1,
+  "status": "building",
+  "iteration": 2,
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
   "initial_sha": "d20aa73bf888c9c1e0b346cbb794dba39f573b39",
@@ -21,7 +21,9 @@
       "summary": "HTTP transport and IPC contracts well-implemented (preconditions, status codes, ETag handling all correct), but ZERO renderer files changed. Missing: entire UI layer (bed-clear dialog, lifecycle panel, provenance display, blocked-reasons panel), acknowledgement safety guards, print result entry, external asset manifest, queue reconciliation loop (dead constants jobQueueChanges, jobQueueSubscriptionResources left unreferenced), end-to-end and accessibility test coverage. 6 of 17 criteria FAIL due to missing renderer. 2 new dead constants violate goal.md requirement.",
       "verdict": "FAIL",
       "iteration": 1,
-      "audit_note": "Initial PASS verdict overturned by orchestrator audit. Corrected verdict based on evidence: zero renderer files changed, zero UI implementation, two new dead constants left unreferenced. This corrects the critical failure documented in `.squad/decisions.md` and issue #119."
+      "audit_note": "Initial PASS verdict overturned by orchestrator audit. Corrected verdict based on evidence: zero renderer files changed, zero UI implementation, two new dead constants left unreferenced. This corrects the critical failure documented in `.squad/decisions.md` and issue #119.",
+      "mutation_testing": "Five guard mutations applied to src/main/calibrationHttp.ts and run against tests/calibration.queue-dispatch.test.ts: dropped X-Dispatch-State-If-Match, disabled 412 ETag surfacing, collapsed 409 sub-codes, altered jobKind casing, broke ETag byte-identity. Each produced the exact isolated failure named by the test, and no mutation produced zero failures. Transport tests fail for the reasons they name; criterion 6 is PASS with high confidence. Tree verified clean of mutations before commit.",
+      "scope_decision": "Orchestrator raised the size of remaining scope with the user after this verdict. User elected to finish all of #54 on this branch and accept one large PR, rather than slicing into sub-issues, because #57 stays blocked until #54 closes."
     }
   ]
 }
