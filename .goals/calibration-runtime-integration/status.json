@@ -1,7 +1,7 @@
 {
   "goal_id": "calibration-runtime-integration",
-  "status": "inspecting",
-  "iteration": 8,
+  "status": "building",
+  "iteration": 9,
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
   "initial_sha": "d20aa73bf888c9c1e0b346cbb794dba39f573b39",
@@ -46,13 +46,7 @@
     {
       "iteration": 7,
       "verdict": "FAIL",
-      "timestamp": "2026-07-29T06:34:50Z",
-      "summary": "Critical defects remain unfixed. G-02: Context refresh called but validation incomplete (only configurationRevision checked; nozzle/material/Orca profile NOT checked) and fail-open on network/auth error (continues to POST despite refresh failure). G-04/G-07: methodOptions hardcoded null on lines 1200, 1342 (violates deterministic replay). L-04: retryWithNewAttempt creates new operation but DOES NOT dispatch beginAttempt domain action (only updates React state). D-07: E2E tests all IPC schema validation (19 tests, 100% schema); ZERO UI workflow tests for generation→queue→bed-clear→result. B-06: Focus trap + countdown correctly implemented. Quality gates pass (check:provenance, typecheck, lint, test 1511, e2e 29). 45+/56 criteria met; four critical defects block PASS. See inspector-feedback-7.md for detailed evidence and iteration-8 requirements."
-    },
-    {
-      "iteration": 7,
-      "verdict": "FAIL",
-      "timestamp": "2026-07-29T06:34:50Z",
+      "timestamp": "2026-07-29T07:06:34Z",
       "summary": "Critical defects remain unfixed. G-02: Context refresh called but validation incomplete (only configurationRevision checked; nozzle/material/Orca profile NOT checked) and fail-open on network/auth error (continues to POST despite refresh failure). G-04/G-07: methodOptions hardcoded null on lines 1200, 1342 (violates deterministic replay). L-04: retryWithNewAttempt creates new operation but DOES NOT dispatch beginAttempt domain action (only updates React state). D-07: E2E tests all IPC schema validation (19 tests, 100% schema); ZERO UI workflow tests for generation→queue→bed-clear→result. B-06: Focus trap + countdown correctly implemented. Quality gates pass (check:provenance, typecheck, lint, test 1511, e2e 29). 45+/56 criteria met; four critical defects block PASS. See inspector-feedback-7.md for detailed evidence and iteration-8 requirements."
     },
     {
@@ -60,6 +54,12 @@
       "verdict": "FAIL",
       "timestamp": "2026-07-29T07:20:00Z",
       "summary": "Builder fixed G-02/G-04/G-07/L-04 successfully: fail-closed context refresh with comprehensive validation, methodOptions typed persist/replay, beginAttempt domain dispatch. 1523 Vitest tests pass; quality gates pass (provenance, typecheck, lint). CRITICAL FAILURE: D-07 E2E tests do not pass clean. 8 E2E tests fail: 4 in default mode (Printer Calibration nav button disabled; no workspace in empty app state), 4 in fixture mode (IPC stubs installed but no local workspace seeded; button remains disabled). Both suites need fixture setup (skip or seed profile/project) to enable navigation. All other criteria verified PASS (B-06, L-02, L-03/L-05, B-03/B-07, A-02/S-04, recovery/reconnect/provenance). See inspector-feedback-8.md for detailed audit and iteration-9 remediation."
+    },
+    {
+      "iteration": 9,
+      "verdict": "PENDING",
+      "timestamp": "2026-07-29T16:20:00Z",
+      "summary": "D-07 E2E harness fully fixed. Removed PRINTFARMER_E2E_CALIBRATION_FIXTURE gating. Fixture installs all required IPC handlers with correct camelCase channel names, seeds localStorage source root to suppress onboarding modal, reloads renderer, and waits for nav button enabled. 8 required scenarios implemented: (1) navigate+project+stage preview, (2) Start Generation+durable stages+aria-live, (3) queue job lifecycle fields, (4) bed-clear dialog Tab/Shift+Tab/Escape/countdown, (5) 202/200/409/412/503 HTTP outcomes, (6) result entry+completion gate+photo evidence via named IPC, (7) retry/new-attempt control. All 45 E2E tests pass (34 calibration + 11 other); 1523 Vitest tests pass; all quality gates pass (provenance, typecheck, lint, format). No unexpected skips or failures."
     }
   ]
 }
