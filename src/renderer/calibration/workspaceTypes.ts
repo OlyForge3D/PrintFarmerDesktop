@@ -3,6 +3,7 @@ import type {
   CalibrationBedClearAckOutcome,
   CalibrationBlockedReason,
   CalibrationExternalLinkId,
+  CalibrationMethodOptions,
   CalibrationOrchestrationStatus,
   CalibrationPrinterCandidate,
   CalibrationPrinterContext,
@@ -249,6 +250,8 @@ export interface GenerationStartParams {
   readonly method: string;
   readonly definitionVersion: string;
   readonly baseRevision: number | null;
+  /** Typed method options (null = server default). Persisted for exact replay. */
+  readonly methodOptions: CalibrationMethodOptions | null;
 }
 
 /** State of the current backend generation operation for a stage. */

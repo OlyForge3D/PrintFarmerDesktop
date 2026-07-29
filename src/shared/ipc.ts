@@ -2355,6 +2355,50 @@ export type CalibrationSelectedBaseProfile = z.infer<
   typeof CalibrationSelectedBaseProfile
 >;
 
+/**
+ * Typed method options for a calibration generation request.
+ * Each field maps directly to a field in the PrintFarmer API's
+ * `CalibrationMethodOptionsRequest` (PR #979).
+ * Only fields relevant to the selected method should be populated;
+ * supplying inapplicable fields is rejected by the server with 422.
+ *
+ * Defined here (before CalibrationWorkspacePayload) so that
+ * pendingGeneration.methodOptions can reference this schema directly —
+ * no z.unknown(), record-of-unknown, or structural casts.
+ */
+export const CalibrationMethodOptions = z
+  .object({
+    startCelsius: z.number().int().optional(),
+    endCelsius: z.number().int().optional(),
+    stepCelsius: z.number().int().optional(),
+    startRatio: z.number().optional(),
+    endRatio: z.number().optional(),
+    stepRatio: z.number().optional(),
+    flowRatio: z.number().optional(),
+    startPressureAdvance: z.number().optional(),
+    endPressureAdvance: z.number().optional(),
+    stepPressureAdvance: z.number().optional(),
+    lineCount: z.number().int().optional(),
+    lineLengthMillimeters: z.number().optional(),
+    cornersPerRow: z.number().int().optional(),
+    startLengthMillimeters: z.number().optional(),
+    endLengthMillimeters: z.number().optional(),
+    stepLengthMillimeters: z.number().optional(),
+    retractionSpeedMillimetersPerSecond: z.number().int().optional(),
+    startCubicMillimetersPerSecond: z.number().optional(),
+    endCubicMillimetersPerSecond: z.number().optional(),
+    stepCubicMillimetersPerSecond: z.number().optional(),
+    nominalLengthMillimeters: z.number().optional(),
+    barWidthMillimeters: z.number().optional(),
+    model3DId: z.string().uuid().optional(),
+    expectedSha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+  })
+  .strict();
+export type CalibrationMethodOptions = z.infer<typeof CalibrationMethodOptions>;
+
 export const CalibrationWorkspacePayload = z
   .object({
     schemaVersion: z.literal(1),
@@ -2418,8 +2462,8 @@ export const CalibrationWorkspacePayload = z
         method: z.string().min(1).max(64).nullable().optional(),
         /** API definition version for exact replay. */
         definitionVersion: z.string().min(1).max(64).nullable().optional(),
-        /** Method-specific options captured at submission time. */
-        methodOptions: z.record(z.string(), z.unknown()).nullable().optional(),
+        /** Method-specific options captured at submission time (exact replay). */
+        methodOptions: CalibrationMethodOptions.nullable().optional(),
         /** Profile ID at time of submission. */
         profileId: z.string().uuid().nullable().optional(),
         /** Printer configuration revision at time of submission (G-07). */
@@ -3420,46 +3464,6 @@ export const CalibrationApiError = z
   })
   .strict();
 export type CalibrationApiError = z.infer<typeof CalibrationApiError>;
-
-/**
- * Typed method options for a calibration generation request.
- * Each field maps directly to a field in the PrintFarmer API's
- * `CalibrationMethodOptionsRequest` (PR #979).
- * Only fields relevant to the selected method should be populated;
- * supplying inapplicable fields is rejected by the server with 422.
- */
-export const CalibrationMethodOptions = z
-  .object({
-    startCelsius: z.number().int().optional(),
-    endCelsius: z.number().int().optional(),
-    stepCelsius: z.number().int().optional(),
-    startRatio: z.number().optional(),
-    endRatio: z.number().optional(),
-    stepRatio: z.number().optional(),
-    flowRatio: z.number().optional(),
-    startPressureAdvance: z.number().optional(),
-    endPressureAdvance: z.number().optional(),
-    stepPressureAdvance: z.number().optional(),
-    lineCount: z.number().int().optional(),
-    lineLengthMillimeters: z.number().optional(),
-    cornersPerRow: z.number().int().optional(),
-    startLengthMillimeters: z.number().optional(),
-    endLengthMillimeters: z.number().optional(),
-    stepLengthMillimeters: z.number().optional(),
-    retractionSpeedMillimetersPerSecond: z.number().int().optional(),
-    startCubicMillimetersPerSecond: z.number().optional(),
-    endCubicMillimetersPerSecond: z.number().optional(),
-    stepCubicMillimetersPerSecond: z.number().optional(),
-    nominalLengthMillimeters: z.number().optional(),
-    barWidthMillimeters: z.number().optional(),
-    model3DId: z.string().uuid().optional(),
-    expectedSha256: z
-      .string()
-      .regex(/^[a-f0-9]{64}$/)
-      .optional(),
-  })
-  .strict();
-export type CalibrationMethodOptions = z.infer<typeof CalibrationMethodOptions>;
 
 /**
  * Durable, redacted orchestration status surfaced to the renderer.

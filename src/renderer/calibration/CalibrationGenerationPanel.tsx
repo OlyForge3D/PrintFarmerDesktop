@@ -89,8 +89,7 @@ export function CalibrationGenerationPanel({
   const projectId = activeProject?.record.projectId ?? null;
 
   const isFailed =
-    isCurrentStage &&
-    (orchestration?.status === 'Failed' || genError !== null);
+    isCurrentStage && (orchestration?.status === 'Failed' || genError !== null);
 
   /** Existing operationId if a failed generation is in state (for retry same). */
   const existingOperationId = isCurrentStage
@@ -107,6 +106,9 @@ export function CalibrationGenerationPanel({
     definitionVersion: '1',
     baseRevision:
       orchestration?.revision != null ? orchestration.revision : null,
+    /* methodOptions: null = server default. When the UI exposes per-method
+     * options, derive them from the stage/method definition and pass here. */
+    methodOptions: null,
   });
 
   const handleStartGeneration = async (): Promise<void> => {
@@ -117,9 +119,7 @@ export function CalibrationGenerationPanel({
       isSubmitting
     )
       return;
-    await store.startGeneration(
-      buildParams(store.environment.createId()),
-    );
+    await store.startGeneration(buildParams(store.environment.createId()));
   };
 
   /**
@@ -150,9 +150,7 @@ export function CalibrationGenerationPanel({
       isSubmitting
     )
       return;
-    await store.retryWithNewAttempt(
-      buildParams(store.environment.createId()),
-    );
+    await store.retryWithNewAttempt(buildParams(store.environment.createId()));
   };
 
   const handlePollStatus = async (): Promise<void> => {

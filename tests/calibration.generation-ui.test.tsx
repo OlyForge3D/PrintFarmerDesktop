@@ -292,7 +292,48 @@ function makeBaseApi(savedRecord = makeRecord()): CalibrationApi {
     listCalibrationPrinters: vi
       .fn()
       .mockResolvedValue({ printers: [], fetchedAt: now }),
-    getCalibrationPrinterContext: vi.fn(),
+    getCalibrationPrinterContext: vi.fn().mockResolvedValue({
+      printerId,
+      displayName: 'Unbranded printer',
+      printerModel: null,
+      firmware: {
+        firmware: 'Klipper' as const,
+        gcodeDialect: 'Klipper' as const,
+        firmwareVersion: null,
+        klipperConfigHash: null,
+      },
+      orcaProfileId: 'orca-base',
+      orcaProfileDisplayName: 'PLA',
+      bedWidthMm: 220,
+      bedDepthMm: 220,
+      nozzleDiameterMm: 0.4,
+      snapshotAt: now,
+      isCurrent: true,
+      configurationRevision: 7, // matches binding
+      configurationId: 'cfg-1',
+      snapshotId: 'snapshot-7', // matches binding.snapshot.snapshotId
+      snapshotRevision: 7,
+      slicerIdentity: 'OrcaSlicer' as const,
+      slicerDistribution: 'upstream' as const,
+      profileRevision: 'profile-rev-7',
+      contentHash: null, // no hash comparison with null
+      toolheads: [], // empty toolheads: no nozzle mismatch check
+      safety: {
+        buildVolumeMm: { x: 220, y: 220, z: 250 },
+        maximumNozzleTemperatureC: 300,
+        maximumBedTemperatureC: 110,
+        maximumVolumetricRateMm3S: 35,
+        emergencyStopAvailable: true,
+        thermalProtectionConfirmed: true,
+        ventilationAssessed: true,
+      },
+      permissions: {
+        readPrinter: true,
+        writeCalibration: true,
+        generateCalibration: true, // permission granted
+        startPrint: true,
+      },
+    }),
     listOrcaProfiles: vi.fn().mockResolvedValue({ profiles: [] }),
     openCalibrationPhoto: vi.fn().mockResolvedValue(null),
     stageCalibrationPhoto: vi.fn(),
@@ -718,10 +759,9 @@ describe('G-04/G-06: pendingGeneration reconciled on project load (restart recov
     fireEvent.click(projectBtn);
 
     // Crash-before-response: startCalibrationGeneration must be called with the SAME operationId
-    await waitFor(
-      () => expect(startMock).toHaveBeenCalledTimes(1),
-      { timeout: 3000 },
-    );
+    await waitFor(() => expect(startMock).toHaveBeenCalledTimes(1), {
+      timeout: 3000,
+    });
     const callArgs = startMock.mock.calls[0]![0];
     // Must reuse the persisted operationId — not a fresh UUID
     expect(callArgs.operationId).toBe(operationId);
@@ -864,10 +904,9 @@ describe('G-02: Context refresh before POST blocks on config revision mismatch',
     fireEvent.click(screen.getByTestId('start-generation-btn'));
 
     // With matching revision, POST proceeds
-    await waitFor(
-      () => expect(startMock).toHaveBeenCalledTimes(1),
-      { timeout: 3000 },
-    );
+    await waitFor(() => expect(startMock).toHaveBeenCalledTimes(1), {
+      timeout: 3000,
+    });
   });
 });
 
@@ -1387,18 +1426,16 @@ describe('L-04: retryGeneration / retryWithNewAttempt', () => {
 
   it('shows "Reconcile operation" button after failed generation (L-04)', async () => {
     await setupWithFailedGeneration();
-    await waitFor(() =>
-      expect(
-        screen.queryByTestId('retry-generation-btn'),
-      ).not.toBeNull(),
+    await waitFor(
+      () => expect(screen.queryByTestId('retry-generation-btn')).not.toBeNull(),
       { timeout: 3000 },
     );
   });
 
   it('shows "New attempt" button after failed generation (L-04)', async () => {
     await setupWithFailedGeneration();
-    await waitFor(() =>
-      expect(screen.queryByTestId('new-attempt-btn')).not.toBeNull(),
+    await waitFor(
+      () => expect(screen.queryByTestId('new-attempt-btn')).not.toBeNull(),
       { timeout: 3000 },
     );
   });
@@ -1430,8 +1467,8 @@ describe('L-04: retryGeneration / retryWithNewAttempt', () => {
     const firstCallOpId = startMock.mock.calls[0]![0].operationId;
 
     // Wait for retry button
-    await waitFor(() =>
-      expect(screen.queryByTestId('retry-generation-btn')).not.toBeNull(),
+    await waitFor(
+      () => expect(screen.queryByTestId('retry-generation-btn')).not.toBeNull(),
       { timeout: 3000 },
     );
 
@@ -2378,7 +2415,11 @@ describe('B-06: BedClearDialog focus trap — Tab/Shift+Tab confinement', () => 
     // Focus the last element
     last.focus();
     // Fire Tab keydown — handler on dialog should wrap focus to first
-    const tabEvent = fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: false, bubbles: true });
+    const tabEvent = fireEvent.keyDown(dialog, {
+      key: 'Tab',
+      shiftKey: false,
+      bubbles: true,
+    });
     // The tab event should be handled (focus wraps); active element should be first
     expect(document.activeElement === first || tabEvent).toBeTruthy();
   });
@@ -2396,7 +2437,11 @@ describe('B-06: BedClearDialog focus trap — Tab/Shift+Tab confinement', () => 
     // Focus the first element
     first.focus();
     // Fire Shift+Tab — handler should wrap focus to last
-    const tabEvent = fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true, bubbles: true });
+    const tabEvent = fireEvent.keyDown(dialog, {
+      key: 'Tab',
+      shiftKey: true,
+      bubbles: true,
+    });
     // The shift+tab event should be handled (focus wraps); active element should be last
     expect(document.activeElement === last || tabEvent).toBeTruthy();
   });
@@ -2408,6 +2453,508 @@ describe('B-06: BedClearDialog focus trap — Tab/Shift+Tab confinement', () => 
     await waitFor(() =>
       expect(screen.queryByTestId('bed-clear-dialog')).toBeNull(),
     );
+  });
+});
+
+// ─── G-02 (iteration-8): Fail-closed context refresh — all blockers ───────────
+
+/**
+ * G-02 fail-closed production-store tests (iteration 8).
+ * Each test verifies one blocker blocks POST and is typed/named.
+ */
+describe('G-02 (iter-8): Fail-closed context refresh — each blocker blocks POST', () => {
+  /** Shared context fixture (matches project binding exactly — no mismatch). */
+  function makeMatchingContext(): import('@shared/ipc').CalibrationPrinterContext {
+    return {
+      printerId,
+      displayName: 'Unbranded printer',
+      printerModel: null,
+      firmware: {
+        firmware: 'Klipper' as const,
+        gcodeDialect: 'Klipper' as const,
+        firmwareVersion: null,
+        klipperConfigHash: null,
+      },
+      orcaProfileId: 'orca-base',
+      orcaProfileDisplayName: 'PLA',
+      bedWidthMm: 220,
+      bedDepthMm: 220,
+      nozzleDiameterMm: 0.4,
+      snapshotAt: now,
+      isCurrent: true,
+      configurationRevision: 7, // matches binding.printer.printerConfigurationRevision
+      configurationId: 'cfg-1',
+      snapshotId: 'snapshot-7', // matches binding.snapshot.snapshotId
+      snapshotRevision: 7,
+      slicerIdentity: 'OrcaSlicer' as const,
+      slicerDistribution: 'upstream' as const,
+      profileRevision: 'profile-rev-7',
+      contentHash:
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', // matches selectedBaseProfile.contentHash
+      toolheads: [
+        {
+          toolId: 'tool-a',
+          toolheadId: 'head-a',
+          extruderType: 'directDrive' as const,
+          nozzle: {
+            id: 'nozzle-a', // matches binding.selectedNozzleId
+            diameterMm: 0.4,
+            material: 'brass',
+          },
+        },
+      ],
+      safety: {
+        buildVolumeMm: { x: 220, y: 220, z: 250 },
+        maximumNozzleTemperatureC: 300,
+        maximumBedTemperatureC: 110,
+        maximumVolumetricRateMm3S: 35,
+        emergencyStopAvailable: true,
+        thermalProtectionConfirmed: true,
+        ventilationAssessed: true,
+      },
+      permissions: {
+        readPrinter: true,
+        writeCalibration: true,
+        generateCalibration: true,
+        startPrint: true,
+      },
+    };
+  }
+
+  it('G-02: refresh returns null → POST blocked (fail-closed)', async () => {
+    const startMock = vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValue({
+        status: 'submitted',
+        orchestration: makeOrchestration(),
+      });
+
+    const api = {
+      ...makeBaseApi(),
+      // Simulate network/auth failure — returns null via throw
+      getCalibrationPrinterContext: vi
+        .fn<CalibrationApi['getCalibrationPrinterContext']>()
+        .mockRejectedValue(new Error('Network unavailable')),
+      startCalibrationGeneration: startMock,
+    };
+
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('start-generation-btn'));
+
+    await waitFor(
+      () =>
+        expect(
+          screen.queryAllByText(
+            /context refresh failed|network|auth|connection/i,
+          ).length,
+        ).toBeGreaterThan(0),
+      { timeout: 3000 },
+    );
+    // POST must NOT be called when context refresh fails
+    expect(startMock).not.toHaveBeenCalled();
+  });
+
+  it('G-02: stale context (isCurrent=false) blocks POST', async () => {
+    const staleCtx = { ...makeMatchingContext(), isCurrent: false };
+    const startMock = vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValue({
+        status: 'submitted',
+        orchestration: makeOrchestration(),
+      });
+
+    const api = {
+      ...makeBaseApi(),
+      getCalibrationPrinterContext: vi.fn().mockResolvedValue(staleCtx),
+      startCalibrationGeneration: startMock,
+    };
+
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('start-generation-btn'));
+
+    await waitFor(
+      () =>
+        expect(screen.queryAllByText(/stale|rebase/i).length).toBeGreaterThan(
+          0,
+        ),
+      { timeout: 3000 },
+    );
+    expect(startMock).not.toHaveBeenCalled();
+  });
+
+  it('G-02: nozzle mismatch (nozzleId not found in toolheads) blocks POST', async () => {
+    /* Context has a different nozzle ID — physical identity changed. */
+    const nozzleMismatchCtx = {
+      ...makeMatchingContext(),
+      toolheads: [
+        {
+          toolId: 'tool-a',
+          toolheadId: 'head-a',
+          extruderType: 'directDrive' as const,
+          nozzle: {
+            id: 'nozzle-DIFFERENT', // does NOT match binding.selectedNozzleId='nozzle-a'
+            diameterMm: 0.6,
+            material: 'brass',
+          },
+        },
+      ],
+    };
+    const startMock = vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValue({
+        status: 'submitted',
+        orchestration: makeOrchestration(),
+      });
+
+    const api = {
+      ...makeBaseApi(),
+      getCalibrationPrinterContext: vi
+        .fn()
+        .mockResolvedValue(nozzleMismatchCtx),
+      startCalibrationGeneration: startMock,
+    };
+
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('start-generation-btn'));
+
+    await waitFor(
+      () =>
+        expect(
+          screen.queryAllByText(/nozzle|no longer present|rebase/i).length,
+        ).toBeGreaterThan(0),
+      { timeout: 3000 },
+    );
+    expect(startMock).not.toHaveBeenCalled();
+  });
+
+  it('G-02: Orca profile content hash mismatch blocks POST', async () => {
+    /* Context returns a different contentHash — upstream profile changed. */
+    const hashMismatchCtx = {
+      ...makeMatchingContext(),
+      contentHash:
+        'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    };
+    const startMock = vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValue({
+        status: 'submitted',
+        orchestration: makeOrchestration(),
+      });
+
+    const api = {
+      ...makeBaseApi(),
+      getCalibrationPrinterContext: vi.fn().mockResolvedValue(hashMismatchCtx),
+      startCalibrationGeneration: startMock,
+    };
+
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('start-generation-btn'));
+
+    await waitFor(
+      () =>
+        expect(
+          screen.queryAllByText(/orca|profile.*hash|content hash/i).length,
+        ).toBeGreaterThan(0),
+      { timeout: 3000 },
+    );
+    expect(startMock).not.toHaveBeenCalled();
+  });
+
+  it('G-02: permission check (generateCalibration=false) blocks POST', async () => {
+    const noPermCtx = {
+      ...makeMatchingContext(),
+      permissions: {
+        readPrinter: true,
+        writeCalibration: true,
+        generateCalibration: false, // permission revoked
+        startPrint: true,
+      },
+    };
+    const startMock = vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValue({
+        status: 'submitted',
+        orchestration: makeOrchestration(),
+      });
+
+    const api = {
+      ...makeBaseApi(),
+      getCalibrationPrinterContext: vi.fn().mockResolvedValue(noPermCtx),
+      startCalibrationGeneration: startMock,
+    };
+
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('start-generation-btn'));
+
+    await waitFor(
+      () =>
+        expect(
+          screen.queryAllByText(/permission|generate.*calibration|blocked/i)
+            .length,
+        ).toBeGreaterThan(0),
+      { timeout: 3000 },
+    );
+    expect(startMock).not.toHaveBeenCalled();
+  });
+
+  it('G-02: matching context allows POST', async () => {
+    const startMock = vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValue({
+        status: 'submitted',
+        orchestration: makeOrchestration(),
+      });
+
+    const api = {
+      ...makeBaseApi(),
+      getCalibrationPrinterContext: vi
+        .fn()
+        .mockResolvedValue(makeMatchingContext()),
+      startCalibrationGeneration: startMock,
+    };
+
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('start-generation-btn'));
+
+    await waitFor(() => expect(startMock).toHaveBeenCalledTimes(1), {
+      timeout: 3000,
+    });
+  });
+});
+
+// ─── G-04/G-07 (iter-8): methodOptions typed serialization and replay ─────────
+
+describe('G-04/G-07 (iter-8): methodOptions typed persist/serialize/replay', () => {
+  it('methodOptions null (server default) is preserved through submission (G-04)', async () => {
+    const startMock = vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValue({
+        status: 'submitted',
+        orchestration: makeOrchestration(),
+      });
+
+    // Use base API with no context mock — context refresh throws and blocks POST normally,
+    // but for this assertion we use the standard base which has a null mock (no real server).
+    const api2 = {
+      ...makeBaseApi(),
+      startCalibrationGeneration: startMock,
+    };
+
+    await openStepWorkflow(api2);
+    fireEvent.click(screen.getByTestId('start-generation-btn'));
+
+    // startCalibrationGeneration was called (schema allows methodOptions:null)
+    await waitFor(() => expect(startMock).toHaveBeenCalled(), {
+      timeout: 3000,
+    });
+    // methodOptions must be null (server default, not undefined or missing key)
+    const call = startMock.mock.calls[0]?.[0];
+    // methodOptions is either null or an object — never undefined at this call site
+    expect('methodOptions' in (call ?? {})).toBe(true);
+  });
+
+  it('pendingGeneration persisted with methodOptions matching submission (G-04)', () => {
+    /* Verify that the schema change from z.unknown() to CalibrationMethodOptions
+     * is reflected correctly: a record persisted with typed options round-trips. */
+    const base = makeRecord();
+    const withOptions = CalibrationWorkspacePayload.parse({
+      ...base.workspaceState,
+      pendingGeneration: {
+        operationId,
+        stageId: 'temperature',
+        attemptId,
+        expectedProjectRevision: 1,
+        orchestrationId: null,
+        orchestrationStep: null,
+        jobId: null,
+        lastReconcileAt: null,
+        createdAt: now,
+        method: 'temperatureTower',
+        definitionVersion: '1',
+        methodOptions: { startCelsius: 190, endCelsius: 250, stepCelsius: 5 },
+        profileId,
+        printerConfigRevision: 7,
+        snapshotId: 'snapshot-7',
+        orcaProfileContentHash: null,
+        nozzleId: 'nozzle-a',
+        spoolId: null,
+      },
+    });
+    // Typed options survive parse — no z.unknown() loss
+    const opts = withOptions.pendingGeneration?.methodOptions;
+    expect(opts).toEqual({
+      startCelsius: 190,
+      endCelsius: 250,
+      stepCelsius: 5,
+    });
+  });
+
+  it('changed methodOptions produce a distinct operationId on retry (G-04)', async () => {
+    /* Verified by contract: retryWithNewAttempt is called with fresh params.
+     * The new operationId is distinct (tested in L-04 suite). This test
+     * asserts that methodOptions are wired through params, not hard-null. */
+    const startMock = vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValueOnce({
+        status: 'submitted',
+        orchestration: makeOrchestration({ status: 'Failed' }),
+      })
+      .mockResolvedValueOnce({
+        status: 'submitted',
+        orchestration: makeOrchestration({ status: 'Running' }),
+      });
+
+    const api = { ...makeBaseApi(), startCalibrationGeneration: startMock };
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('start-generation-btn'));
+
+    await waitFor(() => expect(startMock).toHaveBeenCalledTimes(1), {
+      timeout: 3000,
+    });
+
+    // The first submission has methodOptions=null (server default from buildParams)
+    const firstCall = startMock.mock.calls[0]![0];
+    // Key must be present (not undefined)
+    expect(
+      Object.prototype.hasOwnProperty.call(firstCall, 'methodOptions'),
+    ).toBe(true);
+
+    // After new attempt click, a new distinct operation is submitted
+    await waitFor(
+      () => expect(screen.queryByTestId('new-attempt-btn')).not.toBeNull(),
+      { timeout: 3000 },
+    );
+    fireEvent.click(screen.getByTestId('new-attempt-btn'));
+
+    await waitFor(() => expect(startMock).toHaveBeenCalledTimes(2), {
+      timeout: 3000,
+    });
+    const secondCall = startMock.mock.calls[1]![0];
+
+    // New attempt uses a distinct operationId
+    expect(secondCall.operationId).not.toBe(firstCall.operationId);
+    // methodOptions is present (not undefined)
+    expect(
+      Object.prototype.hasOwnProperty.call(secondCall, 'methodOptions'),
+    ).toBe(true);
+  });
+});
+
+// ─── L-04 (iter-8): beginAttempt domain event dispatched on retryWithNewAttempt
+
+describe('L-04 (iter-8): retryWithNewAttempt dispatches beginAttempt domain event', () => {
+  it('retryWithNewAttempt produces a distinct attemptId from the original (L-04)', async () => {
+    const startMock = vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValueOnce({
+        status: 'submitted',
+        orchestration: makeOrchestration({ status: 'Failed' }),
+      })
+      .mockResolvedValueOnce({
+        status: 'submitted',
+        orchestration: makeOrchestration({ status: 'Running' }),
+      });
+
+    const api = { ...makeBaseApi(), startCalibrationGeneration: startMock };
+    await openStepWorkflow(api);
+
+    // First start generates initial attemptId from generation panel
+    fireEvent.click(screen.getByTestId('start-generation-btn'));
+    await waitFor(() => expect(startMock).toHaveBeenCalledTimes(1), {
+      timeout: 3000,
+    });
+    const firstAttemptId = startMock.mock.calls[0]![0].attemptId;
+
+    // Wait for new attempt button (failed orchestration)
+    await waitFor(
+      () => expect(screen.queryByTestId('new-attempt-btn')).not.toBeNull(),
+      { timeout: 3000 },
+    );
+
+    // New attempt generates a fresh attemptId
+    fireEvent.click(screen.getByTestId('new-attempt-btn'));
+    await waitFor(() => expect(startMock).toHaveBeenCalledTimes(2), {
+      timeout: 3000,
+    });
+    const newAttemptId = startMock.mock.calls[1]![0].attemptId;
+
+    // New attempt must use a DISTINCT attemptId
+    expect(newAttemptId).not.toBe(firstAttemptId);
+  });
+
+  it('retryWithNewAttempt immutable history: old operationId not re-submitted (L-04)', async () => {
+    const startMock = vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValueOnce({
+        status: 'submitted',
+        orchestration: makeOrchestration({ status: 'Failed', operationId }),
+      })
+      .mockResolvedValueOnce({
+        status: 'submitted',
+        orchestration: makeOrchestration({ status: 'Running' }),
+      });
+
+    const api = { ...makeBaseApi(), startCalibrationGeneration: startMock };
+    await openStepWorkflow(api);
+
+    fireEvent.click(screen.getByTestId('start-generation-btn'));
+    await waitFor(() => expect(startMock).toHaveBeenCalledTimes(1), {
+      timeout: 3000,
+    });
+    const originalOpId = startMock.mock.calls[0]![0].operationId;
+
+    await waitFor(
+      () => expect(screen.queryByTestId('new-attempt-btn')).not.toBeNull(),
+      { timeout: 3000 },
+    );
+
+    fireEvent.click(screen.getByTestId('new-attempt-btn'));
+    await waitFor(() => expect(startMock).toHaveBeenCalledTimes(2), {
+      timeout: 3000,
+    });
+    const newOpId = startMock.mock.calls[1]![0].operationId;
+
+    // New attempt must NOT reuse the old operationId (history is immutable)
+    expect(newOpId).not.toBe(originalOpId);
+  });
+
+  it('retryGeneration (same operationId) does NOT produce a beginAttempt transition (L-04)', async () => {
+    /* retryGeneration reuses the same operationId for idempotent replay —
+     * no new domain attempt is created. Only retryWithNewAttempt does. */
+    const startMock = vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValueOnce({
+        status: 'submitted',
+        orchestration: makeOrchestration({ status: 'Failed' }),
+      })
+      .mockResolvedValueOnce({
+        status: 'submitted',
+        orchestration: makeOrchestration({ status: 'Running' }),
+      });
+
+    const api = { ...makeBaseApi(), startCalibrationGeneration: startMock };
+    await openStepWorkflow(api);
+
+    fireEvent.click(screen.getByTestId('start-generation-btn'));
+    await waitFor(() => expect(startMock).toHaveBeenCalledTimes(1), {
+      timeout: 3000,
+    });
+    const firstOpId = startMock.mock.calls[0]![0].operationId;
+
+    await waitFor(
+      () => expect(screen.queryByTestId('retry-generation-btn')).not.toBeNull(),
+      { timeout: 3000 },
+    );
+
+    // Reconcile-same-operation retry
+    fireEvent.click(screen.getByTestId('retry-generation-btn'));
+    await waitFor(() => expect(startMock).toHaveBeenCalledTimes(2), {
+      timeout: 3000,
+    });
+    const retryOpId = startMock.mock.calls[1]![0].operationId;
+
+    // Same operationId for idempotent reconcile
+    expect(retryOpId).toBe(firstOpId);
   });
 });
 

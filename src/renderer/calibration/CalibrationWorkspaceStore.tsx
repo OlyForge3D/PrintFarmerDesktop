@@ -25,6 +25,7 @@ import { browserCalibrationEnvironment, calibrationApi } from './api';
 import {
   calibrationReducer,
   type CalibrationEvent,
+  type CalibrationMethod,
   type CalibrationStageId,
 } from './domain';
 import { parseWorkspaceRecordDomain } from './parseDomainState';
@@ -1197,7 +1198,7 @@ export function CalibrationWorkspaceStoreProvider({
           operationId: params.operationId,
           method: params.method,
           definitionVersion: params.definitionVersion,
-          methodOptions: null,
+          methodOptions: params.methodOptions,
           baseRevision: params.baseRevision,
         });
         if (profileIdRef.current !== params.profileId) return;
@@ -1284,18 +1285,41 @@ export function CalibrationWorkspaceStoreProvider({
       setAlertMessage(null);
 
       /* G-02: Refresh context immediately before POST and compare against the
-       * project snapshot. If the printer config revision has changed, block the
-       * submission so we do not submit with stale context. */
+       * project snapshot. Every context failure, mismatch, or unknown state
+       * blocks the POST (fail-closed). No POST proceeds on null/stale/error. */
       const contextBeforeSubmit = await refreshProjectContext();
       if (profileIdRef.current !== params.profileId) return;
       const projectBeforeSubmit = activeProjectRef.current;
-      if (
-        projectBeforeSubmit !== null &&
-        contextBeforeSubmit !== null
-      ) {
-        const snapshotRevision =
-          projectBeforeSubmit.domainState.binding.printer
-            .printerConfigurationRevision;
+
+      /* Fail-closed: any null/error from refreshProjectContext blocks POST. */
+      if (contextBeforeSubmit === null) {
+        const msg =
+          'Context refresh failed (network/auth/unknown). Resolve connection issues before generating.';
+        setGenerationState((prev) =>
+          prev ? { ...prev, submitting: false, error: msg } : prev,
+        );
+        reportError(msg);
+        return;
+      }
+
+      if (projectBeforeSubmit !== null) {
+        const binding = projectBeforeSubmit.domainState.binding;
+        const selectedBaseProfile =
+          projectBeforeSubmit.record.workspaceState.selectedBaseProfile;
+
+        /* Stale context (server says snapshot is outdated). */
+        if (contextBeforeSubmit.isCurrent === false) {
+          const msg =
+            'Context mismatch: printer context is stale — rebase the project before generating.';
+          setGenerationState((prev) =>
+            prev ? { ...prev, submitting: false, error: msg } : prev,
+          );
+          reportError(msg);
+          return;
+        }
+
+        /* Configuration revision mismatch. */
+        const snapshotRevision = binding.printer.printerConfigurationRevision;
         if (
           contextBeforeSubmit.configurationRevision !== null &&
           contextBeforeSubmit.configurationRevision !== undefined &&
@@ -1308,10 +1332,65 @@ export function CalibrationWorkspaceStoreProvider({
           reportError(msg);
           return;
         }
+
+        /* Snapshot ID mismatch. */
+        if (
+          contextBeforeSubmit.snapshotId !== null &&
+          contextBeforeSubmit.snapshotId !== undefined &&
+          contextBeforeSubmit.snapshotId !== binding.snapshot.snapshotId
+        ) {
+          const msg = `Context mismatch: snapshot ID changed from ${binding.snapshot.snapshotId} to ${contextBeforeSubmit.snapshotId}. Rebase the project before generating.`;
+          setGenerationState((prev) =>
+            prev ? { ...prev, submitting: false, error: msg } : prev,
+          );
+          reportError(msg);
+          return;
+        }
+
+        /* Physical nozzle identity mismatch (G-02 toolhead/nozzle check). */
+        const expectedNozzleId = binding.selectedNozzleId;
+        const refreshedNozzle = contextBeforeSubmit.toolheads.find(
+          (th) => th.nozzle.id === expectedNozzleId,
+        );
+        if (
+          contextBeforeSubmit.toolheads.length > 0 &&
+          refreshedNozzle === undefined
+        ) {
+          const msg = `Context mismatch: nozzle ${expectedNozzleId} is no longer present in the printer snapshot. Rebase the project before generating.`;
+          setGenerationState((prev) =>
+            prev ? { ...prev, submitting: false, error: msg } : prev,
+          );
+          reportError(msg);
+          return;
+        }
+
+        /* Orca profile content hash mismatch (G-02 upstream-Orca profile). */
+        const expectedHash = selectedBaseProfile.contentHash;
+        if (
+          expectedHash !== null &&
+          contextBeforeSubmit.contentHash !== null &&
+          contextBeforeSubmit.contentHash !== undefined &&
+          contextBeforeSubmit.contentHash !== expectedHash
+        ) {
+          const msg = `Context mismatch: Orca profile content hash changed (expected ${expectedHash.slice(0, 12)}…, got ${contextBeforeSubmit.contentHash.slice(0, 12)}…). Refresh the project context before generating.`;
+          setGenerationState((prev) =>
+            prev ? { ...prev, submitting: false, error: msg } : prev,
+          );
+          reportError(msg);
+          return;
+        }
+
+        /* Permission check: generateCalibration must be granted. */
+        if (contextBeforeSubmit.permissions?.generateCalibration === false) {
+          const msg =
+            'Context blocked: the selected profile does not have generateCalibration permission.';
+          setGenerationState((prev) =>
+            prev ? { ...prev, submitting: false, error: msg } : prev,
+          );
+          reportError(msg);
+          return;
+        }
       }
-      /* If context refresh returned null (fetch failed), continue with a note —
-       * we do not block generation entirely on a transient context fetch failure.
-       * A confirmed mismatch (above) is the hard blocker. */
 
       /* Persist the full operation context to workspace before POST so that a
        * crash/restart can recover the same idempotency key with exact replay
@@ -1320,10 +1399,8 @@ export function CalibrationWorkspaceStoreProvider({
         const binding = projectBeforeSubmit.domainState.binding;
         const selectedBaseProfile =
           projectBeforeSubmit.record.workspaceState.selectedBaseProfile;
-        const filamentSpoolId =
-          binding.filament?.spoolId ?? null;
-        const selectedNozzleId =
-          binding.selectedNozzleId ?? null;
+        const filamentSpoolId = binding.filament?.spoolId ?? null;
+        const selectedNozzleId = binding.selectedNozzleId ?? null;
         const pendingPayload: CalibrationWorkspacePayload = {
           ...payloadFor(projectBeforeSubmit),
           pendingGeneration: {
@@ -1339,13 +1416,11 @@ export function CalibrationWorkspaceStoreProvider({
             /* Full replay context (G-04, G-06, G-07). */
             method: params.method,
             definitionVersion: params.definitionVersion,
-            methodOptions: null,
+            methodOptions: params.methodOptions,
             profileId: params.profileId,
-            printerConfigRevision:
-              binding.printer.printerConfigurationRevision,
+            printerConfigRevision: binding.printer.printerConfigurationRevision,
             snapshotId: binding.snapshot.snapshotId,
-            orcaProfileContentHash:
-              selectedBaseProfile.contentHash ?? null,
+            orcaProfileContentHash: selectedBaseProfile.contentHash ?? null,
             nozzleId: selectedNozzleId,
             spoolId: filamentSpoolId,
           },
@@ -1359,7 +1434,13 @@ export function CalibrationWorkspaceStoreProvider({
 
       await submitGenerationPost(params);
     },
-    [bumpAndSave, environment, refreshProjectContext, reportError, submitGenerationPost],
+    [
+      bumpAndSave,
+      environment,
+      refreshProjectContext,
+      reportError,
+      submitGenerationPost,
+    ],
   );
 
   /**
@@ -1391,6 +1472,9 @@ export function CalibrationWorkspaceStoreProvider({
    * L-04: Create a NEW calibration attempt and operation for a true retry.
    * Preserves the old attempt/generation/job/lifecycle history intact. The new
    * operationId is fresh; the old pendingGeneration record is not mutated.
+   *
+   * Dispatches the `beginAttempt` domain event BEFORE persisting the new
+   * operation so the domain state machine transitions correctly (L-04).
    */
   const retryWithNewAttempt = useCallback(
     async (params: GenerationStartParams): Promise<void> => {
@@ -1400,14 +1484,35 @@ export function CalibrationWorkspaceStoreProvider({
         'Starting a new attempt — old attempt history is preserved (L-04).',
       );
       setAlertMessage(null);
+
+      /* L-04: Dispatch beginAttempt domain event so the domain state machine
+       * transitions to a new in-progress attempt. The old attempt history is
+       * immutably preserved. This MUST happen before persisting the new
+       * pending generation record. */
+      const beginAttemptAccepted = await dispatchEvent({
+        eventId: environment.createId(),
+        timestamp: environment.now(),
+        type: 'beginAttempt',
+        attemptId: params.attemptId,
+        stageId: params.stageId,
+        method: params.method as CalibrationMethod,
+      });
+      if (!beginAttemptAccepted) {
+        reportError(
+          'Could not begin a new attempt — the current workflow state rejected the transition.',
+        );
+        return;
+      }
+
       /* Persist the new operation as pending (clears prior operation). */
-      const binding = projectBeforeRetry.domainState.binding;
+      const projectAfterBegin = activeProjectRef.current ?? projectBeforeRetry;
+      const binding = projectAfterBegin.domainState.binding;
       const selectedBaseProfile =
-        projectBeforeRetry.record.workspaceState.selectedBaseProfile;
+        projectAfterBegin.record.workspaceState.selectedBaseProfile;
       const filamentSpoolId = binding.filament?.spoolId ?? null;
       const selectedNozzleId = binding.selectedNozzleId ?? null;
       const newPendingPayload: CalibrationWorkspacePayload = {
-        ...payloadFor(projectBeforeRetry),
+        ...payloadFor(projectAfterBegin),
         pendingGeneration: {
           operationId: params.operationId,
           stageId: params.stageId,
@@ -1420,19 +1525,17 @@ export function CalibrationWorkspaceStoreProvider({
           createdAt: environment.now(),
           method: params.method,
           definitionVersion: params.definitionVersion,
-          methodOptions: null,
+          methodOptions: params.methodOptions,
           profileId: params.profileId,
-          printerConfigRevision:
-            binding.printer.printerConfigurationRevision,
+          printerConfigRevision: binding.printer.printerConfigurationRevision,
           snapshotId: binding.snapshot.snapshotId,
-          orcaProfileContentHash:
-            selectedBaseProfile.contentHash ?? null,
+          orcaProfileContentHash: selectedBaseProfile.contentHash ?? null,
           nozzleId: selectedNozzleId,
           spoolId: filamentSpoolId,
         },
       };
       await bumpAndSave(
-        replacePayload(projectBeforeRetry, newPendingPayload),
+        replacePayload(projectAfterBegin, newPendingPayload),
         environment.now(),
         'Persisting new attempt operation for restart recovery.',
       );
@@ -1447,7 +1550,13 @@ export function CalibrationWorkspaceStoreProvider({
       });
       await submitGenerationPost(params);
     },
-    [bumpAndSave, environment, submitGenerationPost],
+    [
+      bumpAndSave,
+      dispatchEvent,
+      environment,
+      reportError,
+      submitGenerationPost,
+    ],
   );
 
   const pollOrchestrationStatus = useCallback(
@@ -1993,8 +2102,7 @@ export function CalibrationWorkspaceStoreProvider({
       /* G-06: orchestrationId is null = crash-before-server-response.
        * Exact-replay startCalibrationGeneration with the SAME persisted
        * operationId. The server will deduplicate idempotently. */
-      const profileId =
-        pending.profileId ?? activeProject.record.profileId;
+      const profileId = pending.profileId ?? activeProject.record.profileId;
       const replayParams: import('./workspaceTypes').GenerationStartParams = {
         profileId,
         projectId: activeProject.record.projectId,
@@ -2004,6 +2112,7 @@ export function CalibrationWorkspaceStoreProvider({
         method: pending.method,
         definitionVersion: pending.definitionVersion,
         baseRevision: pending.expectedProjectRevision,
+        methodOptions: pending.methodOptions ?? null,
       };
       setGenerationState((prev) =>
         prev ? { ...prev, submitting: true } : prev,
@@ -2014,7 +2123,12 @@ export function CalibrationWorkspaceStoreProvider({
     if (pending.jobId !== null) {
       void refreshQueueState(pending.jobId);
     }
-  }, [activeProject, pollOrchestrationStatus, refreshQueueState, submitGenerationPost]);
+  }, [
+    activeProject,
+    pollOrchestrationStatus,
+    refreshQueueState,
+    submitGenerationPost,
+  ]);
 
   const value = useMemo<CalibrationWorkspaceStoreValue>(
     () => ({
