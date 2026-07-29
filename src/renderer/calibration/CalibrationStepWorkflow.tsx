@@ -294,6 +294,9 @@ export function CalibrationStepWorkflow({
   >([]);
   const [isAddingObservation, setIsAddingObservation] = useState(false);
   const [observationError, setObservationError] = useState<string | null>(null);
+  const [validatedAssetSha256, setValidatedAssetSha256] = useState<
+    string | null
+  >(null);
 
   // On mount, load any existing queue job for this project/stage attempt.
   useEffect(() => {
@@ -382,12 +385,25 @@ export function CalibrationStepWorkflow({
           state.binding.printer.printerConfigurationRevision,
         gcodeContentSha256: orchStatus.gcodeSha256 ?? null,
         specificationSha256: orchStatus.specificationSha256 ?? null,
-        machineProfileSha256: null,
+        // The workspace persists a single selected base Orca profile (machine/printer).
+        // Its contentHash is the machine profile hash.
+        machineProfileSha256:
+          project.record.workspaceState.selectedBaseProfile?.contentHash ??
+          null,
+        // No distinct process-profile content hash in renderer workspace state.
         processProfileSha256: null,
+        // Filament profile uses a separate Orca profile distinct from the machine
+        // base profile; no filament-specific contentHash is persisted in the
+        // workspace state. Assigning machineProfileSha256 here would be false
+        // provenance — honest absence is the correct representation.
         filamentProfileSha256: null,
+        // Printer config snapshot hash is not surfaced to the renderer (main-process only).
         printerConfigSnapshotSha256: null,
-        requiredFirmwareFamily: null,
-        requiredGcodeDialect: null,
+        // This workspace was created against a Klipper-eligible printer
+        // (CalibrationPrinterEligibility.firmwareFamily: z.literal('Klipper')).
+        // These are product invariants, not runtime values from state.binding.printer.
+        requiredFirmwareFamily: 'Klipper',
+        requiredGcodeDialect: 'Klipper',
         requiredSlicerEngine: null,
         requiredSlicerDistribution: null,
         requiredSlicerVersion: orchStatus.generatorVersion ?? null,
@@ -406,8 +422,8 @@ export function CalibrationStepWorkflow({
           // Construct provenance from what we know
           setHandoffProvenance({
             requiredSlicerVersion: orchStatus.generatorVersion ?? null,
-            requiredGcodeDialect: null,
-            requiredFirmwareFamily: null,
+            requiredGcodeDialect: 'Klipper',
+            requiredFirmwareFamily: 'Klipper',
             requiredSlicerContainerDigest:
               orchStatus.slicerContainerDigest ?? null,
             pinnedPrinterConfigRevision:
@@ -417,9 +433,15 @@ export function CalibrationStepWorkflow({
             gcodeFileId: orchStatus.gcodeFileId,
             gcodeContentSha256: orchStatus.gcodeSha256 ?? null,
             specificationSha256: orchStatus.specificationSha256 ?? null,
-            machineProfileSha256: null,
+            machineProfileSha256:
+              project.record.workspaceState.selectedBaseProfile?.contentHash ??
+              null,
+            // No distinct process-profile content hash in renderer workspace state.
             processProfileSha256: null,
+            // Filament profile hash not persisted in workspace state; null is
+            // honest — assigning machineProfileSha256 would be false provenance.
             filamentProfileSha256: null,
+            // Printer config snapshot hash is not surfaced to the renderer.
             printerConfigSnapshotSha256: null,
             rowVersion: res.rowVersion ?? null,
           });
@@ -435,6 +457,7 @@ export function CalibrationStepWorkflow({
     state.attempts,
     state.binding.printer,
     state.projectId,
+    project.record.workspaceState.selectedBaseProfile,
   ]);
 
   const handleJobInvalidated = useCallback((reason: string) => {
@@ -503,14 +526,45 @@ export function CalibrationStepWorkflow({
           recordedAt: store.environment.now(),
         } as CalibrationPrintObservation;
         setPrintObservations((prev) => [...prev, newObs]);
+        // Persist via IPC (criterion 13) — fire-and-forget; errors silently ignored.
+        void calibrationApi().persistCalibrationPrintObservation({
+          profileId: store.profileId ?? '',
+          projectId: state.projectId,
+          attemptId: orchId ?? '',
+          jobId: queueJobId ?? '',
+          observation: newObs,
+        });
       } catch (err) {
         setObservationError(err instanceof Error ? err.message : String(err));
       } finally {
         setIsAddingObservation(false);
       }
     },
-    [store.environment],
+    [store.environment, store.profileId, state.projectId, orchId, queueJobId],
   );
+
+  // Criterion 14: pick, validate and store asset SHA-256
+  const handlePickAndValidateAsset = useCallback(async () => {
+    const pickRes = await calibrationApi().pickCalibrationAssetFile({
+      allowedExtensions: ['3mf', 'stl'],
+      title: 'Select calibration asset',
+    });
+    if (pickRes.status !== 'ok') return;
+    const validateRes = await calibrationApi().validateCalibrationAssetFile({
+      approvalId: pickRes.approvalId,
+      method: 'sha256',
+    });
+    if (validateRes.status === 'ok') {
+      setValidatedAssetSha256(validateRes.sha256);
+    }
+  }, []);
+
+  // Criterion 14: open manifest URL through the allowlisted IPC channel only
+  const handleOpenManifestUrl = useCallback(() => {
+    void calibrationApi().openCalibrationManifestUrl({
+      url: 'https://printfarmer.dev/calibration/manifest',
+    });
+  }, []);
 
   const stageAttempts = state.attempts.filter(
     (attempt) => attempt.stageId === stageId,
@@ -565,15 +619,31 @@ export function CalibrationStepWorkflow({
 
   /**
    * Derive a typed blocked reason from available signals.
-   * Criterion 10: all four signal paths must route to their code, not null.
+   * Criterion 10: all eight signal paths must route to their code, not null.
    */
   const computedBlockedReason = useMemo<CalibrationBlockedReason | null>(() => {
-    if (store.offline || store.availability?.available !== true) {
+    // Priority 1: hard offline
+    if (store.offline) {
       return {
         code: 'printerOffline',
         detail: 'Printer is not reachable. Check network and Klipper status.',
       };
     }
+    // Priority 2+3: availability object absent (loading) or unavailable
+    if (store.availability?.available !== true) {
+      // maintenanceBusy supersedes generic offline when reason is operatorDisabled
+      if (store.availability?.unavailableReason === 'operatorDisabled') {
+        return {
+          code: 'maintenanceBusy',
+          detail: 'Printer is disabled by an operator — cannot start jobs.',
+        };
+      }
+      return {
+        code: 'printerOffline',
+        detail: 'Printer is not reachable. Check network and Klipper status.',
+      };
+    }
+    // Priority 4: stale telemetry
     if (!project.record.isPrinterContextFresh) {
       return {
         code: 'staleTelemetry',
@@ -581,6 +651,18 @@ export function CalibrationStepWorkflow({
           'Printer context is stale. Re-open the project or force-sync to refresh.',
       };
     }
+    // Priority 5: permission (grantedScopes present but CalibrationWrite absent)
+    if (
+      store.availability.grantedScopes != null &&
+      !store.availability.grantedScopes.includes('CalibrationWrite')
+    ) {
+      return {
+        code: 'permissionFailure',
+        detail:
+          'Your token does not include the CalibrationWrite scope. Contact your administrator.',
+      };
+    }
+    // Priority 6: pinned revision mismatch (config changed since queuing)
     if (
       queueJob?.pinnedPrinterConfigRevision != null &&
       queueJob.pinnedPrinterConfigRevision !==
@@ -592,6 +674,41 @@ export function CalibrationStepWorkflow({
           'Printer configuration changed since this job was queued. Re-queue to pick up the new config.',
       };
     }
+    // Priority 7: machine profile hash mismatch (stale profile)
+    const currentProfileHash =
+      project.record.workspaceState.selectedBaseProfile?.contentHash ?? null;
+    if (
+      queueJob?.machineProfileSha256 != null &&
+      currentProfileHash != null &&
+      queueJob.machineProfileSha256 !== currentProfileHash
+    ) {
+      return {
+        code: 'configChange',
+        detail:
+          'Machine profile changed since this job was queued. Re-queue with the current profile.',
+      };
+    }
+    // Priority 8: firmware family mismatch
+    if (
+      queueJob?.requiredFirmwareFamily != null &&
+      queueJob.requiredFirmwareFamily !== 'Klipper'
+    ) {
+      return {
+        code: 'firmwareChange',
+        detail: `Job requires firmware '${queueJob.requiredFirmwareFamily}' but printer reports Klipper.`,
+      };
+    }
+    // Priority 9: filament SKU mismatch
+    if (
+      queueJob?.requiredFilamentSku != null &&
+      queueJob.requiredFilamentSku !== state.binding.filament.sku
+    ) {
+      return {
+        code: 'materialMismatch',
+        detail: `Job requires filament '${queueJob.requiredFilamentSku}' but binding has '${state.binding.filament.sku}'.`,
+      };
+    }
+    // Priority 10: missing G-code
     if (queueJob != null && !queueJob.gcodeFileId) {
       return {
         code: 'missingGcode',
@@ -603,8 +720,10 @@ export function CalibrationStepWorkflow({
     store.offline,
     store.availability,
     project.record.isPrinterContextFresh,
+    project.record.workspaceState.selectedBaseProfile,
     queueJob,
     state.binding.printer.printerConfigurationRevision,
+    state.binding.filament.sku,
   ]);
   const currentPhysicalMatch = isCurrentPhysicalMatch(
     state,
@@ -1231,6 +1350,7 @@ export function CalibrationStepWorkflow({
                 blockedReason={computedBlockedReason}
                 onJobInvalidated={handleJobInvalidated}
                 onBedClearExpiryChange={setBedClearExpiresAt}
+                bedClearExpiresAt={bedClearExpiresAt}
               />
             )}
 
@@ -1252,6 +1372,33 @@ export function CalibrationStepWorkflow({
                 createId={store.environment.createId}
                 now={store.environment.now}
               />
+            )}
+
+            {/* Asset manifest storage and navigation — criterion 14 */}
+            {queueJobId !== null && (
+              <section className="cal-step-section" aria-label="Asset manifest">
+                <button
+                  type="button"
+                  className="cal-button"
+                  data-testid="pick-validate-asset"
+                  onClick={() => void handlePickAndValidateAsset()}
+                >
+                  Pick and validate asset file
+                </button>
+                {validatedAssetSha256 !== null && (
+                  <p data-testid="validated-asset-sha256">
+                    Asset SHA-256: {validatedAssetSha256}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  className="cal-button"
+                  data-testid="open-manifest-url"
+                  onClick={handleOpenManifestUrl}
+                >
+                  Open calibration manifest
+                </button>
+              </section>
             )}
 
             {/* Bed-clear safety dialog — criteria 7, 12 */}

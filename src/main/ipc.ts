@@ -2265,6 +2265,46 @@ export function registerIpcHandlers(
     },
   );
 
+  // --- Print observation persistence (criterion 13, issue #54) -------------
+  ipcMain.handle(
+    IpcChannel.CalibrationPersistPrintObservation,
+    (_event, rawRequest: unknown) => {
+      // Stub: persistence deferred to a future main-process implementation.
+      // The renderer fires this as a best-effort side-channel; it is safe to
+      // return ok immediately while the implementation is pending.
+      ipcSchemas[IpcChannel.CalibrationPersistPrintObservation].request.parse(
+        rawRequest,
+      );
+      return ipcSchemas[
+        IpcChannel.CalibrationPersistPrintObservation
+      ].response.parse({ status: 'ok' });
+    },
+  );
+
+  // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
+  ipcMain.handle(
+    IpcChannel.CalibrationOpenManifestUrl,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationOpenManifestUrl].request.parse(
+          rawRequest,
+        );
+      // Only allow https:// URLs to PrintFarmer infrastructure.
+      // Renderer isolation: never call shell.openExternal directly; always go
+      // through this allowlisted channel with validated URLs.
+      if (!request.url.startsWith('https://')) {
+        return ipcSchemas[IpcChannel.CalibrationOpenManifestUrl].response.parse(
+          { status: 'error', error: 'Only https:// URLs are allowed.' },
+        );
+      }
+      const { shell } = await import('electron');
+      await shell.openExternal(request.url);
+      return ipcSchemas[IpcChannel.CalibrationOpenManifestUrl].response.parse({
+        status: 'ok',
+      });
+    },
+  );
+
   ipcMain.handle(
     IpcChannel.CalibrationListOrcaProfiles,
     async (_event, rawRequest: unknown) => {

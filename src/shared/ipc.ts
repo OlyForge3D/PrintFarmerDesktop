@@ -42,6 +42,10 @@ export const IpcChannel = {
   CalibrationPickAssetFile: 'calibration:pickAssetFile',
   CalibrationValidateAssetFile: 'calibration:validateAssetFile',
   CalibrationGetAssetManifest: 'calibration:getAssetManifest',
+  // --- Print observation persistence (criterion 13, issue #54) -------------
+  CalibrationPersistPrintObservation: 'calibration:persistPrintObservation',
+  // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
+  CalibrationOpenManifestUrl: 'calibration:openManifestUrl',
   // -------------------------------------------------------------------------
   CalibrationListOrcaProfiles: 'calibration:listOrcaProfiles',
   CalibrationExportOrcaProfile: 'calibration:exportOrcaProfile',
@@ -3440,6 +3444,12 @@ export const CalibrationQueueJobState = z
     priority: z.number().int(),
     queuePosition: z.number().int(),
     updatedAt: z.string().datetime(),
+    /** Firmware family required at job creation time (e.g. 'Klipper'). Passthrough from QueuePrintJobDto. */
+    requiredFirmwareFamily: z.string().max(256).nullable().optional(),
+    /** Filament SKU required at job creation time. Passthrough from QueuePrintJobDto. */
+    requiredFilamentSku: z.string().max(256).nullable().optional(),
+    /** Machine profile SHA-256 at job creation time. Used for stale-context detection. */
+    machineProfileSha256: z.string().max(256).nullable().optional(),
   })
   .passthrough();
 export type CalibrationQueueJobState = z.infer<typeof CalibrationQueueJobState>;
@@ -4020,6 +4030,69 @@ export const CalibrationPrintObservation = z
   .passthrough();
 export type CalibrationPrintObservation = z.infer<
   typeof CalibrationPrintObservation
+>;
+
+// --- Persist print observation via IPC (criterion 13, issue #54) ------------
+
+/**
+ * Request to persist a print observation to durable storage.
+ * Called after every successful `handleAddObservation`; fail-safe (ignored on error).
+ */
+export const CalibrationPersistPrintObservationRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    projectId: z.string().uuid(),
+    attemptId: z.string().uuid(),
+    jobId: z.string().uuid(),
+    observation: CalibrationPrintObservation,
+  })
+  .strict();
+export type CalibrationPersistPrintObservationRequest = z.infer<
+  typeof CalibrationPersistPrintObservationRequest
+>;
+
+export const CalibrationPersistPrintObservationResponse = z.discriminatedUnion(
+  'status',
+  [
+    z.object({ status: z.literal('ok') }).strict(),
+    z
+      .object({ status: z.literal('error'), message: z.string().max(512) })
+      .strict(),
+  ],
+);
+export type CalibrationPersistPrintObservationResponse = z.infer<
+  typeof CalibrationPersistPrintObservationResponse
+>;
+
+// --- Allowlisted external navigation for manifest URLs (criterion 14) --------
+
+/**
+ * Opens a calibration asset manifest source URL in the system browser.
+ * The main process validates the URL against the allowlist before opening.
+ * Renderer code must never call window.open, shell.openExternal, or
+ * navigate directly — this IPC channel is the sole external-navigation path.
+ */
+export const CalibrationOpenManifestUrlRequest = z
+  .object({
+    /** The manifest sourceUrl to open (must be https://). */
+    url: z.string().url().max(2048),
+  })
+  .strict();
+export type CalibrationOpenManifestUrlRequest = z.infer<
+  typeof CalibrationOpenManifestUrlRequest
+>;
+
+export const CalibrationOpenManifestUrlResponse = z.discriminatedUnion(
+  'status',
+  [
+    z.object({ status: z.literal('ok') }).strict(),
+    z
+      .object({ status: z.literal('error'), message: z.string().max(512) })
+      .strict(),
+  ],
+);
+export type CalibrationOpenManifestUrlResponse = z.infer<
+  typeof CalibrationOpenManifestUrlResponse
 >;
 
 // --- Local OrcaSlicer profile discovery ------------------------------------
@@ -5154,6 +5227,16 @@ export const ipcSchemas = {
     request: CalibrationValidateAssetFileRequest,
     response: CalibrationValidateAssetFileResponse,
   },
+  // --- Print observation persistence (criterion 13, issue #54) -------------
+  [IpcChannel.CalibrationPersistPrintObservation]: {
+    request: CalibrationPersistPrintObservationRequest,
+    response: CalibrationPersistPrintObservationResponse,
+  },
+  // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
+  [IpcChannel.CalibrationOpenManifestUrl]: {
+    request: CalibrationOpenManifestUrlRequest,
+    response: CalibrationOpenManifestUrlResponse,
+  },
   // -------------------------------------------------------------------------
   [IpcChannel.CalibrationListOrcaProfiles]: {
     request: CalibrationListOrcaProfilesRequest,
@@ -5350,6 +5433,14 @@ export interface PrintFarmerApi {
   validateCalibrationAssetFile(
     request: CalibrationValidateAssetFileRequest,
   ): Promise<CalibrationValidateAssetFileResponse>;
+  // --- Print observation persistence (criterion 13, issue #54) -------------
+  persistCalibrationPrintObservation(
+    request: CalibrationPersistPrintObservationRequest,
+  ): Promise<CalibrationPersistPrintObservationResponse>;
+  // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
+  openCalibrationManifestUrl(
+    request: CalibrationOpenManifestUrlRequest,
+  ): Promise<CalibrationOpenManifestUrlResponse>;
   // -------------------------------------------------------------------------
   listOrcaProfiles(
     request: CalibrationListOrcaProfilesRequest,

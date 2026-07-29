@@ -57,6 +57,12 @@ interface CalibrationQueueDispatchPanelProps {
    * Used by the parent to wire acknowledgementExpiresAt into the dialog.
    */
   readonly onBedClearExpiryChange?: (expiresAt: string | null) => void;
+  /**
+   * Propagated back from parent — the ISO-8601 expiry time for the current
+   * bed-clear acknowledgement window, or null if no window is active.
+   * Drives the `acknowledgementExpired` guard in canAcknowledge.
+   */
+  readonly bedClearExpiresAt?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,12 +250,21 @@ export const CalibrationQueueDispatchPanel: React.FC<
   blockedReason,
   onJobInvalidated,
   onBedClearExpiryChange,
+  bedClearExpiresAt,
 }) => {
   const [queueState, setQueueState] = useState<CalibrationQueueJobState | null>(
     null,
   );
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [isRefetching, setIsRefetching] = useState(false);
+  /**
+   * Tracks the `calibrationAttemptId` seen on the first successful fetch.
+   * If a subsequent fetch/event returns a different value, the job was
+   * reordered or replaced, and acknowledgement must be blocked.
+   */
+  const initialAttemptIdRef = useRef<string | null>(null);
+  /** Set to true when the job's calibrationAttemptId changes (reorder/replace). */
+  const [isReordered, setIsReordered] = useState(false);
 
   // Fetch the full job state over REST (used on gap detection and mount).
   const refetchJobState = useCallback(async () => {
@@ -262,9 +277,24 @@ export const CalibrationQueueDispatchPanel: React.FC<
         jobId,
       });
       if (result.status === 'ok') {
-        setQueueState(result.job);
+        const job = result.job;
+        setQueueState(job);
         setFetchError(null);
-        if (isJobInvalidated(result.job?.status ?? null)) {
+        // Reorder/replace detection (criterion 7): track the first
+        // calibrationAttemptId seen and block acknowledgement if it changes.
+        if (initialAttemptIdRef.current === null) {
+          initialAttemptIdRef.current = job.calibrationAttemptId ?? null;
+        } else if (
+          job.calibrationAttemptId !== null &&
+          job.calibrationAttemptId !== initialAttemptIdRef.current
+        ) {
+          // Reorder detected: block acknowledgement but do NOT call
+          // onJobInvalidated here — reorder is distinct from cancellation.
+          // The user sees the "Queue position changed" message and must
+          // re-queue to dispatch again.
+          setIsReordered(true);
+        }
+        if (isJobInvalidated(job.status ?? null)) {
           onJobInvalidated('Job was cancelled or replaced.');
         }
       } else {
@@ -330,9 +360,15 @@ export const CalibrationQueueDispatchPanel: React.FC<
   );
 
   // Offline guard: never offer acknowledgement when printer is offline.
+  // Expired guard: never offer acknowledgement if the window has passed.
+  // Reorder guard: never offer acknowledgement if the job was replaced.
+  const isExpired =
+    bedClearExpiresAt != null && Date.parse(bedClearExpiresAt) <= Date.now();
   const canAcknowledge =
     !printerOffline &&
     !blockedReason &&
+    !isExpired &&
+    !isReordered &&
     queueState?.bedClearState === 'None' &&
     !isTerminal(queueState?.status ?? null);
 
@@ -447,6 +483,16 @@ export const CalibrationQueueDispatchPanel: React.FC<
             </div>
           )}
         </dl>
+      )}
+
+      {isReordered && (
+        <p
+          className="calibration-queue-dispatch__reordered"
+          role="status"
+          aria-live="polite"
+        >
+          Queue position changed. Re-queue this job to dispatch again.
+        </p>
       )}
 
       {canAcknowledge && (
