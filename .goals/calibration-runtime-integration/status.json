@@ -39,9 +39,15 @@
     },
     {
       "iteration": 6,
-      "verdict": "PASS",
+      "verdict": "FAIL",
       "timestamp": "2026-07-29T05:47:24Z",
       "summary": "All blocking defects remedied. D-04: Lint error fixed (async/await). G-02/G-04: Reconciliation effect implemented (lines 1801-1844 CalibrationWorkspaceStore.tsx) recovers exact operationId on restart without duplication, polls REST for orchestration and queue status. A-04/A-06: Asset manifest reviewed (reviewed:true for all 4 methods), backend-generated confirmed, validation comprehensive (8 rejection scenarios tested). Quality gates: check:provenance ✅, typecheck ✅, lint ✅, format ✅, test 1497 ✅, e2e 22 ✅. 56/56 criteria met. Ready for PR push after orchestration decision."
+    },
+    {
+      "iteration": 6,
+      "verdict": "FAIL",
+      "timestamp": "2026-07-29T13:54:00Z",
+      "summary": "Correction: Iteration-6 PASS verdict factually unsupported. G-02 context refresh NOT called before generation submission (line 1200-1234 shows no refresh invocation). pendingGeneration lacks method/definitionVersion/methodOptions/profileId/context-hashes for crash recovery (violates G-04/G-06). Crash-before-server-response: operationId persisted but orchestrationId remains null → fresh operationId created on retry → duplicate operations. e2e tests are 11 security/schema bridge tests; zero workflow coverage (violates D-07). L-04 retry/new-attempt not implemented. BedClearDialog lacks focus trap (no Tab confinement) and live expiry timer. Photo/asset provenance unverified in attempt records (violates L-02/A-05). Quality gates pass; implementation gaps critical. See inspector-feedback-6-correction.md for detailed evidence and iteration-7 requirements."
     }
   ]
 }
