@@ -2,6 +2,7 @@ import type {
   CalibrationAvailability,
   CalibrationBedClearAckOutcome,
   CalibrationBlockedReason,
+  CalibrationExternalLinkId,
   CalibrationOrchestrationStatus,
   CalibrationPrinterCandidate,
   CalibrationPrinterContext,
@@ -196,8 +197,8 @@ export interface CalibrationWorkspaceStoreValue {
   readonly acknowledgeBedClear: () => Promise<void>;
   /** Clear all generation/queue/lifecycle state for this stage. */
   readonly clearGenerationState: (stageId: CalibrationStageId) => void;
-  /** Open external URL via the allowlisted window-open navigation (A-02). */
-  readonly openExternalUrl: (url: string) => void;
+  /** Open a reviewed allowlisted calibration external link via IPC (A-02, S-04). */
+  readonly openExternalUrl: (linkId: CalibrationExternalLinkId) => void;
   /** Complete the active attempt with the current workflow result (L-05). */
   readonly completeAttemptWithResult: (
     stageId: CalibrationStageId,

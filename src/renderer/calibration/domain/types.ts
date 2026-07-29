@@ -225,6 +225,12 @@ export interface CalibrationAttempt {
   readonly observations: readonly CalibrationObservation[];
   readonly selectedObservationId?: string | undefined;
   readonly confidence?: Confidence | undefined;
+  /** Append-only result recorded at completion (L-03, L-05). */
+  readonly result?: 'pass' | 'fail' | 'inconclusive' | undefined;
+  /** Retest decision recorded at completion (L-03). */
+  readonly retest?: 'YES' | 'NO' | 'PENDING' | undefined;
+  /** Operator notes recorded at completion (L-03). */
+  readonly completionNotes?: string | undefined;
   readonly recommendation?: CalibrationRecommendation | undefined;
   readonly diagnostics: readonly CalibrationDiagnostic[];
 }
@@ -282,6 +288,12 @@ export type CalibrationEvent =
       readonly type: 'completeAttempt';
       readonly attemptId: string;
       readonly confidence: Confidence;
+      /** Result recorded at completion (L-03, L-05). Required for new completions. */
+      readonly result?: 'pass' | 'fail' | 'inconclusive' | undefined;
+      /** Retest decision recorded at completion (L-03). */
+      readonly retest?: 'YES' | 'NO' | 'PENDING' | undefined;
+      /** Operator notes recorded at completion (L-03). */
+      readonly completionNotes?: string | undefined;
     })
   | (CalibrationEventBase & {
       readonly type: 'skipStage';

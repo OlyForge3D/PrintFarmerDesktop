@@ -22,6 +22,7 @@ export type CalibrationApi = Pick<
   | 'acknowledgeCalibrationBedClear'
   | 'openCalibrationLocalModel'
   | 'validateCalibrationLocalModel'
+  | 'openCalibrationExternalUrl'
 >;
 
 /** The preload bridge is already runtime-validated; calibration only narrows it. */

@@ -262,6 +262,12 @@ const attempt = z
     observations: z.array(observation).max(2_000),
     selectedObservationId: nonEmptyId.optional(),
     confidence: confidence.optional(),
+    /** Append-only result recorded at completion (L-03, L-05). */
+    result: z.enum(['pass', 'fail', 'inconclusive']).optional(),
+    /** Retest decision recorded at completion (L-03). */
+    retest: z.enum(['YES', 'NO', 'PENDING']).optional(),
+    /** Operator notes recorded at completion (L-03). */
+    completionNotes: z.string().max(4_096).optional(),
     recommendation: recommendation.optional(),
     diagnostics: z.array(diagnostic).max(2_000),
   })
@@ -355,6 +361,9 @@ const event = z.discriminatedUnion('type', [
       type: z.literal('completeAttempt'),
       attemptId: nonEmptyId,
       confidence,
+      result: z.enum(['pass', 'fail', 'inconclusive']).optional(),
+      retest: z.enum(['YES', 'NO', 'PENDING']).optional(),
+      completionNotes: z.string().max(4_096).optional(),
     })
     .strict(),
   z

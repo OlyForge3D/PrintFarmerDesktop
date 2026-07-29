@@ -12,6 +12,7 @@ import {
   CalibrationWorkspacePayload as CalibrationWorkspacePayloadSchema,
   deriveCalibrationWorkspaceProjection,
   type CalibrationAvailability,
+  type CalibrationExternalLinkId,
   type CalibrationPrinterContext,
   type CalibrationQueueJobState,
   type CalibrationSaveWorkspaceStateRequest,
@@ -1523,11 +1524,12 @@ export function CalibrationWorkspaceStoreProvider({
     [generationState?.stageId, queueJobState?.stageId],
   );
 
-  const openExternalUrl = useCallback((url: string): void => {
-    if (url.startsWith('https://')) {
-      window.open(url, '_blank', 'noopener,noreferrer');
-    }
-  }, []);
+  const openExternalUrl = useCallback(
+    (linkId: CalibrationExternalLinkId): void => {
+      void calibrationApi().openCalibrationExternalUrl({ linkId });
+    },
+    [],
+  );
 
   const completeAttemptWithResult = useCallback(
     async (stageId: CalibrationStageId): Promise<void> => {
@@ -1540,13 +1542,19 @@ export function CalibrationWorkspaceStoreProvider({
       if (!activeAttempt) return;
       const draft = project.record.workspaceState.workflowDrafts[stageId];
       const confidence = draft?.confidence ?? '';
-      if (confidence === '') return;
+      const result = draft?.observation.primary ?? '';
+      // Enforce the result gate (L-05): both result and confidence required.
+      if (confidence === '' || result === '') return;
       await dispatchEvent({
         eventId: environment.createId(),
         timestamp: environment.now(),
         type: 'completeAttempt',
         attemptId: activeAttempt.attemptId,
         confidence,
+        result: result as 'pass' | 'fail' | 'inconclusive',
+        retest: draft?.observation.quality as
+          'YES' | 'NO' | 'PENDING' | undefined,
+        completionNotes: draft?.observation.notes ?? undefined,
       });
     },
     [dispatchEvent, environment],

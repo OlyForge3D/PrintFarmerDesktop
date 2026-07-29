@@ -45,6 +45,8 @@ export const IpcChannel = {
   CalibrationGenerateOrcaProfile: 'calibration:generateOrcaProfile',
   CalibrationInstallOrcaProfile: 'calibration:installOrcaProfile',
   CalibrationRestoreOrcaProfile: 'calibration:restoreOrcaProfile',
+  // Allowlisted external-link navigation (A-02, S-01, S-04) -----------------
+  CalibrationOpenExternalUrl: 'calibration:openExternalUrl',
   // -------------------------------------------------------------------------
   AppInfo: 'app:info',
   SidecarPing: 'sidecar:ping',
@@ -1527,6 +1529,12 @@ const WorkspaceAttemptBase = {
   completedAt: WorkspaceTimestamp.optional(),
   selectedObservationId: WorkspaceId.optional(),
   confidence: z.enum(['low', 'medium', 'high']).optional(),
+  /** Append-only result recorded at completion (L-03, L-05). */
+  result: z.enum(['pass', 'fail', 'inconclusive']).optional(),
+  /** Retest decision recorded at completion (L-03). */
+  retest: z.enum(['YES', 'NO', 'PENDING']).optional(),
+  /** Operator notes recorded at completion (L-03). */
+  completionNotes: z.string().max(4_096).optional(),
   recommendation: WorkspaceRecommendation.optional(),
   diagnostics: z.array(WorkspaceDiagnostic).max(2_000),
 };
@@ -1706,6 +1714,12 @@ const WorkspaceHistoryEvent = z.discriminatedUnion('type', [
       type: z.literal('completeAttempt'),
       attemptId: WorkspaceId,
       confidence: z.enum(['low', 'medium', 'high']),
+      /** Result recorded at completion (L-03, L-05). Required for new completions. */
+      result: z.enum(['pass', 'fail', 'inconclusive']).optional(),
+      /** Retest decision recorded at completion (L-03). */
+      retest: z.enum(['YES', 'NO', 'PENDING']).optional(),
+      /** Operator notes recorded at completion (L-03). */
+      completionNotes: z.string().max(4_096).optional(),
     })
     .strict(),
   z
@@ -3170,6 +3184,49 @@ export const CalibrationResolveConflictResponse = z
   .strict();
 export type CalibrationResolveConflictResponse = z.infer<
   typeof CalibrationResolveConflictResponse
+>;
+
+// --- Allowlisted external-link navigation (A-02, S-01, S-04) ---------------
+
+/**
+ * Stable IDs for reviewed, allowlisted external links in the calibration
+ * asset manifest. The renderer sends one of these IDs; the main process
+ * resolves to the exact reviewed HTTPS URL and calls shell.openExternal.
+ * No generic URL string reaches the IPC boundary (S-04).
+ */
+export const CalibrationExternalLinkId = z.enum([
+  /** Source repository release page for calibration wizard v1.3.2. */
+  'calibration-source-releases',
+  /** AGPL-3.0-only license file for calibration wizard v1.3.2. */
+  'calibration-license-agpl3',
+]);
+export type CalibrationExternalLinkId = z.infer<
+  typeof CalibrationExternalLinkId
+>;
+
+/** Reviewed exact HTTPS URLs for each CalibrationExternalLinkId. */
+export const CALIBRATION_EXTERNAL_URLS: Readonly<
+  Record<CalibrationExternalLinkId, string>
+> = {
+  'calibration-source-releases':
+    'https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/releases/tag/v1.3.2',
+  'calibration-license-agpl3':
+    'https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/blob/057d6117b9ab31747ede3a5684a009cb6079ad11/License',
+};
+
+export const CalibrationOpenExternalUrlRequest = z
+  .object({
+    /** Allowlisted link identifier. No arbitrary URL string is accepted. */
+    linkId: CalibrationExternalLinkId,
+  })
+  .strict();
+export type CalibrationOpenExternalUrlRequest = z.infer<
+  typeof CalibrationOpenExternalUrlRequest
+>;
+
+export const CalibrationOpenExternalUrlResponse = z.void();
+export type CalibrationOpenExternalUrlResponse = z.infer<
+  typeof CalibrationOpenExternalUrlResponse
 >;
 
 // --- Generation and G-code queue ------------------------------------------
@@ -4866,6 +4923,11 @@ export const ipcSchemas = {
     request: CalibrationRestoreOrcaProfileRequest,
     response: CalibrationRestoreOrcaProfileResponse,
   },
+  // --- Allowlisted external-link navigation (A-02, S-01, S-04) -------------
+  [IpcChannel.CalibrationOpenExternalUrl]: {
+    request: CalibrationOpenExternalUrlRequest,
+    response: CalibrationOpenExternalUrlResponse,
+  },
 } as const;
 
 export type IpcSchemas = typeof ipcSchemas;
@@ -5042,4 +5104,8 @@ export interface PrintFarmerApi {
   restoreOrcaProfile(
     request: CalibrationRestoreOrcaProfileRequest,
   ): Promise<CalibrationRestoreOrcaProfileResponse>;
+  /** Open a reviewed allowlisted calibration external URL via shell (A-02, S-04). */
+  openCalibrationExternalUrl(
+    request: CalibrationOpenExternalUrlRequest,
+  ): Promise<CalibrationOpenExternalUrlResponse>;
 }

@@ -4,7 +4,7 @@
  * Shows available calibration methods with their review status (A-06).
  * For reviewed methods, displays source URL, author, license (A-05) and allows
  * local file selection via narrowly-named IPC (A-03, A-04).
- * External links open only via the allowlisted window-open navigation (A-02).
+ * External links open only via the named openCalibrationExternalUrl IPC (A-02, S-04).
  */
 import { useState } from 'react';
 import { useCalibrationWorkspaceStore } from './CalibrationWorkspaceStore';
@@ -130,9 +130,8 @@ export function CalibrationAssetLoaderPanel({
   const manifest = METHOD_MANIFESTS[method] ?? null;
 
   const handleOpenSourcePage = (): void => {
-    const url = manifest?.sourceModelUrl;
-    if (!url) return;
-    store.openExternalUrl(url);
+    if (!manifest?.sourceModelUrl) return;
+    store.openExternalUrl('calibration-source-releases');
   };
 
   const handleSelectFile = async (): Promise<void> => {
@@ -231,7 +230,9 @@ export function CalibrationAssetLoaderPanel({
               <button
                 type="button"
                 className="cal-link-button"
-                onClick={() => store.openExternalUrl(manifest.licenseUrl)}
+                onClick={() =>
+                  store.openExternalUrl('calibration-license-agpl3')
+                }
                 data-testid="asset-license-link"
               >
                 View license

@@ -7,11 +7,13 @@ import {
   dialog,
   ipcMain,
   safeStorage,
+  shell,
   type WebContents,
 } from 'electron';
 import { z } from 'zod';
 import {
   AppInfoResponse,
+  CALIBRATION_EXTERNAL_URLS,
   IPC_CONTRACT_VERSION,
   IpcChannel,
   ListModelsResponse,
@@ -2098,6 +2100,27 @@ export function registerIpcHandlers(
       return ipcSchemas[
         IpcChannel.CalibrationValidateLocalModel
       ].response.parse(result);
+    },
+  );
+
+  // Allowlisted external-link navigation (A-02, S-01, S-04): main resolves
+  // the link ID to a reviewed exact HTTPS URL and calls shell.openExternal.
+  // The renderer never supplies an arbitrary URL string across the IPC boundary.
+  ipcMain.handle(
+    IpcChannel.CalibrationOpenExternalUrl,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationOpenExternalUrl].request.parse(
+          rawRequest,
+        );
+      const url = CALIBRATION_EXTERNAL_URLS[request.linkId];
+      // Defence-in-depth: re-validate that the resolved URL is HTTPS.
+      if (!/^https:\/\//.test(url)) {
+        throw new Error(
+          `Allowlisted URL for linkId '${request.linkId}' is not HTTPS.`,
+        );
+      }
+      await shell.openExternal(url);
     },
   );
 

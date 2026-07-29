@@ -129,6 +129,9 @@ import {
   type CalibrationInstallOrcaProfileResponse,
   type CalibrationRestoreOrcaProfileRequest,
   type CalibrationRestoreOrcaProfileResponse,
+  // Allowlisted external-link navigation (A-02, S-01, S-04) -----------------
+  type CalibrationOpenExternalUrlRequest,
+  type CalibrationOpenExternalUrlResponse,
 } from '@shared/ipc';
 
 /**
@@ -607,6 +610,13 @@ const api: PrintFarmerApi = {
         request,
       ),
     ),
+  // Allowlisted external-link navigation (A-02, S-01, S-04) -----------------
+  openCalibrationExternalUrl: async (
+    request: CalibrationOpenExternalUrlRequest,
+  ): Promise<CalibrationOpenExternalUrlResponse> => {
+    ipcSchemas[IpcChannel.CalibrationOpenExternalUrl].request.parse(request);
+    await ipcRenderer.invoke(IpcChannel.CalibrationOpenExternalUrl, request);
+  },
 };
 
 contextBridge.exposeInMainWorld('printFarmer', api);

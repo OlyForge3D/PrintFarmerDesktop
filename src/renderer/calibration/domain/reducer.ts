@@ -590,6 +590,11 @@ export function calibrationReducer(
         status: 'completed',
         completedAt: event.timestamp,
         confidence: event.confidence,
+        ...(event.result !== undefined ? { result: event.result } : {}),
+        ...(event.retest !== undefined ? { retest: event.retest } : {}),
+        ...(event.completionNotes !== undefined
+          ? { completionNotes: event.completionNotes }
+          : {}),
         recommendation,
         diagnostics: [...attempt.diagnostics, ...lowConfidenceDiagnostic],
       };
