@@ -62,7 +62,7 @@ select:disabled {
   --surface-hover: #202630;
   --text: #e6e9ed;
   --muted: #a7afba;
-  --quiet: #737d89;
+  --quiet: #929ca8;
   --border: #2a3039;
   --border-strong: #3b4653;
   --accent: #62b0e8;
@@ -2772,6 +2772,16 @@ select:disabled {
   display: block;
   margin: 0.5rem 0;
 }
+
+.retarget-viewer {
+  width: 100%;
+  height: clamp(240px, 40vh, 360px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--viewer);
+}
+
 .retarget-live {
   position: absolute;
   width: 1px;

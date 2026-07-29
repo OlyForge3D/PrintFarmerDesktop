@@ -8,6 +8,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  assertMultipartRequestWithinLimit,
   createNodeUploadTransport,
   MAX_THUMBNAIL_BYTES,
   MAX_UPLOAD_MODEL_BYTES,
@@ -138,22 +139,19 @@ describe('streaming multipart upload transport', () => {
     expect(requestAttempts).toBe(1);
   });
 
-  it('calculates the exact multipart request boundary without materializing it', () => {
-    const input = {
-      displayName: 'model.stl',
-      modelSize: 0,
-      clientUploadId: '11111111-1111-4111-8111-111111111111',
-      mode: 'modern' as const,
-    };
-    const envelopeBytes = multipartRequestBytes(input);
-    const exactModelBytes = MAX_UPLOAD_REQUEST_BYTES - envelopeBytes;
-
-    expect(
-      multipartRequestBytes({ ...input, modelSize: exactModelBytes }),
-    ).toBe(MAX_UPLOAD_REQUEST_BYTES);
-    expect(
-      multipartRequestBytes({ ...input, modelSize: exactModelBytes + 1 }),
-    ).toBe(MAX_UPLOAD_REQUEST_BYTES + 1);
+  it('enforces the exact production multipart request boundary load-free', () => {
+    expect(() =>
+      assertMultipartRequestWithinLimit(MAX_UPLOAD_REQUEST_BYTES),
+    ).not.toThrow();
+    let rejected: unknown;
+    try {
+      assertMultipartRequestWithinLimit(MAX_UPLOAD_REQUEST_BYTES + 1);
+    } catch (error) {
+      rejected = error;
+    }
+    expect(rejected).toMatchObject({
+      detail: { code: 'PAYLOAD_TOO_LARGE' },
+    });
   });
 
   it.each([401, 413])(

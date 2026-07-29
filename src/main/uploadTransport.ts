@@ -11,7 +11,13 @@ import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { RemoteUploadResult, type UploadError } from '@shared/ipc';
 
+/** User-visible source-model limit, before multipart framing or thumbnails. */
 export const MAX_UPLOAD_MODEL_BYTES = 500_000_000;
+/**
+ * Defense-in-depth cap for the complete multipart wire body. The model limit is
+ * deliberately lower so a maximum-size model still has room for framing and a
+ * maximum-size thumbnail.
+ */
 export const MAX_UPLOAD_REQUEST_BYTES = 512_000_000;
 export const MAX_THUMBNAIL_BYTES = 10 * 1024 * 1024;
 export const MAX_RESPONSE_BYTES = 256 * 1024;
@@ -112,6 +118,21 @@ export function multipartRequestBytes(
   return buildMultipartEnvelope(input, MULTIPART_BOUNDARY_SAMPLE).contentLength;
 }
 
+/**
+ * Enforce the server's complete multipart request contract without opening a
+ * file or allocating the request body. The real transport calls this after
+ * constructing its exact envelope, which keeps the boundary seam testable.
+ */
+export function assertMultipartRequestWithinLimit(contentLength: number): void {
+  if (contentLength > MAX_UPLOAD_REQUEST_BYTES) {
+    throw makeUploadError(
+      'PAYLOAD_TOO_LARGE',
+      'The multipart request exceeds the server upload limit.',
+      false,
+    );
+  }
+}
+
 export type UploadTransport = (
   request: UploadTransportRequest,
 ) => Promise<z.infer<typeof RemoteUploadResult>>;
@@ -165,13 +186,7 @@ export function createNodeUploadTransport(
       },
       boundary,
     );
-    if (contentLength > MAX_UPLOAD_REQUEST_BYTES) {
-      throw makeUploadError(
-        'PAYLOAD_TOO_LARGE',
-        'The multipart request exceeds the server upload limit.',
-        false,
-      );
-    }
+    assertMultipartRequestWithinLimit(contentLength);
 
     const requestOptions: RequestOptions = {
       protocol: target.protocol,
