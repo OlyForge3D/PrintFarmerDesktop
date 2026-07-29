@@ -1,5 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
-import { OpenCalibrationPhotoResponse } from '@shared/ipc';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import {
+  OpenCalibrationPhotoResponse,
+  type CalibrationOrchestrationStatus,
+  type CalibrationQueueJobState,
+  type CalibrationJobProvenance,
+  type CalibrationPrintObservation,
+} from '@shared/ipc';
 import {
   CALIBRATION_BOUNDS,
   CALIBRATION_STAGE_BY_ID,
@@ -22,6 +28,14 @@ import {
   formatTimestamp,
   type WorkspaceWorkflowDraft,
 } from './workspaceTypes';
+import { CalibrationOrchestrationProgress } from './CalibrationOrchestrationProgress';
+import { CalibrationQueueDispatchPanel } from './CalibrationQueueDispatchPanel';
+import {
+  CalibrationBedClearDialog,
+  type BedClearDialogJob,
+} from './CalibrationBedClearDialog';
+import { CalibrationPrintLifecycle } from './CalibrationPrintLifecycle';
+import { CalibrationProvenance } from './CalibrationProvenance';
 
 interface CalibrationStepWorkflowProps {
   readonly stageId: CalibrationStageId;
@@ -246,6 +260,251 @@ export function CalibrationStepWorkflow({
   const [photoStatus, setPhotoStatus] = useState('');
   const [photoError, setPhotoError] = useState<string | null>(null);
   const [photoBusy, setPhotoBusy] = useState(false);
+
+  // ---------------------------------------------------------------------------
+  // Handoff section state (generation → queue → bed-clear → lifecycle)
+  // ---------------------------------------------------------------------------
+  const [orchId, setOrchId] = useState<string | null>(null);
+  const [orchStatus, setOrchStatus] =
+    useState<CalibrationOrchestrationStatus | null>(null);
+  const [orchLoading, setOrchLoading] = useState(false);
+  const [orchError, setOrchError] = useState<string | null>(null);
+
+  const [queueJobId, setQueueJobId] = useState<string | null>(null);
+  const [queueJob, setQueueJob] = useState<CalibrationQueueJobState | null>(
+    null,
+  );
+
+  const [bedClearOpen, setBedClearOpen] = useState(false);
+  const [bedClearSubmitting, setBedClearSubmitting] = useState(false);
+  const [bedClearError, setBedClearError] = useState<string | null>(null);
+  const bedClearTriggerRef = useRef<HTMLButtonElement>(null);
+
+  const [handoffProvenance, setHandoffProvenance] =
+    useState<CalibrationJobProvenance | null>(null);
+
+  const [printStatus, setPrintStatus] = useState<string | null>(null);
+  const [printObservations, setPrintObservations] = useState<
+    CalibrationPrintObservation[]
+  >([]);
+  const [isAddingObservation, setIsAddingObservation] = useState(false);
+  const [observationError, setObservationError] = useState<string | null>(null);
+
+  // On mount, load any existing queue job for this project/stage attempt.
+  useEffect(() => {
+    if (!store.profileId) return;
+    const profileId = store.profileId;
+    const projectId = state.projectId;
+    let cancelled = false;
+    void calibrationApi()
+      .getCalibrationQueueState({ profileId, projectId })
+      .then((res) => {
+        if (cancelled) return;
+        if (res.status === 'ok') {
+          setQueueJobId(res.job.jobId);
+          setQueueJob(res.job);
+          if (res.job.status) setPrintStatus(res.job.status);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [store.profileId, state.projectId]);
+
+  const handleGenerate = useCallback(async () => {
+    if (!store.profileId || orchLoading) return;
+    const attempt = [...state.attempts]
+      .reverse()
+      .find((a) => a.stageId === stageId && a.status === 'inProgress');
+    if (!attempt) return;
+    setOrchLoading(true);
+    setOrchError(null);
+    try {
+      const res = await calibrationApi().startCalibrationGeneration({
+        profileId: store.profileId,
+        projectId: state.projectId,
+        attemptId: attempt.attemptId,
+        method: attempt.method,
+        operationId: store.environment.createId(),
+        baseRevision: null,
+      });
+      if (res.status === 'submitted') {
+        setOrchId(res.orchestrationId);
+        const statusRes =
+          await calibrationApi().getCalibrationOrchestrationStatus({
+            profileId: store.profileId,
+            orchestrationId: res.orchestrationId,
+          });
+        if (statusRes.status === 'ok') {
+          setOrchStatus(statusRes.orchestration);
+        } else {
+          setOrchError(statusRes.error.message);
+        }
+      } else {
+        setOrchError(res.error.message);
+      }
+    } catch (err) {
+      setOrchError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setOrchLoading(false);
+    }
+  }, [
+    store.profileId,
+    store.environment,
+    orchLoading,
+    state.attempts,
+    state.projectId,
+    stageId,
+  ]);
+
+  const handleQueuePrint = useCallback(async () => {
+    if (!store.profileId || !orchStatus?.gcodeFileId) return;
+    const attempt = state.attempts.find(
+      (a) => a.attemptId === orchStatus.attemptId,
+    );
+    if (!attempt) return;
+    const printerId = state.binding.printer.backendPrinterId;
+    try {
+      const res = await calibrationApi().startCalibrationPrint({
+        profileId: store.profileId,
+        projectId: state.projectId,
+        attemptId: orchStatus.attemptId,
+        orchestrationId: orchStatus.id,
+        gcodeFileId: orchStatus.gcodeFileId,
+        assignedPrinterId: printerId,
+        operationId: store.environment.createId(),
+        pinnedPrinterConfigRevision:
+          state.binding.printer.printerConfigurationRevision,
+        gcodeContentSha256: orchStatus.gcodeSha256 ?? null,
+        specificationSha256: orchStatus.specificationSha256 ?? null,
+        machineProfileSha256: null,
+        processProfileSha256: null,
+        filamentProfileSha256: null,
+        printerConfigSnapshotSha256: null,
+        requiredFirmwareFamily: null,
+        requiredGcodeDialect: null,
+        requiredSlicerEngine: null,
+        requiredSlicerDistribution: null,
+        requiredSlicerVersion: orchStatus.generatorVersion ?? null,
+        requiredSlicerContainerDigest: orchStatus.slicerContainerDigest ?? null,
+      });
+      if (res.status === 'ok') {
+        setQueueJobId(res.jobId);
+        const jobRes = await calibrationApi().getCalibrationQueueState({
+          profileId: store.profileId,
+          projectId: state.projectId,
+          jobId: res.jobId,
+        });
+        if (jobRes.status === 'ok') {
+          setQueueJob(jobRes.job);
+          setPrintStatus(jobRes.job.status);
+          // Construct provenance from what we know
+          setHandoffProvenance({
+            requiredSlicerVersion: orchStatus.generatorVersion ?? null,
+            requiredGcodeDialect: null,
+            requiredFirmwareFamily: null,
+            requiredSlicerContainerDigest:
+              orchStatus.slicerContainerDigest ?? null,
+            pinnedPrinterConfigRevision:
+              state.binding.printer.printerConfigurationRevision,
+            jobId: res.jobId,
+            assignedPrinterId: printerId,
+            gcodeFileId: orchStatus.gcodeFileId,
+            gcodeContentSha256: orchStatus.gcodeSha256 ?? null,
+            specificationSha256: orchStatus.specificationSha256 ?? null,
+            machineProfileSha256: null,
+            processProfileSha256: null,
+            filamentProfileSha256: null,
+            printerConfigSnapshotSha256: null,
+            rowVersion: res.rowVersion ?? null,
+          });
+        }
+      }
+    } catch {
+      // Queue errors surface via the dispatch panel's own polling
+    }
+  }, [
+    store.profileId,
+    store.environment,
+    orchStatus,
+    state.attempts,
+    state.binding.printer,
+    state.projectId,
+  ]);
+
+  const handleJobInvalidated = useCallback((reason: string) => {
+    setQueueJobId(null);
+    setQueueJob(null);
+    setHandoffProvenance(null);
+    void reason; // Acknowledged
+  }, []);
+
+  const handleBedClearConfirm = useCallback(async () => {
+    if (!store.profileId || !queueJob) return;
+    setBedClearSubmitting(true);
+    setBedClearError(null);
+    try {
+      const printerId = queueJob.assignedPrinterId ?? '';
+      const res = await calibrationApi().acknowledgeCalibrationBedClear({
+        profileId: store.profileId,
+        jobId: queueJob.jobId,
+        printerId,
+        operationId: store.environment.createId(),
+        rowVersion: queueJob.rowVersion ?? '',
+        dispatchStateRowVersion: queueJob.dispatchStateRowVersion ?? '',
+        expectedPrinterConfigRevision: null,
+      });
+      if (res.status === 'ok') {
+        setBedClearOpen(false);
+        setQueueJob((prev) =>
+          prev ? { ...prev, bedClearState: 'Acknowledged' } : null,
+        );
+      } else {
+        setBedClearError(
+          res.status === 'error' ? res.error.message : 'Revision conflict.',
+        );
+      }
+    } catch (err) {
+      setBedClearError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBedClearSubmitting(false);
+    }
+  }, [store.profileId, store.environment, queueJob]);
+
+  const handleAddObservation = useCallback(
+    (
+      obs: Omit<CalibrationPrintObservation, 'observationId' | 'recordedAt'>,
+    ) => {
+      setIsAddingObservation(true);
+      setObservationError(null);
+      try {
+        const newObs = {
+          ...obs,
+          observationId: store.environment.createId(),
+          recordedAt: store.environment.now(),
+        } as CalibrationPrintObservation;
+        setPrintObservations((prev) => [...prev, newObs]);
+      } catch (err) {
+        setObservationError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setIsAddingObservation(false);
+      }
+    },
+    [store.environment],
+  );
+
+  const bedClearDialogJob: BedClearDialogJob | null = queueJob
+    ? {
+        jobId: queueJob.jobId,
+        assignedPrinterId: queueJob.assignedPrinterId,
+        assignedPrinterName: null,
+        queueRevision: queueJob.rowVersion,
+        material: null,
+        nozzle: null,
+        generatedTestName: null,
+        acknowledgementExpiresAt: null,
+      }
+    : null;
 
   const stageAttempts = state.attempts.filter(
     (attempt) => attempt.stageId === stageId,
@@ -812,31 +1071,44 @@ export function CalibrationStepWorkflow({
               <button
                 type="button"
                 className="cal-button"
-                disabled
+                disabled={
+                  !generationDecision.allowed || orchLoading || orchId !== null
+                }
                 aria-describedby="generation-gate"
+                onClick={() => void handleGenerate()}
               >
                 Generate calibration model
               </button>
               <button
                 type="button"
                 className="cal-button"
-                disabled
+                disabled={
+                  !queueDecision.allowed ||
+                  orchStatus?.gcodeFileId == null ||
+                  queueJobId !== null
+                }
                 aria-describedby="queue-gate"
+                onClick={() => void handleQueuePrint()}
               >
                 Queue calibration print
               </button>
               <button
+                ref={bedClearTriggerRef}
                 type="button"
                 className="cal-button"
-                disabled
+                disabled={!queueJob || queueJob.bedClearState !== 'None'}
                 aria-describedby="start-gate"
+                onClick={() => setBedClearOpen(true)}
               >
                 Confirm bed clear
               </button>
               <button
                 type="button"
                 className="cal-button"
-                disabled
+                disabled={
+                  !startDecision.allowed ||
+                  queueJob?.bedClearState !== 'Acknowledged'
+                }
                 aria-describedby="start-gate"
               >
                 Start calibration print
@@ -864,6 +1136,63 @@ export function CalibrationStepWorkflow({
                 {startDecision.blockers.map((item) => item.message).join(' ')}
               </p>
             </div>
+
+            {/* Orchestration progress — criterion 4 */}
+            {orchId !== null && (
+              <CalibrationOrchestrationProgress
+                orchestration={orchStatus}
+                isLoading={orchLoading}
+                fetchError={orchError}
+              />
+            )}
+
+            {/* Queue/dispatch panel — criteria 7, 8, 9, 10 */}
+            {queueJobId !== null && (
+              <CalibrationQueueDispatchPanel
+                profileId={store.profileId ?? ''}
+                projectId={state.projectId}
+                jobId={queueJobId}
+                api={calibrationApi()}
+                printerOffline={
+                  store.offline || store.availability?.available !== true
+                }
+                blockedReason={null}
+                onJobInvalidated={handleJobInvalidated}
+              />
+            )}
+
+            {/* Immutable provenance — criterion 11 */}
+            {handoffProvenance !== null && (
+              <CalibrationProvenance provenance={handoffProvenance} />
+            )}
+
+            {/* Print lifecycle and result entry — criterion 13 */}
+            {queueJobId !== null && printStatus !== null && (
+              <CalibrationPrintLifecycle
+                jobId={queueJobId}
+                attemptId={orchId ?? ''}
+                jobStatus={printStatus}
+                observations={printObservations}
+                onAddObservation={handleAddObservation}
+                isAddingObservation={isAddingObservation}
+                observationError={observationError}
+                createId={store.environment.createId}
+                now={store.environment.now}
+              />
+            )}
+
+            {/* Bed-clear safety dialog — criteria 7, 12 */}
+            {bedClearDialogJob !== null && (
+              <CalibrationBedClearDialog
+                open={bedClearOpen}
+                onConfirm={() => void handleBedClearConfirm()}
+                onCancel={() => setBedClearOpen(false)}
+                job={bedClearDialogJob}
+                blocked={{ kind: 'ready' }}
+                isSubmitting={bedClearSubmitting}
+                submissionError={bedClearError}
+              />
+            )}
           </section>
 
           <section

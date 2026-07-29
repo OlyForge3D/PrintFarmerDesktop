@@ -1,5 +1,8 @@
-import { useState } from 'react';
-import type { CalibrationPrinterContext } from '@shared/ipc';
+import { useEffect, useState } from 'react';
+import type {
+  CalibrationPrinterContext,
+  CalibrationJobProvenance,
+} from '@shared/ipc';
 import {
   CALIBRATION_STAGE_BY_ID,
   CALIBRATION_STAGE_IDS,
@@ -10,6 +13,8 @@ import { useCalibrationWorkspaceStore } from './CalibrationWorkspaceStore';
 import { isCurrentPhysicalMatch } from './parseDomainState';
 import { bindingFromContext } from './projectEligibility';
 import { formatTimestamp } from './workspaceTypes';
+import { calibrationApi } from './api';
+import { CalibrationProvenance } from './CalibrationProvenance';
 
 function rebaseBlockers(
   context: CalibrationPrinterContext,
@@ -114,6 +119,46 @@ export function ProjectOverview(): React.JSX.Element {
   const [retestStages, setRetestStages] = useState<
     ReadonlySet<CalibrationStageId>
   >(() => new Set());
+
+  // Load queue job provenance for the overview (criterion 11).
+  const [queueProvenance, setQueueProvenance] =
+    useState<CalibrationJobProvenance | null>(null);
+  useEffect(() => {
+    if (!store.profileId || !project) return;
+    const profileId = store.profileId;
+    const projectId = project.domainState.projectId;
+    const api = calibrationApi();
+    // Guard: method may be absent in partial mocks / older preload versions.
+    if (typeof api.getCalibrationQueueState !== 'function') return;
+    let cancelled = false;
+    void api
+      .getCalibrationQueueState({ profileId, projectId })
+      .then((res) => {
+        if (cancelled || res.status !== 'ok') return;
+        const job = res.job;
+        setQueueProvenance({
+          requiredSlicerVersion: null,
+          requiredGcodeDialect: null,
+          requiredFirmwareFamily: null,
+          requiredSlicerContainerDigest: null,
+          pinnedPrinterConfigRevision: job.pinnedPrinterConfigRevision,
+          jobId: job.jobId,
+          assignedPrinterId: job.assignedPrinterId,
+          gcodeFileId: job.gcodeFileId,
+          gcodeContentSha256: null,
+          specificationSha256: null,
+          machineProfileSha256: null,
+          processProfileSha256: null,
+          filamentProfileSha256: null,
+          printerConfigSnapshotSha256: null,
+          rowVersion: job.rowVersion,
+        });
+      })
+      .catch(() => undefined); // Silently ignore transient fetch failures.
+    return () => {
+      cancelled = true;
+    };
+  }, [store.profileId, project]);
 
   if (project === null) {
     return (
@@ -587,6 +632,11 @@ export function ProjectOverview(): React.JSX.Element {
               ))}
             </ol>
           </section>
+
+          {/* Immutable job provenance — criterion 11 */}
+          {queueProvenance !== null && (
+            <CalibrationProvenance provenance={queueProvenance} />
+          )}
         </aside>
       </div>
     </section>
