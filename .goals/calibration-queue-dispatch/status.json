@@ -1,7 +1,7 @@
 {
   "goal_id": "calibration-queue-dispatch",
   "issue": "OlyForge3D/PrintFarmerDesktop#54",
-  "status": "building",
+  "status": "complete",
   "iteration": 1,
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
@@ -16,5 +16,11 @@
     "note": "Authoritative over issue #54 prose where the two disagree."
   },
   "created_at": "2026-07-29T12:20:00Z",
-  "history": []
+  "history": [
+    {
+      "summary": "All acceptance criteria verified. Two dead routes removed. All three bed-clear preconditions sent byte-identical. ETags handled as opaque strings. Full test coverage with 39 new tests. All quality gates pass (typecheck, lint, format, test 1343 tests, provenance, cargo). Ready for PR targeting development.",
+      "verdict": "PASS",
+      "iteration": 1
+    }
+  ]
 }
