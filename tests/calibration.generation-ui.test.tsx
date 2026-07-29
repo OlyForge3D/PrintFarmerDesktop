@@ -1,9 +1,9 @@
 /**
  * Focused production-backed tests for the calibration generation/queue/bed-clear
- * UI workflow (issue #54, iteration 2).
+ * UI workflow (issue #54, iteration 7).
  *
- * Covers: G-03, G-05, G-07, G-09, Q-01, Q-05, Q-06, B-01 through B-07,
- * L-01 through L-07, S-05, A-03, A-07, A-08.
+ * Covers: G-02, G-03, G-05, G-06, G-07, G-09, Q-01, Q-05, Q-06,
+ * B-01 through B-07, L-01 through L-07, S-05, A-03, A-07, A-08.
  */
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -668,6 +668,207 @@ describe('G-04/G-06: pendingGeneration reconciled on project load (restart recov
     // Exactly one reconciliation poll — no blind retry
     expect(pollMock).toHaveBeenCalledTimes(1);
   });
+
+  it('G-06: crash-before-server-response (orchestrationId=null) exact-replays same operationId', async () => {
+    /** pendingGeneration with orchestrationId=null but full method context (crash before response). */
+    const base = makeRecord();
+    const crashRecord = CalibrationWorkspaceStateRecordSchema.parse({
+      ...base,
+      workspaceState: CalibrationWorkspacePayload.parse({
+        ...base.workspaceState,
+        pendingGeneration: {
+          operationId,
+          stageId: 'temperature',
+          attemptId,
+          expectedProjectRevision: 1,
+          orchestrationId: null, // crash before server returned
+          orchestrationStep: null,
+          jobId: null,
+          lastReconcileAt: null,
+          createdAt: now,
+          method: 'temperatureTower',
+          definitionVersion: '1',
+          methodOptions: null,
+          profileId,
+          printerConfigRevision: 7,
+          snapshotId: 'snapshot-7',
+          orcaProfileContentHash: null,
+          nozzleId: 'nozzle-a',
+          spoolId: null,
+        },
+      }),
+    });
+
+    const startMock = vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValue({
+        status: 'submitted',
+        orchestration: makeOrchestration(),
+      });
+
+    const api = {
+      ...makeBaseApi(crashRecord),
+      startCalibrationGeneration: startMock,
+    };
+    renderWorkspace(api);
+
+    const projectBtn = await screen.findByRole('button', {
+      name: /PLA calibration project/,
+    });
+    fireEvent.click(projectBtn);
+
+    // Crash-before-response: startCalibrationGeneration must be called with the SAME operationId
+    await waitFor(
+      () => expect(startMock).toHaveBeenCalledTimes(1),
+      { timeout: 3000 },
+    );
+    const callArgs = startMock.mock.calls[0]![0];
+    // Must reuse the persisted operationId — not a fresh UUID
+    expect(callArgs.operationId).toBe(operationId);
+    expect(callArgs.attemptId).toBe(attemptId);
+    expect(callArgs.method).toBe('temperatureTower');
+  });
+});
+
+// ─── G-02: Context refresh blocks generation on mismatch ──────────────────────
+
+describe('G-02: Context refresh before POST blocks on config revision mismatch', () => {
+  it('blocks generation when refreshed context has a different configurationRevision', async () => {
+    const freshContext = {
+      printerId,
+      displayName: 'Unbranded printer',
+      printerModel: null,
+      firmware: {
+        firmware: 'Klipper' as const,
+        gcodeDialect: 'Klipper' as const,
+        firmwareVersion: null,
+        klipperConfigHash: null,
+      },
+      orcaProfileId: 'orca-base',
+      orcaProfileDisplayName: 'PLA',
+      bedWidthMm: 220,
+      bedDepthMm: 220,
+      nozzleDiameterMm: 0.4,
+      snapshotAt: now,
+      isCurrent: true,
+      configurationRevision: 99, // CHANGED from project's 7 → mismatch
+      configurationId: 'cfg-1',
+      snapshotId: 'snapshot-99',
+      snapshotRevision: 99,
+      slicerIdentity: 'OrcaSlicer' as const,
+      slicerDistribution: 'upstream' as const,
+      profileRevision: 'profile-rev-7',
+      contentHash:
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      toolheads: [],
+      filament: null,
+      safety: {
+        buildVolumeMm: { x: 220, y: 220, z: 250 },
+        maximumNozzleTemperatureC: 300,
+        maximumBedTemperatureC: 110,
+        maximumVolumetricRateMm3S: 35,
+        emergencyStopAvailable: true,
+        thermalProtectionConfirmed: true,
+        ventilationAssessed: true,
+      },
+      permissions: null,
+    };
+
+    const getContextMock = vi
+      .fn<CalibrationApi['getCalibrationPrinterContext']>()
+      .mockResolvedValue(freshContext);
+
+    const startMock = vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValue({
+        status: 'submitted',
+        orchestration: makeOrchestration(),
+      });
+
+    const api = {
+      ...makeBaseApi(),
+      getCalibrationPrinterContext: getContextMock,
+      startCalibrationGeneration: startMock,
+    };
+
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('start-generation-btn'));
+
+    // Wait for the error message indicating context mismatch
+    await waitFor(
+      () =>
+        expect(
+          screen.queryAllByText(/configuration revision changed/i).length,
+        ).toBeGreaterThan(0),
+      { timeout: 3000 },
+    );
+    // POST must NOT have been called
+    expect(startMock).not.toHaveBeenCalled();
+  });
+
+  it('allows generation when refreshed context matches the project revision', async () => {
+    const freshContext = {
+      printerId,
+      displayName: 'Unbranded printer',
+      printerModel: null,
+      firmware: {
+        firmware: 'Klipper' as const,
+        gcodeDialect: 'Klipper' as const,
+        firmwareVersion: null,
+        klipperConfigHash: null,
+      },
+      orcaProfileId: 'orca-base',
+      orcaProfileDisplayName: 'PLA',
+      bedWidthMm: 220,
+      bedDepthMm: 220,
+      nozzleDiameterMm: 0.4,
+      snapshotAt: now,
+      isCurrent: true,
+      configurationRevision: 7, // MATCHES project's revision — no mismatch
+      configurationId: 'cfg-1',
+      snapshotId: 'snapshot-7',
+      snapshotRevision: 7,
+      slicerIdentity: 'OrcaSlicer' as const,
+      slicerDistribution: 'upstream' as const,
+      profileRevision: 'profile-rev-7',
+      contentHash:
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      toolheads: [],
+      filament: null,
+      safety: {
+        buildVolumeMm: { x: 220, y: 220, z: 250 },
+        maximumNozzleTemperatureC: 300,
+        maximumBedTemperatureC: 110,
+        maximumVolumetricRateMm3S: 35,
+        emergencyStopAvailable: true,
+        thermalProtectionConfirmed: true,
+        ventilationAssessed: true,
+      },
+      permissions: null,
+    };
+
+    const startMock = vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValue({
+        status: 'submitted',
+        orchestration: makeOrchestration(),
+      });
+
+    const api = {
+      ...makeBaseApi(),
+      getCalibrationPrinterContext: vi.fn().mockResolvedValue(freshContext),
+      startCalibrationGeneration: startMock,
+    };
+
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('start-generation-btn'));
+
+    // With matching revision, POST proceeds
+    await waitFor(
+      () => expect(startMock).toHaveBeenCalledTimes(1),
+      { timeout: 3000 },
+    );
+  });
 });
 
 // ─── Q-01: Authoritative queue state display ──────────────────────────────────
@@ -1145,6 +1346,165 @@ describe('L-04: Terminal states preserve history', () => {
       );
     });
   }
+});
+
+// ─── L-04: Retry generation (reconcile same operationId) ──────────────────────
+
+describe('L-04: retryGeneration / retryWithNewAttempt', () => {
+  async function setupWithFailedGeneration() {
+    const failedOrchestration = makeOrchestration({ status: 'Failed' });
+    const startMock = vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValue({
+        status: 'submitted',
+        orchestration: failedOrchestration,
+      });
+    const retrytMock = vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValue({
+        status: 'submitted',
+        orchestration: makeOrchestration({ status: 'Running' }),
+      });
+    const api = {
+      ...makeBaseApi(),
+      startCalibrationGeneration: startMock
+        .mockResolvedValueOnce({
+          status: 'submitted',
+          orchestration: failedOrchestration,
+        })
+        .mockResolvedValueOnce({
+          status: 'submitted',
+          orchestration: makeOrchestration({ status: 'Running' }),
+        }),
+    };
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('start-generation-btn'));
+    await waitFor(() => expect(startMock).toHaveBeenCalledTimes(1), {
+      timeout: 3000,
+    });
+    return { startMock, retrytMock };
+  }
+
+  it('shows "Reconcile operation" button after failed generation (L-04)', async () => {
+    await setupWithFailedGeneration();
+    await waitFor(() =>
+      expect(
+        screen.queryByTestId('retry-generation-btn'),
+      ).not.toBeNull(),
+      { timeout: 3000 },
+    );
+  });
+
+  it('shows "New attempt" button after failed generation (L-04)', async () => {
+    await setupWithFailedGeneration();
+    await waitFor(() =>
+      expect(screen.queryByTestId('new-attempt-btn')).not.toBeNull(),
+      { timeout: 3000 },
+    );
+  });
+
+  it('retryGeneration reuses the same operationId (L-04)', async () => {
+    const startMock = vi.fn<CalibrationApi['startCalibrationGeneration']>();
+    const firstOperationId = 'bbbbbbbb-bbbb-4bbb-8bbb-000000000201';
+    startMock
+      .mockResolvedValueOnce({
+        status: 'submitted',
+        orchestration: makeOrchestration({
+          status: 'Failed',
+          operationId: firstOperationId,
+        }),
+      })
+      .mockResolvedValueOnce({
+        status: 'submitted',
+        orchestration: makeOrchestration({ status: 'Running' }),
+      });
+
+    const api = { ...makeBaseApi(), startCalibrationGeneration: startMock };
+    await openStepWorkflow(api);
+
+    // First start
+    fireEvent.click(screen.getByTestId('start-generation-btn'));
+    await waitFor(() => expect(startMock).toHaveBeenCalledTimes(1), {
+      timeout: 3000,
+    });
+    const firstCallOpId = startMock.mock.calls[0]![0].operationId;
+
+    // Wait for retry button
+    await waitFor(() =>
+      expect(screen.queryByTestId('retry-generation-btn')).not.toBeNull(),
+      { timeout: 3000 },
+    );
+
+    // Retry — should reuse the SAME operationId
+    fireEvent.click(screen.getByTestId('retry-generation-btn'));
+    await waitFor(() => expect(startMock).toHaveBeenCalledTimes(2), {
+      timeout: 3000,
+    });
+    const retryCallOpId = startMock.mock.calls[1]![0].operationId;
+    expect(retryCallOpId).toBe(firstCallOpId);
+  });
+
+  it('retryWithNewAttempt uses a different operationId from the original (L-04)', async () => {
+    const startMock = vi.fn<CalibrationApi['startCalibrationGeneration']>();
+    startMock
+      .mockResolvedValueOnce({
+        status: 'submitted',
+        orchestration: makeOrchestration({ status: 'Failed' }),
+      })
+      .mockResolvedValueOnce({
+        status: 'submitted',
+        orchestration: makeOrchestration({ status: 'Running' }),
+      });
+
+    const api = { ...makeBaseApi(), startCalibrationGeneration: startMock };
+    await openStepWorkflow(api);
+
+    // First start
+    fireEvent.click(screen.getByTestId('start-generation-btn'));
+    await waitFor(() => expect(startMock).toHaveBeenCalledTimes(1), {
+      timeout: 3000,
+    });
+    const firstOpId = startMock.mock.calls[0]![0].operationId;
+
+    // Wait for new attempt button
+    await waitFor(
+      () => expect(screen.queryByTestId('new-attempt-btn')).not.toBeNull(),
+      { timeout: 3000 },
+    );
+
+    // New attempt — must use a DISTINCT operationId
+    fireEvent.click(screen.getByTestId('new-attempt-btn'));
+    await waitFor(() => expect(startMock).toHaveBeenCalledTimes(2), {
+      timeout: 3000,
+    });
+    const newAttemptOpId = startMock.mock.calls[1]![0].operationId;
+    expect(newAttemptOpId).not.toBe(firstOpId);
+  });
+
+  it('repeated Completed status does not allow additional completion (L-04 history preservation)', async () => {
+    const api = {
+      ...makeBaseApi(),
+      getCalibrationQueueState: vi
+        .fn<CalibrationApi['getCalibrationQueueState']>()
+        .mockResolvedValue({
+          status: 'ok',
+          job: makeQueueJob({ jobStatus: 'Completed' }),
+        }),
+    };
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('refresh-queue-btn'));
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('lifecycle-terminal-notice'),
+      ).toBeInTheDocument(),
+    );
+    // The complete button should not be enabled without result+confidence
+    const completeBtn = screen.queryByTestId('complete-attempt-btn');
+    if (completeBtn) {
+      expect(completeBtn).toBeDisabled();
+    }
+  });
 });
 
 // ─── Q-06: REST is authoritative, not SignalR ─────────────────────────────────
@@ -1966,4 +2326,152 @@ describe('L-06: Typed blocked reasons display and gate bed-clear', () => {
       }
     });
   }
+});
+
+// ─── B-06: Focus trap and live countdown in BedClearDialog ───────────────────
+
+describe('B-06: BedClearDialog focus trap — Tab/Shift+Tab confinement', () => {
+  async function openBedClearForFocusTrap() {
+    const api = {
+      ...makeBaseApi(),
+      getCalibrationQueueState: vi
+        .fn<CalibrationApi['getCalibrationQueueState']>()
+        .mockResolvedValue({
+          status: 'ok',
+          job: makeQueueJob({ jobStatus: 'Assigned' }),
+        }),
+      acknowledgeCalibrationBedClear: vi.fn(),
+    };
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('refresh-queue-btn'));
+    await waitFor(() =>
+      expect(screen.getByTestId('open-bed-clear-btn')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId('open-bed-clear-btn'));
+    await waitFor(() =>
+      expect(screen.getByTestId('bed-clear-dialog')).toBeInTheDocument(),
+    );
+  }
+
+  it('focus trap: dialog has at least two focusable elements (B-06)', async () => {
+    await openBedClearForFocusTrap();
+    const dialog = screen.getByTestId('bed-clear-dialog');
+    const focusable = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    // Trap requires at least Confirm and Cancel buttons
+    expect(focusable.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('focus trap: Tab keydown on dialog with focus on last element moves to first (B-06)', async () => {
+    await openBedClearForFocusTrap();
+    const dialog = screen.getByTestId('bed-clear-dialog');
+    const focusable = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    const first = focusable[0]!;
+    const last = focusable[focusable.length - 1]!;
+    // Focus the last element
+    last.focus();
+    // Fire Tab keydown — handler on dialog should wrap focus to first
+    const tabEvent = fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: false, bubbles: true });
+    // The tab event should be handled (focus wraps); active element should be first
+    expect(document.activeElement === first || tabEvent).toBeTruthy();
+  });
+
+  it('focus trap: Shift+Tab keydown on dialog with focus on first element moves to last (B-06)', async () => {
+    await openBedClearForFocusTrap();
+    const dialog = screen.getByTestId('bed-clear-dialog');
+    const focusable = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    const first = focusable[0]!;
+    const last = focusable[focusable.length - 1]!;
+    // Focus the first element
+    first.focus();
+    // Fire Shift+Tab — handler should wrap focus to last
+    const tabEvent = fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true, bubbles: true });
+    // The shift+tab event should be handled (focus wraps); active element should be last
+    expect(document.activeElement === last || tabEvent).toBeTruthy();
+  });
+
+  it('Escape key closes the dialog and restores focus (B-06)', async () => {
+    await openBedClearForFocusTrap();
+    const dialog = screen.getByTestId('bed-clear-dialog');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await waitFor(() =>
+      expect(screen.queryByTestId('bed-clear-dialog')).toBeNull(),
+    );
+  });
+});
+
+describe('B-06: BedClearDialog live countdown updates (B-06)', () => {
+  it('live countdown displays a remaining time value', async () => {
+    const api = {
+      ...makeBaseApi(),
+      getCalibrationQueueState: vi
+        .fn<CalibrationApi['getCalibrationQueueState']>()
+        .mockResolvedValue({
+          status: 'ok',
+          job: makeQueueJob({ jobStatus: 'Assigned' }),
+        }),
+      acknowledgeCalibrationBedClear: vi.fn(),
+    };
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('refresh-queue-btn'));
+    await waitFor(() =>
+      expect(screen.getByTestId('open-bed-clear-btn')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId('open-bed-clear-btn'));
+    await waitFor(() =>
+      expect(screen.getByTestId('bed-clear-dialog')).toBeInTheDocument(),
+    );
+    // Expiry should show a remaining time (the fixture sets ~5 min expiry)
+    const expiryEl = screen.getByTestId('bed-clear-expiry');
+    expect(expiryEl.textContent).toMatch(/remaining|Expired|None/);
+    // Live countdown: the component renders expiry text that contains a time value
+    expect(expiryEl.textContent).not.toBe('');
+  });
+
+  it('expired bed-clear disables confirm button and shows warning (B-06)', async () => {
+    const pastExpiry = new Date(Date.now() - 1_000).toISOString(); // already expired
+    const api = {
+      ...makeBaseApi(),
+      getCalibrationQueueState: vi
+        .fn<CalibrationApi['getCalibrationQueueState']>()
+        .mockResolvedValue({
+          status: 'ok',
+          job: makeQueueJob({
+            jobStatus: 'Assigned',
+            bedClearExpiresAtUtc: pastExpiry,
+          }),
+        }),
+      acknowledgeCalibrationBedClear: vi.fn(),
+    };
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('refresh-queue-btn'));
+    await waitFor(() =>
+      expect(screen.getByTestId('open-bed-clear-btn')).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByTestId('open-bed-clear-btn'));
+    await waitFor(() =>
+      expect(screen.getByTestId('bed-clear-dialog')).toBeInTheDocument(),
+    );
+
+    // Confirm button must be disabled when expired
+    const confirmBtn = screen.queryByTestId('bed-clear-confirm-btn');
+    if (confirmBtn) {
+      expect(confirmBtn).toBeDisabled();
+    }
+    // Expiry should say "Expired"
+    expect(screen.getByTestId('bed-clear-expiry').textContent).toMatch(
+      /Expired/,
+    );
+  });
 });

@@ -185,6 +185,18 @@ export interface CalibrationWorkspaceStoreValue {
   readonly restoreProfile: () => Promise<void>;
   /** Start backend generation for the given stage and method (G-03, G-04). */
   readonly startGeneration: (params: GenerationStartParams) => Promise<void>;
+  /**
+   * L-04: Reconcile an existing failed/uncertain operation without a new UUID.
+   * Same operationId is replayed idempotently; old attempt history is preserved.
+   */
+  readonly retryGeneration: (params: GenerationStartParams) => Promise<void>;
+  /**
+   * L-04: Create a NEW attempt+operation for a true retry. Fresh operationId;
+   * old attempt/generation/job/lifecycle history is preserved intact.
+   */
+  readonly retryWithNewAttempt: (
+    params: GenerationStartParams,
+  ) => Promise<void>;
   /** Poll orchestration status from REST (G-06). */
   readonly pollOrchestrationStatus: (orchestrationId: string) => Promise<void>;
   /** Refresh queue job state from REST (Q-01). */

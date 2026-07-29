@@ -1182,45 +1182,13 @@ export function CalibrationWorkspaceStoreProvider({
     [flush, refresh, reportError, selectedProfileId],
   );
 
-  const startGeneration = useCallback(
+  /**
+   * Internal helper: submit `startCalibrationGeneration` IPC, update state, and
+   * persist the orchestration ID on success. Used by both `startGeneration`
+   * (new submission) and the crash-recovery replay path (G-06).
+   */
+  const submitGenerationPost = useCallback(
     async (params: GenerationStartParams): Promise<void> => {
-      setGenerationState({
-        stageId: params.stageId,
-        operationId: params.operationId,
-        submitted: false,
-        submitting: true,
-        orchestration: null,
-        polling: false,
-        error: null,
-      });
-      setLiveMessage(
-        'Submitting calibration generation request to PrintFarmer.',
-      );
-      setAlertMessage(null);
-      /* Persist the durable operation ID to workspace before submission so that
-       * a crash/restart can recover the same idempotency key (G-02, G-04). */
-      const projectBeforeSubmit = activeProjectRef.current;
-      if (projectBeforeSubmit !== null) {
-        const pendingPayload: CalibrationWorkspacePayload = {
-          ...payloadFor(projectBeforeSubmit),
-          pendingGeneration: {
-            operationId: params.operationId,
-            stageId: params.stageId,
-            attemptId: params.attemptId,
-            expectedProjectRevision: params.baseRevision,
-            orchestrationId: null,
-            orchestrationStep: null,
-            jobId: null,
-            lastReconcileAt: null,
-            createdAt: environment.now(),
-          },
-        };
-        await bumpAndSave(
-          replacePayload(projectBeforeSubmit, pendingPayload),
-          environment.now(),
-          'Persisting generation operation ID for restart recovery.',
-        );
-      }
       try {
         const response = await calibrationApi().startCalibrationGeneration({
           profileId: params.profileId,
@@ -1297,6 +1265,189 @@ export function CalibrationWorkspaceStoreProvider({
       }
     },
     [bumpAndSave, environment, reportError],
+  );
+
+  const startGeneration = useCallback(
+    async (params: GenerationStartParams): Promise<void> => {
+      setGenerationState({
+        stageId: params.stageId,
+        operationId: params.operationId,
+        submitted: false,
+        submitting: true,
+        orchestration: null,
+        polling: false,
+        error: null,
+      });
+      setLiveMessage(
+        'Submitting calibration generation request to PrintFarmer.',
+      );
+      setAlertMessage(null);
+
+      /* G-02: Refresh context immediately before POST and compare against the
+       * project snapshot. If the printer config revision has changed, block the
+       * submission so we do not submit with stale context. */
+      const contextBeforeSubmit = await refreshProjectContext();
+      if (profileIdRef.current !== params.profileId) return;
+      const projectBeforeSubmit = activeProjectRef.current;
+      if (
+        projectBeforeSubmit !== null &&
+        contextBeforeSubmit !== null
+      ) {
+        const snapshotRevision =
+          projectBeforeSubmit.domainState.binding.printer
+            .printerConfigurationRevision;
+        if (
+          contextBeforeSubmit.configurationRevision !== null &&
+          contextBeforeSubmit.configurationRevision !== undefined &&
+          contextBeforeSubmit.configurationRevision !== snapshotRevision
+        ) {
+          const msg = `Context mismatch: printer configuration revision changed from ${snapshotRevision} to ${contextBeforeSubmit.configurationRevision}. Refresh the project context before generating.`;
+          setGenerationState((prev) =>
+            prev ? { ...prev, submitting: false, error: msg } : prev,
+          );
+          reportError(msg);
+          return;
+        }
+      }
+      /* If context refresh returned null (fetch failed), continue with a note —
+       * we do not block generation entirely on a transient context fetch failure.
+       * A confirmed mismatch (above) is the hard blocker. */
+
+      /* Persist the full operation context to workspace before POST so that a
+       * crash/restart can recover the same idempotency key with exact replay
+       * (G-02, G-04, G-06, G-07). */
+      if (projectBeforeSubmit !== null) {
+        const binding = projectBeforeSubmit.domainState.binding;
+        const selectedBaseProfile =
+          projectBeforeSubmit.record.workspaceState.selectedBaseProfile;
+        const filamentSpoolId =
+          binding.filament?.spoolId ?? null;
+        const selectedNozzleId =
+          binding.selectedNozzleId ?? null;
+        const pendingPayload: CalibrationWorkspacePayload = {
+          ...payloadFor(projectBeforeSubmit),
+          pendingGeneration: {
+            operationId: params.operationId,
+            stageId: params.stageId,
+            attemptId: params.attemptId,
+            expectedProjectRevision: params.baseRevision,
+            orchestrationId: null,
+            orchestrationStep: null,
+            jobId: null,
+            lastReconcileAt: null,
+            createdAt: environment.now(),
+            /* Full replay context (G-04, G-06, G-07). */
+            method: params.method,
+            definitionVersion: params.definitionVersion,
+            methodOptions: null,
+            profileId: params.profileId,
+            printerConfigRevision:
+              binding.printer.printerConfigurationRevision,
+            snapshotId: binding.snapshot.snapshotId,
+            orcaProfileContentHash:
+              selectedBaseProfile.contentHash ?? null,
+            nozzleId: selectedNozzleId,
+            spoolId: filamentSpoolId,
+          },
+        };
+        await bumpAndSave(
+          replacePayload(projectBeforeSubmit, pendingPayload),
+          environment.now(),
+          'Persisting generation operation and context for restart recovery.',
+        );
+      }
+
+      await submitGenerationPost(params);
+    },
+    [bumpAndSave, environment, refreshProjectContext, reportError, submitGenerationPost],
+  );
+
+  /**
+   * L-04: Reconcile an existing failed/uncertain operation without creating a
+   * new UUID. Used for "retry" when the exact same operationId can be replayed
+   * idempotently (server will deduplicate). Preserves all prior attempt history.
+   */
+  const retryGeneration = useCallback(
+    async (params: GenerationStartParams): Promise<void> => {
+      setGenerationState({
+        stageId: params.stageId,
+        operationId: params.operationId,
+        submitted: false,
+        submitting: true,
+        orchestration: null,
+        polling: false,
+        error: null,
+      });
+      setLiveMessage(
+        'Reconciling existing generation operation — same operationId (L-04).',
+      );
+      setAlertMessage(null);
+      await submitGenerationPost(params);
+    },
+    [submitGenerationPost],
+  );
+
+  /**
+   * L-04: Create a NEW calibration attempt and operation for a true retry.
+   * Preserves the old attempt/generation/job/lifecycle history intact. The new
+   * operationId is fresh; the old pendingGeneration record is not mutated.
+   */
+  const retryWithNewAttempt = useCallback(
+    async (params: GenerationStartParams): Promise<void> => {
+      const projectBeforeRetry = activeProjectRef.current;
+      if (projectBeforeRetry === null) return;
+      setLiveMessage(
+        'Starting a new attempt — old attempt history is preserved (L-04).',
+      );
+      setAlertMessage(null);
+      /* Persist the new operation as pending (clears prior operation). */
+      const binding = projectBeforeRetry.domainState.binding;
+      const selectedBaseProfile =
+        projectBeforeRetry.record.workspaceState.selectedBaseProfile;
+      const filamentSpoolId = binding.filament?.spoolId ?? null;
+      const selectedNozzleId = binding.selectedNozzleId ?? null;
+      const newPendingPayload: CalibrationWorkspacePayload = {
+        ...payloadFor(projectBeforeRetry),
+        pendingGeneration: {
+          operationId: params.operationId,
+          stageId: params.stageId,
+          attemptId: params.attemptId,
+          expectedProjectRevision: params.baseRevision,
+          orchestrationId: null,
+          orchestrationStep: null,
+          jobId: null,
+          lastReconcileAt: null,
+          createdAt: environment.now(),
+          method: params.method,
+          definitionVersion: params.definitionVersion,
+          methodOptions: null,
+          profileId: params.profileId,
+          printerConfigRevision:
+            binding.printer.printerConfigurationRevision,
+          snapshotId: binding.snapshot.snapshotId,
+          orcaProfileContentHash:
+            selectedBaseProfile.contentHash ?? null,
+          nozzleId: selectedNozzleId,
+          spoolId: filamentSpoolId,
+        },
+      };
+      await bumpAndSave(
+        replacePayload(projectBeforeRetry, newPendingPayload),
+        environment.now(),
+        'Persisting new attempt operation for restart recovery.',
+      );
+      setGenerationState({
+        stageId: params.stageId,
+        operationId: params.operationId,
+        submitted: false,
+        submitting: true,
+        orchestration: null,
+        polling: false,
+        error: null,
+      });
+      await submitGenerationPost(params);
+    },
+    [bumpAndSave, environment, submitGenerationPost],
   );
 
   const pollOrchestrationStatus = useCallback(
@@ -1802,6 +1953,8 @@ export function CalibrationWorkspaceStoreProvider({
    * so an app restart resumes in-flight operations without creating duplicates.
    * - Initializes generationState UI from persisted durable data.
    * - If orchestrationId is present, polls REST to reconcile authoritative status.
+   * - If orchestrationId is NULL (crash before server response), exact-replays
+   *   startCalibrationGeneration with the SAME persisted operationId (G-06).
    * - If jobId is present, fetches queue state via REST.
    * - Uses a ref to ensure reconciliation runs exactly once per project load. */
   const lastReconciledProjectIdRef = useRef<string | null>(null);
@@ -1831,17 +1984,37 @@ export function CalibrationWorkspaceStoreProvider({
       'Resuming in-flight calibration generation from saved state.',
     );
 
-    /* Reconcile orchestration status via REST (G-06). Same operationId is
-     * preserved — exact replay reuses the persisted operation, never creates
-     * a new one for the same pending attempt. */
     if (pending.orchestrationId !== null) {
+      /* Reconcile orchestration status via REST (G-06). Same operationId is
+       * preserved — exact replay reuses the persisted operation, never creates
+       * a new one for the same pending attempt. */
       void pollOrchestrationStatus(pending.orchestrationId);
+    } else if (pending.method != null && pending.definitionVersion != null) {
+      /* G-06: orchestrationId is null = crash-before-server-response.
+       * Exact-replay startCalibrationGeneration with the SAME persisted
+       * operationId. The server will deduplicate idempotently. */
+      const profileId =
+        pending.profileId ?? activeProject.record.profileId;
+      const replayParams: import('./workspaceTypes').GenerationStartParams = {
+        profileId,
+        projectId: activeProject.record.projectId,
+        attemptId: pending.attemptId,
+        operationId: pending.operationId,
+        stageId: pending.stageId,
+        method: pending.method,
+        definitionVersion: pending.definitionVersion,
+        baseRevision: pending.expectedProjectRevision,
+      };
+      setGenerationState((prev) =>
+        prev ? { ...prev, submitting: true } : prev,
+      );
+      void submitGenerationPost(replayParams);
     }
     /* Reconcile queue job status via REST (Q-04). */
     if (pending.jobId !== null) {
       void refreshQueueState(pending.jobId);
     }
-  }, [activeProject, pollOrchestrationStatus, refreshQueueState]);
+  }, [activeProject, pollOrchestrationStatus, refreshQueueState, submitGenerationPost]);
 
   const value = useMemo<CalibrationWorkspaceStoreValue>(
     () => ({
@@ -1890,6 +2063,8 @@ export function CalibrationWorkspaceStoreProvider({
       installProfile,
       restoreProfile,
       startGeneration,
+      retryGeneration,
+      retryWithNewAttempt,
       pollOrchestrationStatus,
       refreshQueueState,
       openBedClearDialog,
@@ -1948,6 +2123,8 @@ export function CalibrationWorkspaceStoreProvider({
       updateWorkflowDraft,
       view,
       startGeneration,
+      retryGeneration,
+      retryWithNewAttempt,
       pollOrchestrationStatus,
       refreshQueueState,
       openBedClearDialog,

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useCalibrationWorkspaceStore } from './CalibrationWorkspaceStore';
 import type { CalibrationStageId } from './domain';
 
@@ -148,6 +148,14 @@ function BedClearDialog(): React.JSX.Element | null {
   /* Focus trap: restore focus to the trigger on close (accessibility). */
   const triggerFocusRef = useRef<HTMLElement | null>(null);
 
+  /* B-06: Live countdown — tick every second so users see the expiry update. */
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!bedClearDialog.open) return;
+    const id = setInterval(() => setTick((n) => n + 1), 1_000);
+    return () => clearInterval(id);
+  }, [bedClearDialog.open]);
+
   useEffect(() => {
     if (bedClearDialog.open) {
       triggerFocusRef.current =
@@ -162,6 +170,37 @@ function BedClearDialog(): React.JSX.Element | null {
       triggerFocusRef.current = null;
     }
   }, [bedClearDialog.open]);
+
+  /* B-06 Tab/Shift+Tab focus trap — cycles focus among enabled focusable elements. */
+  useEffect(() => {
+    const el = dialogRef.current;
+    if (!el) return;
+    const handler = (event: Event): void => {
+      if (!(event instanceof KeyboardEvent)) return;
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(
+        el.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((e) => !e.closest('[inert]'));
+      if (focusable.length === 0) return;
+      const first = focusable[0]!;
+      const last = focusable[focusable.length - 1]!;
+      if (event.shiftKey) {
+        if (document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    el.addEventListener('keydown', handler);
+    return () => el.removeEventListener('keydown', handler);
+  }, []);
 
   /* Escape key closes dialog (B-06: withheld when not safe). */
   useEffect(() => {

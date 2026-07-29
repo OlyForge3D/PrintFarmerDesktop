@@ -2408,6 +2408,39 @@ export const CalibrationWorkspacePayload = z
         lastReconcileAt: z.string().datetime().nullable(),
         /** ISO-8601 datetime when this operation record was created. */
         createdAt: z.string().datetime(),
+        /**
+         * Full replay context persisted at submission time for exact
+         * crash/restart/reconnect recovery (G-02, G-04, G-06, G-07).
+         * All fields are optional for backward compatibility with records
+         * persisted before these fields were added.
+         */
+        /** Calibration method name (e.g. 'temperatureTower'). */
+        method: z.string().min(1).max(64).nullable().optional(),
+        /** API definition version for exact replay. */
+        definitionVersion: z.string().min(1).max(64).nullable().optional(),
+        /** Method-specific options captured at submission time. */
+        methodOptions: z.record(z.string(), z.unknown()).nullable().optional(),
+        /** Profile ID at time of submission. */
+        profileId: z.string().uuid().nullable().optional(),
+        /** Printer configuration revision at time of submission (G-07). */
+        printerConfigRevision: z
+          .number()
+          .int()
+          .nonnegative()
+          .nullable()
+          .optional(),
+        /** Snapshot ID captured at time of submission (G-07). */
+        snapshotId: z.string().max(256).nullable().optional(),
+        /** OrcaSlicer profile content hash at time of submission (G-07). */
+        orcaProfileContentHash: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/)
+          .nullable()
+          .optional(),
+        /** Selected nozzle ID at time of submission (G-07). */
+        nozzleId: z.string().max(256).nullable().optional(),
+        /** Material/spool ID at time of submission (G-07). */
+        spoolId: z.string().max(256).nullable().optional(),
       })
       .strict()
       .nullable()

@@ -88,6 +88,27 @@ export function CalibrationGenerationPanel({
 
   const projectId = activeProject?.record.projectId ?? null;
 
+  const isFailed =
+    isCurrentStage &&
+    (orchestration?.status === 'Failed' || genError !== null);
+
+  /** Existing operationId if a failed generation is in state (for retry same). */
+  const existingOperationId = isCurrentStage
+    ? (generationState?.operationId ?? null)
+    : null;
+
+  const buildParams = (operationId: string): GenerationStartParams => ({
+    profileId: profileId ?? '',
+    projectId: projectId ?? '',
+    attemptId,
+    operationId,
+    stageId,
+    method,
+    definitionVersion: '1',
+    baseRevision:
+      orchestration?.revision != null ? orchestration.revision : null,
+  });
+
   const handleStartGeneration = async (): Promise<void> => {
     if (
       profileId === null ||
@@ -96,18 +117,42 @@ export function CalibrationGenerationPanel({
       isSubmitting
     )
       return;
-    const params: GenerationStartParams = {
-      profileId,
-      projectId,
-      attemptId,
-      operationId: store.environment.createId(),
-      stageId,
-      method,
-      definitionVersion: '1',
-      baseRevision:
-        orchestration?.revision != null ? orchestration.revision : null,
-    };
-    await store.startGeneration(params);
+    await store.startGeneration(
+      buildParams(store.environment.createId()),
+    );
+  };
+
+  /**
+   * L-04: Reconcile existing operation (same operationId — idempotent replay).
+   * Does NOT create a new UUID; the server deduplicates.
+   */
+  const handleRetryGeneration = async (): Promise<void> => {
+    if (
+      profileId === null ||
+      projectId === null ||
+      method === '' ||
+      isSubmitting ||
+      existingOperationId === null
+    )
+      return;
+    await store.retryGeneration(buildParams(existingOperationId));
+  };
+
+  /**
+   * L-04: Start a new calibration attempt with a fresh operationId.
+   * Old attempt/generation/job history is preserved intact.
+   */
+  const handleNewAttempt = async (): Promise<void> => {
+    if (
+      profileId === null ||
+      projectId === null ||
+      method === '' ||
+      isSubmitting
+    )
+      return;
+    await store.retryWithNewAttempt(
+      buildParams(store.environment.createId()),
+    );
   };
 
   const handlePollStatus = async (): Promise<void> => {
@@ -270,6 +315,36 @@ export function CalibrationGenerationPanel({
             {isSubmitting
               ? 'Submitting to PrintFarmer…'
               : 'Start generation on PrintFarmer'}
+          </button>
+        ) : null}
+
+        {/* L-04: Retry same operation (reconcile existing — no new UUID) */}
+        {isFailed && existingOperationId !== null ? (
+          <button
+            type="button"
+            className="cal-button cal-button--secondary"
+            disabled={isSubmitting || method === '' || profileId === null}
+            aria-busy={isSubmitting}
+            onClick={() => void handleRetryGeneration()}
+            data-testid="retry-generation-btn"
+            title="Reconcile the existing operation using the same idempotency ID"
+          >
+            {isSubmitting ? 'Reconciling…' : 'Reconcile operation'}
+          </button>
+        ) : null}
+
+        {/* L-04: New attempt (fresh operationId, preserves old history) */}
+        {isFailed ? (
+          <button
+            type="button"
+            className="cal-button cal-button--secondary"
+            disabled={isSubmitting || method === '' || profileId === null}
+            aria-busy={isSubmitting}
+            onClick={() => void handleNewAttempt()}
+            data-testid="new-attempt-btn"
+            title="Start a new calibration attempt; the old attempt history is preserved"
+          >
+            {isSubmitting ? 'Starting…' : 'New attempt'}
           </button>
         ) : null}
 
