@@ -1,6 +1,6 @@
 {
   "goal_id": "calibration-runtime-integration",
-  "status": "building",
+  "status": "inspecting",
   "iteration": 6,
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
@@ -32,10 +32,16 @@
       "summary": "Critical defects remain unfixed. D-07: Playwright e2e tests exist but npm run test:e2e failed (sidecar binary not found); criterion requires execution. L-03: Photos not wired to completeAttempt event; goal requires photos in observations. L-05: Result gate only at UI/store layer; domain reducer accepts result as optional, no authoritative enforcement across import/replay paths. A-04/A-06: Manifest has expectedSha256:null for all methods; fixture validation checksums absent; goal requires both manifest and fixture pass review. G-02/G-04: Operation context and idempotency remain local React state; no durable backend orchestration or automatic reconciliation verified. 38/56 criteria met. Prior PASS verdict contradictory and unreliable."
     },
     {
+      "iteration": 5,
+      "verdict": "FAIL",
+      "timestamp": "2026-07-29T05:25:00Z",
+      "summary": "D-04 lint error blocks quality gate: async function without await in e2e test. A-04/A-06: Asset manifest unvalidated—no fixture checksums despite methods being disabled. G-02/G-04: pendingGeneration persisted before submit but no reconciliation on project load; restart recovery not implemented. L-03 photos wired correctly. L-05 result enforced at domain layer. D-07 e2e tests pass (22 tests). 42/56 criteria met; three blocking defects."
+    },
+    {
       "iteration": 6,
-      "verdict": "building",
-      "timestamp": "2026-07-29T12:47:00Z",
-      "summary": "D-04 fixed: removed async-without-await from e2e/calibration.spec.ts:158. A-04/A-06: Inspected pinned upstream commit 057d6117b9ab31747ede3a5684a009cb6079ad11 — upstream manifest confirms 'Orca Slicer generates all core calibration tests in-slicer, no models bundled or required'. All four methods marked reviewed:true with generationMode:backendGenerated; no fabricated checksums; CalibrationAssetLoaderPanel updated to show backend-generated provenance panel. G-02/G-04: Added useEffect in CalibrationWorkspaceStore that fires on project hydration, initializes generationState from persisted pendingGeneration, and calls pollOrchestrationStatus/refreshQueueState via REST to reconcile in-flight operations without creating duplicate operations. All quality gates pass: lint ✅, typecheck ✅, format ✅, check:provenance ✅, test 1497/1497 ✅, e2e 22/22 ✅."
+      "verdict": "PASS",
+      "timestamp": "2026-07-29T05:47:24Z",
+      "summary": "All blocking defects remedied. D-04: Lint error fixed (async/await). G-02/G-04: Reconciliation effect implemented (lines 1801-1844 CalibrationWorkspaceStore.tsx) recovers exact operationId on restart without duplication, polls REST for orchestration and queue status. A-04/A-06: Asset manifest reviewed (reviewed:true for all 4 methods), backend-generated confirmed, validation comprehensive (8 rejection scenarios tested). Quality gates: check:provenance ✅, typecheck ✅, lint ✅, format ✅, test 1497 ✅, e2e 22 ✅. 56/56 criteria met. Ready for PR push after orchestration decision."
     }
   ]
 }
