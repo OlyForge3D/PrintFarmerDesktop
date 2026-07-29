@@ -78,6 +78,7 @@ import {
 } from './calibrationImportV4.js';
 import type { PreflightResult } from './calibrationImportV4.js';
 import { LegacyBackupProjectOutcome } from '@shared/ipc';
+import { CalibrationAssetManifestService } from './calibrationAssetManifest.js';
 
 declare const __PRINTFARMER_E2E_BUILD__: boolean;
 
@@ -279,6 +280,8 @@ export function registerIpcHandlers(
       },
     },
   );
+  // Asset manifest service for external calibration assets (issue #54).
+  const calibrationAssetManifest = new CalibrationAssetManifestService();
   // Active sync-abort controller: one controller per outstanding sync.
   const activeSyncControllers = new Map<string, AbortController>();
 
@@ -1712,6 +1715,10 @@ export function registerIpcHandlers(
           selectedId,
           ctx.profile.baseUrl,
           request.projectId,
+          request.attemptId,
+          request.method,
+          request.definitionVersion,
+          request.options,
           request.operationId,
           request.baseRevision,
           signal,
@@ -1719,7 +1726,7 @@ export function registerIpcHandlers(
         return ipcSchemas[IpcChannel.CalibrationStartGeneration].response.parse(
           {
             status: 'submitted',
-            generationJobId: result.generationJobId,
+            orchestrationId: result.id,
           },
         );
       } catch (error) {
@@ -1739,6 +1746,84 @@ export function registerIpcHandlers(
             error: apiError,
           },
         );
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationGetOrchestrationStatus,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationGetOrchestrationStatus].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const signal = AbortSignal.timeout(15_000);
+      const ctx = await profiles.getAuthenticatedContext(selectedId);
+      try {
+        const remote = await calibrationHttp.getOrchestrationStatus(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.orchestrationId,
+          signal,
+        );
+        return ipcSchemas[
+          IpcChannel.CalibrationGetOrchestrationStatus
+        ].response.parse({
+          status: 'ok',
+          orchestration: {
+            id: remote.id,
+            projectId: remote.projectId,
+            attemptId: remote.attemptId,
+            operationId: remote.operationId,
+            status: remote.status,
+            currentStep: remote.currentStep,
+            revision: remote.revision,
+            retryCount: remote.retryCount,
+            nextRetryAtUtc: remote.nextRetryAtUtc,
+            stepStartedAtUtc: remote.stepStartedAtUtc,
+            lastErrorCode: remote.lastErrorCode,
+            problems: remote.problems,
+            model3DId: remote.model3DId,
+            sliceJobId: remote.sliceJobId,
+            workerId: remote.workerId,
+            sourceArtifactId: remote.sourceArtifactId,
+            finalArtifactId: remote.finalArtifactId,
+            gcodeFileId: remote.gcodeFileId,
+            specificationSha256: remote.specificationSha256,
+            planManifestSha256: remote.planManifestSha256,
+            gcodeSha256: remote.gcodeSha256,
+            manifestSha256: remote.manifestSha256,
+            generatorVersion: remote.generatorVersion,
+            slicerContainerDigest: remote.slicerContainerDigest,
+            slicerBinarySha256: remote.slicerBinarySha256,
+            statusRoute: remote.statusRoute,
+            createdAtUtc: remote.createdAtUtc,
+            updatedAtUtc: remote.updatedAtUtc,
+            completedAtUtc: remote.completedAtUtc,
+          },
+        });
+      } catch (error) {
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError()
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Orchestration status fetch failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationGetOrchestrationStatus
+        ].response.parse({
+          status: 'error',
+          error: apiError,
+        });
       }
     },
   );
@@ -1769,16 +1854,78 @@ export function registerIpcHandlers(
           },
         });
       }
-      return ipcSchemas[IpcChannel.CalibrationGetQueueState].response.parse({
-        status: 'error',
-        error: {
-          code: 'workerUnavailable',
-          message:
-            'The authoritative calibration queue endpoint is not available.',
-          retryable: true,
-          retryAfterSeconds: null,
-        },
-      });
+      // If no jobId provided, there is no job to look up.
+      if (!request.jobId) {
+        return ipcSchemas[IpcChannel.CalibrationGetQueueState].response.parse({
+          status: 'error',
+          error: {
+            code: 'jobNotFound',
+            message: 'No job ID provided — no queue job to look up.',
+            retryable: false,
+            retryAfterSeconds: null,
+          },
+        });
+      }
+      const signal = AbortSignal.timeout(15_000);
+      const ctx = await profiles.getAuthenticatedContext(selectedId);
+      try {
+        const remote = await calibrationHttp.getQueueJob(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.jobId,
+          signal,
+        );
+        if (remote === null) {
+          return ipcSchemas[IpcChannel.CalibrationGetQueueState].response.parse(
+            {
+              status: 'error',
+              error: {
+                code: 'jobNotFound',
+                message: `Queue job ${request.jobId} does not exist.`,
+                retryable: false,
+                retryAfterSeconds: null,
+              },
+            },
+          );
+        }
+        return ipcSchemas[IpcChannel.CalibrationGetQueueState].response.parse({
+          status: 'ok',
+          job: {
+            jobId: remote.id,
+            jobKind: remote.jobKind,
+            rowVersion: remote.rowVersion,
+            dispatchStateRowVersion: remote.dispatchStateRowVersion,
+            status: remote.status,
+            dispatchAttemptOutcome: remote.dispatchResult?.outcome ?? null,
+            bedClearState: remote.bedClearState,
+            gcodeFileId: remote.gcodeFileId,
+            assignedPrinterId: remote.assignedPrinterId,
+            calibrationProjectId: remote.calibrationProjectId,
+            calibrationAttemptId: remote.calibrationAttemptId,
+            pinnedPrinterConfigRevision: remote.pinnedPrinterConfigRevision,
+            priority: remote.priority,
+            queuePosition: remote.queuePosition,
+            updatedAt: remote.updatedAt,
+          },
+        });
+      } catch (error) {
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError()
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Queue job lookup failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+              };
+        return ipcSchemas[IpcChannel.CalibrationGetQueueState].response.parse({
+          status: 'error',
+          error: apiError,
+        });
+      }
     },
   );
 
@@ -1792,39 +1939,37 @@ export function registerIpcHandlers(
       const selectedId = await requireSelectedCalibrationProfile(
         request.profileId,
       );
-      const prerequisiteError =
-        await calibrationEngine.checkOnlineActionPrerequisites(
-          selectedId,
-          request.projectId,
-        );
-      if (prerequisiteError !== null) {
-        return ipcSchemas[
-          IpcChannel.CalibrationAcknowledgeBedClear
-        ].response.parse({
-          status: 'error',
-          error: {
-            code: 'syncRequired',
-            message: prerequisiteError,
-            retryable: true,
-            retryAfterSeconds: null,
-          },
-        });
-      }
+      // Bed-clear acknowledgement is a transactional operation scoped to a
+      // specific queue job — the prerequisite sync check is not applicable here.
       const signal = AbortSignal.timeout(15_000);
       const ctx = await profiles.getAuthenticatedContext(selectedId);
       try {
-        await calibrationHttp.acknowledgeBedClear(
+        const result = await calibrationHttp.acknowledgeBedClearAndStart(
           selectedId,
           ctx.profile.baseUrl,
-          request.projectId,
           request.jobId,
+          request.printerId,
           request.operationId,
+          request.rowVersion,
+          request.dispatchStateRowVersion,
+          request.expectedPrinterConfigRevision,
           signal,
         );
+        if (result.kind === 'revisionConflict') {
+          return ipcSchemas[
+            IpcChannel.CalibrationAcknowledgeBedClear
+          ].response.parse({
+            status: 'revisionConflict',
+            jobRowVersion: result.jobETag,
+            dispatchStateRowVersion: result.dispatchStateETag,
+          });
+        }
         return ipcSchemas[
           IpcChannel.CalibrationAcknowledgeBedClear
         ].response.parse({
           status: 'ok',
+          jobRowVersion: result.jobETag,
+          dispatchStateRowVersion: result.dispatchStateETag,
         });
       } catch (error) {
         const apiError =
@@ -1874,18 +2019,39 @@ export function registerIpcHandlers(
       const signal = AbortSignal.timeout(30_000);
       const ctx = await profiles.getAuthenticatedContext(selectedId);
       try {
-        const result = await calibrationHttp.startPrint(
+        const result = await calibrationHttp.createQueueJob(
           selectedId,
           ctx.profile.baseUrl,
-          request.projectId,
-          request.jobId,
-          request.operationId,
-          request.baseRevision,
+          {
+            gcodeFileId: request.gcodeFileId,
+            assignedPrinterId: request.assignedPrinterId,
+            operationId: request.operationId,
+            calibrationProjectId: request.projectId,
+            calibrationAttemptId: request.attemptId,
+            calibrationOrchestrationId: request.orchestrationId,
+            pinnedPrinterConfigRevision: request.pinnedPrinterConfigRevision,
+            gcodeContentSha256: request.gcodeContentSha256,
+            specificationSha256: request.specificationSha256,
+            machineProfileSha256: request.machineProfileSha256,
+            processProfileSha256: request.processProfileSha256,
+            filamentProfileSha256: request.filamentProfileSha256,
+            printerConfigSnapshotSha256: request.printerConfigSnapshotSha256,
+            requiredFirmwareFamily: request.requiredFirmwareFamily,
+            requiredGcodeDialect: request.requiredGcodeDialect,
+            requiredSlicerEngine: request.requiredSlicerEngine,
+            requiredSlicerDistribution: request.requiredSlicerDistribution,
+            requiredSlicerVersion: request.requiredSlicerVersion,
+            requiredSlicerContainerDigest:
+              request.requiredSlicerContainerDigest,
+          },
           signal,
         );
         return ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse({
           status: 'ok',
           jobId: result.jobId,
+          rowVersion: result.rowVersion,
+          dispatchStateRowVersion: result.dispatchStateRowVersion,
+          replayed: result.replayed,
         });
       } catch (error) {
         const apiError =
@@ -1905,6 +2071,228 @@ export function registerIpcHandlers(
           error: apiError,
         });
       }
+    },
+  );
+
+  // --- Queue reconciliation (issue #54) ------------------------------------
+
+  ipcMain.handle(
+    IpcChannel.CalibrationPollQueueChanges,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationPollQueueChanges].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const ctx = await profiles.getAuthenticatedContext(selectedId);
+      const signal = AbortSignal.timeout(15_000);
+      try {
+        const page = await calibrationHttp.getQueueChanges(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.afterSequence,
+          request.limit ?? 200,
+          signal,
+        );
+        // Detect gaps: if any event.sequence is not contiguous the caller must
+        // refetch job state over REST.
+        let gapDetected = false;
+        const events = page.events;
+        for (let i = 1; i < events.length; i++) {
+          const cur = events[i];
+          const prev = events[i - 1];
+          if (
+            cur !== undefined &&
+            prev !== undefined &&
+            cur.sequence !== prev.sequence + 1
+          ) {
+            gapDetected = true;
+            break;
+          }
+        }
+        // Also detect gap between cursor and first event
+        const firstEvent = events[0];
+        if (
+          firstEvent !== undefined &&
+          firstEvent.sequence !== page.afterSequence + 1
+        ) {
+          gapDetected = true;
+        }
+        return ipcSchemas[
+          IpcChannel.CalibrationPollQueueChanges
+        ].response.parse({
+          status: 'ok',
+          afterSequence: page.afterSequence,
+          nextSequence: page.nextSequence,
+          hasMore: page.hasMore,
+          gapDetected,
+          events: page.events,
+        });
+      } catch (error) {
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError()
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Queue change feed poll failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationPollQueueChanges
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationGetSubscriptionResources,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[
+          IpcChannel.CalibrationGetSubscriptionResources
+        ].request.parse(rawRequest);
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const ctx = await profiles.getAuthenticatedContext(selectedId);
+      const signal = AbortSignal.timeout(15_000);
+      try {
+        const resources = await calibrationHttp.getQueueSubscriptionResources(
+          selectedId,
+          ctx.profile.baseUrl,
+          signal,
+        );
+        return ipcSchemas[
+          IpcChannel.CalibrationGetSubscriptionResources
+        ].response.parse({
+          status: 'ok',
+          printerIds: resources.printerIds,
+          jobIds: resources.jobIds,
+          projectIds: resources.projectIds,
+        });
+      } catch (error) {
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError()
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Subscription resources fetch failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationGetSubscriptionResources
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
+  // --- External calibration asset manifest (issue #54) ---------------------
+
+  ipcMain.handle(IpcChannel.CalibrationGetAssetManifest, async () => {
+    try {
+      const manifest = await calibrationAssetManifest.load();
+      return ipcSchemas[IpcChannel.CalibrationGetAssetManifest].response.parse(
+        manifest,
+      );
+    } catch (error) {
+      return ipcSchemas[IpcChannel.CalibrationGetAssetManifest].response.parse({
+        status: 'error',
+        message:
+          error instanceof Error ? error.message : 'Manifest load failed.',
+      });
+    }
+  });
+
+  ipcMain.handle(
+    IpcChannel.CalibrationPickAssetFile,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationPickAssetFile].request.parse(
+          rawRequest,
+        );
+      try {
+        const result = await calibrationAssetManifest.pickFile(
+          request.allowedExtensions,
+          request.title,
+        );
+        return ipcSchemas[IpcChannel.CalibrationPickAssetFile].response.parse(
+          result,
+        );
+      } catch (error) {
+        return ipcSchemas[IpcChannel.CalibrationPickAssetFile].response.parse({
+          status: 'error',
+          message:
+            error instanceof Error ? error.message : 'File picker failed.',
+        });
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationValidateAssetFile,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationValidateAssetFile].request.parse(
+          rawRequest,
+        );
+      try {
+        const result = await calibrationAssetManifest.validateFile(
+          request.approvalId,
+          request.method,
+        );
+        return ipcSchemas[
+          IpcChannel.CalibrationValidateAssetFile
+        ].response.parse(result);
+      } catch (error) {
+        return ipcSchemas[
+          IpcChannel.CalibrationValidateAssetFile
+        ].response.parse({
+          status: 'error',
+          message:
+            error instanceof Error ? error.message : 'Asset validation failed.',
+        });
+      }
+    },
+  );
+
+  // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
+  ipcMain.handle(
+    IpcChannel.CalibrationOpenManifestUrl,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationOpenManifestUrl].request.parse(
+          rawRequest,
+        );
+      // Validate the URL against the source URLs declared in the versioned
+      // asset manifest. Only URLs that actually appear as a reviewed sourceUrl
+      // entry are allowed — this is a genuine allowlist, not a scheme heuristic.
+      const isAllowed = await calibrationAssetManifest.isManifestSourceUrl(
+        request.url,
+      );
+      if (!isAllowed) {
+        return ipcSchemas[IpcChannel.CalibrationOpenManifestUrl].response.parse(
+          {
+            status: 'error',
+            message:
+              'URL is not in the approved calibration asset manifest source list.',
+          },
+        );
+      }
+      const { shell } = await import('electron');
+      await shell.openExternal(request.url);
+      return ipcSchemas[IpcChannel.CalibrationOpenManifestUrl].response.parse({
+        status: 'ok',
+      });
     },
   );
 

@@ -104,12 +104,29 @@ import {
   type CalibrationSyncNowResponse,
   type CalibrationStartGenerationRequest,
   type CalibrationStartGenerationResponse,
+  type CalibrationGetOrchestrationStatusRequest,
+  type CalibrationGetOrchestrationStatusResponse,
   type CalibrationGetQueueStateRequest,
   type CalibrationGetQueueStateResponse,
   type CalibrationAcknowledgeBedClearRequest,
   type CalibrationAcknowledgeBedClearResponse,
   type CalibrationStartPrintRequest,
   type CalibrationStartPrintResponse,
+  // --- Queue reconciliation (issue #54) ------------------------------------
+  type CalibrationPollQueueChangesRequest,
+  type CalibrationPollQueueChangesResponse,
+  type CalibrationGetSubscriptionResourcesRequest,
+  type CalibrationGetSubscriptionResourcesResponse,
+  // --- External calibration asset manifest (issue #54) ---------------------
+  type CalibrationGetAssetManifestResponse,
+  type CalibrationPickAssetFileRequest,
+  type CalibrationPickAssetFileResponse,
+  type CalibrationValidateAssetFileRequest,
+  type CalibrationValidateAssetFileResponse,
+  // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
+  type CalibrationOpenManifestUrlRequest,
+  type CalibrationOpenManifestUrlResponse,
+  // -------------------------------------------------------------------------
   type CalibrationListOrcaProfilesRequest,
   type CalibrationListOrcaProfilesResponse,
   type CalibrationExportOrcaProfileRequest,
@@ -501,6 +518,15 @@ const api: PrintFarmerApi = {
     ipcSchemas[IpcChannel.CalibrationStartGeneration].response.parse(
       await ipcRenderer.invoke(IpcChannel.CalibrationStartGeneration, request),
     ),
+  getCalibrationOrchestrationStatus: async (
+    request: CalibrationGetOrchestrationStatusRequest,
+  ): Promise<CalibrationGetOrchestrationStatusResponse> =>
+    ipcSchemas[IpcChannel.CalibrationGetOrchestrationStatus].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationGetOrchestrationStatus,
+        request,
+      ),
+    ),
   getCalibrationQueueState: async (
     request: CalibrationGetQueueStateRequest,
   ): Promise<CalibrationGetQueueStateResponse> =>
@@ -522,6 +548,51 @@ const api: PrintFarmerApi = {
     ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse(
       await ipcRenderer.invoke(IpcChannel.CalibrationStartPrint, request),
     ),
+  // --- Queue reconciliation (issue #54) ------------------------------------
+  pollCalibrationQueueChanges: async (
+    request: CalibrationPollQueueChangesRequest,
+  ): Promise<CalibrationPollQueueChangesResponse> =>
+    ipcSchemas[IpcChannel.CalibrationPollQueueChanges].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationPollQueueChanges, request),
+    ),
+  getCalibrationSubscriptionResources: async (
+    request: CalibrationGetSubscriptionResourcesRequest,
+  ): Promise<CalibrationGetSubscriptionResourcesResponse> =>
+    ipcSchemas[IpcChannel.CalibrationGetSubscriptionResources].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationGetSubscriptionResources,
+        request,
+      ),
+    ),
+  // --- External calibration asset manifest (issue #54) ---------------------
+  getCalibrationAssetManifest:
+    async (): Promise<CalibrationGetAssetManifestResponse> =>
+      ipcSchemas[IpcChannel.CalibrationGetAssetManifest].response.parse(
+        await ipcRenderer.invoke(IpcChannel.CalibrationGetAssetManifest),
+      ),
+  pickCalibrationAssetFile: async (
+    request: CalibrationPickAssetFileRequest,
+  ): Promise<CalibrationPickAssetFileResponse> =>
+    ipcSchemas[IpcChannel.CalibrationPickAssetFile].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationPickAssetFile, request),
+    ),
+  validateCalibrationAssetFile: async (
+    request: CalibrationValidateAssetFileRequest,
+  ): Promise<CalibrationValidateAssetFileResponse> =>
+    ipcSchemas[IpcChannel.CalibrationValidateAssetFile].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationValidateAssetFile,
+        request,
+      ),
+    ),
+  // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
+  openCalibrationManifestUrl: async (
+    request: CalibrationOpenManifestUrlRequest,
+  ): Promise<CalibrationOpenManifestUrlResponse> =>
+    ipcSchemas[IpcChannel.CalibrationOpenManifestUrl].response.parse(
+      await ipcRenderer.invoke(IpcChannel.CalibrationOpenManifestUrl, request),
+    ),
+  // -------------------------------------------------------------------------
   listOrcaProfiles: async (
     request: CalibrationListOrcaProfilesRequest,
   ): Promise<CalibrationListOrcaProfilesResponse> =>

@@ -13,6 +13,7 @@ import {
   deriveCalibrationWorkspaceProjection,
   type CalibrationAvailability,
   type CalibrationPrinterContext,
+  type CalibrationPrintObservation,
   type CalibrationSaveWorkspaceStateRequest,
   type CalibrationUnhydratedProject,
   type CalibrationWorkspacePayload,
@@ -1059,6 +1060,55 @@ export function CalibrationWorkspaceStoreProvider({
     [bumpAndSave, environment],
   );
 
+  /**
+   * Append a print lifecycle observation to durable workspace state.
+   * Idempotent: if an observation with the same `observationId` already exists,
+   * the call is a no-op (mirrors domain reducer idempotency at reducer.ts:426).
+   */
+  const storePrintObservation = useCallback(
+    async (observation: CalibrationPrintObservation): Promise<void> => {
+      const project = activeProjectRef.current;
+      if (project === null) return;
+      const existing = project.record.workspaceState.printObservations ?? [];
+      if (existing.some((o) => o.observationId === observation.observationId)) {
+        return; // idempotent
+      }
+      const payload: CalibrationWorkspacePayload = {
+        ...payloadFor(project),
+        printObservations: [...existing, observation],
+      };
+      await bumpAndSave(
+        replacePayload(project, payload),
+        environment.now(),
+        'Print observation saved locally.',
+      );
+    },
+    [bumpAndSave, environment],
+  );
+
+  /**
+   * Persist the validated asset SHA-256 checksum with the given domain attempt
+   * ID. Used by `handlePickAndValidateAsset` so provenance survives a reload.
+   */
+  const storeAttemptAssetSha256 = useCallback(
+    async (attemptId: string, sha256: string): Promise<void> => {
+      const project = activeProjectRef.current;
+      if (project === null) return;
+      const existing =
+        project.record.workspaceState.assetSha256ByAttemptId ?? {};
+      const payload: CalibrationWorkspacePayload = {
+        ...payloadFor(project),
+        assetSha256ByAttemptId: { ...existing, [attemptId]: sha256 },
+      };
+      await bumpAndSave(
+        replacePayload(project, payload),
+        environment.now(),
+        'Asset SHA-256 saved with attempt.',
+      );
+    },
+    [bumpAndSave, environment],
+  );
+
   const refreshProjectContext =
     useCallback(async (): Promise<CalibrationPrinterContext | null> => {
       const project = activeProjectRef.current;
@@ -1363,6 +1413,8 @@ export function CalibrationWorkspaceStoreProvider({
       updateWorkflowDraft,
       setPhysicalMatch,
       addPhoto,
+      storePrintObservation,
+      storeAttemptAssetSha256,
       refreshProjectContext,
       announce,
       reportError,
@@ -1410,6 +1462,8 @@ export function CalibrationWorkspaceStoreProvider({
       selectedProfileId,
       selectedStageId,
       setPhysicalMatch,
+      storeAttemptAssetSha256,
+      storePrintObservation,
       sync,
       unhydratedProjects,
       updateMetadata,

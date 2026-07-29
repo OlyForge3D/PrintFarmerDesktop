@@ -21,6 +21,7 @@ import {
 import type {
   CalibrationPrinterCandidate,
   CalibrationPrinterContext,
+  CalibrationQueueEventEnvelope,
   CalibrationSaveWorkspaceStateRequest,
   CalibrationWorkspaceStateRecord,
 } from '@shared/ipc';
@@ -472,6 +473,105 @@ function makeApi(savedRecord = record()) {
           retryable: false,
         },
       }),
+    // --- Calibration generation, queue, and bed-clear (issue #54) ----------
+    startCalibrationGeneration: vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'serverError',
+          message: 'Not implemented in test.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      }),
+    getCalibrationOrchestrationStatus: vi
+      .fn<CalibrationApi['getCalibrationOrchestrationStatus']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'serverError',
+          message: 'Not implemented in test.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      }),
+    getCalibrationQueueState: vi
+      .fn<CalibrationApi['getCalibrationQueueState']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'serverError',
+          message: 'Not implemented in test.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      }),
+    acknowledgeCalibrationBedClear: vi
+      .fn<CalibrationApi['acknowledgeCalibrationBedClear']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'serverError',
+          message: 'Not implemented in test.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      }),
+    startCalibrationPrint: vi
+      .fn<CalibrationApi['startCalibrationPrint']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'serverError',
+          message: 'Not implemented in test.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      }),
+    // --- Queue reconciliation (issue #54) ------------------------------------
+    pollCalibrationQueueChanges: vi
+      .fn<CalibrationApi['pollCalibrationQueueChanges']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'serverError',
+          message: 'Not implemented in test.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      }),
+    getCalibrationSubscriptionResources: vi
+      .fn<CalibrationApi['getCalibrationSubscriptionResources']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'serverError',
+          message: 'Not implemented in test.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      }),
+    // --- External calibration asset manifest (issue #54) -------------------
+    getCalibrationAssetManifest: vi
+      .fn<CalibrationApi['getCalibrationAssetManifest']>()
+      .mockResolvedValue({
+        status: 'error',
+        message: 'Not implemented in test.',
+      }),
+    pickCalibrationAssetFile: vi
+      .fn<CalibrationApi['pickCalibrationAssetFile']>()
+      .mockResolvedValue({ status: 'cancelled' }),
+    validateCalibrationAssetFile: vi
+      .fn<CalibrationApi['validateCalibrationAssetFile']>()
+      .mockResolvedValue({
+        status: 'error',
+        message: 'Not implemented in test.',
+      }),
+    // --- Allowlisted manifest URL navigation (criterion 14) ----------------
+    openCalibrationManifestUrl: vi
+      .fn<CalibrationApi['openCalibrationManifestUrl']>()
+      .mockResolvedValue({ status: 'ok' }),
   } satisfies CalibrationApi;
 }
 
@@ -1671,5 +1771,1344 @@ describe('CalibrationWorkspace', () => {
       expect(source).not.toContain(forbidden);
     }
     expect(source).not.toContain('selection' + '.path');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Handoff section integration: generation → queue → bed-clear → lifecycle
+  // (criteria 4, 7, 8, 9, 10, 11, 12, 13 — issue #54)
+  // ---------------------------------------------------------------------------
+
+  const HANDOFF_QUEUE_JOB_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  const HANDOFF_ORCH_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+  const HANDOFF_PRINTER_ID = 'printer-safe';
+
+  function queueJobFixture(
+    overrides: {
+      status?: string;
+      dispatchAttemptOutcome?: string | null;
+      bedClearState?: string;
+      pinnedPrinterConfigRevision?: number | null;
+      gcodeFileId?: string | null;
+      assignedPrinterName?: string | null;
+      /** Criterion 10 / 7: firmware family required by the job. */
+      requiredFirmwareFamily?: string | null;
+      /** Criterion 10: filament SKU required by the job. */
+      requiredFilamentSku?: string | null;
+      /** Criterion 11: machine profile SHA-256 recorded at job creation. */
+      machineProfileSha256?: string | null;
+      /** Criterion 7: distinct attempt ID to trigger reorder detection. */
+      calibrationAttemptId?: string;
+    } = {},
+  ) {
+    return {
+      status: 'ok' as const,
+      job: {
+        jobId: HANDOFF_QUEUE_JOB_ID,
+        jobKind: 'FilamentCalibration',
+        rowVersion: 'AAAA==',
+        dispatchStateRowVersion: 'BBBB==',
+        status: overrides.status ?? 'Queued',
+        dispatchAttemptOutcome: overrides.dispatchAttemptOutcome ?? null,
+        bedClearState: overrides.bedClearState ?? 'None',
+        gcodeFileId:
+          overrides.gcodeFileId !== undefined ? overrides.gcodeFileId : null,
+        assignedPrinterId: HANDOFF_PRINTER_ID,
+        assignedPrinterName:
+          overrides.assignedPrinterName !== undefined
+            ? overrides.assignedPrinterName
+            : null,
+        calibrationProjectId: projectId,
+        calibrationAttemptId:
+          overrides.calibrationAttemptId !== undefined
+            ? overrides.calibrationAttemptId
+            : attemptId,
+        pinnedPrinterConfigRevision:
+          overrides.pinnedPrinterConfigRevision !== undefined
+            ? overrides.pinnedPrinterConfigRevision
+            : 7,
+        priority: 1,
+        queuePosition: 1,
+        updatedAt: now,
+        // Criterion 10: new optional fields
+        requiredFirmwareFamily:
+          overrides.requiredFirmwareFamily !== undefined
+            ? overrides.requiredFirmwareFamily
+            : null,
+        requiredFilamentSku:
+          overrides.requiredFilamentSku !== undefined
+            ? overrides.requiredFilamentSku
+            : null,
+        // Criterion 11: stale profile detection
+        machineProfileSha256:
+          overrides.machineProfileSha256 !== undefined
+            ? overrides.machineProfileSha256
+            : null,
+      },
+    };
+  }
+
+  async function openStepView(api: ReturnType<typeof makeApi>) {
+    renderWorkspace(api);
+    fireEvent.click(
+      await screen.findByRole('button', { name: /PLA production calibration/ }),
+    );
+    // Match any stage status (notStarted, inProgress, etc.)
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: /Open Temperature/,
+      }),
+    );
+    await screen.findByRole('heading', { name: 'Temperature' });
+  }
+
+  it('CalibrationQueueDispatchPanel appears when a queue job exists (criterion 8)', async () => {
+    const api = makeApi(record(domainState()));
+    api.getCalibrationQueueState.mockResolvedValue(queueJobFixture());
+    await openStepView(api);
+
+    // Panel is always rendered when queue state loads from the useEffect
+    expect(
+      await screen.findByRole('heading', { name: 'Queue State', level: 3 }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText(HANDOFF_QUEUE_JOB_ID)).toBeInTheDocument();
+    expect(
+      await screen.findByText('Queued — waiting for printer'),
+    ).toBeInTheDocument();
+  });
+
+  it('Unknown dispatch outcome renders as "Starting" with reconciliation note and no retry button (criterion 9)', async () => {
+    const api = makeApi(record(domainState()));
+    api.getCalibrationQueueState.mockResolvedValue(
+      queueJobFixture({ dispatchAttemptOutcome: 'Unknown' }),
+    );
+    await openStepView(api);
+
+    // Dispatch Outcome section shows "Starting" not "Unknown"
+    expect(await screen.findByText('Starting')).toBeInTheDocument();
+    // Reconciliation guidance is present (no blind-retry)
+    expect(await screen.findByText(/Do not retry/)).toBeInTheDocument();
+    // No "Retry" button anywhere in the dispatch panel
+    const panel = await screen.findByLabelText('Queue and dispatch status');
+    expect(
+      within(panel).queryByRole('button', { name: /retry/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('staleTelemetry blocked reason renders in dispatch panel (criterion 10)', async () => {
+    // Mutation test: remove `staleTelemetry` branch from computedBlockedReason →
+    // no alert → this test fails.
+    const api = makeApi(
+      record(domainState(), { isPrinterContextFresh: false }),
+    );
+    api.getCalibrationQueueState.mockResolvedValue(queueJobFixture());
+    await openStepView(api);
+    await screen.findByRole('heading', { name: 'Queue State', level: 3 });
+
+    const panel = await screen.findByLabelText('Queue and dispatch status');
+    await waitFor(() => {
+      expect(within(panel).getByRole('alert')).toHaveTextContent(
+        'Stale telemetry',
+      );
+    });
+  });
+
+  it('configChange blocked reason renders when pinnedRevision differs from binding (criterion 10)', async () => {
+    // Mutation test: remove `configChange` branch from computedBlockedReason →
+    // no alert → this test fails.
+    const api = makeApi(record(domainState()));
+    // Binding revision is 7; pinning to 5 causes configChange.
+    api.getCalibrationQueueState.mockResolvedValue(
+      queueJobFixture({ pinnedPrinterConfigRevision: 5 }),
+    );
+    await openStepView(api);
+    await screen.findByRole('heading', { name: 'Queue State', level: 3 });
+
+    const panel = await screen.findByLabelText('Queue and dispatch status');
+    await waitFor(() => {
+      expect(within(panel).getByRole('alert')).toHaveTextContent(
+        'Configuration changed',
+      );
+    });
+  });
+
+  it('printerOffline blocked reason renders when availability rejects (criterion 10)', async () => {
+    // Mutation test: remove `printerOffline` branch → no alert → test fails.
+    const api = makeApi(record(domainState()));
+    api.getCalibrationAvailability.mockRejectedValue(
+      new Error('Network timeout'),
+    );
+    api.getCalibrationQueueState.mockResolvedValue(queueJobFixture());
+    await openStepView(api);
+    await screen.findByRole('heading', { name: 'Queue State', level: 3 });
+
+    const panel = await screen.findByLabelText('Queue and dispatch status');
+    // When offline, the panel shows its own offline banner AND the blockedReason
+    // banner (both carry role="alert"). Check specifically for the blockedReason
+    // detail text which only appears when computedBlockedReason === 'printerOffline'.
+    await waitFor(() => {
+      expect(
+        within(panel).getByText(/Check network and Klipper status/i),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it('gap detection triggers getCalibrationQueueState refetch (criterion 8)', async () => {
+    // Mutation test: delete onGapDetected() call at CalibrationQueueDispatchPanel.tsx:168
+    // Strategy: defer the first poll so we can clear the call counter AFTER all
+    // initialization calls are done. Then fire the gap response and assert ≥1
+    // NEW call. Without the onGapDetected() call, count stays at 0 → test fails.
+    const api = makeApi(record(domainState()));
+    api.getCalibrationQueueState.mockResolvedValue(queueJobFixture());
+
+    // First poll hangs until fireGap() is called.
+    let fireGap!: () => void;
+    api.pollCalibrationQueueChanges.mockImplementationOnce(
+      () =>
+        new Promise<{
+          status: 'ok';
+          afterSequence: number;
+          nextSequence: number;
+          hasMore: boolean;
+          gapDetected: boolean;
+          events: CalibrationQueueEventEnvelope[];
+        }>((resolve) => {
+          fireGap = () =>
+            resolve({
+              status: 'ok',
+              afterSequence: 0,
+              nextSequence: 5,
+              hasMore: false,
+              gapDetected: true,
+              events: [],
+            });
+        }),
+    );
+    // Subsequent polls: gap-free so the loop settles.
+    api.pollCalibrationQueueChanges.mockResolvedValue({
+      status: 'ok',
+      afterSequence: 5,
+      nextSequence: 5,
+      hasMore: false,
+      gapDetected: false,
+      events: [],
+    });
+
+    await openStepView(api);
+    await screen.findByRole('heading', { name: 'Queue State', level: 3 });
+
+    // All initialization calls (workflow + panel) are done. Zero out the counter.
+    api.getCalibrationQueueState.mockClear();
+
+    // Fire the deferred gap response. This triggers onGapDetected() → refetchJobState().
+    act(() => {
+      fireGap();
+    });
+
+    // Mutation test: delete onGapDetected() → no refetch → mock stays at 0 → fails.
+    await waitFor(() => {
+      expect(
+        api.getCalibrationQueueState.mock.calls.length,
+      ).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  it('redacted Printer-group envelope (jobId:null) is NOT applied to job state (criterion 8)', async () => {
+    // Mutation test: remove `evt.jobId === jobId` guard at line 174 of
+    // CalibrationQueueDispatchPanel.tsx → the Cancelled status is applied →
+    // 'Queued — waiting for printer' text disappears → this test fails.
+    const api = makeApi(record(domainState()));
+    api.getCalibrationQueueState.mockResolvedValue(queueJobFixture());
+    api.pollCalibrationQueueChanges.mockResolvedValueOnce({
+      status: 'ok',
+      afterSequence: 0,
+      nextSequence: 10,
+      hasMore: false,
+      gapDetected: false,
+      events: [
+        {
+          schemaVersion: '1',
+          eventId: 'aaaabbbb-0000-4000-8000-000000000001',
+          sequence: 1,
+          eventType: 'PrinterGroupStateChanged',
+          occurredAtUtc: now,
+          jobId: null, // redacted envelope — must not touch job state
+          printerId: HANDOFF_PRINTER_ID,
+          projectId: null,
+          calibrationAttemptId: null,
+          jobStatus: 'Cancelled', // would be catastrophic if applied
+          jobKind: null,
+          jobRevision: null,
+          dispatchStateRevision: null,
+          attemptId: null,
+          attemptNumber: null,
+          attemptOutcome: null,
+          bedClearState: null,
+          bedClearCommandId: null,
+          bedClearExpiresAtUtc: null,
+          failureCode: null,
+          failureRetryable: null,
+          failureRequiresReconciliation: null,
+          jobLogicalRevision: null,
+          dispatchStateLogicalRevision: null,
+        },
+      ],
+    });
+
+    await openStepView(api);
+    await screen.findByRole('heading', { name: 'Queue State', level: 3 });
+
+    // Job status must remain "Queued", not "Cancelled"
+    expect(
+      await screen.findByText('Queued — waiting for printer'),
+    ).toBeInTheDocument();
+  });
+
+  it('CalibrationOrchestrationProgress shows free-form status from server (criterion 4)', async () => {
+    const api = makeApi(record(withActiveAttempt(), { isSynced: true }));
+    api.startCalibrationGeneration.mockResolvedValue({
+      status: 'submitted',
+      orchestrationId: HANDOFF_ORCH_ID,
+    });
+    api.getCalibrationOrchestrationStatus.mockResolvedValue({
+      status: 'ok',
+      orchestration: {
+        id: HANDOFF_ORCH_ID,
+        projectId,
+        attemptId,
+        operationId: 'op-1',
+        status: 'Running',
+        currentStep: 'TemperatureSensing',
+        revision: 1,
+        retryCount: 0,
+        nextRetryAtUtc: null,
+        stepStartedAtUtc: null,
+        lastErrorCode: null,
+        problems: [],
+        model3DId: null,
+        sliceJobId: null,
+        workerId: null,
+        sourceArtifactId: null,
+        finalArtifactId: null,
+        gcodeFileId: null,
+        specificationSha256: null,
+        planManifestSha256: null,
+        gcodeSha256: null,
+        manifestSha256: null,
+        generatorVersion: null,
+        slicerContainerDigest: null,
+        slicerBinarySha256: null,
+        statusRoute: '/api/calibration-orchestrations/' + HANDOFF_ORCH_ID,
+        createdAtUtc: now,
+        updatedAtUtc: now,
+        completedAtUtc: null,
+      },
+    });
+    await openStepView(api);
+
+    // Click Generate — enabled because isSynced+physicalMatch+online
+    const generateButton = await screen.findByRole('button', {
+      name: 'Generate calibration model',
+    });
+    fireEvent.click(generateButton);
+
+    // Progress panel appears with free-form status "Running"
+    expect(await screen.findByText('Running')).toBeInTheDocument();
+    // And the free-form current step is rendered verbatim
+    expect(await screen.findByText('TemperatureSensing')).toBeInTheDocument();
+  });
+
+  it('unrecognised orchestration status renders verbatim without crash (criterion 4)', async () => {
+    const api = makeApi(record(withActiveAttempt(), { isSynced: true }));
+    api.startCalibrationGeneration.mockResolvedValue({
+      status: 'submitted',
+      orchestrationId: HANDOFF_ORCH_ID,
+    });
+    api.getCalibrationOrchestrationStatus.mockResolvedValue({
+      status: 'ok',
+      orchestration: {
+        id: HANDOFF_ORCH_ID,
+        projectId,
+        attemptId,
+        operationId: 'op-1',
+        status: 'QuantumEntangled',
+        currentStep: 'NeuralCalibrationPass',
+        revision: 1,
+        retryCount: 0,
+        nextRetryAtUtc: null,
+        stepStartedAtUtc: null,
+        lastErrorCode: null,
+        problems: [],
+        model3DId: null,
+        sliceJobId: null,
+        workerId: null,
+        sourceArtifactId: null,
+        finalArtifactId: null,
+        gcodeFileId: null,
+        specificationSha256: null,
+        planManifestSha256: null,
+        gcodeSha256: null,
+        manifestSha256: null,
+        generatorVersion: null,
+        slicerContainerDigest: null,
+        slicerBinarySha256: null,
+        statusRoute: '/api/calibration-orchestrations/' + HANDOFF_ORCH_ID,
+        createdAtUtc: now,
+        updatedAtUtc: now,
+        completedAtUtc: null,
+      },
+    });
+    await openStepView(api);
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Generate calibration model',
+      }),
+    );
+    // Unrecognised status rendered verbatim — no crash, no blank
+    expect(await screen.findByText('QuantumEntangled')).toBeInTheDocument();
+    expect(
+      await screen.findByText('NeuralCalibrationPass'),
+    ).toBeInTheDocument();
+  });
+
+  it('CalibrationProvenance appears in project overview when a queue job is loaded (criterion 11)', async () => {
+    const api = makeApi(record(domainState()));
+    api.getCalibrationQueueState.mockResolvedValue(queueJobFixture());
+    renderWorkspace(api);
+
+    // Navigate to overview (not step view — provenance is in ProjectOverview)
+    fireEvent.click(
+      await screen.findByRole('button', { name: /PLA production calibration/ }),
+    );
+    // Now we're in the overview view (default after project click)
+    await screen.findByRole('heading', { name: 'PLA production calibration' });
+
+    // Provenance section should appear with the job ID
+    expect(
+      await screen.findByText(new RegExp(HANDOFF_QUEUE_JOB_ID.slice(0, 8))),
+    ).toBeInTheDocument();
+  });
+
+  it('CalibrationPrintLifecycle shows status and accepts append-only observations (criterion 13)', async () => {
+    const api = makeApi(record(domainState()));
+    api.getCalibrationQueueState.mockResolvedValue(
+      queueJobFixture({ status: 'Completed' }),
+    );
+    await openStepView(api);
+
+    // Lifecycle panel shows the completed status
+    expect(
+      await screen.findByRole('region', { name: 'Print lifecycle' }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText('✓ Completed')).toBeInTheDocument();
+
+    // Add first observation
+    const resultSelect = screen.getByLabelText('Result');
+    fireEvent.change(resultSelect, { target: { value: 'accepted' } });
+    const confidenceSelect = screen.getByLabelText('Confidence');
+    fireEvent.change(confidenceSelect, { target: { value: 'high' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Observation' }));
+
+    // First observation appears (each list item has aria-label="Observation N")
+    await screen.findByRole('listitem', { name: 'Observation 1' });
+
+    // Add a second observation — first must still be present
+    fireEvent.change(resultSelect, { target: { value: 'rejected' } });
+    fireEvent.change(confidenceSelect, { target: { value: 'low' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Observation' }));
+
+    // Both observations are in the DOM (append-only)
+    await waitFor(() => {
+      expect(
+        screen.getByRole('listitem', { name: 'Observation 1' }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('listitem', { name: 'Observation 2' }),
+      ).toBeInTheDocument();
+    });
+  });
+
+  describe('bed-clear dialog accessibility (criterion 12)', () => {
+    async function openBedClearDialog(api: ReturnType<typeof makeApi>) {
+      api.getCalibrationQueueState.mockResolvedValue(
+        queueJobFixture({ bedClearState: 'None' }),
+      );
+      await openStepView(api);
+
+      const confirmButton = await screen.findByRole('button', {
+        name: 'Confirm bed clear',
+      });
+      await waitFor(() => expect(confirmButton).not.toBeDisabled());
+      // Explicitly focus the button so the dialog captures it as the restore target
+      act(() => {
+        confirmButton.focus();
+      });
+      fireEvent.click(confirmButton);
+      return await screen.findByRole('dialog');
+    }
+
+    it('opens with role=dialog aria-modal and initial focus on close button', async () => {
+      const api = makeApi(record(domainState()));
+      const dialog = await openBedClearDialog(api);
+
+      expect(dialog).toBeInTheDocument();
+      expect(dialog).toHaveAttribute('aria-modal', 'true');
+      // Initial focus is moved to first focusable element (Close ×)
+      await waitFor(() => {
+        const closeBtn = within(dialog).getByRole('button', {
+          name: 'Close dialog',
+        });
+        expect(document.activeElement).toBe(closeBtn);
+      });
+    });
+
+    it('Escape closes dialog and restores focus to trigger button', async () => {
+      const api = makeApi(record(domainState()));
+      await openBedClearDialog(api);
+
+      const trigger = screen.getByRole('button', { name: 'Confirm bed clear' });
+
+      // Fire Escape on document (useFocusTrap listens on document)
+      fireEvent.keyDown(document, {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      });
+
+      // Dialog closes
+      await waitFor(() =>
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument(),
+      );
+
+      // Focus is restored to the trigger button
+      await waitFor(() => expect(document.activeElement).toBe(trigger));
+    });
+
+    it('Tab from last focusable element wraps focus to first focusable', async () => {
+      const api = makeApi(record(domainState()));
+      const dialog = await openBedClearDialog(api);
+
+      const closeBtn = within(dialog).getByRole('button', {
+        name: 'Close dialog',
+      });
+      const allButtons = within(dialog).getAllByRole('button');
+      const lastButton = allButtons[allButtons.length - 1]!;
+
+      // Move focus to the last button explicitly
+      act(() => {
+        lastButton.focus();
+      });
+      expect(document.activeElement).toBe(lastButton);
+
+      // Tab from last should cycle back to first
+      fireEvent.keyDown(document, {
+        key: 'Tab',
+        bubbles: true,
+        cancelable: true,
+      });
+
+      expect(document.activeElement).toBe(closeBtn);
+    });
+
+    it('Shift+Tab from first focusable wraps focus to last focusable', async () => {
+      const api = makeApi(record(domainState()));
+      const dialog = await openBedClearDialog(api);
+
+      const allButtons = within(dialog).getAllByRole('button');
+      const firstButton = allButtons[0]!;
+      const lastButton = allButtons[allButtons.length - 1]!;
+
+      // Move focus to first button explicitly
+      act(() => {
+        firstButton.focus();
+      });
+      expect(document.activeElement).toBe(firstButton);
+
+      // Shift+Tab from first should wrap to last
+      fireEvent.keyDown(document, {
+        key: 'Tab',
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+
+      expect(document.activeElement).toBe(lastButton);
+    });
+
+    it('countdown announces via aria-live when expiry propagates from poll event (criterion 12)', async () => {
+      // Mutation test: remove onBedClearExpiryChange call from handleEvent in
+      // CalibrationQueueDispatchPanel → bedClearExpiresAt never set → countdown
+      // never fires → /expires in \d+ second/i match fails.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const fixedNow = new Date('2026-07-26T16:00:00.000Z').getTime();
+      vi.setSystemTime(fixedNow);
+      const expiresAt = new Date(fixedNow + 20_000).toISOString(); // 20 s from now (within 30-second window)
+
+      const api = makeApi(record(domainState()));
+      api.getCalibrationQueueState.mockResolvedValue(
+        queueJobFixture({ bedClearState: 'None' }),
+      );
+      // First poll delivers a bed-clear-expiry event for our specific job.
+      api.pollCalibrationQueueChanges.mockResolvedValueOnce({
+        status: 'ok',
+        afterSequence: 0,
+        nextSequence: 5,
+        hasMore: false,
+        gapDetected: false,
+        events: [
+          {
+            schemaVersion: '1',
+            eventId: 'ccccdddd-0000-4000-8000-000000000001',
+            sequence: 1,
+            eventType: 'BedClearRequested',
+            occurredAtUtc: now,
+            jobId: HANDOFF_QUEUE_JOB_ID,
+            printerId: HANDOFF_PRINTER_ID,
+            projectId,
+            calibrationAttemptId: attemptId,
+            jobStatus: 'Assigned',
+            jobKind: 'FilamentCalibration',
+            jobRevision: 'AAAA==',
+            dispatchStateRevision: 'BBBB==',
+            attemptId: null,
+            attemptNumber: null,
+            attemptOutcome: 'InProgress',
+            bedClearState: 'None',
+            bedClearCommandId: null,
+            bedClearExpiresAtUtc: expiresAt,
+            failureCode: null,
+            failureRetryable: null,
+            failureRequiresReconciliation: null,
+            jobLogicalRevision: null,
+            dispatchStateLogicalRevision: null,
+          },
+        ],
+      });
+
+      await openStepView(api);
+
+      const confirmButton = await screen.findByRole('button', {
+        name: 'Confirm bed clear',
+      });
+      await waitFor(() => expect(confirmButton).not.toBeDisabled());
+      act(() => {
+        confirmButton.focus();
+      });
+      fireEvent.click(confirmButton);
+      await screen.findByRole('dialog');
+
+      // After the poll event is processed, bedClearExpiresAt propagates into the
+      // dialog which then shows the countdown. Target the dialog's specific live
+      // region (not [aria-live="assertive"] which also matches the blocked-reason
+      // alert in the panel).
+      await waitFor(() => {
+        const liveRegion = document.querySelector(
+          '.calibration-bed-clear-dialog__live-region',
+        );
+        expect(liveRegion?.textContent).toMatch(/expires in \d+ second/i);
+      });
+
+      vi.useRealTimers();
+    });
+
+    it('dialog shows material and nozzle from project binding (criterion 12)', async () => {
+      // Mutation test: remove material wiring from bedClearDialogJob in
+      // CalibrationStepWorkflow → material is null → "Material Co PLA Pro" absent
+      // → within(dialog).getByText('Material Co PLA Pro') throws → test fails.
+      const api = makeApi(record(domainState()));
+      api.getCalibrationQueueState.mockResolvedValue(
+        queueJobFixture({ bedClearState: 'None' }),
+      );
+      const dialog = await openBedClearDialog(api);
+
+      // Material = binding.filament.provider + ' ' + product
+      expect(
+        within(dialog).getByText('Material Co PLA Pro'),
+      ).toBeInTheDocument();
+      // Nozzle = selectedTool (tool-a): 0.4 mm brass
+      expect(within(dialog).getByText('0.4 mm brass')).toBeInTheDocument();
+    });
+
+    it('revisionConflict (412) closes dialog and updates ETags for the next attempt (criterion 6)', async () => {
+      // Mutation test: remove ETag update from revisionConflict branch →
+      // second call still uses 'AAAA==' rowVersion → expect(...).toBe('CONFLICT_JOB==')
+      // fails.
+      const api = makeApi(record(domainState()));
+      api.getCalibrationQueueState.mockResolvedValue(
+        queueJobFixture({ bedClearState: 'None' }),
+      );
+      // First ack returns 412 with authoritative ETags.
+      api.acknowledgeCalibrationBedClear
+        .mockResolvedValueOnce({
+          status: 'revisionConflict',
+          jobRowVersion: 'CONFLICT_JOB==',
+          dispatchStateRowVersion: 'CONFLICT_DISP==',
+        })
+        .mockResolvedValueOnce({
+          status: 'ok',
+          jobRowVersion: null,
+          dispatchStateRowVersion: null,
+        });
+
+      // Open dialog
+      await openBedClearDialog(api);
+
+      // Click confirm inside dialog — triggers handleBedClearConfirm
+      const confirmBedClearBtn = screen.getByRole('button', {
+        name: 'Confirm Bed Clear',
+      });
+      fireEvent.click(confirmBedClearBtn);
+
+      // Dialog should close (revisionConflict path closes without showing error)
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      });
+
+      // Re-open dialog (ETags should now be updated)
+      const triggerBtn = await screen.findByRole('button', {
+        name: 'Confirm bed clear',
+      });
+      await waitFor(() => expect(triggerBtn).not.toBeDisabled());
+      act(() => {
+        triggerBtn.focus();
+      });
+      fireEvent.click(triggerBtn);
+      await screen.findByRole('dialog');
+
+      const confirmBedClearBtn2 = screen.getByRole('button', {
+        name: 'Confirm Bed Clear',
+      });
+      fireEvent.click(confirmBedClearBtn2);
+
+      // The second ack call must carry the 412-supplied ETags.
+      await waitFor(() => {
+        const calls = api.acknowledgeCalibrationBedClear.mock.calls;
+        expect(calls.length).toBeGreaterThanOrEqual(2);
+        const secondArgs = calls[1]?.[0];
+        expect(secondArgs?.rowVersion).toBe('CONFLICT_JOB==');
+        expect(secondArgs?.dispatchStateRowVersion).toBe('CONFLICT_DISP==');
+      });
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Criterion 10 — four new blocked reason branches
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('maintenanceBusy blocked reason when availability.unavailableReason is operatorDisabled (criterion 10)', async () => {
+    // Mutation test: remove the operatorDisabled branch → renders printerOffline
+    // instead → "Printer in maintenance" absent → test fails.
+    const api = makeApi(record(domainState()));
+    api.getCalibrationAvailability.mockResolvedValue({
+      ...availability(),
+      available: false,
+      unavailableReason: 'operatorDisabled',
+    });
+    api.getCalibrationQueueState.mockResolvedValue(queueJobFixture());
+    await openStepView(api);
+    await screen.findByRole('heading', { name: 'Queue State', level: 3 });
+
+    const panel = await screen.findByLabelText('Queue and dispatch status');
+    await waitFor(() => {
+      // When availability is false+operatorDisabled, both the offline banner and
+      // the maintenanceBusy blocked reason render as alert roles. Check the text
+      // directly rather than expecting a single alert.
+      expect(
+        within(panel).getByText(/Printer in maintenance/),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it('permissionFailure blocked reason when CalibrationWrite scope is absent (criterion 10)', async () => {
+    // Mutation test: remove the grantedScopes branch → returns null → no alert
+    // → test fails.
+    const api = makeApi(record(domainState()));
+    api.getCalibrationAvailability.mockResolvedValue({
+      ...availability(),
+      available: true,
+      grantedScopes: ['CalibrationRead'], // CalibrationWrite absent
+    });
+    api.getCalibrationQueueState.mockResolvedValue(queueJobFixture());
+    await openStepView(api);
+    await screen.findByRole('heading', { name: 'Queue State', level: 3 });
+
+    const panel = await screen.findByLabelText('Queue and dispatch status');
+    await waitFor(() => {
+      expect(within(panel).getByRole('alert')).toHaveTextContent(
+        'Permission denied',
+      );
+    });
+  });
+
+  it('firmwareChange blocked reason when requiredFirmwareFamily is not Klipper (criterion 10)', async () => {
+    // Mutation test: remove requiredFirmwareFamily branch → returns null → no
+    // alert → test fails.
+    const api = makeApi(record(domainState()));
+    api.getCalibrationQueueState.mockResolvedValue(
+      queueJobFixture({ requiredFirmwareFamily: 'Marlin' }),
+    );
+    await openStepView(api);
+    await screen.findByRole('heading', { name: 'Queue State', level: 3 });
+
+    const panel = await screen.findByLabelText('Queue and dispatch status');
+    await waitFor(() => {
+      expect(within(panel).getByRole('alert')).toHaveTextContent(
+        'Firmware changed',
+      );
+    });
+  });
+
+  it('materialMismatch blocked reason when requiredFilamentSku differs from binding.filament.sku (criterion 10)', async () => {
+    // Mutation test: remove requiredFilamentSku branch → returns null → no
+    // alert → test fails.
+    // Binding filament sku = 'PLA-BLK'; job requires 'PETG-RED'.
+    const api = makeApi(record(domainState()));
+    api.getCalibrationQueueState.mockResolvedValue(
+      queueJobFixture({ requiredFilamentSku: 'PETG-RED' }),
+    );
+    await openStepView(api);
+    await screen.findByRole('heading', { name: 'Queue State', level: 3 });
+
+    const panel = await screen.findByLabelText('Queue and dispatch status');
+    await waitFor(() => {
+      expect(within(panel).getByRole('alert')).toHaveTextContent(
+        'Material mismatch',
+      );
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Criterion 7 — extended canAcknowledge guards
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('expired bed-clear acknowledgement blocks canAcknowledge hint (criterion 7)', async () => {
+    // Mutation test: remove isExpired check from canAcknowledge → hint appears
+    // even after expiry → expect(...).not.toBeInTheDocument() fails.
+    //
+    // Strategy: deliver a poll event that carries a bedClearExpiresAtUtc value
+    // in the past (2 hours ago). The component sets bedClearExpiresAt from the
+    // event and computes isExpired = Date.parse(...) <= Date.now(). Since the
+    // timestamp is well in the past, isExpired becomes true immediately and the
+    // acknowledgement hint must be absent.
+    const api = makeApi(record(domainState()));
+
+    api.getCalibrationQueueState.mockResolvedValue(
+      queueJobFixture({ bedClearState: 'None', gcodeFileId: 'gcode-1' }),
+    );
+
+    // Use a timestamp guaranteed to be far in the past.
+    const farPastExpiry = new Date(Date.now() - 7200_000).toISOString();
+    api.pollCalibrationQueueChanges.mockResolvedValue({
+      status: 'ok',
+      afterSequence: 0,
+      nextSequence: 1,
+      hasMore: false,
+      gapDetected: false,
+      events: [
+        {
+          schemaVersion: '3',
+          eventId: 'aaaabbbb-0000-4000-8000-000000000010',
+          sequence: 1,
+          eventType: 'JobStateChanged',
+          occurredAtUtc: now,
+          jobId: HANDOFF_QUEUE_JOB_ID,
+          printerId: HANDOFF_PRINTER_ID,
+          projectId: projectId,
+          calibrationAttemptId: attemptId,
+          jobStatus: 'WaitingForBedClear',
+          jobKind: 'FilamentCalibration',
+          jobRevision: 'AAAA==',
+          dispatchStateRevision: 'BBBB==',
+          attemptId: null,
+          attemptNumber: null,
+          attemptOutcome: null,
+          bedClearState: 'None',
+          bedClearCommandId: null,
+          bedClearExpiresAtUtc: farPastExpiry,
+          failureCode: null,
+          failureRetryable: null,
+          failureRequiresReconciliation: null,
+          jobLogicalRevision: null,
+          dispatchStateLogicalRevision: null,
+        },
+      ],
+    });
+
+    await openStepView(api);
+    await screen.findByRole('heading', { name: 'Queue State', level: 3 });
+
+    const panel = await screen.findByLabelText('Queue and dispatch status');
+    // The acknowledgement hint must NOT be visible when the window has expired.
+    await waitFor(() => {
+      expect(
+        within(panel).queryByText(/Bed-clear acknowledgement is available/i),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  it('reordered job (calibrationAttemptId change) blocks canAcknowledge hint (criterion 7)', async () => {
+    // Mutation test: remove !isReordered from canAcknowledge → hint appears
+    // even after reorder → expect(...).not.toBeInTheDocument() fails.
+    //
+    // Strategy:
+    //   Call #1 (workflow mount) → original attemptId
+    //   Call #2 (panel initial fetch) → original attemptId (sets initialAttemptIdRef)
+    //   First poll returns gapDetected=true → panel refetches
+    //   Call #3 (gap refetch) → replacement attemptId → setIsReordered(true)
+    // With !isReordered in canAcknowledge and gcodeFileId non-null (no other
+    // blocked reason), the hint is absent; panel shows "Queue position changed".
+    const api = makeApi(record(domainState()));
+
+    const originalFixture = queueJobFixture({
+      bedClearState: 'None',
+      calibrationAttemptId: 'attempt-original',
+      gcodeFileId: 'gcode-1',
+    });
+    const replacementFixture = queueJobFixture({
+      bedClearState: 'None',
+      calibrationAttemptId: 'attempt-replacement',
+      gcodeFileId: 'gcode-1',
+    });
+
+    // Panel calls include jobId; ProjectOverview and workflow-mount calls do not.
+    // Use that to give the panel's initial fetch 'original' and subsequent
+    // panel fetches (gap-triggered) 'replacement'. This is robust regardless
+    // of how many non-panel calls fire before the panel mounts.
+    let panelFetchCount = 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    api.getCalibrationQueueState.mockImplementation((req: any) => {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+      if (req.jobId != null) {
+        panelFetchCount += 1;
+        return Promise.resolve(
+          panelFetchCount <= 1 ? originalFixture : replacementFixture,
+        );
+      }
+      return Promise.resolve(originalFixture);
+    });
+
+    // A single gap drives the refetchJobState call.
+    api.pollCalibrationQueueChanges.mockResolvedValueOnce({
+      status: 'ok',
+      afterSequence: 0,
+      nextSequence: 1,
+      hasMore: false,
+      gapDetected: true,
+      events: [],
+    });
+    api.pollCalibrationQueueChanges.mockResolvedValue({
+      status: 'ok',
+      afterSequence: 1,
+      nextSequence: 1,
+      hasMore: false,
+      gapDetected: false,
+      events: [],
+    });
+
+    await openStepView(api);
+    await screen.findByRole('heading', { name: 'Queue State', level: 3 });
+
+    const panel = await screen.findByLabelText('Queue and dispatch status');
+    // After reorder detection the "Queue position changed" banner appears.
+    await waitFor(() => {
+      expect(
+        within(panel).getByText(/Queue position changed/i),
+      ).toBeInTheDocument();
+    });
+    // Acknowledgement hint must be absent — isReordered blocks canAcknowledge.
+    expect(
+      within(panel).queryByText(/Bed-clear acknowledgement is available/i),
+    ).not.toBeInTheDocument();
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Criterion 11 — provenance fields wired from real orchestration data
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('machineProfileSha256 is wired from selectedBaseProfile.contentHash when queueing (criterion 11)', async () => {
+    // Mutation test: null machineProfileSha256 in handleQueuePrint → assert below
+    // finds null, not the real hash → fails.
+    // selectedBaseProfile.contentHash fixture value:
+    //   'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' (64 a's)
+    const api = makeApi(record(withActiveAttempt(), { isSynced: true }));
+    api.getCalibrationOrchestrationStatus.mockResolvedValue({
+      status: 'ok',
+      orchestration: {
+        id: HANDOFF_ORCH_ID,
+        projectId,
+        attemptId,
+        operationId: 'op-1',
+        status: 'Completed',
+        currentStep: 'Completed',
+        revision: 2,
+        retryCount: 0,
+        nextRetryAtUtc: null,
+        stepStartedAtUtc: null,
+        lastErrorCode: null,
+        problems: [],
+        model3DId: 'model-1',
+        sliceJobId: 'slice-1',
+        workerId: null,
+        sourceArtifactId: null,
+        finalArtifactId: null,
+        gcodeFileId: 'gcode-1',
+        specificationSha256: null,
+        planManifestSha256: null,
+        gcodeSha256: null,
+        manifestSha256: null,
+        generatorVersion: null,
+        slicerContainerDigest: null,
+        slicerBinarySha256: null,
+        statusRoute: '/api/calibration-orchestrations/' + HANDOFF_ORCH_ID,
+        createdAtUtc: now,
+        updatedAtUtc: now,
+        completedAtUtc: null,
+      },
+    });
+    api.startCalibrationGeneration.mockResolvedValue({
+      status: 'submitted',
+      orchestrationId: HANDOFF_ORCH_ID,
+    });
+    api.startCalibrationPrint.mockResolvedValue({
+      status: 'ok',
+      jobId: HANDOFF_QUEUE_JOB_ID,
+      rowVersion: 'BBBB==',
+      dispatchStateRowVersion: 'CCCC==',
+      replayed: false,
+    });
+
+    await openStepView(api);
+
+    // Trigger generation to populate orchId then queue print.
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Generate calibration model' }),
+    );
+    await waitFor(() =>
+      expect(api.getCalibrationOrchestrationStatus).toHaveBeenCalled(),
+    );
+    const queueBtn = await screen.findByRole('button', {
+      name: 'Queue calibration print',
+    });
+    await waitFor(() => expect(queueBtn).not.toBeDisabled());
+    fireEvent.click(queueBtn);
+
+    await waitFor(() => expect(api.startCalibrationPrint).toHaveBeenCalled());
+    const callArg = api.startCalibrationPrint.mock.calls[0]?.[0];
+    expect(callArg?.machineProfileSha256).toBe(
+      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    );
+    expect(callArg?.requiredFirmwareFamily).toBe('Klipper');
+    expect(callArg?.requiredGcodeDialect).toBe('Klipper');
+    // filamentProfileSha256 must be null — not a mirror of machineProfileSha256.
+    // The workspace persists only one profile hash (the machine base profile);
+    // there is no distinct filament-profile hash to record.
+    // Mutation test: set filamentProfileSha256 = machineProfileSha256 → this
+    // expect(null) fails, catching the false-provenance regression.
+    expect(callArg?.filamentProfileSha256).toBeNull();
+  });
+
+  it('stale machineProfileSha256 (job differs from selectedBaseProfile) causes configChange block (criterion 11)', async () => {
+    // Mutation test: remove the machineProfileSha256 comparison from
+    // computedBlockedReason → stale job no longer triggers configChange →
+    // alert absent → test fails.
+    // Job was created with hash bbbb... but current profile has aaaa...
+    const api = makeApi(record(domainState()));
+    api.getCalibrationQueueState.mockResolvedValue(
+      queueJobFixture({
+        machineProfileSha256:
+          'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      }),
+    );
+    await openStepView(api);
+    await screen.findByRole('heading', { name: 'Queue State', level: 3 });
+
+    const panel = await screen.findByLabelText('Queue and dispatch status');
+    await waitFor(() => {
+      expect(within(panel).getByRole('alert')).toHaveTextContent(
+        'Configuration changed',
+      );
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Criterion 13 — durable observation persistence via workspace-state path
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('adding an observation persists it via saveCalibrationWorkspaceState (criterion 13)', async () => {
+    // Mutation test: make storePrintObservation a no-op (comment out the
+    // bumpAndSave call) → saveCalibrationWorkspaceState is never called with
+    // printObservations → expect(...).toHaveBeenCalledWith() fails.
+    const api = makeApi(record(domainState()));
+    api.getCalibrationQueueState.mockResolvedValue(
+      queueJobFixture({ status: 'Completed' }),
+    );
+    await openStepView(api);
+
+    // Lifecycle panel requires a non-null printStatus — 'Completed' propagates.
+    const resultSelect = await screen.findByLabelText('Result');
+    fireEvent.change(resultSelect, { target: { value: 'accepted' } });
+    const confidenceSelect = screen.getByLabelText('Confidence');
+    fireEvent.change(confidenceSelect, { target: { value: 'high' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Observation' }));
+
+    await waitFor(() => {
+      const lastCall = api.saveCalibrationWorkspaceState.mock.calls.at(-1)?.[0];
+      expect(lastCall?.workspaceState?.printObservations).toHaveLength(1);
+      expect(
+        lastCall?.workspaceState?.printObservations?.[0]?.selectedResult,
+      ).toBe('accepted');
+      expect(lastCall?.workspaceState?.printObservations?.[0]?.attemptId).toBe(
+        attemptId,
+      );
+    });
+  });
+
+  it('print observations survive remount (durable persistence) (criterion 13)', async () => {
+    // Mutation test: read printObservations from volatile useState instead of
+    // workspace state → observations absent on mount without re-adding →
+    // findByRole('listitem') fails.
+    const prePopObs = {
+      observationId: 'aaaaaaaa-aaaa-4aaa-8aaa-000000000099',
+      attemptId,
+      jobId: HANDOFF_QUEUE_JOB_ID,
+      recordedAt: now,
+      selectedResult: 'accepted' as const,
+      confidence: 'high' as const,
+      retestRequired: false,
+      notes: '',
+      photoIds: [] as string[],
+    };
+    const defaultRecord = record(domainState());
+    const prePopRecord = record(domainState(), {
+      workspaceState: CalibrationWorkspacePayload.parse({
+        ...defaultRecord.workspaceState,
+        printObservations: [prePopObs],
+      }),
+    });
+    const api = makeApi(prePopRecord);
+    api.getCalibrationQueueState.mockResolvedValue(
+      queueJobFixture({ status: 'Completed' }),
+    );
+    await openStepView(api);
+    await screen.findByRole('heading', { name: 'Queue State', level: 3 });
+    // The observation must be visible from workspace state alone — no user
+    // interaction, proving it survives a simulated remount/reload.
+    await screen.findByRole('listitem', { name: 'Observation 1' });
+  });
+
+  it('observations survive job invalidation (failure/cancel preserves history) (criterion 13)', async () => {
+    // Mutation test: make storePrintObservation a no-op → observation never
+    // stored in workspace state → 'Observation 1' absent at findByRole →
+    // test fails.
+    const api = makeApi(record(domainState()));
+    api.getCalibrationQueueState.mockResolvedValue(
+      queueJobFixture({ status: 'Completed' }),
+    );
+    await openStepView(api);
+
+    // Add an observation first.
+    const resultSelect = await screen.findByLabelText('Result');
+    fireEvent.change(resultSelect, { target: { value: 'accepted' } });
+    const confidenceSelect = screen.getByLabelText('Confidence');
+    fireEvent.change(confidenceSelect, { target: { value: 'high' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Observation' }));
+    await screen.findByRole('listitem', { name: 'Observation 1' });
+
+    // Invalidate the job by sending a Cancelled event.
+    api.pollCalibrationQueueChanges.mockResolvedValue({
+      status: 'ok',
+      afterSequence: 0,
+      nextSequence: 1,
+      hasMore: false,
+      gapDetected: false,
+      events: [
+        {
+          schemaVersion: '3',
+          eventId: 'aaaabbbb-0000-4000-8000-000000000020',
+          sequence: 1,
+          eventType: 'JobStateChanged',
+          occurredAtUtc: now,
+          jobId: HANDOFF_QUEUE_JOB_ID,
+          printerId: HANDOFF_PRINTER_ID,
+          projectId: projectId,
+          calibrationAttemptId: attemptId,
+          jobStatus: 'Cancelled',
+          jobKind: 'FilamentCalibration',
+          jobRevision: 'AAAA==',
+          dispatchStateRevision: 'BBBB==',
+          attemptId: null,
+          attemptNumber: null,
+          attemptOutcome: null,
+          bedClearState: 'None',
+          bedClearCommandId: null,
+          bedClearExpiresAtUtc: null,
+          failureCode: null,
+          failureRetryable: null,
+          failureRequiresReconciliation: null,
+          jobLogicalRevision: null,
+          dispatchStateLogicalRevision: null,
+        },
+      ],
+    });
+
+    // Wait for the event to be processed. The panel's event loop calls
+    // onJobInvalidated, which does NOT clear printObservations.
+    await waitFor(() => {
+      // The lifecycle panel remains visible because observations persist.
+      expect(
+        screen.getByRole('listitem', { name: 'Observation 1' }),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it('stage status does not auto-complete when queue job reports Completed (criterion 13)', async () => {
+    // Mutation test: auto-advance domain state to completed on queue completion
+    // → step card shows completed status → assertion fails.
+    // This test drives through the step list which should NOT show the stage
+    // as "completed" simply because the queue job finished.
+    const api = makeApi(record(domainState()));
+    api.getCalibrationQueueState.mockResolvedValue(
+      queueJobFixture({ status: 'Completed' }),
+    );
+
+    renderWorkspace(api);
+    fireEvent.click(
+      await screen.findByRole('button', { name: /PLA production calibration/ }),
+    );
+
+    // The step button in the list should NOT bear a "Completed" label.
+    // It remains "not started" or "in progress" — the queue outcome does not
+    // automatically close the calibration attempt.
+    const stepButton = await screen.findByRole('button', {
+      name: /Open Temperature/,
+    });
+    // The button's accessible name should not include "Completed"
+    expect(stepButton.getAttribute('aria-label')).not.toMatch(/completed/i);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Criterion 14 — manifest checksum storage and allowlisted URL navigation
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('validated asset SHA-256 is stored and displayed after Pick+Validate (criterion 14)', async () => {
+    // Mutation test: make storeAttemptAssetSha256 a no-op → SHA-256 is never
+    // persisted to workspace state → displaySha256 is null → the element has
+    // no text content → toHaveTextContent('cccc...') fails.
+    const api = makeApi(record(withActiveAttempt(domainState())));
+    api.getCalibrationQueueState.mockResolvedValue(queueJobFixture());
+    api.pickCalibrationAssetFile.mockResolvedValue({
+      status: 'ok',
+      approvalId: 'aaaabbbb-0000-4000-8000-000000000099',
+      byteSize: 1024,
+      extension: '3mf',
+    });
+    api.validateCalibrationAssetFile.mockResolvedValue({
+      status: 'ok',
+      sha256:
+        'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      byteSize: 1024,
+      extension: '3mf',
+      contentType: 'model/3mf',
+      checksumVerified: true,
+      validationNotes: [],
+    });
+
+    await openStepView(api);
+    await screen.findByRole('heading', { name: 'Queue State', level: 3 });
+
+    fireEvent.click(await screen.findByTestId('pick-validate-asset'));
+
+    await waitFor(() => {
+      const sha256El = screen.getByTestId('validated-asset-sha256');
+      expect(sha256El).toHaveTextContent(
+        'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      );
+    });
+
+    // Verify durable write: saveCalibrationWorkspaceState must have been
+    // called with the SHA-256 keyed by the active attempt ID.
+    await waitFor(() => {
+      const lastCall = api.saveCalibrationWorkspaceState.mock.calls.at(-1)?.[0];
+      expect(
+        lastCall?.workspaceState?.assetSha256ByAttemptId?.[attemptId],
+      ).toBe(
+        'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      );
+    });
+  });
+
+  it('asset SHA-256 survives remount (durable persistence) (criterion 14)', async () => {
+    // Mutation test: read displaySha256 from volatile useState instead of
+    // workspace state → SHA-256 absent on mount without re-picking →
+    // toHaveTextContent() fails.
+    const defaultRecord = record(withActiveAttempt(domainState()));
+    const prePopRecord = record(withActiveAttempt(domainState()), {
+      workspaceState: CalibrationWorkspacePayload.parse({
+        ...defaultRecord.workspaceState,
+        assetSha256ByAttemptId: {
+          [attemptId]:
+            'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+        },
+      }),
+    });
+    const api = makeApi(prePopRecord);
+    api.getCalibrationQueueState.mockResolvedValue(queueJobFixture());
+    await openStepView(api);
+    await screen.findByRole('heading', { name: 'Queue State', level: 3 });
+    // SHA-256 must be visible from workspace state alone — no user interaction.
+    await waitFor(() => {
+      const sha256El = screen.getByTestId('validated-asset-sha256');
+      expect(sha256El).toHaveTextContent(
+        'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      );
+    });
+  });
+
+  it('manifest source URL opens through openCalibrationManifestUrl, not window.open (criterion 14)', async () => {
+    // Mutation test: replace calibrationApi().openCalibrationManifestUrl with
+    // window.open → IPC mock never called → expect(...).toHaveBeenCalled()
+    // fails.
+    const api = makeApi(record(domainState()));
+    api.getCalibrationQueueState.mockResolvedValue(queueJobFixture());
+    api.getCalibrationAssetManifest.mockResolvedValue({
+      status: 'ok',
+      schemaVersion: '1',
+      entries: [
+        {
+          method: 'TestMethod',
+          enabled: true,
+          disabledReason: null,
+          sourceUrl: 'https://example.com/test-asset.stl',
+          author: 'Test Author',
+          license: 'MIT',
+          attribution: 'Test Attribution',
+          expectedFilename: null,
+          contentType: 'model/stl',
+          expectedExtension: 'stl',
+          expectedSha256: null,
+          minSizeBytes: 100,
+          maxSizeBytes: 1048576,
+          validationRules: {},
+        },
+      ],
+    });
+
+    const windowOpenSpy = vi
+      .spyOn(window, 'open')
+      .mockImplementation(() => null);
+
+    await openStepView(api);
+    await screen.findByRole('heading', { name: 'Queue State', level: 3 });
+
+    fireEvent.click(await screen.findByTestId('open-manifest-url'));
+
+    await waitFor(() => {
+      expect(api.openCalibrationManifestUrl).toHaveBeenCalledTimes(1);
+    });
+    expect(api.openCalibrationManifestUrl.mock.calls[0]?.[0]?.url).toBe(
+      'https://example.com/test-asset.stl',
+    );
+    expect(windowOpenSpy).not.toHaveBeenCalled();
+
+    windowOpenSpy.mockRestore();
   });
 });
