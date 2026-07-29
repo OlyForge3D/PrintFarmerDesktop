@@ -11,6 +11,7 @@ import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { RemoteUploadResult, type UploadError } from '@shared/ipc';
 
+export const MAX_UPLOAD_MODEL_BYTES = 500_000_000;
 export const MAX_UPLOAD_REQUEST_BYTES = 512_000_000;
 export const MAX_THUMBNAIL_BYTES = 10 * 1024 * 1024;
 export const MAX_RESPONSE_BYTES = 256 * 1024;
@@ -86,6 +87,31 @@ export interface UploadTransportRequest {
   onProgress(bytesSent: number): void | Promise<void>;
 }
 
+export interface MultipartRequestSizeInput {
+  displayName: string;
+  modelSize: number;
+  clientUploadId: string;
+  mode: UploadTransportRequest['mode'];
+  thumbnailBytes?: number;
+}
+
+interface MultipartEnvelope {
+  filename: string;
+  modelHeader: Buffer;
+  thumbnailHeader: Buffer | null;
+  clientIdPart: Buffer | null;
+  end: Buffer;
+  contentLength: number;
+}
+
+const MULTIPART_BOUNDARY_SAMPLE = `----PrintFarmerDesktop${'0'.repeat(36)}`;
+
+export function multipartRequestBytes(
+  input: MultipartRequestSizeInput,
+): number {
+  return buildMultipartEnvelope(input, MULTIPART_BOUNDARY_SAMPLE).contentLength;
+}
+
 export type UploadTransport = (
   request: UploadTransportRequest,
 ) => Promise<z.infer<typeof RemoteUploadResult>>;
@@ -113,34 +139,32 @@ export function createNodeUploadTransport(
     if (input.signal.aborted) {
       throw makeUploadError('ABORTED', 'The upload was stopped.', true);
     }
+    if (input.modelSize > MAX_UPLOAD_MODEL_BYTES) {
+      throw makeUploadError(
+        'PAYLOAD_TOO_LARGE',
+        'The model exceeds the 500 MB upload limit.',
+        false,
+      );
+    }
     const target = validateEndpoint(input.endpoint);
     const boundary = `----PrintFarmerDesktop${randomBytes(18).toString('hex')}`;
-    const filename = sanitizeMultipartFilename(input.displayName);
-    const modelHeader = partHeader(
-      boundary,
-      'modelFile',
+    const {
       filename,
-      contentTypeFor(filename),
+      modelHeader,
+      thumbnailHeader,
+      clientIdPart,
+      end,
+      contentLength,
+    } = buildMultipartEnvelope(
+      {
+        displayName: input.displayName,
+        modelSize: input.modelSize,
+        clientUploadId: input.clientUploadId,
+        mode: input.mode,
+        ...(input.thumbnail ? { thumbnailBytes: input.thumbnail.length } : {}),
+      },
+      boundary,
     );
-    const thumbnailHeader = input.thumbnail
-      ? partHeader(boundary, 'thumbnailFile', 'thumbnail.png', 'image/png')
-      : null;
-    const clientIdPart =
-      input.mode === 'modern'
-        ? Buffer.from(
-            `--${boundary}\r\nContent-Disposition: form-data; name="clientUploadId"\r\n\r\n${input.clientUploadId}\r\n`,
-          )
-        : null;
-    const end = Buffer.from(`--${boundary}--\r\n`);
-    const contentLength =
-      modelHeader.length +
-      input.modelSize +
-      2 +
-      (thumbnailHeader?.length ?? 0) +
-      (input.thumbnail?.length ?? 0) +
-      (input.thumbnail ? 2 : 0) +
-      (clientIdPart?.length ?? 0) +
-      end.length;
     if (contentLength > MAX_UPLOAD_REQUEST_BYTES) {
       throw makeUploadError(
         'PAYLOAD_TOO_LARGE',
@@ -330,6 +354,46 @@ export function createNodeUploadTransport(
     if (!req.destroyed && outcome instanceof Error) req.destroy();
     if (outcome instanceof Error) throw outcome;
     return outcome;
+  };
+}
+
+function buildMultipartEnvelope(
+  input: MultipartRequestSizeInput,
+  boundary: string,
+): MultipartEnvelope {
+  const filename = sanitizeMultipartFilename(input.displayName);
+  const modelHeader = partHeader(
+    boundary,
+    'modelFile',
+    filename,
+    contentTypeFor(filename),
+  );
+  const thumbnailHeader =
+    input.thumbnailBytes === undefined
+      ? null
+      : partHeader(boundary, 'thumbnailFile', 'thumbnail.png', 'image/png');
+  const clientIdPart =
+    input.mode === 'modern'
+      ? Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="clientUploadId"\r\n\r\n${input.clientUploadId}\r\n`,
+        )
+      : null;
+  const end = Buffer.from(`--${boundary}--\r\n`);
+  return {
+    filename,
+    modelHeader,
+    thumbnailHeader,
+    clientIdPart,
+    end,
+    contentLength:
+      modelHeader.length +
+      input.modelSize +
+      2 +
+      (thumbnailHeader?.length ?? 0) +
+      (input.thumbnailBytes ?? 0) +
+      (thumbnailHeader ? 2 : 0) +
+      (clientIdPart?.length ?? 0) +
+      end.length,
   };
 }
 

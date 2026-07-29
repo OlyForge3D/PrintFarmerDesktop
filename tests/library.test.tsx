@@ -1112,38 +1112,42 @@ describe('selectLibraryView', () => {
     ).toEqual(['h-obj']);
   });
 
-  it('handles a 100k-entry synthetic catalog with deterministic filtering and sort', () => {
-    const synthetic = Array.from({ length: 100_000 }, (_, index) =>
-      model({
-        hash: `bulk-${index.toString().padStart(6, '0')}`,
-        format: index % 2 === 0 ? 'stl' : 'obj',
+  it('filters and sorts a large result set from a 100k-entry catalog', () => {
+    const synthetic = Array.from({ length: 100_000 }, (_, offset) => {
+      const index = 99_999 - offset;
+      const suffix = index.toString().padStart(6, '0');
+      const format = index % 2 === 0 ? 'stl' : 'obj';
+      return model({
+        hash: `bulk-${suffix}`,
+        format,
         size: 1_024 + (index % 64),
         locations: [
           {
             rootId: `root-${index % 20}`,
-            path: `D:\\catalog\\segment-${index % 20}\\gear-${index.toString().padStart(6, '0')}.${index % 2 === 0 ? 'stl' : 'obj'}`,
-            rootRelative: `segment-${index % 20}\\gear-${index.toString().padStart(6, '0')}.${index % 2 === 0 ? 'stl' : 'obj'}`,
+            path: `D:\\catalog\\segment-${index % 20}\\gear-${suffix}.${format}`,
+            rootRelative: `segment-${index % 20}\\gear-${suffix}.${format}`,
             size: 1_024 + (index % 64),
             available: true,
           },
         ],
-      }),
-    );
-    const matchHash = 'bulk-099998';
+      });
+    });
 
     const start = Date.now();
     const filtered = selectLibraryView(synthetic, {
       ...defaultLibraryView,
       filter: 'stl',
-      query: 'gear-099998',
+      query: 'gear-',
       sort: 'name-asc',
     });
     const elapsedMs = Date.now() - start;
 
-    expect(filtered).toHaveLength(1);
-    expect(filtered[0]?.hash).toBe(matchHash);
+    expect(filtered).toHaveLength(50_000);
+    expect(filtered[0]?.hash).toBe('bulk-000000');
+    expect(filtered[25_000]?.hash).toBe('bulk-050000');
+    expect(filtered.at(-1)?.hash).toBe('bulk-099998');
     expect(elapsedMs).toBeLessThan(5_000);
-  });
+  }, 15_000);
 });
 
 describe('useFavorites', () => {

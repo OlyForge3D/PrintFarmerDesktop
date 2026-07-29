@@ -9,6 +9,10 @@ import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   createNodeUploadTransport,
+  MAX_THUMBNAIL_BYTES,
+  MAX_UPLOAD_MODEL_BYTES,
+  MAX_UPLOAD_REQUEST_BYTES,
+  multipartRequestBytes,
   parseRetryAfter,
   sanitizeMultipartFilename,
   validateThumbnailPng,
@@ -88,6 +92,68 @@ describe('streaming multipart upload transport', () => {
     expect(multipart).not.toContain('\r\nname.obj"\r\n');
     expect(progress.at(-1)).toBe(stat.size);
     expect(result.etag).toBe('"server-etag"');
+  });
+
+  it('accepts the exact model limit and rejects the first byte over it', async () => {
+    const clientUploadId = '11111111-1111-4111-8111-111111111111';
+    const displayName = `${'x'.repeat(1_020)}.stl`;
+    const exactRequestBytes = multipartRequestBytes({
+      displayName,
+      modelSize: MAX_UPLOAD_MODEL_BYTES,
+      clientUploadId,
+      mode: 'modern',
+      thumbnailBytes: MAX_THUMBNAIL_BYTES,
+    });
+    expect(exactRequestBytes).toBeLessThanOrEqual(MAX_UPLOAD_REQUEST_BYTES);
+
+    const requestAccepted = new Error('request accepted');
+    let requestAttempts = 0;
+    const request = (() => {
+      requestAttempts += 1;
+      throw requestAccepted;
+    }) as unknown as typeof import('node:http').request;
+    const transport = createNodeUploadTransport({ request });
+    const exactInput = {
+      endpoint: 'http://127.0.0.1/upload',
+      token: 'token',
+      modelPath: 'private-snapshot',
+      displayName,
+      modelSize: MAX_UPLOAD_MODEL_BYTES,
+      clientUploadId,
+      mode: 'modern' as const,
+      thumbnail: Buffer.alloc(MAX_THUMBNAIL_BYTES),
+      signal: new AbortController().signal,
+      onProgress: () => undefined,
+    };
+
+    await expect(transport(exactInput)).rejects.toBe(requestAccepted);
+    await expect(
+      transport({
+        ...exactInput,
+        modelSize: MAX_UPLOAD_MODEL_BYTES + 1,
+      }),
+    ).rejects.toMatchObject({
+      detail: { code: 'PAYLOAD_TOO_LARGE' },
+    });
+    expect(requestAttempts).toBe(1);
+  });
+
+  it('calculates the exact multipart request boundary without materializing it', () => {
+    const input = {
+      displayName: 'model.stl',
+      modelSize: 0,
+      clientUploadId: '11111111-1111-4111-8111-111111111111',
+      mode: 'modern' as const,
+    };
+    const envelopeBytes = multipartRequestBytes(input);
+    const exactModelBytes = MAX_UPLOAD_REQUEST_BYTES - envelopeBytes;
+
+    expect(
+      multipartRequestBytes({ ...input, modelSize: exactModelBytes }),
+    ).toBe(MAX_UPLOAD_REQUEST_BYTES);
+    expect(
+      multipartRequestBytes({ ...input, modelSize: exactModelBytes + 1 }),
+    ).toBe(MAX_UPLOAD_REQUEST_BYTES + 1);
   });
 
   it.each([401, 413])(

@@ -159,6 +159,33 @@ async function openWorkflow(page: Page, fileName: string): Promise<void> {
   ).toBeVisible();
 }
 
+async function expectPackagedThumbnail(
+  page: Page,
+  fileName: string,
+): Promise<void> {
+  const image = page
+    .getByRole('button', { name: `Select ${fileName}` })
+    .locator('img.model-thumb-img');
+  await expect(image).toBeVisible();
+  const rendered = await image.evaluate(async (element) => {
+    if (!(element instanceof HTMLImageElement)) {
+      throw new Error('Thumbnail did not render as an image.');
+    }
+    await element.decode();
+    return {
+      naturalWidth: element.naturalWidth,
+      naturalHeight: element.naturalHeight,
+      source: element.currentSrc || element.src,
+    };
+  });
+
+  expect(rendered).toMatchObject({
+    naturalWidth: 256,
+    naturalHeight: 256,
+  });
+  expect(rendered.source).toMatch(/^data:image\/png;base64,/);
+}
+
 test('runs the U1 workflow in the packaged app without changing the source', async () => {
   test.setTimeout(180_000);
   const executable = findPackagedExecutable(repoRoot);
@@ -223,6 +250,7 @@ test('runs the U1 workflow in the packaged app without changing the source', asy
   );
   await dismissOnboarding(launched.page);
   await launched.page.getByRole('button', { name: 'Refresh catalog' }).click();
+  await expectPackagedThumbnail(launched.page, fileName);
   const imported = await launched.page.evaluate(() =>
     window.printFarmer.listModels(),
   );
@@ -282,7 +310,16 @@ test('runs the U1 workflow in the packaged app without changing the source', asy
     launched.page.getByRole('button', { name: 'Snapmaker U1 output' }),
   ).toHaveAttribute('aria-pressed', 'true');
 
-  await launched.page.getByRole('button', { name: 'Save As…' }).click();
+  const saveAs = launched.page.getByRole('button', { name: 'Save As…' });
+  await expect(saveAs).toBeEnabled();
+  // The tall comparison pane can place the footer outside Electron's CDP
+  // viewport; activate the real button while the save result remains end-to-end.
+  await saveAs.evaluate((element) => {
+    if (!(element instanceof HTMLButtonElement)) {
+      throw new Error('Save action did not render as a button.');
+    }
+    element.click();
+  });
   await expect(
     launched.page.getByText(/Saved saved-u1\.3mf/).first(),
   ).toBeVisible();

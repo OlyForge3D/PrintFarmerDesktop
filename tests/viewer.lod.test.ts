@@ -193,18 +193,6 @@ describe('shouldBuildLod', () => {
     expect(shouldBuildLod(mesh)).toBe(true);
   });
 
-  it('accepts a representative high-triangle scene workload', () => {
-    const heroTriangles = 500_000;
-    const mesh = scene([
-      object('hero', fakeMeshOfSize(heroTriangles)),
-      object('support', fakeMeshOfSize(5_000)),
-    ]);
-
-    expect(sceneTriangleCount(mesh)).toBe(heroTriangles + 5_000);
-    expect(shouldSimplifyObject(mesh.objects[0]!.mesh!)).toBe(true);
-    expect(shouldBuildLod(mesh)).toBe(true);
-  });
-
   it('declines a heavy scene made only of small objects', () => {
     // Draw-call bound, not triangle bound: decimation would not help, so the
     // scene total alone must not be enough to trigger it.

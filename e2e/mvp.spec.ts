@@ -211,20 +211,6 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
     'precision-calibration-fixture-with-an-intentionally-long-name.obj';
   const select = page.getByRole('button', { name: `Select ${filename}` });
   await expect(select).toBeVisible();
-  const renderedThumbnail = await page.evaluate(async (targetName) => {
-    const models = await window.printFarmer.listModels();
-    const model = models.find((entry) =>
-      entry.locations.some((location) => location.rootRelative === targetName),
-    );
-    const path = model?.locations[0]?.path;
-    if (!path) throw new Error(`Could not find imported model ${targetName}`);
-    const thumbnail = await window.printFarmer.renderThumbnail({
-      path,
-      size: 256,
-    });
-    return thumbnail.pngBase64.length;
-  }, filename);
-  expect(renderedThumbnail).toBeGreaterThan(0);
 
   await select.hover();
   await expect(
