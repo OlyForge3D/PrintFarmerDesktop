@@ -1,10 +1,10 @@
 {
   "goal_id": "calibration-queue-dispatch",
   "issue": "OlyForge3D/PrintFarmerDesktop#54",
-  "status": "building",
-  "iteration": 3,
+  "status": "completed",
+  "iteration": 5,
   "builder_model": "Claude:Sonnet-4.6",
-  "inspector_model": "Claude:Haiku-4.5",
+  "inspector_model": "Claude:Opus-4.8",
   "initial_sha": "d20aa73bf888c9c1e0b346cbb794dba39f573b39",
   "base_branch": "development",
   "working_branch": "jpapiez-psychic-happiness",
