@@ -1,10 +1,16 @@
 {
   "goal_id": "calibration-runtime-integration",
-  "status": "building",
+  "status": "inspecting",
   "iteration": 1,
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
   "initial_sha": "d20aa73bf888c9c1e0b346cbb794dba39f573b39",
   "created_at": "2026-07-29T01:21:20.603-07:00",
-  "history": []
+  "history": [
+    {
+      "iteration": 1,
+      "verdict": "PASS",
+      "timestamp": "2026-07-29T02:05:00Z"
+    }
+  ]
 }
