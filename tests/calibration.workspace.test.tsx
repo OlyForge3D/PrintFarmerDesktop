@@ -568,10 +568,6 @@ function makeApi(savedRecord = record()) {
         status: 'error',
         message: 'Not implemented in test.',
       }),
-    // --- Print observation persistence (criterion 13) ----------------------
-    persistCalibrationPrintObservation: vi
-      .fn<CalibrationApi['persistCalibrationPrintObservation']>()
-      .mockResolvedValue({ status: 'ok' }),
     // --- Allowlisted manifest URL navigation (criterion 14) ----------------
     openCalibrationManifestUrl: vi
       .fn<CalibrationApi['openCalibrationManifestUrl']>()
@@ -2834,21 +2830,20 @@ describe('CalibrationWorkspace', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Criterion 13 — observation persistence via IPC
+  // Criterion 13 — durable observation persistence via workspace-state path
   // ─────────────────────────────────────────────────────────────────────────
 
-  it('persistCalibrationPrintObservation is called when an observation is added (criterion 13)', async () => {
-    // Mutation test: remove the persistCalibrationPrintObservation call from
-    // handleAddObservation → mock never called → expect(...).toHaveBeenCalled()
-    // fails.
+  it('adding an observation persists it via saveCalibrationWorkspaceState (criterion 13)', async () => {
+    // Mutation test: make storePrintObservation a no-op (comment out the
+    // bumpAndSave call) → saveCalibrationWorkspaceState is never called with
+    // printObservations → expect(...).toHaveBeenCalledWith() fails.
     const api = makeApi(record(domainState()));
     api.getCalibrationQueueState.mockResolvedValue(
       queueJobFixture({ status: 'Completed' }),
     );
     await openStepView(api);
 
-    // Lifecycle panel requires a non-null printStatus — the 'Completed' status
-    // is propagated from the queue job.
+    // Lifecycle panel requires a non-null printStatus — 'Completed' propagates.
     const resultSelect = await screen.findByLabelText('Result');
     fireEvent.change(resultSelect, { target: { value: 'accepted' } });
     const confidenceSelect = screen.getByLabelText('Confidence');
@@ -2856,16 +2851,54 @@ describe('CalibrationWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add Observation' }));
 
     await waitFor(() => {
-      expect(api.persistCalibrationPrintObservation).toHaveBeenCalledTimes(1);
+      const lastCall = api.saveCalibrationWorkspaceState.mock.calls.at(-1)?.[0];
+      expect(lastCall?.workspaceState?.printObservations).toHaveLength(1);
+      expect(
+        lastCall?.workspaceState?.printObservations?.[0]?.selectedResult,
+      ).toBe('accepted');
+      expect(lastCall?.workspaceState?.printObservations?.[0]?.attemptId).toBe(
+        attemptId,
+      );
     });
-    const callArg = api.persistCalibrationPrintObservation.mock.calls[0]?.[0];
-    expect(callArg?.jobId).toBe(HANDOFF_QUEUE_JOB_ID);
-    expect(callArg?.observation?.selectedResult).toBe('accepted');
+  });
+
+  it('print observations survive remount (durable persistence) (criterion 13)', async () => {
+    // Mutation test: read printObservations from volatile useState instead of
+    // workspace state → observations absent on mount without re-adding →
+    // findByRole('listitem') fails.
+    const prePopObs = {
+      observationId: 'aaaaaaaa-aaaa-4aaa-8aaa-000000000099',
+      attemptId,
+      jobId: HANDOFF_QUEUE_JOB_ID,
+      recordedAt: now,
+      selectedResult: 'accepted' as const,
+      confidence: 'high' as const,
+      retestRequired: false,
+      notes: '',
+      photoIds: [] as string[],
+    };
+    const defaultRecord = record(domainState());
+    const prePopRecord = record(domainState(), {
+      workspaceState: CalibrationWorkspacePayload.parse({
+        ...defaultRecord.workspaceState,
+        printObservations: [prePopObs],
+      }),
+    });
+    const api = makeApi(prePopRecord);
+    api.getCalibrationQueueState.mockResolvedValue(
+      queueJobFixture({ status: 'Completed' }),
+    );
+    await openStepView(api);
+    await screen.findByRole('heading', { name: 'Queue State', level: 3 });
+    // The observation must be visible from workspace state alone — no user
+    // interaction, proving it survives a simulated remount/reload.
+    await screen.findByRole('listitem', { name: 'Observation 1' });
   });
 
   it('observations survive job invalidation (failure/cancel preserves history) (criterion 13)', async () => {
-    // Mutation test: add setPrintObservations([]) inside handleJobInvalidated →
-    // observation list clears → "Observation 1" absent → test fails.
+    // Mutation test: make storePrintObservation a no-op → observation never
+    // stored in workspace state → 'Observation 1' absent at findByRole →
+    // test fails.
     const api = makeApi(record(domainState()));
     api.getCalibrationQueueState.mockResolvedValue(
       queueJobFixture({ status: 'Completed' }),
@@ -2957,10 +2990,10 @@ describe('CalibrationWorkspace', () => {
   // ─────────────────────────────────────────────────────────────────────────
 
   it('validated asset SHA-256 is stored and displayed after Pick+Validate (criterion 14)', async () => {
-    // Mutation test: remove setValidatedAssetSha256 call from
-    // handlePickAndValidateAsset → SHA-256 is never displayed →
-    // findByTestId('validated-asset-sha256') fails.
-    const api = makeApi(record(domainState()));
+    // Mutation test: make storeAttemptAssetSha256 a no-op → SHA-256 is never
+    // persisted to workspace state → displaySha256 is null → the element has
+    // no text content → toHaveTextContent('cccc...') fails.
+    const api = makeApi(record(withActiveAttempt(domainState())));
     api.getCalibrationQueueState.mockResolvedValue(queueJobFixture());
     api.pickCalibrationAssetFile.mockResolvedValue({
       status: 'ok',
@@ -2990,6 +3023,44 @@ describe('CalibrationWorkspace', () => {
         'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
       );
     });
+
+    // Verify durable write: saveCalibrationWorkspaceState must have been
+    // called with the SHA-256 keyed by the active attempt ID.
+    await waitFor(() => {
+      const lastCall = api.saveCalibrationWorkspaceState.mock.calls.at(-1)?.[0];
+      expect(
+        lastCall?.workspaceState?.assetSha256ByAttemptId?.[attemptId],
+      ).toBe(
+        'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      );
+    });
+  });
+
+  it('asset SHA-256 survives remount (durable persistence) (criterion 14)', async () => {
+    // Mutation test: read displaySha256 from volatile useState instead of
+    // workspace state → SHA-256 absent on mount without re-picking →
+    // toHaveTextContent() fails.
+    const defaultRecord = record(withActiveAttempt(domainState()));
+    const prePopRecord = record(withActiveAttempt(domainState()), {
+      workspaceState: CalibrationWorkspacePayload.parse({
+        ...defaultRecord.workspaceState,
+        assetSha256ByAttemptId: {
+          [attemptId]:
+            'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+        },
+      }),
+    });
+    const api = makeApi(prePopRecord);
+    api.getCalibrationQueueState.mockResolvedValue(queueJobFixture());
+    await openStepView(api);
+    await screen.findByRole('heading', { name: 'Queue State', level: 3 });
+    // SHA-256 must be visible from workspace state alone — no user interaction.
+    await waitFor(() => {
+      const sha256El = screen.getByTestId('validated-asset-sha256');
+      expect(sha256El).toHaveTextContent(
+        'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      );
+    });
   });
 
   it('manifest source URL opens through openCalibrationManifestUrl, not window.open (criterion 14)', async () => {
@@ -2998,6 +3069,28 @@ describe('CalibrationWorkspace', () => {
     // fails.
     const api = makeApi(record(domainState()));
     api.getCalibrationQueueState.mockResolvedValue(queueJobFixture());
+    api.getCalibrationAssetManifest.mockResolvedValue({
+      status: 'ok',
+      schemaVersion: '1',
+      entries: [
+        {
+          method: 'TestMethod',
+          enabled: true,
+          disabledReason: null,
+          sourceUrl: 'https://example.com/test-asset.stl',
+          author: 'Test Author',
+          license: 'MIT',
+          attribution: 'Test Attribution',
+          expectedFilename: null,
+          contentType: 'model/stl',
+          expectedExtension: 'stl',
+          expectedSha256: null,
+          minSizeBytes: 100,
+          maxSizeBytes: 1048576,
+          validationRules: {},
+        },
+      ],
+    });
 
     const windowOpenSpy = vi
       .spyOn(window, 'open')
@@ -3011,6 +3104,9 @@ describe('CalibrationWorkspace', () => {
     await waitFor(() => {
       expect(api.openCalibrationManifestUrl).toHaveBeenCalledTimes(1);
     });
+    expect(api.openCalibrationManifestUrl.mock.calls[0]?.[0]?.url).toBe(
+      'https://example.com/test-asset.stl',
+    );
     expect(windowOpenSpy).not.toHaveBeenCalled();
 
     windowOpenSpy.mockRestore();

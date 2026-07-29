@@ -491,3 +491,33 @@ describe('CalibrationAssetManifestService — provenance output', () => {
     }
   });
 });
+
+describe('CalibrationAssetManifestService.isManifestSourceUrl', () => {
+  it('returns true for a URL present in the manifest sourceUrl list', async () => {
+    // Mutation test: replace isManifestSourceUrl with `return false` →
+    // expect(true) fails → present URLs are wrongly rejected.
+    const ctx = await setup();
+    try {
+      const result = await ctx.service.isManifestSourceUrl(
+        'https://example.com/asset',
+      );
+      expect(result).toBe(true);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+
+  it('returns false for an https:// URL absent from the manifest', async () => {
+    // Mutation test: replace isManifestSourceUrl with `return true` →
+    // expect(false) fails → non-manifest URLs are wrongly allowed through.
+    const ctx = await setup();
+    try {
+      const result = await ctx.service.isManifestSourceUrl(
+        'https://evil.example.com/malware.stl',
+      );
+      expect(result).toBe(false);
+    } finally {
+      await teardown(ctx);
+    }
+  });
+});

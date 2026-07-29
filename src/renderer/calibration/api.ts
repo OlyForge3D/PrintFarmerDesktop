@@ -29,8 +29,6 @@ export type CalibrationApi = Pick<
   | 'getCalibrationAssetManifest'
   | 'pickCalibrationAssetFile'
   | 'validateCalibrationAssetFile'
-  // --- Print observation persistence (criterion 13, issue #54) -------------
-  | 'persistCalibrationPrintObservation'
   // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
   | 'openCalibrationManifestUrl'
 >;

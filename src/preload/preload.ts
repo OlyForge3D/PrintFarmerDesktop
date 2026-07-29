@@ -123,9 +123,6 @@ import {
   type CalibrationPickAssetFileResponse,
   type CalibrationValidateAssetFileRequest,
   type CalibrationValidateAssetFileResponse,
-  // --- Print observation persistence (criterion 13, issue #54) -------------
-  type CalibrationPersistPrintObservationRequest,
-  type CalibrationPersistPrintObservationResponse,
   // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
   type CalibrationOpenManifestUrlRequest,
   type CalibrationOpenManifestUrlResponse,
@@ -585,16 +582,6 @@ const api: PrintFarmerApi = {
     ipcSchemas[IpcChannel.CalibrationValidateAssetFile].response.parse(
       await ipcRenderer.invoke(
         IpcChannel.CalibrationValidateAssetFile,
-        request,
-      ),
-    ),
-  // --- Print observation persistence (criterion 13, issue #54) -------------
-  persistCalibrationPrintObservation: async (
-    request: CalibrationPersistPrintObservationRequest,
-  ): Promise<CalibrationPersistPrintObservationResponse> =>
-    ipcSchemas[IpcChannel.CalibrationPersistPrintObservation].response.parse(
-      await ipcRenderer.invoke(
-        IpcChannel.CalibrationPersistPrintObservation,
         request,
       ),
     ),

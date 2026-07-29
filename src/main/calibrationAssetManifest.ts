@@ -170,6 +170,22 @@ export class CalibrationAssetManifestService {
   }
 
   /**
+   * Return true only if `url` is listed as a `sourceUrl` in the manifest.
+   *
+   * This is the allowlist check for external navigation (criterion 14b):
+   * only URLs that appear as reviewed manifest entries are permitted.
+   * A scheme check alone is not sufficient — this method enforces that the
+   * URL originates from the reviewed and shipped manifest.
+   *
+   * Mutation test: replace with `return true` → any https:// URL is accepted
+   * → test for non-manifest https:// URL fails (expects false).
+   */
+  async isManifestSourceUrl(url: string): Promise<boolean> {
+    const manifest = await this._loadManifest();
+    return manifest.entries.some((e) => e.sourceUrl === url);
+  }
+
+  /**
    * Open an OS file picker restricted to the given extensions.
    * On success returns an opaque approvalId, file size, and extension.
    * The renderer never receives the file path.

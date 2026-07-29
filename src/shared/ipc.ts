@@ -42,8 +42,6 @@ export const IpcChannel = {
   CalibrationPickAssetFile: 'calibration:pickAssetFile',
   CalibrationValidateAssetFile: 'calibration:validateAssetFile',
   CalibrationGetAssetManifest: 'calibration:getAssetManifest',
-  // --- Print observation persistence (criterion 13, issue #54) -------------
-  CalibrationPersistPrintObservation: 'calibration:persistPrintObservation',
   // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
   CalibrationOpenManifestUrl: 'calibration:openManifestUrl',
   // -------------------------------------------------------------------------
@@ -2258,6 +2256,32 @@ export type CalibrationSelectedBaseProfile = z.infer<
   typeof CalibrationSelectedBaseProfile
 >;
 
+/**
+ * A single append-only observation recorded after a print completes.
+ * Once written, observations are never mutated or deleted.
+ */
+export const CalibrationPrintObservation = z
+  .object({
+    observationId: z.string().uuid(),
+    attemptId: z.string().uuid(),
+    jobId: z.string().uuid(),
+    recordedAt: z.string().datetime(),
+    /** Selected calibration result. */
+    selectedResult: z.enum(['accepted', 'rejected', 'inconclusive']).nullable(),
+    /** Confidence in the result. */
+    confidence: z.enum(['low', 'medium', 'high']).nullable(),
+    /** Whether a retest is needed. */
+    retestRequired: z.boolean(),
+    /** Operator notes (append-only). */
+    notes: z.string().max(4096),
+    /** Photo IDs attached to this observation (from prior stage). */
+    photoIds: z.array(z.string().uuid()).max(20),
+  })
+  .passthrough();
+export type CalibrationPrintObservation = z.infer<
+  typeof CalibrationPrintObservation
+>;
+
 export const CalibrationWorkspacePayload = z
   .object({
     schemaVersion: z.literal(1),
@@ -2286,6 +2310,15 @@ export const CalibrationWorkspacePayload = z
     /** Compatibility alias; must equal selectedBaseProfile.orcaProfileId. */
     selectedBaseProfileId: z.string().min(1).max(512),
     autosaveRevision: z.number().int().nonnegative(),
+    /** Append-only print lifecycle observations (criterion 13, issue #54). */
+    printObservations: z.array(CalibrationPrintObservation).max(200).optional(),
+    /**
+     * SHA-256 of the validated calibration asset file, keyed by domain attempt
+     * ID (criterion 14a, issue #54). Persisted so provenance survives reload.
+     */
+    assetSha256ByAttemptId: z
+      .record(z.string().uuid(), z.string().regex(/^[a-f0-9]{64}$/))
+      .optional(),
   })
   .strict()
   .superRefine((payload, context) => {
@@ -4006,64 +4039,6 @@ export type CalibrationValidateAssetFileResponse = z.infer<
 
 // --- Print lifecycle append-only observations (criterion 13, issue #54) ----
 
-/**
- * A single append-only observation recorded after a print completes.
- * Once written, observations are never mutated or deleted.
- */
-export const CalibrationPrintObservation = z
-  .object({
-    observationId: z.string().uuid(),
-    attemptId: z.string().uuid(),
-    jobId: z.string().uuid(),
-    recordedAt: z.string().datetime(),
-    /** Selected calibration result. */
-    selectedResult: z.enum(['accepted', 'rejected', 'inconclusive']).nullable(),
-    /** Confidence in the result. */
-    confidence: z.enum(['low', 'medium', 'high']).nullable(),
-    /** Whether a retest is needed. */
-    retestRequired: z.boolean(),
-    /** Operator notes (append-only). */
-    notes: z.string().max(4096),
-    /** Photo IDs attached to this observation (from prior stage). */
-    photoIds: z.array(z.string().uuid()).max(20),
-  })
-  .passthrough();
-export type CalibrationPrintObservation = z.infer<
-  typeof CalibrationPrintObservation
->;
-
-// --- Persist print observation via IPC (criterion 13, issue #54) ------------
-
-/**
- * Request to persist a print observation to durable storage.
- * Called after every successful `handleAddObservation`; fail-safe (ignored on error).
- */
-export const CalibrationPersistPrintObservationRequest = z
-  .object({
-    profileId: z.string().uuid(),
-    projectId: z.string().uuid(),
-    attemptId: z.string().uuid(),
-    jobId: z.string().uuid(),
-    observation: CalibrationPrintObservation,
-  })
-  .strict();
-export type CalibrationPersistPrintObservationRequest = z.infer<
-  typeof CalibrationPersistPrintObservationRequest
->;
-
-export const CalibrationPersistPrintObservationResponse = z.discriminatedUnion(
-  'status',
-  [
-    z.object({ status: z.literal('ok') }).strict(),
-    z
-      .object({ status: z.literal('error'), message: z.string().max(512) })
-      .strict(),
-  ],
-);
-export type CalibrationPersistPrintObservationResponse = z.infer<
-  typeof CalibrationPersistPrintObservationResponse
->;
-
 // --- Allowlisted external navigation for manifest URLs (criterion 14) --------
 
 /**
@@ -5227,11 +5202,6 @@ export const ipcSchemas = {
     request: CalibrationValidateAssetFileRequest,
     response: CalibrationValidateAssetFileResponse,
   },
-  // --- Print observation persistence (criterion 13, issue #54) -------------
-  [IpcChannel.CalibrationPersistPrintObservation]: {
-    request: CalibrationPersistPrintObservationRequest,
-    response: CalibrationPersistPrintObservationResponse,
-  },
   // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
   [IpcChannel.CalibrationOpenManifestUrl]: {
     request: CalibrationOpenManifestUrlRequest,
@@ -5433,10 +5403,6 @@ export interface PrintFarmerApi {
   validateCalibrationAssetFile(
     request: CalibrationValidateAssetFileRequest,
   ): Promise<CalibrationValidateAssetFileResponse>;
-  // --- Print observation persistence (criterion 13, issue #54) -------------
-  persistCalibrationPrintObservation(
-    request: CalibrationPersistPrintObservationRequest,
-  ): Promise<CalibrationPersistPrintObservationResponse>;
   // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
   openCalibrationManifestUrl(
     request: CalibrationOpenManifestUrlRequest,

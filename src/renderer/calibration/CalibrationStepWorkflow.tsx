@@ -289,14 +289,8 @@ export function CalibrationStepWorkflow({
     useState<CalibrationJobProvenance | null>(null);
 
   const [printStatus, setPrintStatus] = useState<string | null>(null);
-  const [printObservations, setPrintObservations] = useState<
-    CalibrationPrintObservation[]
-  >([]);
   const [isAddingObservation, setIsAddingObservation] = useState(false);
   const [observationError, setObservationError] = useState<string | null>(null);
-  const [validatedAssetSha256, setValidatedAssetSha256] = useState<
-    string | null
-  >(null);
 
   // On mount, load any existing queue job for this project/stage attempt.
   useEffect(() => {
@@ -525,22 +519,16 @@ export function CalibrationStepWorkflow({
           observationId: store.environment.createId(),
           recordedAt: store.environment.now(),
         } as CalibrationPrintObservation;
-        setPrintObservations((prev) => [...prev, newObs]);
-        // Persist via IPC (criterion 13) — fire-and-forget; errors silently ignored.
-        void calibrationApi().persistCalibrationPrintObservation({
-          profileId: store.profileId ?? '',
-          projectId: state.projectId,
-          attemptId: orchId ?? '',
-          jobId: queueJobId ?? '',
-          observation: newObs,
-        });
+        // Persist via the durable workspace-state path (criterion 13).
+        // Idempotency guard is inside storePrintObservation.
+        void store.storePrintObservation(newObs);
       } catch (err) {
         setObservationError(err instanceof Error ? err.message : String(err));
       } finally {
         setIsAddingObservation(false);
       }
     },
-    [store.environment, store.profileId, state.projectId, orchId, queueJobId],
+    [store],
   );
 
   // Criterion 14: pick, validate and store asset SHA-256
@@ -555,15 +543,30 @@ export function CalibrationStepWorkflow({
       method: 'sha256',
     });
     if (validateRes.status === 'ok') {
-      setValidatedAssetSha256(validateRes.sha256);
+      // Persist SHA-256 with the domain attempt so it survives a workspace
+      // reload (criterion 14a). Prefer the orchestration attempt ID; fall back
+      // to the active domain attempt for the current stage.
+      const attemptId =
+        orchStatus?.attemptId ??
+        [...state.attempts]
+          .filter((a) => a.stageId === stageId)
+          .reverse()
+          .find((a) => a.status === 'inProgress')?.attemptId;
+      if (attemptId) {
+        void store.storeAttemptAssetSha256(attemptId, validateRes.sha256);
+      }
     }
-  }, []);
+  }, [orchStatus, state.attempts, stageId, store]);
 
   // Criterion 14: open manifest URL through the allowlisted IPC channel only
-  const handleOpenManifestUrl = useCallback(() => {
-    void calibrationApi().openCalibrationManifestUrl({
-      url: 'https://printfarmer.dev/calibration/manifest',
-    });
+  const handleOpenManifestUrl = useCallback(async () => {
+    // Load the manifest to obtain the actual reviewed sourceUrl; never
+    // hardcode a URL that may not be in the allowlist.
+    const manifestRes = await calibrationApi().getCalibrationAssetManifest();
+    if (manifestRes.status !== 'ok') return;
+    const url = manifestRes.entries[0]?.sourceUrl;
+    if (!url) return;
+    void calibrationApi().openCalibrationManifestUrl({ url });
   }, []);
 
   const stageAttempts = state.attempts.filter(
@@ -572,6 +575,26 @@ export function CalibrationStepWorkflow({
   const activeAttempt = [...stageAttempts]
     .reverse()
     .find((attempt) => attempt.status === 'inProgress');
+
+  // Criterion 13: observations read from durable workspace state; filtered to
+  // the current queue job's domain attempt so only the relevant history shows.
+  const printObservations = (
+    project.record.workspaceState.printObservations ?? []
+  ).filter(
+    (obs) =>
+      obs.attemptId ===
+      (queueJob?.calibrationAttemptId ?? activeAttempt?.attemptId),
+  );
+
+  // Criterion 14a: SHA-256 from durable workspace state so provenance
+  // survives a workspace reload. Key is the orchestration attempt ID when
+  // available; otherwise the active domain attempt for this stage.
+  const displaySha256 =
+    (orchStatus?.attemptId ?? activeAttempt?.attemptId)
+      ? (project.record.workspaceState.assetSha256ByAttemptId?.[
+          orchStatus?.attemptId ?? activeAttempt?.attemptId ?? ''
+        ] ?? null)
+      : null;
   const selectedAttempt = state.attempts.find(
     (attempt) => attempt.attemptId === progress.selectedAttemptId,
   );
@@ -1363,7 +1386,11 @@ export function CalibrationStepWorkflow({
             {queueJobId !== null && printStatus !== null && (
               <CalibrationPrintLifecycle
                 jobId={queueJobId}
-                attemptId={orchId ?? ''}
+                attemptId={
+                  queueJob?.calibrationAttemptId ??
+                  activeAttempt?.attemptId ??
+                  ''
+                }
                 jobStatus={printStatus}
                 observations={printObservations}
                 onAddObservation={handleAddObservation}
@@ -1385,16 +1412,16 @@ export function CalibrationStepWorkflow({
                 >
                   Pick and validate asset file
                 </button>
-                {validatedAssetSha256 !== null && (
+                {displaySha256 !== null && (
                   <p data-testid="validated-asset-sha256">
-                    Asset SHA-256: {validatedAssetSha256}
+                    Asset SHA-256: {displaySha256}
                   </p>
                 )}
                 <button
                   type="button"
                   className="cal-button"
                   data-testid="open-manifest-url"
-                  onClick={handleOpenManifestUrl}
+                  onClick={() => void handleOpenManifestUrl()}
                 >
                   Open calibration manifest
                 </button>

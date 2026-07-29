@@ -2265,22 +2265,6 @@ export function registerIpcHandlers(
     },
   );
 
-  // --- Print observation persistence (criterion 13, issue #54) -------------
-  ipcMain.handle(
-    IpcChannel.CalibrationPersistPrintObservation,
-    (_event, rawRequest: unknown) => {
-      // Stub: persistence deferred to a future main-process implementation.
-      // The renderer fires this as a best-effort side-channel; it is safe to
-      // return ok immediately while the implementation is pending.
-      ipcSchemas[IpcChannel.CalibrationPersistPrintObservation].request.parse(
-        rawRequest,
-      );
-      return ipcSchemas[
-        IpcChannel.CalibrationPersistPrintObservation
-      ].response.parse({ status: 'ok' });
-    },
-  );
-
   // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
   ipcMain.handle(
     IpcChannel.CalibrationOpenManifestUrl,
@@ -2289,12 +2273,19 @@ export function registerIpcHandlers(
         ipcSchemas[IpcChannel.CalibrationOpenManifestUrl].request.parse(
           rawRequest,
         );
-      // Only allow https:// URLs to PrintFarmer infrastructure.
-      // Renderer isolation: never call shell.openExternal directly; always go
-      // through this allowlisted channel with validated URLs.
-      if (!request.url.startsWith('https://')) {
+      // Validate the URL against the source URLs declared in the versioned
+      // asset manifest. Only URLs that actually appear as a reviewed sourceUrl
+      // entry are allowed — this is a genuine allowlist, not a scheme heuristic.
+      const isAllowed = await calibrationAssetManifest.isManifestSourceUrl(
+        request.url,
+      );
+      if (!isAllowed) {
         return ipcSchemas[IpcChannel.CalibrationOpenManifestUrl].response.parse(
-          { status: 'error', error: 'Only https:// URLs are allowed.' },
+          {
+            status: 'error',
+            message:
+              'URL is not in the approved calibration asset manifest source list.',
+          },
         );
       }
       const { shell } = await import('electron');
