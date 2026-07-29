@@ -1132,3 +1132,422 @@ export type RemoteCalibrationApplyRequest = z.infer<
 export type RemoteCalibrationApplyResult =
   | { kind: 'success'; value: RemoteCalibrationApplySuccess }
   | { kind: 'conflict'; value: RemoteCalibrationApplyConflict };
+
+// ─── Generation orchestration (issue #899 / #54) ────────────────────────────
+
+/**
+ * Remote orchestration status from GET /api/calibration-orchestrations/{id}.
+ *
+ * `status` and `currentStep` are free-form strings from the saga implementation.
+ * The desktop MUST NOT switch exhaustively on them; render the raw value with
+ * a fallback for any unrecognised state.
+ *
+ * All fields are parsed additively (passthrough) so the server can add fields
+ * without breaking the desktop.
+ */
+export const RemoteCalibrationOrchestrationStatus = z
+  .object({
+    id: ServerGuid,
+    projectId: ServerGuid,
+    attemptId: ServerGuid,
+    operationId: z.string(),
+    /** Free-form — e.g. "Running", "Completed". NOT an enum. */
+    status: z.string(),
+    /** Free-form — e.g. "Slicing". NOT an enum. */
+    currentStep: z.string(),
+    revision: z.number().int(),
+    retryCount: z.number().int(),
+    nextRetryAtUtc: z
+      .string()
+      .datetime()
+      .nullish()
+      .transform((v) => v ?? null),
+    stepStartedAtUtc: z
+      .string()
+      .datetime()
+      .nullish()
+      .transform((v) => v ?? null),
+    lastErrorCode: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    problems: z
+      .array(
+        z
+          .object({
+            code: z.string(),
+            field: z
+              .string()
+              .nullish()
+              .transform((v) => v ?? null),
+            message: z.string(),
+          })
+          .passthrough(),
+      )
+      .max(100)
+      .optional()
+      .default([]),
+    model3DId: ServerGuid.nullish().transform((v) => v ?? null),
+    sliceJobId: ServerGuid.nullish().transform((v) => v ?? null),
+    workerId: ServerGuid.nullish().transform((v) => v ?? null),
+    sourceArtifactId: ServerGuid.nullish().transform((v) => v ?? null),
+    finalArtifactId: ServerGuid.nullish().transform((v) => v ?? null),
+    gcodeFileId: ServerGuid.nullish().transform((v) => v ?? null),
+    specificationSha256: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    planManifestSha256: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    gcodeSha256: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    manifestSha256: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    generatorVersion: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    slicerContainerDigest: z
+      .string()
+      .max(512)
+      .nullish()
+      .transform((v) => v ?? null),
+    slicerBinarySha256: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    statusRoute: z.string(),
+    createdAtUtc: z.string().datetime(),
+    updatedAtUtc: z.string().datetime(),
+    completedAtUtc: z
+      .string()
+      .datetime()
+      .nullish()
+      .transform((v) => v ?? null),
+  })
+  .passthrough();
+export type RemoteCalibrationOrchestrationStatus = z.infer<
+  typeof RemoteCalibrationOrchestrationStatus
+>;
+
+// ─── Primary job-queue REST DTOs (issue #900 / #54) ─────────────────────────
+
+/**
+ * Dispatch attempt result embedded in a queue job DTO.
+ * `outcome` is a DispatchAttemptOutcome literal:
+ *   InProgress | Accepted | Rejected | FailedBeforeStart | Unknown
+ *
+ * `jobRevision` and `dispatchStateRevision` are opaque base-64 byte arrays —
+ * send them back byte-identical; never parse or re-encode.
+ */
+export const RemoteDispatchAttemptResult = z
+  .object({
+    attemptId: ServerGuid.nullish().transform((v) => v ?? null),
+    attemptNumber: z
+      .number()
+      .int()
+      .nullish()
+      .transform((v) => v ?? null),
+    /** DispatchAttemptOutcome literal — NOT an enum — forward-compat. */
+    outcome: z.string(),
+    backendAcceptedAtUtc: z
+      .string()
+      .datetime()
+      .nullish()
+      .transform((v) => v ?? null),
+    errorCode: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    errorDetail: z
+      .string()
+      .max(4096)
+      .nullish()
+      .transform((v) => v ?? null),
+    isRetryable: z.boolean(),
+    requiresReconciliation: z.boolean(),
+    /** Opaque base-64 job rowVersion. */
+    jobRevision: z
+      .string()
+      .max(512)
+      .nullish()
+      .transform((v) => v ?? null),
+    /** Opaque base-64 dispatch state rowVersion. */
+    dispatchStateRevision: z
+      .string()
+      .max(512)
+      .nullish()
+      .transform((v) => v ?? null),
+  })
+  .passthrough();
+export type RemoteDispatchAttemptResult = z.infer<
+  typeof RemoteDispatchAttemptResult
+>;
+
+/**
+ * Response from GET /api/job-queue/{id} and (on creation) POST /api/job-queue.
+ *
+ * `rowVersion` / `dispatchStateRowVersion` are opaque base-64 byte arrays
+ * that represent SQL Server rowversion columns.  Send them back byte-identical
+ * as `If-Match` / `X-Dispatch-State-If-Match` headers on mutations.
+ *
+ * `status` is a PrintJobStatus literal:
+ *   Queued | Assigned | Starting | Printing | Paused | Completed | Failed | Cancelled
+ */
+export const RemoteJobQueueJob = z
+  .object({
+    id: ServerGuid,
+    /** Opaque base-64 job ETag. Send as If-Match on bed-clear. */
+    rowVersion: z
+      .string()
+      .max(512)
+      .nullish()
+      .transform((v) => v ?? null),
+    revision: z.number().int(),
+    /** Opaque base-64 dispatch state ETag. Send as X-Dispatch-State-If-Match. */
+    dispatchStateRowVersion: z
+      .string()
+      .max(512)
+      .nullish()
+      .transform((v) => v ?? null),
+    dispatchStateRevision: z
+      .number()
+      .int()
+      .nullish()
+      .transform((v) => v ?? null),
+    dispatchResult: RemoteDispatchAttemptResult.nullish().transform(
+      (v) => v ?? null,
+    ),
+    /** "Standard" | "FilamentCalibration" | null */
+    jobKind: z
+      .string()
+      .nullish()
+      .transform((v) => v ?? null),
+    calibrationProjectId: ServerGuid.nullish().transform((v) => v ?? null),
+    calibrationAttemptId: ServerGuid.nullish().transform((v) => v ?? null),
+    pinnedPrinterConfigRevision: z
+      .number()
+      .int()
+      .nullish()
+      .transform((v) => v ?? null),
+    gcodeFileId: ServerGuid.nullish().transform((v) => v ?? null),
+    gcodeFileName: z.string().optional().default(''),
+    assignedPrinterId: ServerGuid.nullish().transform((v) => v ?? null),
+    assignedPrinterName: z.string().optional().default(''),
+    /** PrintJobStatus literal — NOT an enum — forward-compat. */
+    status: z
+      .string()
+      .nullish()
+      .transform((v) => v ?? null),
+    /**
+     * BedClearState literal — NOT an enum — forward-compat.
+     * Values: None | Acknowledged | Consumed | Invalidated
+     */
+    bedClearState: z
+      .string()
+      .nullish()
+      .transform((v) => v ?? null),
+    priority: z.number().int(),
+    queuePosition: z.number().int(),
+    copies: z.number().int(),
+    completedCopies: z.number().int(),
+    remainingCopies: z.number().int(),
+    isIdempotentReplay: z.boolean().optional().default(false),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .passthrough();
+export type RemoteJobQueueJob = z.infer<typeof RemoteJobQueueJob>;
+
+/**
+ * Success body returned by POST /api/job-queue/{jobId}/acknowledge-bed-clear-and-start.
+ * Both ETags may be null if the service did not have current row versions.
+ */
+export const RemoteAcknowledgeBedClearSuccess = z
+  .object({
+    message: z.string().optional(),
+    jobETag: z
+      .string()
+      .max(512)
+      .nullish()
+      .transform((v) => v ?? null),
+    dispatchStateETag: z
+      .string()
+      .max(512)
+      .nullish()
+      .transform((v) => v ?? null),
+  })
+  .passthrough();
+export type RemoteAcknowledgeBedClearSuccess = z.infer<
+  typeof RemoteAcknowledgeBedClearSuccess
+>;
+
+/**
+ * 412 body returned by the bed-clear endpoint when ETags are out of date.
+ * Use the returned ETags to retry without a separate GET.
+ */
+export const RemoteAcknowledgeBedClearConflict = z
+  .object({
+    error: z.string(),
+    detail: z.string().optional(),
+    /** Current job ETag — use as If-Match on the next attempt. */
+    jobETag: z
+      .string()
+      .max(512)
+      .nullish()
+      .transform((v) => v ?? null),
+    /** Current dispatch state ETag — use as X-Dispatch-State-If-Match on the next attempt. */
+    dispatchStateETag: z
+      .string()
+      .max(512)
+      .nullish()
+      .transform((v) => v ?? null),
+  })
+  .passthrough();
+export type RemoteAcknowledgeBedClearConflict = z.infer<
+  typeof RemoteAcknowledgeBedClearConflict
+>;
+
+/**
+ * Request body for POST /api/job-queue (FilamentCalibration job creation).
+ */
+export const RemoteQueuePrintJobDto = z
+  .object({
+    gcodeFileId: z.string().uuid(),
+    jobKind: z.literal('FilamentCalibration'),
+    idempotencyKey: z.string(),
+    idempotencyScope: z.string().optional(),
+    calibrationProjectId: z.string().uuid().optional(),
+    calibrationAttemptId: z.string().uuid().optional(),
+    calibrationConfigSnapshotId: z.string().uuid().optional(),
+    calibrationOrchestrationId: z.string().uuid().optional(),
+    sourceArtifactId: z.string().uuid().optional(),
+    assignedPrinterId: z.string().uuid(),
+    priority: z.enum(['Low', 'Normal', 'High', 'Urgent']).optional(),
+    pinnedPrinterConfigRevision: z.number().int().nullable().optional(),
+    requiredFirmwareFamily: z.string().max(256).nullable().optional(),
+    requiredGcodeDialect: z.string().max(256).nullable().optional(),
+    requiredSlicerEngine: z.string().max(256).nullable().optional(),
+    requiredSlicerDistribution: z.string().max(256).nullable().optional(),
+    requiredSlicerVersion: z.string().max(256).nullable().optional(),
+    requiredSlicerContainerDigest: z.string().max(512).nullable().optional(),
+    gcodeContentSha256: z.string().max(256).nullable().optional(),
+    specificationSha256: z.string().max(256).nullable().optional(),
+    machineProfileSha256: z.string().max(256).nullable().optional(),
+    processProfileSha256: z.string().max(256).nullable().optional(),
+    filamentProfileSha256: z.string().max(256).nullable().optional(),
+    printerConfigSnapshotSha256: z.string().max(256).nullable().optional(),
+    copies: z.number().int().min(1).max(1).optional(),
+  })
+  .passthrough();
+export type RemoteQueuePrintJobDto = z.infer<typeof RemoteQueuePrintJobDto>;
+
+/**
+ * SignalR QueueEventEnvelope (schema version "3").
+ *
+ * The `Printer-{printerId}` group receives REDACTED envelopes where
+ * `jobId`, `jobRevision`, `bedClearState`, and many other fields are nulled
+ * and `eventType` is always "PrintFarmer.Queue.PrinterStateChanged.v1".
+ * NEVER treat printer-group envelopes as job state.
+ *
+ * For full job data: subscribe to the `QueueJob-{jobId}` group via
+ * `SubscribeToQueueJobAsync(jobId)`.
+ *
+ * Use `sequence` for gap detection; REST is authoritative on any gap.
+ */
+export const RemoteQueueEventEnvelope = z
+  .object({
+    schemaVersion: z.string(),
+    eventId: ServerGuid,
+    sequence: z.number().int(),
+    eventType: z.string(),
+    occurredAtUtc: z.string().datetime(),
+    jobId: ServerGuid.nullish().transform((v) => v ?? null),
+    printerId: ServerGuid.nullish().transform((v) => v ?? null),
+    projectId: ServerGuid.nullish().transform((v) => v ?? null),
+    calibrationAttemptId: ServerGuid.nullish().transform((v) => v ?? null),
+    /** PrintJobStatus literal. */
+    jobStatus: z
+      .string()
+      .nullish()
+      .transform((v) => v ?? null),
+    /** "Standard" | "FilamentCalibration" | null */
+    jobKind: z
+      .string()
+      .nullish()
+      .transform((v) => v ?? null),
+    /** Opaque base-64 job rowVersion. */
+    jobRevision: z
+      .string()
+      .nullish()
+      .transform((v) => v ?? null),
+    /** Opaque base-64 dispatch state rowVersion. */
+    dispatchStateRevision: z
+      .string()
+      .nullish()
+      .transform((v) => v ?? null),
+    attemptId: ServerGuid.nullish().transform((v) => v ?? null),
+    attemptNumber: z
+      .number()
+      .int()
+      .nullish()
+      .transform((v) => v ?? null),
+    /** DispatchAttemptOutcome literal. */
+    attemptOutcome: z
+      .string()
+      .nullish()
+      .transform((v) => v ?? null),
+    /** BedClearState: None | Acknowledged | Consumed | Invalidated */
+    bedClearState: z
+      .string()
+      .nullish()
+      .transform((v) => v ?? null),
+    bedClearCommandId: ServerGuid.nullish().transform((v) => v ?? null),
+    bedClearExpiresAtUtc: z
+      .string()
+      .datetime()
+      .nullish()
+      .transform((v) => v ?? null),
+    errorCode: z
+      .string()
+      .nullish()
+      .transform((v) => v ?? null),
+    failureCode: z
+      .string()
+      .nullish()
+      .transform((v) => v ?? null),
+    failureRetryable: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? null),
+    failureRequiresReconciliation: z
+      .boolean()
+      .nullish()
+      .transform((v) => v ?? null),
+    jobLogicalRevision: z
+      .number()
+      .int()
+      .nullish()
+      .transform((v) => v ?? null),
+    dispatchStateLogicalRevision: z
+      .number()
+      .int()
+      .nullish()
+      .transform((v) => v ?? null),
+  })
+  .passthrough();
+export type RemoteQueueEventEnvelope = z.infer<typeof RemoteQueueEventEnvelope>;

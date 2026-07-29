@@ -104,6 +104,8 @@ import {
   type CalibrationSyncNowResponse,
   type CalibrationStartGenerationRequest,
   type CalibrationStartGenerationResponse,
+  type CalibrationGetOrchestrationStatusRequest,
+  type CalibrationGetOrchestrationStatusResponse,
   type CalibrationGetQueueStateRequest,
   type CalibrationGetQueueStateResponse,
   type CalibrationAcknowledgeBedClearRequest,
@@ -500,6 +502,15 @@ const api: PrintFarmerApi = {
   ): Promise<CalibrationStartGenerationResponse> =>
     ipcSchemas[IpcChannel.CalibrationStartGeneration].response.parse(
       await ipcRenderer.invoke(IpcChannel.CalibrationStartGeneration, request),
+    ),
+  getCalibrationOrchestrationStatus: async (
+    request: CalibrationGetOrchestrationStatusRequest,
+  ): Promise<CalibrationGetOrchestrationStatusResponse> =>
+    ipcSchemas[IpcChannel.CalibrationGetOrchestrationStatus].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationGetOrchestrationStatus,
+        request,
+      ),
     ),
   getCalibrationQueueState: async (
     request: CalibrationGetQueueStateRequest,

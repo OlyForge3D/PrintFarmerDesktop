@@ -31,6 +31,7 @@ export const IpcChannel = {
   CalibrationResolveConflict: 'calibration:resolveConflict',
   CalibrationSyncNow: 'calibration:syncNow',
   CalibrationStartGeneration: 'calibration:startGeneration',
+  CalibrationGetOrchestrationStatus: 'calibration:getOrchestrationStatus',
   CalibrationGetQueueState: 'calibration:getQueueState',
   CalibrationAcknowledgeBedClear: 'calibration:acknowledgeBedClear',
   CalibrationStartPrint: 'calibration:startPrint',
@@ -3192,6 +3193,23 @@ export const CalibrationApiErrorCode = z.enum([
   'syncRequired',
   /** The printer context is stale and must be revalidated. */
   'printerContextStale',
+  // --- Bed-clear / queue-specific codes (issue #54) -----------------------
+  /** HTTP 403 — caller does not have queue:acknowledge-bed-clear or queue:start. */
+  'forbidden',
+  /** HTTP 404 job_not_found — the queue job does not exist. */
+  'jobNotFound',
+  /** HTTP 409 wrong_job — bed-clear was for a different job. */
+  'wrongJob',
+  /** HTTP 409 printer_busy — printer already has an active job. */
+  'printerBusy',
+  /** HTTP 409 job_not_dispatchable — job is not in a dispatchable state. */
+  'jobNotDispatchable',
+  /** HTTP 412 dispatch_revision_conflict — ETag mismatch; response body carries current ETags. */
+  'dispatchRevisionConflict',
+  /** HTTP 422 calibration_job_incompatible — job is incompatible with the assigned printer. */
+  'calibrationJobIncompatible',
+  /** HTTP 422 filament_check_failed — filament material or nozzle mismatch. */
+  'filamentCheckFailed',
 ]);
 export type CalibrationApiErrorCode = z.infer<typeof CalibrationApiErrorCode>;
 
@@ -3206,15 +3224,71 @@ export const CalibrationApiError = z
   .strict();
 export type CalibrationApiError = z.infer<typeof CalibrationApiError>;
 
-/** Request to trigger profile generation for a completed calibration project. */
+/**
+ * Method-specific options for calibration G-code generation.
+ * Only the fields applicable to the chosen method need to be populated.
+ * Uses passthrough so the server can extend the options without breaking the desktop.
+ */
+export const CalibrationMethodOptions = z
+  .object({
+    // Temperature tower
+    startCelsius: z.number().int().optional(),
+    endCelsius: z.number().int().optional(),
+    stepCelsius: z.number().int().optional(),
+    // Flow sweep
+    startRatio: z.number().optional(),
+    endRatio: z.number().optional(),
+    stepRatio: z.number().optional(),
+    // Flow verification
+    flowRatio: z.number().optional(),
+    // Pressure advance
+    startPressureAdvance: z.number().optional(),
+    endPressureAdvance: z.number().optional(),
+    stepPressureAdvance: z.number().optional(),
+    lineCount: z.number().int().optional(),
+    lineLengthMillimeters: z.number().optional(),
+    cornersPerRow: z.number().int().optional(),
+    // Retraction
+    startLengthMillimeters: z.number().optional(),
+    endLengthMillimeters: z.number().optional(),
+    stepLengthMillimeters: z.number().optional(),
+    retractionSpeedMillimetersPerSecond: z.number().optional(),
+    // Max volumetric speed
+    startCubicMillimetersPerSecond: z.number().optional(),
+    endCubicMillimetersPerSecond: z.number().optional(),
+    stepCubicMillimetersPerSecond: z.number().optional(),
+    // Shrinkage / final print
+    nominalLengthMillimeters: z.number().optional(),
+    barWidthMillimeters: z.number().optional(),
+    model3DId: z.string().uuid().optional(),
+    expectedSha256: z.string().max(256).optional(),
+  })
+  .passthrough();
+export type CalibrationMethodOptions = z.infer<typeof CalibrationMethodOptions>;
+
+/**
+ * Request to trigger G-code generation for a specific calibration attempt.
+ * Routes to POST /api/calibration-projects/{projectId}/attempts/{attemptId}/generate-job.
+ */
 export const CalibrationStartGenerationRequest = z
   .object({
     profileId: z.string().uuid(),
     projectId: z.string().uuid(),
+    /** The calibration attempt to generate G-code for. */
+    attemptId: z.string().uuid(),
+    /** Generation method identifier (e.g. "temperature", "flow"). */
+    method: z.string().min(1).max(256),
+    /** Definition schema version (default "1.0"). */
+    definitionVersion: z.string().min(1).max(64).optional(),
+    /** Method-specific generation options. */
+    options: CalibrationMethodOptions.optional(),
     /** Client-generated idempotency key for this generation request. */
     operationId: z.string().uuid(),
-    /** The base revision of the project at generation time (for If-Match). */
-    baseRevision: z.number().int().nonnegative(),
+    /**
+     * Optimistic revision of the attempt (long? on server) — 412 if stale.
+     * This is an integer revision counter, NOT a base-64 ETag.
+     */
+    baseRevision: z.number().int().nullable(),
   })
   .strict();
 export type CalibrationStartGenerationRequest = z.infer<
@@ -3226,7 +3300,8 @@ export const CalibrationStartGenerationResponse = z.discriminatedUnion(
     z
       .object({
         status: z.literal('submitted'),
-        generationJobId: z.string().uuid(),
+        /** Orchestration ID to poll via CalibrationGetOrchestrationStatus. */
+        orchestrationId: z.string().uuid(),
       })
       .strict(),
     z
@@ -3237,6 +3312,125 @@ export const CalibrationStartGenerationResponse = z.discriminatedUnion(
 export type CalibrationStartGenerationResponse = z.infer<
   typeof CalibrationStartGenerationResponse
 >;
+
+/**
+ * An individual problem within an orchestration status (validation or execution issue).
+ */
+export const CalibrationOrchestrationProblem = z
+  .object({
+    code: z.string(),
+    field: z.string().nullable(),
+    message: z.string(),
+  })
+  .passthrough();
+export type CalibrationOrchestrationProblem = z.infer<
+  typeof CalibrationOrchestrationProblem
+>;
+
+/**
+ * Orchestration status for a G-code generation run.
+ * `status` and `currentStep` are free-form strings defined by the saga
+ * implementation — never switch exhaustively on them; always render the
+ * raw value with a fallback for unrecognised states.
+ */
+export const CalibrationOrchestrationStatus = z
+  .object({
+    id: z.string().uuid(),
+    projectId: z.string().uuid(),
+    attemptId: z.string().uuid(),
+    operationId: z.string(),
+    /** Free-form status from the saga — e.g. "Running", "Completed". NOT an enum. */
+    status: z.string(),
+    /** Free-form current step — e.g. "Slicing". NOT an enum. */
+    currentStep: z.string(),
+    revision: z.number().int(),
+    retryCount: z.number().int(),
+    nextRetryAtUtc: z.string().datetime().nullable(),
+    stepStartedAtUtc: z.string().datetime().nullable(),
+    lastErrorCode: z.string().nullable(),
+    problems: z.array(CalibrationOrchestrationProblem).max(100).default([]),
+    model3DId: z.string().uuid().nullable(),
+    sliceJobId: z.string().uuid().nullable(),
+    workerId: z.string().uuid().nullable(),
+    sourceArtifactId: z.string().uuid().nullable(),
+    finalArtifactId: z.string().uuid().nullable(),
+    gcodeFileId: z.string().uuid().nullable(),
+    specificationSha256: z.string().nullable(),
+    planManifestSha256: z.string().nullable(),
+    gcodeSha256: z.string().nullable(),
+    manifestSha256: z.string().nullable(),
+    generatorVersion: z.string().nullable(),
+    slicerContainerDigest: z.string().nullable(),
+    slicerBinarySha256: z.string().nullable(),
+    statusRoute: z.string(),
+    createdAtUtc: z.string().datetime(),
+    updatedAtUtc: z.string().datetime(),
+    completedAtUtc: z.string().datetime().nullable(),
+  })
+  .passthrough();
+export type CalibrationOrchestrationStatus = z.infer<
+  typeof CalibrationOrchestrationStatus
+>;
+
+/** Poll the status of a G-code generation orchestration. */
+export const CalibrationGetOrchestrationStatusRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    orchestrationId: z.string().uuid(),
+  })
+  .strict();
+export type CalibrationGetOrchestrationStatusRequest = z.infer<
+  typeof CalibrationGetOrchestrationStatusRequest
+>;
+export const CalibrationGetOrchestrationStatusResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        orchestration: CalibrationOrchestrationStatus,
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationGetOrchestrationStatusResponse = z.infer<
+  typeof CalibrationGetOrchestrationStatusResponse
+>;
+
+/**
+ * Full state of a queue job as returned by GET /api/job-queue/{id}.
+ * `status` is a PrintJobStatus enum value; `dispatchAttemptOutcome` is a
+ * DispatchAttemptOutcome value. Both are passed as strings (not enums) for
+ * forward compatibility.
+ */
+export const CalibrationQueueJobState = z
+  .object({
+    jobId: z.string().uuid(),
+    jobKind: z.string().nullable(),
+    /** Job rowVersion (opaque base-64 ETag). Send byte-identical as If-Match. */
+    rowVersion: z.string().nullable(),
+    /** Dispatch state rowVersion (opaque base-64 ETag). Send as X-Dispatch-State-If-Match. */
+    dispatchStateRowVersion: z.string().nullable(),
+    /** PrintJobStatus literal: Queued|Assigned|Starting|Printing|Paused|Completed|Failed|Cancelled */
+    status: z.string().nullable(),
+    /** DispatchAttemptOutcome literal: InProgress|Accepted|Rejected|FailedBeforeStart|Unknown */
+    dispatchAttemptOutcome: z.string().nullable(),
+    /** BedClearState literal: None|Acknowledged|Consumed|Invalidated */
+    bedClearState: z.string().nullable(),
+    gcodeFileId: z.string().uuid().nullable(),
+    assignedPrinterId: z.string().uuid().nullable(),
+    calibrationProjectId: z.string().uuid().nullable(),
+    calibrationAttemptId: z.string().uuid().nullable(),
+    pinnedPrinterConfigRevision: z.number().int().nullable(),
+    priority: z.number().int(),
+    queuePosition: z.number().int(),
+    updatedAt: z.string().datetime(),
+  })
+  .passthrough();
+export type CalibrationQueueJobState = z.infer<typeof CalibrationQueueJobState>;
 
 export const CalibrationQueueState = z
   .object({
@@ -3260,26 +3454,56 @@ export const CalibrationGetQueueStateRequest = z
   .object({
     profileId: z.string().uuid(),
     projectId: z.string().uuid(),
+    /** The specific job ID to look up via GET /api/job-queue/{id}. */
+    jobId: z.string().uuid().optional(),
   })
   .strict();
 export type CalibrationGetQueueStateRequest = z.infer<
   typeof CalibrationGetQueueStateRequest
 >;
 export const CalibrationGetQueueStateResponse = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('ok'), queue: CalibrationQueueState }).strict(),
+  z
+    .object({
+      status: z.literal('ok'),
+      /** Full queue job state from REST. */
+      job: CalibrationQueueJobState,
+    })
+    .strict(),
   z.object({ status: z.literal('error'), error: CalibrationApiError }).strict(),
 ]);
 export type CalibrationGetQueueStateResponse = z.infer<
   typeof CalibrationGetQueueStateResponse
 >;
 
-/** Acknowledge that the bed has been cleared before starting an exact calibration job. */
+/**
+ * Acknowledge that the bed has been cleared before starting an exact calibration job.
+ *
+ * Calls POST /api/job-queue/{jobId}/acknowledge-bed-clear-and-start.
+ * THREE preconditions are required by the server:
+ *   - `Idempotency-Key` header (from operationId)
+ *   - `If-Match` header (from rowVersion — opaque base-64 job ETag)
+ *   - `X-Dispatch-State-If-Match` header (from dispatchStateRowVersion — opaque base-64 dispatch state ETag)
+ * Any missing precondition returns 428 precondition_required.
+ */
 export const CalibrationAcknowledgeBedClearRequest = z
   .object({
     profileId: z.string().uuid(),
-    projectId: z.string().uuid(),
     jobId: z.string().uuid(),
     operationId: z.string().uuid(),
+    /** Printer UUID for the request body `printerId`. */
+    printerId: z.string().uuid(),
+    /**
+     * Opaque base-64 job rowVersion (from `CalibrationQueueJobState.rowVersion`).
+     * Sent byte-identical as the `If-Match` request header.
+     */
+    rowVersion: z.string().min(1).max(256),
+    /**
+     * Opaque base-64 dispatch state rowVersion (from `CalibrationQueueJobState.dispatchStateRowVersion`).
+     * Sent byte-identical as the `X-Dispatch-State-If-Match` request header.
+     */
+    dispatchStateRowVersion: z.string().min(1).max(256),
+    /** Optional: guard against printer configuration advancing since job was read. */
+    expectedPrinterConfigRevision: z.number().int().nullable().optional(),
   })
   .strict();
 export type CalibrationAcknowledgeBedClearRequest = z.infer<
@@ -3288,7 +3512,29 @@ export type CalibrationAcknowledgeBedClearRequest = z.infer<
 export const CalibrationAcknowledgeBedClearResponse = z.discriminatedUnion(
   'status',
   [
-    z.object({ status: z.literal('ok') }).strict(),
+    /**
+     * 202 Accepted or 200 OK — acknowledgement was accepted or was an exact
+     * idempotent replay. Updated ETags are included for subsequent operations.
+     */
+    z
+      .object({
+        status: z.literal('ok'),
+        jobRowVersion: z.string().nullable(),
+        dispatchStateRowVersion: z.string().nullable(),
+      })
+      .strict(),
+    /**
+     * 412 Precondition Failed — dispatch_revision_conflict.
+     * The body carries the CURRENT ETags so the caller can retry without a
+     * separate GET.
+     */
+    z
+      .object({
+        status: z.literal('revisionConflict'),
+        jobRowVersion: z.string(),
+        dispatchStateRowVersion: z.string(),
+      })
+      .strict(),
     z
       .object({ status: z.literal('error'), error: CalibrationApiError })
       .strict(),
@@ -3298,22 +3544,59 @@ export type CalibrationAcknowledgeBedClearResponse = z.infer<
   typeof CalibrationAcknowledgeBedClearResponse
 >;
 
-/** Start an exact calibration print job. Disabled until sync complete + printer fresh. */
+/**
+ * Create a FilamentCalibration queue job via POST /api/job-queue.
+ * All provenance fields are required by the server to produce an immutable
+ * hash record.  ETags are opaque strings, never integers.
+ */
 export const CalibrationStartPrintRequest = z
   .object({
     profileId: z.string().uuid(),
     projectId: z.string().uuid(),
-    jobId: z.string().uuid(),
+    /** Calibration attempt ID that produced the G-code. */
+    attemptId: z.string().uuid(),
+    /** Generation orchestration ID (for idempotency scope). */
+    orchestrationId: z.string().uuid(),
+    /** Promoted G-code file UUID from the orchestration. */
+    gcodeFileId: z.string().uuid(),
+    /** Printer to assign the job to (must be the same printer the context was snapshotted for). */
+    assignedPrinterId: z.string().uuid(),
+    /** Client-generated idempotency key. */
     operationId: z.string().uuid(),
-    /** The base revision of the queue state (If-Match). */
-    baseRevision: z.number().int().nonnegative(),
+    /** Pinned printer config revision — guards against config advancing after snapshot. */
+    pinnedPrinterConfigRevision: z.number().int().nullable(),
+    // --- Immutable provenance / hash set ---
+    gcodeContentSha256: z.string().max(256).nullable(),
+    specificationSha256: z.string().max(256).nullable(),
+    machineProfileSha256: z.string().max(256).nullable(),
+    processProfileSha256: z.string().max(256).nullable(),
+    filamentProfileSha256: z.string().max(256).nullable(),
+    printerConfigSnapshotSha256: z.string().max(256).nullable(),
+    // --- Required slicer dialect for the job runner ---
+    requiredFirmwareFamily: z.string().max(256).nullable(),
+    requiredGcodeDialect: z.string().max(256).nullable(),
+    requiredSlicerEngine: z.string().max(256).nullable(),
+    requiredSlicerDistribution: z.string().max(256).nullable(),
+    requiredSlicerVersion: z.string().max(256).nullable(),
+    requiredSlicerContainerDigest: z.string().max(256).nullable(),
   })
   .strict();
 export type CalibrationStartPrintRequest = z.infer<
   typeof CalibrationStartPrintRequest
 >;
 export const CalibrationStartPrintResponse = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('ok'), jobId: z.string().uuid() }).strict(),
+  z
+    .object({
+      status: z.literal('ok'),
+      jobId: z.string().uuid(),
+      /** Opaque base-64 job rowVersion ETag. Use as `If-Match` on bed-clear. */
+      rowVersion: z.string().nullable(),
+      /** Opaque base-64 dispatch state ETag. Use as `X-Dispatch-State-If-Match` on bed-clear. */
+      dispatchStateRowVersion: z.string().nullable(),
+      /** true when this is an exact idempotent replay of a previous request. */
+      replayed: z.boolean(),
+    })
+    .strict(),
   z.object({ status: z.literal('error'), error: CalibrationApiError }).strict(),
 ]);
 export type CalibrationStartPrintResponse = z.infer<
@@ -4414,6 +4697,10 @@ export const ipcSchemas = {
     request: CalibrationStartGenerationRequest,
     response: CalibrationStartGenerationResponse,
   },
+  [IpcChannel.CalibrationGetOrchestrationStatus]: {
+    request: CalibrationGetOrchestrationStatusRequest,
+    response: CalibrationGetOrchestrationStatusResponse,
+  },
   [IpcChannel.CalibrationGetQueueState]: {
     request: CalibrationGetQueueStateRequest,
     response: CalibrationGetQueueStateResponse,
@@ -4594,6 +4881,9 @@ export interface PrintFarmerApi {
   startCalibrationGeneration(
     request: CalibrationStartGenerationRequest,
   ): Promise<CalibrationStartGenerationResponse>;
+  getCalibrationOrchestrationStatus(
+    request: CalibrationGetOrchestrationStatusRequest,
+  ): Promise<CalibrationGetOrchestrationStatusResponse>;
   getCalibrationQueueState(
     request: CalibrationGetQueueStateRequest,
   ): Promise<CalibrationGetQueueStateResponse>;
