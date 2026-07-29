@@ -354,6 +354,8 @@ function makeBaseApi(savedRecord = makeRecord()): CalibrationApi {
         retryAfterSeconds: null,
       },
     }),
+    openCalibrationLocalModel: vi.fn().mockResolvedValue(null),
+    validateCalibrationLocalModel: vi.fn().mockResolvedValue(null),
   } satisfies CalibrationApi;
 }
 
@@ -1091,6 +1093,8 @@ describe('S-05: Renderer privilege boundary', () => {
       'getCalibrationOrchestrationStatus',
       'getCalibrationQueueState',
       'acknowledgeCalibrationBedClear',
+      'openCalibrationLocalModel',
+      'validateCalibrationLocalModel',
     ];
 
     const forbidden = [
@@ -1176,5 +1180,423 @@ describe('A-03, A-07, A-08: Asset provenance manifest', () => {
       readFileSync(manifestPath, 'utf-8'),
     ) as ProvenanceManifest;
     expect(Array.isArray(manifest.derivedFiles)).toBe(true);
+  });
+});
+
+// ─── A-05/A-06: Asset provenance display and unreviewed method ────────────────
+
+describe('A-05: Asset provenance displayed for reviewed methods', () => {
+  it('shows attribution, license, and expected filename for temperatureTower (A-05)', async () => {
+    const api = makeBaseApi();
+    await openStepWorkflow(api);
+
+    // temperatureTower is selected by openStepWorkflow
+    await waitFor(
+      () => expect(screen.queryByTestId('asset-provenance')).not.toBeNull(),
+      { timeout: 3000 },
+    );
+    expect(screen.getByTestId('asset-attribution')).toHaveTextContent(
+      'tayloraaron078-tech/Filament_Calibration_Wizard',
+    );
+    expect(screen.getByTestId('asset-license')).toHaveTextContent(
+      'AGPL-3.0-only',
+    );
+    expect(screen.getByTestId('asset-expected-filename')).toHaveTextContent(
+      'temperature_tower_v1.3.2.3mf',
+    );
+  });
+
+  it('shows Select local model file button for reviewed method (A-05)', async () => {
+    const api = makeBaseApi();
+    await openStepWorkflow(api);
+
+    await waitFor(
+      () =>
+        expect(screen.queryByTestId('asset-select-file-btn')).not.toBeNull(),
+      { timeout: 3000 },
+    );
+  });
+});
+
+describe('A-06: Unreviewed method shows disabled with concrete reason', () => {
+  function setupWithMethod(methodId: string) {
+    const manifest = JSON.parse(
+      readFileSync(
+        join(process.cwd(), 'compliance', 'calibration-asset-manifest.json'),
+        'utf-8',
+      ),
+    ) as {
+      methods: Array<{
+        methodId: string;
+        reviewed: boolean;
+        disabledReason?: string;
+      }>;
+    };
+    return manifest.methods.find((m) => m.methodId === methodId);
+  }
+
+  it('pressureAdvanceTower manifest has reviewed:false and concrete disabledReason (A-06)', () => {
+    const method = setupWithMethod('pressureAdvanceTower');
+    expect(method).toBeDefined();
+    expect(method?.reviewed).toBe(false);
+    expect(method?.disabledReason).toBeTruthy();
+    expect(typeof method?.disabledReason).toBe('string');
+    expect((method?.disabledReason ?? '').length).toBeGreaterThan(10);
+  });
+
+  it('flowCoarse manifest has reviewed:false and concrete disabledReason (A-06)', () => {
+    const method = setupWithMethod('flowCoarse');
+    expect(method).toBeDefined();
+    expect(method?.reviewed).toBe(false);
+    expect(method?.disabledReason).toBeTruthy();
+  });
+});
+
+// ─── A-04/A-08: Asset validation UI rejection paths ───────────────────────────
+
+describe('A-04/A-08: Asset validation rejection reason codes shown in UI', () => {
+  const approvalId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+
+  async function setupAndClickSelect(
+    validateResult: Awaited<
+      ReturnType<CalibrationApi['validateCalibrationLocalModel']>
+    >,
+  ) {
+    const api: CalibrationApi = {
+      ...makeBaseApi(),
+      openCalibrationLocalModel: vi.fn().mockResolvedValue({ approvalId }),
+      validateCalibrationLocalModel: vi.fn().mockResolvedValue(validateResult),
+    };
+    await openStepWorkflow(api);
+
+    await waitFor(
+      () =>
+        expect(screen.queryByTestId('asset-select-file-btn')).not.toBeNull(),
+      { timeout: 3000 },
+    );
+    fireEvent.click(screen.getByTestId('asset-select-file-btn'));
+    return api;
+  }
+
+  const rejectionCases = [
+    { reason: 'invalidExtension', label: 'Invalid file extension' },
+    { reason: 'invalidMagicBytes', label: 'does not have valid 3MF' },
+    { reason: 'fileTooLarge', label: 'exceeds the 50 MB' },
+    { reason: 'fileTooSmall', label: 'too small' },
+    {
+      reason: 'geometryOutOfBounds',
+      label: 'does not contain a valid 3D model',
+    },
+    { reason: 'checksumMismatch', label: 'checksum does not match' },
+    { reason: 'notARegularFile', label: 'not a regular file' },
+    { reason: 'fileChangedDuringRead', label: 'changed while being read' },
+  ] as const;
+
+  for (const { reason, label } of rejectionCases) {
+    it(`shows rejection reason "${reason}" with human-readable label (A-04/A-08)`, async () => {
+      await setupAndClickSelect({
+        status: 'invalid',
+        reason,
+        detail: `Test detail for ${reason}`,
+      });
+
+      await waitFor(
+        () =>
+          expect(
+            screen.queryByTestId('asset-validation-invalid'),
+          ).not.toBeNull(),
+        { timeout: 3000 },
+      );
+      expect(screen.getByTestId('asset-validation-invalid')).toHaveTextContent(
+        reason,
+      );
+      expect(
+        screen.getByTestId('asset-validation-reason-label'),
+      ).toHaveTextContent(label);
+    });
+  }
+
+  it('shows valid result with SHA-256 after successful validation (A-04)', async () => {
+    const api: CalibrationApi = {
+      ...makeBaseApi(),
+      openCalibrationLocalModel: vi.fn().mockResolvedValue({ approvalId }),
+      validateCalibrationLocalModel: vi.fn().mockResolvedValue({
+        status: 'valid',
+        sha256:
+          'aabbccddeeffaabbccddeeffaabbccddeeffaabbccddeeffaabbccddeeffaabb',
+        byteSize: 12345,
+        detectedType: '3mf',
+      }),
+    };
+    await openStepWorkflow(api);
+
+    await waitFor(
+      () =>
+        expect(screen.queryByTestId('asset-select-file-btn')).not.toBeNull(),
+      { timeout: 3000 },
+    );
+    fireEvent.click(screen.getByTestId('asset-select-file-btn'));
+
+    await waitFor(
+      () =>
+        expect(screen.queryByTestId('asset-validation-valid')).not.toBeNull(),
+      { timeout: 3000 },
+    );
+    expect(screen.getByTestId('asset-validated-sha256')).toHaveTextContent(
+      'aabbccddee',
+    );
+    expect(screen.getByTestId('asset-validated-type')).toHaveTextContent('3mf');
+  });
+
+  it('shows canceled message when file picker is canceled (A-04)', async () => {
+    const api: CalibrationApi = {
+      ...makeBaseApi(),
+      openCalibrationLocalModel: vi.fn().mockResolvedValue(null),
+    };
+    await openStepWorkflow(api);
+
+    await waitFor(
+      () =>
+        expect(screen.queryByTestId('asset-select-file-btn')).not.toBeNull(),
+      { timeout: 3000 },
+    );
+    fireEvent.click(screen.getByTestId('asset-select-file-btn'));
+
+    await waitFor(
+      () =>
+        expect(
+          screen.queryByTestId('asset-validation-canceled'),
+        ).not.toBeNull(),
+      { timeout: 3000 },
+    );
+  });
+});
+
+// ─── B-06: Klipper firmware check blocks bed-clear ────────────────────────────
+
+describe('B-06: Klipper check blocks bed-clear button when noKlipperPrinter blocked', () => {
+  it('hides bed-clear button and shows warning when noKlipperPrinter blocked', async () => {
+    const api = {
+      ...makeBaseApi(),
+      getCalibrationQueueState: vi
+        .fn<CalibrationApi['getCalibrationQueueState']>()
+        .mockResolvedValue({
+          status: 'ok',
+          job: makeQueueJob({ jobStatus: 'Assigned' }),
+          blockedReasons: [{ code: 'noKlipperPrinter' as const, detail: null }],
+        }),
+    };
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('refresh-queue-btn'));
+
+    await waitFor(
+      () =>
+        expect(
+          screen.getByTestId('bed-clear-klipper-blocked'),
+        ).toBeInTheDocument(),
+      { timeout: 3000 },
+    );
+    expect(screen.queryByTestId('open-bed-clear-btn')).toBeNull();
+    expect(screen.getByTestId('bed-clear-klipper-blocked')).toHaveTextContent(
+      /Klipper/i,
+    );
+  });
+
+  it('shows bed-clear button normally when blockedReasons is empty', async () => {
+    const api = {
+      ...makeBaseApi(),
+      getCalibrationQueueState: vi
+        .fn<CalibrationApi['getCalibrationQueueState']>()
+        .mockResolvedValue({
+          status: 'ok',
+          job: makeQueueJob({ jobStatus: 'Assigned' }),
+        }),
+    };
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('refresh-queue-btn'));
+
+    await waitFor(
+      () =>
+        expect(screen.getByTestId('open-bed-clear-btn')).toBeInTheDocument(),
+      { timeout: 3000 },
+    );
+  });
+});
+
+// ─── L-02/L-03/L-05: Result entry after print completion ─────────────────────
+
+describe('L-02: Immutable attempt chain links shown after Completed', () => {
+  async function setupCompleted() {
+    const api = {
+      ...makeBaseApi(),
+      getCalibrationQueueState: vi
+        .fn<CalibrationApi['getCalibrationQueueState']>()
+        .mockResolvedValue({
+          status: 'ok',
+          job: makeQueueJob({ jobStatus: 'Completed' }),
+        }),
+      startCalibrationGeneration: vi.fn().mockResolvedValue({
+        status: 'submitted',
+        orchestration: {
+          orchestrationId,
+          projectId,
+          attemptId,
+          operationId,
+          status: 'Completed',
+          currentStep: 'QueueJobCreated',
+          revision: 1,
+          retryCount: 0,
+          nextRetryAtUtc: null,
+          stepStartedAtUtc: now,
+          lastErrorCode: null,
+          problems: [],
+          model3DId: null,
+          sliceJobId: null,
+          gcodeFileId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          specificationSha256: null,
+          planManifestSha256: null,
+          gcodeSha256: null,
+          generatorVersion: null,
+          slicerContainerDigest: null,
+          statusRoute: `/api/calibration-orchestrations/${orchestrationId}`,
+          createdAtUtc: now,
+          updatedAtUtc: now,
+          completedAtUtc: now,
+        },
+      }),
+    };
+    await openStepWorkflow(api);
+    // Start generation to get orchestration state
+    fireEvent.click(screen.getByTestId('start-generation-btn'));
+    // Refresh queue to get Completed job
+    await waitFor(
+      () => expect(screen.queryByTestId('refresh-queue-btn')).not.toBeNull(),
+      { timeout: 3000 },
+    );
+    fireEvent.click(screen.getByTestId('refresh-queue-btn'));
+    // Wait for result entry panel
+    await waitFor(
+      () =>
+        expect(screen.queryByTestId('result-immutable-links')).not.toBeNull(),
+      { timeout: 5000 },
+    );
+    return api;
+  }
+
+  it('shows job ID link when job Completed (L-02)', async () => {
+    await setupCompleted();
+    expect(screen.getByTestId('result-link-job-id')).toHaveTextContent(
+      jobId.slice(0, 8),
+    );
+  });
+
+  it('shows G-code file ID link when job Completed (L-02)', async () => {
+    await setupCompleted();
+    expect(screen.getByTestId('result-link-gcode-id')).toHaveTextContent(
+      'cccccccc',
+    );
+  });
+
+  it('shows orchestration ID link when orchestration present (L-02)', async () => {
+    await setupCompleted();
+    expect(
+      screen.getByTestId('result-link-orchestration-id'),
+    ).toHaveTextContent(orchestrationId.slice(0, 8));
+  });
+});
+
+describe('L-03: Result entry form shown when job Completed', () => {
+  it('shows result entry form with outcome and confidence fields (L-03)', async () => {
+    const api = {
+      ...makeBaseApi(),
+      getCalibrationQueueState: vi
+        .fn<CalibrationApi['getCalibrationQueueState']>()
+        .mockResolvedValue({
+          status: 'ok',
+          job: makeQueueJob({ jobStatus: 'Completed' }),
+        }),
+    };
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('refresh-queue-btn'));
+
+    await waitFor(
+      () => expect(screen.queryByTestId('result-entry-form')).not.toBeNull(),
+      { timeout: 3000 },
+    );
+    expect(screen.getByTestId('result-outcome-pass')).toBeInTheDocument();
+    expect(screen.getByTestId('result-outcome-fail')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('result-outcome-inconclusive'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('result-confidence-low')).toBeInTheDocument();
+    expect(screen.getByTestId('result-confidence-high')).toBeInTheDocument();
+  });
+});
+
+describe('L-05: Complete button disabled until result and confidence selected', () => {
+  it('complete button disabled when no result selected (L-05)', async () => {
+    const api = {
+      ...makeBaseApi(),
+      getCalibrationQueueState: vi
+        .fn<CalibrationApi['getCalibrationQueueState']>()
+        .mockResolvedValue({
+          status: 'ok',
+          job: makeQueueJob({ jobStatus: 'Completed' }),
+        }),
+    };
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('refresh-queue-btn'));
+
+    await waitFor(
+      () => expect(screen.queryByTestId('result-complete-btn')).not.toBeNull(),
+      { timeout: 3000 },
+    );
+    const btn = screen.getByTestId('result-complete-btn');
+    expect(btn).toBeDisabled();
+  });
+
+  it('shows result-gate-notice explaining the L-05 requirement (L-05)', async () => {
+    const api = {
+      ...makeBaseApi(),
+      getCalibrationQueueState: vi
+        .fn<CalibrationApi['getCalibrationQueueState']>()
+        .mockResolvedValue({
+          status: 'ok',
+          job: makeQueueJob({ jobStatus: 'Completed' }),
+        }),
+    };
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('refresh-queue-btn'));
+
+    await waitFor(
+      () => expect(screen.queryByTestId('result-gate-notice')).not.toBeNull(),
+      { timeout: 3000 },
+    );
+    expect(screen.getByTestId('result-gate-notice')).toHaveTextContent(
+      /result/i,
+    );
+  });
+
+  it('result entry form not shown when job is not Completed (L-05)', async () => {
+    const api = {
+      ...makeBaseApi(),
+      getCalibrationQueueState: vi
+        .fn<CalibrationApi['getCalibrationQueueState']>()
+        .mockResolvedValue({
+          status: 'ok',
+          job: makeQueueJob({ jobStatus: 'Printing' }),
+        }),
+    };
+    await openStepWorkflow(api);
+    fireEvent.click(screen.getByTestId('refresh-queue-btn'));
+
+    await waitFor(
+      () =>
+        expect(screen.getByTestId('lifecycle-status-label')).toHaveTextContent(
+          'Printing',
+        ),
+      { timeout: 3000 },
+    );
+    expect(screen.queryByTestId('result-entry-form')).toBeNull();
   });
 });

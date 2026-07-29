@@ -48,6 +48,10 @@ import {
   cleanupStaleCalibrationPhotoTemps,
   stagePrivateCalibrationPhoto,
 } from './calibrationPhotos.js';
+import {
+  CalibrationModelApprovalStore,
+  inspectCalibrationModel,
+} from './calibrationAsset.js';
 import { resolveCalibrationWorkspaceFreshness } from './calibrationFreshness.js';
 import { CalibrationSyncEngine } from './calibrationEngine.js';
 import {
@@ -229,6 +233,7 @@ export function registerIpcHandlers(
   const retargetOwnerCleanup = new WeakSet<WebContents>();
   const approvedPickerFiles = new Set<string>();
   const calibrationPhotoApprovals = new CalibrationPhotoApprovalStore();
+  const calibrationModelApprovals = new CalibrationModelApprovalStore();
   const legacyBackupApprovals = new LegacyBackupApprovalStore();
   const calibrationPhotoRoot = path.join(
     app.getPath('userData'),
@@ -2028,6 +2033,71 @@ export function registerIpcHandlers(
           error: apiError,
         });
       }
+    },
+  );
+
+  ipcMain.handle(IpcChannel.CalibrationOpenLocalModel, async (event) => {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const options = {
+      title: 'Select calibration model file',
+      properties: ['openFile' as const],
+      filters: [
+        {
+          name: 'Calibration models',
+          extensions: ['3mf', 'stl'],
+        },
+      ],
+    };
+    const result = owner
+      ? await dialog.showOpenDialog(owner, options)
+      : await dialog.showOpenDialog(options);
+    const selectedPath =
+      result.canceled || result.filePaths.length === 0
+        ? null
+        : result.filePaths[0]!;
+    const response = selectedPath
+      ? {
+          approvalId: calibrationModelApprovals.approve(
+            selectedPath,
+            event.sender.id,
+          ),
+        }
+      : null;
+    return ipcSchemas[IpcChannel.CalibrationOpenLocalModel].response.parse(
+      response,
+    );
+  });
+
+  ipcMain.handle(
+    IpcChannel.CalibrationValidateLocalModel,
+    async (event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationValidateLocalModel].request.parse(
+          rawRequest,
+        );
+      let approvedPath: string;
+      try {
+        approvedPath = calibrationModelApprovals.consume(
+          request.approvalId,
+          event.sender.id,
+        );
+      } catch {
+        return ipcSchemas[
+          IpcChannel.CalibrationValidateLocalModel
+        ].response.parse({
+          status: 'invalid',
+          reason: 'notARegularFile',
+          detail:
+            'The model approval is missing, expired, or was already used.',
+        });
+      }
+      const result = await inspectCalibrationModel(
+        approvedPath,
+        request.expectedSha256,
+      );
+      return ipcSchemas[
+        IpcChannel.CalibrationValidateLocalModel
+      ].response.parse(result);
     },
   );
 

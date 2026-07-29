@@ -500,7 +500,9 @@ export function CalibrationQueuePanel({
         ) : null}
 
         {/* B-01 through B-07: bed-clear dialog trigger */}
-        {awaitsBedClear && !bedClearDialog.open ? (
+        {awaitsBedClear &&
+        !bedClearDialog.open &&
+        !blockedReasons.some((r) => r.code === 'noKlipperPrinter') ? (
           <button
             type="button"
             className="cal-button cal-button--primary"
@@ -509,6 +511,16 @@ export function CalibrationQueuePanel({
           >
             Acknowledge bed clear and start print
           </button>
+        ) : null}
+        {awaitsBedClear &&
+        blockedReasons.some((r) => r.code === 'noKlipperPrinter') ? (
+          <p
+            className="cal-alert cal-alert--warning"
+            role="alert"
+            data-testid="bed-clear-klipper-blocked"
+          >
+            {blockedReasonLabel('noKlipperPrinter')}
+          </p>
         ) : null}
       </div>
 

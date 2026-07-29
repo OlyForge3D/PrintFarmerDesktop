@@ -196,6 +196,12 @@ export interface CalibrationWorkspaceStoreValue {
   readonly acknowledgeBedClear: () => Promise<void>;
   /** Clear all generation/queue/lifecycle state for this stage. */
   readonly clearGenerationState: (stageId: CalibrationStageId) => void;
+  /** Open external URL via the allowlisted window-open navigation (A-02). */
+  readonly openExternalUrl: (url: string) => void;
+  /** Complete the active attempt with the current workflow result (L-05). */
+  readonly completeAttemptWithResult: (
+    stageId: CalibrationStageId,
+  ) => Promise<void>;
   /** Current generation operation state (null = none started). */
   readonly generationState: CalibrationGenerationState | null;
   /** Current queue job state (null = no job or not fetched). */

@@ -110,6 +110,9 @@ import {
   type CalibrationGetQueueStateResponse,
   type CalibrationAcknowledgeBedClearRequest,
   type CalibrationAcknowledgeBedClearResponse,
+  type CalibrationOpenLocalModelResponse,
+  type CalibrationValidateLocalModelRequest,
+  type CalibrationValidateLocalModelResponse,
   type CalibrationStartPrintRequest,
   type CalibrationStartPrintResponse,
   type CalibrationListOrcaProfilesRequest,
@@ -524,6 +527,20 @@ const api: PrintFarmerApi = {
     ipcSchemas[IpcChannel.CalibrationAcknowledgeBedClear].response.parse(
       await ipcRenderer.invoke(
         IpcChannel.CalibrationAcknowledgeBedClear,
+        request,
+      ),
+    ),
+  openCalibrationLocalModel:
+    async (): Promise<CalibrationOpenLocalModelResponse> =>
+      ipcSchemas[IpcChannel.CalibrationOpenLocalModel].response.parse(
+        await ipcRenderer.invoke(IpcChannel.CalibrationOpenLocalModel),
+      ),
+  validateCalibrationLocalModel: async (
+    request: CalibrationValidateLocalModelRequest,
+  ): Promise<CalibrationValidateLocalModelResponse> =>
+    ipcSchemas[IpcChannel.CalibrationValidateLocalModel].response.parse(
+      await ipcRenderer.invoke(
+        IpcChannel.CalibrationValidateLocalModel,
         request,
       ),
     ),

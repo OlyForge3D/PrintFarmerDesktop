@@ -24,6 +24,8 @@ import {
 } from './workspaceTypes';
 import { CalibrationGenerationPanel } from './CalibrationGenerationPanel';
 import { CalibrationQueuePanel } from './CalibrationQueuePanel';
+import { CalibrationAssetLoaderPanel } from './CalibrationAssetLoaderPanel';
+import { CalibrationResultEntryPanel } from './CalibrationResultEntryPanel';
 
 interface CalibrationStepWorkflowProps {
   readonly stageId: CalibrationStageId;
@@ -833,6 +835,17 @@ export function CalibrationStepWorkflow({
             </div>
           </section>
 
+          {/* A-01..A-08: Asset loader and provenance panel */}
+          {generationDecision.allowed && method !== '' ? (
+            <CalibrationAssetLoaderPanel
+              stageId={stageId}
+              method={method}
+              attemptId={
+                activeAttempt?.attemptId ?? store.environment.createId()
+              }
+            />
+          ) : null}
+
           {/* G-03, G-05, G-07, G-09: Generation panel */}
           {generationDecision.allowed ? (
             <CalibrationGenerationPanel
@@ -847,6 +860,19 @@ export function CalibrationStepWorkflow({
           {/* Q-01 through Q-06, B-01 through B-07: Queue and bed-clear panel */}
           {queueDecision.allowed ? (
             <CalibrationQueuePanel stageId={stageId} />
+          ) : null}
+
+          {/* L-02, L-03, L-05: Result entry after print completion */}
+          {store.queueJobState?.job?.jobStatus === 'Completed' &&
+          store.queueJobState.job !== null ? (
+            <CalibrationResultEntryPanel
+              stageId={stageId}
+              job={store.queueJobState.job}
+              orchestrationId={
+                store.generationState?.orchestration?.orchestrationId ?? null
+              }
+              attemptId={activeAttempt?.attemptId ?? null}
+            />
           ) : null}
 
           <section

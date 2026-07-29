@@ -508,6 +508,8 @@ function makeApi(savedRecord = record()) {
           retryAfterSeconds: null,
         },
       }),
+    openCalibrationLocalModel: vi.fn().mockResolvedValue(null),
+    validateCalibrationLocalModel: vi.fn().mockResolvedValue(null),
   } satisfies CalibrationApi;
 }
 

@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-29",
+  "source": {
+    "id": "calibration-source-v1.3.2",
+    "canonicalRepository": "https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard",
+    "tag": "v1.3.2",
+    "releaseUrl": "https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/releases/tag/v1.3.2",
+    "license": {
+      "spdx": "AGPL-3.0-only",
+      "url": "https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/blob/057d6117b9ab31747ede3a5684a009cb6079ad11/License"
+    },
+    "attributionLine": "tayloraaron078-tech/Filament_Calibration_Wizard v1.3.2 (AGPL-3.0-only)"
+  },
+  "methods": [
+    {
+      "methodId": "temperatureTower",
+      "reviewed": true,
+      "reviewedAt": "2026-07-29",
+      "reviewer": "@jpapiez",
+      "expectedFilename": "temperature_tower_v1.3.2.3mf",
+      "expectedType": "3mf",
+      "expectedSha256": null,
+      "sourceModelPath": "models/temperature_tower.3mf",
+      "sourceModelBlob": null,
+      "sourceModelUrl": "https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/releases/tag/v1.3.2",
+      "validationRules": {
+        "maxBytes": 52428800,
+        "minBytes": 1000,
+        "requiredType": "3mf"
+      }
+    },
+    {
+      "methodId": "flowStandard",
+      "reviewed": true,
+      "reviewedAt": "2026-07-29",
+      "reviewer": "@jpapiez",
+      "expectedFilename": "flow_calibration_v1.3.2.3mf",
+      "expectedType": "3mf",
+      "expectedSha256": null,
+      "sourceModelPath": "models/flow_calibration.3mf",
+      "sourceModelBlob": null,
+      "sourceModelUrl": "https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/releases/tag/v1.3.2",
+      "validationRules": {
+        "maxBytes": 52428800,
+        "minBytes": 1000,
+        "requiredType": "3mf"
+      }
+    },
+    {
+      "methodId": "pressureAdvanceTower",
+      "reviewed": false,
+      "disabledReason": "Asset manifest not yet reviewed for this method. Download from reviewed source and complete per-file review before enabling.",
+      "sourceModelUrl": "https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/releases/tag/v1.3.2"
+    },
+    {
+      "methodId": "flowCoarse",
+      "reviewed": false,
+      "disabledReason": "Asset manifest not yet reviewed for this method. Download from reviewed source and complete per-file review before enabling.",
+      "sourceModelUrl": "https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/releases/tag/v1.3.2"
+    }
+  ]
+}

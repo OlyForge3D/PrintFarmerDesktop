@@ -20,6 +20,8 @@ export type CalibrationApi = Pick<
   | 'getCalibrationOrchestrationStatus'
   | 'getCalibrationQueueState'
   | 'acknowledgeCalibrationBedClear'
+  | 'openCalibrationLocalModel'
+  | 'validateCalibrationLocalModel'
 >;
 
 /** The preload bridge is already runtime-validated; calibration only narrows it. */

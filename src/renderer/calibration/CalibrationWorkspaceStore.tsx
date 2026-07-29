@@ -1357,7 +1357,7 @@ export function CalibrationWorkspaceStoreProvider({
           loading: false,
           error: null,
           job,
-          blockedReasons: [],
+          blockedReasons: response.blockedReasons ?? [],
           lastRefreshedAt: environment.now(),
         });
         setLiveMessage(
@@ -1521,6 +1521,35 @@ export function CalibrationWorkspaceStoreProvider({
       setBedClearDialog(emptyBedClearDialog);
     },
     [generationState?.stageId, queueJobState?.stageId],
+  );
+
+  const openExternalUrl = useCallback((url: string): void => {
+    if (url.startsWith('https://')) {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+  }, []);
+
+  const completeAttemptWithResult = useCallback(
+    async (stageId: CalibrationStageId): Promise<void> => {
+      const project = activeProjectRef.current;
+      if (!project) return;
+      const attempts = project.domainState.attempts;
+      const activeAttempt = [...attempts]
+        .reverse()
+        .find((a) => a.stageId === stageId && a.status === 'inProgress');
+      if (!activeAttempt) return;
+      const draft = project.record.workspaceState.workflowDrafts[stageId];
+      const confidence = draft?.confidence ?? '';
+      if (confidence === '') return;
+      await dispatchEvent({
+        eventId: environment.createId(),
+        timestamp: environment.now(),
+        type: 'completeAttempt',
+        attemptId: activeAttempt.attemptId,
+        confidence,
+      });
+    },
+    [dispatchEvent, environment],
   );
 
   const generateProfile = useCallback(async (): Promise<void> => {
@@ -1745,6 +1774,8 @@ export function CalibrationWorkspaceStoreProvider({
       generationState,
       queueJobState,
       bedClearDialog,
+      openExternalUrl,
+      completeAttemptWithResult,
     }),
     [
       activeProject,
@@ -1801,6 +1832,8 @@ export function CalibrationWorkspaceStoreProvider({
       generationState,
       queueJobState,
       bedClearDialog,
+      openExternalUrl,
+      completeAttemptWithResult,
     ],
   );
 

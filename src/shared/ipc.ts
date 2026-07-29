@@ -34,6 +34,8 @@ export const IpcChannel = {
   CalibrationGetOrchestrationStatus: 'calibration:getOrchestrationStatus',
   CalibrationGetQueueState: 'calibration:getQueueState',
   CalibrationAcknowledgeBedClear: 'calibration:acknowledgeBedClear',
+  CalibrationOpenLocalModel: 'calibration:openLocalModel',
+  CalibrationValidateLocalModel: 'calibration:validateLocalModel',
   CalibrationStartPrint: 'calibration:startPrint',
   CalibrationListOrcaProfiles: 'calibration:listOrcaProfiles',
   CalibrationExportOrcaProfile: 'calibration:exportOrcaProfile',
@@ -3487,7 +3489,14 @@ export type CalibrationGetQueueStateRequest = z.infer<
   typeof CalibrationGetQueueStateRequest
 >;
 export const CalibrationGetQueueStateResponse = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('ok'), job: CalibrationQueueJobState }).strict(),
+  z
+    .object({
+      status: z.literal('ok'),
+      job: CalibrationQueueJobState,
+      /** Optional server-side blocked reasons (e.g. noKlipperPrinter). */
+      blockedReasons: z.array(CalibrationBlockedReason).optional(),
+    })
+    .strict(),
   z.object({ status: z.literal('error'), error: CalibrationApiError }).strict(),
 ]);
 export type CalibrationGetQueueStateResponse = z.infer<
@@ -3595,6 +3604,79 @@ export const CalibrationAcknowledgeBedClearResponse = z.discriminatedUnion(
 );
 export type CalibrationAcknowledgeBedClearResponse = z.infer<
   typeof CalibrationAcknowledgeBedClearResponse
+>;
+
+// --- calibration:openLocalModel / calibration:validateLocalModel (A-04) ------
+
+/** Opens a file dialog for 3MF/STL selection; returns approvalId or null on cancel. */
+export const CalibrationOpenLocalModelRequest = z.void();
+export type CalibrationOpenLocalModelRequest = z.infer<
+  typeof CalibrationOpenLocalModelRequest
+>;
+export const CalibrationOpenLocalModelResponse = z
+  .object({ approvalId: z.string().uuid() })
+  .strict()
+  .nullable();
+export type CalibrationOpenLocalModelResponse = z.infer<
+  typeof CalibrationOpenLocalModelResponse
+>;
+
+/** Validates an approved local model file and returns a typed result (A-04, A-08). */
+export const CalibrationValidateLocalModelRequest = z
+  .object({
+    approvalId: z.string().uuid(),
+    method: z.string().min(1).max(128),
+    expectedSha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .nullable(),
+  })
+  .strict();
+export type CalibrationValidateLocalModelRequest = z.infer<
+  typeof CalibrationValidateLocalModelRequest
+>;
+
+/** Typed rejection reason codes for A-08. */
+export const CalibrationAssetValidationReasonCode = z.enum([
+  'invalidExtension',
+  'invalidMagicBytes',
+  'fileTooLarge',
+  'fileTooSmall',
+  'geometryOutOfBounds',
+  'checksumMismatch',
+  'notARegularFile',
+  'fileChangedDuringRead',
+]);
+export type CalibrationAssetValidationReasonCode = z.infer<
+  typeof CalibrationAssetValidationReasonCode
+>;
+
+export const CalibrationValidateLocalModelResponse = z
+  .discriminatedUnion('status', [
+    z
+      .object({
+        status: z.literal('valid'),
+        sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        byteSize: z.number().int().positive(),
+        detectedType: z.enum(['3mf', 'stl']),
+      })
+      .strict(),
+    z
+      .object({
+        status: z.literal('invalid'),
+        reason: CalibrationAssetValidationReasonCode,
+        detail: z.string().max(512).nullable(),
+      })
+      .strict(),
+    z
+      .object({
+        status: z.literal('canceled'),
+      })
+      .strict(),
+  ])
+  .nullable();
+export type CalibrationValidateLocalModelResponse = z.infer<
+  typeof CalibrationValidateLocalModelResponse
 >;
 
 /**
@@ -4743,6 +4825,14 @@ export const ipcSchemas = {
     request: CalibrationAcknowledgeBedClearRequest,
     response: CalibrationAcknowledgeBedClearResponse,
   },
+  [IpcChannel.CalibrationOpenLocalModel]: {
+    request: CalibrationOpenLocalModelRequest,
+    response: CalibrationOpenLocalModelResponse,
+  },
+  [IpcChannel.CalibrationValidateLocalModel]: {
+    request: CalibrationValidateLocalModelRequest,
+    response: CalibrationValidateLocalModelResponse,
+  },
   [IpcChannel.CalibrationStartPrint]: {
     request: CalibrationStartPrintRequest,
     response: CalibrationStartPrintResponse,
@@ -4925,6 +5015,10 @@ export interface PrintFarmerApi {
   acknowledgeCalibrationBedClear(
     request: CalibrationAcknowledgeBedClearRequest,
   ): Promise<CalibrationAcknowledgeBedClearResponse>;
+  openCalibrationLocalModel(): Promise<CalibrationOpenLocalModelResponse>;
+  validateCalibrationLocalModel(
+    request: CalibrationValidateLocalModelRequest,
+  ): Promise<CalibrationValidateLocalModelResponse>;
   startCalibrationPrint(
     request: CalibrationStartPrintRequest,
   ): Promise<CalibrationStartPrintResponse>;
