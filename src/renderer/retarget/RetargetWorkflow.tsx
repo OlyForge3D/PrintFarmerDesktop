@@ -306,15 +306,17 @@ export function RetargetWorkflow({
               </button>
             </div>
             {mesh ? (
-              <ModelViewer
-                mesh={mesh}
-                wireframe={false}
-                projection="perspective"
-                hiddenObjects={new Set()}
-                resetToken={scene === 'source' ? 1 : 2}
-                className="viewer-canvas"
-                background="#0b0e12"
-              />
+              <div className="retarget-viewer">
+                <ModelViewer
+                  mesh={mesh}
+                  wireframe={false}
+                  projection="perspective"
+                  hiddenObjects={new Set()}
+                  resetToken={scene === 'source' ? 1 : 2}
+                  className="viewer-canvas"
+                  background="#0b0e12"
+                />
+              </div>
             ) : sceneError ? (
               <p role="alert">
                 {sceneError}{' '}

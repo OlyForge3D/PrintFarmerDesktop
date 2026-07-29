@@ -1,11 +1,4 @@
-import {
-  test,
-  expect,
-  chromium,
-  type Browser,
-  type Page,
-} from '@playwright/test';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { test, expect, type Page } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import {
   existsSync,
@@ -14,7 +7,6 @@ import {
   readFileSync,
   readdirSync,
 } from 'node:fs';
-import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +14,16 @@ import {
   createEditableRetargetFixture,
   findPackagedExecutable,
 } from './helpers/retargetFixture';
+import {
+  attachPackagedFailureDiagnostics,
+  cleanupPackagedApp,
+  createPackagedProcessLog,
+  launchPackagedApp,
+  removePackagedAppTempRoot,
+  runWithPackagedTestCleanup,
+  type PackagedApp,
+  type PackagedProcessLog,
+} from './helpers/packagedApp';
 import { SidecarClient, spawnSidecarChannel } from '../src/main/sidecar';
 import { RootApprovalStore } from '../src/main/rootApprovals';
 
@@ -40,8 +42,11 @@ function instanceRoots(): string[] {
     return readdirSync(retargetRoot).map((entry) =>
       path.join(retargetRoot, entry),
     );
-  } catch {
-    return [];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+    throw error;
   }
 }
 
@@ -55,99 +60,6 @@ async function dismissOnboarding(page: Page): Promise<void> {
   }
 }
 
-async function launchPackaged(
-  executablePath: string,
-  userData: string,
-  catalogDb: string,
-  dialogEnvironment: Record<string, string>,
-): Promise<{
-  browser: Browser;
-  child: ChildProcess;
-  page: Page;
-  close: () => Promise<void>;
-}> {
-  const port = await new Promise<number>((resolve, reject) => {
-    const server = createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      if (!address || typeof address === 'string') {
-        reject(new Error('Could not allocate a debugging port.'));
-        return;
-      }
-      server.close((error) => {
-        if (error) reject(error);
-        else resolve(address.port);
-      });
-    });
-  });
-  const child = spawn(
-    executablePath,
-    [`--remote-debugging-port=${port}`, `--user-data-dir=${userData}`],
-    {
-      env: {
-        ...process.env,
-        PRINTFARMER_CATALOG_DB: catalogDb,
-        ...dialogEnvironment,
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  );
-  let processOutput = '';
-  child.stdout?.on('data', (bytes: Buffer) => {
-    processOutput += bytes.toString();
-  });
-  child.stderr?.on('data', (bytes: Buffer) => {
-    processOutput += bytes.toString();
-  });
-  const endpoint = `http://127.0.0.1:${port}`;
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) {
-      throw new Error(
-        `Packaged app exited with ${child.exitCode} before CDP was ready.\n${processOutput}`,
-      );
-    }
-    try {
-      const response = await fetch(`${endpoint}/json/version`);
-      if (response.ok) break;
-    } catch {
-      // The packaged process is still starting.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  const browser = await chromium.connectOverCDP(endpoint);
-  const context = browser.contexts()[0];
-  if (!context)
-    throw new Error('Packaged app did not expose a browser context.');
-  let page = context.pages()[0];
-  while (!page && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    page = context.pages()[0];
-  }
-  if (!page) throw new Error('Packaged app did not create a BrowserWindow.');
-  await page.waitForLoadState('domcontentloaded');
-  return {
-    browser,
-    child,
-    page,
-    close: async () => {
-      await page.close().catch(() => undefined);
-      const exited = await Promise.race([
-        new Promise<boolean>((resolve) => {
-          if (child.exitCode !== null) resolve(true);
-          else child.once('exit', () => resolve(true));
-        }),
-        new Promise<boolean>((resolve) =>
-          setTimeout(() => resolve(false), 3_000),
-        ),
-      ]);
-      if (!exited) child.kill();
-      await browser.close().catch(() => undefined);
-    },
-  };
-}
-
 async function openWorkflow(page: Page, fileName: string): Promise<void> {
   await page.getByRole('button', { name: `Select ${fileName}` }).click();
   await page
@@ -159,185 +71,289 @@ async function openWorkflow(page: Page, fileName: string): Promise<void> {
   ).toBeVisible();
 }
 
-test('runs the U1 workflow in the packaged app without changing the source', async () => {
-  test.setTimeout(180_000);
-  const executable = findPackagedExecutable(repoRoot);
-  const root = mkdtempSync(path.join(tmpdir(), 'pf-u1-packaged-'));
-  const fixtureDirectory = path.join(root, 'fixtures');
-  const fixture = createEditableRetargetFixture(fixtureDirectory);
-  const fileName = path.basename(fixture.file);
-  const catalogDb = path.join(root, 'catalog.sqlite3');
-  const userData = path.join(root, 'user-data');
-  const savedOutput = path.join(root, 'saved-u1.3mf');
-  const rootsBefore = new Set(instanceRoots());
-
-  const dialogEnvironment = {
-    PRINTFARMER_E2E: '1',
-    PRINTFARMER_E2E_OPEN_DIALOGS: JSON.stringify([savedOutput, savedOutput]),
-    PRINTFARMER_E2E_SAVE_DIALOGS: JSON.stringify([
-      { canceled: false, filePath: savedOutput },
-    ]),
-  };
-  const stagedSidecar = path.join(
-    repoRoot,
-    'resources',
-    'sidecar',
-    process.platform === 'win32' ? 'model-core.exe' : 'model-core',
-  );
-  mkdirSync(userData, { recursive: true });
-  const approvals = new RootApprovalStore({ userDataPath: userData });
-  await approvals.approveFromPicker(fixtureDirectory);
-
-  const previousCatalogDb = process.env.PRINTFARMER_CATALOG_DB;
-  process.env.PRINTFARMER_CATALOG_DB = catalogDb;
-  const seedSidecar = new SidecarClient(() =>
-    spawnSidecarChannel(stagedSidecar),
-  );
-  try {
-    await seedSidecar.importRoot(
-      'packaged-u1-fixtures',
-      fixtureDirectory,
-      [
-        {
-          relativePath: '',
-          kind: 'collection',
-          name: 'Packaged U1 fixtures',
-        },
-      ],
-      ['u1-e2e'],
-    );
-  } finally {
-    seedSidecar.dispose();
-    if (previousCatalogDb === undefined) {
-      delete process.env.PRINTFARMER_CATALOG_DB;
-    } else {
-      process.env.PRINTFARMER_CATALOG_DB = previousCatalogDb;
+async function expectPackagedThumbnail(
+  page: Page,
+  fileName: string,
+): Promise<void> {
+  const image = page
+    .getByRole('button', { name: `Select ${fileName}` })
+    .locator('img.model-thumb-img');
+  await expect(image).toBeVisible();
+  const rendered = await image.evaluate(async (element) => {
+    if (!(element instanceof HTMLImageElement)) {
+      throw new Error('Thumbnail did not render as an image.');
     }
-  }
-
-  let launched = await launchPackaged(
-    executable,
-    userData,
-    catalogDb,
-    dialogEnvironment,
-  );
-  await dismissOnboarding(launched.page);
-  await launched.page.getByRole('button', { name: 'Refresh catalog' }).click();
-  const imported = await launched.page.evaluate(() =>
-    window.printFarmer.listModels(),
-  );
-  const importedModel = imported.find((model) => model.hash === fixture.sha256);
-  expect(importedModel).toBeDefined();
-  const importedRootId = importedModel?.locations[0]?.rootId;
-  expect(importedRootId).toBeTruthy();
-  const directPreflight = await launched.page.evaluate(
-    async ({ modelHash }) => {
-      const catalog = await window.printFarmer.listRetargetProfiles();
-      if (catalog.status !== 'ok') return catalog;
-      const profileId = catalog.value.profiles.find(
-        (profile) => profile.source === 'bundled',
-      )?.id;
-      if (!profileId) return { missingBundledProfile: true };
-      try {
-        return await window.printFarmer.preflightRetarget({
-          modelHash,
-          rootId: 'packaged-u1-fixtures',
-          profileId,
-          objectExclusion: false,
-        });
-      } catch (error) {
-        return { thrown: String(error) };
-      }
-    },
-    { modelHash: fixture.sha256, rootId: importedRootId! },
-  );
-  expect(directPreflight).not.toHaveProperty('thrown');
-  await launched.page.getByRole('button', { name: 'Refresh catalog' }).click();
-  await openWorkflow(launched.page, fileName);
-
-  const bundled = launched.page
-    .getByRole('radio', { name: /\(bundled\)$/ })
-    .first();
-  await bundled.click();
-  const build = launched.page.getByRole('button', {
-    name: 'Build review copy',
+    await element.decode();
+    return {
+      naturalWidth: element.naturalWidth,
+      naturalHeight: element.naturalHeight,
+      source: element.currentSrc || element.src,
+    };
   });
-  await expect(build).toBeEnabled();
-  expect(hash(fixture.file)).toBe(fixture.sha256);
-  await build.click();
-  await expect(
-    launched.page.getByRole('heading', { name: 'Review changes' }),
-  ).toBeVisible();
-  await expect(launched.page.getByText('Source preserved.')).toBeVisible();
-  expect(hash(fixture.file)).toBe(fixture.sha256);
 
-  await launched.page.getByRole('button', { name: 'Source' }).click();
-  await expect(
-    launched.page.getByRole('button', { name: 'Source' }),
-  ).toHaveAttribute('aria-pressed', 'true');
-  await launched.page
-    .getByRole('button', { name: 'Snapmaker U1 output' })
-    .click();
-  await expect(
-    launched.page.getByRole('button', { name: 'Snapmaker U1 output' }),
-  ).toHaveAttribute('aria-pressed', 'true');
+  expect(rendered).toMatchObject({
+    naturalWidth: 256,
+    naturalHeight: 256,
+  });
+  expect(rendered.source).toMatch(/^data:image\/png;base64,/);
+}
 
-  await launched.page.getByRole('button', { name: 'Save As…' }).click();
-  await expect(
-    launched.page.getByText(/Saved saved-u1\.3mf/).first(),
-  ).toBeVisible();
-  expect(existsSync(savedOutput)).toBe(true);
-  expect(hash(fixture.file)).toBe(fixture.sha256);
-  await launched.page
-    .getByRole('status')
-    .filter({ hasText: /Saved saved-u1\.3mf/ })
-    .getByRole('button', { name: 'Close' })
-    .click();
+test('runs the U1 workflow in the packaged app without changing the source', async ({
+  browserName,
+}, testInfo) => {
+  test.setTimeout(180_000);
+  let root: string | null = null;
+  let rootsBefore: Set<string> | null = null;
+  let launched: PackagedApp | null = null;
+  let processLog: PackagedProcessLog | null = null;
 
-  await openWorkflow(launched.page, fileName);
-  const directImport = await launched.page.evaluate(() =>
-    window.printFarmer.importRetargetProfile(),
+  await runWithPackagedTestCleanup(
+    async () => {
+      expect(browserName).toBe('chromium');
+      processLog = createPackagedProcessLog();
+      const executable = findPackagedExecutable(repoRoot);
+      root = mkdtempSync(path.join(tmpdir(), 'pf-u1-packaged-'));
+      const fixtureDirectory = path.join(root, 'fixtures');
+      const fixture = createEditableRetargetFixture(fixtureDirectory);
+      const fileName = path.basename(fixture.file);
+      const catalogDb = path.join(root, 'catalog.sqlite3');
+      const userData = path.join(root, 'user-data');
+      const savedOutput = path.join(root, 'saved-u1.3mf');
+      const initialInstanceRoots = new Set(instanceRoots());
+      rootsBefore = initialInstanceRoots;
+      const dialogEnvironment = {
+        PRINTFARMER_E2E: '1',
+        PRINTFARMER_E2E_OPEN_DIALOGS: JSON.stringify([
+          savedOutput,
+          savedOutput,
+        ]),
+        PRINTFARMER_E2E_SAVE_DIALOGS: JSON.stringify([
+          { canceled: false, filePath: savedOutput },
+        ]),
+      };
+
+      const stagedSidecar = path.join(
+        repoRoot,
+        'resources',
+        'sidecar',
+        process.platform === 'win32' ? 'model-core.exe' : 'model-core',
+      );
+      mkdirSync(userData, { recursive: true });
+      const approvals = new RootApprovalStore({ userDataPath: userData });
+      await approvals.approveFromPicker(fixtureDirectory);
+
+      const previousCatalogDb = process.env.PRINTFARMER_CATALOG_DB;
+      process.env.PRINTFARMER_CATALOG_DB = catalogDb;
+      let seedSidecar: SidecarClient | null = null;
+      await runWithPackagedTestCleanup(
+        async () => {
+          seedSidecar = new SidecarClient(() =>
+            spawnSidecarChannel(stagedSidecar),
+          );
+          await seedSidecar.importRoot(
+            'packaged-u1-fixtures',
+            fixtureDirectory,
+            [
+              {
+                relativePath: '',
+                kind: 'collection',
+                name: 'Packaged U1 fixtures',
+              },
+            ],
+            ['u1-e2e'],
+          );
+        },
+        () => {
+          try {
+            seedSidecar?.dispose();
+          } finally {
+            if (previousCatalogDb === undefined) {
+              delete process.env.PRINTFARMER_CATALOG_DB;
+            } else {
+              process.env.PRINTFARMER_CATALOG_DB = previousCatalogDb;
+            }
+          }
+          return Promise.resolve();
+        },
+      );
+
+      launched = await launchPackagedApp({
+        executablePath: executable,
+        userDataPath: userData,
+        catalogDb,
+        processLog,
+        environment: dialogEnvironment,
+      });
+      await dismissOnboarding(launched.page);
+      await launched.page
+        .getByRole('button', { name: 'Refresh catalog' })
+        .click();
+      await expectPackagedThumbnail(launched.page, fileName);
+      const imported = await launched.page.evaluate(() =>
+        window.printFarmer.listModels(),
+      );
+      const importedModel = imported.find(
+        (model) => model.hash === fixture.sha256,
+      );
+      expect(importedModel).toBeDefined();
+      const importedRootId = importedModel?.locations[0]?.rootId;
+      expect(importedRootId).toBeTruthy();
+      const directPreflight = await launched.page.evaluate(
+        async ({ modelHash }) => {
+          const catalog = await window.printFarmer.listRetargetProfiles();
+          if (catalog.status !== 'ok') return catalog;
+          const profileId = catalog.value.profiles.find(
+            (profile) => profile.source === 'bundled',
+          )?.id;
+          if (!profileId) return { missingBundledProfile: true };
+          try {
+            return await window.printFarmer.preflightRetarget({
+              modelHash,
+              rootId: 'packaged-u1-fixtures',
+              profileId,
+              objectExclusion: false,
+            });
+          } catch (error) {
+            return { thrown: String(error) };
+          }
+        },
+        { modelHash: fixture.sha256, rootId: importedRootId! },
+      );
+      expect(directPreflight).not.toHaveProperty('thrown');
+      await launched.page
+        .getByRole('button', { name: 'Refresh catalog' })
+        .click();
+      await openWorkflow(launched.page, fileName);
+
+      const bundled = launched.page
+        .getByRole('radio', { name: /\(bundled\)$/ })
+        .first();
+      await bundled.click();
+      const build = launched.page.getByRole('button', {
+        name: 'Build review copy',
+      });
+      await expect(build).toBeEnabled();
+      expect(hash(fixture.file)).toBe(fixture.sha256);
+      await build.click();
+      await expect(
+        launched.page.getByRole('heading', { name: 'Review changes' }),
+      ).toBeVisible();
+      await expect(launched.page.getByText('Source preserved.')).toBeVisible();
+      expect(hash(fixture.file)).toBe(fixture.sha256);
+
+      await launched.page.getByRole('button', { name: 'Source' }).click();
+      await expect(
+        launched.page.getByRole('button', { name: 'Source' }),
+      ).toHaveAttribute('aria-pressed', 'true');
+      await launched.page
+        .getByRole('button', { name: 'Snapmaker U1 output' })
+        .click();
+      await expect(
+        launched.page.getByRole('button', { name: 'Snapmaker U1 output' }),
+      ).toHaveAttribute('aria-pressed', 'true');
+
+      const saveAs = launched.page.getByRole('button', { name: 'Save As…' });
+      await expect(saveAs).toBeEnabled();
+      await saveAs.scrollIntoViewIfNeeded({ timeout: 10_000 });
+      await saveAs.click({ trial: true, timeout: 10_000 });
+      await saveAs.click({ timeout: 10_000 });
+      await expect(
+        launched.page.getByText(/Saved saved-u1\.3mf/).first(),
+      ).toBeVisible();
+      expect(existsSync(savedOutput)).toBe(true);
+      expect(hash(fixture.file)).toBe(fixture.sha256);
+      await launched.page
+        .getByRole('status')
+        .filter({ hasText: /Saved saved-u1\.3mf/ })
+        .getByRole('button', { name: 'Close' })
+        .click();
+
+      await openWorkflow(launched.page, fileName);
+      const directImport = await launched.page.evaluate(() =>
+        window.printFarmer.importRetargetProfile(),
+      );
+      expect(directImport).toMatchObject({ status: 'ok' });
+      await launched.page
+        .getByRole('button', { name: 'Import U1 reference' })
+        .click();
+      await expect(
+        launched.page.getByRole('radio', { name: /\(imported\)$/ }).first(),
+      ).toBeChecked();
+      await expect(
+        launched.page.getByRole('button', { name: 'Build review copy' }),
+      ).toBeEnabled();
+      await launched.page
+        .getByRole('button', { name: 'Build review copy' })
+        .click();
+      await expect(
+        launched.page.getByRole('heading', { name: 'Review changes' }),
+      ).toBeVisible();
+      expect(hash(fixture.file)).toBe(fixture.sha256);
+
+      const createdRoots = instanceRoots().filter(
+        (entry) => !initialInstanceRoots.has(entry),
+      );
+      expect(createdRoots.length).toBeGreaterThan(0);
+      await launched.close();
+      launched = null;
+      expect(hash(fixture.file)).toBe(fixture.sha256);
+
+      launched = await launchPackagedApp({
+        executablePath: executable,
+        userDataPath: userData,
+        catalogDb,
+        processLog,
+        environment: dialogEnvironment,
+      });
+      await dismissOnboarding(launched.page);
+      await expect
+        .poll(() => createdRoots.every((entry) => !existsSync(entry)))
+        .toBe(true);
+      expect(hash(fixture.file)).toBe(fixture.sha256);
+      await launched.page
+        .getByRole('button', { name: 'Refresh catalog' })
+        .click();
+      await openWorkflow(launched.page, fileName);
+      await expect(
+        launched.page.getByRole('radio', { name: /\(imported\)$/ }).first(),
+      ).toBeVisible();
+    },
+    async () => {
+      await cleanupPackagedApp(launched, root === null ? [] : [root], () => {
+        if (rootsBefore === null) {
+          return;
+        }
+        const baselineRoots = rootsBefore;
+
+        const instanceCleanupErrors: unknown[] = [];
+        let createdInstanceRoots: string[] = [];
+        try {
+          createdInstanceRoots = instanceRoots().filter(
+            (entry) => !baselineRoots.has(entry),
+          );
+        } catch (error) {
+          instanceCleanupErrors.push(error);
+        }
+        for (const instanceRoot of createdInstanceRoots) {
+          try {
+            removePackagedAppTempRoot(instanceRoot);
+          } catch (error) {
+            instanceCleanupErrors.push(error);
+          }
+        }
+        if (instanceCleanupErrors.length > 0) {
+          throw new AggregateError(
+            instanceCleanupErrors,
+            'Retarget instance diagnostics cleanup failed.',
+          );
+        }
+      });
+    },
+    (diagnostics) =>
+      attachPackagedFailureDiagnostics(
+        testInfo,
+        processLog?.read() ?? '',
+        diagnostics,
+      ),
   );
-  expect(directImport).toMatchObject({ status: 'ok' });
-  await launched.page
-    .getByRole('button', { name: 'Import U1 reference' })
-    .click();
-  await expect(
-    launched.page.getByRole('radio', { name: /\(imported\)$/ }).first(),
-  ).toBeChecked();
-  await expect(
-    launched.page.getByRole('button', { name: 'Build review copy' }),
-  ).toBeEnabled();
-  await launched.page
-    .getByRole('button', { name: 'Build review copy' })
-    .click();
-  await expect(
-    launched.page.getByRole('heading', { name: 'Review changes' }),
-  ).toBeVisible();
-  expect(hash(fixture.file)).toBe(fixture.sha256);
-
-  const createdRoots = instanceRoots().filter(
-    (entry) => !rootsBefore.has(entry),
-  );
-  expect(createdRoots.length).toBeGreaterThan(0);
-  await launched.close();
-  expect(hash(fixture.file)).toBe(fixture.sha256);
-
-  launched = await launchPackaged(
-    executable,
-    userData,
-    catalogDb,
-    dialogEnvironment,
-  );
-  await dismissOnboarding(launched.page);
-  await expect
-    .poll(() => createdRoots.every((entry) => !existsSync(entry)))
-    .toBe(true);
-  expect(hash(fixture.file)).toBe(fixture.sha256);
-  await launched.page.getByRole('button', { name: 'Refresh catalog' }).click();
-  await openWorkflow(launched.page, fileName);
-  await expect(
-    launched.page.getByRole('radio', { name: /\(imported\)$/ }).first(),
-  ).toBeVisible();
-  await launched.close();
 });

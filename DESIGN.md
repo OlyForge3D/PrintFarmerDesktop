@@ -9,7 +9,7 @@ PrintFarmer Desktop uses a restrained, dark desktop-tool theme intended for oper
 - Window and canvas: `#0e1116`, `#11151a`
 - Navigation and inspector: `#15191f`
 - Raised surface: `#1a1f27`; hover: `#202630`
-- Primary text: `#e6e9ed`; secondary text: `#a7afba`; quiet text: `#737d89`
+- Primary text: `#e6e9ed`; secondary text: `#a7afba`; quiet text: `#929ca8`
 - Borders: `#2a3039`; strong borders: `#3b4653`
 - Accent/action: `#62b0e8`; focus: `#86c7f2`; selected tint: `#173247`
 - Success: `#69b98a`; warning: `#d6a75f`; danger: `#e07178`

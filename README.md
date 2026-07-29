@@ -28,6 +28,10 @@ Early development. See the implementation plan and the tracked work items.
 Source models are never moved, modified, or uploaded without an explicit user
 action.
 
+The packaged Windows/macOS release matrix, WebGL2 capability reporting,
+SwiftShader fallback, accessibility gate, and physical-GPU limitation are
+documented in [release validation](./docs/release-validation.md).
+
 The trust boundaries behind that claim, the adversaries they defend against, and
 the accepted residual risks are documented in
 [the threat model](./docs/security/THREAT_MODEL.md).

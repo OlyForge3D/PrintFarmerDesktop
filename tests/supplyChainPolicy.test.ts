@@ -404,21 +404,48 @@ describe('the release workflow enforces compliance before publication', () => {
     ).toBe(false);
   });
 
-  it('mirrors the lockfile guard after package verification in CI', () => {
+  it('mirrors the lockfile guard before every packaged release suite in CI', () => {
     const steps = parseWorkflowSteps(ciWorkflow, 'package');
     const indexOfRun = (run: string): number =>
       steps.findIndex((step) => step.run === run);
+    const indexOfName = (name: string): number =>
+      steps.findIndex((step) => step.name === name);
     const immutableLocks = indexOfRun(lockGuard);
+    const releaseSuites = [
+      [
+        'Packaged Electron end-to-end tests',
+        'npx playwright test --grep-invert "@gpu|@a11y"',
+      ],
+      [
+        'Packaged accessibility (material WCAG A/AA)',
+        'npx playwright test e2e/release.accessibility.spec.ts',
+      ],
+      [
+        'Packaged WebGL2 (host default capability report)',
+        'npx playwright test e2e/release.gpu.spec.ts',
+      ],
+      [
+        'Packaged WebGL2 (SwiftShader fallback)',
+        'npx playwright test e2e/release.gpu.spec.ts',
+      ],
+    ] as const;
+    const suiteIndexes = releaseSuites.map(([name, run]) => {
+      const index = indexOfName(name);
+      expect(steps[index]?.run).toBe(run);
+      return index;
+    });
     const ordered = [
       indexOfRun('npm run package'),
       indexOfRun('node scripts/verify-packaged-sidecar.mjs'),
       immutableLocks,
-      indexOfRun('npx playwright test'),
+      ...suiteIndexes,
     ];
 
     expect(ordered.every((index) => index >= 0)).toBe(true);
     expect(ordered).toEqual([...ordered].sort((left, right) => left - right));
-    expect(steps.at(immutableLocks)?.continueOnError).not.toBe('true');
+    for (const index of [immutableLocks, ...suiteIndexes]) {
+      expect(steps.at(index)?.continueOnError).not.toBe('true');
+    }
   });
 
   it('locks every workspace Cargo command and detects a stripped flag', () => {

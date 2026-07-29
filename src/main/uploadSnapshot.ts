@@ -2,7 +2,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants as fsConstants, promises as fs } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
-import { MAX_UPLOAD_REQUEST_BYTES } from './uploadTransport.js';
+import { MAX_UPLOAD_MODEL_BYTES } from './uploadTransport.js';
 import type { ApprovedFile } from './rootApprovals.js';
 
 const COPY_CHUNK_BYTES = 64 * 1024;
@@ -106,7 +106,7 @@ export class PrivateSnapshotManager implements SnapshotManager {
       }
       if (
         opened.size !== BigInt(approved.size) ||
-        opened.size > BigInt(MAX_UPLOAD_REQUEST_BYTES)
+        opened.size > BigInt(MAX_UPLOAD_MODEL_BYTES)
       ) {
         throw new SnapshotError(
           'SOURCE_TOO_LARGE',
@@ -129,7 +129,7 @@ export class PrivateSnapshotManager implements SnapshotManager {
         const { bytesRead } = await source.read(buffer, 0, buffer.length, null);
         if (bytesRead === 0) break;
         total += bytesRead;
-        if (total > MAX_UPLOAD_REQUEST_BYTES) {
+        if (total > MAX_UPLOAD_MODEL_BYTES) {
           throw new SnapshotError(
             'SOURCE_TOO_LARGE',
             'The model grew beyond the server upload limit while being copied.',
