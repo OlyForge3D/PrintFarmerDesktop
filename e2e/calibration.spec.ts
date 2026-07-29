@@ -154,11 +154,13 @@ test('calibration: preload bridge is an object with calibration IPC methods', as
 test('calibration: openCalibrationExternalUrl with valid linkId calls through to shell (A-02)', async () => {
   // Stub shell.openExternal WITHOUT calling the original — no side effects in tests.
   await app.evaluate(({ shell }) => {
-    (shell as { openExternal: (url: string) => Promise<void> }).openExternal =
-      async (url: string) => {
-        process.env['PRINTFARMER_TEST_LAST_OPENED_URL'] = url;
-        // Deliberately does NOT call the original — no real browser open in tests.
-      };
+    (shell as { openExternal: (url: string) => Promise<void> }).openExternal = (
+      url: string,
+    ) => {
+      process.env['PRINTFARMER_TEST_LAST_OPENED_URL'] = url;
+      // Deliberately does NOT call the original — no real browser open in tests.
+      return Promise.resolve();
+    };
   });
 
   await page.evaluate(async () => {

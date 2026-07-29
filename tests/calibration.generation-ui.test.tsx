@@ -570,6 +570,106 @@ describe('G-09: Structured failure variants map to typed reasons', () => {
   });
 });
 
+// ─── G-04/G-06: pendingGeneration reconciliation on project load ──────────────
+
+describe('G-04/G-06: pendingGeneration reconciled on project load (restart recovery)', () => {
+  /** Make a record that has a persisted pendingGeneration with orchestrationId. */
+  function makeRecordWithPendingGeneration(): CalibrationWorkspaceStateRecord {
+    const base = makeRecord();
+    return CalibrationWorkspaceStateRecordSchema.parse({
+      ...base,
+      workspaceState: CalibrationWorkspacePayload.parse({
+        ...base.workspaceState,
+        pendingGeneration: {
+          operationId,
+          stageId: 'temperature',
+          attemptId,
+          expectedProjectRevision: 1,
+          orchestrationId,
+          orchestrationStep: 'SlicingQueued',
+          jobId: null,
+          lastReconcileAt: now,
+          createdAt: now,
+        },
+      }),
+    });
+  }
+
+  it('G-04: same operationId reused on restart — no new operation created', async () => {
+    const recordWithPending = makeRecordWithPendingGeneration();
+    const startMock = vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValue({
+        status: 'submitted',
+        orchestration: makeOrchestration(),
+      });
+    const pollMock = vi
+      .fn<CalibrationApi['getCalibrationOrchestrationStatus']>()
+      .mockResolvedValue({
+        status: 'ok',
+        orchestration: makeOrchestration({ status: 'Running' }),
+      });
+    const api = {
+      ...makeBaseApi(recordWithPending),
+      startCalibrationGeneration: startMock,
+      getCalibrationOrchestrationStatus: pollMock,
+    };
+    renderWorkspace(api);
+
+    // Open project (triggers reconciliation)
+    const projectBtn = await screen.findByRole('button', {
+      name: /PLA calibration project/,
+    });
+    fireEvent.click(projectBtn);
+
+    // After project open, REST reconcile poll is triggered automatically (G-06)
+    await waitFor(
+      () =>
+        expect(pollMock).toHaveBeenCalledWith(
+          expect.objectContaining({ orchestrationId }),
+        ),
+      { timeout: 3000 },
+    );
+
+    // The start endpoint is NOT called — the persisted operationId is reused (G-04)
+    expect(startMock).not.toHaveBeenCalled();
+  });
+
+  it('G-06: pollOrchestrationStatus called on project load to reconcile state', async () => {
+    const recordWithPending = makeRecordWithPendingGeneration();
+    const pollMock = vi
+      .fn<CalibrationApi['getCalibrationOrchestrationStatus']>()
+      .mockResolvedValue({
+        status: 'ok',
+        orchestration: makeOrchestration({
+          status: 'Running',
+          currentStep: 'ArtifactValidated',
+        }),
+      });
+    const api = {
+      ...makeBaseApi(recordWithPending),
+      getCalibrationOrchestrationStatus: pollMock,
+    };
+    renderWorkspace(api);
+
+    const projectBtn = await screen.findByRole('button', {
+      name: /PLA calibration project/,
+    });
+    fireEvent.click(projectBtn);
+
+    // After project load, REST reconcile poll is triggered automatically (G-06)
+    await waitFor(
+      () =>
+        expect(pollMock).toHaveBeenCalledWith(
+          expect.objectContaining({ orchestrationId }),
+        ),
+      { timeout: 3000 },
+    );
+    // Exactly one reconciliation poll — no blind retry
+    expect(pollMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 // ─── Q-01: Authoritative queue state display ──────────────────────────────────
 
 describe('Q-01: Authoritative queue state display', () => {
@@ -1187,44 +1287,52 @@ describe('A-03, A-07, A-08: Asset provenance manifest', () => {
   });
 });
 
-// ─── A-05/A-06: Asset provenance display and disabled methods ─────────────────
+// ─── A-05/A-06: Asset provenance display — backend-generated methods ───────────
 
 /**
- * A-05/A-06: With all methods currently disabled-until-review (expectedSha256
- * is null for all methods), provenance display is the disabled reason and
- * source URL. Tests assert disabled state enforcement.
+ * A-05/A-06: All four calibration methods are confirmed backend-generated
+ * (OrcaSlicer in-slicer) based on review of the pinned upstream commit.
+ * Reviewed methods show provenance (attribution, license, source) and a clear
+ * note that no local file is required. No file-select button is shown.
  */
-describe('A-05/A-06: All methods currently disabled-until-review (no SHA-256)', () => {
-  it('temperatureTower shows disabled state with concrete reason (A-06)', async () => {
+describe('A-05/A-06: Backend-generated methods show provenance panel (no file upload)', () => {
+  it('temperatureTower shows backend-generated panel with provenance (A-05/A-06)', async () => {
     const api = makeBaseApi();
     await openStepWorkflow(api);
 
-    // temperatureTower is selected by openStepWorkflow; must show disabled panel
+    // Backend-generated methods show the backend-generated panel, not disabled
     await waitFor(
       () =>
-        expect(screen.queryByTestId('asset-method-disabled')).not.toBeNull(),
+        expect(
+          screen.queryByTestId('asset-method-backend-generated'),
+        ).not.toBeNull(),
       { timeout: 3000 },
     );
-    // Disabled reason must mention SHA-256 / validation requirement
-    const reason = screen.getByTestId('asset-disabled-reason');
-    expect(reason.textContent).toBeTruthy();
-    expect(reason.textContent.length).toBeGreaterThan(20);
+    // Disabled panel must NOT appear
+    expect(screen.queryByTestId('asset-method-disabled')).toBeNull();
+    // Backend-generated note must be visible
+    expect(
+      screen.getByTestId('asset-backend-generated-note').textContent,
+    ).toContain('generated server-side');
   });
 
-  it('temperatureTower: no file-select button visible (no upload/generation with unvalidated asset, A-04/A-06)', async () => {
+  it('temperatureTower: no file-select button for backend-generated method (A-03/A-04/A-06)', async () => {
     const api = makeBaseApi();
     await openStepWorkflow(api);
 
-    // The disabled panel must NOT show the file selection button
+    // Backend-generated method does NOT show the file selection button (A-03/A-04)
     await waitFor(
       () =>
-        expect(screen.queryByTestId('asset-method-disabled')).not.toBeNull(),
+        expect(
+          screen.queryByTestId('asset-method-backend-generated'),
+        ).not.toBeNull(),
       { timeout: 3000 },
     );
+    // No file select — backend generates the model server-side
     expect(screen.queryByTestId('asset-select-file-btn')).toBeNull();
   });
 
-  it('flowStandard manifest has reviewed:false in the JSON file (A-06)', () => {
+  it('flowStandard manifest has reviewed:true and generationMode:backendGenerated (A-06)', () => {
     const manifest = JSON.parse(
       readFileSync(
         join(process.cwd(), 'compliance', 'calibration-asset-manifest.json'),
@@ -1234,22 +1342,19 @@ describe('A-05/A-06: All methods currently disabled-until-review (no SHA-256)', 
       methods: Array<{
         methodId: string;
         reviewed: boolean;
-        disabledReason?: string;
-        expectedSha256?: string | null;
+        generationMode?: string;
+        disabledReason?: string | null;
       }>;
     };
     const flow = manifest.methods.find((m) => m.methodId === 'flowStandard');
     expect(flow).toBeDefined();
-    expect(flow?.reviewed).toBe(false);
-    expect(flow?.disabledReason).toBeTruthy();
-    expect((flow?.disabledReason ?? '').length).toBeGreaterThan(20);
-    // No SHA-256 present in manifest — this is the root cause for the disable
-    expect(
-      flow?.expectedSha256 === null || flow?.expectedSha256 === undefined,
-    ).toBe(true);
+    expect(flow?.reviewed).toBe(true);
+    expect(flow?.generationMode).toBe('backendGenerated');
+    // Backend-generated methods are not disabled
+    expect(flow?.disabledReason).toBeFalsy();
   });
 
-  it('temperatureTower manifest has reviewed:false in the JSON file (A-06)', () => {
+  it('temperatureTower manifest has reviewed:true and generationMode:backendGenerated (A-06)', () => {
     const manifest = JSON.parse(
       readFileSync(
         join(process.cwd(), 'compliance', 'calibration-asset-manifest.json'),
@@ -1259,19 +1364,19 @@ describe('A-05/A-06: All methods currently disabled-until-review (no SHA-256)', 
       methods: Array<{
         methodId: string;
         reviewed: boolean;
-        disabledReason?: string;
+        generationMode?: string;
       }>;
     };
     const temp = manifest.methods.find(
       (m) => m.methodId === 'temperatureTower',
     );
     expect(temp).toBeDefined();
-    expect(temp?.reviewed).toBe(false);
-    expect(temp?.disabledReason).toBeTruthy();
+    expect(temp?.reviewed).toBe(true);
+    expect(temp?.generationMode).toBe('backendGenerated');
   });
 });
 
-describe('A-06: Unreviewed method shows disabled with concrete reason', () => {
+describe('A-06: Backend-generated methods are reviewed and have generationMode (A-06)', () => {
   function setupWithMethod(methodId: string) {
     const manifest = JSON.parse(
       readFileSync(
@@ -1282,30 +1387,31 @@ describe('A-06: Unreviewed method shows disabled with concrete reason', () => {
       methods: Array<{
         methodId: string;
         reviewed: boolean;
-        disabledReason?: string;
+        generationMode?: string;
+        disabledReason?: string | null;
       }>;
     };
     return manifest.methods.find((m) => m.methodId === methodId);
   }
 
-  it('pressureAdvanceTower manifest has reviewed:false and concrete disabledReason (A-06)', () => {
+  it('pressureAdvanceTower manifest has reviewed:true and generationMode:backendGenerated (A-06)', () => {
     const method = setupWithMethod('pressureAdvanceTower');
     expect(method).toBeDefined();
-    expect(method?.reviewed).toBe(false);
-    expect(method?.disabledReason).toBeTruthy();
-    expect(typeof method?.disabledReason).toBe('string');
-    expect((method?.disabledReason ?? '').length).toBeGreaterThan(10);
+    expect(method?.reviewed).toBe(true);
+    expect(method?.generationMode).toBe('backendGenerated');
+    expect(method?.disabledReason).toBeFalsy();
   });
 
-  it('flowCoarse manifest has reviewed:false and concrete disabledReason (A-06)', () => {
+  it('flowCoarse manifest has reviewed:true and generationMode:backendGenerated (A-06)', () => {
     const method = setupWithMethod('flowCoarse');
     expect(method).toBeDefined();
-    expect(method?.reviewed).toBe(false);
-    expect(method?.disabledReason).toBeTruthy();
+    expect(method?.reviewed).toBe(true);
+    expect(method?.generationMode).toBe('backendGenerated');
+    expect(method?.disabledReason).toBeFalsy();
   });
 });
 
-describe('A-06: Unreviewed method shows disabled with concrete reason', () => {
+describe('A-06: Backend-generated methods — generation mode distinction confirmed', () => {
   function setupWithMethod(methodId: string) {
     const manifest = JSON.parse(
       readFileSync(
@@ -1316,67 +1422,75 @@ describe('A-06: Unreviewed method shows disabled with concrete reason', () => {
       methods: Array<{
         methodId: string;
         reviewed: boolean;
-        disabledReason?: string;
+        generationMode?: string;
+        disabledReason?: string | null;
       }>;
     };
     return manifest.methods.find((m) => m.methodId === methodId);
   }
 
-  it('pressureAdvanceTower manifest has reviewed:false and concrete disabledReason (A-06)', () => {
+  it('pressureAdvanceTower: generationMode:backendGenerated, no disabledReason (A-06)', () => {
     const method = setupWithMethod('pressureAdvanceTower');
     expect(method).toBeDefined();
-    expect(method?.reviewed).toBe(false);
-    expect(method?.disabledReason).toBeTruthy();
-    expect(typeof method?.disabledReason).toBe('string');
-    expect((method?.disabledReason ?? '').length).toBeGreaterThan(10);
+    expect(method?.reviewed).toBe(true);
+    expect(method?.generationMode).toBe('backendGenerated');
+    expect(method?.disabledReason).toBeFalsy();
   });
 
-  it('flowCoarse manifest has reviewed:false and concrete disabledReason (A-06)', () => {
+  it('flowCoarse: generationMode:backendGenerated, no disabledReason (A-06)', () => {
     const method = setupWithMethod('flowCoarse');
     expect(method).toBeDefined();
-    expect(method?.reviewed).toBe(false);
-    expect(method?.disabledReason).toBeTruthy();
+    expect(method?.reviewed).toBe(true);
+    expect(method?.generationMode).toBe('backendGenerated');
+    expect(method?.disabledReason).toBeFalsy();
   });
 });
 
-// ─── A-04/A-08: Asset validation enforcement (all methods currently disabled) ──
+// ─── A-04/A-08: Backend-generated methods block file upload (server generates) ──
 
 /**
- * A-04/A-08: All methods are disabled-until-review. The UI enforces "no upload
- * or generation with unvalidated asset" by not showing the file-select button.
+ * A-04/A-08: Backend-generated methods (all four) do NOT show a file-select
+ * button — the calibration test is generated server-side by OrcaSlicer via
+ * PrintFarmer. No local file upload is possible or required.
  * The validation rejection-reason codes are tested at unit level in
  * calibration.asset.test.ts (which runs against the real sidecar binary).
  */
-describe('A-04/A-08: Disabled methods block file upload and generation', () => {
-  it('no asset-select-file-btn appears for disabled method (A-04/A-06)', async () => {
+describe('A-04/A-08: Backend-generated methods block file upload (server-side generation)', () => {
+  it('no asset-select-file-btn for backend-generated method (A-03/A-04/A-06)', async () => {
     const api = makeBaseApi();
     await openStepWorkflow(api);
 
-    // Wait for the disabled panel to appear; no select button must be present
+    // Backend-generated panel appears; no file-select button is present
     await waitFor(
       () =>
-        expect(screen.queryByTestId('asset-method-disabled')).not.toBeNull(),
+        expect(
+          screen.queryByTestId('asset-method-backend-generated'),
+        ).not.toBeNull(),
       { timeout: 3000 },
     );
-    // File select is blocked — no upload possible without reviewed asset
+    // No file upload — backend generates the model server-side
     expect(screen.queryByTestId('asset-select-file-btn')).toBeNull();
   });
 
-  it('disabled panel shows concrete disabledReason text (A-06)', async () => {
+  it('backend-generated note displayed instead of disabledReason (A-05/A-06)', async () => {
     const api = makeBaseApi();
     await openStepWorkflow(api);
 
     await waitFor(
       () =>
-        expect(screen.queryByTestId('asset-disabled-reason')).not.toBeNull(),
+        expect(
+          screen.queryByTestId('asset-backend-generated-note'),
+        ).not.toBeNull(),
       { timeout: 3000 },
     );
-    const reasonEl = screen.getByTestId('asset-disabled-reason');
-    expect(reasonEl.textContent).toBeTruthy();
-    expect(reasonEl.textContent.length).toBeGreaterThan(20);
+    const noteEl = screen.getByTestId('asset-backend-generated-note');
+    expect(noteEl.textContent).toBeTruthy();
+    expect(noteEl.textContent.length).toBeGreaterThan(20);
+    // Must NOT show disabled panel
+    expect(screen.queryByTestId('asset-disabled-reason')).toBeNull();
   });
 
-  it('openCalibrationLocalModel is never called for a disabled method (A-04/A-08)', async () => {
+  it('openCalibrationLocalModel is never called for a backend-generated method (A-04/A-08)', async () => {
     const openModelMock = vi
       .fn<CalibrationApi['openCalibrationLocalModel']>()
       .mockResolvedValue({
@@ -1388,13 +1502,15 @@ describe('A-04/A-08: Disabled methods block file upload and generation', () => {
     };
     await openStepWorkflow(api);
 
-    // Render the disabled panel
+    // Backend-generated panel renders; no file dialog is ever opened
     await waitFor(
       () =>
-        expect(screen.queryByTestId('asset-method-disabled')).not.toBeNull(),
+        expect(
+          screen.queryByTestId('asset-method-backend-generated'),
+        ).not.toBeNull(),
       { timeout: 3000 },
     );
-    // No file dialog was opened — no local model IPC invoked
+    // No local model IPC invoked — server generates the model
     expect(openModelMock).not.toHaveBeenCalled();
   });
 });
@@ -1689,13 +1805,12 @@ describe('A-02/S-04/S-05: openCalibrationExternalUrl IPC — no window.open', ()
     };
     await openStepWorkflow(api);
 
-    // Disabled panel shows "View source page" button (IPC — not window.open)
+    // Backend-generated panel shows source link button (IPC — not window.open)
     await waitFor(
-      () =>
-        expect(screen.queryByTestId('asset-open-source-btn')).not.toBeNull(),
+      () => expect(screen.queryByTestId('asset-source-link')).not.toBeNull(),
       { timeout: 3000 },
     );
-    fireEvent.click(screen.getByTestId('asset-open-source-btn'));
+    fireEvent.click(screen.getByTestId('asset-source-link'));
 
     // IPC must be called, NOT window.open
     await waitFor(() =>

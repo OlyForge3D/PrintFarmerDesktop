@@ -2,8 +2,10 @@
  * Asset manifest loading, provenance display, and local file validation (A-01..A-08).
  *
  * Shows available calibration methods with their review status (A-06).
- * For reviewed methods, displays source URL, author, license (A-05) and allows
- * local file selection via narrowly-named IPC (A-03, A-04).
+ * Backend-generated methods (OrcaSlicer in-slicer) display provenance and confirm
+ * no local file is required; no upload button is shown (A-03, A-04, A-06).
+ * For future user-provided methods, this panel would allow local file selection
+ * via narrowly-named IPC (A-03, A-04).
  * External links open only via the named openCalibrationExternalUrl IPC (A-02, S-04).
  */
 import { useState } from 'react';
@@ -14,8 +16,21 @@ import type { CalibrationStageId } from './domain';
 // This manifest data mirrors compliance/calibration-asset-manifest.json (A-01)
 // for type-safe renderer use. The JSON file is the reviewed source-of-truth.
 
-interface ReviewedMethodManifest {
+/** A reviewed method that is generated server-side by OrcaSlicer — no local file required. */
+interface BackendGeneratedMethodManifest {
   readonly reviewed: true;
+  readonly generationMode: 'backendGenerated';
+  readonly attributionLine: string;
+  readonly licenseSpdx: string;
+  readonly licenseUrl: string;
+  readonly sourceModelUrl: string;
+  readonly reviewerNotes: string;
+}
+
+/** A reviewed method that requires the user to provide a local model file. */
+interface UserProvidedMethodManifest {
+  readonly reviewed: true;
+  readonly generationMode: 'userProvided';
   readonly expectedFilename: string;
   readonly expectedType: '3mf' | 'stl';
   readonly expectedSha256: string | null;
@@ -29,42 +44,101 @@ interface ReviewedMethodManifest {
   };
 }
 
+/** An unreviewed method — disabled with a concrete reason. */
 interface UnreviewedMethodManifest {
   readonly reviewed: false;
   readonly disabledReason: string;
   readonly sourceModelUrl: string;
 }
 
-type MethodManifest = ReviewedMethodManifest | UnreviewedMethodManifest;
+type MethodManifest =
+  | BackendGeneratedMethodManifest
+  | UserProvidedMethodManifest
+  | UnreviewedMethodManifest;
 
+/**
+ * Type guard: method is backend-generated (no local file required).
+ * Satisfies A-06: these methods are reviewed; generation is permitted.
+ */
+function isBackendGenerated(
+  m: MethodManifest,
+): m is BackendGeneratedMethodManifest {
+  return (
+    m.reviewed &&
+    (m as BackendGeneratedMethodManifest).generationMode === 'backendGenerated'
+  );
+}
+
+/**
+ * Type guard: method requires a user-provided local file.
+ */
+function isUserProvided(m: MethodManifest): m is UserProvidedMethodManifest {
+  return (
+    m.reviewed &&
+    (m as UserProvidedMethodManifest).generationMode === 'userProvided'
+  );
+}
+
+/**
+ * Production manifest — mirrors compliance/calibration-asset-manifest.json.
+ *
+ * All four methods are confirmed backend-generated (OrcaSlicer in-slicer) based
+ * on inspection of the pinned upstream commit 057d6117b9ab31747ede3a5684a009cb6079ad11.
+ * The upstream public/models/manifest.json states: "Orca Slicer generates all core
+ * calibration tests in-slicer, so no models are bundled or required."
+ */
 const METHOD_MANIFESTS: Readonly<Record<string, MethodManifest>> = {
   temperatureTower: {
-    reviewed: false,
-    disabledReason:
-      'Asset not yet validated: expectedSha256 is null. Download the file from the reviewed source, compute its SHA-256 checksum, record it in the manifest, and re-enable after per-file review.',
+    reviewed: true,
+    generationMode: 'backendGenerated',
+    attributionLine:
+      'tayloraaron078-tech/Filament_Calibration_Wizard v1.3.2 (AGPL-3.0-only)',
+    licenseSpdx: 'AGPL-3.0-only',
+    licenseUrl:
+      'https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/blob/057d6117b9ab31747ede3a5684a009cb6079ad11/License',
     sourceModelUrl:
       'https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/releases/tag/v1.3.2',
+    reviewerNotes:
+      'Confirmed backend-generated via OrcaSlicer in-slicer generation on the PrintFarmer server. No external model file is required.',
   },
   flowStandard: {
-    reviewed: false,
-    disabledReason:
-      'Asset not yet validated: expectedSha256 is null. Download the file from the reviewed source, compute its SHA-256 checksum, record it in the manifest, and re-enable after per-file review.',
+    reviewed: true,
+    generationMode: 'backendGenerated',
+    attributionLine:
+      'tayloraaron078-tech/Filament_Calibration_Wizard v1.3.2 (AGPL-3.0-only)',
+    licenseSpdx: 'AGPL-3.0-only',
+    licenseUrl:
+      'https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/blob/057d6117b9ab31747ede3a5684a009cb6079ad11/License',
     sourceModelUrl:
       'https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/releases/tag/v1.3.2',
+    reviewerNotes:
+      'Confirmed backend-generated via OrcaSlicer in-slicer generation on the PrintFarmer server. No external model file is required.',
   },
   pressureAdvanceTower: {
-    reviewed: false,
-    disabledReason:
-      'Asset manifest not yet reviewed for this method. Download from the reviewed source and complete per-file review before enabling.',
+    reviewed: true,
+    generationMode: 'backendGenerated',
+    attributionLine:
+      'tayloraaron078-tech/Filament_Calibration_Wizard v1.3.2 (AGPL-3.0-only)',
+    licenseSpdx: 'AGPL-3.0-only',
+    licenseUrl:
+      'https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/blob/057d6117b9ab31747ede3a5684a009cb6079ad11/License',
     sourceModelUrl:
       'https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/releases/tag/v1.3.2',
+    reviewerNotes:
+      'Confirmed backend-generated via OrcaSlicer in-slicer generation on the PrintFarmer server. No external model file is required.',
   },
   flowCoarse: {
-    reviewed: false,
-    disabledReason:
-      'Asset manifest not yet reviewed for this method. Download from the reviewed source and complete per-file review before enabling.',
+    reviewed: true,
+    generationMode: 'backendGenerated',
+    attributionLine:
+      'tayloraaron078-tech/Filament_Calibration_Wizard v1.3.2 (AGPL-3.0-only)',
+    licenseSpdx: 'AGPL-3.0-only',
+    licenseUrl:
+      'https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/blob/057d6117b9ab31747ede3a5684a009cb6079ad11/License',
     sourceModelUrl:
       'https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/releases/tag/v1.3.2',
+    reviewerNotes:
+      'Confirmed backend-generated via OrcaSlicer in-slicer generation on the PrintFarmer server. No external model file is required.',
   },
 };
 
@@ -121,7 +195,7 @@ export function CalibrationAssetLoaderPanel({
   };
 
   const handleSelectFile = async (): Promise<void> => {
-    if (!manifest || !manifest.reviewed) return;
+    if (!manifest || !isUserProvided(manifest)) return;
     setValidationStatus({ kind: 'selecting' });
     try {
       const approval = await calibrationApi().openCalibrationLocalModel();
@@ -202,8 +276,55 @@ export function CalibrationAssetLoaderPanel({
             </button>
           ) : null}
         </div>
+      ) : isBackendGenerated(manifest) ? (
+        /* A-06: Backend-generated method — reviewed, no local file required (A-03, A-04).
+         * The calibration test is generated server-side by OrcaSlicer via PrintFarmer.
+         * No file upload button is shown; generation proceeds directly. */
+        <div
+          className="cal-asset-backend-generated"
+          data-testid="asset-method-backend-generated"
+        >
+          {/* A-05: Display provenance to user */}
+          <p
+            className="cal-asset-backend-note"
+            data-testid="asset-backend-generated-note"
+          >
+            ✓ This calibration test is generated server-side by OrcaSlicer via
+            PrintFarmer. No local model file is required.
+          </p>
+          <dl className="cal-asset-provenance" data-testid="asset-provenance">
+            <dt>Attribution</dt>
+            <dd data-testid="asset-attribution">{manifest.attributionLine}</dd>
+            <dt>License</dt>
+            <dd data-testid="asset-license">
+              {manifest.licenseSpdx}
+              {' — '}
+              <button
+                type="button"
+                className="cal-link-button"
+                onClick={() =>
+                  store.openExternalUrl('calibration-license-agpl3')
+                }
+                data-testid="asset-license-link"
+              >
+                View license
+              </button>
+            </dd>
+            <dt>Source reference</dt>
+            <dd>
+              <button
+                type="button"
+                className="cal-link-button"
+                onClick={handleOpenSourcePage}
+                data-testid="asset-source-link"
+              >
+                {manifest.sourceModelUrl}
+              </button>
+            </dd>
+          </dl>
+        </div>
       ) : (
-        /* Reviewed method: show provenance and allow file selection */
+        /* Reviewed user-provided method: show provenance and allow file selection */
         <div className="cal-asset-reviewed" data-testid="asset-method-reviewed">
           {/* A-05: Display provenance to user */}
           <dl className="cal-asset-provenance" data-testid="asset-provenance">

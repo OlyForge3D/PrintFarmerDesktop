@@ -282,9 +282,9 @@ describe('inspectCalibrationModel — A-04 validation rejection codes', () => {
   });
 });
 
-// ─── A-06: Unreviewed manifest entries have disabledReason ───────────────────
+// ─── A-06: Backend-generated methods are reviewed; no external file needed ─────
 
-describe('A-06: Unreviewed method manifest (compliance/calibration-asset-manifest.json)', () => {
+describe('A-06: Manifest distinguishes backend-generated from user-provided methods', () => {
   function readManifest() {
     return JSON.parse(
       readFileSync(
@@ -295,26 +295,58 @@ describe('A-06: Unreviewed method manifest (compliance/calibration-asset-manifes
       methods: Array<{
         methodId: string;
         reviewed: boolean;
-        disabledReason?: string;
+        generationMode?: string;
+        reviewerNotes?: string;
+        disabledReason?: string | null;
       }>;
     };
   }
 
-  it('pressureAdvanceTower has reviewed:false and disabledReason', () => {
+  it('pressureAdvanceTower is reviewed with generationMode backendGenerated (A-06)', () => {
     const manifest = readManifest();
     const pa = manifest.methods.find(
       (m) => m.methodId === 'pressureAdvanceTower',
     );
     expect(pa).toBeDefined();
-    expect(pa?.reviewed).toBe(false);
-    expect(pa?.disabledReason).toBeTruthy();
+    expect(pa?.reviewed).toBe(true);
+    expect(pa?.generationMode).toBe('backendGenerated');
+    expect(pa?.disabledReason).toBeFalsy();
+    expect(pa?.reviewerNotes).toBeTruthy();
   });
 
-  it('flowCoarse has reviewed:false and disabledReason', () => {
+  it('flowCoarse is reviewed with generationMode backendGenerated (A-06)', () => {
     const manifest = readManifest();
     const fc = manifest.methods.find((m) => m.methodId === 'flowCoarse');
     expect(fc).toBeDefined();
-    expect(fc?.reviewed).toBe(false);
-    expect(fc?.disabledReason).toBeTruthy();
+    expect(fc?.reviewed).toBe(true);
+    expect(fc?.generationMode).toBe('backendGenerated');
+    expect(fc?.disabledReason).toBeFalsy();
+  });
+
+  it('temperatureTower is reviewed with generationMode backendGenerated (A-06)', () => {
+    const manifest = readManifest();
+    const t = manifest.methods.find((m) => m.methodId === 'temperatureTower');
+    expect(t).toBeDefined();
+    expect(t?.reviewed).toBe(true);
+    expect(t?.generationMode).toBe('backendGenerated');
+    expect(t?.disabledReason).toBeFalsy();
+  });
+
+  it('flowStandard is reviewed with generationMode backendGenerated (A-06)', () => {
+    const manifest = readManifest();
+    const fs = manifest.methods.find((m) => m.methodId === 'flowStandard');
+    expect(fs).toBeDefined();
+    expect(fs?.reviewed).toBe(true);
+    expect(fs?.generationMode).toBe('backendGenerated');
+    expect(fs?.disabledReason).toBeFalsy();
+  });
+
+  it('all methods have generationMode field distinguishing backend from user-provided (A-06)', () => {
+    const manifest = readManifest();
+    for (const method of manifest.methods) {
+      expect(['backendGenerated', 'userProvided']).toContain(
+        method.generationMode,
+      );
+    }
   });
 });

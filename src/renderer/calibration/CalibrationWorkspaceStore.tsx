@@ -1798,6 +1798,51 @@ export function CalibrationWorkspaceStoreProvider({
     }
   }, [generatedProfile, reportError]);
 
+  /* G-06: On project hydration, reconcile any persisted pendingGeneration state
+   * so an app restart resumes in-flight operations without creating duplicates.
+   * - Initializes generationState UI from persisted durable data.
+   * - If orchestrationId is present, polls REST to reconcile authoritative status.
+   * - If jobId is present, fetches queue state via REST.
+   * - Uses a ref to ensure reconciliation runs exactly once per project load. */
+  const lastReconciledProjectIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (activeProject === null) {
+      lastReconciledProjectIdRef.current = null;
+      return;
+    }
+    const projectId = activeProject.record.projectId;
+    if (lastReconciledProjectIdRef.current === projectId) return;
+    lastReconciledProjectIdRef.current = projectId;
+
+    const pending = activeProject.record.workspaceState.pendingGeneration;
+    if (!pending) return;
+
+    /* Initialize generation UI from persisted durable operation (G-04). */
+    setGenerationState({
+      stageId: pending.stageId,
+      operationId: pending.operationId,
+      submitted: pending.orchestrationId !== null,
+      submitting: false,
+      orchestration: null,
+      polling: false,
+      error: null,
+    });
+    setLiveMessage(
+      'Resuming in-flight calibration generation from saved state.',
+    );
+
+    /* Reconcile orchestration status via REST (G-06). Same operationId is
+     * preserved — exact replay reuses the persisted operation, never creates
+     * a new one for the same pending attempt. */
+    if (pending.orchestrationId !== null) {
+      void pollOrchestrationStatus(pending.orchestrationId);
+    }
+    /* Reconcile queue job status via REST (Q-04). */
+    if (pending.jobId !== null) {
+      void refreshQueueState(pending.jobId);
+    }
+  }, [activeProject, pollOrchestrationStatus, refreshQueueState]);
+
   const value = useMemo<CalibrationWorkspaceStoreValue>(
     () => ({
       profileId: selectedProfileId,
