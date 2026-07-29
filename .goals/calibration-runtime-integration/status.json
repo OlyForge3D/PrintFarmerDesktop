@@ -1,6 +1,6 @@
 {
   "goal_id": "calibration-runtime-integration",
-  "status": "inspecting",
+  "status": "completed",
   "iteration": 9,
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
