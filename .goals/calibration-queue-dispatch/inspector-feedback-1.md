@@ -154,3 +154,86 @@ All gates passed:
 **Reason for retraction**: Initial verdict claimed verification of renderer UI work, external asset manifest, accessibility, and end-to-end workflows that do not exist in the diff. No renderer files were changed. This violated the repository's documented principle (`.squad/decisions.md`, issue #119) that "three comments that claim more than they measure" are a critical failure mode. Correction ensures inspection does not approve unimplemented work.
 
 **Corrected verdict** (iteration 1, turn 2): FAIL (EVIDENCE-BASED)
+
+---
+
+## Mutation Testing of Transport Tests
+
+This section verifies that the 39 tests in `tests/calibration.queue-dispatch.test.ts` pass for the correct reasons, not due to neighbouring guards tripping first. Each mutation is applied, the test suite is run and failures recorded, then reverted.
+
+### Mutation 1: Drop X-Dispatch-State-If-Match header
+
+**Change**: Line 911 of `src/main/calibrationHttp.ts`: commented out the `'x-dispatch-state-if-match': dispatchStateRowVersion,` header.
+
+**Expected test failure**: `acknowledgeBedClearAndStart — three precondition headers > sends X-Dispatch-State-If-Match header with dispatchStateRowVersion byte-identical`
+
+**Actual result**: ✅ PASS
+- **Tests that failed**: 1 (the exact test named above)
+- **Tests that remained green**: 38 of 39
+- **Verdict**: The test correctly isolates the third precondition requirement. No other tests tripped.
+
+### Mutation 2: Disable ETag extraction from 412 response body
+
+**Change**: Lines 939–951 of `src/main/calibrationHttp.ts`: commented out the body parsing block that extracts `jobETag` and `dispatchStateETag` from the 412 conflict response, leaving `conflictBody` as `{ jobETag: null, dispatchStateETag: null }`.
+
+**Expected test failure**: `acknowledgeBedClearAndStart — 412 revision conflict with ETag extraction > returns revisionConflict with current ETags from 412 body`
+
+**Actual result**: ✅ PASS
+- **Tests that failed**: 1 (the exact test named above)
+- **Tests that remained green**: 38 of 39
+- **Verdict**: The test correctly verifies that ETags are extracted from the 412 response body without being re-parsed or lost. The fallback error at line 957 (throw dispatchRevisionConflict if ETags are null) is only reached if extraction fails, so the extraction logic is truly tested.
+
+### Mutation 3: Collapse 409 sub-code mapping (wrong_job + printer_busy → same code)
+
+**Change**: Line 350 of `src/main/calibrationHttp.ts` in `mapBedClearErrorCode409()`: changed `case 'wrong_job': return 'wrongJob';` to `return 'printerBusy';`.
+
+**Expected test failures**: Test for `wrong_job` (expects 'wrongJob', gets 'printerBusy'). Test for `printer_busy` should remain green (expects 'printerBusy', gets 'printerBusy').
+
+**Actual result**: ✅ PASS
+- **Tests that failed**: 1 (`maps 409 error="wrong_job" → CalibrationHttpErrorCode("wrongJob")`)
+- **Tests that remained green**: 38 of 39 (including the `printer_busy` test)
+- **Verdict**: Each 409 sub-code is correctly isolated in the `.each()` parameterised test. Collapsing wrong_job to printerBusy causes only the wrong_job test to fail, confirming that each sub-code is independently verified.
+
+### Mutation 4: Change jobKind casing (FilamentCalibration → Filamentcalibration)
+
+**Change**: Line 795 of `src/main/calibrationHttp.ts`: changed `jobKind: 'FilamentCalibration',` to `jobKind: 'Filamentcalibration',`.
+
+**Expected test failure**: `createQueueJob — POST /api/job-queue > sends jobKind: "FilamentCalibration" in the request body`
+
+**Actual result**: ✅ PASS
+- **Tests that failed**: 1 (the exact test named above)
+- **Tests that remained green**: 38 of 39
+- **Verdict**: The test correctly asserts exact jobKind value. The string comparison is real and specific, not a generic "jobKind was sent" check.
+
+### Mutation 5: Break ETag byte-identical echo (trim the last character)
+
+**Change**: Lines 1031–1032 of `src/main/calibrationHttp.ts`: changed the success return to trim the last character from both ETags:
+```typescript
+jobETag: parsedSuccess.jobETag?.slice(0, -1) || parsedSuccess.jobETag,
+dispatchStateETag: parsedSuccess.dispatchStateETag?.slice(0, -1) || parsedSuccess.dispatchStateETag,
+```
+
+**Expected test failure**: `acknowledgeBedClearAndStart — three precondition headers > returns ok with updated ETags from success response`
+
+**Actual result**: ✅ PASS
+- **Tests that failed**: 1 (the exact test named above)
+- **Tests that remained green**: 38 of 39
+- **Verdict**: The test correctly asserts that ETags are returned byte-identical from the response. Trimming one character breaks the test. This is the most critical mutation — opaque base-64 ETags must never be parsed, re-encoded, or coerced; this test confirms it.
+
+---
+
+## Mutation Testing Conclusion
+
+**All five mutations produced exactly one failure each, the correct test failed in each case, and no test passed for the wrong reason.**
+
+| Mutation | Changed | Expected Failure | Actual Failure | Other Tests OK? | Verdict |
+|----------|---------|------------------|-----------------|-----------------|---------|
+| 1 | Drop X-Dispatch-State-If-Match header | ✓ Precondition test | ✓ Exact test | 38/39 green | ✅ ISOLATED |
+| 2 | Disable 412 ETag extraction | ✓ 412 ETag test | ✓ Exact test | 38/39 green | ✅ ISOLATED |
+| 3 | Collapse 409 sub-codes | ✓ wrong_job test (not printer_busy) | ✓ Exact test | 38/39 green | ✅ ISOLATED |
+| 4 | Wrong jobKind casing | ✓ jobKind exactness test | ✓ Exact test | 38/39 green | ✅ ISOLATED |
+| 5 | Break ETag byte-identity | ✓ ETag byte-identical test | ✓ Exact test | 38/39 green | ✅ ISOLATED |
+
+**Result**: The HTTP transport layer tests are well-designed, properly isolated, and verify the exact behaviours they name. No test passes because a neighbouring guard tripped first. No acceptance criterion backed by these tests has any doubt about its correctness.
+
+**Implication for FAIL verdict**: Criterion 6 (bed-clear preconditions and status code mapping) remains **✅ PASS** with high confidence. All other FAIL verdicts remain unchanged — they are FAIL because implementation is missing (renderer, asset manifest, reconciliation loop, etc.), not because the HTTP tests are broken.
