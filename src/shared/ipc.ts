@@ -31,6 +31,7 @@ export const IpcChannel = {
   CalibrationResolveConflict: 'calibration:resolveConflict',
   CalibrationSyncNow: 'calibration:syncNow',
   CalibrationStartGeneration: 'calibration:startGeneration',
+  CalibrationGetOrchestrationStatus: 'calibration:getOrchestrationStatus',
   CalibrationGetQueueState: 'calibration:getQueueState',
   CalibrationAcknowledgeBedClear: 'calibration:acknowledgeBedClear',
   CalibrationStartPrint: 'calibration:startPrint',
@@ -3206,15 +3207,135 @@ export const CalibrationApiError = z
   .strict();
 export type CalibrationApiError = z.infer<typeof CalibrationApiError>;
 
-/** Request to trigger profile generation for a completed calibration project. */
+/**
+ * Typed method options for a calibration generation request.
+ * Each field maps directly to a field in the PrintFarmer API's
+ * `CalibrationMethodOptionsRequest` (PR #979).
+ * Only fields relevant to the selected method should be populated;
+ * supplying inapplicable fields is rejected by the server with 422.
+ */
+export const CalibrationMethodOptions = z
+  .object({
+    startCelsius: z.number().int().optional(),
+    endCelsius: z.number().int().optional(),
+    stepCelsius: z.number().int().optional(),
+    startRatio: z.number().optional(),
+    endRatio: z.number().optional(),
+    stepRatio: z.number().optional(),
+    flowRatio: z.number().optional(),
+    startPressureAdvance: z.number().optional(),
+    endPressureAdvance: z.number().optional(),
+    stepPressureAdvance: z.number().optional(),
+    lineCount: z.number().int().optional(),
+    lineLengthMillimeters: z.number().optional(),
+    cornersPerRow: z.number().int().optional(),
+    startLengthMillimeters: z.number().optional(),
+    endLengthMillimeters: z.number().optional(),
+    stepLengthMillimeters: z.number().optional(),
+    retractionSpeedMillimetersPerSecond: z.number().int().optional(),
+    startCubicMillimetersPerSecond: z.number().optional(),
+    endCubicMillimetersPerSecond: z.number().optional(),
+    stepCubicMillimetersPerSecond: z.number().optional(),
+    nominalLengthMillimeters: z.number().optional(),
+    barWidthMillimeters: z.number().optional(),
+    model3DId: z.string().uuid().optional(),
+    expectedSha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
+  })
+  .strict();
+export type CalibrationMethodOptions = z.infer<typeof CalibrationMethodOptions>;
+
+/**
+ * Durable, redacted orchestration status surfaced to the renderer.
+ * All identifiers, digests, hashes, stage names, and timestamps are
+ * included. Storage paths, worker endpoints, credentials, private URLs,
+ * and raw slicer logs are excluded by the server.
+ */
+export const CalibrationOrchestrationStatus = z
+  .object({
+    orchestrationId: z.string().uuid(),
+    projectId: z.string().uuid(),
+    attemptId: z.string().uuid(),
+    operationId: z.string().min(1).max(256),
+    /** Durable status name (Running, Completed, Failed, etc.). */
+    status: z.string().min(1).max(64),
+    /** Durable step name the saga last checkpointed. */
+    currentStep: z.string().min(1).max(128),
+    revision: z.number().int().nonnegative(),
+    retryCount: z.number().int().nonnegative(),
+    nextRetryAtUtc: z.string().datetime().nullable(),
+    stepStartedAtUtc: z.string().datetime().nullable(),
+    lastErrorCode: z.string().max(64).nullable(),
+    problems: z
+      .array(
+        z
+          .object({
+            code: z.string().max(64),
+            field: z.string().max(128),
+            message: z.string().max(512),
+          })
+          .strict(),
+      )
+      .max(50),
+    model3DId: z.string().uuid().nullable(),
+    sliceJobId: z.string().uuid().nullable(),
+    gcodeFileId: z.string().uuid().nullable(),
+    /** SHA-256 of the recompiled canonical specification. */
+    specificationSha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable(),
+    /** SHA-256 of the compiled upstream-Orca plan manifest. */
+    planManifestSha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable(),
+    /** SHA-256 of the final annotated calibration G-code. */
+    gcodeSha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable(),
+    /** Trusted generator version that produced the run. */
+    generatorVersion: z.string().max(128).nullable(),
+    /** Pinned slicer container digest attested by the accepted worker. */
+    slicerContainerDigest: z.string().max(256).nullable(),
+    /** Authenticated route that reports this orchestration's durable status (for REST reconciliation). */
+    statusRoute: z.string().min(1).max(2048),
+    createdAtUtc: z.string().datetime(),
+    updatedAtUtc: z.string().datetime(),
+    completedAtUtc: z.string().datetime().nullable(),
+  })
+  .strict();
+export type CalibrationOrchestrationStatus = z.infer<
+  typeof CalibrationOrchestrationStatus
+>;
+
+/**
+ * Request to start or resume the durable calibration generation saga.
+ * Maps to `POST /api/calibration-projects/{projectId}/attempts/{attemptId}/generate-job`
+ * (PR #979 / 167a3b134a678a0d9a8c10371da8333d03ddc636).
+ */
 export const CalibrationStartGenerationRequest = z
   .object({
     profileId: z.string().uuid(),
     projectId: z.string().uuid(),
-    /** Client-generated idempotency key for this generation request. */
+    /** Immutable attempt identity. */
+    attemptId: z.string().uuid(),
+    /** Client-generated stable idempotency key for this generation request. */
     operationId: z.string().uuid(),
-    /** The base revision of the project at generation time (for If-Match). */
-    baseRevision: z.number().int().nonnegative(),
+    /** Canonical calibration method name (e.g., "temperature"). */
+    method: z.string().min(1).max(128),
+    /** Method definition version the caller compiled its options against. */
+    definitionVersion: z.string().min(1).max(64),
+    /** Typed method options (null = server default). */
+    methodOptions: CalibrationMethodOptions.nullable(),
+    /**
+     * Orchestration revision the caller observed.
+     * Supplying a stale revision fails with 412. Null on first submission.
+     */
+    baseRevision: z.number().int().nonnegative().nullable(),
   })
   .strict();
 export type CalibrationStartGenerationRequest = z.infer<
@@ -3226,7 +3347,7 @@ export const CalibrationStartGenerationResponse = z.discriminatedUnion(
     z
       .object({
         status: z.literal('submitted'),
-        generationJobId: z.string().uuid(),
+        orchestration: CalibrationOrchestrationStatus,
       })
       .strict(),
     z
@@ -3238,6 +3359,104 @@ export type CalibrationStartGenerationResponse = z.infer<
   typeof CalibrationStartGenerationResponse
 >;
 
+/**
+ * Request to poll the durable orchestration status for REST reconciliation
+ * after restart or reconnect.
+ * Maps to `GET /api/calibration-orchestrations/{orchestrationId}`
+ * (PR #979 / 167a3b134a678a0d9a8c10371da8333d03ddc636).
+ */
+export const CalibrationGetOrchestrationStatusRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    orchestrationId: z.string().uuid(),
+  })
+  .strict();
+export type CalibrationGetOrchestrationStatusRequest = z.infer<
+  typeof CalibrationGetOrchestrationStatusRequest
+>;
+export const CalibrationGetOrchestrationStatusResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        orchestration: CalibrationOrchestrationStatus,
+      })
+      .strict(),
+    z.object({ status: z.literal('notFound') }).strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationGetOrchestrationStatusResponse = z.infer<
+  typeof CalibrationGetOrchestrationStatusResponse
+>;
+
+/**
+ * Authoritative queue job state for a calibration print job.
+ * REST is the authority; SignalR events are hints only.
+ * Carries ETags required for bed-clear acknowledgement headers.
+ */
+export const CalibrationQueueJobState = z
+  .object({
+    jobId: z.string().uuid(),
+    profileId: z.string().uuid(),
+    calibrationProjectId: z.string().uuid().nullable(),
+    assignedPrinterId: z.string().uuid().nullable(),
+    assignedPrinterName: z.string().max(256),
+    gcodeFileId: z.string().uuid().nullable(),
+    gcodeFileName: z.string().max(512),
+    /** Current print job status (Queued/Assigned/Starting/Printing/Paused/Completed/Failed/Cancelled). */
+    jobStatus: z.string().max(64).nullable(),
+    queuePosition: z.number().int().nonnegative(),
+    priority: z.number().int().nonnegative(),
+    requiredNozzleDiameter: z.number().positive().max(10).nullable(),
+    requiredMaterialType: z.string().max(128).nullable(),
+    pinnedPrinterConfigRevision: z.number().int().nonnegative().nullable(),
+    /**
+     * Base-64 ETag of the job row (echo as `If-Match` in bed-clear request).
+     * Null when the server does not supply one.
+     */
+    jobEtag: z.string().max(512).nullable(),
+    /**
+     * Base-64 ETag of the printer dispatch state row
+     * (echo as `X-Dispatch-State-If-Match` in bed-clear request).
+     * Null when no dispatch state exists.
+     */
+    dispatchStateEtag: z.string().max(512).nullable(),
+    dispatchStateRevision: z.number().int().nonnegative().nullable(),
+    bedClearExpiresAtUtc: z.string().datetime().nullable(),
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+export type CalibrationQueueJobState = z.infer<typeof CalibrationQueueJobState>;
+
+/** Typed blocked reason for queue/dispatch state (Q-05, L-06). */
+export const CalibrationBlockedReason = z.object({
+  code: z.enum([
+    'staleTelemetry',
+    'changedFirmwareOrConfig',
+    'materialNozzleMismatch',
+    'maintenanceOrBusy',
+    'missingGcode',
+    'permissionDenied',
+    'offline',
+    'unsynchronized',
+    'unauthorized',
+    'expired',
+    'noKlipperPrinter',
+    'staleContext',
+  ]),
+  detail: z.string().max(512).nullable(),
+});
+export type CalibrationBlockedReason = z.infer<typeof CalibrationBlockedReason>;
+
+/**
+ * Legacy shape kept for backward compatibility (references `printerId` and
+ * `awaitingBedClear`). New code should use `CalibrationQueueJobState`.
+ * @deprecated Use CalibrationQueueJobState instead.
+ */
 export const CalibrationQueueState = z
   .object({
     profileId: z.string().uuid(),
@@ -3260,26 +3479,101 @@ export const CalibrationGetQueueStateRequest = z
   .object({
     profileId: z.string().uuid(),
     projectId: z.string().uuid(),
+    /** The specific job ID to fetch (authoritative REST fetch for ETags). */
+    jobId: z.string().uuid().nullable(),
   })
   .strict();
 export type CalibrationGetQueueStateRequest = z.infer<
   typeof CalibrationGetQueueStateRequest
 >;
 export const CalibrationGetQueueStateResponse = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('ok'), queue: CalibrationQueueState }).strict(),
+  z.object({ status: z.literal('ok'), job: CalibrationQueueJobState }).strict(),
   z.object({ status: z.literal('error'), error: CalibrationApiError }).strict(),
 ]);
 export type CalibrationGetQueueStateResponse = z.infer<
   typeof CalibrationGetQueueStateResponse
 >;
 
-/** Acknowledge that the bed has been cleared before starting an exact calibration job. */
+/**
+ * Bed-clear acknowledgement typed outcome (B-03).
+ * Each variant maps to an exact HTTP status from the backend:
+ * - `starting` → 202 (newly accepted)
+ * - `alreadyStarting` → 200 (idempotent replay or already starting)
+ * - `conflict` → 409 (wrong job/printer/state/idempotency mismatch)
+ * - `staleRevision` → 412 (dispatch revision conflict — refetch before retry)
+ * - `printerOffline` → 503 (offline or stale telemetry)
+ * - `preconditionRequired` → 428 (missing Idempotency-Key)
+ */
+export const CalibrationBedClearAckOutcome = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('starting'),
+      /** The job ID that is now starting. */
+      jobId: z.string().uuid(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('alreadyStarting'),
+      /** The job ID that was already starting (idempotent replay). */
+      jobId: z.string().uuid(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('conflict'),
+      /** Stable snake_case reason code from the server. */
+      reason: z.string().max(128),
+      /** Operator-facing detail (no credentials or paths). */
+      detail: z.string().max(512).nullable(),
+    })
+    .strict(),
+  z.object({ kind: z.literal('staleRevision') }).strict(),
+  z
+    .object({
+      kind: z.literal('printerOffline'),
+      detail: z.string().max(512).nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('preconditionRequired'),
+      detail: z.string().max(512).nullable(),
+    })
+    .strict(),
+]);
+export type CalibrationBedClearAckOutcome = z.infer<
+  typeof CalibrationBedClearAckOutcome
+>;
+
+/**
+ * Acknowledge that the bed has been cleared before starting an exact calibration job.
+ * Maps to `POST /api/job-queue/{jobId}/acknowledge-bed-clear-and-start`
+ * (PR #979 / 167a3b134a678a0d9a8c10371da8333d03ddc636).
+ *
+ * This is the single combined bed-clear + start endpoint. No separate start endpoint.
+ */
 export const CalibrationAcknowledgeBedClearRequest = z
   .object({
     profileId: z.string().uuid(),
-    projectId: z.string().uuid(),
+    /** The exact job being acknowledged. */
     jobId: z.string().uuid(),
+    /** UUID of the assigned printer (must match job's AssignedPrinterId). */
+    printerId: z.string().uuid(),
+    /** Client-generated stable UUID for this command (Idempotency-Key header). */
     operationId: z.string().uuid(),
+    /**
+     * Base-64 ETag of the job row (from GET /api/job-queue/{id} `ETag` response header).
+     * Echo as `If-Match` header. Required by the server (428 if missing).
+     */
+    jobEtag: z.string().max(512).nullable(),
+    /**
+     * Base-64 ETag of the printer dispatch state (from `X-Dispatch-State-ETag` response header).
+     * Echo as `X-Dispatch-State-If-Match` header. Required by the server (428 if missing).
+     */
+    dispatchStateEtag: z.string().max(512).nullable(),
+    /** Printer config revision at request time (optional, for tighter fencing). */
+    expectedPrinterConfigRevision: z.number().int().nonnegative().nullable(),
   })
   .strict();
 export type CalibrationAcknowledgeBedClearRequest = z.infer<
@@ -3288,7 +3582,12 @@ export type CalibrationAcknowledgeBedClearRequest = z.infer<
 export const CalibrationAcknowledgeBedClearResponse = z.discriminatedUnion(
   'status',
   [
-    z.object({ status: z.literal('ok') }).strict(),
+    z
+      .object({
+        status: z.literal('ok'),
+        outcome: CalibrationBedClearAckOutcome,
+      })
+      .strict(),
     z
       .object({ status: z.literal('error'), error: CalibrationApiError })
       .strict(),
@@ -3298,7 +3597,25 @@ export type CalibrationAcknowledgeBedClearResponse = z.infer<
   typeof CalibrationAcknowledgeBedClearResponse
 >;
 
-/** Start an exact calibration print job. Disabled until sync complete + printer fresh. */
+/**
+ * Print lifecycle states reconciled from authoritative REST (L-01).
+ * The renderer never claims transition without REST confirmation.
+ */
+export const CalibrationPrintLifecycleState = z.enum([
+  'Queued',
+  'Assigned',
+  'Starting',
+  'Printing',
+  'Paused',
+  'Completed',
+  'Failed',
+  'Cancelled',
+]);
+export type CalibrationPrintLifecycleState = z.infer<
+  typeof CalibrationPrintLifecycleState
+>;
+
+/** Start an exact calibration print job (legacy channel, now an alias of acknowledgeBedClear). */
 export const CalibrationStartPrintRequest = z
   .object({
     profileId: z.string().uuid(),
@@ -4414,6 +4731,10 @@ export const ipcSchemas = {
     request: CalibrationStartGenerationRequest,
     response: CalibrationStartGenerationResponse,
   },
+  [IpcChannel.CalibrationGetOrchestrationStatus]: {
+    request: CalibrationGetOrchestrationStatusRequest,
+    response: CalibrationGetOrchestrationStatusResponse,
+  },
   [IpcChannel.CalibrationGetQueueState]: {
     request: CalibrationGetQueueStateRequest,
     response: CalibrationGetQueueStateResponse,
@@ -4594,6 +4915,10 @@ export interface PrintFarmerApi {
   startCalibrationGeneration(
     request: CalibrationStartGenerationRequest,
   ): Promise<CalibrationStartGenerationResponse>;
+  /** Poll orchestration status for REST reconciliation after restart/reconnect (G-06). */
+  getCalibrationOrchestrationStatus(
+    request: CalibrationGetOrchestrationStatusRequest,
+  ): Promise<CalibrationGetOrchestrationStatusResponse>;
   getCalibrationQueueState(
     request: CalibrationGetQueueStateRequest,
   ): Promise<CalibrationGetQueueStateResponse>;

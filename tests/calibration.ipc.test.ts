@@ -969,14 +969,45 @@ describe('generation/queue disabled states parse correctly', () => {
     expect(result.status).toBe('error');
   });
 
-  it('CalibrationStartGeneration ok state parses with generationJobId', () => {
+  it('CalibrationStartGeneration ok state parses with orchestration', () => {
+    const NOW_UTC = '2026-07-29T00:00:00.000Z';
     const result = ipcSchemas[
       IpcChannel.CalibrationStartGeneration
     ].response.parse({
       status: 'submitted',
-      generationJobId: ATTEMPT_UUID,
+      orchestration: {
+        orchestrationId: ATTEMPT_UUID,
+        projectId: PROJECT_UUID,
+        attemptId: ATTEMPT_UUID,
+        operationId: ATTEMPT_UUID,
+        status: 'Running',
+        currentStep: 'SlicingQueued',
+        revision: 1,
+        retryCount: 0,
+        nextRetryAtUtc: null,
+        stepStartedAtUtc: NOW_UTC,
+        lastErrorCode: null,
+        problems: [],
+        model3DId: null,
+        sliceJobId: null,
+        gcodeFileId: null,
+        specificationSha256: null,
+        planManifestSha256: null,
+        gcodeSha256: null,
+        generatorVersion: null,
+        slicerContainerDigest: null,
+        statusRoute:
+          '/api/calibration-orchestrations/44444444-4444-4444-8444-444444444444',
+        createdAtUtc: NOW_UTC,
+        updatedAtUtc: NOW_UTC,
+        completedAtUtc: null,
+      },
     });
     expect(result.status).toBe('submitted');
+    if (result.status === 'submitted') {
+      expect(result.orchestration.orchestrationId).toBe(ATTEMPT_UUID);
+      expect(result.orchestration.status).toBe('Running');
+    }
   });
 
   it('CalibrationStartPrint printerContextStale error parses', () => {

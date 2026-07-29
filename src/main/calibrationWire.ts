@@ -1132,3 +1132,204 @@ export type RemoteCalibrationApplyRequest = z.infer<
 export type RemoteCalibrationApplyResult =
   | { kind: 'success'; value: RemoteCalibrationApplySuccess }
   | { kind: 'conflict'; value: RemoteCalibrationApplyConflict };
+
+// --- Generation orchestration (issue #54) ----------------------------------
+
+/**
+ * One structured, redacted reason a generation request was refused.
+ * Mirrors `CalibrationGenerationProblemDto` from the PrintFarmer API.
+ * Storage paths, credentials, and raw logs are excluded by the server.
+ */
+export const RemoteCalibrationGenerationProblem = z
+  .object({
+    code: z.string().min(1).max(64),
+    field: z.string().max(128),
+    message: z.string().max(512),
+  })
+  .passthrough();
+export type RemoteCalibrationGenerationProblem = z.infer<
+  typeof RemoteCalibrationGenerationProblem
+>;
+
+/**
+ * Durable, redacted status of one calibration generation orchestration.
+ * Mirrors `CalibrationOrchestrationStatusDto` from the PrintFarmer API at
+ * `GET /api/calibration-orchestrations/{id}` and `POST …/generate-job` (202/200).
+ *
+ * Carries identifiers, digests, counters, and timestamps only.  Storage
+ * paths, worker endpoints, API keys, private URLs, and raw slicer logs are
+ * excluded by the server before this reaches PFD.
+ */
+export const RemoteCalibrationOrchestrationStatus = z
+  .object({
+    id: ServerGuid,
+    projectId: ServerGuid,
+    attemptId: ServerGuid,
+    operationId: z.string().min(1).max(256),
+    status: z.string().min(1).max(64),
+    currentStep: z.string().min(1).max(128),
+    revision: z.number().int().nonnegative(),
+    retryCount: z.number().int().nonnegative(),
+    nextRetryAtUtc: z
+      .string()
+      .datetime()
+      .nullish()
+      .transform((v) => v ?? null),
+    stepStartedAtUtc: z
+      .string()
+      .datetime()
+      .nullish()
+      .transform((v) => v ?? null),
+    lastErrorCode: z
+      .string()
+      .max(64)
+      .nullish()
+      .transform((v) => v ?? null),
+    problems: z
+      .array(RemoteCalibrationGenerationProblem)
+      .max(50)
+      .optional()
+      .default([]),
+    model3DId: ServerGuid.nullish().transform((v) => v ?? null),
+    sliceJobId: ServerGuid.nullish().transform((v) => v ?? null),
+    workerId: ServerGuid.nullish().transform((v) => v ?? null),
+    sourceArtifactId: ServerGuid.nullish().transform((v) => v ?? null),
+    finalArtifactId: ServerGuid.nullish().transform((v) => v ?? null),
+    gcodeFileId: ServerGuid.nullish().transform((v) => v ?? null),
+    specificationSha256: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    planManifestSha256: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    gcodeSha256: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    manifestSha256: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    generatorVersion: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    slicerContainerDigest: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    slicerBinarySha256: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    statusRoute: z.string().min(1).max(2048),
+    createdAtUtc: z.string().datetime(),
+    updatedAtUtc: z.string().datetime(),
+    completedAtUtc: z
+      .string()
+      .datetime()
+      .nullish()
+      .transform((v) => v ?? null),
+  })
+  .passthrough();
+export type RemoteCalibrationOrchestrationStatus = z.infer<
+  typeof RemoteCalibrationOrchestrationStatus
+>;
+
+// --- Job queue (issue #54) ------------------------------------------------
+
+/**
+ * Queue-focused view of a print job from `GET /api/job-queue/{id}`.
+ * Mirrors `JobQueuePrintJobDto` from the PrintFarmer API (PR #979).
+ *
+ * Key fields for bed-clear acknowledgement:
+ * - `rowVersion`: echoed as `If-Match` header
+ * - `dispatchStateRowVersion`: echoed as `X-Dispatch-State-If-Match` header
+ * - `pinnedPrinterConfigRevision`: echoed as `expectedPrinterConfigRevision` in body
+ * - `assignedPrinterId`: the printer the job is assigned to
+ * - `calibrationProjectId`: the calibration project that owns this job
+ *
+ * Storage paths and credentials never appear in this DTO.
+ */
+export const RemoteJobQueueJob = z
+  .object({
+    id: ServerGuid,
+    rowVersion: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    revision: z.number().int().nonnegative(),
+    dispatchStateRowVersion: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? null),
+    dispatchStateRevision: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullish()
+      .transform((v) => v ?? null),
+    calibrationProjectId: ServerGuid.nullish().transform((v) => v ?? null),
+    pinnedPrinterConfigRevision: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullish()
+      .transform((v) => v ?? null),
+    assignedPrinterId: ServerGuid.nullish().transform((v) => v ?? null),
+    assignedPrinterName: z
+      .string()
+      .max(256)
+      .nullish()
+      .transform((v) => v ?? ''),
+    gcodeFileName: z
+      .string()
+      .max(512)
+      .nullish()
+      .transform((v) => v ?? ''),
+    gcodeFileId: ServerGuid.nullish().transform((v) => v ?? null),
+    status: z
+      .string()
+      .max(64)
+      .nullish()
+      .transform((v) => v ?? null),
+    priority: z.number().int().nonnegative().optional().default(0),
+    queuePosition: z.number().int().nonnegative().optional().default(0),
+    requiredNozzleDiameter: z
+      .number()
+      .positive()
+      .max(10)
+      .nullish()
+      .transform((v) => v ?? null),
+    requiredMaterialType: z
+      .string()
+      .max(128)
+      .nullish()
+      .transform((v) => v ?? null),
+    bedClearState: z
+      .string()
+      .max(64)
+      .nullish()
+      .transform((v) => v ?? null),
+    bedClearCommandId: ServerGuid.nullish().transform((v) => v ?? null),
+    bedClearExpiresAtUtc: z
+      .string()
+      .datetime()
+      .nullish()
+      .transform((v) => v ?? null),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .passthrough();
+export type RemoteJobQueueJob = z.infer<typeof RemoteJobQueueJob>;

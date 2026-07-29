@@ -30,6 +30,8 @@ import type {
   RemoteCalibrationCapabilities,
   RemoteCalibrationPrinters,
   RemoteCalibrationPrinterContext,
+  RemoteCalibrationOrchestrationStatus,
+  RemoteJobQueueJob,
 } from './calibrationWire.js';
 import {
   RemoteCalibrationApplySuccess,
@@ -42,6 +44,8 @@ import {
   RemoteCalibrationPhoto as PhotoSchema,
   RemoteCalibrationPrinters as PrintersSchema,
   RemoteCalibrationPrinterContext as PrinterContextSchema,
+  RemoteCalibrationOrchestrationStatus as OrchestrationStatusSchema,
+  RemoteJobQueueJob as JobQueueJobSchema,
 } from './calibrationWire.js';
 
 // --- Fixed API route constants ---------------------------------------------
@@ -68,14 +72,19 @@ const ROUTES = {
     `/api/calibration-photos/${encodeURIComponent(id)}/upload`,
   profileRevisions: (projectId: string) =>
     `/api/calibration-projects/${encodeURIComponent(projectId)}/profile-revisions`,
-  generation: (projectId: string) =>
-    `/api/calibration-projects/${encodeURIComponent(projectId)}/generation`,
-  queue: (projectId: string) =>
-    `/api/calibration-projects/${encodeURIComponent(projectId)}/queue`,
-  bedClear: (projectId: string, jobId: string) =>
-    `/api/calibration-projects/${encodeURIComponent(projectId)}/queue/${encodeURIComponent(jobId)}/bed-clear`,
-  printStart: (projectId: string, jobId: string) =>
-    `/api/calibration-projects/${encodeURIComponent(projectId)}/queue/${encodeURIComponent(jobId)}/start`,
+  // Generation: POST /api/calibration-projects/{projectId}/attempts/{attemptId}/generate-job
+  // (PR #979 / 167a3b134a678a0d9a8c10371da8333d03ddc636)
+  generateJob: (projectId: string, attemptId: string) =>
+    `/api/calibration-projects/${encodeURIComponent(projectId)}/attempts/${encodeURIComponent(attemptId)}/generate-job`,
+  // Orchestration status: GET /api/calibration-orchestrations/{id}
+  orchestrationStatus: (orchestrationId: string) =>
+    `/api/calibration-orchestrations/${encodeURIComponent(orchestrationId)}`,
+  // Job queue: GET /api/job-queue/{id}
+  jobQueueJob: (jobId: string) => `/api/job-queue/${encodeURIComponent(jobId)}`,
+  // Bed-clear and start: POST /api/job-queue/{jobId}/acknowledge-bed-clear-and-start
+  // (PR #979 / 167a3b134a678a0d9a8c10371da8333d03ddc636)
+  acknowledgeBedClearAndStart: (jobId: string) =>
+    `/api/job-queue/${encodeURIComponent(jobId)}/acknowledge-bed-clear-and-start`,
 } as const;
 
 // --- Error types -----------------------------------------------------------
@@ -95,7 +104,28 @@ export type CalibrationHttpErrorCode =
   | 'revisionConflict'
   | 'idempotencyPayloadChanged'
   | 'invalidData'
-  | 'workerUnavailable';
+  | 'workerUnavailable'
+  /** Bed-clear: 409 wrong_job — the acknowledgement names a different job. */
+  | 'wrongJob'
+  /** Bed-clear: 409 printer_busy — printer is busy with another job. */
+  | 'printerBusy'
+  /** Bed-clear: 409 job_not_dispatchable — job is not dispatchable. */
+  | 'jobNotDispatchable'
+  /** Bed-clear: 422 calibration_job_incompatible — compatibility tuple invalid. */
+  | 'calibrationJobIncompatible';
+
+/** Typed outcome of a `POST …/acknowledge-bed-clear-and-start` request. */
+export type BedClearAckOutcome =
+  | { kind: 'starting'; jobId: string }
+  | { kind: 'alreadyStarting'; jobId: string }
+  | {
+      kind: 'conflict';
+      reason: string;
+      detail: string | null;
+    }
+  | { kind: 'staleRevision' }
+  | { kind: 'printerOffline'; detail: string | null }
+  | { kind: 'preconditionRequired'; detail: string | null };
 
 export class CalibrationHttpError extends Error {
   constructor(
@@ -571,24 +601,45 @@ export class CalibrationHttpClient {
     }
   }
 
+  /**
+   * Start or resume the durable calibration generation saga for an attempt.
+   * Maps to `POST /api/calibration-projects/{projectId}/attempts/{attemptId}/generate-job`
+   * (PR #979 / 167a3b134a678a0d9a8c10371da8333d03ddc636).
+   *
+   * Headers:
+   * - `Idempotency-Key`: stable client-generated UUID for exact-replay detection
+   *
+   * Body: typed `CalibrationGenerateJobRequest` with method, definitionVersion, options, baseRevision.
+   *
+   * Responses: 202 (new/resumed), 200 (exact replay), 409/412/422/503 on failure.
+   *
+   * @returns The durable orchestration status (includes orchestrationId and statusRoute for polling).
+   */
   async startGeneration(
     profileId: string,
     baseUrl: string,
     projectId: string,
+    attemptId: string,
     operationId: string,
-    baseRevision: number,
+    method: string,
+    definitionVersion: string,
+    options: Record<string, unknown> | null,
+    baseRevision: number | null,
     signal: AbortSignal,
-  ): Promise<{ generationJobId: string }> {
+  ): Promise<RemoteCalibrationOrchestrationStatus> {
     const headers: Record<string, string> = {
       'content-type': 'application/json',
-      'idempotency-key': operationId,
-      'if-match': String(baseRevision),
+      'Idempotency-Key': operationId,
     };
+    const body: Record<string, unknown> = { method, definitionVersion };
+    if (options !== null) body.options = options;
+    if (baseRevision !== null) body.baseRevision = baseRevision;
+
     const pending = await this.request(
       profileId,
       baseUrl,
-      ROUTES.generation(projectId),
-      { method: 'POST', headers, body: JSON.stringify({ projectId }) },
+      ROUTES.generateJob(projectId, attemptId),
+      { method: 'POST', headers, body: JSON.stringify(body) },
       signal,
       true,
     );
@@ -600,87 +651,246 @@ export class CalibrationHttpClient {
           pending.timedOut(),
         );
       }
-      const body = await this.readBody(pending);
-      const parsed = z
-        .object({ generationJobId: z.string().uuid() })
-        .passthrough()
-        .parse(JSON.parse(body));
-      return { generationJobId: parsed.generationJobId };
+      const responseBody = await this.readBody(pending);
+      return OrchestrationStatusSchema.parse(JSON.parse(responseBody));
     } finally {
       pending.dispose();
     }
   }
 
+  /**
+   * Fetch the durable orchestration status for REST reconciliation after restart/reconnect.
+   * Maps to `GET /api/calibration-orchestrations/{id}`
+   * (PR #979 / 167a3b134a678a0d9a8c10371da8333d03ddc636).
+   *
+   * This is the authoritative REST source for all stage display after restart;
+   * SignalR progress is a hint only.
+   */
+  async getOrchestrationStatus(
+    profileId: string,
+    baseUrl: string,
+    orchestrationId: string,
+    signal: AbortSignal,
+  ): Promise<RemoteCalibrationOrchestrationStatus | null> {
+    return this.getOptional(
+      profileId,
+      baseUrl,
+      ROUTES.orchestrationStatus(orchestrationId),
+      OrchestrationStatusSchema,
+      signal,
+    );
+  }
+
+  /**
+   * Fetch the authoritative queue job state for a single job.
+   * Maps to `GET /api/job-queue/{id}`
+   * (PR #979 / 167a3b134a678a0d9a8c10371da8333d03ddc636).
+   *
+   * The response includes `RowVersion` and `DispatchStateRowVersion` as ETags
+   * in the `ETag` and `X-Dispatch-State-ETag` response headers (stored in the
+   * `rowVersion` and `dispatchStateRowVersion` fields of the DTO).
+   *
+   * REST is authoritative; SignalR events are hints only. On reconnect or gap,
+   * this endpoint must be polled to converge to authoritative state.
+   */
+  async getJobQueueJob(
+    profileId: string,
+    baseUrl: string,
+    jobId: string,
+    signal: AbortSignal,
+  ): Promise<RemoteJobQueueJob | null> {
+    const pending = await this.request(
+      profileId,
+      baseUrl,
+      ROUTES.jobQueueJob(jobId),
+      { method: 'GET' },
+      signal,
+      false,
+    );
+    try {
+      if (pending.response.status === 404) {
+        await discard(pending.response);
+        return null;
+      }
+      if (!pending.response.ok) {
+        throw await this.statusError(
+          pending.response,
+          false,
+          pending.timedOut(),
+        );
+      }
+      const body = await this.readBody(pending);
+      const dto = JobQueueJobSchema.parse(JSON.parse(body));
+      // Merge ETags from response headers into the DTO if present.
+      // The server also provides these in the response body fields, but headers
+      // are canonical and must not be overwritten with stale body values.
+      const etagHeader = pending.response.headers.get('ETag');
+      const dispatchEtagHeader = pending.response.headers.get(
+        'X-Dispatch-State-ETag',
+      );
+      return {
+        ...dto,
+        rowVersion:
+          etagHeader !== null
+            ? etagHeader.replace(/^"|"$/g, '')
+            : dto.rowVersion,
+        dispatchStateRowVersion:
+          dispatchEtagHeader !== null
+            ? dispatchEtagHeader.replace(/^"|"$/g, '')
+            : dto.dispatchStateRowVersion,
+      };
+    } finally {
+      pending.dispose();
+    }
+  }
+
+  /**
+   * Acknowledge bed-clear and authorize dispatch for a specific job.
+   * Maps to `POST /api/job-queue/{jobId}/acknowledge-bed-clear-and-start`
+   * (PR #979 / 167a3b134a678a0d9a8c10371da8333d03ddc636).
+   *
+   * This is the single endpoint for combined bed-clear acknowledgement and print start.
+   * No separate startPrint endpoint exists.
+   *
+   * Required headers (per PR #979 API contract):
+   * - `Idempotency-Key`: stable UUID for exact-replay detection
+   * - `If-Match`: base-64 ETag of the job row (from `GET /api/job-queue/{id}`)
+   * - `X-Dispatch-State-If-Match`: base-64 ETag of the printer dispatch state
+   *
+   * Required body fields:
+   * - `printerId`: UUID of the assigned printer
+   *
+   * Optional body fields:
+   * - `expectedPrinterConfigRevision`: printer config revision at request time
+   *
+   * Typed outcomes (B-03):
+   * - 202: newly accepted → `{ kind: 'starting', jobId }`
+   * - 200: idempotent replay → `{ kind: 'alreadyStarting', jobId }`
+   * - 409: wrong job/printer/state → `{ kind: 'conflict', reason, detail }`
+   * - 412: stale dispatch revision → `{ kind: 'staleRevision' }` (refetch before retry)
+   * - 503: printer offline/stale → `{ kind: 'printerOffline', detail }`
+   * - 428: missing Idempotency-Key → `{ kind: 'preconditionRequired', detail }`
+   *
+   * An accepted-but-unconfirmed start remains in `Starting` state; no blind retry
+   * is offered or triggered automatically (B-04).
+   */
   async acknowledgeBedClear(
     profileId: string,
     baseUrl: string,
-    projectId: string,
     jobId: string,
+    printerId: string,
     operationId: string,
+    jobEtag: string | null,
+    dispatchStateEtag: string | null,
+    expectedPrinterConfigRevision: number | null,
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<BedClearAckOutcome> {
     const headers: Record<string, string> = {
       'content-type': 'application/json',
-      'idempotency-key': operationId,
+      'Idempotency-Key': operationId,
     };
-    const pending = await this.request(
-      profileId,
-      baseUrl,
-      ROUTES.bedClear(projectId, jobId),
-      { method: 'POST', headers, body: '{}' },
-      signal,
-      true,
-    );
-    try {
-      if (!pending.response.ok) {
-        throw await this.statusError(
-          pending.response,
-          true,
-          pending.timedOut(),
-        );
-      }
-      await discard(pending.response);
-    } finally {
-      pending.dispose();
+    if (jobEtag !== null) {
+      headers['If-Match'] = `"${jobEtag}"`;
     }
-  }
+    if (dispatchStateEtag !== null) {
+      headers['X-Dispatch-State-If-Match'] = `"${dispatchStateEtag}"`;
+    }
+    const bodyObj: Record<string, unknown> = { printerId };
+    if (expectedPrinterConfigRevision !== null) {
+      bodyObj.expectedPrinterConfigRevision = expectedPrinterConfigRevision;
+    }
 
-  async startPrint(
-    profileId: string,
-    baseUrl: string,
-    projectId: string,
-    jobId: string,
-    operationId: string,
-    baseRevision: number,
-    signal: AbortSignal,
-  ): Promise<{ jobId: string }> {
-    const headers: Record<string, string> = {
-      'content-type': 'application/json',
-      'idempotency-key': operationId,
-      'if-match': String(baseRevision),
-    };
     const pending = await this.request(
       profileId,
       baseUrl,
-      ROUTES.printStart(projectId, jobId),
-      { method: 'POST', headers, body: JSON.stringify({ jobId }) },
+      ROUTES.acknowledgeBedClearAndStart(jobId),
+      { method: 'POST', headers, body: JSON.stringify(bodyObj) },
       signal,
       true,
     );
     try {
-      if (!pending.response.ok) {
-        throw await this.statusError(
-          pending.response,
+      const status = pending.response.status;
+
+      if (status === 202 || status === 200) {
+        await discard(pending.response);
+        return status === 202
+          ? { kind: 'starting', jobId }
+          : { kind: 'alreadyStarting', jobId };
+      }
+
+      if (status === 409) {
+        let detail: string | null = null;
+        let reason = 'conflict';
+        try {
+          const body = await this.readBody(pending);
+          const parsed = z
+            .object({
+              error: z.string().optional(),
+              detail: z.string().optional(),
+            })
+            .passthrough()
+            .safeParse(JSON.parse(body));
+          if (parsed.success) {
+            reason = parsed.data.error ?? 'conflict';
+            detail = parsed.data.detail ?? null;
+          }
+        } catch {
+          // Ignore parse errors; use defaults
+        }
+        return { kind: 'conflict', reason, detail };
+      }
+
+      if (status === 412) {
+        await discard(pending.response);
+        return { kind: 'staleRevision' };
+      }
+
+      if (status === 503) {
+        let detail: string | null = null;
+        try {
+          const body = await this.readBody(pending);
+          const parsed = z
+            .object({ detail: z.string().optional() })
+            .passthrough()
+            .safeParse(JSON.parse(body));
+          if (parsed.success) detail = parsed.data.detail ?? null;
+        } catch {
+          // Ignore parse errors
+        }
+        return { kind: 'printerOffline', detail };
+      }
+
+      if (status === 428) {
+        let detail: string | null = null;
+        try {
+          const body = await this.readBody(pending);
+          const parsed = z
+            .object({ detail: z.string().optional() })
+            .passthrough()
+            .safeParse(JSON.parse(body));
+          if (parsed.success) detail = parsed.data.detail ?? null;
+        } catch {
+          // Ignore parse errors
+        }
+        return { kind: 'preconditionRequired', detail };
+      }
+
+      // All other non-2xx statuses → throw typed error
+      throw await this.statusError(pending.response, true, pending.timedOut());
+    } catch (error) {
+      if (
+        error instanceof CalibrationHttpError &&
+        ['invalidResponse', 'bodyTooLarge', 'transport'].includes(error.code)
+      ) {
+        throw new CalibrationHttpError(
+          error.code,
+          error.message,
+          error.status,
+          error.retryAfterMs,
           true,
-          pending.timedOut(),
         );
       }
-      const body = await this.readBody(pending);
-      const parsed = z
-        .object({ jobId: z.string().uuid() })
-        .passthrough()
-        .parse(JSON.parse(body));
-      return { jobId: parsed.jobId };
+      throw error;
     } finally {
       pending.dispose();
     }
