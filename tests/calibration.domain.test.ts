@@ -911,3 +911,151 @@ describe('calibration reducer', () => {
     expect(state.binding.snapshot.snapshotId).toBe('snapshot-rebased');
   });
 });
+
+// ─── completePrintedAttempt — authoritative domain enforcement (L-03, L-05) ──
+
+describe('completePrintedAttempt: authoritative result/photo enforcement (L-03, L-05)', () => {
+  function stateWithInProgressAttempt(): {
+    state: CalibrationState;
+    attemptId: string;
+  } {
+    const attemptId = 'printed-attempt-1';
+    const observationId = 'printed-obs-1';
+    let state = initial();
+    state = calibrationReducer(state, {
+      ...eventBase('pa1'),
+      type: 'beginAttempt',
+      attemptId,
+      stageId: 'temperature',
+      method: 'temperatureTower',
+    });
+    state = calibrationReducer(state, {
+      ...eventBase('pa2'),
+      type: 'recordObservation',
+      attemptId,
+      observation: observationFor('temperature', attemptId, observationId),
+    });
+    state = calibrationReducer(state, {
+      ...eventBase('pa3'),
+      type: 'selectObservation',
+      attemptId,
+      observationId,
+    });
+    return { state, attemptId };
+  }
+
+  function completePrinted(
+    state: CalibrationState,
+    attemptId: string,
+    overrides: Partial<
+      Extract<CalibrationEvent, { type: 'completePrintedAttempt' }>
+    > = {},
+  ): CalibrationState {
+    const event: CalibrationEvent = {
+      ...eventBase('printed-complete'),
+      type: 'completePrintedAttempt',
+      attemptId,
+      result: 'pass',
+      confidence: 'high',
+      retest: 'NO',
+      photos: [],
+      orchestrationId: null,
+      jobId: null,
+      assetContentHash: null,
+      ...overrides,
+    };
+    return calibrationReducer(state, event);
+  }
+
+  it('accepts completePrintedAttempt with required result, confidence, retest (L-05)', () => {
+    const { state, attemptId } = stateWithInProgressAttempt();
+    const next = completePrinted(state, attemptId);
+    const attempt = next.attempts.find((a) => a.attemptId === attemptId);
+    expect(attempt?.status).toBe('completed');
+    expect(attempt?.result).toBe('pass');
+    expect(attempt?.confidence).toBe('high');
+    expect(attempt?.retest).toBe('NO');
+    expect(next.stages.temperature.status).toBe('completed');
+  });
+
+  it('persists photos as immutable evidence on the attempt (L-03)', () => {
+    const { state, attemptId } = stateWithInProgressAttempt();
+    const photo = {
+      photoId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      contentHash: 'a'.repeat(64),
+      mimeType: 'image/jpeg' as const,
+      caption: 'Test photo',
+      order: 1,
+    };
+    const next = completePrinted(state, attemptId, { photos: [photo] });
+    const attempt = next.attempts.find((a) => a.attemptId === attemptId);
+    expect(attempt?.photos).toHaveLength(1);
+    expect(attempt?.photos?.[0]?.contentHash).toBe('a'.repeat(64));
+    expect(attempt?.photos?.[0]?.caption).toBe('Test photo');
+  });
+
+  it('persists orchestrationId and jobId as immutable provenance (L-02)', () => {
+    const { state, attemptId } = stateWithInProgressAttempt();
+    const next = completePrinted(state, attemptId, {
+      orchestrationId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      jobId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    });
+    const attempt = next.attempts.find((a) => a.attemptId === attemptId);
+    expect(attempt?.orchestrationId).toBe(
+      'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    );
+    expect(attempt?.jobId).toBe('cccccccc-cccc-4ccc-8ccc-cccccccccccc');
+  });
+
+  it('rejects completePrintedAttempt for a non-in-progress attempt (L-05)', () => {
+    const { state, attemptId } = stateWithInProgressAttempt();
+    const completed = completePrinted(state, attemptId);
+    const diagnosticsBefore = completed.diagnostics.length;
+    const rejected = completePrinted(completed, attemptId, {
+      ...eventBase('double-complete'),
+    });
+    expect(rejected.diagnostics.length).toBeGreaterThan(diagnosticsBefore);
+    const error = rejected.diagnostics.at(-1);
+    expect(error?.code).toBe('ATTEMPT_NOT_IN_PROGRESS');
+    expect(error?.severity).toBe('error');
+  });
+
+  it('appends completePrintedAttempt event to immutable history (L-03)', () => {
+    const { state, attemptId } = stateWithInProgressAttempt();
+    const historyBefore = state.history.length;
+    const next = completePrinted(state, attemptId);
+    expect(next.history.length).toBe(historyBefore + 1);
+    const lastEvent = next.history.at(-1);
+    expect(lastEvent?.type).toBe('completePrintedAttempt');
+  });
+
+  it('completePrintedAttempt replayed via replayCalibrationEvents preserves IDs (G-02)', () => {
+    const { state, attemptId } = stateWithInProgressAttempt();
+    const photo = {
+      photoId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      contentHash: 'd'.repeat(64),
+      mimeType: 'image/png' as const,
+      caption: 'After print',
+      order: 1,
+    };
+    const next = completePrinted(state, attemptId, {
+      photos: [photo],
+      orchestrationId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+    });
+    const initial2 = createCalibrationState({
+      projectId: next.projectId,
+      createdAt: next.createdAt,
+      mode: next.mode,
+      baseline: next.baseline,
+      binding: next.binding,
+    });
+    const replayed = replayCalibrationEvents(initial2, next.history);
+    const attempt = replayed.attempts.find((a) => a.attemptId === attemptId);
+    expect(attempt?.status).toBe('completed');
+    expect(attempt?.result).toBe('pass');
+    expect(attempt?.photos?.[0]?.contentHash).toBe('d'.repeat(64));
+    expect(attempt?.orchestrationId).toBe(
+      'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+    );
+  });
+});

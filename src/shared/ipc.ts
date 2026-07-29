@@ -1537,6 +1537,34 @@ const WorkspaceAttemptBase = {
   completionNotes: z.string().max(4_096).optional(),
   recommendation: WorkspaceRecommendation.optional(),
   diagnostics: z.array(WorkspaceDiagnostic).max(2_000),
+  /**
+   * Immutable photo descriptors committed at completePrintedAttempt (L-03).
+   * Absent for legacy attempts completed via completeAttempt.
+   */
+  photos: z
+    .array(
+      z
+        .object({
+          photoId: z.string().uuid(),
+          contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+          mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+          caption: z.string().min(1).max(512),
+          order: z.number().int().min(1).max(1_000),
+        })
+        .strict(),
+    )
+    .max(100)
+    .optional(),
+  /** Immutable orchestration ID from the generation that produced this print. */
+  orchestrationId: z.string().uuid().nullable().optional(),
+  /** Immutable queue job ID for the print that produced this result. */
+  jobId: z.string().uuid().nullable().optional(),
+  /** SHA-256 of the calibration asset used, or null if not applicable. */
+  assetContentHash: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .nullable()
+    .optional(),
 };
 const WorkspaceAttempt = z.discriminatedUnion('stageId', [
   z
@@ -1720,6 +1748,57 @@ const WorkspaceHistoryEvent = z.discriminatedUnion('type', [
       retest: z.enum(['YES', 'NO', 'PENDING']).optional(),
       /** Operator notes recorded at completion (L-03). */
       completionNotes: z.string().max(4_096).optional(),
+    })
+    .strict(),
+  /**
+   * Additive strict completion event for the queue workflow (L-03, L-05).
+   * Distinct from `completeAttempt` (legacy); this variant REQUIRES result,
+   * retest decision, and approved photo descriptors, and carries immutable
+   * generation/job provenance links. The reducer rejects this event if any
+   * required field is absent, the attempt is not in-progress, or it has
+   * already been completed.
+   */
+  z
+    .object({
+      ...WorkspaceEventBase,
+      type: z.literal('completePrintedAttempt'),
+      attemptId: WorkspaceId,
+      /** Result is REQUIRED (non-optional) — the domain rejects absent results. */
+      result: z.enum(['pass', 'fail', 'inconclusive']),
+      confidence: z.enum(['low', 'medium', 'high']),
+      /** Retest decision is REQUIRED for this workflow event. */
+      retest: z.enum(['YES', 'NO', 'PENDING']),
+      completionNotes: z.string().max(4_096).optional(),
+      /**
+       * Immutable approved photo descriptors (no local paths). Each entry
+       * references a photo already in the workspace photos array. The
+       * contentHash is the stable identity; no local file path is included.
+       */
+      photos: z
+        .array(
+          z
+            .object({
+              photoId: z.string().uuid(),
+              contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+              mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+              caption: z.string().min(1).max(512),
+              order: z.number().int().min(1).max(1_000),
+            })
+            .strict(),
+        )
+        .max(100),
+      /** Immutable orchestration ID from the generation that produced the print. */
+      orchestrationId: z.string().uuid().nullable(),
+      /** Immutable job ID from the queue for the print that completed. */
+      jobId: z.string().uuid().nullable(),
+      /**
+       * SHA-256 of the calibration asset (3MF) used for this print.
+       * Null when the method does not use an external asset.
+       */
+      assetContentHash: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/)
+        .nullable(),
     })
     .strict(),
   z
@@ -2097,6 +2176,20 @@ const WorkspaceDomainState = z
             'History attempt reference does not match a persisted attempt.',
           );
         }
+      } else if (event.type === 'completePrintedAttempt') {
+        const attempt = attemptById.get(event.attemptId);
+        if (
+          attempt === undefined ||
+          attempt.status !== 'completed' ||
+          attempt.confidence !== event.confidence ||
+          attempt.result !== event.result
+        ) {
+          workspaceIssue(
+            context,
+            ['history', eventIndex],
+            'History completePrintedAttempt reference does not match a completed attempt with matching result and confidence.',
+          );
+        }
       } else if (event.type === 'recordObservation') {
         const attempt = attemptById.get(event.attemptId);
         const observation = observationById.get(
@@ -2290,6 +2383,35 @@ export const CalibrationWorkspacePayload = z
     /** Compatibility alias; must equal selectedBaseProfile.orcaProfileId. */
     selectedBaseProfileId: z.string().min(1).max(512),
     autosaveRevision: z.number().int().nonnegative(),
+    /**
+     * Durable pending generation operation state for restart/reconnect
+     * reconciliation (G-02, G-04). Persisted on operation creation; reused
+     * across process restarts so the same operationId is replayed idempotently.
+     * A new failed/cancelled retry sets a new operationId while this field is
+     * cleared. Null when no generation is in progress.
+     */
+    pendingGeneration: z
+      .object({
+        /** Stable idempotency UUID generated once when operation is created. */
+        operationId: z.string().uuid(),
+        stageId: CalibrationWorkspaceStageId,
+        attemptId: z.string().uuid(),
+        /** Project revision at time of generation submission. */
+        expectedProjectRevision: z.number().int().nonnegative().nullable(),
+        /** Orchestration saga ID from the server (null until submitted). */
+        orchestrationId: z.string().uuid().nullable(),
+        /** Last known orchestration step name. */
+        orchestrationStep: z.string().max(128).nullable(),
+        /** Queue job ID created by the orchestration (null until promoted). */
+        jobId: z.string().uuid().nullable(),
+        /** ISO-8601 datetime of the last REST reconcile for this operation. */
+        lastReconcileAt: z.string().datetime().nullable(),
+        /** ISO-8601 datetime when this operation record was created. */
+        createdAt: z.string().datetime(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
   })
   .strict()
   .superRefine((payload, context) => {

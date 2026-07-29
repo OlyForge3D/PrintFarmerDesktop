@@ -152,15 +152,12 @@ test('calibration: preload bridge is an object with calibration IPC methods', as
 });
 
 test('calibration: openCalibrationExternalUrl with valid linkId calls through to shell (A-02)', async () => {
-  // Intercept shell.openExternal in the main process to capture the URL.
-  let capturedUrl: string | null = null;
+  // Stub shell.openExternal WITHOUT calling the original — no side effects in tests.
   await app.evaluate(({ shell }) => {
-    // Stub openExternal to capture the URL
-    const originalOpen = shell.openExternal.bind(shell);
     (shell as { openExternal: (url: string) => Promise<void> }).openExternal =
       async (url: string) => {
         process.env['PRINTFARMER_TEST_LAST_OPENED_URL'] = url;
-        return originalOpen(url);
+        // Deliberately does NOT call the original — no real browser open in tests.
       };
   });
 
@@ -176,11 +173,143 @@ test('calibration: openCalibrationExternalUrl with valid linkId calls through to
     });
   });
 
-  capturedUrl = await app.evaluate(
+  const capturedUrl = await app.evaluate(
     () => process.env['PRINTFARMER_TEST_LAST_OPENED_URL'] ?? null,
   );
 
   expect(capturedUrl).toMatch(/^https:\/\/github\.com\//);
   expect(capturedUrl).toContain('Filament_Calibration_Wizard');
   expect(capturedUrl).toContain('v1.3.2');
+});
+
+// ─── Calibration IPC — named channels reject bad input (S-01, S-05) ──────────
+
+test('calibration: getCalibrationQueueState rejects request with missing profileId (S-01)', async () => {
+  const threw = await page.evaluate(async () => {
+    try {
+      await (
+        window as unknown as {
+          printFarmer: {
+            getCalibrationQueueState: (r: unknown) => Promise<unknown>;
+          };
+        }
+      ).printFarmer.getCalibrationQueueState({ jobId: null });
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  // Zod schema rejects the request — no profileId supplied
+  expect(threw).toBe(true);
+});
+
+test('calibration: acknowledgeCalibrationBedClear rejects request with invalid UUID (S-05)', async () => {
+  const threw = await page.evaluate(async () => {
+    try {
+      await (
+        window as unknown as {
+          printFarmer: {
+            acknowledgeCalibrationBedClear: (r: unknown) => Promise<unknown>;
+          };
+        }
+      ).printFarmer.acknowledgeCalibrationBedClear({
+        profileId: 'not-a-uuid',
+        jobId: 'also-not-a-uuid',
+        printerId: 'still-not-a-uuid',
+        operationId: 'not-a-uuid-either',
+        jobEtag: 'AABBCCDD',
+        dispatchStateEtag: 'AABBCCDD',
+        expectedPrinterConfigRevision: 7,
+      });
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  // Zod schema rejects non-UUID profileId
+  expect(threw).toBe(true);
+});
+
+test('calibration: startCalibrationGeneration rejects renderer-supplied arbitrary method (S-04)', async () => {
+  const threw = await page.evaluate(async () => {
+    try {
+      await (
+        window as unknown as {
+          printFarmer: {
+            startCalibrationGeneration: (r: unknown) => Promise<unknown>;
+          };
+        }
+      ).printFarmer.startCalibrationGeneration({
+        profileId: '11111111-1111-4111-8111-111111111111',
+        projectId: '22222222-2222-4222-8222-222222222222',
+        attemptId: '33333333-3333-4333-8333-333333333333',
+        operationId: '44444444-4444-4444-8444-444444444444',
+        method: 'ARBITRARY_UNSAFE_METHOD',
+        definitionVersion: '1.0',
+        methodOptions: null,
+        baseRevision: null,
+      });
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  // Method value must be from the allowed calibration method enum
+  expect(threw).toBe(true);
+});
+
+// ─── Calibration IPC — no generic URL/shell primitive exposed (S-04) ─────────
+
+test('calibration: no generic getCalibrationOrchestrationStatus without profileId (S-04)', async () => {
+  // Verifies that the named IPC channel has Zod-validated schema that requires profileId
+  const threw = await page.evaluate(async () => {
+    try {
+      await (
+        window as unknown as {
+          printFarmer: {
+            getCalibrationOrchestrationStatus: (r: unknown) => Promise<unknown>;
+          };
+        }
+      ).printFarmer.getCalibrationOrchestrationStatus({
+        orchestrationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        // profileId intentionally missing
+      });
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  expect(threw).toBe(true);
+});
+
+// ─── IPC unhandled-rejection safety (S-03, S-05) ─────────────────────────────
+
+test('calibration: renderer IPC rejection is surfaced as a thrown error, not an unhandled promise (S-05)', async () => {
+  // The preload bridge wraps IPC calls so that a schema rejection throws
+  // synchronously in the renderer rather than creating an unhandled rejection.
+  const result = await page.evaluate(async () => {
+    let threw = false;
+    let unhandled = false;
+    const handler = () => {
+      unhandled = true;
+    };
+    window.addEventListener('unhandledrejection', handler);
+    try {
+      await (
+        window as unknown as {
+          printFarmer: {
+            openCalibrationExternalUrl: (r: unknown) => Promise<void>;
+          };
+        }
+      ).printFarmer.openCalibrationExternalUrl({ linkId: 'not-in-allowlist' });
+    } catch {
+      threw = true;
+    }
+    // Yield so that unhandled-rejection handlers can fire if applicable
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    window.removeEventListener('unhandledrejection', handler);
+    return { threw, unhandled };
+  });
+  expect(result.threw).toBe(true);
+  expect(result.unhandled).toBe(false);
 });

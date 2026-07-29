@@ -39,32 +39,18 @@ type MethodManifest = ReviewedMethodManifest | UnreviewedMethodManifest;
 
 const METHOD_MANIFESTS: Readonly<Record<string, MethodManifest>> = {
   temperatureTower: {
-    reviewed: true,
-    expectedFilename: 'temperature_tower_v1.3.2.3mf',
-    expectedType: '3mf',
-    expectedSha256: null,
+    reviewed: false,
+    disabledReason:
+      'Asset not yet validated: expectedSha256 is null. Download the file from the reviewed source, compute its SHA-256 checksum, record it in the manifest, and re-enable after per-file review.',
     sourceModelUrl:
       'https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/releases/tag/v1.3.2',
-    attributionLine:
-      'tayloraaron078-tech/Filament_Calibration_Wizard v1.3.2 (AGPL-3.0-only)',
-    licenseSpdx: 'AGPL-3.0-only',
-    licenseUrl:
-      'https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/blob/057d6117b9ab31747ede3a5684a009cb6079ad11/License',
-    validationRules: { maxBytes: 52428800, minBytes: 512 },
   },
   flowStandard: {
-    reviewed: true,
-    expectedFilename: 'flow_calibration_v1.3.2.3mf',
-    expectedType: '3mf',
-    expectedSha256: null,
+    reviewed: false,
+    disabledReason:
+      'Asset not yet validated: expectedSha256 is null. Download the file from the reviewed source, compute its SHA-256 checksum, record it in the manifest, and re-enable after per-file review.',
     sourceModelUrl:
       'https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/releases/tag/v1.3.2',
-    attributionLine:
-      'tayloraaron078-tech/Filament_Calibration_Wizard v1.3.2 (AGPL-3.0-only)',
-    licenseSpdx: 'AGPL-3.0-only',
-    licenseUrl:
-      'https://github.com/tayloraaron078-tech/Filament_Calibration_Wizard/blob/057d6117b9ab31747ede3a5684a009cb6079ad11/License',
-    validationRules: { maxBytes: 52428800, minBytes: 512 },
   },
   pressureAdvanceTower: {
     reviewed: false,

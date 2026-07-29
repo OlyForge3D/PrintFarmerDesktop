@@ -45,6 +45,8 @@ function eventSummary(event: CalibrationEvent): string {
       return `Selected observation ${event.observationId} for attempt ${event.attemptId}.`;
     case 'completeAttempt':
       return `Completed attempt ${event.attemptId} with ${event.confidence} confidence.`;
+    case 'completePrintedAttempt':
+      return `Completed printed attempt ${event.attemptId}: ${event.result} (${event.confidence} confidence, retest: ${event.retest}).`;
     case 'skipStage':
       return `Skipped ${event.stageId}. Reason: ${event.reason}`;
     case 'redoStage':

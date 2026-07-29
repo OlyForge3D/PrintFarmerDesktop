@@ -616,6 +616,126 @@ export function calibrationReducer(
       };
       return appendEvent(next, event);
     }
+    case 'completePrintedAttempt': {
+      /* Authoritative domain-layer enforcement (L-05): result is required at
+       * schema level. This case handles the printed-result workflow with
+       * append-only evidence (photos, provenance links). */
+      const attempt = state.attempts.find(
+        (candidate) => candidate.attemptId === event.attemptId,
+      );
+      const selected = attempt?.observations.find(
+        (observation) =>
+          observation.observationId === attempt.selectedObservationId,
+      );
+      if (attempt === undefined || attempt.status !== 'inProgress') {
+        return rejectEvent(
+          state,
+          event,
+          'ATTEMPT_NOT_IN_PROGRESS',
+          'completePrintedAttempt requires an in-progress attempt.',
+          attempt?.stageId,
+        );
+      }
+      if (selected === undefined) {
+        return rejectEvent(
+          state,
+          event,
+          'SELECTED_OBSERVATION_REQUIRED',
+          'Select an observation from the in-progress attempt before completion.',
+          attempt.stageId,
+        );
+      }
+      const dependencies = unmetDependencies(state, attempt.stageId);
+      if (dependencies.length > 0) {
+        return rejectEvent(
+          state,
+          event,
+          'CURRENT_DEPENDENCIES_INVALID',
+          `Attempt completion is stale because dependencies require resolution: ${dependencies.join(', ')}.`,
+          attempt.stageId,
+        );
+      }
+      if (!attemptMatchesCurrentBinding(attempt, state)) {
+        return rejectEvent(
+          state,
+          event,
+          'STALE_ATTEMPT_SCOPE',
+          'Attempt scope no longer matches the current snapshot, tool, nozzle, and filament binding.',
+          attempt.stageId,
+        );
+      }
+      const selectedDiagnostics = validateObservation(
+        selected,
+        state.binding,
+        attempt.method,
+      );
+      if (
+        selectedDiagnostics.some(
+          (diagnostic) => diagnostic.severity === 'error',
+        )
+      ) {
+        return rejectEvent(
+          state,
+          event,
+          'SELECTED_OBSERVATION_INVALID',
+          'The selected observation has validation errors.',
+          attempt.stageId,
+        );
+      }
+      const recommendation = recommendationForObservation(state, selected);
+      const verificationFailed =
+        (selected.stageId === 'flowVerification' ||
+          selected.stageId === 'finalVerification') &&
+        (!selected.passed || selected.defectCount > 0);
+      const lowConfidenceDiagnostic: CalibrationDiagnostic[] =
+        event.confidence === 'low'
+          ? [
+              {
+                code: 'LOW_RESULT_CONFIDENCE',
+                severity: 'warning',
+                message: 'Low confidence is recorded; a retest is recommended.',
+                stageId: attempt.stageId,
+                eventId: event.eventId,
+              },
+            ]
+          : [];
+      /* Append immutable evidence: result, retest, photos, provenance links.
+       * None of these fields can be overwritten after this point (L-03). */
+      const completedAttempt: CalibrationAttempt = {
+        ...attempt,
+        status: 'completed',
+        completedAt: event.timestamp,
+        confidence: event.confidence,
+        result: event.result,
+        retest: event.retest,
+        ...(event.completionNotes !== undefined
+          ? { completionNotes: event.completionNotes }
+          : {}),
+        photos: event.photos,
+        orchestrationId: event.orchestrationId,
+        jobId: event.jobId,
+        assetContentHash: event.assetContentHash,
+        recommendation,
+        diagnostics: [...attempt.diagnostics, ...lowConfidenceDiagnostic],
+      };
+      let next = replaceAttempt(state, completedAttempt);
+      next = {
+        ...next,
+        stages: {
+          ...next.stages,
+          [attempt.stageId]: {
+            ...next.stages[attempt.stageId],
+            status: verificationFailed ? 'needsRetest' : 'completed',
+            selectedAttemptId: attempt.attemptId,
+            ...(verificationFailed
+              ? { retestReason: 'Selected verification did not pass cleanly.' }
+              : {}),
+          },
+        },
+        diagnostics: [...next.diagnostics, ...lowConfidenceDiagnostic],
+      };
+      return appendEvent(next, event);
+    }
     case 'skipStage': {
       const reason = event.reason.trim();
       const progress = state.stages[event.stageId];

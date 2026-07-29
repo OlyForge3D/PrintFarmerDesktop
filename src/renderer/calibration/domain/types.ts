@@ -233,6 +233,25 @@ export interface CalibrationAttempt {
   readonly completionNotes?: string | undefined;
   readonly recommendation?: CalibrationRecommendation | undefined;
   readonly diagnostics: readonly CalibrationDiagnostic[];
+  /**
+   * Immutable photo descriptors committed at completePrintedAttempt (L-03).
+   * Absent for legacy attempts completed via completeAttempt.
+   */
+  readonly photos?:
+    | readonly {
+        readonly photoId: string;
+        readonly contentHash: string;
+        readonly mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+        readonly caption: string;
+        readonly order: number;
+      }[]
+    | undefined;
+  /** Immutable orchestration ID from the generation that produced this print. */
+  readonly orchestrationId?: string | null | undefined;
+  /** Immutable queue job ID for the print that produced this result. */
+  readonly jobId?: string | null | undefined;
+  /** SHA-256 of the calibration asset used, or null if not applicable. */
+  readonly assetContentHash?: string | null | undefined;
 }
 
 export interface StageSkip {
@@ -294,6 +313,28 @@ export type CalibrationEvent =
       readonly retest?: 'YES' | 'NO' | 'PENDING' | undefined;
       /** Operator notes recorded at completion (L-03). */
       readonly completionNotes?: string | undefined;
+    })
+  /**
+   * Additive strict completion event for the queue workflow (L-03, L-05).
+   * Result, retest, and photos are REQUIRED — reducer rejects if absent.
+   */
+  | (CalibrationEventBase & {
+      readonly type: 'completePrintedAttempt';
+      readonly attemptId: string;
+      readonly result: 'pass' | 'fail' | 'inconclusive';
+      readonly confidence: Confidence;
+      readonly retest: 'YES' | 'NO' | 'PENDING';
+      readonly completionNotes?: string | undefined;
+      readonly photos: readonly {
+        readonly photoId: string;
+        readonly contentHash: string;
+        readonly mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+        readonly caption: string;
+        readonly order: number;
+      }[];
+      readonly orchestrationId: string | null;
+      readonly jobId: string | null;
+      readonly assetContentHash: string | null;
     })
   | (CalibrationEventBase & {
       readonly type: 'skipStage';

@@ -222,8 +222,12 @@ export function CalibrationWorkspaceStoreProvider({
     useState<GeneratedProfileState | null>(null);
   const [generationState, setGenerationState] =
     useState<CalibrationGenerationState | null>(null);
+  const generationStateRef = useRef<CalibrationGenerationState | null>(null);
+  generationStateRef.current = generationState;
   const [queueJobState, setQueueJobState] =
     useState<CalibrationQueueJobDisplayState | null>(null);
+  const queueJobStateRef = useRef<CalibrationQueueJobDisplayState | null>(null);
+  queueJobStateRef.current = queueJobState;
   const [bedClearDialog, setBedClearDialog] =
     useState<BedClearDialogState>(emptyBedClearDialog);
 
@@ -1193,6 +1197,30 @@ export function CalibrationWorkspaceStoreProvider({
         'Submitting calibration generation request to PrintFarmer.',
       );
       setAlertMessage(null);
+      /* Persist the durable operation ID to workspace before submission so that
+       * a crash/restart can recover the same idempotency key (G-02, G-04). */
+      const projectBeforeSubmit = activeProjectRef.current;
+      if (projectBeforeSubmit !== null) {
+        const pendingPayload: CalibrationWorkspacePayload = {
+          ...payloadFor(projectBeforeSubmit),
+          pendingGeneration: {
+            operationId: params.operationId,
+            stageId: params.stageId,
+            attemptId: params.attemptId,
+            expectedProjectRevision: params.baseRevision,
+            orchestrationId: null,
+            orchestrationStep: null,
+            jobId: null,
+            lastReconcileAt: null,
+            createdAt: environment.now(),
+          },
+        };
+        await bumpAndSave(
+          replacePayload(projectBeforeSubmit, pendingPayload),
+          environment.now(),
+          'Persisting generation operation ID for restart recovery.',
+        );
+      }
       try {
         const response = await calibrationApi().startCalibrationGeneration({
           profileId: params.profileId,
@@ -1233,6 +1261,29 @@ export function CalibrationWorkspaceStoreProvider({
         setLiveMessage(
           `Generation submitted. Orchestration ${orchestration.orchestrationId.slice(0, 8)}… is ${orchestration.status}.`,
         );
+        /* Update persisted pendingGeneration with the orchestration ID returned
+         * by the server so reconciliation can resume after restart (G-06). */
+        const projectAfterSubmit = activeProjectRef.current;
+        if (
+          projectAfterSubmit !== null &&
+          projectAfterSubmit.record.workspaceState.pendingGeneration
+            ?.operationId === params.operationId
+        ) {
+          const updatedPayload: CalibrationWorkspacePayload = {
+            ...payloadFor(projectAfterSubmit),
+            pendingGeneration: {
+              ...projectAfterSubmit.record.workspaceState.pendingGeneration,
+              orchestrationId: orchestration.orchestrationId,
+              orchestrationStep: orchestration.currentStep ?? null,
+              lastReconcileAt: environment.now(),
+            },
+          };
+          await bumpAndSave(
+            replacePayload(projectAfterSubmit, updatedPayload),
+            environment.now(),
+            'Persisting orchestration ID for restart recovery.',
+          );
+        }
       } catch (cause) {
         if (profileIdRef.current !== params.profileId) return;
         const message = errorMessage(
@@ -1245,7 +1296,7 @@ export function CalibrationWorkspaceStoreProvider({
         reportError(message);
       }
     },
-    [reportError],
+    [bumpAndSave, environment, reportError],
   );
 
   const pollOrchestrationStatus = useCallback(
@@ -1543,18 +1594,39 @@ export function CalibrationWorkspaceStoreProvider({
       const draft = project.record.workspaceState.workflowDrafts[stageId];
       const confidence = draft?.confidence ?? '';
       const result = draft?.observation.primary ?? '';
-      // Enforce the result gate (L-05): both result and confidence required.
+      /* Enforce the result gate (L-05): both result and confidence required
+       * at the store layer; the domain reducer enforces this authoritatively. */
       if (confidence === '' || result === '') return;
+      /* Collect approved photo descriptors staged for this attempt (L-03). */
+      const stagedPhotos = project.record.workspaceState.photos.filter(
+        (photo) => photo.attemptId === activeAttempt.attemptId,
+      );
+      const photoDescriptors = stagedPhotos.map((photo) => ({
+        photoId: photo.photoId,
+        contentHash: photo.contentHash,
+        mimeType: photo.mimeType,
+        caption: photo.caption,
+        order: photo.order,
+      }));
+      /* Attach immutable generation/job provenance from in-progress state. */
+      const gen = generationStateRef.current;
+      const queueJob = queueJobStateRef.current;
+      const orchestrationId = gen?.orchestration?.orchestrationId ?? null;
+      const jobId = queueJob?.job?.jobId ?? null;
       await dispatchEvent({
         eventId: environment.createId(),
         timestamp: environment.now(),
-        type: 'completeAttempt',
+        type: 'completePrintedAttempt',
         attemptId: activeAttempt.attemptId,
-        confidence,
+        confidence: confidence,
         result: result as 'pass' | 'fail' | 'inconclusive',
-        retest: draft?.observation.quality as
-          'YES' | 'NO' | 'PENDING' | undefined,
+        retest: (draft?.observation.quality ?? 'PENDING') as
+          'YES' | 'NO' | 'PENDING',
         completionNotes: draft?.observation.notes ?? undefined,
+        photos: photoDescriptors,
+        orchestrationId,
+        jobId,
+        assetContentHash: null,
       });
     },
     [dispatchEvent, environment],

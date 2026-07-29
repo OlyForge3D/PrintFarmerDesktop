@@ -880,3 +880,85 @@ describe('PrintFarmer Orca profile discovery projection', () => {
     ).toBeNull();
   });
 });
+
+// ─── pendingGeneration workspace field (G-02, G-04) ──────────────────────────
+
+describe('pendingGeneration workspace field — durable operation context (G-02, G-04)', () => {
+  it('accepts pendingGeneration when present — operationId is preserved', () => {
+    const base = validWorkspace();
+    const result = CalibrationWorkspacePayload.safeParse({
+      ...base,
+      pendingGeneration: {
+        operationId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        stageId: 'temperature',
+        attemptId: '11111111-1111-4111-8111-111111111111',
+        expectedProjectRevision: 3,
+        orchestrationId: '22222222-2222-4222-8222-222222222222',
+        orchestrationStep: 'SlicingClaimed',
+        jobId: null,
+        lastReconcileAt: '2026-07-29T00:01:00.000Z',
+        createdAt: '2026-07-29T00:00:00.000Z',
+      },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.pendingGeneration?.operationId).toBe(
+        'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      );
+      expect(result.data.pendingGeneration?.orchestrationStep).toBe(
+        'SlicingClaimed',
+      );
+    }
+  });
+
+  it('accepts workspace without pendingGeneration — backward compatible', () => {
+    const base = validWorkspace();
+    // Remove pendingGeneration to simulate old workspace
+    const { pendingGeneration: _omit, ...rest } = base as typeof base & {
+      pendingGeneration?: unknown;
+    };
+    void _omit;
+    const result = CalibrationWorkspacePayload.safeParse(rest);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.pendingGeneration).toBeUndefined();
+    }
+  });
+
+  it('accepts pendingGeneration: null — operation cleared after completion', () => {
+    const base = validWorkspace();
+    const result = CalibrationWorkspacePayload.safeParse({
+      ...base,
+      pendingGeneration: null,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.pendingGeneration).toBeNull();
+    }
+  });
+
+  it('operationId is a stable UUID across serialize→parse roundtrip (G-04)', () => {
+    const operationId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const base = validWorkspace();
+    const parsed = CalibrationWorkspacePayload.parse({
+      ...base,
+      pendingGeneration: {
+        operationId,
+        stageId: 'flowPass1',
+        attemptId: '33333333-3333-4333-8333-333333333333',
+        expectedProjectRevision: null,
+        orchestrationId: null,
+        orchestrationStep: null,
+        jobId: null,
+        lastReconcileAt: null,
+        createdAt: NOW,
+      },
+    });
+    // Serialize and re-parse to prove stable IDs
+    const reparsed = CalibrationWorkspacePayload.parse(
+      JSON.parse(JSON.stringify(parsed)),
+    );
+    expect(reparsed.pendingGeneration?.operationId).toBe(operationId);
+    expect(reparsed.pendingGeneration?.stageId).toBe('flowPass1');
+  });
+});
