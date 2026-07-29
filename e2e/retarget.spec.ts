@@ -15,6 +15,7 @@ import {
   findPackagedExecutable,
 } from './helpers/retargetFixture';
 import {
+  attachPackagedFailureDiagnostics,
   cleanupPackagedApp,
   createPackagedProcessLog,
   launchPackagedApp,
@@ -348,11 +349,11 @@ test('runs the U1 workflow in the packaged app without changing the source', asy
         }
       });
     },
-    async () => {
-      await testInfo.attach('packaged-process.log', {
-        body: Buffer.from(processLog?.read() ?? '', 'utf8'),
-        contentType: 'text/plain',
-      });
-    },
+    (diagnostics) =>
+      attachPackagedFailureDiagnostics(
+        testInfo,
+        processLog?.read() ?? '',
+        diagnostics,
+      ),
   );
 });

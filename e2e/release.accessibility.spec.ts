@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  attachPackagedFailureDiagnostics,
   cleanupPackagedApp,
   createPackagedProcessLog,
   launchPackagedApp,
@@ -136,12 +137,12 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
     async () => {
       await cleanupPackagedApp(launched, root === null ? [] : [root]);
     },
-    async () => {
-      await testInfo.attach('packaged-process.log', {
-        body: Buffer.from(processLog?.read() ?? '', 'utf8'),
-        contentType: 'text/plain',
-      });
-    },
+    (diagnostics) =>
+      attachPackagedFailureDiagnostics(
+        testInfo,
+        processLog?.read() ?? '',
+        diagnostics,
+      ),
   );
 });
 

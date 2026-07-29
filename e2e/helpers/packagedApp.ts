@@ -1,11 +1,16 @@
-import { chromium, type Browser, type Page } from '@playwright/test';
+import {
+  chromium,
+  type Browser,
+  type Page,
+  type TestInfo,
+} from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 
 const STARTUP_TIMEOUT_MS = 20_000;
 const SHUTDOWN_TIMEOUT_MS = 8_000;
-const MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024;
+export const MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024;
 
 export type PackagedGpuMode = 'default' | 'swiftshader';
 
@@ -29,6 +34,24 @@ export interface PackagedProcessLog {
   read(): string;
 }
 
+export interface PackagedProcessLogDecode {
+  text: string;
+  inputBytes: number;
+  inspectedCodePoints: number;
+  outputBytes: number;
+}
+
+export interface PackagedErrorDiagnostic {
+  name: string;
+  message: string;
+  stack?: string;
+}
+
+export interface PackagedFailureDiagnostics {
+  primary: PackagedErrorDiagnostic;
+  secondary: readonly PackagedErrorDiagnostic[];
+}
+
 type TestOutcome<T> =
   | {
       status: 'fulfilled';
@@ -39,6 +62,58 @@ type TestOutcome<T> =
       reason: unknown;
     };
 
+export function decodeBoundedUtf8Tail(
+  bytes: Uint8Array,
+  maxBytes = MAX_PROCESS_OUTPUT_BYTES,
+): PackagedProcessLogDecode {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    throw new RangeError('The process output byte limit must be non-negative.');
+  }
+
+  const input = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  const decoded = input.toString('utf8');
+  let start = decoded.length;
+  let inspectedCodePoints = 0;
+  let outputBytes = 0;
+
+  // Account for each trailing code point once instead of repeatedly re-encoding
+  // progressively sliced strings when invalid bytes expand to replacement text.
+  while (start > 0) {
+    inspectedCodePoints += 1;
+    const trailing = decoded.charCodeAt(start - 1);
+    let codePointStart = start - 1;
+    let codePointBytes: number;
+    if (trailing >= 0xdc00 && trailing <= 0xdfff && codePointStart > 0) {
+      const leading = decoded.charCodeAt(codePointStart - 1);
+      if (leading >= 0xd800 && leading <= 0xdbff) {
+        codePointStart -= 1;
+        codePointBytes = 4;
+      } else {
+        codePointBytes = 3;
+      }
+    } else if (trailing <= 0x7f) {
+      codePointBytes = 1;
+    } else if (trailing <= 0x7ff) {
+      codePointBytes = 2;
+    } else {
+      codePointBytes = 3;
+    }
+
+    if (outputBytes + codePointBytes > maxBytes) {
+      break;
+    }
+    outputBytes += codePointBytes;
+    start = codePointStart;
+  }
+
+  return {
+    text: decoded.slice(start),
+    inputBytes: input.length,
+    inspectedCodePoints,
+    outputBytes,
+  };
+}
+
 export function createPackagedProcessLog(): PackagedProcessLog {
   let output = Buffer.alloc(0);
 
@@ -46,7 +121,9 @@ export function createPackagedProcessLog(): PackagedProcessLog {
     append(chunk) {
       const incoming = Buffer.from(chunk);
       if (incoming.length >= MAX_PROCESS_OUTPUT_BYTES) {
-        output = incoming.subarray(incoming.length - MAX_PROCESS_OUTPUT_BYTES);
+        output = Buffer.from(
+          incoming.subarray(incoming.length - MAX_PROCESS_OUTPUT_BYTES),
+        );
         return;
       }
 
@@ -60,70 +137,218 @@ export function createPackagedProcessLog(): PackagedProcessLog {
       ]);
     },
     read() {
-      let decoded = output.toString('utf8');
-      while (Buffer.byteLength(decoded) > MAX_PROCESS_OUTPUT_BYTES) {
-        decoded = decoded.slice(1);
-      }
-      return decoded;
+      return decodeBoundedUtf8Tail(output).text;
     },
   };
 }
 
-export function suppressedErrors(error: unknown): readonly unknown[] {
-  if (!(error instanceof Error)) {
-    return [];
-  }
-
-  const suppressed = (error as Error & { suppressed?: unknown }).suppressed;
-  return suppressed instanceof AggregateError
-    ? Array.from(suppressed.errors)
-    : [];
-}
-
-function withSuppressedErrors(
+function withSerializableCauses(
   primaryError: unknown,
   secondaryErrors: readonly unknown[],
 ): unknown {
-  if (secondaryErrors.length === 0) {
-    return primaryError;
-  }
-
   const reportableError =
-    primaryError instanceof Error && Object.isExtensible(primaryError)
+    primaryError instanceof Error
       ? primaryError
-      : new Error(
-          primaryError instanceof Error
-            ? primaryError.message
-            : String(primaryError),
-          { cause: primaryError },
-        );
-  const aggregate = new AggregateError(
-    [...suppressedErrors(reportableError), ...secondaryErrors],
-    'Secondary packaged-test diagnostics or cleanup failures',
-  );
-
-  Object.defineProperty(reportableError, 'suppressed', {
-    configurable: true,
-    enumerable: true,
-    value: aggregate,
-  });
-  const primaryStack =
-    reportableError.stack ??
-    `${reportableError.name}: ${reportableError.message}`;
-  const secondaryStacks = Array.from(aggregate.errors, (error) =>
-    error instanceof Error
-      ? (error.stack ?? `${error.name}: ${error.message}`)
-      : String(error),
-  ).join('\n\n');
-  reportableError.stack = `${primaryStack}\n\nSuppressed secondary failures:\n${secondaryStacks}`;
+      : new Error(String(primaryError));
+  const ownAggregateErrors =
+    primaryError instanceof AggregateError ? aggregateErrors(primaryError) : [];
+  appendSerializableCauses(reportableError, [
+    ...ownAggregateErrors,
+    ...secondaryErrors,
+  ]);
 
   return reportableError;
+}
+
+function appendSerializableCauses(
+  primaryError: Error,
+  errors: readonly unknown[],
+): void {
+  // Playwright 1.61 serializes Error.cause, but drops AggregateError.errors
+  // and custom error fields, so append flattened failures to the existing chain.
+  const existingChain = new Set<Error>();
+  let tail: Error = primaryError;
+  while (true) {
+    if (existingChain.has(tail)) {
+      return;
+    }
+    existingChain.add(tail);
+    const cause = errorCause(tail);
+    if (cause === undefined) {
+      break;
+    }
+    if (!(cause instanceof Error)) {
+      return;
+    }
+    tail = cause;
+  }
+
+  for (const error of flattenErrors(errors)) {
+    const candidate =
+      error instanceof Error
+        ? error
+        : new Error(`Non-Error failure: ${String(error)}`);
+    const candidateTail = causeChainTail(candidate, existingChain);
+    if (candidateTail === null) {
+      continue;
+    }
+    if (!setErrorCause(tail, candidate)) {
+      return;
+    }
+    for (let current: Error | undefined = candidate; current !== undefined;) {
+      existingChain.add(current);
+      const cause = errorCause(current);
+      current = cause instanceof Error ? cause : undefined;
+    }
+    tail = candidateTail;
+  }
+}
+
+function causeChainTail(
+  error: Error,
+  disallowed: ReadonlySet<Error>,
+): Error | null {
+  const visited = new Set<Error>();
+  let tail = error;
+  while (true) {
+    if (visited.has(tail) || disallowed.has(tail)) {
+      return null;
+    }
+    visited.add(tail);
+    const cause = errorCause(tail);
+    if (cause === undefined) {
+      return tail;
+    }
+    if (!(cause instanceof Error)) {
+      return null;
+    }
+    tail = cause;
+  }
+}
+
+function errorCause(error: Error): unknown {
+  return (error as Error & { cause?: unknown }).cause;
+}
+
+function setErrorCause(error: Error, cause: Error): boolean {
+  try {
+    Object.defineProperty(error, 'cause', {
+      configurable: true,
+      value: cause,
+      writable: true,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function flattenErrors(errors: readonly unknown[]): unknown[] {
+  const flattened: unknown[] = [];
+  const visited = new Set<unknown>();
+  const visit = (error: unknown): void => {
+    if (visited.has(error)) {
+      return;
+    }
+    visited.add(error);
+    if (error instanceof AggregateError) {
+      const nested = aggregateErrors(error);
+      if (nested.length === 0) {
+        flattened.push(error);
+      } else {
+        for (const nestedError of nested) {
+          visit(nestedError);
+        }
+      }
+      return;
+    }
+    flattened.push(error);
+  };
+  for (const error of errors) {
+    visit(error);
+  }
+  return flattened;
+}
+
+function aggregateErrors(error: AggregateError): readonly unknown[] {
+  return error.errors as readonly unknown[];
+}
+
+function describeError(error: unknown): PackagedErrorDiagnostic {
+  if (error instanceof Error) {
+    return {
+      name: error.name || 'Error',
+      message: error.message,
+      ...(error.stack === undefined ? {} : { stack: error.stack }),
+    };
+  }
+  return {
+    name: typeof error,
+    message: String(error),
+  };
+}
+
+function failureDiagnostics(
+  primaryError: unknown,
+  secondaryErrors: readonly unknown[],
+): PackagedFailureDiagnostics {
+  const ownAggregateErrors =
+    primaryError instanceof AggregateError ? aggregateErrors(primaryError) : [];
+  return {
+    primary: describeError(primaryError),
+    secondary: flattenErrors([...ownAggregateErrors, ...secondaryErrors]).map(
+      describeError,
+    ),
+  };
+}
+
+export async function attachPackagedFailureDiagnostics(
+  testInfo: Pick<TestInfo, 'attach'>,
+  processOutput: string,
+  diagnostics: PackagedFailureDiagnostics,
+): Promise<void> {
+  const attachmentErrors: unknown[] = [];
+  if (diagnostics.secondary.length > 0) {
+    try {
+      await testInfo.attach('packaged-secondary-errors.json', {
+        body: Buffer.from(
+          JSON.stringify(
+            {
+              schemaVersion: 1,
+              primary: diagnostics.primary,
+              secondary: diagnostics.secondary,
+            },
+            null,
+            2,
+          ),
+          'utf8',
+        ),
+        contentType: 'application/json',
+      });
+    } catch (error) {
+      attachmentErrors.push(error);
+    }
+  }
+  try {
+    await testInfo.attach('packaged-process.log', {
+      body: Buffer.from(processOutput, 'utf8'),
+      contentType: 'text/plain',
+    });
+  } catch (error) {
+    attachmentErrors.push(error);
+  }
+  if (attachmentErrors.length > 0) {
+    throw new AggregateError(
+      attachmentErrors,
+      'Packaged failure diagnostic attachment failed.',
+    );
+  }
 }
 
 export async function runWithPackagedTestCleanup<T>(
   body: () => Promise<T>,
   cleanup: () => Promise<void>,
-  onFailure?: (error: unknown) => Promise<void>,
+  onFailure?: (diagnostics: PackagedFailureDiagnostics) => Promise<void>,
 ): Promise<T> {
   let outcome: TestOutcome<T> | undefined;
   const secondaryErrors: unknown[] = [];
@@ -162,23 +387,23 @@ export async function runWithPackagedTestCleanup<T>(
     const diagnosticErrors: unknown[] = [];
     if (onFailure !== undefined) {
       try {
-        await onFailure(cleanupFailure);
+        await onFailure(failureDiagnostics(cleanupFailure, []));
       } catch (error) {
         diagnosticErrors.push(error);
       }
     }
-    throw withSuppressedErrors(cleanupFailure, diagnosticErrors);
+    throw withSerializableCauses(cleanupFailure, diagnosticErrors);
   }
 
   if (onFailure !== undefined) {
     try {
-      await onFailure(outcome.reason);
+      await onFailure(failureDiagnostics(outcome.reason, secondaryErrors));
     } catch (error) {
       secondaryErrors.push(error);
     }
   }
 
-  throw withSuppressedErrors(outcome.reason, secondaryErrors);
+  throw withSerializableCauses(outcome.reason, secondaryErrors);
 }
 
 export function packagedGpuModeFromEnvironment(): PackagedGpuMode {
@@ -311,7 +536,7 @@ export async function launchPackagedApp(
     } catch (cleanupError) {
       cleanupErrors.push(cleanupError);
     }
-    throw withSuppressedErrors(error, cleanupErrors);
+    throw withSerializableCauses(error, cleanupErrors);
   }
 }
 
