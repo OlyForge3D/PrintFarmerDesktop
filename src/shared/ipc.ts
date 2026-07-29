@@ -3430,6 +3430,10 @@ export const CalibrationQueueJobState = z
     bedClearState: z.string().nullable(),
     gcodeFileId: z.string().uuid().nullable(),
     assignedPrinterId: z.string().uuid().nullable(),
+    /** Assigned printer display name from server (passthrough from JobQueuePrintJobDto). */
+    assignedPrinterName: z.string().nullable().optional(),
+    /** ISO 8601 UTC expiry for an active bed-clear acknowledgement. null = no expiry. */
+    acknowledgementExpiresAt: z.string().datetime().nullable().optional(),
     calibrationProjectId: z.string().uuid().nullable(),
     calibrationAttemptId: z.string().uuid().nullable(),
     pinnedPrinterConfigRevision: z.number().int().nullable(),

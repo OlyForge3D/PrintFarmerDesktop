@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import {
   OpenCalibrationPhotoResponse,
+  type CalibrationBlockedReason,
   type CalibrationOrchestrationStatus,
   type CalibrationQueueJobState,
   type CalibrationJobProvenance,
@@ -278,6 +279,10 @@ export function CalibrationStepWorkflow({
   const [bedClearOpen, setBedClearOpen] = useState(false);
   const [bedClearSubmitting, setBedClearSubmitting] = useState(false);
   const [bedClearError, setBedClearError] = useState<string | null>(null);
+  /** Expiry received from a bed-clear queue event; wired into the dialog countdown. */
+  const [bedClearExpiresAt, setBedClearExpiresAt] = useState<string | null>(
+    null,
+  );
   const bedClearTriggerRef = useRef<HTMLButtonElement>(null);
 
   const [handoffProvenance, setHandoffProvenance] =
@@ -459,9 +464,23 @@ export function CalibrationStepWorkflow({
         setQueueJob((prev) =>
           prev ? { ...prev, bedClearState: 'Acknowledged' } : null,
         );
+      } else if (res.status === 'revisionConflict') {
+        // Server returned 412: update our ETags so the next attempt uses the
+        // authoritative versions, then close the dialog.
+        setQueueJob((prev) =>
+          prev
+            ? {
+                ...prev,
+                rowVersion: res.jobRowVersion ?? prev.rowVersion,
+                dispatchStateRowVersion:
+                  res.dispatchStateRowVersion ?? prev.dispatchStateRowVersion,
+              }
+            : null,
+        );
+        setBedClearOpen(false);
       } else {
         setBedClearError(
-          res.status === 'error' ? res.error.message : 'Revision conflict.',
+          res.status === 'error' ? res.error.message : 'Unexpected error.',
         );
       }
     } catch (err) {
@@ -493,19 +512,6 @@ export function CalibrationStepWorkflow({
     [store.environment],
   );
 
-  const bedClearDialogJob: BedClearDialogJob | null = queueJob
-    ? {
-        jobId: queueJob.jobId,
-        assignedPrinterId: queueJob.assignedPrinterId,
-        assignedPrinterName: null,
-        queueRevision: queueJob.rowVersion,
-        material: null,
-        nozzle: null,
-        generatedTestName: null,
-        acknowledgementExpiresAt: null,
-      }
-    : null;
-
   const stageAttempts = state.attempts.filter(
     (attempt) => attempt.stageId === stageId,
   );
@@ -534,6 +540,72 @@ export function CalibrationStepWorkflow({
   const selectedTool = state.binding.snapshot.toolheads.find(
     (tool) => tool.toolId === state.binding.selectedToolId,
   );
+
+  /**
+   * Assemble the bed-clear dialog job from live fields.
+   * Criterion 12: material, nozzle, generatedTestName, assignedPrinterName and
+   * acknowledgementExpiresAt must show real data, not null.
+   */
+  const bedClearDialogJob: BedClearDialogJob | null = queueJob
+    ? {
+        jobId: queueJob.jobId,
+        assignedPrinterId: queueJob.assignedPrinterId,
+        assignedPrinterName: queueJob.assignedPrinterName ?? null,
+        queueRevision: queueJob.rowVersion,
+        material: `${state.binding.filament.provider} ${state.binding.filament.product}`,
+        nozzle: selectedTool
+          ? `${selectedTool.nozzle.diameterMm} mm ${selectedTool.nozzle.material}`
+          : null,
+        generatedTestName: activeAttempt
+          ? methodLabel(activeAttempt.method)
+          : null,
+        acknowledgementExpiresAt: bedClearExpiresAt,
+      }
+    : null;
+
+  /**
+   * Derive a typed blocked reason from available signals.
+   * Criterion 10: all four signal paths must route to their code, not null.
+   */
+  const computedBlockedReason = useMemo<CalibrationBlockedReason | null>(() => {
+    if (store.offline || store.availability?.available !== true) {
+      return {
+        code: 'printerOffline',
+        detail: 'Printer is not reachable. Check network and Klipper status.',
+      };
+    }
+    if (!project.record.isPrinterContextFresh) {
+      return {
+        code: 'staleTelemetry',
+        detail:
+          'Printer context is stale. Re-open the project or force-sync to refresh.',
+      };
+    }
+    if (
+      queueJob?.pinnedPrinterConfigRevision != null &&
+      queueJob.pinnedPrinterConfigRevision !==
+        state.binding.printer.printerConfigurationRevision
+    ) {
+      return {
+        code: 'configChange',
+        detail:
+          'Printer configuration changed since this job was queued. Re-queue to pick up the new config.',
+      };
+    }
+    if (queueJob != null && !queueJob.gcodeFileId) {
+      return {
+        code: 'missingGcode',
+        detail: 'G-code file not yet attached to this job.',
+      };
+    }
+    return null;
+  }, [
+    store.offline,
+    store.availability,
+    project.record.isPrinterContextFresh,
+    queueJob,
+    state.binding.printer.printerConfigurationRevision,
+  ]);
   const currentPhysicalMatch = isCurrentPhysicalMatch(
     state,
     project.record.workspaceState.physicalMatch,
@@ -1156,8 +1228,9 @@ export function CalibrationStepWorkflow({
                 printerOffline={
                   store.offline || store.availability?.available !== true
                 }
-                blockedReason={null}
+                blockedReason={computedBlockedReason}
                 onJobInvalidated={handleJobInvalidated}
+                onBedClearExpiryChange={setBedClearExpiresAt}
               />
             )}
 

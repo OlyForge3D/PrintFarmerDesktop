@@ -51,6 +51,12 @@ interface CalibrationQueueDispatchPanelProps {
   readonly blockedReason: CalibrationBlockedReason | null;
   /** Called when the panel detects the job has been reordered/replaced/cancelled. */
   readonly onJobInvalidated: (reason: string) => void;
+  /**
+   * Called when a queue event carries a bed-clear expiry time.
+   * Passes null when the expiry is no longer applicable.
+   * Used by the parent to wire acknowledgementExpiresAt into the dialog.
+   */
+  readonly onBedClearExpiryChange?: (expiresAt: string | null) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -237,6 +243,7 @@ export const CalibrationQueueDispatchPanel: React.FC<
   printerOffline,
   blockedReason,
   onJobInvalidated,
+  onBedClearExpiryChange,
 }) => {
   const [queueState, setQueueState] = useState<CalibrationQueueJobState | null>(
     null,
@@ -293,22 +300,33 @@ export const CalibrationQueueDispatchPanel: React.FC<
           rowVersion: event.jobRevision ?? prev.rowVersion,
         };
       });
+      // Notify parent of bed-clear expiry so the dialog can show a countdown.
+      if (event.bedClearExpiresAtUtc != null) {
+        onBedClearExpiryChange?.(event.bedClearExpiresAtUtc);
+      }
       if (isJobInvalidated(event.jobStatus)) {
         onJobInvalidated('Job was cancelled.');
       }
     },
-    [onJobInvalidated],
+    [onJobInvalidated, onBedClearExpiryChange],
   );
 
   // Reconciliation loop — stop once job is terminal.
+  // Memoize so the effect dependency is stable across renders; without this the
+  // inline arrow is recreated on every render, restarting the loop and cancelling
+  // any in-flight deferred poll before it can call onGapDetected().
   const isActive = !isTerminal(queueState?.status ?? null);
+  const onGapDetected = useCallback(
+    () => void refetchJobState(),
+    [refetchJobState],
+  );
   useQueueReconciliation(
     profileId,
     jobId,
     api,
     isActive,
     handleEvent,
-    () => void refetchJobState(),
+    onGapDetected,
   );
 
   // Offline guard: never offer acknowledgement when printer is offline.
