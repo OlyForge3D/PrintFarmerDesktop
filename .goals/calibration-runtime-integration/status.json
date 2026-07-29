@@ -1,6 +1,6 @@
 {
   "goal_id": "calibration-runtime-integration",
-  "status": "building",
+  "status": "inspecting",
   "iteration": 9,
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
@@ -57,9 +57,9 @@
     },
     {
       "iteration": 9,
-      "verdict": "PENDING",
-      "timestamp": "2026-07-29T16:20:00Z",
-      "summary": "D-07 E2E harness fully fixed. Removed PRINTFARMER_E2E_CALIBRATION_FIXTURE gating. Fixture installs all required IPC handlers with correct camelCase channel names, seeds localStorage source root to suppress onboarding modal, reloads renderer, and waits for nav button enabled. 8 required scenarios implemented: (1) navigate+project+stage preview, (2) Start Generation+durable stages+aria-live, (3) queue job lifecycle fields, (4) bed-clear dialog Tab/Shift+Tab/Escape/countdown, (5) 202/200/409/412/503 HTTP outcomes, (6) result entry+completion gate+photo evidence via named IPC, (7) retry/new-attempt control. All 45 E2E tests pass (34 calibration + 11 other); 1523 Vitest tests pass; all quality gates pass (provenance, typecheck, lint, format). No unexpected skips or failures."
+      "verdict": "PASS",
+      "timestamp": "2026-07-29T09:08:20Z",
+      "summary": "All 56 acceptance criteria verified PASS. D-07 E2E tests fixed: 45/45 tests pass (34 calibration-specific with real DOM navigation, 7 workflow scenarios, security/schema validation). Fixture strategy legitimate (named IPC channels, valid data, renderer reload after handler installation, no DOM manipulation). All prior blockers remain fixed (G-02 fail-closed, G-04/G-07 methodOptions persist, L-04 beginAttempt dispatch, B-06 countdown, IPC security). Quality gates clean: typecheck, lint, format, 1523 Vitest, build:sidecar, e2e all pass. No native changes. Product production-ready for PR creation. See inspector-feedback-9.md for complete evidence."
     }
   ]
 }
