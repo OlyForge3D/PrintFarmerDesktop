@@ -1551,3 +1551,45 @@ export const RemoteQueueEventEnvelope = z
   })
   .passthrough();
 export type RemoteQueueEventEnvelope = z.infer<typeof RemoteQueueEventEnvelope>;
+
+// ─── Primary job-queue change feed (issue #54) ──────────────────────────────
+
+/**
+ * Response from GET /api/job-queue/changes?afterSequence=&limit=
+ *
+ * `events` are the QueueEventEnvelope records since the cursor.
+ * `nextSequence` is the highest sequence seen; use it as `afterSequence` on
+ * the next poll. A gap (nextSequence > events[-1].sequence + 1) means some
+ * events were skipped — refetch the job state via REST.
+ *
+ * schemaVersion "3" is current (QueueEventSchemaVersions.Current = "3").
+ */
+export const RemoteJobQueueChangeFeedPage = z
+  .object({
+    afterSequence: z.number().int(),
+    nextSequence: z.number().int(),
+    hasMore: z.boolean(),
+    events: z.array(RemoteQueueEventEnvelope).max(500),
+  })
+  .passthrough();
+export type RemoteJobQueueChangeFeedPage = z.infer<
+  typeof RemoteJobQueueChangeFeedPage
+>;
+
+/**
+ * Response from GET /api/job-queue/subscription-resources
+ *
+ * Lists active job IDs, printer IDs, and project IDs that the client
+ * should subscribe to via SignalR. Only active jobs are included
+ * (Queued | Assigned | Starting | Printing | Paused).
+ */
+export const RemoteQueueSubscriptionResources = z
+  .object({
+    printerIds: z.array(ServerGuid).max(500),
+    jobIds: z.array(ServerGuid).max(500),
+    projectIds: z.array(ServerGuid).max(500),
+  })
+  .passthrough();
+export type RemoteQueueSubscriptionResources = z.infer<
+  typeof RemoteQueueSubscriptionResources
+>;

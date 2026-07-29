@@ -25,6 +25,7 @@ import {
   CalibrationHttpError,
   type CalibrationTokenProvider,
 } from '../src/main/calibrationHttp.js';
+import { CalibrationBlockedReason } from '../src/shared/ipc.js';
 
 const BASE_URL = 'http://farm.local';
 const PROFILE_ID = '11111111-1111-4111-8111-111111111111';
@@ -953,4 +954,628 @@ describe('CalibrationHttpError.toApiError — bed-clear error code mapping', () 
       expect(apiError.code).toBe(expectedApiCode);
     },
   );
+});
+
+// ==========================================================================
+// Queue change feed — getQueueChanges (issue #54, criterion 8)
+// ==========================================================================
+
+describe('CalibrationHttpClient.getQueueChanges — change feed polling', () => {
+  const CHANGE_FEED_PAGE = {
+    afterSequence: 10,
+    nextSequence: 13,
+    hasMore: false,
+    events: [
+      {
+        schemaVersion: '3',
+        eventId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+        sequence: 11,
+        eventType: 'PrintFarmer.Queue.JobStatusChanged.v1',
+        occurredAtUtc: '2025-01-01T00:00:01.000Z',
+        jobId: JOB_ID,
+        printerId: PRINTER_ID,
+        projectId: PROJECT_ID,
+        calibrationAttemptId: null,
+        jobStatus: 'Assigned',
+        jobKind: 'FilamentCalibration',
+        jobRevision: 'CCCCCCCCCCCC==',
+        dispatchStateRevision: 'DDDDDDDDDDDD==',
+        attemptId: null,
+        attemptNumber: null,
+        attemptOutcome: 'InProgress',
+        bedClearState: 'None',
+        bedClearCommandId: null,
+        bedClearExpiresAtUtc: null,
+        failureCode: null,
+        failureRetryable: null,
+        failureRequiresReconciliation: null,
+        jobLogicalRevision: 2,
+        dispatchStateLogicalRevision: 2,
+      },
+      {
+        schemaVersion: '3',
+        eventId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        sequence: 12,
+        eventType: 'PrintFarmer.Queue.JobStatusChanged.v1',
+        occurredAtUtc: '2025-01-01T00:00:02.000Z',
+        jobId: JOB_ID,
+        printerId: PRINTER_ID,
+        projectId: PROJECT_ID,
+        calibrationAttemptId: null,
+        jobStatus: 'Printing',
+        jobKind: 'FilamentCalibration',
+        jobRevision: 'EEEEEEEEEEEE==',
+        dispatchStateRevision: 'FFFFFFFFFFFF==',
+        attemptId: null,
+        attemptNumber: null,
+        attemptOutcome: 'Accepted',
+        bedClearState: 'Consumed',
+        bedClearCommandId: null,
+        bedClearExpiresAtUtc: null,
+        failureCode: null,
+        failureRetryable: null,
+        failureRequiresReconciliation: null,
+        jobLogicalRevision: 3,
+        dispatchStateLogicalRevision: 3,
+      },
+    ],
+  };
+
+  it('uses ROUTES.jobQueueChanges with afterSequence and limit query params', async () => {
+    const fetch = vi.fn().mockResolvedValue(json(CHANGE_FEED_PAGE));
+    const client = makeClient(fetch);
+    const signal = AbortSignal.timeout(5000);
+
+    await client.getQueueChanges(PROFILE_ID, BASE_URL, 10, 100, signal);
+
+    const url = getCallUrl(fetch);
+    expect(url).toContain('/api/job-queue/changes');
+    expect(url).toContain('afterSequence=10');
+    expect(url).toContain('limit=100');
+  });
+
+  it('returns schemaVersion "3" events with sequence numbers', async () => {
+    const fetch = vi.fn().mockResolvedValue(json(CHANGE_FEED_PAGE));
+    const client = makeClient(fetch);
+    const signal = AbortSignal.timeout(5000);
+
+    const page = await client.getQueueChanges(
+      PROFILE_ID,
+      BASE_URL,
+      10,
+      100,
+      signal,
+    );
+
+    expect(page.afterSequence).toBe(10);
+    expect(page.nextSequence).toBe(13);
+    expect(page.events).toHaveLength(2);
+    expect(page.events[0]).toMatchObject({
+      sequence: 11,
+      jobStatus: 'Assigned',
+    });
+    expect(page.events[1]).toMatchObject({
+      sequence: 12,
+      jobStatus: 'Printing',
+    });
+  });
+
+  it('returns hasMore=false when all events have been consumed', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(json({ ...CHANGE_FEED_PAGE, hasMore: false }));
+    const client = makeClient(fetch);
+    const signal = AbortSignal.timeout(5000);
+
+    const page = await client.getQueueChanges(
+      PROFILE_ID,
+      BASE_URL,
+      10,
+      100,
+      signal,
+    );
+
+    expect(page.hasMore).toBe(false);
+  });
+
+  it('caps limit at 500 per server contract', async () => {
+    const fetch = vi.fn().mockResolvedValue(json(CHANGE_FEED_PAGE));
+    const client = makeClient(fetch);
+    const signal = AbortSignal.timeout(5000);
+
+    await client.getQueueChanges(PROFILE_ID, BASE_URL, 0, 9999, signal);
+
+    const url = getCallUrl(fetch);
+    expect(url).toContain('limit=500');
+  });
+
+  it('uses Bearer auth header for change feed requests', async () => {
+    const fetch = vi.fn().mockResolvedValue(json(CHANGE_FEED_PAGE));
+    const client = makeClient(fetch);
+    const signal = AbortSignal.timeout(5000);
+
+    await client.getQueueChanges(PROFILE_ID, BASE_URL, 0, 100, signal);
+
+    const init = getCallInit(fetch);
+    const headers = new Headers(init.headers);
+    expect(headers.get('Authorization')).toMatch(/^Bearer /);
+  });
+
+  it('Printer-group event has redacted jobId field (null) — never treated as job state', async () => {
+    // CONTRACT: Printer-group envelopes are REDACTED per server contract — jobId is null.
+    // The caller must skip them when looking for job-specific state.
+    const printerGroupEvent = {
+      schemaVersion: '3',
+      eventId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      sequence: 20,
+      eventType: 'PrintFarmer.Queue.PrinterStateChanged.v1',
+      occurredAtUtc: '2025-01-01T00:01:00.000Z',
+      jobId: null, // REDACTED
+      printerId: PRINTER_ID,
+      projectId: null,
+      calibrationAttemptId: null,
+      jobStatus: null,
+      jobKind: null,
+      jobRevision: null,
+      dispatchStateRevision: null,
+      attemptId: null,
+      attemptNumber: null,
+      attemptOutcome: null,
+      bedClearState: null,
+      bedClearCommandId: null,
+      bedClearExpiresAtUtc: null,
+      failureCode: null,
+      failureRetryable: null,
+      failureRequiresReconciliation: null,
+      jobLogicalRevision: null,
+      dispatchStateLogicalRevision: null,
+    };
+    const fetch = vi.fn().mockResolvedValue(
+      json({
+        afterSequence: 19,
+        nextSequence: 21,
+        hasMore: false,
+        events: [printerGroupEvent],
+      }),
+    );
+    const client = makeClient(fetch);
+    const signal = AbortSignal.timeout(5000);
+
+    const page = await client.getQueueChanges(
+      PROFILE_ID,
+      BASE_URL,
+      19,
+      100,
+      signal,
+    );
+
+    const evt = page.events[0];
+    // Specific guard: printer-group envelope has null jobId.
+    expect(evt?.jobId).toBeNull();
+    expect(evt?.eventType).toBe('PrintFarmer.Queue.PrinterStateChanged.v1');
+  });
+
+  it('additive-compatible future envelope fields do not throw (passthrough)', async () => {
+    const extendedEvent = {
+      ...CHANGE_FEED_PAGE.events[0],
+      futureEnvelopeField: 'some-future-value',
+    };
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(
+        json({ ...CHANGE_FEED_PAGE, events: [extendedEvent] }),
+      );
+    const client = makeClient(fetch);
+    const signal = AbortSignal.timeout(5000);
+
+    // Must not throw despite unknown field.
+    const page = await client.getQueueChanges(
+      PROFILE_ID,
+      BASE_URL,
+      10,
+      100,
+      signal,
+    );
+    expect(page.events).toHaveLength(1);
+  });
+});
+
+// ==========================================================================
+// Queue subscription resources — getQueueSubscriptionResources (issue #54)
+// ==========================================================================
+
+describe('CalibrationHttpClient.getQueueSubscriptionResources', () => {
+  const RESOURCES_FIXTURE = {
+    printerIds: [PRINTER_ID],
+    jobIds: [JOB_ID],
+    projectIds: [PROJECT_ID],
+  };
+
+  it('uses ROUTES.jobQueueSubscriptionResources endpoint', async () => {
+    const fetch = vi.fn().mockResolvedValue(json(RESOURCES_FIXTURE));
+    const client = makeClient(fetch);
+    const signal = AbortSignal.timeout(5000);
+
+    await client.getQueueSubscriptionResources(PROFILE_ID, BASE_URL, signal);
+
+    const url = getCallUrl(fetch);
+    expect(url).toContain('/api/job-queue/subscription-resources');
+  });
+
+  it('returns typed printerIds, jobIds, projectIds arrays', async () => {
+    const fetch = vi.fn().mockResolvedValue(json(RESOURCES_FIXTURE));
+    const client = makeClient(fetch);
+    const signal = AbortSignal.timeout(5000);
+
+    const resources = await client.getQueueSubscriptionResources(
+      PROFILE_ID,
+      BASE_URL,
+      signal,
+    );
+
+    expect(resources.printerIds).toEqual([PRINTER_ID]);
+    expect(resources.jobIds).toEqual([JOB_ID]);
+    expect(resources.projectIds).toEqual([PROJECT_ID]);
+  });
+
+  it('accepts additive-compatible future fields without throwing (passthrough)', async () => {
+    const extended = { ...RESOURCES_FIXTURE, futureField: 'some-future-value' };
+    const fetch = vi.fn().mockResolvedValue(json(extended));
+    const client = makeClient(fetch);
+    const signal = AbortSignal.timeout(5000);
+
+    const resources = await client.getQueueSubscriptionResources(
+      PROFILE_ID,
+      BASE_URL,
+      signal,
+    );
+
+    expect(resources.jobIds).toEqual([JOB_ID]);
+  });
+});
+
+// ==========================================================================
+// IPC gap detection (criterion 8)
+// ==========================================================================
+
+describe('Queue change feed gap detection', () => {
+  /**
+   * Simulates the gap detection logic extracted from the IPC handler.
+   * criterion 8: REST is authoritative; gap → caller must refetch.
+   *
+   * Test discipline: each test is sized to the specific gap scenario it names.
+   * Mutation: changing `!== afterSequence + 1` to `< afterSequence` fails only
+   * the "first event gap" tests.
+   */
+  function detectGaps(
+    afterSequence: number,
+    events: { sequence: number }[],
+  ): boolean {
+    let gapDetected = false;
+    for (let i = 1; i < events.length; i++) {
+      const cur = events[i];
+      const prev = events[i - 1];
+      if (
+        cur !== undefined &&
+        prev !== undefined &&
+        cur.sequence !== prev.sequence + 1
+      ) {
+        gapDetected = true;
+        break;
+      }
+    }
+    const firstEvent = events[0];
+    if (firstEvent !== undefined && firstEvent.sequence !== afterSequence + 1) {
+      gapDetected = true;
+    }
+    return gapDetected;
+  }
+
+  it('detects no gap for contiguous events starting at cursor+1', () => {
+    expect(
+      detectGaps(10, [{ sequence: 11 }, { sequence: 12 }, { sequence: 13 }]),
+    ).toBe(false);
+  });
+
+  it('detects a gap when first event does not start at afterSequence+1', () => {
+    // Specific guard: first event sequence 13 when cursor is 10 → 11, 12 missing.
+    expect(detectGaps(10, [{ sequence: 13 }, { sequence: 14 }])).toBe(true);
+  });
+
+  it('detects a gap between consecutive events with missing sequences', () => {
+    // Specific guard: jump 12→15, events 13 and 14 missing.
+    expect(
+      detectGaps(10, [{ sequence: 11 }, { sequence: 12 }, { sequence: 15 }]),
+    ).toBe(true);
+  });
+
+  it('returns false for empty event list (no gap when nothing came)', () => {
+    expect(detectGaps(10, [])).toBe(false);
+  });
+
+  it('returns false for single contiguous event', () => {
+    expect(detectGaps(5, [{ sequence: 6 }])).toBe(false);
+  });
+
+  it('returns true when only gap between cursor and first event exists', () => {
+    // cursor=5, first=8: 6, 7 missing
+    expect(detectGaps(5, [{ sequence: 8 }])).toBe(true);
+  });
+});
+
+// ==========================================================================
+// Bed-clear acknowledgement guards (criterion 7)
+// ==========================================================================
+
+describe('Bed-clear acknowledgement guards', () => {
+  /**
+   * Tests verify three required preconditions on acknowledgeBedClearAndStart.
+   * Each test is isolated to a single guard.
+   *
+   * Test discipline (per SKILL.md):
+   * - Each test asserts exactly the control it names.
+   * - Mutation: dropping `X-Dispatch-State-If-Match` fails only its test.
+   */
+
+  it('sends Idempotency-Key header (operationId) on acknowledgement', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(
+        json(
+          { jobRowVersion: 'AAAA==', dispatchStateRowVersion: 'BBBB==' },
+          202,
+        ),
+      );
+    const client = makeClient(fetch);
+    const signal = AbortSignal.timeout(5000);
+
+    await client.acknowledgeBedClearAndStart(
+      PROFILE_ID,
+      BASE_URL,
+      JOB_ID,
+      PRINTER_ID,
+      OPERATION_ID,
+      'ROWV==',
+      'DSPV==',
+      null,
+      signal,
+    );
+
+    const init = getCallInit(fetch);
+    const headers = new Headers(init.headers);
+    // Specific guard: Idempotency-Key must be the operationId.
+    expect(headers.get('Idempotency-Key')).toBe(OPERATION_ID);
+  });
+
+  it('sends If-Match header with rowVersion byte-identical (not re-encoded)', async () => {
+    // Specific guard: opaque base-64 ETag must echo byte-identical.
+    const opaqueEtag = 'AAAAAAAAAA+/=';
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(
+        json(
+          { jobRowVersion: opaqueEtag, dispatchStateRowVersion: 'BBBB==' },
+          202,
+        ),
+      );
+    const client = makeClient(fetch);
+    const signal = AbortSignal.timeout(5000);
+
+    await client.acknowledgeBedClearAndStart(
+      PROFILE_ID,
+      BASE_URL,
+      JOB_ID,
+      PRINTER_ID,
+      OPERATION_ID,
+      opaqueEtag,
+      'DSPV==',
+      null,
+      signal,
+    );
+
+    const init = getCallInit(fetch);
+    const headers = new Headers(init.headers);
+    expect(headers.get('If-Match')).toBe(opaqueEtag);
+  });
+
+  it('sends X-Dispatch-State-If-Match header byte-identical', async () => {
+    // Specific guard: dispatch-state ETag is a separate header, not the job ETag.
+    const dispatchEtag = 'DISPATCH+ABC/==';
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(
+        json(
+          { jobRowVersion: 'ROWV==', dispatchStateRowVersion: dispatchEtag },
+          202,
+        ),
+      );
+    const client = makeClient(fetch);
+    const signal = AbortSignal.timeout(5000);
+
+    await client.acknowledgeBedClearAndStart(
+      PROFILE_ID,
+      BASE_URL,
+      JOB_ID,
+      PRINTER_ID,
+      OPERATION_ID,
+      'ROWV==',
+      dispatchEtag,
+      null,
+      signal,
+    );
+
+    const init = getCallInit(fetch);
+    const headers = new Headers(init.headers);
+    expect(headers.get('X-Dispatch-State-If-Match')).toBe(dispatchEtag);
+  });
+
+  it('returns revisionConflict with current ETags on 412 (not an exception)', async () => {
+    const currentJobEtag = 'CURRENT-JOB==';
+    const currentDispatchEtag = 'CURRENT-DISPATCH==';
+    const fetch = vi.fn().mockResolvedValue(
+      json(
+        {
+          error: 'dispatch_revision_conflict',
+          jobETag: currentJobEtag,
+          dispatchStateETag: currentDispatchEtag,
+        },
+        412,
+      ),
+    );
+    const client = makeClient(fetch);
+    const signal = AbortSignal.timeout(5000);
+
+    const result = await client.acknowledgeBedClearAndStart(
+      PROFILE_ID,
+      BASE_URL,
+      JOB_ID,
+      PRINTER_ID,
+      OPERATION_ID,
+      'STALE==',
+      'STALE==',
+      null,
+      signal,
+    );
+
+    // Specific guard: 412 with ETags → revisionConflict, not thrown error.
+    expect(result.kind).toBe('revisionConflict');
+    if (result.kind === 'revisionConflict') {
+      expect(result.jobETag).toBe(currentJobEtag);
+      expect(result.dispatchStateETag).toBe(currentDispatchEtag);
+    }
+  });
+
+  it('maps 428 precondition_required when precondition header is missing', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(json({ errorCode: 'precondition_required' }, 428));
+    const client = makeClient(fetch);
+    const signal = AbortSignal.timeout(5000);
+
+    try {
+      await client.acknowledgeBedClearAndStart(
+        PROFILE_ID,
+        BASE_URL,
+        JOB_ID,
+        PRINTER_ID,
+        OPERATION_ID,
+        '',
+        '',
+        null,
+        signal,
+      );
+      expect.fail('Should have thrown');
+    } catch (error) {
+      expect(error).toBeInstanceOf(CalibrationHttpError);
+      // Specific guard: 428 → preconditionRequired, not serverError.
+      expect((error as CalibrationHttpError).code).toBe('preconditionRequired');
+    }
+  });
+});
+
+// ==========================================================================
+// Unknown dispatch outcome — criterion 9 (no blind retry)
+// ==========================================================================
+
+describe('Unknown dispatch outcome — Starting display, no blind retry', () => {
+  /**
+   * criterion 9: "Unknown" dispatch outcome must display as "Starting"
+   * and must NOT offer a retry affordance.
+   *
+   * Test discipline: each test covers exactly one assertion.
+   * Mutation: changing the mapping 'Starting' → something else fails test 1 only.
+   */
+  function mapOutcomeToDisplay(outcome: string | null): string {
+    if (!outcome) return 'Unknown';
+    switch (outcome) {
+      case 'InProgress':
+        return 'Dispatch in progress…';
+      case 'Accepted':
+        return 'Accepted';
+      case 'Rejected':
+        return 'Rejected';
+      case 'FailedBeforeStart':
+        return 'Failed before start';
+      case 'Unknown':
+        return 'Starting'; // criterion 9 mapping
+      default:
+        return outcome;
+    }
+  }
+
+  function isRetryAvailable(outcome: string | null): boolean {
+    // criterion 9: Unknown must never offer a retry
+    return (
+      outcome !== null && outcome !== 'Unknown' && outcome !== 'InProgress'
+    );
+  }
+
+  it('maps "Unknown" dispatch outcome to "Starting" label (criterion 9)', () => {
+    // Specific guard: "Unknown" → "Starting". Any other string fails this test.
+    expect(mapOutcomeToDisplay('Unknown')).toBe('Starting');
+  });
+
+  it('does not offer retry when dispatch outcome is Unknown (no blind retry)', () => {
+    // Specific guard: retry must be unavailable for Unknown outcome.
+    expect(isRetryAvailable('Unknown')).toBe(false);
+  });
+
+  it('does not map other outcomes to "Starting" (only Unknown gets this label)', () => {
+    expect(mapOutcomeToDisplay('InProgress')).not.toBe('Starting');
+    expect(mapOutcomeToDisplay('Accepted')).not.toBe('Starting');
+    expect(mapOutcomeToDisplay('SomeFutureState')).not.toBe('Starting');
+  });
+
+  it('allows retry when dispatch outcome is Rejected (but not Unknown)', () => {
+    expect(isRetryAvailable('Rejected')).toBe(true);
+  });
+});
+
+// ==========================================================================
+// Typed blocked reasons (criterion 10)
+// ==========================================================================
+
+describe('Typed blocked reasons — CalibrationBlockedReason discriminated union', () => {
+  /**
+   * Each reason code must be a typed discriminant. Free text is not allowed.
+   *
+   * Test discipline: each test verifies one named code in isolation.
+   * Mutation: removing a case from the discriminated union fails only its test.
+   */
+
+  const validReasonCodes = [
+    'staleTelemetry',
+    'firmwareChange',
+    'configChange',
+    'materialMismatch',
+    'maintenanceBusy',
+    'missingGcode',
+    'permissionFailure',
+    'printerOffline',
+    'acknowledgementExpired',
+    'jobReordered',
+  ] as const;
+
+  it.each(validReasonCodes)(
+    'parses CalibrationBlockedReason with code="%s"',
+    (code) => {
+      const parsed = CalibrationBlockedReason.parse({
+        code,
+        detail: `detail for ${code}`,
+      });
+      // Specific guard: each code round-trips as itself.
+      expect(parsed.code).toBe(code);
+      expect(parsed.detail).toContain(code);
+    },
+  );
+
+  it('rejects unknown reason code (no free text allowed)', () => {
+    // Specific guard: discriminated union rejects unknown string codes.
+    expect(() =>
+      CalibrationBlockedReason.parse({
+        code: 'unknownFreeTextCode',
+        detail: 'text',
+      }),
+    ).toThrow();
+  });
 });

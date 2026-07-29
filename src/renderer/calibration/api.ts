@@ -16,6 +16,19 @@ export type CalibrationApi = Pick<
   | 'exportOrcaProfile'
   | 'installOrcaProfile'
   | 'restoreOrcaProfile'
+  // --- Calibration generation, queue, and bed-clear (issue #54) ------------
+  | 'startCalibrationGeneration'
+  | 'getCalibrationOrchestrationStatus'
+  | 'getCalibrationQueueState'
+  | 'acknowledgeCalibrationBedClear'
+  | 'startCalibrationPrint'
+  // --- Queue reconciliation (issue #54) ------------------------------------
+  | 'pollCalibrationQueueChanges'
+  | 'getCalibrationSubscriptionResources'
+  // --- External calibration asset manifest (issue #54) ---------------------
+  | 'getCalibrationAssetManifest'
+  | 'pickCalibrationAssetFile'
+  | 'validateCalibrationAssetFile'
 >;
 
 /** The preload bridge is already runtime-validated; calibration only narrows it. */

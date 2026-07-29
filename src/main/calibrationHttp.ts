@@ -32,6 +32,8 @@ import type {
   RemoteCalibrationPrinterContext,
   RemoteCalibrationOrchestrationStatus,
   RemoteJobQueueJob,
+  RemoteJobQueueChangeFeedPage,
+  RemoteQueueSubscriptionResources,
 } from './calibrationWire.js';
 import {
   RemoteCalibrationApplySuccess,
@@ -48,6 +50,8 @@ import {
   RemoteJobQueueJob as JobQueueJobSchema,
   RemoteAcknowledgeBedClearSuccess as AcknowledgeBedClearSuccessSchema,
   RemoteAcknowledgeBedClearConflict as AcknowledgeBedClearConflictSchema,
+  RemoteJobQueueChangeFeedPage as JobQueueChangeFeedPageSchema,
+  RemoteQueueSubscriptionResources as QueueSubscriptionResourcesSchema,
 } from './calibrationWire.js';
 
 // --- Fixed API route constants ---------------------------------------------
@@ -749,6 +753,60 @@ export class CalibrationHttpClient {
       baseUrl,
       ROUTES.jobQueueJob(jobId),
       JobQueueJobSchema,
+      signal,
+    );
+  }
+
+  /**
+   * Poll the job-queue change feed for new events since `afterSequence`.
+   *
+   * Uses ROUTES.jobQueueChanges: GET /api/job-queue/changes?afterSequence=&limit=
+   *
+   * Envelope `schemaVersion` is "3". Use `nextSequence` as the cursor on the
+   * next poll. If any gap is detected (missing sequence numbers) the caller
+   * must refetch job state via REST.
+   *
+   * NOTE: Printer-group envelopes are REDACTED — never treat them as job state.
+   *       Subscribe via SubscribeToQueueJobAsync(jobId) for full job envelopes.
+   */
+  async getQueueChanges(
+    profileId: string,
+    baseUrl: string,
+    afterSequence: number,
+    limit: number,
+    signal: AbortSignal,
+  ): Promise<RemoteJobQueueChangeFeedPage> {
+    const query = new URLSearchParams({
+      afterSequence: String(afterSequence),
+      limit: String(Math.min(limit, 500)),
+    });
+    return this.get(
+      profileId,
+      baseUrl,
+      `${ROUTES.jobQueueChanges}?${query.toString()}`,
+      JobQueueChangeFeedPageSchema,
+      signal,
+    );
+  }
+
+  /**
+   * Fetch subscription resources: lists active job, printer, and project IDs
+   * the client should subscribe to via SignalR.
+   *
+   * Uses ROUTES.jobQueueSubscriptionResources: GET /api/job-queue/subscription-resources
+   *
+   * Active states: Queued | Assigned | Starting | Printing | Paused.
+   */
+  async getQueueSubscriptionResources(
+    profileId: string,
+    baseUrl: string,
+    signal: AbortSignal,
+  ): Promise<RemoteQueueSubscriptionResources> {
+    return this.get(
+      profileId,
+      baseUrl,
+      ROUTES.jobQueueSubscriptionResources,
+      QueueSubscriptionResourcesSchema,
       signal,
     );
   }

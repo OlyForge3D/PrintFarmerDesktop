@@ -472,6 +472,101 @@ function makeApi(savedRecord = record()) {
           retryable: false,
         },
       }),
+    // --- Calibration generation, queue, and bed-clear (issue #54) ----------
+    startCalibrationGeneration: vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'serverError',
+          message: 'Not implemented in test.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      }),
+    getCalibrationOrchestrationStatus: vi
+      .fn<CalibrationApi['getCalibrationOrchestrationStatus']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'serverError',
+          message: 'Not implemented in test.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      }),
+    getCalibrationQueueState: vi
+      .fn<CalibrationApi['getCalibrationQueueState']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'serverError',
+          message: 'Not implemented in test.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      }),
+    acknowledgeCalibrationBedClear: vi
+      .fn<CalibrationApi['acknowledgeCalibrationBedClear']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'serverError',
+          message: 'Not implemented in test.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      }),
+    startCalibrationPrint: vi
+      .fn<CalibrationApi['startCalibrationPrint']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'serverError',
+          message: 'Not implemented in test.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      }),
+    // --- Queue reconciliation (issue #54) ------------------------------------
+    pollCalibrationQueueChanges: vi
+      .fn<CalibrationApi['pollCalibrationQueueChanges']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'serverError',
+          message: 'Not implemented in test.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      }),
+    getCalibrationSubscriptionResources: vi
+      .fn<CalibrationApi['getCalibrationSubscriptionResources']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'serverError',
+          message: 'Not implemented in test.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      }),
+    // --- External calibration asset manifest (issue #54) -------------------
+    getCalibrationAssetManifest: vi
+      .fn<CalibrationApi['getCalibrationAssetManifest']>()
+      .mockResolvedValue({
+        status: 'error',
+        message: 'Not implemented in test.',
+      }),
+    pickCalibrationAssetFile: vi
+      .fn<CalibrationApi['pickCalibrationAssetFile']>()
+      .mockResolvedValue({ status: 'cancelled' }),
+    validateCalibrationAssetFile: vi
+      .fn<CalibrationApi['validateCalibrationAssetFile']>()
+      .mockResolvedValue({
+        status: 'error',
+        message: 'Not implemented in test.',
+      }),
   } satisfies CalibrationApi;
 }
 

@@ -78,6 +78,7 @@ import {
 } from './calibrationImportV4.js';
 import type { PreflightResult } from './calibrationImportV4.js';
 import { LegacyBackupProjectOutcome } from '@shared/ipc';
+import { CalibrationAssetManifestService } from './calibrationAssetManifest.js';
 
 declare const __PRINTFARMER_E2E_BUILD__: boolean;
 
@@ -279,6 +280,8 @@ export function registerIpcHandlers(
       },
     },
   );
+  // Asset manifest service for external calibration assets (issue #54).
+  const calibrationAssetManifest = new CalibrationAssetManifestService();
   // Active sync-abort controller: one controller per outstanding sync.
   const activeSyncControllers = new Map<string, AbortController>();
 
@@ -2066,6 +2069,197 @@ export function registerIpcHandlers(
         return ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse({
           status: 'error',
           error: apiError,
+        });
+      }
+    },
+  );
+
+  // --- Queue reconciliation (issue #54) ------------------------------------
+
+  ipcMain.handle(
+    IpcChannel.CalibrationPollQueueChanges,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationPollQueueChanges].request.parse(
+          rawRequest,
+        );
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const ctx = await profiles.getAuthenticatedContext(selectedId);
+      const signal = AbortSignal.timeout(15_000);
+      try {
+        const page = await calibrationHttp.getQueueChanges(
+          selectedId,
+          ctx.profile.baseUrl,
+          request.afterSequence,
+          request.limit ?? 200,
+          signal,
+        );
+        // Detect gaps: if any event.sequence is not contiguous the caller must
+        // refetch job state over REST.
+        let gapDetected = false;
+        const events = page.events;
+        for (let i = 1; i < events.length; i++) {
+          const cur = events[i];
+          const prev = events[i - 1];
+          if (
+            cur !== undefined &&
+            prev !== undefined &&
+            cur.sequence !== prev.sequence + 1
+          ) {
+            gapDetected = true;
+            break;
+          }
+        }
+        // Also detect gap between cursor and first event
+        const firstEvent = events[0];
+        if (
+          firstEvent !== undefined &&
+          firstEvent.sequence !== page.afterSequence + 1
+        ) {
+          gapDetected = true;
+        }
+        return ipcSchemas[
+          IpcChannel.CalibrationPollQueueChanges
+        ].response.parse({
+          status: 'ok',
+          afterSequence: page.afterSequence,
+          nextSequence: page.nextSequence,
+          hasMore: page.hasMore,
+          gapDetected,
+          events: page.events,
+        });
+      } catch (error) {
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError()
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Queue change feed poll failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationPollQueueChanges
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationGetSubscriptionResources,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[
+          IpcChannel.CalibrationGetSubscriptionResources
+        ].request.parse(rawRequest);
+      const selectedId = await requireSelectedCalibrationProfile(
+        request.profileId,
+      );
+      const ctx = await profiles.getAuthenticatedContext(selectedId);
+      const signal = AbortSignal.timeout(15_000);
+      try {
+        const resources = await calibrationHttp.getQueueSubscriptionResources(
+          selectedId,
+          ctx.profile.baseUrl,
+          signal,
+        );
+        return ipcSchemas[
+          IpcChannel.CalibrationGetSubscriptionResources
+        ].response.parse({
+          status: 'ok',
+          printerIds: resources.printerIds,
+          jobIds: resources.jobIds,
+          projectIds: resources.projectIds,
+        });
+      } catch (error) {
+        const apiError =
+          error instanceof CalibrationHttpError
+            ? error.toApiError()
+            : {
+                code: 'serverError' as const,
+                message:
+                  error instanceof Error
+                    ? error.message
+                    : 'Subscription resources fetch failed.',
+                retryable: false,
+                retryAfterSeconds: null,
+              };
+        return ipcSchemas[
+          IpcChannel.CalibrationGetSubscriptionResources
+        ].response.parse({ status: 'error', error: apiError });
+      }
+    },
+  );
+
+  // --- External calibration asset manifest (issue #54) ---------------------
+
+  ipcMain.handle(IpcChannel.CalibrationGetAssetManifest, async () => {
+    try {
+      const manifest = await calibrationAssetManifest.load();
+      return ipcSchemas[IpcChannel.CalibrationGetAssetManifest].response.parse(
+        manifest,
+      );
+    } catch (error) {
+      return ipcSchemas[IpcChannel.CalibrationGetAssetManifest].response.parse({
+        status: 'error',
+        message:
+          error instanceof Error ? error.message : 'Manifest load failed.',
+      });
+    }
+  });
+
+  ipcMain.handle(
+    IpcChannel.CalibrationPickAssetFile,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationPickAssetFile].request.parse(
+          rawRequest,
+        );
+      try {
+        const result = await calibrationAssetManifest.pickFile(
+          request.allowedExtensions,
+          request.title,
+        );
+        return ipcSchemas[IpcChannel.CalibrationPickAssetFile].response.parse(
+          result,
+        );
+      } catch (error) {
+        return ipcSchemas[IpcChannel.CalibrationPickAssetFile].response.parse({
+          status: 'error',
+          message:
+            error instanceof Error ? error.message : 'File picker failed.',
+        });
+      }
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationValidateAssetFile,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationValidateAssetFile].request.parse(
+          rawRequest,
+        );
+      try {
+        const result = await calibrationAssetManifest.validateFile(
+          request.approvalId,
+          request.method,
+        );
+        return ipcSchemas[
+          IpcChannel.CalibrationValidateAssetFile
+        ].response.parse(result);
+      } catch (error) {
+        return ipcSchemas[
+          IpcChannel.CalibrationValidateAssetFile
+        ].response.parse({
+          status: 'error',
+          message:
+            error instanceof Error ? error.message : 'Asset validation failed.',
         });
       }
     },
