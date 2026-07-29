@@ -1,6 +1,6 @@
 {
   "goal_id": "calibration-runtime-integration",
-  "status": "building",
+  "status": "inspecting",
   "iteration": 7,
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
@@ -45,9 +45,9 @@
     },
     {
       "iteration": 7,
-      "verdict": "building",
-      "timestamp": "2026-07-29T13:59:00Z",
-      "summary": "Iteration 7 builder commit. Implemented: (1) G-02 context refresh before POST — calls refreshProjectContext() and blocks on confirmed config-revision mismatch; (2) G-04/G-06 pendingGeneration extended with method/definitionVersion/methodOptions/profileId/printerConfigRevision/snapshotId/orcaProfileContentHash/nozzleId/spoolId for exact crash/restart replay; (3) G-06 crash-before-server-response recovery — when orchestrationId=null, exact-replays startCalibrationGeneration with persisted operationId; (4) L-04 retryGeneration (same operationId) and retryWithNewAttempt (fresh operationId) actions with UI buttons in generation panel; (5) B-06 focus trap (Tab/Shift+Tab wraparound in BedClearDialog) and live countdown timer (setInterval every 1s); (6) D-07 workflow e2e tests added (7 new IPC schema/workflow tests, 29 total); (7) 14 new unit tests for G-02 mismatch blocking, G-06 null-orchestrationId replay, L-04 retry/new-attempt, B-06 focus trap/countdown. Quality gates: typecheck ✓, lint ✓, test 1511/1511 ✓, test:e2e 29/29 ✓."
+      "verdict": "FAIL",
+      "timestamp": "2026-07-29T06:34:50Z",
+      "summary": "Critical defects remain unfixed. G-02: Context refresh called but validation incomplete (only configurationRevision checked; nozzle/material/Orca profile NOT checked) and fail-open on network/auth error (continues to POST despite refresh failure). G-04/G-07: methodOptions hardcoded null on lines 1200, 1342 (violates deterministic replay). L-04: retryWithNewAttempt creates new operation but DOES NOT dispatch beginAttempt domain action (only updates React state). D-07: E2E tests all IPC schema validation (19 tests, 100% schema); ZERO UI workflow tests for generation→queue→bed-clear→result. B-06: Focus trap + countdown correctly implemented. Quality gates pass (check:provenance, typecheck, lint, test 1511, e2e 29). 45+/56 criteria met; four critical defects block PASS. See inspector-feedback-7.md for detailed evidence and iteration-8 requirements."
     }
   ]
 }
