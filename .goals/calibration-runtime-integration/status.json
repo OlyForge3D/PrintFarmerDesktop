@@ -1,6 +1,6 @@
 {
   "goal_id": "calibration-runtime-integration",
-  "status": "building",
+  "status": "inspecting",
   "iteration": 3,
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
@@ -18,6 +18,12 @@
       "verdict": "FAIL",
       "timestamp": "2026-07-29T03:04:00Z",
       "summary": "Partial implementation: Generation (G-01–G-09), Queue (Q-01–Q-06), Bed-Clear (B-01–B-07) fully working. IPC/security boundaries secure (S-01–S-05). Quality gates pass. Critical gaps: Zero UI for asset manifest loading/validation (A-01–A-08), result entry workflow (L-03/L-05/L-06/L-07), immutable attempt linking (L-02). Only 3 of 7 workflows end-to-end. Tests incomplete: Vitest/jsdom only (no Playwright e2e per D-07). Missing lifecycle enforcement (G-02 context validation, B-06 Klipper check, L-05 result-entry gate). User-visible completeness ~40%."
+    },
+    {
+      "iteration": 3,
+      "verdict": "FAIL",
+      "timestamp": "2026-07-29T03:51:22Z",
+      "summary": "Most workflows end-to-end (generation, queue, bed-clear, asset loading, result entry) with 1468 passing tests and all quality gates met. Critical security violation: A-02/S-01/S-04/S-05 — renderer calls window.open() directly without IPC channel (exposes generic network primitive). Functional gaps: L-03/L-05 — completeAttemptWithResult() dispatches only confidence, not result/retest/notes (workflow draft mutable, not persisted). Compliance gap: D-07 — zero Playwright e2e tests for covered UI workflows (required by criterion). 38/56 criteria fully met, 13 partial/gapped, 5 violated. Blocking fixes: add openExternalUrl IPC, persist full result, add Playwright tests."
     }
   ]
 }
