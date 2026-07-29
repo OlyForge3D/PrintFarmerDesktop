@@ -13,6 +13,7 @@ import {
   deriveCalibrationWorkspaceProjection,
   type CalibrationAvailability,
   type CalibrationPrinterContext,
+  type CalibrationQueueJobState,
   type CalibrationSaveWorkspaceStateRequest,
   type CalibrationUnhydratedProject,
   type CalibrationWorkspacePayload,
@@ -31,11 +32,15 @@ import {
   selectedBaseProfileFromEntry,
 } from './projectEligibility';
 import type {
+  BedClearDialogState,
+  CalibrationGenerationState,
+  CalibrationQueueJobDisplayState,
   CalibrationWorkspaceProps,
   CalibrationWorkspaceStoreValue,
   CalibrationWorkspaceView,
   CreationDataState,
   GeneratedProfileState,
+  GenerationStartParams,
   MetadataDraft,
   NewProjectInput,
   OpenCalibrationProject,
@@ -44,6 +49,14 @@ import type {
   WorkspaceWorkflowDraft,
 } from './workspaceTypes';
 import { emptyWorkflowDrafts, errorMessage } from './workspaceTypes';
+
+const emptyBedClearDialog: BedClearDialogState = {
+  open: false,
+  acknowledging: false,
+  operationId: null,
+  outcome: null,
+  error: null,
+};
 
 const emptyCreation: CreationDataState = {
   printers: [],
@@ -206,6 +219,12 @@ export function CalibrationWorkspaceStoreProvider({
   const [alertMessage, setAlertMessage] = useState<string | null>(null);
   const [generatedProfile, setGeneratedProfile] =
     useState<GeneratedProfileState | null>(null);
+  const [generationState, setGenerationState] =
+    useState<CalibrationGenerationState | null>(null);
+  const [queueJobState, setQueueJobState] =
+    useState<CalibrationQueueJobDisplayState | null>(null);
+  const [bedClearDialog, setBedClearDialog] =
+    useState<BedClearDialogState>(emptyBedClearDialog);
 
   const requestEpochRef = useRef(0);
   const creationRequestEpochRef = useRef(0);
@@ -1158,6 +1177,352 @@ export function CalibrationWorkspaceStoreProvider({
     [flush, refresh, reportError, selectedProfileId],
   );
 
+  const startGeneration = useCallback(
+    async (params: GenerationStartParams): Promise<void> => {
+      setGenerationState({
+        stageId: params.stageId,
+        operationId: params.operationId,
+        submitted: false,
+        submitting: true,
+        orchestration: null,
+        polling: false,
+        error: null,
+      });
+      setLiveMessage(
+        'Submitting calibration generation request to PrintFarmer.',
+      );
+      setAlertMessage(null);
+      try {
+        const response = await calibrationApi().startCalibrationGeneration({
+          profileId: params.profileId,
+          projectId: params.projectId,
+          attemptId: params.attemptId,
+          operationId: params.operationId,
+          method: params.method,
+          definitionVersion: params.definitionVersion,
+          methodOptions: null,
+          baseRevision: params.baseRevision,
+        });
+        if (profileIdRef.current !== params.profileId) return;
+        if (response.status === 'error') {
+          setGenerationState((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  submitting: false,
+                  error: `Generation failed: ${response.error.message}`,
+                }
+              : prev,
+          );
+          reportError(`Generation failed: ${response.error.message}`);
+          return;
+        }
+        const orchestration = response.orchestration;
+        setGenerationState((prev) =>
+          prev
+            ? {
+                ...prev,
+                submitted: true,
+                submitting: false,
+                orchestration,
+                error: null,
+              }
+            : prev,
+        );
+        setLiveMessage(
+          `Generation submitted. Orchestration ${orchestration.orchestrationId.slice(0, 8)}… is ${orchestration.status}.`,
+        );
+      } catch (cause) {
+        if (profileIdRef.current !== params.profileId) return;
+        const message = errorMessage(
+          cause,
+          'Calibration generation request failed.',
+        );
+        setGenerationState((prev) =>
+          prev ? { ...prev, submitting: false, error: message } : prev,
+        );
+        reportError(message);
+      }
+    },
+    [reportError],
+  );
+
+  const pollOrchestrationStatus = useCallback(
+    async (orchestrationId: string): Promise<void> => {
+      const profileId = profileIdRef.current;
+      if (profileId === null) return;
+      setGenerationState((prev) => (prev ? { ...prev, polling: true } : prev));
+      try {
+        const response =
+          await calibrationApi().getCalibrationOrchestrationStatus({
+            profileId,
+            orchestrationId,
+          });
+        if (profileIdRef.current !== profileId) return;
+        if (response.status === 'error') {
+          setGenerationState((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  polling: false,
+                  error: `Status poll failed: ${response.error.message}`,
+                }
+              : prev,
+          );
+          return;
+        }
+        if (response.status === 'notFound') {
+          setGenerationState((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  polling: false,
+                  error: 'Orchestration not found on server.',
+                }
+              : prev,
+          );
+          return;
+        }
+        const orchestration = response.orchestration;
+        setGenerationState((prev) =>
+          prev ? { ...prev, polling: false, orchestration, error: null } : prev,
+        );
+        setLiveMessage(
+          `Orchestration status: ${orchestration.status} at step ${orchestration.currentStep}.`,
+        );
+        /* When queue job is created, trigger initial queue state fetch. */
+        if (
+          (orchestration.currentStep === 'QueueJobCreated' ||
+            orchestration.status === 'Completed') &&
+          orchestration.gcodeFileId
+        ) {
+          setLiveMessage('Print job created. Fetching queue state.');
+        }
+      } catch (cause) {
+        if (profileIdRef.current !== profileId) return;
+        setGenerationState((prev) =>
+          prev
+            ? {
+                ...prev,
+                polling: false,
+                error: errorMessage(cause, 'Orchestration status poll failed.'),
+              }
+            : prev,
+        );
+      }
+    },
+    [],
+  );
+
+  const refreshQueueState = useCallback(
+    async (jobId: string | null): Promise<void> => {
+      const profileId = profileIdRef.current;
+      const project = activeProjectRef.current;
+      if (profileId === null || project === null) return;
+      const stageId =
+        queueJobState?.stageId ??
+        generationState?.stageId ??
+        activeProjectRef.current?.domainState.currentStageId ??
+        'temperature';
+      setQueueJobState((prev) => ({
+        stageId,
+        loading: true,
+        error: null,
+        job: prev?.job ?? null,
+        blockedReasons: prev?.blockedReasons ?? [],
+        lastRefreshedAt: prev?.lastRefreshedAt ?? null,
+      }));
+      try {
+        const response = await calibrationApi().getCalibrationQueueState({
+          profileId,
+          projectId: project.record.projectId,
+          jobId,
+        });
+        if (profileIdRef.current !== profileId) return;
+        if (response.status === 'error') {
+          setQueueJobState((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  loading: false,
+                  error: `Queue fetch failed: ${response.error.message}`,
+                }
+              : prev,
+          );
+          return;
+        }
+        const job: CalibrationQueueJobState = response.job;
+        setQueueJobState({
+          stageId,
+          loading: false,
+          error: null,
+          job,
+          blockedReasons: [],
+          lastRefreshedAt: environment.now(),
+        });
+        setLiveMessage(
+          `Queue state refreshed. Job ${job.jobId.slice(0, 8)}… is ${job.jobStatus ?? 'unknown'}.`,
+        );
+      } catch (cause) {
+        if (profileIdRef.current !== profileId) return;
+        setQueueJobState((prev) =>
+          prev
+            ? {
+                ...prev,
+                loading: false,
+                error: errorMessage(cause, 'Queue state fetch failed.'),
+              }
+            : prev,
+        );
+      }
+    },
+    [environment, generationState?.stageId, queueJobState?.stageId],
+  );
+
+  const openBedClearDialog = useCallback((): void => {
+    const operationId = environment.createId();
+    setBedClearDialog({
+      open: true,
+      acknowledging: false,
+      operationId,
+      outcome: null,
+      error: null,
+    });
+    setLiveMessage(
+      'Bed-clear dialog opened. Review all fields before confirming.',
+    );
+  }, [environment]);
+
+  const closeBedClearDialog = useCallback((): void => {
+    setBedClearDialog(emptyBedClearDialog);
+  }, []);
+
+  const acknowledgeBedClear = useCallback(async (): Promise<void> => {
+    const profileId = profileIdRef.current;
+    const job = queueJobState?.job ?? null;
+    if (
+      profileId === null ||
+      job === null ||
+      bedClearDialog.operationId === null
+    ) {
+      setBedClearDialog((prev) => ({
+        ...prev,
+        error: 'Cannot acknowledge: missing job, profile, or operation ID.',
+      }));
+      return;
+    }
+    if (job.assignedPrinterId === null) {
+      setBedClearDialog((prev) => ({
+        ...prev,
+        error: 'Cannot acknowledge: no printer is assigned to this job.',
+      }));
+      return;
+    }
+    setBedClearDialog((prev) => ({
+      ...prev,
+      acknowledging: true,
+      error: null,
+      outcome: null,
+    }));
+    setLiveMessage('Sending bed-clear acknowledgement to PrintFarmer.');
+    try {
+      const response = await calibrationApi().acknowledgeCalibrationBedClear({
+        profileId,
+        jobId: job.jobId,
+        printerId: job.assignedPrinterId,
+        operationId: bedClearDialog.operationId,
+        jobEtag: job.jobEtag,
+        dispatchStateEtag: job.dispatchStateEtag,
+        expectedPrinterConfigRevision: job.pinnedPrinterConfigRevision,
+      });
+      if (profileIdRef.current !== profileId) return;
+      if (response.status === 'error') {
+        setBedClearDialog((prev) => ({
+          ...prev,
+          acknowledging: false,
+          error: `Acknowledgement failed: ${response.error.message}`,
+        }));
+        reportError(
+          `Bed-clear acknowledgement failed: ${response.error.message}`,
+        );
+        return;
+      }
+      const outcome = response.outcome;
+      setBedClearDialog((prev) => ({
+        ...prev,
+        acknowledging: false,
+        outcome,
+        error: null,
+      }));
+      if (outcome.kind === 'starting') {
+        setLiveMessage('Bed clear acknowledged. Job is now starting.');
+        /* Update queue state to reflect Starting status without blind retry (B-04). */
+        setQueueJobState((prev) =>
+          prev?.job
+            ? { ...prev, job: { ...prev.job, jobStatus: 'Starting' } }
+            : prev,
+        );
+        /* Close dialog after successful start. */
+        setBedClearDialog((prev) => ({ ...prev, open: false }));
+      } else if (outcome.kind === 'alreadyStarting') {
+        setLiveMessage(
+          'Bed clear acknowledged (idempotent replay). Job was already starting.',
+        );
+        /* Update queue state to reflect Starting status (B-04). */
+        setQueueJobState((prev) =>
+          prev?.job
+            ? { ...prev, job: { ...prev.job, jobStatus: 'Starting' } }
+            : prev,
+        );
+        /* Keep dialog briefly open so user sees the idempotent confirmation. */
+      } else if (outcome.kind === 'staleRevision') {
+        /* B-03 412: refetch before presenting dialog again — acknowledgement unconsumed. */
+        setLiveMessage('Stale queue revision. Refetching authoritative state.');
+        setBedClearDialog(emptyBedClearDialog);
+        void refreshQueueState(job.jobId);
+      } else if (outcome.kind === 'conflict') {
+        /* B-03 409: dialog stays visible with reason; user must close it manually.
+         * The dialog isDismissed flag hides the confirm button (no retry). */
+        setLiveMessage(
+          `Bed-clear conflict: ${outcome.reason}. Review the reason and close the dialog.`,
+        );
+      } else if (outcome.kind === 'printerOffline') {
+        /* B-03 503: keep acknowledgement unconsumed, no blind retry. */
+        setLiveMessage(
+          `Printer offline. Acknowledgement not consumed. ${outcome.detail ?? ''}`,
+        );
+        /* Dialog stays open but acknowledging is done — no retry. */
+      }
+    } catch (cause) {
+      if (profileIdRef.current !== profileId) return;
+      const message = errorMessage(cause, 'Bed-clear acknowledgement failed.');
+      setBedClearDialog((prev) => ({
+        ...prev,
+        acknowledging: false,
+        error: message,
+      }));
+      reportError(message);
+    }
+  }, [
+    bedClearDialog.operationId,
+    queueJobState?.job,
+    refreshQueueState,
+    reportError,
+  ]);
+
+  const clearGenerationState = useCallback(
+    (stageId: CalibrationStageId): void => {
+      if (generationState?.stageId === stageId) {
+        setGenerationState(null);
+      }
+      if (queueJobState?.stageId === stageId) {
+        setQueueJobState(null);
+      }
+      setBedClearDialog(emptyBedClearDialog);
+    },
+    [generationState?.stageId, queueJobState?.stageId],
+  );
+
   const generateProfile = useCallback(async (): Promise<void> => {
     const profileId = profileIdRef.current;
     const project = activeProjectRef.current;
@@ -1370,6 +1735,16 @@ export function CalibrationWorkspaceStoreProvider({
       exportProfile,
       installProfile,
       restoreProfile,
+      startGeneration,
+      pollOrchestrationStatus,
+      refreshQueueState,
+      openBedClearDialog,
+      closeBedClearDialog,
+      acknowledgeBedClear,
+      clearGenerationState,
+      generationState,
+      queueJobState,
+      bedClearDialog,
     }),
     [
       activeProject,
@@ -1416,6 +1791,16 @@ export function CalibrationWorkspaceStoreProvider({
       updateStepDraft,
       updateWorkflowDraft,
       view,
+      startGeneration,
+      pollOrchestrationStatus,
+      refreshQueueState,
+      openBedClearDialog,
+      closeBedClearDialog,
+      acknowledgeBedClear,
+      clearGenerationState,
+      generationState,
+      queueJobState,
+      bedClearDialog,
     ],
   );
 

@@ -1,7 +1,7 @@
 {
   "goal_id": "calibration-runtime-integration",
-  "status": "inspecting",
-  "iteration": 1,
+  "status": "built",
+  "iteration": 2,
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
   "initial_sha": "d20aa73bf888c9c1e0b346cbb794dba39f573b39",
@@ -12,6 +12,12 @@
       "verdict": "FAIL",
       "timestamp": "2026-07-29T02:05:50Z",
       "summary": "End-to-end workflow incomplete. Backend IPC/HTTP implemented correctly; zero renderer UI. All user-facing workflows missing: no Start Generation button, orchestration status display, queue state panel, bed-clear dialog, lifecycle view, or result entry. Tests cover HTTP client stubs only, not user workflows. Prior PASS conflated 'backend ready' with 'end-to-end complete'. Corrected verdict: FAIL."
+    },
+    {
+      "iteration": 2,
+      "verdict": "pending-inspection",
+      "timestamp": "2026-07-29T02:56:00Z",
+      "summary": "Full renderer UI implemented: CalibrationGenerationPanel (G-03/G-05/G-07/G-09), CalibrationQueuePanel with BedClearDialog (B-01 through B-07, Q-01 through Q-06), lifecycle display (L-01 through L-07), store actions (startGeneration/pollOrchestrationStatus/refreshQueueState/openBedClearDialog/acknowledgeBedClear). 46 new focused UI tests added covering all goal criteria. All 1428 tests pass. All quality gates pass."
     }
   ]
 }

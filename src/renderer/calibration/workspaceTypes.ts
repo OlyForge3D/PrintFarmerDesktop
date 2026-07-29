@@ -1,7 +1,11 @@
 import type {
   CalibrationAvailability,
+  CalibrationBedClearAckOutcome,
+  CalibrationBlockedReason,
+  CalibrationOrchestrationStatus,
   CalibrationPrinterCandidate,
   CalibrationPrinterContext,
+  CalibrationQueueJobState,
   CalibrationSelectedBaseProfile,
   CalibrationUnhydratedProject,
   CalibrationWorkspacePayload,
@@ -178,6 +182,26 @@ export interface CalibrationWorkspaceStoreValue {
   readonly installProfile: () => Promise<void>;
   /** Restore from a prior install backup (Windows). */
   readonly restoreProfile: () => Promise<void>;
+  /** Start backend generation for the given stage and method (G-03, G-04). */
+  readonly startGeneration: (params: GenerationStartParams) => Promise<void>;
+  /** Poll orchestration status from REST (G-06). */
+  readonly pollOrchestrationStatus: (orchestrationId: string) => Promise<void>;
+  /** Refresh queue job state from REST (Q-01). */
+  readonly refreshQueueState: (jobId: string | null) => Promise<void>;
+  /** Open the bed-clear safety dialog for the current job (B-01). */
+  readonly openBedClearDialog: () => void;
+  /** Close the bed-clear safety dialog without acknowledging. */
+  readonly closeBedClearDialog: () => void;
+  /** Acknowledge bed clear and start the job (B-02). */
+  readonly acknowledgeBedClear: () => Promise<void>;
+  /** Clear all generation/queue/lifecycle state for this stage. */
+  readonly clearGenerationState: (stageId: CalibrationStageId) => void;
+  /** Current generation operation state (null = none started). */
+  readonly generationState: CalibrationGenerationState | null;
+  /** Current queue job state (null = no job or not fetched). */
+  readonly queueJobState: CalibrationQueueJobDisplayState | null;
+  /** Bed-clear dialog state. */
+  readonly bedClearDialog: BedClearDialogState;
 }
 
 /** State of a generated OrcaSlicer profile (from CalibrationGenerateOrcaProfile). */
@@ -194,6 +218,72 @@ export interface GeneratedProfileState {
   readonly backupHash: string | null;
   /** Export outcome. Set after a successful exportProfile call. */
   readonly exportedHash: string | null;
+}
+
+/** Parameters required to start backend generation (G-04). */
+export interface GenerationStartParams {
+  readonly profileId: string;
+  readonly projectId: string;
+  readonly attemptId: string;
+  readonly operationId: string;
+  readonly stageId: CalibrationStageId;
+  readonly method: string;
+  readonly definitionVersion: string;
+  readonly baseRevision: number | null;
+}
+
+/** State of the current backend generation operation for a stage. */
+export interface CalibrationGenerationState {
+  /** The stage this generation is for. */
+  readonly stageId: CalibrationStageId;
+  /** Client-generated stable operation ID (idempotency key). */
+  readonly operationId: string;
+  /** Whether a generation request has been submitted. */
+  readonly submitted: boolean;
+  /** Whether submission is in progress (request in flight). */
+  readonly submitting: boolean;
+  /** The orchestration returned after submission or last poll. */
+  readonly orchestration: CalibrationOrchestrationStatus | null;
+  /** Whether we are currently polling orchestration status. */
+  readonly polling: boolean;
+  /** User-visible error if generation or polling failed. */
+  readonly error: string | null;
+}
+
+/** Typed blocked reason for display in the UI (Q-05, L-06). */
+export interface BlockedReasonDisplay {
+  readonly code: CalibrationBlockedReason['code'];
+  readonly detail: string | null;
+}
+
+/** State of the current queue job for display (Q-01). */
+export interface CalibrationQueueJobDisplayState {
+  /** The stage this queue job is associated with. */
+  readonly stageId: CalibrationStageId;
+  /** Whether queue state is being fetched. */
+  readonly loading: boolean;
+  /** User-visible error if queue state fetch failed. */
+  readonly error: string | null;
+  /** The authoritative job state from REST. */
+  readonly job: CalibrationQueueJobState | null;
+  /** Typed blocked reasons from REST (Q-05). */
+  readonly blockedReasons: readonly BlockedReasonDisplay[];
+  /** When the bed-clear expiry last ticked for countdown display. */
+  readonly lastRefreshedAt: string | null;
+}
+
+/** State of the bed-clear acknowledgement dialog (B-01 through B-07). */
+export interface BedClearDialogState {
+  /** Whether the dialog is open. */
+  readonly open: boolean;
+  /** Whether acknowledgement is in progress. */
+  readonly acknowledging: boolean;
+  /** The stable UUID for this dialog invocation (B-05). */
+  readonly operationId: string | null;
+  /** The outcome of the most recent acknowledgement attempt. */
+  readonly outcome: CalibrationBedClearAckOutcome | null;
+  /** User-visible error from acknowledgement. */
+  readonly error: string | null;
 }
 
 export function errorMessage(error: unknown, fallback: string): string {

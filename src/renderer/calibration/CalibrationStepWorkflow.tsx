@@ -22,6 +22,8 @@ import {
   formatTimestamp,
   type WorkspaceWorkflowDraft,
 } from './workspaceTypes';
+import { CalibrationGenerationPanel } from './CalibrationGenerationPanel';
+import { CalibrationQueuePanel } from './CalibrationQueuePanel';
 
 interface CalibrationStepWorkflowProps {
   readonly stageId: CalibrationStageId;
@@ -803,50 +805,11 @@ export function CalibrationStepWorkflow({
 
           <section className="cal-step-section" aria-labelledby="handoff-title">
             <h2 id="handoff-title">Generation, queue, and print handoff</h2>
-            <p>
-              These controls are gated entry surfaces for the connected
-              generation and printer workflows. This renderer does not implement
-              those operations or claim success.
-            </p>
-            <div className="cal-actions">
-              <button
-                type="button"
-                className="cal-button"
-                disabled
-                aria-describedby="generation-gate"
-              >
-                Generate calibration model
-              </button>
-              <button
-                type="button"
-                className="cal-button"
-                disabled
-                aria-describedby="queue-gate"
-              >
-                Queue calibration print
-              </button>
-              <button
-                type="button"
-                className="cal-button"
-                disabled
-                aria-describedby="start-gate"
-              >
-                Confirm bed clear
-              </button>
-              <button
-                type="button"
-                className="cal-button"
-                disabled
-                aria-describedby="start-gate"
-              >
-                Start calibration print
-              </button>
-            </div>
             <div className="cal-gate-list">
               <p id="generation-gate">
                 <strong>Generation gate:</strong>{' '}
                 {generationDecision.allowed
-                  ? 'Runtime safety gates pass; complete the generation workflow when available.'
+                  ? 'Runtime safety gates pass.'
                   : generationDecision.blockers
                       .map((item) => item.message)
                       .join(' ')}
@@ -854,17 +817,37 @@ export function CalibrationStepWorkflow({
               <p id="queue-gate">
                 <strong>Queue gate:</strong>{' '}
                 {queueDecision.allowed
-                  ? 'Runtime safety gates pass; connected queue handoff is not implemented here.'
+                  ? 'Runtime safety gates pass.'
                   : queueDecision.blockers
                       .map((item) => item.message)
                       .join(' ')}
               </p>
               <p id="start-gate">
                 <strong>Print-start gate:</strong>{' '}
-                {startDecision.blockers.map((item) => item.message).join(' ')}
+                {startDecision.allowed
+                  ? 'Runtime safety gates pass.'
+                  : startDecision.blockers
+                      .map((item) => item.message)
+                      .join(' ')}
               </p>
             </div>
           </section>
+
+          {/* G-03, G-05, G-07, G-09: Generation panel */}
+          {generationDecision.allowed ? (
+            <CalibrationGenerationPanel
+              stageId={stageId}
+              method={method}
+              attemptId={
+                activeAttempt?.attemptId ?? store.environment.createId()
+              }
+            />
+          ) : null}
+
+          {/* Q-01 through Q-06, B-01 through B-07: Queue and bed-clear panel */}
+          {queueDecision.allowed ? (
+            <CalibrationQueuePanel stageId={stageId} />
+          ) : null}
 
           <section
             className="cal-step-section"

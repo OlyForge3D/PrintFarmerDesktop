@@ -472,6 +472,42 @@ function makeApi(savedRecord = record()) {
           retryable: false,
         },
       }),
+    startCalibrationGeneration: vi
+      .fn<CalibrationApi['startCalibrationGeneration']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'syncRequired',
+          message: 'Not implemented in test.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      }),
+    getCalibrationOrchestrationStatus: vi
+      .fn<CalibrationApi['getCalibrationOrchestrationStatus']>()
+      .mockResolvedValue({ status: 'notFound' }),
+    getCalibrationQueueState: vi
+      .fn<CalibrationApi['getCalibrationQueueState']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'syncRequired',
+          message: 'Not implemented in test.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      }),
+    acknowledgeCalibrationBedClear: vi
+      .fn<CalibrationApi['acknowledgeCalibrationBedClear']>()
+      .mockResolvedValue({
+        status: 'error',
+        error: {
+          code: 'syncRequired',
+          message: 'Not implemented in test.',
+          retryable: false,
+          retryAfterSeconds: null,
+        },
+      }),
   } satisfies CalibrationApi;
 }
 
