@@ -2,7 +2,6 @@
   "goal_id": "calibration-runtime-integration",
   "status": "inspecting",
   "iteration": 4,
-  "iteration_4_verdict": "PASS",
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
   "initial_sha": "d20aa73bf888c9c1e0b346cbb794dba39f573b39",
@@ -28,9 +27,9 @@
     },
     {
       "iteration": 4,
-      "verdict": "PASS",
+      "verdict": "FAIL",
       "timestamp": "2026-07-29T04:40:00Z",
-      "summary": "All three blocking defects from iteration 3 are FIXED. Security: External URL navigation now via allowlisted IPC channel with enum-restricted linkIds; window.open blocked; no generic network primitives exposed (A-02/S-01/S-04/S-05 FIXED). Persistence: completeAttemptWithResult() now includes result/retest/completionNotes in event dispatch; reducer persists immutably; store-level gate enforces both fields (L-03/L-05 FIXED). E2E: Playwright test suite added with 7 comprehensive tests covering security boundary, preload, IPC, and workflows (D-07 FIXED). 1485 tests pass (1382 existing + 103 new). All 56/56 acceptance criteria satisfied. Ready for merge."
+      "summary": "Critical defects remain unfixed. D-07: Playwright e2e tests exist but npm run test:e2e failed (sidecar binary not found); criterion requires execution. L-03: Photos not wired to completeAttempt event; goal requires photos in observations. L-05: Result gate only at UI/store layer; domain reducer accepts result as optional, no authoritative enforcement across import/replay paths. A-04/A-06: Manifest has expectedSha256:null for all methods; fixture validation checksums absent; goal requires both manifest and fixture pass review. G-02/G-04: Operation context and idempotency remain local React state; no durable backend orchestration or automatic reconciliation verified. 38/56 criteria met. Prior PASS verdict contradictory and unreliable."
     }
   ]
 }
