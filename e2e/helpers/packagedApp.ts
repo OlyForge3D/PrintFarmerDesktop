@@ -15,12 +15,170 @@ export interface LaunchPackagedAppOptions {
   catalogDb: string;
   environment?: NodeJS.ProcessEnv;
   gpuMode?: PackagedGpuMode;
+  processLog?: PackagedProcessLog;
 }
 
 export interface PackagedApp {
   page: Page;
   processOutput(): string;
   close(): Promise<void>;
+}
+
+export interface PackagedProcessLog {
+  append(chunk: string | Uint8Array): void;
+  read(): string;
+}
+
+type TestOutcome<T> =
+  | {
+      status: 'fulfilled';
+      value: T;
+    }
+  | {
+      status: 'rejected';
+      reason: unknown;
+    };
+
+export function createPackagedProcessLog(): PackagedProcessLog {
+  let output = Buffer.alloc(0);
+
+  return {
+    append(chunk) {
+      const incoming = Buffer.from(chunk);
+      if (incoming.length >= MAX_PROCESS_OUTPUT_BYTES) {
+        output = incoming.subarray(incoming.length - MAX_PROCESS_OUTPUT_BYTES);
+        return;
+      }
+
+      const retainedBytes = Math.min(
+        output.length,
+        MAX_PROCESS_OUTPUT_BYTES - incoming.length,
+      );
+      output = Buffer.concat([
+        output.subarray(output.length - retainedBytes),
+        incoming,
+      ]);
+    },
+    read() {
+      let decoded = output.toString('utf8');
+      while (Buffer.byteLength(decoded) > MAX_PROCESS_OUTPUT_BYTES) {
+        decoded = decoded.slice(1);
+      }
+      return decoded;
+    },
+  };
+}
+
+export function suppressedErrors(error: unknown): readonly unknown[] {
+  if (!(error instanceof Error)) {
+    return [];
+  }
+
+  const suppressed = (error as Error & { suppressed?: unknown }).suppressed;
+  return suppressed instanceof AggregateError
+    ? Array.from(suppressed.errors)
+    : [];
+}
+
+function withSuppressedErrors(
+  primaryError: unknown,
+  secondaryErrors: readonly unknown[],
+): unknown {
+  if (secondaryErrors.length === 0) {
+    return primaryError;
+  }
+
+  const reportableError =
+    primaryError instanceof Error && Object.isExtensible(primaryError)
+      ? primaryError
+      : new Error(
+          primaryError instanceof Error
+            ? primaryError.message
+            : String(primaryError),
+          { cause: primaryError },
+        );
+  const aggregate = new AggregateError(
+    [...suppressedErrors(reportableError), ...secondaryErrors],
+    'Secondary packaged-test diagnostics or cleanup failures',
+  );
+
+  Object.defineProperty(reportableError, 'suppressed', {
+    configurable: true,
+    enumerable: true,
+    value: aggregate,
+  });
+  const primaryStack =
+    reportableError.stack ??
+    `${reportableError.name}: ${reportableError.message}`;
+  const secondaryStacks = Array.from(aggregate.errors, (error) =>
+    error instanceof Error
+      ? (error.stack ?? `${error.name}: ${error.message}`)
+      : String(error),
+  ).join('\n\n');
+  reportableError.stack = `${primaryStack}\n\nSuppressed secondary failures:\n${secondaryStacks}`;
+
+  return reportableError;
+}
+
+export async function runWithPackagedTestCleanup<T>(
+  body: () => Promise<T>,
+  cleanup: () => Promise<void>,
+  onFailure?: (error: unknown) => Promise<void>,
+): Promise<T> {
+  let outcome: TestOutcome<T> | undefined;
+  const secondaryErrors: unknown[] = [];
+
+  try {
+    outcome = {
+      status: 'fulfilled',
+      value: await body(),
+    };
+  } catch (error) {
+    outcome = {
+      status: 'rejected',
+      reason: error,
+    };
+  } finally {
+    try {
+      await cleanup();
+    } catch (error) {
+      secondaryErrors.push(error);
+    }
+  }
+
+  if (outcome === undefined) {
+    throw new Error('Packaged test completed without recording an outcome.');
+  }
+
+  if (outcome.status === 'fulfilled') {
+    if (secondaryErrors.length === 0) {
+      return outcome.value;
+    }
+
+    const cleanupFailure =
+      secondaryErrors.length === 1
+        ? secondaryErrors[0]
+        : new AggregateError(secondaryErrors, 'Packaged test cleanup failed.');
+    const diagnosticErrors: unknown[] = [];
+    if (onFailure !== undefined) {
+      try {
+        await onFailure(cleanupFailure);
+      } catch (error) {
+        diagnosticErrors.push(error);
+      }
+    }
+    throw withSuppressedErrors(cleanupFailure, diagnosticErrors);
+  }
+
+  if (onFailure !== undefined) {
+    try {
+      await onFailure(outcome.reason);
+    } catch (error) {
+      secondaryErrors.push(error);
+    }
+  }
+
+  throw withSuppressedErrors(outcome.reason, secondaryErrors);
 }
 
 export function packagedGpuModeFromEnvironment(): PackagedGpuMode {
@@ -43,8 +201,9 @@ export function removePackagedAppTempRoot(directory: string): void {
 }
 
 export async function cleanupPackagedApp(
-  app: PackagedApp | null,
+  app: Pick<PackagedApp, 'close'> | null,
   directories: readonly string[],
+  afterCoreCleanup?: () => Promise<void> | void,
 ): Promise<void> {
   const errors: unknown[] = [];
   try {
@@ -59,6 +218,13 @@ export async function cleanupPackagedApp(
       errors.push(error);
     }
   }
+  if (afterCoreCleanup !== undefined) {
+    try {
+      await afterCoreCleanup();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
   if (errors.length > 0) {
     throw new AggregateError(errors, 'Packaged test cleanup failed.');
   }
@@ -67,50 +233,56 @@ export async function cleanupPackagedApp(
 export async function launchPackagedApp(
   options: LaunchPackagedAppOptions,
 ): Promise<PackagedApp> {
-  const port = await allocateLoopbackPort();
   const gpuMode = options.gpuMode ?? 'default';
-  const child = spawn(
-    options.executablePath,
-    [
-      `--remote-debugging-port=${port}`,
-      `--user-data-dir=${options.userDataPath}`,
-      ...gpuArguments(gpuMode),
-    ],
-    {
-      env: {
-        ...process.env,
-        PRINTFARMER_CATALOG_DB: options.catalogDb,
-        ...options.environment,
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  );
-  let output = '';
+  const processLog = options.processLog ?? createPackagedProcessLog();
+  let child: ChildProcess | null = null;
   let spawnError: Error | null = null;
   const appendOutput = (bytes: Buffer): void => {
-    output = `${output}${bytes.toString()}`.slice(-MAX_PROCESS_OUTPUT_BYTES);
+    processLog.append(bytes);
   };
-  child.stdout?.on('data', appendOutput);
-  child.stderr?.on('data', appendOutput);
-  child.once('error', (error) => {
-    spawnError = error;
-  });
 
   let browser: Browser | null = null;
   let page: Page | null = null;
   let closePromise: Promise<void> | null = null;
   const close = (): Promise<void> => {
-    closePromise ??= closeHandles(page, browser, child);
+    const activeChild = child;
+    if (activeChild === null) {
+      return Promise.resolve();
+    }
+    closePromise ??= closeHandles(page, browser, activeChild);
     return closePromise;
   };
 
   try {
+    const port = await allocateLoopbackPort();
+    child = spawn(
+      options.executablePath,
+      [
+        `--remote-debugging-port=${port}`,
+        `--user-data-dir=${options.userDataPath}`,
+        ...gpuArguments(gpuMode),
+      ],
+      {
+        env: {
+          ...process.env,
+          PRINTFARMER_CATALOG_DB: options.catalogDb,
+          ...options.environment,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    child.stdout?.on('data', appendOutput);
+    child.stderr?.on('data', appendOutput);
+    child.once('error', (error) => {
+      spawnError = error;
+    });
+
     const endpoint = `http://127.0.0.1:${port}`;
     await waitForDebugEndpoint(
       endpoint,
       child,
       () => spawnError,
-      () => output,
+      () => processLog.read(),
     );
     browser = await chromium.connectOverCDP(endpoint);
     const context = browser.contexts()[0];
@@ -129,19 +301,17 @@ export async function launchPackagedApp(
     await page.waitForLoadState('domcontentloaded');
     return {
       page,
-      processOutput: () => output,
+      processOutput: () => processLog.read(),
       close,
     };
   } catch (error) {
+    const cleanupErrors: unknown[] = [];
     try {
       await close();
     } catch (cleanupError) {
-      throw new AggregateError(
-        [error, cleanupError],
-        'Packaged app launch failed and cleanup was incomplete.',
-      );
+      cleanupErrors.push(cleanupError);
     }
-    throw error;
+    throw withSuppressedErrors(error, cleanupErrors);
   }
 }
 
