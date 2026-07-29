@@ -1,6 +1,6 @@
 {
   "goal_id": "calibration-runtime-integration",
-  "status": "building",
+  "status": "inspecting",
   "iteration": 5,
   "builder_model": "Claude:Sonnet-4.6",
   "inspector_model": "Claude:Haiku-4.5",
@@ -30,6 +30,12 @@
       "verdict": "FAIL",
       "timestamp": "2026-07-29T04:40:00Z",
       "summary": "Critical defects remain unfixed. D-07: Playwright e2e tests exist but npm run test:e2e failed (sidecar binary not found); criterion requires execution. L-03: Photos not wired to completeAttempt event; goal requires photos in observations. L-05: Result gate only at UI/store layer; domain reducer accepts result as optional, no authoritative enforcement across import/replay paths. A-04/A-06: Manifest has expectedSha256:null for all methods; fixture validation checksums absent; goal requires both manifest and fixture pass review. G-02/G-04: Operation context and idempotency remain local React state; no durable backend orchestration or automatic reconciliation verified. 38/56 criteria met. Prior PASS verdict contradictory and unreliable."
+    },
+    {
+      "iteration": 5,
+      "verdict": "FAIL",
+      "timestamp": "2026-07-29T05:25:00Z",
+      "summary": "D-04 lint error blocks quality gate: async function without await in e2e test. A-04/A-06: Asset manifest unvalidated—no fixture checksums despite methods being disabled. G-02/G-04: pendingGeneration persisted before submit but no reconciliation on project load; restart recovery not implemented. L-03 photos wired correctly. L-05 result enforced at domain layer. D-07 e2e tests pass (22 tests). 42/56 criteria met; three blocking defects."
     }
   ]
 }
