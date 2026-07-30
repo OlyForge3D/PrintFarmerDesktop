@@ -277,9 +277,11 @@ describe('descriptor-bound Windows installer launch', () => {
 
       expect(processId).toBeGreaterThan(0);
       expectProcessAlive(processId);
-      expect(
-        path.resolve(await processImagePath(processId)).toLowerCase(),
-      ).toBe(path.resolve(legitimateInstaller).toLowerCase());
+      const runningImageBytes = await readFile(
+        await processImagePath(processId),
+      );
+      expect(runningImageBytes).toEqual(legitimateBytes);
+      expect(runningImageBytes).not.toEqual(attackerBytes);
       await expect(readFile(publicInstaller)).resolves.toEqual(attackerBytes);
       expect(
         createHash('sha256')
