@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "id": "windows-x64-nvidia",
+      "platform": "win32",
+      "architecture": "x64",
+      "vendor": "nvidia",
+      "runnerLabels": [
+        "self-hosted",
+        "Windows",
+        "X64",
+        "printfarmer-gpu",
+        "nvidia"
+      ]
+    },
+    {
+      "id": "windows-x64-amd",
+      "platform": "win32",
+      "architecture": "x64",
+      "vendor": "amd",
+      "runnerLabels": [
+        "self-hosted",
+        "Windows",
+        "X64",
+        "printfarmer-gpu",
+        "amd"
+      ]
+    },
+    {
+      "id": "windows-x64-intel",
+      "platform": "win32",
+      "architecture": "x64",
+      "vendor": "intel",
+      "runnerLabels": [
+        "self-hosted",
+        "Windows",
+        "X64",
+        "printfarmer-gpu",
+        "intel"
+      ]
+    },
+    {
+      "id": "macos-arm64-apple",
+      "platform": "darwin",
+      "architecture": "arm64",
+      "vendor": "apple",
+      "runnerLabels": [
+        "self-hosted",
+        "macOS",
+        "ARM64",
+        "printfarmer-gpu",
+        "apple"
+      ]
+    },
+    {
+      "id": "macos-x64-intel",
+      "platform": "darwin",
+      "architecture": "x64",
+      "vendor": "intel",
+      "runnerLabels": [
+        "self-hosted",
+        "macOS",
+        "X64",
+        "printfarmer-gpu",
+        "intel"
+      ]
+    },
+    {
+      "id": "macos-x64-amd",
+      "platform": "darwin",
+      "architecture": "x64",
+      "vendor": "amd",
+      "runnerLabels": ["self-hosted", "macOS", "X64", "printfarmer-gpu", "amd"]
+    }
+  ]
+}

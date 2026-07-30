@@ -16,12 +16,14 @@
 /forge.config.ts @jpapiez
 /.github/workflows/ci.yml @jpapiez
 /.github/workflows/release.yml @jpapiez
+/.github/workflows/release-gpu-qualification.yml @jpapiez
 /scripts/check-calibration-provenance.mjs @jpapiez
 /scripts/stage-compliance.mjs @jpapiez
 /scripts/stage-sidecar.* @jpapiez
 /scripts/audit-advisories.* @jpapiez
 /scripts/generate-sbom.* @jpapiez
 /scripts/generate-notices.mjs @jpapiez
+/scripts/release-gpu-* @jpapiez
 /scripts/supply-chain.* @jpapiez
 /scripts/supply-chain-policy.* @jpapiez
 /scripts/supply-chain-policy.json @jpapiez
@@ -32,6 +34,7 @@
 /tests/licensing.test.ts @jpapiez
 /tests/packaging.test.ts @jpapiez
 /tests/provenance.test.ts @jpapiez
+/tests/releaseGpuQualification.test.ts @jpapiez
 /tests/supplyChain.test.ts @jpapiez
 /tests/supplyChainPolicy.test.ts @jpapiez
 /.github/CODEOWNERS @jpapiez
