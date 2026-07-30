@@ -14,6 +14,7 @@ import {
   createEditableRetargetFixture,
   findPackagedExecutable,
 } from './helpers/retargetFixture';
+import { refreshCatalog } from './helpers/modelLibrary';
 import {
   attachPackagedFailureDiagnostics,
   cleanupPackagedApp,
@@ -185,9 +186,7 @@ test('runs the U1 workflow in the packaged app without changing the source', asy
         environment: dialogEnvironment,
       });
       await dismissOnboarding(launched.page);
-      await launched.page
-        .getByRole('button', { name: 'Refresh catalog' })
-        .click();
+      await refreshCatalog(launched.page);
       await expectPackagedThumbnail(launched.page, fileName);
       const imported = await launched.page.evaluate(() =>
         window.printFarmer.listModels(),
@@ -220,9 +219,7 @@ test('runs the U1 workflow in the packaged app without changing the source', asy
         { modelHash: fixture.sha256, rootId: importedRootId! },
       );
       expect(directPreflight).not.toHaveProperty('thrown');
-      await launched.page
-        .getByRole('button', { name: 'Refresh catalog' })
-        .click();
+      await refreshCatalog(launched.page);
       await openWorkflow(launched.page, fileName);
 
       const bundled = launched.page
@@ -310,9 +307,7 @@ test('runs the U1 workflow in the packaged app without changing the source', asy
         .poll(() => createdRoots.every((entry) => !existsSync(entry)))
         .toBe(true);
       expect(hash(fixture.file)).toBe(fixture.sha256);
-      await launched.page
-        .getByRole('button', { name: 'Refresh catalog' })
-        .click();
+      await refreshCatalog(launched.page);
       await openWorkflow(launched.page, fileName);
       await expect(
         launched.page.getByRole('radio', { name: /\(imported\)$/ }).first(),

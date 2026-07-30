@@ -8,6 +8,7 @@ import {
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { refreshCatalog } from './helpers/modelLibrary';
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -205,7 +206,7 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
   );
   expect(importResult.report.added).toBe(1);
   expect(importResult.modelsOrganized).toBe(1);
-  await page.getByRole('button', { name: 'Refresh catalog' }).click();
+  await refreshCatalog(page);
 
   const filename =
     'precision-calibration-fixture-with-an-intentionally-long-name.obj';

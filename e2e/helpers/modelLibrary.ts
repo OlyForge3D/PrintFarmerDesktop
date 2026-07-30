@@ -12,6 +12,18 @@ export const modelFixtureDirectory = path.resolve(
 export const modelFixtureName =
   'precision-calibration-fixture-with-an-intentionally-long-name.obj';
 
+export async function refreshCatalog(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Manage sources' }).click();
+  const sourcesDialog = page.getByRole('dialog', {
+    name: 'Catalog sources',
+  });
+  await sourcesDialog.getByRole('button', { name: 'Refresh catalog' }).click();
+  await sourcesDialog
+    .getByRole('button', { name: 'Close catalog sources' })
+    .click();
+  await sourcesDialog.waitFor({ state: 'detached' });
+}
+
 export async function importModelFixture(
   page: Page,
   rootId: string,
@@ -53,5 +65,5 @@ export async function importModelFixture(
       `Packaged fixture import added ${result.report.added} and organized ${result.modelsOrganized} models.`,
     );
   }
-  await page.getByRole('button', { name: 'Refresh catalog' }).click();
+  await refreshCatalog(page);
 }
