@@ -8,12 +8,10 @@ import { FuseV1Options, FuseVersion } from '@electron/fuses';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { resolveReleaseSigningConfiguration } from './release-signing';
 
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
 const iconBasePath = path.join(repoRoot, 'assets', 'icon');
 const windowsIconPath = `${iconBasePath}.ico`;
-const releaseSigning = resolveReleaseSigningConfiguration();
 
 function runBuildScript(scriptName: string, description: string): void {
   const script = path.join(repoRoot, 'scripts', scriptName);
@@ -41,7 +39,6 @@ const config: ForgeConfig = {
       './assets/icon.png',
       './resources/compliance',
     ],
-    ...releaseSigning.packagerConfig,
   },
   rebuildConfig: {},
   hooks: {
@@ -64,7 +61,6 @@ const config: ForgeConfig = {
       setupIcon: windowsIconPath,
       iconUrl:
         'https://raw.githubusercontent.com/OlyForge3D/PrintFarmerDesktop/development/assets/icon.ico',
-      ...releaseSigning.squirrelConfig,
     }),
     // Portable, no-install Windows build for users who would rather unzip a
     // folder than run the unsigned installer.

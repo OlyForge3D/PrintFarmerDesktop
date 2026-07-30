@@ -1,11 +1,17 @@
 // @vitest-environment node
 
 import { EventEmitter } from 'node:events';
-import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import {
+  createHash,
+  generateKeyPairSync,
+  sign,
+  type KeyObject,
+} from 'node:crypto';
 import {
   mkdtemp,
   mkdir,
   readFile,
+  rename,
   rm,
   unlink,
   writeFile,
@@ -26,6 +32,10 @@ const temporaryDirectories: string[] = [];
 function releaseFixture(
   artifact: string,
   version = '1.1.0',
+  signingKeys: {
+    privateKey: KeyObject;
+    publicKey: KeyObject;
+  } = generateKeyPairSync('ed25519'),
 ): {
   metadataUrl: string;
   publicKey: string;
@@ -34,6 +44,9 @@ function releaseFixture(
   macArtifactUrl: string;
   windowsFileName: string;
   macFileName: string;
+  metadataPayload: string;
+  metadataSignature: string;
+  signingKeys: { privateKey: KeyObject; publicKey: KeyObject };
 } {
   const metadataUrl =
     'https://github.com/OlyForge3D/PrintFarmerDesktop/releases/latest/download/latest.json';
@@ -41,7 +54,7 @@ function releaseFixture(
   const macFileName = `PrintFarmer-darwin-universal-${version}.zip`;
   const windowsArtifactUrl = `https://github.com/OlyForge3D/PrintFarmerDesktop/releases/download/v${version}/${windowsFileName}`;
   const macArtifactUrl = `https://github.com/OlyForge3D/PrintFarmerDesktop/releases/download/v${version}/${macFileName}`;
-  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  const { privateKey, publicKey } = signingKeys;
   const artifactIdentity = {
     sha256: createHash('sha256').update(artifact).digest('hex'),
     size: Buffer.byteLength(artifact),
@@ -87,6 +100,9 @@ function releaseFixture(
     macArtifactUrl,
     windowsFileName,
     macFileName,
+    metadataPayload: metadata,
+    metadataSignature: signature,
+    signingKeys,
   };
 }
 
@@ -95,6 +111,7 @@ class StagingAutoUpdater extends EventEmitter {
   readonly requestedUrls: string[] = [];
   feedUrl = '';
   beforeArtifactFetch?: () => Promise<void>;
+  artifactBytes: Buffer | null = null;
 
   setFeedURL(options: { url: string }): void {
     this.feedUrl = options.url;
@@ -121,7 +138,7 @@ class StagingAutoUpdater extends EventEmitter {
             `artifact request failed with HTTP ${artifactResponse.status}`,
           );
         }
-        await artifactResponse.arrayBuffer();
+        this.artifactBytes = Buffer.from(await artifactResponse.arrayBuffer());
         this.emit('update-downloaded');
       } catch (error) {
         this.emit('error', error);
@@ -130,20 +147,10 @@ class StagingAutoUpdater extends EventEmitter {
   }
 }
 
-function successfulSpawn(): {
-  implementation: NonNullable<UpdateManagerOptions['spawnInstaller']>;
-  unref: ReturnType<typeof vi.fn>;
-} {
-  const unref = vi.fn();
-  const implementation = vi.fn(() => {
-    const child = new EventEmitter() as EventEmitter & {
-      unref: () => void;
-    };
-    child.unref = unref;
-    queueMicrotask(() => child.emit('spawn'));
-    return child;
-  }) as unknown as NonNullable<UpdateManagerOptions['spawnInstaller']>;
-  return { implementation, unref };
+function successfulLaunch(): NonNullable<
+  UpdateManagerOptions['launchWindowsInstaller']
+> {
+  return vi.fn(() => Promise.resolve());
 }
 
 async function managerFixture(
@@ -151,11 +158,14 @@ async function managerFixture(
   options: {
     platform?: NodeJS.Platform;
     nativeAutoUpdater?: AutoUpdater;
-    spawnInstaller?: UpdateManagerOptions['spawnInstaller'];
+    launchWindowsInstaller?: UpdateManagerOptions['launchWindowsInstaller'];
+    openArtifactFile?: UpdateManagerOptions['openArtifactFile'];
     createArtifactReadStream?: UpdateManagerOptions['createArtifactReadStream'];
     onError?: (error: unknown) => void;
     fetchImplementation?: typeof fetch;
     version?: string;
+    directory?: string;
+    signingKeys?: { privateKey: KeyObject; publicKey: KeyObject };
   } = {},
 ): Promise<{
   manager: InstanceType<typeof UpdateManager>;
@@ -164,9 +174,15 @@ async function managerFixture(
   directory: string;
   app: Pick<App, 'getVersion' | 'getPath' | 'quit'>;
 }> {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'update-download-'));
-  temporaryDirectories.push(directory);
-  const fixture = releaseFixture(artifact, options.version);
+  const directory =
+    options.directory ??
+    (await mkdtemp(path.join(os.tmpdir(), 'update-download-')));
+  if (!options.directory) temporaryDirectories.push(directory);
+  const fixture = releaseFixture(
+    artifact,
+    options.version,
+    options.signingKeys,
+  );
   const fetchImplementation: typeof fetch =
     options.fetchImplementation ??
     ((input) => {
@@ -195,8 +211,11 @@ async function managerFixture(
     ...(options.nativeAutoUpdater
       ? { nativeAutoUpdater: options.nativeAutoUpdater }
       : {}),
-    ...(options.spawnInstaller
-      ? { spawnInstaller: options.spawnInstaller }
+    ...(options.launchWindowsInstaller
+      ? { launchWindowsInstaller: options.launchWindowsInstaller }
+      : {}),
+    ...(options.openArtifactFile
+      ? { openArtifactFile: options.openArtifactFile }
       : {}),
     ...(options.createArtifactReadStream
       ? { createArtifactReadStream: options.createArtifactReadStream }
@@ -249,7 +268,7 @@ describe('verified update download', () => {
     await manager.checkForUpdates();
 
     await expect(store.read()).resolves.toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       phase: 'downloaded',
       targetVersion: '1.1.0',
     });
@@ -272,7 +291,7 @@ describe('verified update download', () => {
   });
 
   it('never authorizes attacker-written state without fresh signed metadata', async () => {
-    const spawnInstaller = vi.fn();
+    const launchWindowsInstaller = vi.fn();
     const fetchImplementation = vi.fn(() =>
       Promise.reject(new Error('release metadata unavailable')),
     ) as unknown as typeof fetch;
@@ -280,27 +299,29 @@ describe('verified update download', () => {
       'signed installer',
       {
         fetchImplementation,
-        spawnInstaller:
-          spawnInstaller as unknown as UpdateManagerOptions['spawnInstaller'],
+        launchWindowsInstaller:
+          launchWindowsInstaller as unknown as UpdateManagerOptions['launchWindowsInstaller'],
       },
     );
     const malicious = 'attacker controlled installer';
     await mkdir(store.directory, { recursive: true });
     await writeFile(store.artifactPath(fixture.windowsFileName), malicious);
     await store.write({
-      schemaVersion: 2,
+      schemaVersion: 3,
       phase: 'downloaded',
       targetVersion: '1.1.0',
       artifactFileName: fixture.windowsFileName,
       artifactSha256: createHash('sha256').update(malicious).digest('hex'),
       artifactSize: Buffer.byteLength(malicious),
+      metadataPayload: fixture.metadataPayload,
+      metadataSignature: 'AAAA',
     });
 
     await expect(manager.initialize()).rejects.toThrow(
-      'release metadata unavailable',
+      'signature verification failed',
     );
     await expect(manager.installReadyUpdate()).resolves.toBe(false);
-    expect(spawnInstaller).not.toHaveBeenCalled();
+    expect(launchWindowsInstaller).not.toHaveBeenCalled();
   });
 
   it('checks for a newer release instead of being pinned by a recovered download', async () => {
@@ -310,15 +331,22 @@ describe('verified update download', () => {
     );
     const oldFileName = 'PrintFarmer-1.1.0.Setup.exe';
     const oldArtifact = 'old signed installer';
+    const oldFixture = releaseFixture(
+      oldArtifact,
+      '1.1.0',
+      fixture.signingKeys,
+    );
     await mkdir(store.directory, { recursive: true });
     await writeFile(store.artifactPath(oldFileName), oldArtifact);
     await store.write({
-      schemaVersion: 2,
+      schemaVersion: 3,
       phase: 'downloaded',
       targetVersion: '1.1.0',
       artifactFileName: oldFileName,
       artifactSha256: createHash('sha256').update(oldArtifact).digest('hex'),
       artifactSize: Buffer.byteLength(oldArtifact),
+      metadataPayload: oldFixture.metadataPayload,
+      metadataSignature: oldFixture.metadataSignature,
     });
 
     await manager.initialize();
@@ -329,14 +357,46 @@ describe('verified update download', () => {
       artifactFileName: fixture.windowsFileName,
     });
   });
+
+  it('preserves a higher same-key signed candidate across restart and replay', async () => {
+    const signingKeys = generateKeyPairSync('ed25519');
+    const first = await managerFixture('signed 1.2.0 installer', {
+      version: '1.2.0',
+      signingKeys,
+    });
+    await first.manager.initialize();
+
+    const replay = await managerFixture('signed 1.1.0 installer', {
+      version: '1.1.0',
+      signingKeys,
+      directory: first.directory,
+    });
+    await replay.manager.initialize();
+
+    await expect(replay.store.read()).resolves.toMatchObject({
+      phase: 'downloaded',
+      targetVersion: '1.2.0',
+      artifactFileName: first.fixture.windowsFileName,
+      metadataPayload: first.fixture.metadataPayload,
+      metadataSignature: first.fixture.metadataSignature,
+    });
+    await expect(
+      readFile(
+        replay.store.artifactPath(first.fixture.windowsFileName),
+        'utf8',
+      ),
+    ).resolves.toBe('signed 1.2.0 installer');
+  });
 });
 
 describe('Windows update installation', () => {
-  it('re-verifies the installer immediately before spawning it', async () => {
-    const spawn = successfulSpawn();
+  it('restores downloaded state when the bound launch rejects a changed installer', async () => {
+    const launchWindowsInstaller = vi.fn(() =>
+      Promise.reject(new Error('installer digest mismatch')),
+    );
     const { manager, fixture, store, app } = await managerFixture(
       'signed installer',
-      { spawnInstaller: spawn.implementation },
+      { launchWindowsInstaller },
     );
     await manager.initialize();
     await writeFile(
@@ -345,27 +405,26 @@ describe('Windows update installation', () => {
     );
 
     await expect(manager.installReadyUpdate()).rejects.toThrow(
-      'changed after signed metadata verification',
+      'installer digest mismatch',
     );
-    expect(spawn.implementation).not.toHaveBeenCalled();
+    expect(launchWindowsInstaller).toHaveBeenCalledOnce();
+    await expect(store.read()).resolves.toMatchObject({ phase: 'downloaded' });
     expect(app.quit).not.toHaveBeenCalled();
   });
 
   it('quits cleanly only after the verified installer has spawned', async () => {
-    const spawn = successfulSpawn();
+    const launchWindowsInstaller = successfulLaunch();
     const { manager, app } = await managerFixture('signed installer', {
-      spawnInstaller: spawn.implementation,
+      launchWindowsInstaller,
     });
     await manager.initialize();
 
     await expect(manager.installReadyUpdate()).resolves.toBe(true);
 
-    expect(spawn.implementation).toHaveBeenCalledWith(
-      expect.stringMatching(/Setup\.exe$/),
-      ['--silent'],
-      expect.objectContaining({ detached: true, windowsHide: true }),
-    );
-    expect(spawn.unref).toHaveBeenCalledOnce();
+    expect(launchWindowsInstaller).toHaveBeenCalledOnce();
+    const call = vi.mocked(launchWindowsInstaller).mock.calls[0];
+    expect(call?.[0]).toMatch(/Setup\.exe$/);
+    expect(call?.[1].fileName).toMatch(/Setup\.exe$/);
     expect(app.quit).toHaveBeenCalledOnce();
   });
 });
@@ -450,8 +509,43 @@ describe('macOS update staging', () => {
 
     await manager.initialize();
 
+    expect(nativeAutoUpdater.artifactBytes?.toString('utf8')).toBe(
+      'signed mac update',
+    );
     await expect(
       readFile(store.artifactPath(fixture.macFileName), 'utf8'),
     ).resolves.toBe('signed mac update');
+  });
+
+  it('serves signed descriptor bytes when the pathname is replaced after validation', async () => {
+    const nativeAutoUpdater = new StagingAutoUpdater();
+    let stagedArtifactPath: string | null = null;
+    const replacement = 'evil mac update!!';
+    const result = await managerFixture('signed mac update', {
+      platform: 'darwin',
+      nativeAutoUpdater: nativeAutoUpdater as unknown as AutoUpdater,
+      createArtifactReadStream: (file) =>
+        Readable.from(
+          (async function* () {
+            if (!stagedArtifactPath) {
+              throw new Error('test artifact path was not initialized');
+            }
+            const artifactPath = stagedArtifactPath;
+            await rename(artifactPath, `${artifactPath}.signed`);
+            await writeFile(artifactPath, replacement);
+            yield await file.readFile();
+          })(),
+        ),
+    });
+    stagedArtifactPath = result.store.artifactPath(result.fixture.macFileName);
+
+    await result.manager.initialize();
+
+    expect(nativeAutoUpdater.artifactBytes?.toString('utf8')).toBe(
+      'signed mac update',
+    );
+    await expect(readFile(stagedArtifactPath, 'utf8')).resolves.toBe(
+      replacement,
+    );
   });
 });

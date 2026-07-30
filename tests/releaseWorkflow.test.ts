@@ -16,16 +16,30 @@ const workflow = readFileSync(
 );
 
 describe('signed release workflow', () => {
-  it('signs the universal sidecar before Forge signs the outer app', () => {
+  function step(name: string): string {
+    const marker = `- name: ${name}`;
+    const start = workflow.indexOf(marker);
+    if (start < 0) throw new Error(`workflow step not found: ${name}`);
+    const next = workflow.indexOf('\n      - name:', start + marker.length);
+    return workflow.slice(start, next < 0 ? workflow.length : next);
+  }
+
+  it('packages without credentials before any signing or notarization', () => {
     const build = workflow.indexOf('Build universal macOS sidecar (release)');
-    const sign = workflow.indexOf(
-      'Sign universal Rust sidecar before the Electron app',
+    const packageApp = workflow.indexOf('Package unsigned application');
+    const windowsSign = workflow.indexOf(
+      'Sign Windows package and build Squirrel installer',
     );
-    const make = workflow.indexOf('Make artifacts');
+    const macSign = workflow.indexOf(
+      'Sign universal sidecar and macOS application',
+    );
+    const notarize = workflow.indexOf('Notarize macOS application');
 
     expect(build).toBeGreaterThan(-1);
-    expect(sign).toBeGreaterThan(build);
-    expect(make).toBeGreaterThan(sign);
+    expect(packageApp).toBeGreaterThan(build);
+    expect(windowsSign).toBeGreaterThan(packageApp);
+    expect(macSign).toBeGreaterThan(packageApp);
+    expect(notarize).toBeGreaterThan(macSign);
     expect(workflow).toContain(
       'PRINTFARMER_SIDECAR_SOURCE: ${{ matrix.platform ==',
     );
@@ -38,7 +52,6 @@ describe('signed release workflow', () => {
     expect(workflow).toContain('APPLE_APP_SPECIFIC_PASSWORD');
     expect(workflow).toContain('UPDATE_SIGNING_PRIVATE_KEY_BASE64');
     expect(workflow).toContain('UPDATE_SIGNING_PUBLIC_KEY_BASE64');
-    expect(workflow).toContain('PRINTFARMER_REQUIRE_SIGNING: ${{');
   });
 
   it('verifies platform signatures before signing update metadata', () => {
@@ -67,20 +80,65 @@ describe('signed release workflow', () => {
     );
   });
 
-  it('keeps signing and notarization secrets out of the job environment', () => {
-    expect(workflow).not.toContain(
-      'WINDOWS_CERTIFICATE_PASSWORD=$env:CERTIFICATE_PASSWORD',
-    );
-    expect(workflow).not.toContain(
-      'APPLE_APP_SPECIFIC_PASSWORD=$NOTARIZATION_PASSWORD',
-    );
+  it('keeps every ordinary build and maker step free of secret names', () => {
+    const forbidden = [
+      'CERTIFICATE_BASE64',
+      'CERTIFICATE_PASSWORD',
+      'WINDOWS_CERTIFICATE_FILE',
+      'WINDOWS_CERTIFICATE_PASSWORD',
+      'APPLE_SIGNING_IDENTITY',
+      'APPLE_SIGNING_KEYCHAIN',
+      'APPLE_ID',
+      'APPLE_APP_SPECIFIC_PASSWORD',
+      'APPLE_TEAM_ID',
+      'UPDATE_SIGNING_PRIVATE_KEY_BASE64',
+    ];
+    const ordinarySteps = [
+      'Install dependencies',
+      'Calibration provenance',
+      'Build Windows sidecar (release)',
+      'Add universal macOS Rust targets',
+      'Build universal macOS sidecar (release)',
+      'Package unsigned application',
+      'Make Windows portable archive',
+      'Make macOS publishable archives',
+      'Verify SBOM reproduces from the lockfiles',
+      'Verify third-party licence policy',
+      'Verify third-party notices reproduce from the SBOM',
+      'Verify packaged sidecar and compliance resources',
+    ];
+    for (const name of ordinarySteps) {
+      for (const secret of forbidden) {
+        expect(step(name), `${name} contains ${secret}`).not.toContain(secret);
+      }
+    }
     expect(workflow).not.toContain('>> "$GITHUB_ENV"');
-    expect(workflow).toContain(
-      'WINDOWS_CERTIFICATE_PASSWORD: ${{ startsWith(github.ref',
-    );
-    expect(workflow).toContain(
-      'APPLE_APP_SPECIFIC_PASSWORD: ${{ startsWith(github.ref',
-    );
+  });
+
+  it('gives each dedicated process only its own credentials', () => {
+    const windows = step('Sign Windows package and build Squirrel installer');
+    expect(windows).toContain('WINDOWS_CERTIFICATE_P12_BASE64');
+    expect(windows).toContain('WINDOWS_CERTIFICATE_PASSWORD');
+    expect(windows).not.toContain('APPLE_APP_SPECIFIC_PASSWORD');
+    expect(windows).not.toContain('UPDATE_SIGNING_PRIVATE_KEY_BASE64');
+
+    const macSign = step('Sign universal sidecar and macOS application');
+    expect(macSign).toContain('APPLE_CERTIFICATE_P12_BASE64');
+    expect(macSign).toContain('APPLE_CERTIFICATE_PASSWORD');
+    expect(macSign).toContain('APPLE_SIGNING_IDENTITY');
+    expect(macSign).not.toContain('APPLE_ID');
+    expect(macSign).not.toContain('APPLE_APP_SPECIFIC_PASSWORD');
+
+    const notarize = step('Notarize macOS application');
+    expect(notarize).toContain('APPLE_ID');
+    expect(notarize).toContain('APPLE_APP_SPECIFIC_PASSWORD');
+    expect(notarize).toContain('APPLE_TEAM_ID');
+    expect(notarize).not.toContain('APPLE_CERTIFICATE_PASSWORD');
+
+    const metadata = step('Generate signed update metadata');
+    expect(metadata).toContain('UPDATE_SIGNING_PRIVATE_KEY_BASE64');
+    expect(metadata).not.toContain('WINDOWS_CERTIFICATE_PASSWORD');
+    expect(metadata).not.toContain('APPLE_APP_SPECIFIC_PASSWORD');
   });
 
   it('requires durable Windows timestamps before publishing', () => {

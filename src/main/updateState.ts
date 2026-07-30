@@ -1,22 +1,32 @@
 import { createHash } from 'node:crypto';
-import {
-  createReadStream,
-  existsSync,
-  mkdirSync,
-  promises as fs,
-} from 'node:fs';
+import { existsSync, mkdirSync, promises as fs } from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { compareVersions } from './updateMetadata.js';
 
 export type UpdatePhase = 'idle' | 'downloading' | 'downloaded' | 'installing';
 
-export interface UpdateState {
-  schemaVersion: 2;
-  phase: UpdatePhase;
-  targetVersion?: string;
-  artifactFileName?: string;
-  artifactSha256?: string;
-  artifactSize?: number;
+interface IdleUpdateState {
+  schemaVersion: 3;
+  phase: 'idle';
+}
+
+export interface ActiveUpdateState {
+  schemaVersion: 3;
+  phase: Exclude<UpdatePhase, 'idle'>;
+  targetVersion: string;
+  artifactFileName: string;
+  artifactSha256: string;
+  artifactSize: number;
+  metadataPayload: string;
+  metadataSignature: string;
+}
+
+export type UpdateState = IdleUpdateState | ActiveUpdateState;
+
+export interface SignedMetadataEnvelope {
+  payload: string;
+  signature: string;
 }
 
 export interface ArtifactIdentity {
@@ -42,7 +52,7 @@ function parseState(value: unknown): UpdateState {
     throw new Error('update state must be an object');
   }
   const state = value as Record<string, unknown>;
-  if (state.schemaVersion !== 2) {
+  if (state.schemaVersion !== 3) {
     throw new Error('unsupported update state schema');
   }
   if (
@@ -55,7 +65,7 @@ function parseState(value: unknown): UpdateState {
   }
   if (state.phase === 'idle') {
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       phase: 'idle',
     };
   }
@@ -66,32 +76,53 @@ function parseState(value: unknown): UpdateState {
     !/^[a-f0-9]{64}$/.test(state.artifactSha256) ||
     typeof state.artifactSize !== 'number' ||
     !Number.isSafeInteger(state.artifactSize) ||
-    state.artifactSize <= 0
+    state.artifactSize <= 0 ||
+    typeof state.metadataPayload !== 'string' ||
+    Buffer.byteLength(state.metadataPayload) === 0 ||
+    Buffer.byteLength(state.metadataPayload) > 128 * 1024 ||
+    typeof state.metadataSignature !== 'string' ||
+    Buffer.byteLength(state.metadataSignature) === 0 ||
+    Buffer.byteLength(state.metadataSignature) > 4 * 1024
   ) {
     throw new Error('active update state is incomplete');
   }
   compareVersions(state.targetVersion, state.targetVersion);
   assertPlainFileName(state.artifactFileName);
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     phase: state.phase,
     targetVersion: state.targetVersion,
     artifactFileName: state.artifactFileName,
     artifactSha256: state.artifactSha256,
     artifactSize: state.artifactSize,
+    metadataPayload: state.metadataPayload,
+    metadataSignature: state.metadataSignature,
   };
 }
 
-async function hashFile(filePath: string): Promise<{
+async function hashOpenFile(file: FileHandle): Promise<{
   sha256: string;
   size: number;
 }> {
+  const stat = await file.stat();
+  if (!stat.isFile()) {
+    throw new Error('update artifact is not a regular file');
+  }
   const digest = createHash('sha256');
   let size = 0;
-  const chunks = createReadStream(filePath) as AsyncIterable<Buffer>;
-  for await (const chunk of chunks) {
-    digest.update(chunk);
-    size += chunk.length;
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  while (size < stat.size) {
+    const { bytesRead } = await file.read(
+      buffer,
+      0,
+      Math.min(buffer.length, stat.size - size),
+      size,
+    );
+    if (bytesRead === 0) {
+      throw new Error('update artifact ended while hashing its open handle');
+    }
+    digest.update(buffer.subarray(0, bytesRead));
+    size += bytesRead;
   }
   return { sha256: digest.digest('hex'), size };
 }
@@ -117,7 +148,7 @@ export class UpdateStateStore {
   async read(): Promise<UpdateState> {
     if (!existsSync(this.statePath)) {
       return {
-        schemaVersion: 2,
+        schemaVersion: 3,
         phase: 'idle',
       };
     }
@@ -151,52 +182,51 @@ export class UpdateStateStore {
       return state;
     }
 
-    const artifactPath = this.artifactPath(state.artifactFileName!);
-    const partialPath = this.partialArtifactPath(state.artifactFileName!);
+    const artifactPath = this.artifactPath(state.artifactFileName);
+    const partialPath = this.partialArtifactPath(state.artifactFileName);
     if (state.phase === 'downloading') {
       await fs.rm(partialPath, { force: true });
       const recovered: UpdateState = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         phase: 'idle',
       };
       await this.write(recovered);
       return recovered;
     }
 
-    if (compareVersions(currentVersion, state.targetVersion!) >= 0) {
+    if (compareVersions(currentVersion, state.targetVersion) >= 0) {
       await Promise.all([
         fs.rm(artifactPath, { force: true }),
         fs.rm(partialPath, { force: true }),
       ]);
       const recovered: UpdateState = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         phase: 'idle',
       };
       await this.write(recovered);
       return recovered;
     }
 
-    const validArtifact = existsSync(artifactPath)
-      ? await hashFile(artifactPath)
-      : null;
     if (
-      !validArtifact ||
-      validArtifact.sha256 !== state.artifactSha256 ||
-      validArtifact.size !== state.artifactSize
+      !(await this.verifyArtifact({
+        fileName: state.artifactFileName,
+        sha256: state.artifactSha256,
+        size: state.artifactSize,
+      }))
     ) {
       await Promise.all([
         fs.rm(artifactPath, { force: true }),
         fs.rm(partialPath, { force: true }),
       ]);
       const recovered: UpdateState = {
-        schemaVersion: 2,
+        schemaVersion: 3,
         phase: 'idle',
       };
       await this.write(recovered);
       return recovered;
     }
 
-    const recovered: UpdateState = {
+    const recovered: ActiveUpdateState = {
       ...state,
       phase: 'downloaded',
     };
@@ -207,36 +237,45 @@ export class UpdateStateStore {
   async beginDownload(
     targetVersion: string,
     artifact: ArtifactIdentity,
-  ): Promise<UpdateState> {
+    metadata: SignedMetadataEnvelope,
+  ): Promise<ActiveUpdateState> {
     assertPlainFileName(artifact.fileName);
-    const state: UpdateState = {
-      schemaVersion: 2,
+    const state: ActiveUpdateState = {
+      schemaVersion: 3,
       phase: 'downloading',
       targetVersion,
       artifactFileName: artifact.fileName,
       artifactSha256: artifact.sha256,
       artifactSize: artifact.size,
+      metadataPayload: metadata.payload,
+      metadataSignature: metadata.signature,
     };
     await this.write(state);
     return state;
   }
 
-  async completeDownload(state: UpdateState): Promise<UpdateState> {
+  async completeDownload(state: ActiveUpdateState): Promise<ActiveUpdateState> {
     if (state.phase !== 'downloading') {
       throw new Error('cannot complete an update that is not downloading');
     }
-    const completed: UpdateState = { ...state, phase: 'downloaded' };
+    const completed: ActiveUpdateState = { ...state, phase: 'downloaded' };
     await this.write(completed);
     return completed;
   }
 
-  async markInstalling(state: UpdateState): Promise<UpdateState> {
+  async markInstalling(state: UpdateState): Promise<ActiveUpdateState> {
     if (state.phase !== 'downloaded') {
       throw new Error('cannot install an update that is not downloaded');
     }
-    const installing: UpdateState = { ...state, phase: 'installing' };
+    const installing: ActiveUpdateState = { ...state, phase: 'installing' };
     await this.write(installing);
     return installing;
+  }
+
+  async markDownloaded(state: ActiveUpdateState): Promise<ActiveUpdateState> {
+    const downloaded: ActiveUpdateState = { ...state, phase: 'downloaded' };
+    await this.write(downloaded);
+    return downloaded;
   }
 
   matches(
@@ -253,15 +292,48 @@ export class UpdateStateStore {
     );
   }
 
-  async verifyArtifact(artifact: ArtifactIdentity): Promise<boolean> {
+  async openVerifiedArtifact(
+    artifact: ArtifactIdentity,
+    openFile: (artifactPath: string) => Promise<FileHandle> = (artifactPath) =>
+      fs.open(artifactPath, 'r'),
+  ): Promise<FileHandle> {
     const artifactPath = this.artifactPath(artifact.fileName);
-    if (!existsSync(artifactPath)) return false;
-    const actual = await hashFile(artifactPath);
-    return actual.sha256 === artifact.sha256 && actual.size === artifact.size;
+    const file = await openFile(artifactPath);
+    try {
+      const actual = await hashOpenFile(file);
+      if (actual.sha256 !== artifact.sha256 || actual.size !== artifact.size) {
+        throw new Error(
+          `update artifact integrity mismatch: expected ${artifact.size} bytes / ${artifact.sha256}, received ${actual.size} bytes / ${actual.sha256}`,
+        );
+      }
+      return file;
+    } catch (error) {
+      await file.close();
+      throw error;
+    }
+  }
+
+  async verifyArtifact(artifact: ArtifactIdentity): Promise<boolean> {
+    if (!existsSync(this.artifactPath(artifact.fileName))) return false;
+    try {
+      const file = await this.openVerifiedArtifact(artifact);
+      await file.close();
+      return true;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        (error.message.includes('integrity mismatch') ||
+          error.message.includes('not a regular file') ||
+          error.message.includes('ended while hashing'))
+      ) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   async discard(state: UpdateState): Promise<UpdateState> {
-    if (state.artifactFileName) {
+    if (state.phase !== 'idle') {
       await Promise.all([
         fs.rm(this.artifactPath(state.artifactFileName), { force: true }),
         fs.rm(this.partialArtifactPath(state.artifactFileName), {
@@ -269,7 +341,7 @@ export class UpdateStateStore {
         }),
       ]);
     }
-    const idle: UpdateState = { schemaVersion: 2, phase: 'idle' };
+    const idle: UpdateState = { schemaVersion: 3, phase: 'idle' };
     await this.write(idle);
     return idle;
   }

@@ -1,8 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { spawn } from 'node:child_process';
-import { createReadStream, promises as fs } from 'node:fs';
+import { promises as fs } from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import type { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { autoUpdater, type App, type AutoUpdater } from 'electron';
 import {
@@ -14,6 +15,7 @@ import {
   type UpdateMetadata,
 } from './updateMetadata.js';
 import { UpdateStateStore, type UpdateState } from './updateState.js';
+import { launchVerifiedWindowsInstaller } from './windowsInstaller.js';
 
 const MAX_METADATA_BYTES = 128 * 1024;
 const MAX_SIGNATURE_BYTES = 4 * 1024;
@@ -29,14 +31,17 @@ export interface UpdateManagerOptions {
   arch?: string;
   fetchImplementation?: FetchImplementation;
   nativeAutoUpdater?: AutoUpdater;
-  spawnInstaller?: typeof spawn;
-  createArtifactReadStream?: typeof createReadStream;
+  launchWindowsInstaller?: typeof launchVerifiedWindowsInstaller;
+  openArtifactFile?: (artifactPath: string) => Promise<FileHandle>;
+  createArtifactReadStream?: (file: FileHandle) => Readable;
   onError?: (error: unknown) => void;
 }
 
 interface TrustedUpdate {
   metadata: UpdateMetadata;
   artifact: UpdateArtifact;
+  payload: string;
+  signature: string;
 }
 
 export async function fetchBoundedText(
@@ -102,8 +107,11 @@ export class UpdateManager {
   private readonly arch: string;
   private readonly fetchImplementation: FetchImplementation;
   private readonly nativeAutoUpdater: AutoUpdater;
-  private readonly spawnInstaller: typeof spawn;
-  private readonly createArtifactReadStream: typeof createReadStream;
+  private readonly launchWindowsInstaller: typeof launchVerifiedWindowsInstaller;
+  private readonly openArtifactFile: (
+    artifactPath: string,
+  ) => Promise<FileHandle>;
+  private readonly createArtifactReadStream: (file: FileHandle) => Readable;
   private readonly onError: (error: unknown) => void;
   private readonly stateStore: UpdateStateStore;
   private state: UpdateState | null = null;
@@ -119,9 +127,14 @@ export class UpdateManager {
     this.arch = options.arch ?? process.arch;
     this.fetchImplementation = options.fetchImplementation ?? fetch;
     this.nativeAutoUpdater = options.nativeAutoUpdater ?? autoUpdater;
-    this.spawnInstaller = options.spawnInstaller ?? spawn;
+    this.launchWindowsInstaller =
+      options.launchWindowsInstaller ?? launchVerifiedWindowsInstaller;
+    this.openArtifactFile =
+      options.openArtifactFile ??
+      ((artifactPath) => fs.open(artifactPath, 'r'));
     this.createArtifactReadStream =
-      options.createArtifactReadStream ?? createReadStream;
+      options.createArtifactReadStream ??
+      ((file) => file.createReadStream({ autoClose: false, start: 0 }));
     this.onError =
       options.onError ??
       ((error) => console.error('[updates] update operation failed', error));
@@ -130,7 +143,35 @@ export class UpdateManager {
 
   async initialize(): Promise<void> {
     this.state = await this.stateStore.recover(this.app.getVersion());
+    this.trustedUpdate = await this.authenticateRecoveredCandidate(this.state);
     await this.checkForUpdates();
+  }
+
+  private async authenticateRecoveredCandidate(
+    state: UpdateState,
+  ): Promise<TrustedUpdate | null> {
+    if (state.phase === 'idle') return null;
+    const metadata = verifySignedUpdateMetadata(
+      state.metadataPayload,
+      state.metadataSignature,
+      this.publicKeyPem,
+    );
+    assertUpdateIsNotRollback(metadata.version, this.app.getVersion());
+    const artifact = selectUpdateArtifact(metadata, this.platform, this.arch);
+    if (
+      !this.stateStore.matches(state, metadata.version, artifact) ||
+      !(await this.stateStore.verifyArtifact(artifact))
+    ) {
+      throw new Error(
+        'recovered update is not bound to its retained signed metadata',
+      );
+    }
+    return {
+      metadata,
+      artifact,
+      payload: state.metadataPayload,
+      signature: state.metadataSignature,
+    };
   }
 
   async checkForUpdates(): Promise<void> {
@@ -155,17 +196,30 @@ export class UpdateManager {
         signature,
         this.publicKeyPem,
       );
-      await this.acceptMetadata(metadata);
+      const artifact = selectUpdateArtifact(metadata, this.platform, this.arch);
+      await this.acceptMetadata({ metadata, artifact, payload, signature });
     } finally {
       this.checking = false;
     }
   }
 
-  private async acceptMetadata(metadata: UpdateMetadata): Promise<void> {
+  private async acceptMetadata(update: TrustedUpdate): Promise<void> {
+    const { metadata, artifact, payload, signature } = update;
     const currentVersion = this.app.getVersion();
     const currentState =
       this.state ?? (await this.stateStore.recover(currentVersion));
     assertUpdateIsNotRollback(metadata.version, currentVersion);
+    if (
+      this.trustedUpdate &&
+      currentState.phase === 'downloaded' &&
+      compareVersions(metadata.version, this.trustedUpdate.metadata.version) <=
+        0
+    ) {
+      if (this.platform === 'darwin' && !this.macUpdateStaged) {
+        await this.stageMacUpdate(this.trustedUpdate);
+      }
+      return;
+    }
     if (compareVersions(metadata.version, currentVersion) === 0) {
       this.trustedUpdate = null;
       this.state =
@@ -175,7 +229,6 @@ export class UpdateManager {
       return;
     }
 
-    const artifact = selectUpdateArtifact(metadata, this.platform, this.arch);
     if (
       this.stateStore.matches(currentState, metadata.version, artifact) &&
       (await this.stateStore.verifyArtifact(artifact))
@@ -188,11 +241,12 @@ export class UpdateManager {
       this.state = await this.stateStore.beginDownload(
         metadata.version,
         artifact,
+        { payload, signature },
       );
       await this.downloadArtifact(artifact);
       this.state = await this.stateStore.completeDownload(this.state);
     }
-    this.trustedUpdate = { metadata, artifact };
+    this.trustedUpdate = update;
     if (this.platform === 'darwin') {
       await this.stageMacUpdate(this.trustedUpdate);
     }
@@ -278,7 +332,6 @@ export class UpdateManager {
       );
     }
 
-    const artifactPath = this.stateStore.artifactPath(artifact.fileName);
     const token = randomBytes(24).toString('hex');
     const server = createServer((request, response) => {
       void (async () => {
@@ -315,24 +368,29 @@ export class UpdateManager {
           return;
         }
         if (pathname === `/${token}/artifact`) {
-          if (!(await this.stateStore.verifyArtifact(artifact))) {
+          let artifactFile: FileHandle;
+          try {
+            artifactFile = await this.stateStore.openVerifiedArtifact(
+              artifact,
+              this.openArtifactFile,
+            );
+          } catch (error) {
             throw new Error(
               'macOS update artifact changed after signed metadata verification',
+              { cause: error },
             );
           }
-          const artifactStat = await fs.stat(artifactPath);
-          if (!artifactStat.isFile() || artifactStat.size !== artifact.size) {
-            throw new Error(
-              'macOS update artifact is not a regular signed file',
-            );
+          try {
+            const artifactStream = this.createArtifactReadStream(artifactFile);
+            response.writeHead(200, {
+              'content-type': 'application/zip',
+              'content-length': artifact.size,
+              'cache-control': 'no-store',
+            });
+            await pipeline(artifactStream, response);
+          } finally {
+            await artifactFile.close();
           }
-          const artifactStream = this.createArtifactReadStream(artifactPath);
-          response.writeHead(200, {
-            'content-type': 'application/zip',
-            'content-length': artifactStat.size,
-            'cache-control': 'no-store',
-          });
-          await pipeline(artifactStream, response);
           return;
         }
         response.writeHead(404).end();
@@ -399,23 +457,15 @@ export class UpdateManager {
       return true;
     }
     if (this.platform === 'win32') {
-      this.state = await this.stateStore.markInstalling(this.state);
-      if (!(await this.stateStore.verifyArtifact(artifact))) {
-        throw new Error(
-          'Windows update artifact changed after signed metadata verification',
-        );
-      }
       const installerPath = this.stateStore.artifactPath(artifact.fileName);
-      const child = this.spawnInstaller(installerPath, ['--silent'], {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-      });
-      await new Promise<void>((resolve, reject) => {
-        child.once('spawn', resolve);
-        child.once('error', reject);
-      });
-      child.unref();
+      const installing = await this.stateStore.markInstalling(this.state);
+      this.state = installing;
+      try {
+        await this.launchWindowsInstaller(installerPath, artifact);
+      } catch (error) {
+        this.state = await this.stateStore.markDownloaded(installing);
+        throw error;
+      }
       this.app.quit();
       return true;
     }

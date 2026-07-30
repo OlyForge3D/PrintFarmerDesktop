@@ -44,44 +44,6 @@ jobs:
       - name: Calibration provenance
         run: npm run check:provenance
 
-      - name: Prepare Windows release signing
-        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
-        shell: pwsh
-        env:
-          CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_P12_BASE64 }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:CERTIFICATE_BASE64)) {
-            throw 'Tagged releases require GitHub secret WINDOWS_CERTIFICATE_P12_BASE64'
-          }
-          $certificatePath = Join-Path $env:RUNNER_TEMP 'printfarmer-release.p12'
-          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
-
-      - name: Prepare Apple release signing
-        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
-        shell: bash
-        env:
-          CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          set -euo pipefail
-          missing=()
-          [[ -n "$CERTIFICATE_BASE64" ]] || missing+=(APPLE_CERTIFICATE_P12_BASE64)
-          [[ -n "$CERTIFICATE_PASSWORD" ]] || missing+=(APPLE_CERTIFICATE_PASSWORD)
-          if (( ${#missing[@]} )); then
-            printf 'Tagged releases require GitHub secrets: %s\n' "${missing[*]}" >&2
-            exit 1
-          fi
-          certificate_path="$RUNNER_TEMP/printfarmer-release.p12"
-          keychain_path="$RUNNER_TEMP/printfarmer-signing.keychain-db"
-          keychain_password="$(openssl rand -hex 24)"
-          printf '%s' "$CERTIFICATE_BASE64" | openssl base64 -d -A -out "$certificate_path"
-          security create-keychain -p "$keychain_password" "$keychain_path"
-          security set-keychain-settings -lut 21600 "$keychain_path"
-          security unlock-keychain -p "$keychain_password" "$keychain_path"
-          security import "$certificate_path" -k "$keychain_path" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain_path"
-          security list-keychains -d user -s "$keychain_path"
-
       - name: Build Windows sidecar (release)
         if: runner.os == 'Windows'
         working-directory: native
@@ -95,33 +57,106 @@ jobs:
         if: runner.os == 'macOS'
         run: node scripts/build-universal-sidecar.mjs
 
-      - name: Sign universal Rust sidecar before the Electron app
-        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
-        shell: bash
-        env:
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_SIGNING_KEYCHAIN: ${{ runner.temp }}/printfarmer-signing.keychain-db
-        run: |
-          set -euo pipefail
-          [[ -n "$APPLE_SIGNING_IDENTITY" ]] || { echo 'APPLE_SIGNING_IDENTITY is required' >&2; exit 1; }
-          sidecar="$GITHUB_WORKSPACE/native/target/universal-apple-darwin/release/model-core"
-          codesign --force --timestamp --options runtime --keychain "$APPLE_SIGNING_KEYCHAIN" --sign "$APPLE_SIGNING_IDENTITY" "$sidecar"
-          codesign --verify --strict --verbose=2 "$sidecar"
-
-      - name: Make artifacts
+      - name: Package unsigned application
         env:
           PRINTFARMER_SKIP_SIDECAR_BUILD: '1'
           PRINTFARMER_SIDECAR_SOURCE: ${{ matrix.platform == 'darwin' && format('{0}/native/target/universal-apple-darwin/release/model-core', github.workspace) || '' }}
-          PRINTFARMER_REQUIRE_SIGNING: ${{ startsWith(github.ref, 'refs/tags/') && '1' || '' }}
           PRINTFARMER_UPDATE_PUBLIC_KEY_BASE64: ${{ startsWith(github.ref, 'refs/tags/') && secrets.UPDATE_SIGNING_PUBLIC_KEY_BASE64 || '' }}
-          WINDOWS_CERTIFICATE_FILE: ${{ startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows' && format('{0}/printfarmer-release.p12', runner.temp) || '' }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows' && secrets.WINDOWS_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_SIGNING_KEYCHAIN: ${{ startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS' && format('{0}/printfarmer-signing.keychain-db', runner.temp) || '' }}
-          APPLE_ID: ${{ startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS' && secrets.APPLE_ID || '' }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
-        run: npm run make -- --platform=${{ matrix.platform }} --arch=${{ matrix.arch }}
+        run: npm run package -- --platform=${{ matrix.platform }} --arch=${{ matrix.arch }}
+
+      - name: Sign Windows package and build Squirrel installer
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_P12_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CERTIFICATE_BASE64)) {
+            throw 'Tagged releases require GitHub secret WINDOWS_CERTIFICATE_P12_BASE64'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
+            throw 'Tagged releases require GitHub secret WINDOWS_CERTIFICATE_PASSWORD'
+          }
+          $certificatePath = Join-Path $env:RUNNER_TEMP 'printfarmer-release.p12'
+          try {
+            [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
+            $env:WINDOWS_CERTIFICATE_FILE = $certificatePath
+            node scripts/release-environment.mjs `
+              --allow WINDOWS_CERTIFICATE_FILE `
+              --allow WINDOWS_CERTIFICATE_PASSWORD `
+              -- node scripts/sign-windows-release.mjs `
+              --app-directory "out/PrintFarmer Desktop-win32-x64" `
+              --output-directory "out/make/squirrel.windows/x64"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Windows signing process failed with exit code $LASTEXITCODE"
+            }
+          } finally {
+            Remove-Item -LiteralPath $certificatePath -Force -ErrorAction SilentlyContinue
+            Remove-Item Env:\WINDOWS_CERTIFICATE_FILE -ErrorAction SilentlyContinue
+          }
+
+      - name: Sign universal sidecar and macOS application
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        shell: bash
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "$CERTIFICATE_BASE64" ]] || missing+=(APPLE_CERTIFICATE_P12_BASE64)
+          [[ -n "$CERTIFICATE_PASSWORD" ]] || missing+=(APPLE_CERTIFICATE_PASSWORD)
+          [[ -n "$APPLE_SIGNING_IDENTITY" ]] || missing+=(APPLE_SIGNING_IDENTITY)
+          if (( ${#missing[@]} )); then
+            printf 'Tagged releases require GitHub secrets: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+          certificate_path="$RUNNER_TEMP/printfarmer-release.p12"
+          keychain_path="$RUNNER_TEMP/printfarmer-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          cleanup() {
+            security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
+            rm -f "$certificate_path"
+          }
+          trap cleanup EXIT
+          printf '%s' "$CERTIFICATE_BASE64" | openssl base64 -d -A -out "$certificate_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" -k "$keychain_path" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain_path"
+          export APPLE_SIGNING_KEYCHAIN="$keychain_path"
+          node scripts/release-environment.mjs \
+            --allow APPLE_SIGNING_IDENTITY \
+            --allow APPLE_SIGNING_KEYCHAIN \
+            -- node scripts/sign-macos-release.mjs \
+            --app "out/PrintFarmer Desktop-darwin-universal/PrintFarmer Desktop.app" \
+            --sidecar "out/PrintFarmer Desktop-darwin-universal/PrintFarmer Desktop.app/Contents/Resources/sidecar/model-core"
+
+      - name: Notarize macOS application
+        if: startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          node scripts/release-environment.mjs \
+            --allow APPLE_ID \
+            --allow APPLE_APP_SPECIFIC_PASSWORD \
+            --allow APPLE_TEAM_ID \
+            -- node scripts/notarize-macos-release.mjs \
+            --app "out/PrintFarmer Desktop-darwin-universal/PrintFarmer Desktop.app"
+
+      - name: Make Windows portable archive
+        if: runner.os == 'Windows'
+        run: npm run make -- --skip-package --platform=win32 --arch=x64 --targets=@electron-forge/maker-zip
+
+      - name: Make macOS publishable archives
+        if: runner.os == 'macOS'
+        run: npm run make -- --skip-package --platform=darwin --arch=universal --targets=@electron-forge/maker-zip,@electron-forge/maker-dmg
 
       - name: Verify Windows Authenticode signatures
         if: startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
@@ -201,22 +236,6 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-      - name: Clean up Windows release credentials
-        if: always() && startsWith(github.ref, 'refs/tags/') && runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $certificatePath = Join-Path $env:RUNNER_TEMP 'printfarmer-release.p12'
-          if (Test-Path $certificatePath) {
-            Remove-Item -LiteralPath $certificatePath -Force
-          }
-
-      - name: Clean up Apple release credentials
-        if: always() && startsWith(github.ref, 'refs/tags/') && runner.os == 'macOS'
-        shell: bash
-        run: |
-          security delete-keychain "$RUNNER_TEMP/printfarmer-signing.keychain-db" || true
-          rm -f "$RUNNER_TEMP/printfarmer-release.p12"
-
   publish:
     name: Sign metadata and publish
     if: startsWith(github.ref, 'refs/tags/')
@@ -261,12 +280,15 @@ jobs:
           [[ -n "$PRINTFARMER_UPDATE_PUBLIC_KEY_BASE64" ]] || { echo 'UPDATE_SIGNING_PUBLIC_KEY_BASE64 is required' >&2; exit 1; }
           version="$(node -p "require('./package.json').version")"
           published_at="$(git show -s --format=%cI "$GITHUB_SHA")"
-          node scripts/generate-update-metadata.mjs \
-            --artifacts dist \
-            --version "$version" \
-            --tag "$GITHUB_REF_NAME" \
-            --published-at "$published_at" \
-            --output dist
+          node scripts/release-environment.mjs \
+            --allow UPDATE_SIGNING_PRIVATE_KEY_BASE64 \
+            --allow PRINTFARMER_UPDATE_PUBLIC_KEY_BASE64 \
+            -- node scripts/generate-update-metadata.mjs \
+              --artifacts dist \
+              --version "$version" \
+              --tag "$GITHUB_REF_NAME" \
+              --published-at "$published_at" \
+              --output dist
 
       - name: Publish signed release
         uses: softprops/action-gh-release@v2

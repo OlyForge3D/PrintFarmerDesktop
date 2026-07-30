@@ -8,6 +8,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { UpdateStateStore, type UpdateState } from '../src/main/updateState';
 
 const temporaryDirectories: string[] = [];
+const signedMetadata = {
+  metadataPayload: '{"schemaVersion":1}',
+  metadataSignature: 'AAAA',
+};
 
 async function temporaryStore(): Promise<UpdateStateStore> {
   const directory = await mkdtemp(
@@ -35,12 +39,13 @@ describe('interrupted update recovery', () => {
   it('removes an interrupted partial download and returns to idle', async () => {
     const store = await temporaryStore();
     const state: UpdateState = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       phase: 'downloading',
       targetVersion: '1.1.0',
       artifactFileName: 'update.exe',
       artifactSha256: digest('complete'),
       artifactSize: 8,
+      ...signedMetadata,
     };
     await store.write(state);
     await writeFile(store.partialArtifactPath('update.exe'), 'partial');
@@ -58,12 +63,13 @@ describe('interrupted update recovery', () => {
     const contents = 'verified update';
     await writeFile(store.artifactPath('update.exe'), contents);
     await store.write({
-      schemaVersion: 2,
+      schemaVersion: 3,
       phase: 'installing',
       targetVersion: '1.1.0',
       artifactFileName: 'update.exe',
       artifactSha256: digest(contents),
       artifactSize: Buffer.byteLength(contents),
+      ...signedMetadata,
     });
 
     await expect(store.recover('1.0.0')).resolves.toMatchObject({
@@ -77,16 +83,17 @@ describe('interrupted update recovery', () => {
     const contents = 'verified update';
     await writeFile(store.artifactPath('update.exe'), contents);
     await store.write({
-      schemaVersion: 2,
+      schemaVersion: 3,
       phase: 'installing',
       targetVersion: '1.1.0',
       artifactFileName: 'update.exe',
       artifactSha256: digest(contents),
       artifactSize: Buffer.byteLength(contents),
+      ...signedMetadata,
     });
 
     await expect(store.recover('1.1.0')).resolves.toEqual({
-      schemaVersion: 2,
+      schemaVersion: 3,
       phase: 'idle',
     });
     await expect(
@@ -98,12 +105,13 @@ describe('interrupted update recovery', () => {
     const store = await temporaryStore();
     await writeFile(store.artifactPath('update.exe'), 'tampered');
     await store.write({
-      schemaVersion: 2,
+      schemaVersion: 3,
       phase: 'installing',
       targetVersion: '1.1.0',
       artifactFileName: 'update.exe',
       artifactSha256: digest('expected'),
       artifactSize: Buffer.byteLength('expected'),
+      ...signedMetadata,
     });
 
     await expect(store.recover('1.0.0')).resolves.toMatchObject({
@@ -114,12 +122,13 @@ describe('interrupted update recovery', () => {
   it('rejects state file names that could delete files outside the update cache', async () => {
     const store = await temporaryStore();
     await store.write({
-      schemaVersion: 2,
+      schemaVersion: 3,
       phase: 'downloading',
       targetVersion: '1.1.0',
       artifactFileName: '..\\outside.exe',
       artifactSha256: digest('expected'),
       artifactSize: Buffer.byteLength('expected'),
+      ...signedMetadata,
     });
 
     await expect(store.recover('1.0.0')).rejects.toThrow(
@@ -132,12 +141,13 @@ describe('interrupted update recovery', () => {
     async (fileName) => {
       const store = await temporaryStore();
       await store.write({
-        schemaVersion: 2,
+        schemaVersion: 3,
         phase: 'downloading',
         targetVersion: '1.1.0',
         artifactFileName: fileName,
         artifactSha256: digest('expected'),
         artifactSize: Buffer.byteLength('expected'),
+        ...signedMetadata,
       });
 
       await expect(store.recover('1.0.0')).rejects.toThrow(
