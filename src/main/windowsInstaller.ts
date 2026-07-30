@@ -5,8 +5,7 @@ import type { ArtifactIdentity } from './updateState.js';
 const MAX_HELPER_OUTPUT_BYTES = 64 * 1024;
 
 export interface WindowsInstallerSynchronization {
-  readyPath: string;
-  continuePath: string;
+  afterVerification: () => void | Promise<void>;
 }
 
 interface LaunchVerifiedWindowsInstallerOptions {
@@ -26,19 +25,13 @@ function decodeExpression(value: string): string {
 export function buildVerifiedInstallerScript(
   installerPath: string,
   artifact: ArtifactIdentity,
-  synchronization?: WindowsInstallerSynchronization,
+  synchronizeAfterVerification = false,
 ): string {
-  const synchronizationScript = synchronization
+  const synchronizationScript = synchronizeAfterVerification
     ? `
-$readyPath = ${decodeExpression(synchronization.readyPath)}
-$continuePath = ${decodeExpression(synchronization.continuePath)}
-[IO.File]::WriteAllText($readyPath, 'ready')
-$deadline = [DateTime]::UtcNow.AddSeconds(120)
-while (-not [IO.File]::Exists($continuePath)) {
-  if ([DateTime]::UtcNow -gt $deadline) {
-    throw 'timed out waiting for installer race-test continuation'
-  }
-  Start-Sleep -Milliseconds 10
+[Console]::Out.WriteLine('VERIFIED')
+if ([Console]::In.ReadLine() -ne 'CONTINUE') {
+  throw 'installer race-test continuation was not received'
 }`
     : '';
   return `
@@ -113,23 +106,60 @@ function minimalWindowsEnvironment(
 function collectOutput(
   stream: NodeJS.ReadableStream | null,
   label: string,
-): Promise<string> {
-  if (!stream) return Promise.resolve('');
-  return new Promise((resolve, reject) => {
+  marker?: string,
+): { output: Promise<string>; marker?: Promise<void> } {
+  if (!stream) return { output: Promise.resolve('') };
+  let markerResolved = false;
+  let resolveMarker: (() => void) | undefined;
+  let rejectMarker: ((error: Error) => void) | undefined;
+  const markerPromise = marker
+    ? new Promise<void>((resolve, reject) => {
+        resolveMarker = resolve;
+        rejectMarker = reject;
+      })
+    : undefined;
+  const output = new Promise<string>((resolve, reject) => {
     const chunks: Buffer[] = [];
     let received = 0;
     stream.on('data', (chunk: Buffer | string) => {
       const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       received += bytes.length;
       if (received > MAX_HELPER_OUTPUT_BYTES) {
-        reject(new Error(`${label} exceeded ${MAX_HELPER_OUTPUT_BYTES} bytes`));
+        const failure = new Error(
+          `${label} exceeded ${MAX_HELPER_OUTPUT_BYTES} bytes`,
+        );
+        reject(failure);
+        rejectMarker?.(failure);
         return;
       }
       chunks.push(bytes);
+      if (
+        marker &&
+        !markerResolved &&
+        Buffer.concat(chunks).toString('utf8').includes(marker)
+      ) {
+        markerResolved = true;
+        resolveMarker?.();
+      }
     });
-    stream.once('error', reject);
-    stream.once('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    stream.once('error', (error) => {
+      const failure =
+        error instanceof Error
+          ? error
+          : new Error(`${label} failed with a non-Error value`);
+      reject(failure);
+      rejectMarker?.(failure);
+    });
+    stream.once('end', () => {
+      resolve(Buffer.concat(chunks).toString('utf8'));
+      if (marker && !markerResolved) {
+        rejectMarker?.(
+          new Error(`verified installer helper exited before ${marker}`),
+        );
+      }
+    });
   });
+  return markerPromise ? { output, marker: markerPromise } : { output };
 }
 
 export async function launchVerifiedWindowsInstaller(
@@ -151,7 +181,7 @@ export async function launchVerifiedWindowsInstaller(
     buildVerifiedInstallerScript(
       installerPath,
       artifact,
-      options.synchronization,
+      options.synchronization !== undefined,
     ),
     'utf16le',
   ).toString('base64');
@@ -169,13 +199,17 @@ export async function launchVerifiedWindowsInstaller(
     ],
     {
       env: minimalWindowsEnvironment(process.env),
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [options.synchronization ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       windowsHide: true,
     },
   );
-  const stdoutPromise = collectOutput(child.stdout, 'installer helper stdout');
-  const stderrPromise = collectOutput(child.stderr, 'installer helper stderr');
-  const exitCode = await new Promise<number>((resolve, reject) => {
+  const stdout = collectOutput(
+    child.stdout,
+    'installer helper stdout',
+    options.synchronization ? 'VERIFIED' : undefined,
+  );
+  const stderr = collectOutput(child.stderr, 'installer helper stderr');
+  const exitCodePromise = new Promise<number>((resolve, reject) => {
     child.once('error', reject);
     child.once('exit', (code, signal) => {
       if (signal) {
@@ -185,15 +219,31 @@ export async function launchVerifiedWindowsInstaller(
       }
     });
   });
-  const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
+  if (options.synchronization) {
+    try {
+      await stdout.marker;
+      await options.synchronization.afterVerification();
+      child.stdin?.end('CONTINUE\n');
+    } catch (error) {
+      child.stdin?.destroy();
+      child.kill();
+      await Promise.allSettled([exitCodePromise, stdout.output, stderr.output]);
+      throw error;
+    }
+  }
+  const [exitCode, stdoutText, stderrText] = await Promise.all([
+    exitCodePromise,
+    stdout.output,
+    stderr.output,
+  ]);
   if (exitCode !== 0) {
     throw new Error(
-      `verified installer helper failed with code ${exitCode}: ${stderr.trim() || stdout.trim() || 'no diagnostic'}`,
+      `verified installer helper failed with code ${exitCode}: ${stderrText.trim() || stdoutText.trim() || 'no diagnostic'}`,
     );
   }
-  if (!/^STARTED:\d+\s*$/m.test(stdout)) {
+  if (!/^STARTED:\d+\s*$/m.test(stdoutText)) {
     throw new Error(
-      `verified installer helper did not confirm child creation: ${stdout.trim() || 'no output'}`,
+      `verified installer helper did not confirm child creation: ${stdoutText.trim() || 'no output'}`,
     );
   }
 }
