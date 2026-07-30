@@ -62,44 +62,117 @@ try {
   if ($actualSha256 -ne $expectedSha256) {
     throw "installer digest mismatch: expected $expectedSha256, received $actualSha256"
   }
-  $nativeSource = @'
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-using System.Text;
-
-public static class PrintFarmerNativePaths {
-  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-  private static extern uint GetFinalPathNameByHandleW(
-    IntPtr file,
-    StringBuilder path,
-    uint pathLength,
-    uint flags
-  );
-
-  public static string GetFinalPath(IntPtr file) {
-    uint capacity = 512;
-    while (true) {
-      var path = new StringBuilder((int)capacity);
-      uint length = GetFinalPathNameByHandleW(file, path, capacity, 0);
-      if (length == 0) {
-        throw new Win32Exception(Marshal.GetLastWin32Error());
-      }
-      if (length < capacity) {
-        return path.ToString();
-      }
-      if (length >= 32767) {
-        throw new InvalidOperationException("canonical installer path exceeds the Windows path limit");
-      }
-      capacity = checked(length + 1);
-    }
+  function New-NativeDelegateType([Type[]]$parameterTypes, [Type]$returnType) {
+    $assemblyName = [Reflection.AssemblyName]::new(
+      'PrintFarmerNativeDelegates'
+    )
+    $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly(
+      $assemblyName,
+      [Reflection.Emit.AssemblyBuilderAccess]::Run
+    )
+    $module = $assembly.DefineDynamicModule('InMemoryModule', $false)
+    $type = $module.DefineType(
+      'GetFinalPathNameByHandleDelegate',
+      [Reflection.TypeAttributes]'Class, Public, Sealed, AnsiClass, AutoClass',
+      [MulticastDelegate]
+    )
+    $attributeConstructor = (
+      [Runtime.InteropServices.UnmanagedFunctionPointerAttribute].GetConstructor(
+        [Type[]]@([Runtime.InteropServices.CallingConvention])
+      )
+    )
+    $attribute = [Reflection.Emit.CustomAttributeBuilder]::new(
+      $attributeConstructor,
+      [object[]]@([Runtime.InteropServices.CallingConvention]::Winapi),
+      [Reflection.FieldInfo[]]@(
+        [Runtime.InteropServices.UnmanagedFunctionPointerAttribute].GetField(
+          'CharSet'
+        ),
+        [Runtime.InteropServices.UnmanagedFunctionPointerAttribute].GetField(
+          'SetLastError'
+        )
+      ),
+      [object[]]@([Runtime.InteropServices.CharSet]::Unicode, $true)
+    )
+    $type.SetCustomAttribute($attribute)
+    $constructor = $type.DefineConstructor(
+      [Reflection.MethodAttributes]'RTSpecialName, HideBySig, Public',
+      [Reflection.CallingConventions]::Standard,
+      $parameterTypes
+    )
+    $constructor.SetImplementationFlags(
+      [Reflection.MethodImplAttributes]'Runtime, Managed'
+    )
+    $invoke = $type.DefineMethod(
+      'Invoke',
+      [Reflection.MethodAttributes]'Public, HideBySig, NewSlot, Virtual',
+      $returnType,
+      $parameterTypes
+    )
+    $invoke.SetImplementationFlags(
+      [Reflection.MethodImplAttributes]'Runtime, Managed'
+    )
+    return $type.CreateType()
   }
-}
-'@
-  [void](Add-Type -TypeDefinition $nativeSource -Language CSharp)
-  $canonicalPath = [PrintFarmerNativePaths]::GetFinalPath(
-    $stream.SafeFileHandle.DangerousGetHandle()
+  $unsafeNativeMethods = [Uri].Assembly.GetType(
+    'Microsoft.Win32.UnsafeNativeMethods',
+    $true
   )
+  $bindingFlags = [Reflection.BindingFlags]'Static, Public, NonPublic'
+  $getModuleHandle = $unsafeNativeMethods.GetMethod(
+    'GetModuleHandle',
+    $bindingFlags,
+    $null,
+    [Type[]]@([string]),
+    $null
+  )
+  $getProcAddress = $unsafeNativeMethods.GetMethod(
+    'GetProcAddress',
+    $bindingFlags,
+    $null,
+    [Type[]]@([IntPtr], [string]),
+    $null
+  )
+  if ($null -eq $getModuleHandle -or $null -eq $getProcAddress) {
+    throw 'required Windows native loader methods are unavailable'
+  }
+  $kernel32 = $getModuleHandle.Invoke($null, @('kernel32.dll'))
+  $functionPointer = $getProcAddress.Invoke(
+    $null,
+    @($kernel32, 'GetFinalPathNameByHandleW')
+  )
+  if ($functionPointer -eq [IntPtr]::Zero) {
+    throw 'GetFinalPathNameByHandleW is unavailable'
+  }
+  $delegateType = New-NativeDelegateType (
+    [Type[]]@([IntPtr], [Text.StringBuilder], [UInt32], [UInt32])
+  ) ([UInt32])
+  $getFinalPath = [Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer(
+    $functionPointer,
+    $delegateType
+  )
+  [uint32]$capacity = 512
+  while ($true) {
+    $pathBuffer = [Text.StringBuilder]::new([int]$capacity)
+    [uint32]$length = $getFinalPath.Invoke(
+      $stream.SafeFileHandle.DangerousGetHandle(),
+      $pathBuffer,
+      $capacity,
+      [uint32]0
+    )
+    if ($length -eq 0) {
+      $win32Error = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+      throw [ComponentModel.Win32Exception]::new($win32Error)
+    }
+    if ($length -lt $capacity) {
+      $canonicalPath = $pathBuffer.ToString()
+      break
+    }
+    if ($length -ge 32767) {
+      throw 'canonical installer path exceeds the Windows path limit'
+    }
+    $capacity = [uint32]($length + 1)
+  }
   if ($canonicalPath.StartsWith('\\\\?\\UNC\\', [StringComparison]::OrdinalIgnoreCase)) {
     $canonicalPath = '\\\\' + $canonicalPath.Substring(8)
   } elseif ($canonicalPath.StartsWith('\\\\?\\', [StringComparison]::OrdinalIgnoreCase)) {

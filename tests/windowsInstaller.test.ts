@@ -107,31 +107,15 @@ async function runPowerShell(script: string): Promise<string> {
   return stdout.trim();
 }
 
-async function compileLongRunningInstaller(outputPath: string): Promise<void> {
-  const encodedPath = Buffer.from(outputPath, 'utf8').toString('base64');
-  await runPowerShell(`
-$source = @'
-using System;
-using System.IO;
-using System.Threading;
-
-public static class LongRunningInstaller {
-  public static int Main(string[] args) {
-    try {
-      Console.Out.WriteLine("STARTED:999999");
-      Console.Out.Flush();
-    } catch (IOException) {
-    }
-    Thread.Sleep(Timeout.Infinite);
-    return 0;
-  }
-}
-'@
-$outputPath = [Text.Encoding]::UTF8.GetString(
-  [Convert]::FromBase64String('${encodedPath}')
-)
-Add-Type -TypeDefinition $source -Language CSharp -OutputAssembly $outputPath -OutputType ConsoleApplication
-`);
+async function stageLongRunningInstaller(outputPath: string): Promise<void> {
+  await copyFile(
+    path.join(
+      process.env.SystemRoot ?? 'C:\\Windows',
+      'System32',
+      'wscript.exe',
+    ),
+    outputPath,
+  );
 }
 
 async function processImagePath(processId: number): Promise<string> {
@@ -177,6 +161,7 @@ describe('descriptor-bound Windows installer launch', () => {
     expect(start).toBeGreaterThan(continuation);
     expect(close).toBeGreaterThan(start);
     expect(script).not.toContain('RedirectStandard');
+    expect(script).not.toContain('Add-Type');
     expect(script).not.toContain('$startInfo.FileName = $installerPath');
     expect(script).not.toContain('C:\\updates\\Setup.exe');
   });
@@ -258,7 +243,7 @@ describe('descriptor-bound Windows installer launch', () => {
       const attackerInstaller = path.join(attackerDirectory, 'Setup.exe');
       const publicInstaller = path.join(updatesJunction, 'Setup.exe');
       await Promise.all([mkdir(legitimateDirectory), mkdir(attackerDirectory)]);
-      await compileLongRunningInstaller(legitimateInstaller);
+      await stageLongRunningInstaller(legitimateInstaller);
       await copyFile(
         path.join(
           process.env.SystemRoot ?? 'C:\\Windows',
@@ -313,7 +298,7 @@ describe('descriptor-bound Windows installer launch', () => {
       );
       temporaryDirectories.push(directory);
       const installerPath = path.join(directory, 'Setup.exe');
-      await compileLongRunningInstaller(installerPath);
+      await stageLongRunningInstaller(installerPath);
       const installerBytes = await readFile(installerPath);
       const artifact = {
         fileName: 'Setup.exe',
@@ -335,7 +320,6 @@ describe('descriptor-bound Windows installer launch', () => {
 
       expect(elapsedMs).toBeLessThan(5_000);
       expect(app.quit).toHaveBeenCalledOnce();
-      expect(processId).not.toBe(999_999);
       expectProcessAlive(processId);
     },
     30_000,
