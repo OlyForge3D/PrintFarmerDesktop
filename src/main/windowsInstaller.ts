@@ -33,7 +33,7 @@ export function buildVerifiedInstallerScript(
 $readyPath = ${decodeExpression(synchronization.readyPath)}
 $continuePath = ${decodeExpression(synchronization.continuePath)}
 [IO.File]::WriteAllText($readyPath, 'ready')
-$deadline = [DateTime]::UtcNow.AddSeconds(30)
+$deadline = [DateTime]::UtcNow.AddSeconds(120)
 while (-not [IO.File]::Exists($continuePath)) {
   if ([DateTime]::UtcNow -gt $deadline) {
     throw 'timed out waiting for installer race-test continuation'

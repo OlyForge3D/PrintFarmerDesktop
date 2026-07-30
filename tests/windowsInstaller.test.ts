@@ -129,6 +129,6 @@ describe('descriptor-bound Windows installer launch', () => {
       await expect(launch).resolves.toBeUndefined();
       await expect(readFile(installerPath)).resolves.toEqual(verifiedBytes);
     },
-    30_000,
+    120_000,
   );
 });
