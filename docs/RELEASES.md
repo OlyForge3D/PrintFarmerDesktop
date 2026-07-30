@@ -106,8 +106,13 @@ At macOS staging, one open file descriptor is checked for regular-file type,
 signed size, and SHA-256, rewound, and streamed from that same descriptor to
 Squirrel. On Windows, an encoded in-memory script is launched from system
 PowerShell. It opens the installer with `FileShare.Read`, denying write and
-delete sharing, hashes and size-checks that handle, and keeps it open through
-`Process.Start`. The app quits only after the helper confirms child creation.
+delete sharing, hashes and size-checks that handle, resolves the canonical
+filesystem path with `GetFinalPathNameByHandleW`, and starts only that resolved
+target while retaining the handle. The installer is shell-launched from the
+fixed canonical executable path and fixed `--silent` argument so it cannot
+inherit the helper's protocol handles. The helper has a bounded lifetime, and
+the app quits promptly after its exact `STARTED:<pid>` transcript confirms child
+creation rather than waiting for the installer to exit.
 An interrupted download removes the partial file, and a successful upgraded
 launch clears the old artifact and journal state.
 

@@ -10,8 +10,10 @@ package-smoke builds remain unsigned and do not enable the production update
 channel.
 
 The Windows install boundary holds a no-write/no-delete-sharing handle from
-hashing through `Process.Start`. The macOS staging server validates and streams
-one open descriptor. Neither platform reopens an attacker-replaceable pathname
+hashing through `Process.Start`, derives the launch path from that same handle
+with `GetFinalPathNameByHandleW`, and detaches installer standard handles from
+the bounded helper protocol. The macOS staging server validates and streams one
+open descriptor. Neither platform reopens an attacker-replaceable pathname
 after validation.
 
 The in-app updater trusts detached Ed25519 signatures over exact

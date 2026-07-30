@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { ArtifactIdentity } from './updateState.js';
 
 const MAX_HELPER_OUTPUT_BYTES = 64 * 1024;
+const HELPER_TIMEOUT_MS = 30_000;
 
 export interface WindowsInstallerSynchronization {
   afterVerification: () => void | Promise<void>;
@@ -12,6 +13,8 @@ interface LaunchVerifiedWindowsInstallerOptions {
   spawnImplementation?: typeof spawn;
   powershellPath?: string;
   synchronization?: WindowsInstallerSynchronization;
+  helperTimeoutMs?: number;
+  onStarted?: (processId: number) => void;
 }
 
 function encodedUtf8(value: string): string {
@@ -59,13 +62,85 @@ try {
   if ($actualSha256 -ne $expectedSha256) {
     throw "installer digest mismatch: expected $expectedSha256, received $actualSha256"
   }
+  $nativeSource = @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class PrintFarmerNativePaths {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  private static extern uint GetFinalPathNameByHandleW(
+    IntPtr file,
+    StringBuilder path,
+    uint pathLength,
+    uint flags
+  );
+
+  public static string GetFinalPath(IntPtr file) {
+    uint capacity = 512;
+    while (true) {
+      var path = new StringBuilder((int)capacity);
+      uint length = GetFinalPathNameByHandleW(file, path, capacity, 0);
+      if (length == 0) {
+        throw new Win32Exception(Marshal.GetLastWin32Error());
+      }
+      if (length < capacity) {
+        return path.ToString();
+      }
+      if (length >= 32767) {
+        throw new InvalidOperationException("canonical installer path exceeds the Windows path limit");
+      }
+      capacity = checked(length + 1);
+    }
+  }
+}
+'@
+  [void](Add-Type -TypeDefinition $nativeSource -Language CSharp)
+  $canonicalPath = [PrintFarmerNativePaths]::GetFinalPath(
+    $stream.SafeFileHandle.DangerousGetHandle()
+  )
+  if ($canonicalPath.StartsWith('\\\\?\\UNC\\', [StringComparison]::OrdinalIgnoreCase)) {
+    $canonicalPath = '\\\\' + $canonicalPath.Substring(8)
+  } elseif ($canonicalPath.StartsWith('\\\\?\\', [StringComparison]::OrdinalIgnoreCase)) {
+    $canonicalPath = $canonicalPath.Substring(4)
+  }
+  $isDrivePath = (
+    $canonicalPath.Length -ge 3 -and
+    [char]::IsLetter($canonicalPath[0]) -and
+    $canonicalPath[1] -eq ':' -and
+    $canonicalPath[2] -eq [IO.Path]::DirectorySeparatorChar
+  )
+  $firstUncSeparator = $canonicalPath.IndexOf(
+    [IO.Path]::DirectorySeparatorChar,
+    2
+  )
+  $secondUncSeparator = if ($firstUncSeparator -gt 2) {
+    $canonicalPath.IndexOf(
+      [IO.Path]::DirectorySeparatorChar,
+      $firstUncSeparator + 1
+    )
+  } else {
+    -1
+  }
+  $isUncPath = (
+    $canonicalPath.StartsWith('\\\\') -and
+    $firstUncSeparator -gt 2 -and
+    $secondUncSeparator -gt ($firstUncSeparator + 1)
+  )
+  if (
+    $canonicalPath.IndexOf([char]0) -ge 0 -or
+    (-not $isDrivePath -and -not $isUncPath)
+  ) {
+    throw "canonical installer path is not a usable local or UNC path: $canonicalPath"
+  }
   ${synchronizationScript}
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
-  $startInfo.FileName = $installerPath
+  $startInfo.FileName = $canonicalPath
   $startInfo.Arguments = '--silent'
-  $startInfo.UseShellExecute = $false
-  $startInfo.CreateNoWindow = $true
-  $startInfo.WorkingDirectory = [IO.Path]::GetDirectoryName($installerPath)
+  $startInfo.UseShellExecute = $true
+  $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+  $startInfo.WorkingDirectory = [IO.Path]::GetDirectoryName($canonicalPath)
   $process = [Diagnostics.Process]::Start($startInfo)
   if ($null -eq $process) {
     throw 'Process.Start returned no installer process'
@@ -185,6 +260,10 @@ export async function launchVerifiedWindowsInstaller(
     ),
     'utf16le',
   ).toString('base64');
+  const timeoutMs = options.helperTimeoutMs ?? HELPER_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('verified installer helper timeout must be positive');
+  }
   const spawnImplementation = options.spawnImplementation ?? spawn;
   const child = spawnImplementation(
     powershellPath,
@@ -219,31 +298,65 @@ export async function launchVerifiedWindowsInstaller(
       }
     });
   });
-  if (options.synchronization) {
-    try {
-      await stdout.marker;
-      await options.synchronization.afterVerification();
-      child.stdin?.end('CONTINUE\n');
-    } catch (error) {
-      child.stdin?.destroy();
+  let timeout: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
       child.kill();
-      await Promise.allSettled([exitCodePromise, stdout.output, stderr.output]);
-      throw error;
+      reject(
+        new Error(`verified installer helper timed out after ${timeoutMs}ms`),
+      );
+    }, timeoutMs);
+  });
+  const withinDeadline = <T>(operation: Promise<T>): Promise<T> =>
+    Promise.race([operation, timeoutPromise]);
+  try {
+    if (options.synchronization) {
+      await withinDeadline(
+        stdout.marker ??
+          Promise.reject(new Error('missing verification marker')),
+      );
+      await withinDeadline(
+        Promise.resolve(options.synchronization.afterVerification()),
+      );
+      child.stdin?.end('CONTINUE\n');
     }
-  }
-  const [exitCode, stdoutText, stderrText] = await Promise.all([
-    exitCodePromise,
-    stdout.output,
-    stderr.output,
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(
-      `verified installer helper failed with code ${exitCode}: ${stderrText.trim() || stdoutText.trim() || 'no diagnostic'}`,
+    const [exitCode, stdoutText, stderrText] = await withinDeadline(
+      Promise.all([exitCodePromise, stdout.output, stderr.output]),
     );
-  }
-  if (!/^STARTED:\d+\s*$/m.test(stdoutText)) {
-    throw new Error(
-      `verified installer helper did not confirm child creation: ${stdoutText.trim() || 'no output'}`,
+    if (exitCode !== 0) {
+      throw new Error(
+        `verified installer helper failed with code ${exitCode}: ${stderrText.trim() || stdoutText.trim() || 'no diagnostic'}`,
+      );
+    }
+    const lines = stdoutText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const startedIndex = options.synchronization ? 1 : 0;
+    if (
+      lines.length !== startedIndex + 1 ||
+      (options.synchronization && lines[0] !== 'VERIFIED') ||
+      !/^STARTED:\d+$/.test(lines[startedIndex] ?? '')
+    ) {
+      throw new Error(
+        `verified installer helper returned an invalid protocol transcript: ${stdoutText.trim() || 'no output'}`,
+      );
+    }
+    const processId = Number(
+      (lines[startedIndex] ?? '').slice('STARTED:'.length),
     );
+    if (!Number.isSafeInteger(processId) || processId <= 0) {
+      throw new Error(
+        'verified installer helper returned an invalid process id',
+      );
+    }
+    options.onStarted?.(processId);
+  } catch (error) {
+    child.stdin?.destroy();
+    child.kill();
+    await Promise.allSettled([exitCodePromise, stdout.output, stderr.output]);
+    throw error;
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
