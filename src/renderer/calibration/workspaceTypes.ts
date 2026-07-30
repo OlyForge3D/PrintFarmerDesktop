@@ -2,6 +2,7 @@ import type {
   CalibrationAvailability,
   CalibrationPrinterCandidate,
   CalibrationPrinterContext,
+  CalibrationPrintObservation,
   CalibrationSelectedBaseProfile,
   CalibrationUnhydratedProject,
   CalibrationWorkspacePayload,
@@ -166,6 +167,21 @@ export interface CalibrationWorkspaceStoreValue {
   readonly addPhoto: (
     photo: WorkspacePhoto,
     stageId: CalibrationStageId,
+  ) => Promise<void>;
+  /**
+   * Append a print lifecycle observation to durable workspace state (criterion
+   * 13). Idempotent: a second call with the same observationId is a no-op.
+   */
+  readonly storePrintObservation: (
+    observation: CalibrationPrintObservation,
+  ) => Promise<void>;
+  /**
+   * Associate a validated asset SHA-256 checksum with a domain attempt ID
+   * (criterion 14a). Persisted so provenance survives a workspace reload.
+   */
+  readonly storeAttemptAssetSha256: (
+    attemptId: string,
+    sha256: string,
   ) => Promise<void>;
   readonly refreshProjectContext: () => Promise<CalibrationPrinterContext | null>;
   readonly announce: (message: string) => void;

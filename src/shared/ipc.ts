@@ -31,9 +31,20 @@ export const IpcChannel = {
   CalibrationResolveConflict: 'calibration:resolveConflict',
   CalibrationSyncNow: 'calibration:syncNow',
   CalibrationStartGeneration: 'calibration:startGeneration',
+  CalibrationGetOrchestrationStatus: 'calibration:getOrchestrationStatus',
   CalibrationGetQueueState: 'calibration:getQueueState',
   CalibrationAcknowledgeBedClear: 'calibration:acknowledgeBedClear',
   CalibrationStartPrint: 'calibration:startPrint',
+  // --- Queue reconciliation (issue #54) ------------------------------------
+  CalibrationPollQueueChanges: 'calibration:pollQueueChanges',
+  CalibrationGetSubscriptionResources: 'calibration:getSubscriptionResources',
+  // --- External calibration asset manifest (issue #54) ---------------------
+  CalibrationPickAssetFile: 'calibration:pickAssetFile',
+  CalibrationValidateAssetFile: 'calibration:validateAssetFile',
+  CalibrationGetAssetManifest: 'calibration:getAssetManifest',
+  // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
+  CalibrationOpenManifestUrl: 'calibration:openManifestUrl',
+  // -------------------------------------------------------------------------
   CalibrationListOrcaProfiles: 'calibration:listOrcaProfiles',
   CalibrationExportOrcaProfile: 'calibration:exportOrcaProfile',
   CalibrationPickLegacyBackupV4: 'calibration:pickLegacyBackupV4',
@@ -2245,6 +2256,32 @@ export type CalibrationSelectedBaseProfile = z.infer<
   typeof CalibrationSelectedBaseProfile
 >;
 
+/**
+ * A single append-only observation recorded after a print completes.
+ * Once written, observations are never mutated or deleted.
+ */
+export const CalibrationPrintObservation = z
+  .object({
+    observationId: z.string().uuid(),
+    attemptId: z.string().uuid(),
+    jobId: z.string().uuid(),
+    recordedAt: z.string().datetime(),
+    /** Selected calibration result. */
+    selectedResult: z.enum(['accepted', 'rejected', 'inconclusive']).nullable(),
+    /** Confidence in the result. */
+    confidence: z.enum(['low', 'medium', 'high']).nullable(),
+    /** Whether a retest is needed. */
+    retestRequired: z.boolean(),
+    /** Operator notes (append-only). */
+    notes: z.string().max(4096),
+    /** Photo IDs attached to this observation (from prior stage). */
+    photoIds: z.array(z.string().uuid()).max(20),
+  })
+  .passthrough();
+export type CalibrationPrintObservation = z.infer<
+  typeof CalibrationPrintObservation
+>;
+
 export const CalibrationWorkspacePayload = z
   .object({
     schemaVersion: z.literal(1),
@@ -2273,6 +2310,15 @@ export const CalibrationWorkspacePayload = z
     /** Compatibility alias; must equal selectedBaseProfile.orcaProfileId. */
     selectedBaseProfileId: z.string().min(1).max(512),
     autosaveRevision: z.number().int().nonnegative(),
+    /** Append-only print lifecycle observations (criterion 13, issue #54). */
+    printObservations: z.array(CalibrationPrintObservation).max(200).optional(),
+    /**
+     * SHA-256 of the validated calibration asset file, keyed by domain attempt
+     * ID (criterion 14a, issue #54). Persisted so provenance survives reload.
+     */
+    assetSha256ByAttemptId: z
+      .record(z.string().uuid(), z.string().regex(/^[a-f0-9]{64}$/))
+      .optional(),
   })
   .strict()
   .superRefine((payload, context) => {
@@ -3192,6 +3238,23 @@ export const CalibrationApiErrorCode = z.enum([
   'syncRequired',
   /** The printer context is stale and must be revalidated. */
   'printerContextStale',
+  // --- Bed-clear / queue-specific codes (issue #54) -----------------------
+  /** HTTP 403 — caller does not have queue:acknowledge-bed-clear or queue:start. */
+  'forbidden',
+  /** HTTP 404 job_not_found — the queue job does not exist. */
+  'jobNotFound',
+  /** HTTP 409 wrong_job — bed-clear was for a different job. */
+  'wrongJob',
+  /** HTTP 409 printer_busy — printer already has an active job. */
+  'printerBusy',
+  /** HTTP 409 job_not_dispatchable — job is not in a dispatchable state. */
+  'jobNotDispatchable',
+  /** HTTP 412 dispatch_revision_conflict — ETag mismatch; response body carries current ETags. */
+  'dispatchRevisionConflict',
+  /** HTTP 422 calibration_job_incompatible — job is incompatible with the assigned printer. */
+  'calibrationJobIncompatible',
+  /** HTTP 422 filament_check_failed — filament material or nozzle mismatch. */
+  'filamentCheckFailed',
 ]);
 export type CalibrationApiErrorCode = z.infer<typeof CalibrationApiErrorCode>;
 
@@ -3206,15 +3269,71 @@ export const CalibrationApiError = z
   .strict();
 export type CalibrationApiError = z.infer<typeof CalibrationApiError>;
 
-/** Request to trigger profile generation for a completed calibration project. */
+/**
+ * Method-specific options for calibration G-code generation.
+ * Only the fields applicable to the chosen method need to be populated.
+ * Uses passthrough so the server can extend the options without breaking the desktop.
+ */
+export const CalibrationMethodOptions = z
+  .object({
+    // Temperature tower
+    startCelsius: z.number().int().optional(),
+    endCelsius: z.number().int().optional(),
+    stepCelsius: z.number().int().optional(),
+    // Flow sweep
+    startRatio: z.number().optional(),
+    endRatio: z.number().optional(),
+    stepRatio: z.number().optional(),
+    // Flow verification
+    flowRatio: z.number().optional(),
+    // Pressure advance
+    startPressureAdvance: z.number().optional(),
+    endPressureAdvance: z.number().optional(),
+    stepPressureAdvance: z.number().optional(),
+    lineCount: z.number().int().optional(),
+    lineLengthMillimeters: z.number().optional(),
+    cornersPerRow: z.number().int().optional(),
+    // Retraction
+    startLengthMillimeters: z.number().optional(),
+    endLengthMillimeters: z.number().optional(),
+    stepLengthMillimeters: z.number().optional(),
+    retractionSpeedMillimetersPerSecond: z.number().optional(),
+    // Max volumetric speed
+    startCubicMillimetersPerSecond: z.number().optional(),
+    endCubicMillimetersPerSecond: z.number().optional(),
+    stepCubicMillimetersPerSecond: z.number().optional(),
+    // Shrinkage / final print
+    nominalLengthMillimeters: z.number().optional(),
+    barWidthMillimeters: z.number().optional(),
+    model3DId: z.string().uuid().optional(),
+    expectedSha256: z.string().max(256).optional(),
+  })
+  .passthrough();
+export type CalibrationMethodOptions = z.infer<typeof CalibrationMethodOptions>;
+
+/**
+ * Request to trigger G-code generation for a specific calibration attempt.
+ * Routes to POST /api/calibration-projects/{projectId}/attempts/{attemptId}/generate-job.
+ */
 export const CalibrationStartGenerationRequest = z
   .object({
     profileId: z.string().uuid(),
     projectId: z.string().uuid(),
+    /** The calibration attempt to generate G-code for. */
+    attemptId: z.string().uuid(),
+    /** Generation method identifier (e.g. "temperature", "flow"). */
+    method: z.string().min(1).max(256),
+    /** Definition schema version (default "1.0"). */
+    definitionVersion: z.string().min(1).max(64).optional(),
+    /** Method-specific generation options. */
+    options: CalibrationMethodOptions.optional(),
     /** Client-generated idempotency key for this generation request. */
     operationId: z.string().uuid(),
-    /** The base revision of the project at generation time (for If-Match). */
-    baseRevision: z.number().int().nonnegative(),
+    /**
+     * Optimistic revision of the attempt (long? on server) — 412 if stale.
+     * This is an integer revision counter, NOT a base-64 ETag.
+     */
+    baseRevision: z.number().int().nullable(),
   })
   .strict();
 export type CalibrationStartGenerationRequest = z.infer<
@@ -3226,7 +3345,8 @@ export const CalibrationStartGenerationResponse = z.discriminatedUnion(
     z
       .object({
         status: z.literal('submitted'),
-        generationJobId: z.string().uuid(),
+        /** Orchestration ID to poll via CalibrationGetOrchestrationStatus. */
+        orchestrationId: z.string().uuid(),
       })
       .strict(),
     z
@@ -3237,6 +3357,135 @@ export const CalibrationStartGenerationResponse = z.discriminatedUnion(
 export type CalibrationStartGenerationResponse = z.infer<
   typeof CalibrationStartGenerationResponse
 >;
+
+/**
+ * An individual problem within an orchestration status (validation or execution issue).
+ */
+export const CalibrationOrchestrationProblem = z
+  .object({
+    code: z.string(),
+    field: z.string().nullable(),
+    message: z.string(),
+  })
+  .passthrough();
+export type CalibrationOrchestrationProblem = z.infer<
+  typeof CalibrationOrchestrationProblem
+>;
+
+/**
+ * Orchestration status for a G-code generation run.
+ * `status` and `currentStep` are free-form strings defined by the saga
+ * implementation — never switch exhaustively on them; always render the
+ * raw value with a fallback for unrecognised states.
+ */
+export const CalibrationOrchestrationStatus = z
+  .object({
+    id: z.string().uuid(),
+    projectId: z.string().uuid(),
+    attemptId: z.string().uuid(),
+    operationId: z.string(),
+    /** Free-form status from the saga — e.g. "Running", "Completed". NOT an enum. */
+    status: z.string(),
+    /** Free-form current step — e.g. "Slicing". NOT an enum. */
+    currentStep: z.string(),
+    revision: z.number().int(),
+    retryCount: z.number().int(),
+    nextRetryAtUtc: z.string().datetime().nullable(),
+    stepStartedAtUtc: z.string().datetime().nullable(),
+    lastErrorCode: z.string().nullable(),
+    problems: z.array(CalibrationOrchestrationProblem).max(100).default([]),
+    model3DId: z.string().uuid().nullable(),
+    sliceJobId: z.string().uuid().nullable(),
+    workerId: z.string().uuid().nullable(),
+    sourceArtifactId: z.string().uuid().nullable(),
+    finalArtifactId: z.string().uuid().nullable(),
+    gcodeFileId: z.string().uuid().nullable(),
+    specificationSha256: z.string().nullable(),
+    planManifestSha256: z.string().nullable(),
+    gcodeSha256: z.string().nullable(),
+    manifestSha256: z.string().nullable(),
+    generatorVersion: z.string().nullable(),
+    slicerContainerDigest: z.string().nullable(),
+    slicerBinarySha256: z.string().nullable(),
+    statusRoute: z.string(),
+    createdAtUtc: z.string().datetime(),
+    updatedAtUtc: z.string().datetime(),
+    completedAtUtc: z.string().datetime().nullable(),
+  })
+  .passthrough();
+export type CalibrationOrchestrationStatus = z.infer<
+  typeof CalibrationOrchestrationStatus
+>;
+
+/** Poll the status of a G-code generation orchestration. */
+export const CalibrationGetOrchestrationStatusRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    orchestrationId: z.string().uuid(),
+  })
+  .strict();
+export type CalibrationGetOrchestrationStatusRequest = z.infer<
+  typeof CalibrationGetOrchestrationStatusRequest
+>;
+export const CalibrationGetOrchestrationStatusResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        orchestration: CalibrationOrchestrationStatus,
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationGetOrchestrationStatusResponse = z.infer<
+  typeof CalibrationGetOrchestrationStatusResponse
+>;
+
+/**
+ * Full state of a queue job as returned by GET /api/job-queue/{id}.
+ * `status` is a PrintJobStatus enum value; `dispatchAttemptOutcome` is a
+ * DispatchAttemptOutcome value. Both are passed as strings (not enums) for
+ * forward compatibility.
+ */
+export const CalibrationQueueJobState = z
+  .object({
+    jobId: z.string().uuid(),
+    jobKind: z.string().nullable(),
+    /** Job rowVersion (opaque base-64 ETag). Send byte-identical as If-Match. */
+    rowVersion: z.string().nullable(),
+    /** Dispatch state rowVersion (opaque base-64 ETag). Send as X-Dispatch-State-If-Match. */
+    dispatchStateRowVersion: z.string().nullable(),
+    /** PrintJobStatus literal: Queued|Assigned|Starting|Printing|Paused|Completed|Failed|Cancelled */
+    status: z.string().nullable(),
+    /** DispatchAttemptOutcome literal: InProgress|Accepted|Rejected|FailedBeforeStart|Unknown */
+    dispatchAttemptOutcome: z.string().nullable(),
+    /** BedClearState literal: None|Acknowledged|Consumed|Invalidated */
+    bedClearState: z.string().nullable(),
+    gcodeFileId: z.string().uuid().nullable(),
+    assignedPrinterId: z.string().uuid().nullable(),
+    /** Assigned printer display name from server (passthrough from JobQueuePrintJobDto). */
+    assignedPrinterName: z.string().nullable().optional(),
+    /** ISO 8601 UTC expiry for an active bed-clear acknowledgement. null = no expiry. */
+    acknowledgementExpiresAt: z.string().datetime().nullable().optional(),
+    calibrationProjectId: z.string().uuid().nullable(),
+    calibrationAttemptId: z.string().uuid().nullable(),
+    pinnedPrinterConfigRevision: z.number().int().nullable(),
+    priority: z.number().int(),
+    queuePosition: z.number().int(),
+    updatedAt: z.string().datetime(),
+    /** Firmware family required at job creation time (e.g. 'Klipper'). Passthrough from QueuePrintJobDto. */
+    requiredFirmwareFamily: z.string().max(256).nullable().optional(),
+    /** Filament SKU required at job creation time. Passthrough from QueuePrintJobDto. */
+    requiredFilamentSku: z.string().max(256).nullable().optional(),
+    /** Machine profile SHA-256 at job creation time. Used for stale-context detection. */
+    machineProfileSha256: z.string().max(256).nullable().optional(),
+  })
+  .passthrough();
+export type CalibrationQueueJobState = z.infer<typeof CalibrationQueueJobState>;
 
 export const CalibrationQueueState = z
   .object({
@@ -3260,26 +3509,56 @@ export const CalibrationGetQueueStateRequest = z
   .object({
     profileId: z.string().uuid(),
     projectId: z.string().uuid(),
+    /** The specific job ID to look up via GET /api/job-queue/{id}. */
+    jobId: z.string().uuid().optional(),
   })
   .strict();
 export type CalibrationGetQueueStateRequest = z.infer<
   typeof CalibrationGetQueueStateRequest
 >;
 export const CalibrationGetQueueStateResponse = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('ok'), queue: CalibrationQueueState }).strict(),
+  z
+    .object({
+      status: z.literal('ok'),
+      /** Full queue job state from REST. */
+      job: CalibrationQueueJobState,
+    })
+    .strict(),
   z.object({ status: z.literal('error'), error: CalibrationApiError }).strict(),
 ]);
 export type CalibrationGetQueueStateResponse = z.infer<
   typeof CalibrationGetQueueStateResponse
 >;
 
-/** Acknowledge that the bed has been cleared before starting an exact calibration job. */
+/**
+ * Acknowledge that the bed has been cleared before starting an exact calibration job.
+ *
+ * Calls POST /api/job-queue/{jobId}/acknowledge-bed-clear-and-start.
+ * THREE preconditions are required by the server:
+ *   - `Idempotency-Key` header (from operationId)
+ *   - `If-Match` header (from rowVersion — opaque base-64 job ETag)
+ *   - `X-Dispatch-State-If-Match` header (from dispatchStateRowVersion — opaque base-64 dispatch state ETag)
+ * Any missing precondition returns 428 precondition_required.
+ */
 export const CalibrationAcknowledgeBedClearRequest = z
   .object({
     profileId: z.string().uuid(),
-    projectId: z.string().uuid(),
     jobId: z.string().uuid(),
     operationId: z.string().uuid(),
+    /** Printer UUID for the request body `printerId`. */
+    printerId: z.string().uuid(),
+    /**
+     * Opaque base-64 job rowVersion (from `CalibrationQueueJobState.rowVersion`).
+     * Sent byte-identical as the `If-Match` request header.
+     */
+    rowVersion: z.string().min(1).max(256),
+    /**
+     * Opaque base-64 dispatch state rowVersion (from `CalibrationQueueJobState.dispatchStateRowVersion`).
+     * Sent byte-identical as the `X-Dispatch-State-If-Match` request header.
+     */
+    dispatchStateRowVersion: z.string().min(1).max(256),
+    /** Optional: guard against printer configuration advancing since job was read. */
+    expectedPrinterConfigRevision: z.number().int().nullable().optional(),
   })
   .strict();
 export type CalibrationAcknowledgeBedClearRequest = z.infer<
@@ -3288,7 +3567,29 @@ export type CalibrationAcknowledgeBedClearRequest = z.infer<
 export const CalibrationAcknowledgeBedClearResponse = z.discriminatedUnion(
   'status',
   [
-    z.object({ status: z.literal('ok') }).strict(),
+    /**
+     * 202 Accepted or 200 OK — acknowledgement was accepted or was an exact
+     * idempotent replay. Updated ETags are included for subsequent operations.
+     */
+    z
+      .object({
+        status: z.literal('ok'),
+        jobRowVersion: z.string().nullable(),
+        dispatchStateRowVersion: z.string().nullable(),
+      })
+      .strict(),
+    /**
+     * 412 Precondition Failed — dispatch_revision_conflict.
+     * The body carries the CURRENT ETags so the caller can retry without a
+     * separate GET.
+     */
+    z
+      .object({
+        status: z.literal('revisionConflict'),
+        jobRowVersion: z.string(),
+        dispatchStateRowVersion: z.string(),
+      })
+      .strict(),
     z
       .object({ status: z.literal('error'), error: CalibrationApiError })
       .strict(),
@@ -3298,26 +3599,475 @@ export type CalibrationAcknowledgeBedClearResponse = z.infer<
   typeof CalibrationAcknowledgeBedClearResponse
 >;
 
-/** Start an exact calibration print job. Disabled until sync complete + printer fresh. */
+/**
+ * Create a FilamentCalibration queue job via POST /api/job-queue.
+ * All provenance fields are required by the server to produce an immutable
+ * hash record.  ETags are opaque strings, never integers.
+ */
 export const CalibrationStartPrintRequest = z
   .object({
     profileId: z.string().uuid(),
     projectId: z.string().uuid(),
-    jobId: z.string().uuid(),
+    /** Calibration attempt ID that produced the G-code. */
+    attemptId: z.string().uuid(),
+    /** Generation orchestration ID (for idempotency scope). */
+    orchestrationId: z.string().uuid(),
+    /** Promoted G-code file UUID from the orchestration. */
+    gcodeFileId: z.string().uuid(),
+    /** Printer to assign the job to (must be the same printer the context was snapshotted for). */
+    assignedPrinterId: z.string().uuid(),
+    /** Client-generated idempotency key. */
     operationId: z.string().uuid(),
-    /** The base revision of the queue state (If-Match). */
-    baseRevision: z.number().int().nonnegative(),
+    /** Pinned printer config revision — guards against config advancing after snapshot. */
+    pinnedPrinterConfigRevision: z.number().int().nullable(),
+    // --- Immutable provenance / hash set ---
+    gcodeContentSha256: z.string().max(256).nullable(),
+    specificationSha256: z.string().max(256).nullable(),
+    machineProfileSha256: z.string().max(256).nullable(),
+    processProfileSha256: z.string().max(256).nullable(),
+    filamentProfileSha256: z.string().max(256).nullable(),
+    printerConfigSnapshotSha256: z.string().max(256).nullable(),
+    // --- Required slicer dialect for the job runner ---
+    requiredFirmwareFamily: z.string().max(256).nullable(),
+    requiredGcodeDialect: z.string().max(256).nullable(),
+    requiredSlicerEngine: z.string().max(256).nullable(),
+    requiredSlicerDistribution: z.string().max(256).nullable(),
+    requiredSlicerVersion: z.string().max(256).nullable(),
+    requiredSlicerContainerDigest: z.string().max(256).nullable(),
   })
   .strict();
 export type CalibrationStartPrintRequest = z.infer<
   typeof CalibrationStartPrintRequest
 >;
 export const CalibrationStartPrintResponse = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('ok'), jobId: z.string().uuid() }).strict(),
+  z
+    .object({
+      status: z.literal('ok'),
+      jobId: z.string().uuid(),
+      /** Opaque base-64 job rowVersion ETag. Use as `If-Match` on bed-clear. */
+      rowVersion: z.string().nullable(),
+      /** Opaque base-64 dispatch state ETag. Use as `X-Dispatch-State-If-Match` on bed-clear. */
+      dispatchStateRowVersion: z.string().nullable(),
+      /** true when this is an exact idempotent replay of a previous request. */
+      replayed: z.boolean(),
+    })
+    .strict(),
   z.object({ status: z.literal('error'), error: CalibrationApiError }).strict(),
 ]);
 export type CalibrationStartPrintResponse = z.infer<
   typeof CalibrationStartPrintResponse
+>;
+
+// --- Queue reconciliation / change feed (issue #54) ------------------------
+
+/**
+ * One event in the job-queue change feed.
+ * `sequence` is monotonic — detect gaps by comparing consecutive values.
+ * `schemaVersion` is "3" (current).
+ *
+ * CRITICAL: Printer-group envelopes are REDACTED — `jobId`, `bedClearState`,
+ * `attemptOutcome`, and most operational fields are null. Never treat them as
+ * job state. Subscribe via SubscribeToQueueJobAsync(jobId) for full envelopes.
+ */
+export const CalibrationQueueEventEnvelope = z
+  .object({
+    schemaVersion: z.string(),
+    eventId: z.string().uuid(),
+    sequence: z.number().int(),
+    eventType: z.string(),
+    occurredAtUtc: z.string().datetime(),
+    jobId: z.string().uuid().nullable(),
+    printerId: z.string().uuid().nullable(),
+    projectId: z.string().uuid().nullable(),
+    calibrationAttemptId: z.string().uuid().nullable(),
+    /** PrintJobStatus literal: Queued|Assigned|Starting|Printing|Paused|Completed|Failed|Cancelled */
+    jobStatus: z.string().nullable(),
+    /** "Standard" | "FilamentCalibration" | null */
+    jobKind: z.string().nullable(),
+    /** Opaque base-64 job rowVersion */
+    jobRevision: z.string().nullable(),
+    /** Opaque base-64 dispatch state rowVersion */
+    dispatchStateRevision: z.string().nullable(),
+    attemptId: z.string().uuid().nullable(),
+    attemptNumber: z.number().int().nullable(),
+    /** DispatchAttemptOutcome: InProgress|Accepted|Rejected|FailedBeforeStart|Unknown */
+    attemptOutcome: z.string().nullable(),
+    /** BedClearState: None|Acknowledged|Consumed|Invalidated */
+    bedClearState: z.string().nullable(),
+    bedClearCommandId: z.string().uuid().nullable(),
+    bedClearExpiresAtUtc: z.string().datetime().nullable(),
+    failureCode: z.string().nullable(),
+    failureRetryable: z.boolean().nullable(),
+    failureRequiresReconciliation: z.boolean().nullable(),
+    jobLogicalRevision: z.number().int().nullable(),
+    dispatchStateLogicalRevision: z.number().int().nullable(),
+  })
+  .passthrough();
+export type CalibrationQueueEventEnvelope = z.infer<
+  typeof CalibrationQueueEventEnvelope
+>;
+
+export const CalibrationPollQueueChangesRequest = z
+  .object({
+    profileId: z.string().uuid(),
+    /** Sequence cursor from the previous poll. Use 0 to start from the beginning. */
+    afterSequence: z.number().int().min(0),
+    /** Maximum events to return (server cap: 500). */
+    limit: z.number().int().min(1).max(500).optional(),
+  })
+  .strict();
+export type CalibrationPollQueueChangesRequest = z.infer<
+  typeof CalibrationPollQueueChangesRequest
+>;
+
+export const CalibrationPollQueueChangesResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        afterSequence: z.number().int(),
+        nextSequence: z.number().int(),
+        hasMore: z.boolean(),
+        /** Whether a gap was detected (missing sequences). Triggers REST refetch. */
+        gapDetected: z.boolean(),
+        events: z.array(CalibrationQueueEventEnvelope).max(500),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationPollQueueChangesResponse = z.infer<
+  typeof CalibrationPollQueueChangesResponse
+>;
+
+export const CalibrationGetSubscriptionResourcesRequest = z
+  .object({ profileId: z.string().uuid() })
+  .strict();
+export type CalibrationGetSubscriptionResourcesRequest = z.infer<
+  typeof CalibrationGetSubscriptionResourcesRequest
+>;
+
+export const CalibrationGetSubscriptionResourcesResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        printerIds: z.array(z.string().uuid()).max(500),
+        jobIds: z.array(z.string().uuid()).max(500),
+        projectIds: z.array(z.string().uuid()).max(500),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), error: CalibrationApiError })
+      .strict(),
+  ],
+);
+export type CalibrationGetSubscriptionResourcesResponse = z.infer<
+  typeof CalibrationGetSubscriptionResourcesResponse
+>;
+
+// --- Typed blocked reasons (criterion 10, issue #54) -----------------------
+
+/**
+ * Typed reasons why an action is blocked.
+ * These are deterministic — each maps to a specific diagnosis.
+ * Never use free text; always use a typed code so the UI can explain clearly.
+ */
+export const CalibrationBlockedReason = z.discriminatedUnion('code', [
+  z
+    .object({
+      code: z.literal('staleTelemetry'),
+      detail: z.string().max(512),
+    })
+    .strict(),
+  z
+    .object({
+      code: z.literal('firmwareChange'),
+      detail: z.string().max(512),
+    })
+    .strict(),
+  z
+    .object({
+      code: z.literal('configChange'),
+      detail: z.string().max(512),
+    })
+    .strict(),
+  z
+    .object({
+      code: z.literal('materialMismatch'),
+      detail: z.string().max(512),
+    })
+    .strict(),
+  z
+    .object({
+      code: z.literal('maintenanceBusy'),
+      detail: z.string().max(512),
+    })
+    .strict(),
+  z
+    .object({
+      code: z.literal('missingGcode'),
+      detail: z.string().max(512),
+    })
+    .strict(),
+  z
+    .object({
+      code: z.literal('permissionFailure'),
+      detail: z.string().max(512),
+    })
+    .strict(),
+  z
+    .object({
+      code: z.literal('printerOffline'),
+      detail: z.string().max(512),
+    })
+    .strict(),
+  z
+    .object({
+      code: z.literal('acknowledgementExpired'),
+      detail: z.string().max(512),
+    })
+    .strict(),
+  z
+    .object({
+      code: z.literal('jobReordered'),
+      detail: z.string().max(512),
+    })
+    .strict(),
+]);
+export type CalibrationBlockedReason = z.infer<typeof CalibrationBlockedReason>;
+
+// --- Immutable provenance record (criterion 11, issue #54) -----------------
+
+/**
+ * Immutable provenance for a queued calibration job.
+ * All fields reflect what was locked in at job creation time —
+ * these are never updated after the job is queued.
+ */
+export const CalibrationJobProvenance = z
+  .object({
+    /** Upstream Orca version used for generation. */
+    requiredSlicerVersion: z.string().max(256).nullable(),
+    /** Klipper dialect enforced by the job runner. */
+    requiredGcodeDialect: z.string().max(256).nullable(),
+    /** Klipper firmware family enforced by the job runner. */
+    requiredFirmwareFamily: z.string().max(256).nullable(),
+    /** Slicer container digest (sha256:...) for reproducibility. */
+    requiredSlicerContainerDigest: z.string().max(512).nullable(),
+    /** Printer config revision pinned at job creation time. */
+    pinnedPrinterConfigRevision: z.number().int().nullable(),
+    /** Job ID. */
+    jobId: z.string().uuid(),
+    /** Assigned printer ID. */
+    assignedPrinterId: z.string().uuid().nullable(),
+    /** G-code file ID. */
+    gcodeFileId: z.string().uuid().nullable(),
+    // --- Hashes (all hex-sha256) ---
+    gcodeContentSha256: z.string().max(256).nullable(),
+    specificationSha256: z.string().max(256).nullable(),
+    machineProfileSha256: z.string().max(256).nullable(),
+    processProfileSha256: z.string().max(256).nullable(),
+    filamentProfileSha256: z.string().max(256).nullable(),
+    printerConfigSnapshotSha256: z.string().max(256).nullable(),
+    /** Queue revision (opaque base-64 ETag) at job creation time. */
+    rowVersion: z.string().nullable(),
+  })
+  .passthrough();
+export type CalibrationJobProvenance = z.infer<typeof CalibrationJobProvenance>;
+
+// --- External calibration asset manifest (criterion 14, issue #54) ---------
+
+/**
+ * A single entry in the external calibration asset manifest.
+ * These entries are reviewed and shipped with the app — never fetched
+ * dynamically. Methods whose entry has not passed review remain disabled.
+ */
+export const CalibrationAssetManifestEntry = z
+  .object({
+    /** Calibration method this asset supports. */
+    method: z.string().min(1).max(128),
+    /** Whether this method is enabled. False = not yet reviewed. */
+    enabled: z.boolean(),
+    /** If disabled, a concrete human-readable reason. */
+    disabledReason: z.string().max(512).nullable(),
+    /** The authoritative source URL for obtaining this asset. */
+    sourceUrl: z.string().url().max(2048),
+    /** Asset author or attribution string. */
+    author: z.string().max(512),
+    /** Declared license (SPDX identifier or free text). */
+    license: z.string().max(256),
+    /** Attribution text to show when the asset is used. */
+    attribution: z.string().max(1024),
+    /** Expected filename (if stable across versions). */
+    expectedFilename: z.string().max(256).nullable(),
+    /** MIME type or content type string. */
+    contentType: z.string().max(128),
+    /** Expected file extension (without leading dot). */
+    expectedExtension: z.string().max(32),
+    /** SHA-256 hex checksum (if stable and shipped with manifest). */
+    expectedSha256: z.string().max(64).nullable(),
+    /** Minimum file size in bytes. */
+    minSizeBytes: z.number().int().positive(),
+    /** Maximum file size in bytes. */
+    maxSizeBytes: z.number().int().positive(),
+    /** Method-specific geometry/validation bounds. Free-form extra rules. */
+    validationRules: z.record(z.unknown()).optional().default({}),
+  })
+  .passthrough();
+export type CalibrationAssetManifestEntry = z.infer<
+  typeof CalibrationAssetManifestEntry
+>;
+
+export const CalibrationGetAssetManifestRequest = z.void();
+export type CalibrationGetAssetManifestRequest = z.infer<
+  typeof CalibrationGetAssetManifestRequest
+>;
+
+export const CalibrationGetAssetManifestResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        schemaVersion: z.string(),
+        entries: z.array(CalibrationAssetManifestEntry).max(100),
+      })
+      .strict(),
+    z.object({ status: z.literal('error'), message: z.string() }).strict(),
+  ],
+);
+export type CalibrationGetAssetManifestResponse = z.infer<
+  typeof CalibrationGetAssetManifestResponse
+>;
+
+export const CalibrationPickAssetFileRequest = z
+  .object({
+    /** Restrict to files matching these extensions (without leading dot). */
+    allowedExtensions: z.array(z.string().max(32)).max(10),
+    title: z.string().max(256),
+  })
+  .strict();
+export type CalibrationPickAssetFileRequest = z.infer<
+  typeof CalibrationPickAssetFileRequest
+>;
+
+export const CalibrationPickAssetFileResponse = z.discriminatedUnion('status', [
+  z
+    .object({
+      status: z.literal('ok'),
+      approvalId: z.string().uuid(),
+      /** File size in bytes. */
+      byteSize: z.number().int().positive(),
+      /** Extension without leading dot (e.g. "3mf", "stl"). */
+      extension: z.string().max(32),
+    })
+    .strict(),
+  z.object({ status: z.literal('cancelled') }).strict(),
+  z
+    .object({ status: z.literal('error'), message: z.string().max(512) })
+    .strict(),
+]);
+export type CalibrationPickAssetFileResponse = z.infer<
+  typeof CalibrationPickAssetFileResponse
+>;
+
+export const CalibrationValidateAssetFileRequest = z
+  .object({
+    approvalId: z.string().uuid(),
+    /** Method this asset is intended for (for method-specific validation). */
+    method: z.string().min(1).max(128),
+  })
+  .strict();
+export type CalibrationValidateAssetFileRequest = z.infer<
+  typeof CalibrationValidateAssetFileRequest
+>;
+
+/**
+ * Validation result for an asset file selected by the user.
+ * On success, includes the SHA-256 checksum and file metadata.
+ * Checksums and provenance are displayed and stored with the attempt.
+ */
+export const CalibrationValidateAssetFileResponse = z.discriminatedUnion(
+  'status',
+  [
+    z
+      .object({
+        status: z.literal('ok'),
+        /** SHA-256 hex checksum of the file content. */
+        sha256: z.string().length(64),
+        /** File size in bytes. */
+        byteSize: z.number().int().positive(),
+        /** Resolved file extension (without leading dot). */
+        extension: z.string().max(32),
+        /** Content type as detected from magic bytes. */
+        contentType: z.string().max(128),
+        /** Whether the checksum matches the manifest's expected SHA-256. */
+        checksumVerified: z.boolean(),
+        /** Geometry or method-specific validation results. */
+        validationNotes: z.array(z.string().max(256)).max(20),
+      })
+      .strict(),
+    z
+      .object({
+        status: z.literal('invalid'),
+        /** Typed failure reason. */
+        reason: z.enum([
+          'badExtension',
+          'badMagicBytes',
+          'tooSmall',
+          'tooLarge',
+          'geometryOutOfBounds',
+          'checksumMismatch',
+          'methodDisabled',
+          'approvalExpired',
+        ]),
+        detail: z.string().max(512),
+      })
+      .strict(),
+    z
+      .object({ status: z.literal('error'), message: z.string().max(512) })
+      .strict(),
+  ],
+);
+export type CalibrationValidateAssetFileResponse = z.infer<
+  typeof CalibrationValidateAssetFileResponse
+>;
+
+// --- Print lifecycle append-only observations (criterion 13, issue #54) ----
+
+// --- Allowlisted external navigation for manifest URLs (criterion 14) --------
+
+/**
+ * Opens a calibration asset manifest source URL in the system browser.
+ * The main process validates the URL against the allowlist before opening.
+ * Renderer code must never call window.open, shell.openExternal, or
+ * navigate directly — this IPC channel is the sole external-navigation path.
+ */
+export const CalibrationOpenManifestUrlRequest = z
+  .object({
+    /** The manifest sourceUrl to open (must be https://). */
+    url: z.string().url().max(2048),
+  })
+  .strict();
+export type CalibrationOpenManifestUrlRequest = z.infer<
+  typeof CalibrationOpenManifestUrlRequest
+>;
+
+export const CalibrationOpenManifestUrlResponse = z.discriminatedUnion(
+  'status',
+  [
+    z.object({ status: z.literal('ok') }).strict(),
+    z
+      .object({ status: z.literal('error'), message: z.string().max(512) })
+      .strict(),
+  ],
+);
+export type CalibrationOpenManifestUrlResponse = z.infer<
+  typeof CalibrationOpenManifestUrlResponse
 >;
 
 // --- Local OrcaSlicer profile discovery ------------------------------------
@@ -4414,6 +5164,10 @@ export const ipcSchemas = {
     request: CalibrationStartGenerationRequest,
     response: CalibrationStartGenerationResponse,
   },
+  [IpcChannel.CalibrationGetOrchestrationStatus]: {
+    request: CalibrationGetOrchestrationStatusRequest,
+    response: CalibrationGetOrchestrationStatusResponse,
+  },
   [IpcChannel.CalibrationGetQueueState]: {
     request: CalibrationGetQueueStateRequest,
     response: CalibrationGetQueueStateResponse,
@@ -4426,6 +5180,34 @@ export const ipcSchemas = {
     request: CalibrationStartPrintRequest,
     response: CalibrationStartPrintResponse,
   },
+  // --- Queue reconciliation (issue #54) ------------------------------------
+  [IpcChannel.CalibrationPollQueueChanges]: {
+    request: CalibrationPollQueueChangesRequest,
+    response: CalibrationPollQueueChangesResponse,
+  },
+  [IpcChannel.CalibrationGetSubscriptionResources]: {
+    request: CalibrationGetSubscriptionResourcesRequest,
+    response: CalibrationGetSubscriptionResourcesResponse,
+  },
+  // --- External calibration asset manifest (issue #54) ---------------------
+  [IpcChannel.CalibrationGetAssetManifest]: {
+    request: CalibrationGetAssetManifestRequest,
+    response: CalibrationGetAssetManifestResponse,
+  },
+  [IpcChannel.CalibrationPickAssetFile]: {
+    request: CalibrationPickAssetFileRequest,
+    response: CalibrationPickAssetFileResponse,
+  },
+  [IpcChannel.CalibrationValidateAssetFile]: {
+    request: CalibrationValidateAssetFileRequest,
+    response: CalibrationValidateAssetFileResponse,
+  },
+  // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
+  [IpcChannel.CalibrationOpenManifestUrl]: {
+    request: CalibrationOpenManifestUrlRequest,
+    response: CalibrationOpenManifestUrlResponse,
+  },
+  // -------------------------------------------------------------------------
   [IpcChannel.CalibrationListOrcaProfiles]: {
     request: CalibrationListOrcaProfilesRequest,
     response: CalibrationListOrcaProfilesResponse,
@@ -4594,6 +5376,9 @@ export interface PrintFarmerApi {
   startCalibrationGeneration(
     request: CalibrationStartGenerationRequest,
   ): Promise<CalibrationStartGenerationResponse>;
+  getCalibrationOrchestrationStatus(
+    request: CalibrationGetOrchestrationStatusRequest,
+  ): Promise<CalibrationGetOrchestrationStatusResponse>;
   getCalibrationQueueState(
     request: CalibrationGetQueueStateRequest,
   ): Promise<CalibrationGetQueueStateResponse>;
@@ -4603,6 +5388,26 @@ export interface PrintFarmerApi {
   startCalibrationPrint(
     request: CalibrationStartPrintRequest,
   ): Promise<CalibrationStartPrintResponse>;
+  // --- Queue reconciliation (issue #54) ------------------------------------
+  pollCalibrationQueueChanges(
+    request: CalibrationPollQueueChangesRequest,
+  ): Promise<CalibrationPollQueueChangesResponse>;
+  getCalibrationSubscriptionResources(
+    request: CalibrationGetSubscriptionResourcesRequest,
+  ): Promise<CalibrationGetSubscriptionResourcesResponse>;
+  // --- External calibration asset manifest (issue #54) ---------------------
+  getCalibrationAssetManifest(): Promise<CalibrationGetAssetManifestResponse>;
+  pickCalibrationAssetFile(
+    request: CalibrationPickAssetFileRequest,
+  ): Promise<CalibrationPickAssetFileResponse>;
+  validateCalibrationAssetFile(
+    request: CalibrationValidateAssetFileRequest,
+  ): Promise<CalibrationValidateAssetFileResponse>;
+  // --- Allowlisted external navigation for manifest URLs (criterion 14) ----
+  openCalibrationManifestUrl(
+    request: CalibrationOpenManifestUrlRequest,
+  ): Promise<CalibrationOpenManifestUrlResponse>;
+  // -------------------------------------------------------------------------
   listOrcaProfiles(
     request: CalibrationListOrcaProfilesRequest,
   ): Promise<CalibrationListOrcaProfilesResponse>;

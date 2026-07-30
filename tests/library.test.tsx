@@ -1111,6 +1111,43 @@ describe('selectLibraryView', () => {
       }).map((item) => item.hash),
     ).toEqual(['h-obj']);
   });
+
+  it('filters and sorts a large result set from a 100k-entry catalog', () => {
+    const synthetic = Array.from({ length: 100_000 }, (_, offset) => {
+      const index = 99_999 - offset;
+      const suffix = index.toString().padStart(6, '0');
+      const format = index % 2 === 0 ? 'stl' : 'obj';
+      return model({
+        hash: `bulk-${suffix}`,
+        format,
+        size: 1_024 + (index % 64),
+        locations: [
+          {
+            rootId: `root-${index % 20}`,
+            path: `D:\\catalog\\segment-${index % 20}\\gear-${suffix}.${format}`,
+            rootRelative: `segment-${index % 20}\\gear-${suffix}.${format}`,
+            size: 1_024 + (index % 64),
+            available: true,
+          },
+        ],
+      });
+    });
+
+    const start = Date.now();
+    const filtered = selectLibraryView(synthetic, {
+      ...defaultLibraryView,
+      filter: 'stl',
+      query: 'gear-',
+      sort: 'name-asc',
+    });
+    const elapsedMs = Date.now() - start;
+
+    expect(filtered).toHaveLength(50_000);
+    expect(filtered[0]?.hash).toBe('bulk-000000');
+    expect(filtered[25_000]?.hash).toBe('bulk-050000');
+    expect(filtered.at(-1)?.hash).toBe('bulk-099998');
+    expect(elapsedMs).toBeLessThan(5_000);
+  }, 15_000);
 });
 
 describe('useFavorites', () => {
@@ -1962,5 +1999,33 @@ describe('useThumbnail', () => {
 
     await waitFor(() => expect(result.current.status).toBe('error'));
     expect(result.current.src).toBeNull();
+  });
+
+  it('completes repeated thumbnail batches without deadlocking queued work', async () => {
+    const renderThumbnail = vi.fn().mockImplementation(() =>
+      Promise.resolve({
+        width: 256,
+        height: 256,
+        pngBase64: 'SOAK',
+        cacheRecipe: 'scene/v3.2/thumb-v1-256',
+      }),
+    );
+    installApi({ renderThumbnail });
+
+    for (let round = 0; round < 5; round += 1) {
+      const hooks = Array.from({ length: 40 }, (_, index) =>
+        renderHook(() =>
+          useThumbnail(model({ hash: `round-${round}-h-${index}` })),
+        ),
+      );
+      await waitFor(() =>
+        hooks.forEach((hook) =>
+          expect(hook.result.current.status).toBe('ready'),
+        ),
+      );
+      hooks.forEach((hook) => hook.unmount());
+    }
+
+    expect(renderThumbnail).toHaveBeenCalledTimes(200);
   });
 });

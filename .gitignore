@@ -38,6 +38,13 @@ coverage/
 playwright-report/
 test-results/
 
+# E2E temp state dirs (created/cleaned by calibration.spec.ts beforeAll/afterAll)
+.pf-e2e-*/
+.pf-cal-e2e-*/
+
+# Goal workflow artifacts
+.goals/
+
 # Secrets, signing material, local config (NEVER commit)
 *.pem
 *.pfx

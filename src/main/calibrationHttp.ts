@@ -30,6 +30,10 @@ import type {
   RemoteCalibrationCapabilities,
   RemoteCalibrationPrinters,
   RemoteCalibrationPrinterContext,
+  RemoteCalibrationOrchestrationStatus,
+  RemoteJobQueueJob,
+  RemoteJobQueueChangeFeedPage,
+  RemoteQueueSubscriptionResources,
 } from './calibrationWire.js';
 import {
   RemoteCalibrationApplySuccess,
@@ -42,6 +46,12 @@ import {
   RemoteCalibrationPhoto as PhotoSchema,
   RemoteCalibrationPrinters as PrintersSchema,
   RemoteCalibrationPrinterContext as PrinterContextSchema,
+  RemoteCalibrationOrchestrationStatus as OrchestrationStatusSchema,
+  RemoteJobQueueJob as JobQueueJobSchema,
+  RemoteAcknowledgeBedClearSuccess as AcknowledgeBedClearSuccessSchema,
+  RemoteAcknowledgeBedClearConflict as AcknowledgeBedClearConflictSchema,
+  RemoteJobQueueChangeFeedPage as JobQueueChangeFeedPageSchema,
+  RemoteQueueSubscriptionResources as QueueSubscriptionResourcesSchema,
 } from './calibrationWire.js';
 
 // --- Fixed API route constants ---------------------------------------------
@@ -68,14 +78,25 @@ const ROUTES = {
     `/api/calibration-photos/${encodeURIComponent(id)}/upload`,
   profileRevisions: (projectId: string) =>
     `/api/calibration-projects/${encodeURIComponent(projectId)}/profile-revisions`,
-  generation: (projectId: string) =>
-    `/api/calibration-projects/${encodeURIComponent(projectId)}/generation`,
-  queue: (projectId: string) =>
-    `/api/calibration-projects/${encodeURIComponent(projectId)}/queue`,
-  bedClear: (projectId: string, jobId: string) =>
-    `/api/calibration-projects/${encodeURIComponent(projectId)}/queue/${encodeURIComponent(jobId)}/bed-clear`,
-  printStart: (projectId: string, jobId: string) =>
-    `/api/calibration-projects/${encodeURIComponent(projectId)}/queue/${encodeURIComponent(jobId)}/start`,
+  // --- Generation orchestration (issue #899) ---------------------------------
+  /** POST — starts generation for a specific attempt. */
+  generateJob: (projectId: string, attemptId: string) =>
+    `/api/calibration-projects/${encodeURIComponent(projectId)}/attempts/${encodeURIComponent(attemptId)}/generate-job`,
+  /** GET — polls orchestration status by orchestration ID. */
+  orchestrationStatus: (orchestrationId: string) =>
+    `/api/calibration-orchestrations/${encodeURIComponent(orchestrationId)}`,
+  // --- Primary job-queue REST (issue #900) ------------------------------------
+  /** POST — create a queue job. */
+  jobQueue: '/api/job-queue',
+  /** GET — fetch a single queue job by ID. */
+  jobQueueJob: (jobId: string) => `/api/job-queue/${encodeURIComponent(jobId)}`,
+  /** GET — change feed cursor poll. */
+  jobQueueChanges: '/api/job-queue/changes',
+  /** GET — subscription resources hint. */
+  jobQueueSubscriptionResources: '/api/job-queue/subscription-resources',
+  /** POST — acknowledge bed clear and start dispatch. */
+  acknowledgeBedClearAndStart: (jobId: string) =>
+    `/api/job-queue/${encodeURIComponent(jobId)}/acknowledge-bed-clear-and-start`,
 } as const;
 
 // --- Error types -----------------------------------------------------------
@@ -95,7 +116,16 @@ export type CalibrationHttpErrorCode =
   | 'revisionConflict'
   | 'idempotencyPayloadChanged'
   | 'invalidData'
-  | 'workerUnavailable';
+  | 'workerUnavailable'
+  // --- Bed-clear / queue specific (issue #54) ---
+  | 'forbidden'
+  | 'jobNotFound'
+  | 'wrongJob'
+  | 'printerBusy'
+  | 'jobNotDispatchable'
+  | 'dispatchRevisionConflict'
+  | 'calibrationJobIncompatible'
+  | 'filamentCheckFailed';
 
 export class CalibrationHttpError extends Error {
   constructor(
@@ -120,6 +150,14 @@ export class CalibrationHttpError extends Error {
       invalidData: 'invalidData',
       workerUnavailable: 'workerUnavailable',
       server: 'serverError',
+      forbidden: 'forbidden',
+      jobNotFound: 'jobNotFound',
+      wrongJob: 'wrongJob',
+      printerBusy: 'printerBusy',
+      jobNotDispatchable: 'jobNotDispatchable',
+      dispatchRevisionConflict: 'dispatchRevisionConflict',
+      calibrationJobIncompatible: 'calibrationJobIncompatible',
+      filamentCheckFailed: 'filamentCheckFailed',
     };
     const apiCode = codeMap[this.code] ?? 'serverError';
     const retryable = [
@@ -139,6 +177,35 @@ export class CalibrationHttpError extends Error {
     };
   }
 }
+
+/**
+ * Result type for bed-clear acknowledgement operations.
+ * Discriminated by `kind` to distinguish the 412 conflict case (which carries
+ * current ETags for retry) from success and generic errors.
+ */
+export type AcknowledgeBedClearResult =
+  | {
+      kind: 'ok';
+      jobETag: string | null;
+      dispatchStateETag: string | null;
+    }
+  | {
+      kind: 'revisionConflict';
+      /** Current job ETag from the 412 response — use for retry. */
+      jobETag: string;
+      /** Current dispatch state ETag from the 412 response — use for retry. */
+      dispatchStateETag: string;
+    };
+
+/**
+ * Result type for queue job creation (POST /api/job-queue).
+ */
+export type CreateQueueJobResult = {
+  jobId: string;
+  rowVersion: string | null;
+  dispatchStateRowVersion: string | null;
+  replayed: boolean;
+};
 
 // --- Token provider interface ----------------------------------------------
 
@@ -273,6 +340,44 @@ function isTransient(error: CalibrationHttpError): boolean {
     'server',
     'workerUnavailable',
   ].includes(error.code);
+}
+
+/**
+ * Map a 409 error code string from the bed-clear endpoint to a typed error code.
+ * Unrecognised codes fall back to 'idempotencyPayloadChanged'.
+ */
+function mapBedClearErrorCode409(
+  errorCode: string | null,
+): CalibrationHttpErrorCode {
+  switch (errorCode) {
+    case 'wrong_job':
+      return 'wrongJob';
+    case 'printer_busy':
+      return 'printerBusy';
+    case 'job_not_dispatchable':
+      return 'jobNotDispatchable';
+    case 'idempotency_payload_mismatch':
+      return 'idempotencyPayloadChanged';
+    default:
+      return 'idempotencyPayloadChanged';
+  }
+}
+
+/**
+ * Map a 422 error code string from the bed-clear endpoint to a typed error code.
+ * Unrecognised codes fall back to 'invalidData'.
+ */
+function mapBedClearErrorCode422(
+  errorCode: string | null,
+): CalibrationHttpErrorCode {
+  switch (errorCode) {
+    case 'calibration_job_incompatible':
+      return 'calibrationJobIncompatible';
+    case 'filament_check_failed':
+      return 'filamentCheckFailed';
+    default:
+      return 'invalidData';
+  }
 }
 
 // --- Main client class ----------------------------------------------------
@@ -575,24 +680,40 @@ export class CalibrationHttpClient {
     profileId: string,
     baseUrl: string,
     projectId: string,
+    attemptId: string,
+    method: string,
+    definitionVersion: string | undefined,
+    options: Record<string, unknown> | undefined,
     operationId: string,
-    baseRevision: number,
+    baseRevision: number | null,
     signal: AbortSignal,
-  ): Promise<{ generationJobId: string }> {
+  ): Promise<RemoteCalibrationOrchestrationStatus> {
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       'idempotency-key': operationId,
-      'if-match': String(baseRevision),
     };
+    const body: Record<string, unknown> = { method };
+    if (definitionVersion !== undefined)
+      body.definitionVersion = definitionVersion;
+    if (options !== undefined) body.options = options;
+    if (baseRevision !== null) body.baseRevision = baseRevision;
+
     const pending = await this.request(
       profileId,
       baseUrl,
-      ROUTES.generation(projectId),
-      { method: 'POST', headers, body: JSON.stringify({ projectId }) },
+      ROUTES.generateJob(projectId, attemptId),
+      { method: 'POST', headers, body: JSON.stringify(body) },
       signal,
       true,
     );
     try {
+      if (pending.response.status === 409 || pending.response.status === 412) {
+        throw await this.statusError(
+          pending.response,
+          true,
+          pending.timedOut(),
+        );
+      }
       if (!pending.response.ok) {
         throw await this.statusError(
           pending.response,
@@ -600,38 +721,176 @@ export class CalibrationHttpClient {
           pending.timedOut(),
         );
       }
-      const body = await this.readBody(pending);
-      const parsed = z
-        .object({ generationJobId: z.string().uuid() })
-        .passthrough()
-        .parse(JSON.parse(body));
-      return { generationJobId: parsed.generationJobId };
+      return await this.parse(pending, OrchestrationStatusSchema);
     } finally {
       pending.dispose();
     }
   }
 
-  async acknowledgeBedClear(
+  async getOrchestrationStatus(
     profileId: string,
     baseUrl: string,
-    projectId: string,
-    jobId: string,
-    operationId: string,
+    orchestrationId: string,
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<RemoteCalibrationOrchestrationStatus> {
+    return this.get(
+      profileId,
+      baseUrl,
+      ROUTES.orchestrationStatus(orchestrationId),
+      OrchestrationStatusSchema,
+      signal,
+    );
+  }
+
+  async getQueueJob(
+    profileId: string,
+    baseUrl: string,
+    jobId: string,
+    signal: AbortSignal,
+  ): Promise<RemoteJobQueueJob | null> {
+    return this.getOptional(
+      profileId,
+      baseUrl,
+      ROUTES.jobQueueJob(jobId),
+      JobQueueJobSchema,
+      signal,
+    );
+  }
+
+  /**
+   * Poll the job-queue change feed for new events since `afterSequence`.
+   *
+   * Uses ROUTES.jobQueueChanges: GET /api/job-queue/changes?afterSequence=&limit=
+   *
+   * Envelope `schemaVersion` is "3". Use `nextSequence` as the cursor on the
+   * next poll. If any gap is detected (missing sequence numbers) the caller
+   * must refetch job state via REST.
+   *
+   * NOTE: Printer-group envelopes are REDACTED — never treat them as job state.
+   *       Subscribe via SubscribeToQueueJobAsync(jobId) for full job envelopes.
+   */
+  async getQueueChanges(
+    profileId: string,
+    baseUrl: string,
+    afterSequence: number,
+    limit: number,
+    signal: AbortSignal,
+  ): Promise<RemoteJobQueueChangeFeedPage> {
+    const query = new URLSearchParams({
+      afterSequence: String(afterSequence),
+      limit: String(Math.min(limit, 500)),
+    });
+    return this.get(
+      profileId,
+      baseUrl,
+      `${ROUTES.jobQueueChanges}?${query.toString()}`,
+      JobQueueChangeFeedPageSchema,
+      signal,
+    );
+  }
+
+  /**
+   * Fetch subscription resources: lists active job, printer, and project IDs
+   * the client should subscribe to via SignalR.
+   *
+   * Uses ROUTES.jobQueueSubscriptionResources: GET /api/job-queue/subscription-resources
+   *
+   * Active states: Queued | Assigned | Starting | Printing | Paused.
+   */
+  async getQueueSubscriptionResources(
+    profileId: string,
+    baseUrl: string,
+    signal: AbortSignal,
+  ): Promise<RemoteQueueSubscriptionResources> {
+    return this.get(
+      profileId,
+      baseUrl,
+      ROUTES.jobQueueSubscriptionResources,
+      QueueSubscriptionResourcesSchema,
+      signal,
+    );
+  }
+
+  /**
+   * Create a FilamentCalibration queue job via POST /api/job-queue.
+   *
+   * 201 → new job (reads `Location` header for job ID and `ETag` / `X-Dispatch-State-ETag` headers for ETags).
+   * 200 with `Idempotency-Replayed: true` → exact replay; reads existing job from response body.
+   */
+  async createQueueJob(
+    profileId: string,
+    baseUrl: string,
+    dto: {
+      gcodeFileId: string;
+      assignedPrinterId: string;
+      operationId: string;
+      calibrationProjectId?: string;
+      calibrationAttemptId?: string;
+      calibrationOrchestrationId?: string;
+      pinnedPrinterConfigRevision: number | null;
+      gcodeContentSha256: string | null;
+      specificationSha256: string | null;
+      machineProfileSha256: string | null;
+      processProfileSha256: string | null;
+      filamentProfileSha256: string | null;
+      printerConfigSnapshotSha256: string | null;
+      requiredFirmwareFamily: string | null;
+      requiredGcodeDialect: string | null;
+      requiredSlicerEngine: string | null;
+      requiredSlicerDistribution: string | null;
+      requiredSlicerVersion: string | null;
+      requiredSlicerContainerDigest: string | null;
+    },
+    signal: AbortSignal,
+  ): Promise<CreateQueueJobResult> {
     const headers: Record<string, string> = {
       'content-type': 'application/json',
-      'idempotency-key': operationId,
+      'idempotency-key': dto.operationId,
     };
+
+    const body: Record<string, unknown> = {
+      gcodeFileId: dto.gcodeFileId,
+      jobKind: 'FilamentCalibration',
+      idempotencyKey: dto.operationId,
+      idempotencyScope: dto.calibrationProjectId
+        ? `calib-project-${dto.calibrationProjectId}`
+        : undefined,
+      assignedPrinterId: dto.assignedPrinterId,
+      calibrationProjectId: dto.calibrationProjectId,
+      calibrationAttemptId: dto.calibrationAttemptId,
+      calibrationOrchestrationId: dto.calibrationOrchestrationId,
+      pinnedPrinterConfigRevision: dto.pinnedPrinterConfigRevision,
+      requiredFirmwareFamily: dto.requiredFirmwareFamily,
+      requiredGcodeDialect: dto.requiredGcodeDialect,
+      requiredSlicerEngine: dto.requiredSlicerEngine,
+      requiredSlicerDistribution: dto.requiredSlicerDistribution,
+      requiredSlicerVersion: dto.requiredSlicerVersion,
+      requiredSlicerContainerDigest: dto.requiredSlicerContainerDigest,
+      gcodeContentSha256: dto.gcodeContentSha256,
+      specificationSha256: dto.specificationSha256,
+      machineProfileSha256: dto.machineProfileSha256,
+      processProfileSha256: dto.processProfileSha256,
+      filamentProfileSha256: dto.filamentProfileSha256,
+      printerConfigSnapshotSha256: dto.printerConfigSnapshotSha256,
+      copies: 1,
+    };
+
     const pending = await this.request(
       profileId,
       baseUrl,
-      ROUTES.bedClear(projectId, jobId),
-      { method: 'POST', headers, body: '{}' },
+      ROUTES.jobQueue,
+      { method: 'POST', headers, body: JSON.stringify(body) },
       signal,
       true,
     );
     try {
+      if (pending.response.status === 409) {
+        throw await this.statusError(
+          pending.response,
+          true,
+          pending.timedOut(),
+        );
+      }
       if (!pending.response.ok) {
         throw await this.statusError(
           pending.response,
@@ -639,35 +898,179 @@ export class CalibrationHttpClient {
           pending.timedOut(),
         );
       }
-      await discard(pending.response);
+      const replayed =
+        pending.response.headers.get('idempotency-replayed') === 'true';
+
+      // Extract ETags — server quotes them: `"base64..."` — strip quotes.
+      const stripQuotes = (s: string | null): string | null => {
+        if (s === null) return null;
+        return s.replace(/^W\/"?|"$/g, '').replace(/^"/, '');
+      };
+
+      const parsedBody = await this.parse(pending, JobQueueJobSchema);
+      const etagHeader = pending.response.headers.get('etag');
+      const dispatchEtagHeader = pending.response.headers.get(
+        'x-dispatch-state-etag',
+      );
+      const rowVersion = parsedBody.rowVersion ?? stripQuotes(etagHeader);
+      const dispatchStateRowVersion =
+        parsedBody.dispatchStateRowVersion ?? stripQuotes(dispatchEtagHeader);
+
+      // For 201 Created, get job ID from Location header or body.
+      let jobId: string = parsedBody.id;
+      if (pending.response.status === 201) {
+        const locationHeader = pending.response.headers.get('location');
+        if (locationHeader) {
+          const parts = locationHeader.split('/');
+          const fromLocation = parts[parts.length - 1];
+          if (fromLocation && /^[0-9a-f-]{36}$/i.test(fromLocation)) {
+            jobId = fromLocation;
+          }
+        }
+      }
+
+      return {
+        jobId,
+        rowVersion,
+        dispatchStateRowVersion,
+        replayed,
+      };
     } finally {
       pending.dispose();
     }
   }
 
-  async startPrint(
+  /**
+   * Acknowledge bed clear and start dispatch for an exact queue job.
+   *
+   * Requires THREE preconditions (all returning 428 if missing):
+   *   - `Idempotency-Key` header
+   *   - `If-Match` header (job rowVersion, opaque base-64)
+   *   - `X-Dispatch-State-If-Match` header (dispatch state rowVersion, opaque base-64)
+   *
+   * A 412 `dispatch_revision_conflict` response body carries the CURRENT ETags
+   * for retry — returned as `kind: 'revisionConflict'` rather than thrown.
+   */
+  async acknowledgeBedClearAndStart(
     profileId: string,
     baseUrl: string,
-    projectId: string,
     jobId: string,
+    printerId: string,
     operationId: string,
-    baseRevision: number,
+    rowVersion: string,
+    dispatchStateRowVersion: string,
+    expectedPrinterConfigRevision: number | null | undefined,
     signal: AbortSignal,
-  ): Promise<{ jobId: string }> {
+  ): Promise<AcknowledgeBedClearResult> {
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       'idempotency-key': operationId,
-      'if-match': String(baseRevision),
+      'if-match': rowVersion,
+      'x-dispatch-state-if-match': dispatchStateRowVersion,
     };
+    const bodyObj: Record<string, unknown> = {
+      printerId,
+      idempotencyKey: operationId,
+    };
+    if (expectedPrinterConfigRevision != null) {
+      bodyObj.expectedPrinterConfigRevision = expectedPrinterConfigRevision;
+    }
+
     const pending = await this.request(
       profileId,
       baseUrl,
-      ROUTES.printStart(projectId, jobId),
-      { method: 'POST', headers, body: JSON.stringify({ jobId }) },
+      ROUTES.acknowledgeBedClearAndStart(jobId),
+      { method: 'POST', headers, body: JSON.stringify(bodyObj) },
       signal,
       true,
     );
     try {
+      // 412 — dispatch_revision_conflict: parse body to extract current ETags
+      if (pending.response.status === 412) {
+        let conflictBody: {
+          jobETag: string | null;
+          dispatchStateETag: string | null;
+        } = {
+          jobETag: null,
+          dispatchStateETag: null,
+        };
+        try {
+          const rawBody = await this.readBody(pending);
+          if (rawBody.length > 0) {
+            const parsed = AcknowledgeBedClearConflictSchema.parse(
+              JSON.parse(rawBody),
+            );
+            conflictBody = {
+              jobETag: parsed.jobETag,
+              dispatchStateETag: parsed.dispatchStateETag,
+            };
+          }
+        } catch {
+          // Best-effort parse; fall through to error if ETags absent
+        }
+        if (
+          conflictBody.jobETag === null ||
+          conflictBody.dispatchStateETag === null
+        ) {
+          throw new CalibrationHttpError(
+            'dispatchRevisionConflict',
+            'Dispatch revision conflict — current ETags unavailable.',
+            412,
+            null,
+            pending.ambiguous,
+          );
+        }
+        return {
+          kind: 'revisionConflict',
+          jobETag: conflictBody.jobETag,
+          dispatchStateETag: conflictBody.dispatchStateETag,
+        };
+      }
+
+      // 409 — map error code to typed error
+      if (pending.response.status === 409) {
+        let errorCode: string | null = null;
+        try {
+          const rawBody = await this.readBody(pending);
+          if (rawBody.length > 0) {
+            const parsed = JSON.parse(rawBody) as { error?: string };
+            errorCode = parsed.error ?? null;
+          }
+        } catch {
+          // ignore parse errors
+        }
+        const code409 = mapBedClearErrorCode409(errorCode);
+        throw new CalibrationHttpError(
+          code409,
+          `Bed-clear conflict: ${errorCode ?? 'conflict'}`,
+          409,
+          null,
+          pending.ambiguous,
+        );
+      }
+
+      // 422 — map error code to typed error
+      if (pending.response.status === 422) {
+        let errorCode: string | null = null;
+        try {
+          const rawBody = await this.readBody(pending);
+          if (rawBody.length > 0) {
+            const parsed = JSON.parse(rawBody) as { error?: string };
+            errorCode = parsed.error ?? null;
+          }
+        } catch {
+          // ignore parse errors
+        }
+        const code422 = mapBedClearErrorCode422(errorCode);
+        throw new CalibrationHttpError(
+          code422,
+          `Bed-clear validation failed: ${errorCode ?? 'invalid'}`,
+          422,
+          null,
+          pending.ambiguous,
+        );
+      }
+
       if (!pending.response.ok) {
         throw await this.statusError(
           pending.response,
@@ -675,12 +1078,17 @@ export class CalibrationHttpClient {
           pending.timedOut(),
         );
       }
-      const body = await this.readBody(pending);
-      const parsed = z
-        .object({ jobId: z.string().uuid() })
-        .passthrough()
-        .parse(JSON.parse(body));
-      return { jobId: parsed.jobId };
+
+      // 202 Accepted or 200 OK (idempotent replay)
+      const parsedSuccess = await this.parse(
+        pending,
+        AcknowledgeBedClearSuccessSchema,
+      );
+      return {
+        kind: 'ok',
+        jobETag: parsedSuccess.jobETag,
+        dispatchStateETag: parsedSuccess.dispatchStateETag,
+      };
     } finally {
       pending.dispose();
     }

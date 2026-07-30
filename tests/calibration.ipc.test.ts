@@ -969,12 +969,12 @@ describe('generation/queue disabled states parse correctly', () => {
     expect(result.status).toBe('error');
   });
 
-  it('CalibrationStartGeneration ok state parses with generationJobId', () => {
+  it('CalibrationStartGeneration ok state parses with orchestrationId', () => {
     const result = ipcSchemas[
       IpcChannel.CalibrationStartGeneration
     ].response.parse({
       status: 'submitted',
-      generationJobId: ATTEMPT_UUID,
+      orchestrationId: ATTEMPT_UUID,
     });
     expect(result.status).toBe('submitted');
   });

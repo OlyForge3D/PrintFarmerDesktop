@@ -6,9 +6,12 @@ import {
   PrivateSnapshotManager,
   SnapshotError,
 } from '../src/main/uploadSnapshot.js';
+import { MAX_UPLOAD_MODEL_BYTES } from '../src/main/uploadTransport.js';
 
 let fixtureRoot: string;
 let userData: string;
+const ZERO_FILLED_500_MB_SHA256 =
+  '38f7c0648553d81ad9402ebdd1b275a0029644c5b7eef7c963dfa7db9ef0ba23';
 
 beforeEach(async () => {
   fixtureRoot = path.resolve('tests', `.snapshot-${randomUUID()}`);
@@ -164,6 +167,49 @@ describe('immutable private upload snapshots', () => {
     await expect(snapshot.cleanup()).rejects.toThrow(/transient/);
     await expect(snapshot.cleanup()).resolves.toBeUndefined();
     expect(cleanupAttempts).toBe(2);
+  });
+
+  it('copies, hashes, syncs, and verifies a model at the 500 MB boundary', async () => {
+    const source = path.join(fixtureRoot, 'max-size.model');
+    await fs.writeFile(source, '');
+    await fs.truncate(source, MAX_UPLOAD_MODEL_BYTES);
+    const manager = new PrivateSnapshotManager(userData);
+
+    const snapshot = await manager.create(
+      await approvedFile(source),
+      ZERO_FILLED_500_MB_SHA256,
+      '11111111-1111-4111-8111-111111111111',
+      new AbortController().signal,
+    );
+    try {
+      expect(snapshot.size).toBe(MAX_UPLOAD_MODEL_BYTES);
+      await expect(fs.stat(snapshot.path)).resolves.toMatchObject({
+        size: MAX_UPLOAD_MODEL_BYTES,
+      });
+    } finally {
+      await snapshot.cleanup();
+    }
+    await expect(fs.stat(snapshot.path)).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  }, 120_000);
+
+  it('rejects files larger than the 500 MB upload boundary', async () => {
+    const source = path.join(fixtureRoot, 'over-limit.model');
+    await fs.writeFile(source, '');
+    await fs.truncate(source, MAX_UPLOAD_MODEL_BYTES + 1);
+    const manager = new PrivateSnapshotManager(userData);
+
+    await expect(
+      manager.create(
+        await approvedFile(source),
+        'not-used',
+        '11111111-1111-4111-8111-111111111111',
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      code: 'SOURCE_TOO_LARGE',
+    });
   });
 });
 

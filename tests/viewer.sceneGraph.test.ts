@@ -336,6 +336,31 @@ describe('buildViewerSceneGraph level of detail', () => {
     graph.dispose();
   });
 
+  it('builds a bounded proxy for a representative 500k-triangle workload', () => {
+    const scene = heavyScene(500);
+    const dense = scene.objects.find((entry) => entry.id === 'dense')!;
+    expect(triangleCount(dense.mesh!)).toBe(500_000);
+
+    const startedAt = Date.now();
+    const graph = buildViewerSceneGraph(scene);
+    const elapsedMs = Date.now() - startedAt;
+    try {
+      expect([...graph.lodObjectIds]).toEqual(['dense']);
+      const [lod] = findLods(graph.root);
+      expect(lod?.levels).toHaveLength(2);
+      const near = lod!.levels[0]!.object as THREE.Mesh;
+      const far = lod!.levels[1]!.object as THREE.Mesh;
+      const nearTriangles = (near.geometry.getIndex()?.count ?? 0) / 3;
+      const farTriangles = (far.geometry.getIndex()?.count ?? 0) / 3;
+      expect(nearTriangles).toBe(500_000);
+      expect(farTriangles).toBeGreaterThan(0);
+      expect(farTriangles).toBeLessThan(nearTriangles);
+      expect(elapsedMs).toBeLessThan(10_000);
+    } finally {
+      graph.dispose();
+    }
+  }, 20_000);
+
   it('starts with the proxy hidden so the first frame is not drawn twice', () => {
     // addLevel does not touch visibility and meshes default to visible, so
     // without an explicit hide both levels would render on top of each other
@@ -1126,8 +1151,8 @@ function findLods(root: THREE.Object3D): THREE.LOD[] {
  * A scene above both LOD thresholds: one dense object worth simplifying plus a
  * small one that must be left alone.
  */
-function heavyScene(): SceneMesh {
-  const dense = denseGrid(420);
+function heavyScene(denseSteps = 420): SceneMesh {
+  const dense = denseGrid(denseSteps);
   // Deliberately compressible and deliberately under the object floor: 7,200
   // triangles over a 61x61 grid welds heavily at 48 cells, so `simplifyMesh`
   // would happily return a cheaper mesh for it. A one-triangle control made the
