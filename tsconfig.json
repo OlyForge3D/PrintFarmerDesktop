@@ -29,6 +29,7 @@
     "tests/**/*.ts",
     "tests/**/*.tsx",
     "e2e/**/*.ts",
+    "scripts/**/*.d.mts",
     "forge.config.ts",
     "playwright.config.ts",
     "vite.main.config.ts",

@@ -57,9 +57,6 @@ const config: ForgeConfig = {
     },
   },
   makers: [
-    // Windows installer (unsigned by default — no certificateFile set). Produces
-    // a single `*.Setup.exe`. Unsigned installers trigger a SmartScreen
-    // "unknown publisher" prompt that users clear via "More info → Run anyway".
     new MakerSquirrel({
       setupIcon: windowsIconPath,
       iconUrl:
@@ -68,8 +65,6 @@ const config: ForgeConfig = {
     // Portable, no-install Windows build for users who would rather unzip a
     // folder than run the unsigned installer.
     new MakerZIP({}, ['win32', 'darwin']),
-    // macOS disk image (unsigned / un-notarized — Gatekeeper requires the user
-    // to right-click → Open, or clear the quarantine xattr, on first launch).
     new MakerDMG({ icon: `${iconBasePath}.icns` }, ['darwin']),
   ],
   plugins: [

@@ -180,38 +180,28 @@ cargo test --features lib3mf
   builds still need Visual Studio Build Tools with the Desktop C++ workload (or an
   equivalent native toolchain) to prove the full native rebuild path.
 
-## Releases (unsigned)
+## Signed releases
 
-Builds are currently **unsigned**: there is no Windows code-signing certificate
-and no Apple notarization credential configured, so `forge.config.ts` sets no
-`certificateFile` or `osxNotarize`. Unsigned artifacts are fully functional; the
-only difference is a first-launch OS trust prompt for end users.
+Official `v*` tags build signed Windows artifacts and a signed, notarized
+universal macOS app. The universal Rust sidecar is signed before the outer
+Electron app. After both platform jobs verify their artifacts, CI publishes a
+detached Ed25519-signed `latest.json` update manifest.
 
-Build the installers locally with `npm run make`, which produces (per platform):
+Build installers locally with `npm run make`, which remains unsigned unless
+`PRINTFARMER_REQUIRE_SIGNING=1` and every platform credential is present:
 
 ```
-Windows   out/make/squirrel.windows/x64/*.Setup.exe   unsigned installer
-Windows   out/make/zip/win32/x64/*.zip                portable (unzip & run)
-macOS     out/make/*.dmg  and  out/make/zip/darwin/*   unsigned disk image / zip
+Windows   out/make/squirrel.windows/x64/*Setup.exe
+Windows   out/make/zip/win32/x64/*.zip
+macOS     out/make/*.dmg  and  out/make/zip/darwin/universal/*.zip
 ```
 
-CI builds unsigned artifacts on every push (the "Package smoke" jobs), and
-tagging a release (`v*`) runs `.github/workflows/release.yml`, which builds on
-Windows + macOS and attaches the artifacts to a GitHub Release.
-
-**End-user trust prompts (expected for unsigned builds):**
-
-- **Windows / SmartScreen** — "Windows protected your PC / unknown publisher".
-  Users click **More info → Run anyway**. The portable ZIP avoids the installer
-  but the bundled `PrintFarmer Desktop.exe` still shows this on first run.
-- **macOS / Gatekeeper** — "cannot be opened because the developer cannot be
-  verified". Users **right-click → Open** once (or run
-  `xattr -dr com.apple.quarantine "/Applications/PrintFarmer Desktop.app"`).
-
-To ship without any prompt later, add a Windows code-signing certificate
-(`MakerSquirrel({ certificateFile, certificatePassword })`) and Apple
-notarization (`packagerConfig.osxSign` + `osxNotarize`); no other changes are
-required.
+Unsigned local and package-smoke builds remain fully functional but do not check
+for in-app updates because they contain no production update public key. Tagged
+release builds verify signed metadata, reject rollback, and hash the downloaded
+installer or universal macOS ZIP before staging it. See
+[Signed releases](./docs/RELEASES.md) for credential names, release ordering,
+failure behavior, and interrupted-update recovery.
 
 ## License and source
 

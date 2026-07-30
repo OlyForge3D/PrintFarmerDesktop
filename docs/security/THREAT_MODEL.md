@@ -23,14 +23,12 @@ describes how someone would try to break it.
 - Network interaction with a PrintFarmer server: profile probing, JWT exchange, model upload,
   library sync.
 - The build and dependency supply chain that produces a release artifact.
+- The signed release/update channel: Authenticode, Apple code signing and
+  notarization, detached update metadata signatures, artifact hashes, recovery,
+  and rollback prevention.
 
 **Out of scope, with reasons**
 
-- **Code signing, notarization, and update integrity.** `.github/workflows/release.yml` is
-  titled "Release (unsigned)"; it has no signing or notarization step, and no updater
-  dependency exists in `package.json`. There is no update channel to attack and no signature
-  to verify. Tracked by #22. Until it lands, an attacker who can substitute the downloaded
-  installer wins outright, and no control in this repository changes that.
 - **The PrintFarmer server itself** — a separate service and repository. This model treats it
   as a _semi-trusted remote peer_: authenticated, but capable of returning hostile responses
   (section 7).
@@ -927,7 +925,7 @@ authorization, artifact-owner threading, `security.ts` navigation/CSP/permission
 fail when its control is removed. The mutation table is in the slice-2 PR.
 | T2.5 | Whether `retarget` should adopt `ParseGuard` — a design change, not a test | not in #21 |
 | T2.6 | Catalog concurrency invariant unstated and untested | not in #21 |
-| Out of scope | No signing, notarization, or update integrity | #22 |
+| Release channel | Signing/notarization and signed update metadata | covered by #22 |
 
 Three rows change PR D's shape rather than merely adding to it. **T2.5 is the big one**: a
 harness scoped from T2.2 alone would fuzz the catalog parsers and never reach an
@@ -956,8 +954,8 @@ changes:
 - Fuse configuration in `forge.config.ts:92-100`.
 - The sidecar transport — in particular anything that gives it a socket or a listening port,
   which invalidates T2.3.
-- The introduction of code signing, notarization, or an update channel (#22), which invalidates
-  section 1's out-of-scope reasoning entirely.
+- Any change to signing identities, notarization, update keys, metadata schema,
+  artifact verification, or updater recovery behavior.
 - Any new dependency reached over `unsafe`, or any new git or path dependency source.
 - **A new parser, or any new ingestion entry point** — in particular any new `ZipArchive::new`
   outside `threemf::open_package`, or any new `parse_bytes`-shaped function. This trigger is
