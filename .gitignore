@@ -42,6 +42,9 @@ test-results/
 .pf-e2e-*/
 .pf-cal-e2e-*/
 
+# Goal workflow artifacts
+.goals/
+
 # Secrets, signing material, local config (NEVER commit)
 *.pem
 *.pfx
