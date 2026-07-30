@@ -31,6 +31,8 @@
 //!   rules in one sidecar request.
 //! - `listModels` — params ignored; returns all catalogued logical models as
 //!   [`crate::rpc::LogicalModelDto`]s.
+//! - `resetCatalog` — params ignored; clears indexed models and source roots
+//!   while preserving source files, organization definitions, and server state.
 //! - `listFavorites`/`addFavorite`/`removeFavorite` — persist local-only
 //!   favorite hashes in the catalog without exposing any filesystem or sync
 //!   primitive to the renderer.
@@ -882,6 +884,14 @@ fn dispatch(
             let models: Vec<LogicalModelDto> =
                 store.models().iter().map(LogicalModelDto::from).collect();
             serde_json::to_value(models).map_err(|e| format!("failed to serialize models: {e}"))
+        }
+        "resetCatalog" => {
+            let summary = store.reset_catalog();
+            Ok(serde_json::json!({
+                "reset": true,
+                "modelsRemoved": summary.models_removed,
+                "sourceRootsRemoved": summary.source_roots_removed,
+            }))
         }
         "listFavorites" => serde_json::to_value(store.favorite_hashes())
             .map_err(|e| format!("failed to serialize favorites: {e}")),
@@ -1746,7 +1756,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_root_then_list_models_over_the_wire() {
+    fn scan_list_and_reset_catalog_over_the_wire() {
         // A folder with one binary STL should reconcile into one logical model
         // that a subsequent listModels call returns — proving shared state.
         let mut bytes = vec![0u8; 80];
@@ -1785,6 +1795,20 @@ mod tests {
         assert_eq!(models[0]["format"], "stl");
         assert_eq!(models[0]["locations"].as_array().unwrap().len(), 1);
         assert_eq!(models[0]["locations"][0]["available"], true);
+
+        let reset_req = serde_json::json!({ "id": 3, "method": "resetCatalog" });
+        let out = handle_line(&mut store, &reset_req.to_string()).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], true, "reset response was {v}");
+        assert_eq!(v["result"]["reset"], true);
+        assert_eq!(v["result"]["modelsRemoved"], 1);
+        assert_eq!(v["result"]["sourceRootsRemoved"], 1);
+
+        let list_req = serde_json::json!({ "id": 4, "method": "listModels" });
+        let out = handle_line(&mut store, &list_req.to_string()).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert!(v["result"].as_array().unwrap().is_empty());
+        assert!(dir.path().join("part.stl").exists());
     }
 
     #[test]

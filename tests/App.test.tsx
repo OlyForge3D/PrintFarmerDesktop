@@ -450,8 +450,13 @@ describe('<App />', () => {
 
     render(<App />);
     await screen.findByRole('button', { name: 'Select widget.stl' });
+    fireEvent.click(screen.getByRole('button', { name: 'Manage sources' }));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Remove models' }));
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Hide models from the catalog',
+      }),
+    );
 
     await waitFor(() =>
       expect(
@@ -527,6 +532,9 @@ describe('<App />', () => {
     });
 
     render(<App />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Manage sources' }),
+    );
     const reconnect = await screen.findByRole('button', { name: 'Reconnect' });
     fireEvent.click(reconnect);
 
@@ -599,6 +607,9 @@ describe('<App />', () => {
     });
 
     render(<App />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Manage sources' }),
+    );
     const rescan = await screen.findByRole('button', { name: 'Scan again' });
 
     fireEvent.click(rescan);
@@ -620,7 +631,9 @@ describe('<App />', () => {
     expect(
       screen.queryByRole('progressbar', { name: 'Current scan progress' }),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Add folder' })).toBeEnabled();
+    expect(
+      screen.getByRole('button', { name: 'Add source folder' }),
+    ).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Scan again' })).toBeEnabled();
     expect(listModels).toHaveBeenCalledTimes(2);
   });

@@ -250,6 +250,12 @@ export function registerIpcHandlers(
     if (approvedPickerFiles.has(canonicalPath)) return canonicalPath;
     return (await approvals.authorizeFile(requestedPath)).canonicalPath;
   };
+  const resetApprovedRootsAndArtifacts = async (): Promise<void> => {
+    await approvals.reset();
+    approvedPickerFiles.clear();
+    await sceneCache.purge();
+    await retargetArtifacts.disposeArtifacts();
+  };
   const uploads =
     uploadJobService ??
     createUploadJobService(
@@ -650,6 +656,13 @@ export function registerIpcHandlers(
       })),
     );
     return ipcSchemas[IpcChannel.ListModels].response.parse(filtered);
+  });
+
+  ipcMain.handle(IpcChannel.ResetCatalog, async () => {
+    const raw = await sidecar.resetCatalog();
+    const response = ipcSchemas[IpcChannel.ResetCatalog].response.parse(raw);
+    await resetApprovedRootsAndArtifacts();
+    return response;
   });
 
   ipcMain.handle(IpcChannel.ListFavorites, async () => {
@@ -1064,18 +1077,15 @@ export function registerIpcHandlers(
   });
 
   ipcMain.handle(IpcChannel.ResetApprovedRoots, async () => {
-    await approvals.reset();
-    approvedPickerFiles.clear();
-    // Both grant sources are cleared above — the persisted root approvals and
-    // the in-memory picker allowlist — and each is pinned by a test that dies
-    // when that one line is dropped and survives when the other is.
+    // The shared reset clears both grant sources — persisted root approvals and
+    // the in-memory picker allowlist — and each is pinned by an independent
+    // authorization test.
     //
     // Scenes derived under those grants are artifacts of them, so they are
     // shredded here for symmetry. Awaited rather than fired off, and unguarded
     // rather than best-effort: a reset that reports success while derived
     // scenes remain on disk is reporting something that did not happen.
-    await sceneCache.purge();
-    await retargetArtifacts.disposeArtifacts();
+    await resetApprovedRootsAndArtifacts();
     return ipcSchemas[IpcChannel.ResetApprovedRoots].response.parse({
       reset: true,
     });

@@ -81,6 +81,14 @@ pub struct LocationUpsert {
     pub fingerprint: FileFingerprint,
 }
 
+/// Result of clearing local indexed content. Organization definitions and
+/// server-backed state are deliberately outside this operation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CatalogResetSummary {
+    pub models_removed: usize,
+    pub source_roots_removed: usize,
+}
+
 /// Storage abstraction for the catalog. Implementations must keep logical model
 /// identity and physical locations consistent: a location belongs to exactly
 /// one model at a time (its current content hash).
@@ -165,6 +173,10 @@ pub trait CatalogStore {
 
     /// All logical models known to the catalog.
     fn models(&self) -> Vec<LogicalModel>;
+
+    /// Clear local models, locations, roots, favorites, and memberships while
+    /// preserving source files, tags, collections, and server-backed state.
+    fn reset_catalog(&mut self) -> CatalogResetSummary;
 
     /// Logical models with more than one physical location.
     fn duplicate_groups(&self) -> Vec<LogicalModel> {
@@ -1295,6 +1307,25 @@ impl CatalogStore for InMemoryCatalog {
             .collect();
         out.sort_by(|a, b| a.hash.cmp(&b.hash));
         out
+    }
+
+    fn reset_catalog(&mut self) -> CatalogResetSummary {
+        let source_roots_removed = self
+            .index
+            .keys()
+            .map(|(root_id, _)| root_id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        let summary = CatalogResetSummary {
+            models_removed: self.models.len(),
+            source_roots_removed,
+        };
+        self.models.clear();
+        self.index.clear();
+        self.favorites.clear();
+        self.model_tags.clear();
+        self.collection_members.clear();
+        summary
     }
 
     fn favorite_hashes(&self) -> Vec<ContentHash> {
@@ -3532,6 +3563,36 @@ mod tests {
         reconcile_root(&mut store, "r", &scan(root));
         let hash = store.models()[0].hash.clone();
         (store, hash)
+    }
+
+    #[test]
+    fn reset_catalog_clears_indexed_content_but_preserves_organization_definitions() {
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("m.stl");
+        write(&model_path, b"bytes");
+        let mut store = InMemoryCatalog::new();
+        reconcile_root(&mut store, "r", &scan(dir.path()));
+        let hash = store.models()[0].hash.clone();
+        store.add_favorite(&hash);
+        store.add_model_tag(&hash, "Keep tag").unwrap();
+        let collection = store.create_collection("Keep collection").unwrap();
+        store.add_model_to_collection(&collection.id, &hash);
+
+        let summary = store.reset_catalog();
+
+        assert_eq!(
+            summary,
+            CatalogResetSummary {
+                models_removed: 1,
+                source_roots_removed: 1,
+            }
+        );
+        assert!(store.models().is_empty());
+        assert!(store.favorite_hashes().is_empty());
+        assert_eq!(store.all_tags()[0].name, "Keep tag");
+        assert_eq!(store.all_collections()[0].name, "Keep collection");
+        assert_eq!(store.all_collections()[0].member_count, 0);
+        assert!(model_path.exists(), "reset must not delete source files");
     }
 
     #[test]

@@ -65,6 +65,7 @@ export const IpcChannel = {
   PreviewImport: 'catalog:previewImport',
   ImportRoot: 'catalog:importRoot',
   ListModels: 'catalog:listModels',
+  ResetCatalog: 'catalog:reset',
   ListFavorites: 'catalog:listFavorites',
   AddFavorite: 'catalog:addFavorite',
   RemoveFavorite: 'catalog:removeFavorite',
@@ -509,6 +510,18 @@ export type ListModelsRequest = z.infer<typeof ListModelsRequest>;
 
 export const ListModelsResponse = z.array(LogicalModel);
 export type ListModelsResponse = z.infer<typeof ListModelsResponse>;
+
+export const ResetCatalogRequest = z.void();
+export type ResetCatalogRequest = z.infer<typeof ResetCatalogRequest>;
+
+export const ResetCatalogResponse = z
+  .object({
+    reset: z.literal(true),
+    modelsRemoved: z.number().int().nonnegative(),
+    sourceRootsRemoved: z.number().int().nonnegative(),
+  })
+  .strict();
+export type ResetCatalogResponse = z.infer<typeof ResetCatalogResponse>;
 
 // --- catalog favorites ----------------------------------------------------
 
@@ -4955,6 +4968,10 @@ export const ipcSchemas = {
     request: ListModelsRequest,
     response: ListModelsResponse,
   },
+  [IpcChannel.ResetCatalog]: {
+    request: ResetCatalogRequest,
+    response: ResetCatalogResponse,
+  },
   [IpcChannel.ListFavorites]: {
     request: ListFavoritesRequest,
     response: ListFavoritesResponse,
@@ -5261,6 +5278,7 @@ export interface PrintFarmerApi {
   previewImport(request: ImportPreviewRequest): Promise<ImportPreviewResponse>;
   importRoot(request: ImportRootRequest): Promise<ImportRootResponse>;
   listModels(): Promise<ListModelsResponse>;
+  resetCatalog(): Promise<ResetCatalogResponse>;
   listFavorites(): Promise<ListFavoritesResponse>;
   addFavorite(request: FavoriteModelRequest): Promise<FavoriteModelResponse>;
   removeFavorite(request: FavoriteModelRequest): Promise<FavoriteModelResponse>;

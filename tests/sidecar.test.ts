@@ -791,6 +791,33 @@ describe('SidecarClient', () => {
     expect(request.method).toBe('listModels');
   });
 
+  it('sends resetCatalog as a mutation and returns the removal summary', async () => {
+    const { channel, sent } = makeFakeChannel((req, emit) => {
+      emit(
+        JSON.stringify({
+          id: req.id,
+          ok: true,
+          result: {
+            reset: true,
+            modelsRemoved: 12,
+            sourceRootsRemoved: 2,
+          },
+        }),
+      );
+    });
+    const client = new SidecarClient(() => channel);
+
+    await expect(client.resetCatalog()).resolves.toEqual({
+      reset: true,
+      modelsRemoved: 12,
+      sourceRootsRemoved: 2,
+    });
+    expect(JSON.parse(sent[0] ?? '{}')).toMatchObject({
+      method: 'resetCatalog',
+      params: {},
+    });
+  });
+
   it('sends favorite catalog requests and resolves the updated hashes', async () => {
     const { channel, sent } = makeFakeChannel((req, emit) => {
       emit(

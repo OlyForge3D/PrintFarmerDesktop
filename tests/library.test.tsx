@@ -58,6 +58,7 @@ import {
   preferredPath,
   rootIdForPath,
 } from '../src/renderer/library/model.js';
+import { saveStoredSourceRoots } from '../src/renderer/library/sourceRoots.js';
 
 function installApi(api: Partial<PrintFarmerApi>): void {
   Object.defineProperty(window, 'printFarmer', {
@@ -145,6 +146,71 @@ describe('useLibrary', () => {
     await waitFor(() => expect(result.current.models).toHaveLength(1));
     expect(listModels).toHaveBeenCalledTimes(1);
     expect(result.current.error).toBeNull();
+  });
+
+  it('clears renderer catalog state only after a successful backend reset', async () => {
+    saveStoredSourceRoots([
+      {
+        rootId: 'root-1',
+        path: 'C:\\models',
+        approvalId: '11111111-1111-4111-8111-111111111111',
+      },
+    ]);
+    const resetCatalog = vi.fn().mockResolvedValue({
+      reset: true,
+      modelsRemoved: 1,
+      sourceRootsRemoved: 1,
+    });
+    installApi({
+      listModels: vi.fn().mockResolvedValue([model()]),
+      resetCatalog,
+    });
+    const { result } = renderHook(() => useLibrary());
+    await waitFor(() => expect(result.current.models).toHaveLength(1));
+    expect(result.current.sourceRoots).toHaveLength(1);
+
+    let summary;
+    await act(async () => {
+      summary = await result.current.resetCatalog();
+    });
+
+    expect(summary).toEqual({
+      reset: true,
+      modelsRemoved: 1,
+      sourceRootsRemoved: 1,
+    });
+    expect(resetCatalog).toHaveBeenCalledOnce();
+    expect(result.current.models).toEqual([]);
+    expect(result.current.sourceRoots).toEqual([]);
+    expect(result.current.lastReport).toBeNull();
+    expect(result.current.status).toBe('idle');
+    await waitFor(() =>
+      expect(
+        JSON.parse(
+          window.localStorage.getItem('printfarmer.library.sourceRoots.v1') ??
+            '{}',
+        ),
+      ).toMatchObject({ roots: [] }),
+    );
+  });
+
+  it('keeps the last known catalog visible when reset fails', async () => {
+    saveStoredSourceRoots([{ rootId: 'root-1', path: 'C:\\models' }]);
+    installApi({
+      listModels: vi.fn().mockResolvedValue([model()]),
+      resetCatalog: vi.fn().mockRejectedValue(new Error('database locked')),
+    });
+    const { result } = renderHook(() => useLibrary());
+    await waitFor(() => expect(result.current.models).toHaveLength(1));
+
+    await act(async () => {
+      await result.current.resetCatalog();
+    });
+
+    expect(result.current.models).toHaveLength(1);
+    expect(result.current.sourceRoots).toHaveLength(1);
+    expect(result.current.error).toBe('Catalog reset failed: database locked');
+    expect(result.current.status).toBe('idle');
   });
 
   it('previews a chosen folder, then imports its confirmed rules', async () => {

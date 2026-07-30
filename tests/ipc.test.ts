@@ -108,6 +108,35 @@ describe('ipc contract', () => {
     expect(value.nonce).toBe('abc123');
   });
 
+  it('strictly validates catalog reset summaries', () => {
+    expect(
+      ipcSchemas[IpcChannel.ResetCatalog].response.parse({
+        reset: true,
+        modelsRemoved: 12,
+        sourceRootsRemoved: 2,
+      }),
+    ).toEqual({
+      reset: true,
+      modelsRemoved: 12,
+      sourceRootsRemoved: 2,
+    });
+    expect(() =>
+      ipcSchemas[IpcChannel.ResetCatalog].response.parse({
+        reset: true,
+        modelsRemoved: -1,
+        sourceRootsRemoved: 0,
+      }),
+    ).toThrow();
+    expect(() =>
+      ipcSchemas[IpcChannel.ResetCatalog].response.parse({
+        reset: true,
+        modelsRemoved: 0,
+        sourceRootsRemoved: 0,
+        filesDeleted: 1,
+      }),
+    ).toThrow();
+  });
+
   it('rejects a sidecar ping request with an empty nonce', () => {
     expect(() =>
       ipcSchemas[IpcChannel.SidecarPing].request.parse({ nonce: '' }),

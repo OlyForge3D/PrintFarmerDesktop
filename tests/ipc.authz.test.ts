@@ -188,6 +188,11 @@ function harness(options: HarnessOptions = {}): Harness {
       pngBase64: 'AA==',
     }),
     scanRoot: record('sidecar', 'scanRoot'),
+    resetCatalog: record('sidecar', 'resetCatalog', {
+      reset: true,
+      modelsRemoved: 3,
+      sourceRootsRemoved: 1,
+    }),
     handshake: () => Promise.resolve({ sidecarVersion: '0' }),
     dispose: () => undefined,
   };
@@ -658,6 +663,31 @@ describe('IPC handler layer: renderer-supplied filesystem paths', () => {
       Promise.resolve(
         h.handlers.get(IpcChannel.ResetApprovedRoots)!(senderEvent(1), {}),
       );
+
+    it('catalog reset clears the sidecar index and revokes local access together', async () => {
+      const response = await Promise.resolve(
+        h.handlers.get(IpcChannel.ResetCatalog)!(senderEvent(1), undefined),
+      );
+
+      expect(response).toEqual({
+        reset: true,
+        modelsRemoved: 3,
+        sourceRootsRemoved: 1,
+      });
+      expect(h.downstream.map((call) => call.method)).toEqual([
+        'resetCatalog',
+        'purge',
+      ]);
+      h.downstream.length = 0;
+      await expect(
+        Promise.resolve(
+          h.handlers.get(IpcChannel.LoadScene)!(senderEvent(1), {
+            path: RENDERER_PATH,
+          }),
+        ),
+      ).rejects.toThrow(DENIED);
+      expect(h.downstream).toEqual([]);
+    });
 
     it('refuses a previously picked file afterwards and reaches nothing downstream', async () => {
       electronState.pickerResult = {

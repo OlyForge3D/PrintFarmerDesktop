@@ -462,6 +462,18 @@ export class SidecarClient {
     return this.request('listModels', {});
   }
 
+  /** Clear indexed models and source roots while preserving source files. */
+  async resetCatalog(): Promise<unknown> {
+    return this.request(
+      'resetCatalog',
+      {},
+      {
+        timeoutMs: this.mutationTimeoutMs,
+        terminateOnTimeout: true,
+      },
+    );
+  }
+
   /** Persist a successful local-to-remote model upload mapping. */
   async linkRemoteModel(link: {
     profileId: string;
