@@ -66,11 +66,17 @@ jobs:
       - name: Clippy (sqlite feature)
         run: cargo clippy --locked --all-targets --features sqlite -- -D warnings
 
+      - name: Clippy (step feature)
+        run: cargo clippy --locked --all-targets --features step -- -D warnings
+
       - name: Test
         run: cargo test --locked
 
       - name: Test (sqlite feature)
         run: cargo test --locked --features sqlite
+
+      - name: Test (step feature)
+        run: cargo test --locked --features step
 
       - name: Build (lib3mf feature)
         if: runner.os == 'Windows'
