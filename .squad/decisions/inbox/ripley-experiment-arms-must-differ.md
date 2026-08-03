@@ -40,10 +40,13 @@ a bypass that does not exist would have been more damaging than missing one, as
 it sends an author rewriting a working control against evidence nobody can
 reproduce.
 
-Neither inspecting the arm under test more carefully, nor reasoning harder about
-the mechanism, surfaces any of the four. Only the comparison does, and only when
-the control is chosen so that a sound apparatus must make it come out
-differently.
+Sorted by stage rather than by severity, the same four cover construction,
+execution, and observation — the entire pipeline — and every one of them presents
+identically. That is what makes the tell worth a rule rather than a habit: it is
+stage-independent, so no amount of scrutiny aimed at the arm you care about will
+find any of them, and no reasoning about the mechanism will either. Only the
+comparison does, and only when the control is chosen so that a sound apparatus
+must make it come out differently.
 
 This is `pushExpectingSuccess` one level up. That control exists because a test
 asserting a push is refused also passes when the push silently never happened;
