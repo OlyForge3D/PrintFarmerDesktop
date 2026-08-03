@@ -8,6 +8,7 @@ import { FuseV1Options, FuseVersion } from '@electron/fuses';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { adhocSignMacApps } from './scripts/adhoc-sign-macos-app.mjs';
 
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
 const iconBasePath = path.join(repoRoot, 'assets', 'icon');
@@ -55,6 +56,12 @@ const config: ForgeConfig = {
       runBuildScript('stage-compliance.mjs', 'staging compliance resources');
       return Promise.resolve();
     },
+    postPackage: (_forgeConfig, { platform, outputPaths }) => {
+      if (platform === 'darwin' && process.platform === 'darwin') {
+        adhocSignMacApps(outputPaths);
+      }
+      return Promise.resolve();
+    },
   },
   makers: [
     new MakerSquirrel({
@@ -92,6 +99,10 @@ const config: ForgeConfig = {
     // ASAR integrity. These fuses are flipped in the final binary.
     new FusesPlugin({
       version: FuseVersion.V1,
+      // Per-architecture ad-hoc signing would leave `_CodeSignature` in the
+      // arm64 build only, so the universal stitch aborts on a file mismatch.
+      // The merged app is ad-hoc signed in `postPackage` instead.
+      resetAdHocDarwinSignature: false,
       [FuseV1Options.RunAsNode]: false,
       [FuseV1Options.EnableCookieEncryption]: true,
       [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,

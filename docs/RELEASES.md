@@ -120,7 +120,10 @@ launch clears the old artifact and journal state.
 
 `npm run package` and `npm run make` are always unsigned. This preserves local
 and package-smoke builds and prevents Forge or its hooks from becoming a
-credential-bearing signing path. Official tagged jobs invoke the dedicated
+credential-bearing signing path. The packaged macOS app is ad-hoc signed after
+packaging so Apple Silicon can execute it; the universal build cannot be ad-hoc
+signed per architecture because that leaves `_CodeSignature` in the arm64 build
+only and aborts the universal merge. Official tagged jobs invoke the dedicated
 platform signing scripts after secretless package output exists and fail closed
 if any required credential is missing.
 
