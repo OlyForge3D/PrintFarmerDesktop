@@ -81,12 +81,43 @@ for (const [id, count] of perId) {
 }
 const tailPaths = perId.get(`m${LEVELS}`) ?? 0;
 
+/**
+ * Enumerates root-to-node paths as *sequences*, independently of the row walk above —
+ * no row counter, distinctness by the path itself. This exists to settle which quantity
+ * the phrase "paths through the `m` chain alone" names, a question on which this
+ * repository has already recorded one false finding.
+ */
+function enumeratePaths({ objects, rootObjectIds }) {
+  const byId = new Map(objects.map((o) => [o.id, o]));
+  const paths = [];
+  const stack = rootObjectIds.map((id) => [id]);
+  while (stack.length > 0) {
+    const path = stack.pop();
+    paths.push(path);
+    for (const child of byId.get(path[path.length - 1])?.children ?? []) {
+      if (!path.includes(child)) stack.push([...path, child]);
+    }
+  }
+  return paths;
+}
+
+const allPaths = enumeratePaths(fixture);
+const pathsEndingAtM = allPaths.filter((p) =>
+  p[p.length - 1].startsWith('m'),
+).length;
+const toTail = allPaths.filter((p) => p[p.length - 1] === `m${LEVELS}`);
+const toTailViaS = toTail.filter((p) =>
+  p.some((n) => n.startsWith('s')),
+).length;
+
 const results = [
   ['objects in fixture', fixture.objects.length, 29],
   ['TOTAL rows emitted', total, 49150],
   ['rows for m-chain nodes', mRows, 32767],
   ['rows for s nodes', sRows, 16383],
   ['distinct paths to tail', tailPaths, 16384],
+  ['paths ending at an m node', pathsEndingAtM, 32767],
+  ['...of paths to tail, via s', toTailViaS, 16383],
 ];
 
 let ok = true;
@@ -94,7 +125,7 @@ for (const [label, actual, expected] of results) {
   const pass = actual === expected;
   if (!pass) ok = false;
   console.log(
-    `${pass ? 'ok  ' : 'FAIL'} ${label.padEnd(24)}: ${actual} (expected ${expected})`,
+    `${pass ? 'ok  ' : 'FAIL'} ${label.padEnd(26)}: ${actual} (expected ${expected})`,
   );
 }
 
@@ -107,6 +138,20 @@ console.log(
 );
 console.log(
   `${total} row total. The threat model's sentence claimed the total.`,
+);
+console.log('');
+console.log(
+  `Paths ending at an m node (${pathsEndingAtM}) equals the m-chain row count`,
+);
+console.log(
+  '(%d): under a path-local `seen` set every row IS a distinct path, so 32,767',
+  mRows,
+);
+console.log(
+  `is both. And of the ${toTail.length} paths to the tail, ${toTailViaS} traverse an s node and`,
+);
+console.log(
+  `${toTail.length - toTailViaS} stays in the m chain alone — so "alone" cannot name ${toTail.length}.`,
 );
 
 if (!ok) {

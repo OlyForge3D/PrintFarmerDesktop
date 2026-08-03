@@ -42,7 +42,9 @@ What that section requires, for any agent running the check:
   constant, the fixture a test builds — **named in the record by path and commit**, with
   every enumerated rendering conforming. **A harness is not the object; a harness is a
   fourth rendering**, and three agreeing implementations are three renderings rather than
-  corroboration. **Copying from the object is verification; copying from another rendering
+  corroboration — routes count by **class of mechanism**, not by author, so three people who
+  each rebuild the fixture and walk it have replicated one method rather than corroborated
+  it. **Copying from the object is verification; copying from another rendering
   is contagion.**
 - **A symmetric diff establishes divergence, not truth.** It cannot say which rendering
   is right, so never resolve by counting renderings: two that agree are **one** if they
@@ -60,6 +62,11 @@ What that section requires, for any agent running the check:
   mechanism attached is still a fabrication.
 - **Repair with the source's own noun.** Where the defect is a quantity attached to the
   wrong unit, restating the correction in the unit that caused the error re-seeds it.
+- **Before calling a source ambiguous, test the rival reading against the whole sentence,
+  qualifiers included.** That some other true quantity exists in the same object does not
+  convict a phrase of naming it. This rule is in the policy because this batch broke it:
+  a rival reading was reported as a defect in `.squad/decisions.md` when the phrase's next
+  word ruled it out. Retracted; see the audit trail.
 - **Rule out "different quantities" before ruling "stale."** A symmetric diff cannot tell
   those apart, and reporting the second as the first is a false finding manufactured by
   the check itself.
@@ -99,26 +106,30 @@ Governing entry, cited by heading: `.squad/decisions.md` →
 review found**. This change is the remedy that entry names, and it was authored by the
 fact-checker, so per that entry it must be reviewed by someone else.
 
-## One wording correction for Scribe, in `.squad/decisions.md` itself
+## No wording correction for Scribe. A referral was made here and is withdrawn.
 
-Not made here, because `.squad/decisions.md` is Scribe's artifact and this is a wording
-change rather than a finding.
+An earlier version of this note asked the Scribe to reword the entry recording the
+diamond-DAG decomposition, on the grounds that its phrase _"paths through the `m` chain
+alone"_ named neither 32,767 nor 16,384 cleanly. **That finding was wrong. The entry is
+correct as written and needs no change.** The retraction is recorded in full in
+`.squad/fact-checker/audit-trail.md`; in short, two measurements withdraw it:
 
-The entry recording the diamond-DAG decomposition renders the sub-quantity as
-_"paths through the `m` chain alone"_. The measurement above shows that phrase names
-**neither** figure cleanly:
+- Distinct root-to-node paths ending at an `m`-chain node = **32,767**, identical to the
+  `m`-chain row count. Not a coincidence: under a path-local `seen` set every emitted row
+  _is_ a distinct root-to-node path, which is the explosion the fixture demonstrates. So
+  `32,767` is a row count **and** a path count, and "paths" is not a wrong noun.
+- The rival reading proposed against it — the 16,384 paths to the tail — is ruled out by
+  the phrase's own next word. Of those 16,384 paths, **16,383 traverse an `s` node** and
+  exactly **one** stays in the `m` chain _alone_. The qualifier does not survive the rival
+  reading, so the rival reading belonged to the reporter and not to the source.
 
-- rows attributable to `m`-chain nodes = **32,767** (= `2^15-1`, paths summed over the chain),
-- distinct paths **through** the chain to its tail `m14` = **16,384** (= `2^14`).
+Nothing downstream moves: the threat model's sentence claimed the **total**, the total is
+49,150, and that repair stands on its own grounds.
 
-The phrase most naturally reads as the second and is used for the first. The entry's
-finding is unaffected and its decomposition is correct — the threat model claimed the
-**total**, and the total is 49,150. But the entry is cited as the authority for this
-quantity, so its phrase should pin which one it means. Suggested wording:
-_"32,767 rows are emitted for `m`-chain nodes — `2^15-1`, the paths summed over the
-chain, not the 16,384 distinct paths to its tail."_
+Left here rather than deleted because the Scribe was told once that this entry was
+defective, and a withdrawal that is only an absence is indistinguishable from forgetting.
 
-Harness output, so the correction can be checked rather than taken on trust. Rebuilds
+Harness output, so the figures can be checked rather than taken on trust. Rebuilds
 `diamondDag(14)` as `tests/viewer.partTree.test.tsx` defines it and walks it with a
 path-local `seen` set — the pre-fix behaviour the figure describes — counting each
 population separately rather than subtracting one reported figure from the other:
@@ -129,7 +140,8 @@ TOTAL rows emitted           : 49150
   rows for m-chain nodes     : 32767
   rows for s nodes           : 16383
 distinct paths to tail m14   : 16384
-m + s == total               : true
+paths ending at an m node    : 32767   <- equals the m-chain row count
+of paths to tail, via an s   : 16383   <- so only 1 stays in the chain "alone"
 ```
 
 The harness source is `scripts/measure-diamond-dag.mjs`, runnable with plain `node`, no
@@ -145,13 +157,18 @@ is the shipped pre-fix `flattenPartTree` at
 revision, so rows are visits and uncapped. That commit is on no ref; it was recovered via
 `gh pr view 68 --json commits`.
 
-**Two mechanisms reached the same finding independently.** The noun defect was found here
-by measurement — rebuilding the fixture and walking it — and reached separately in the #57
-session by reading `a32ecf9`'s wording against the measured figures, with no harness and no
-walk. Different routes, same conclusion. That convergence is worth recording alongside the
-derivation, because it is the kind the log asks for and rarely gets.
+**A convergence was claimed here and is withdrawn with the finding it supported.** This
+note previously reported that a second session had reached the same conclusion about the
+log's phrasing by a different route — reading `a32ecf9`'s wording, with no harness and no
+walk — and offered it as the kind of independent convergence the log asks for. Both halves
+fail. The conclusion was false, as the retraction above records; and that route had
+consumed this run's figures **by direct reading**, which its own author disclosed. It was a
+dependent rendering with the dependency living in prose rather than in a commit — harder to
+see, no different in kind, and it grades ⚠️ by the same rule as any other dependent pair.
+**A well-argued report is a rendering.** Agreement between two accounts of a measurement is
+not agreement between two measurements.
 
-Recorded rather than quietly fixed: the same imprecision was present in
-`.squad/skills/test-discipline/SKILL.md` and in the fact-checker's own first repair, and
-both are corrected in this change. An authority whose phrasing is imprecise is still the
-authority; it just needs to say which quantity it names.
+Recorded rather than quietly fixed: the imprecision the earlier version reported in
+`.squad/skills/test-discipline/SKILL.md` and in the fact-checker's own first repair was
+real _as ambiguity_, and both now name which quantity they mean. That is a disambiguation
+and not a repair of an error; neither file was previously wrong.
