@@ -359,6 +359,79 @@ function configure(cwd: string) {
   git(['config', 'commit.gpgsign', 'false'], cwd);
 }
 
+describe('a solo rollback is not reported as a second writer', () => {
+  // B2. The bug lived entirely in `gatherFacts`, which the unit tests bypass by
+  // supplying `facts` directly — so this can only be caught through the real
+  // hook. `pushedSessions` came from `local ^live`, which is empty whenever the
+  // local tip is an ancestor of the live tip, and every commit being discarded
+  // was then classified as another session's work.
+  let root: string;
+  let remote: string;
+  let work: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-solo-'));
+    remote = path.join(root, 'remote.git');
+    work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, work], root);
+    configure(work);
+    git(['checkout', '-b', 'feature'], work);
+    for (const name of ['first', 'second', 'third']) {
+      commit(work, name, 'session-solo');
+    }
+    git(['push', '--no-verify', '-u', 'origin', 'feature'], work);
+    git(['reset', '--hard', 'HEAD~1'], work);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('still refuses, but as an unacknowledged discard rather than a foreign session', () => {
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force-with-lease', 'origin', 'feature'], work);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    // Fail-closed is preserved — the push is destructive and is refused. What
+    // changes is that the refusal is true.
+    expect(stderr).toContain('push-guard.unacknowledged-discard');
+    expect(stderr).not.toContain('push-guard.foreign-session');
+    expect(stderr).not.toContain('another session');
+    // The specific harm: it must not instruct a lone pusher to acknowledge
+    // themselves as a second writer. That is the habit that disarms the real
+    // refusal, taught on a push where no second writer existed.
+    expect(stderr).not.toContain(ACK_FOREIGN_ENV);
+    // Not asserted: that the session id is absent entirely. The refusal does
+    // annotate the discarded commit with `[session session-solo]`, which is
+    // true and useful. The defect was the *claim* that it belonged to someone
+    // else, not the mention.
+  });
+
+  it('accepts the rollback with the tip acknowledgement alone, no foreign override', () => {
+    const live = git(['ls-remote', remote, 'refs/heads/feature'], work).split(
+      '\t',
+    )[0] as string;
+
+    git(['push', '--force-with-lease', 'origin', 'feature'], work, {
+      [ACK_ENV]: live,
+    });
+
+    const tip = git(['ls-remote', remote, 'refs/heads/feature'], work).split(
+      '\t',
+    )[0];
+    expect(tip).toBe(git(['rev-parse', 'HEAD'], work));
+  });
+});
+
 describe('a second session on one branch cannot be force-pushed over', () => {
   let root: string;
   let remote: string;

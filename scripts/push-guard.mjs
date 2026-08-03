@@ -345,9 +345,21 @@ export function gatherFacts(update, remote, env = process.env) {
     if (!facts.liveTipPresent) return facts;
     if (!isAbsent(update.localSha)) {
       facts.discarded = readCommits([liveRemoteSha, `^${update.localSha}`]);
-      facts.pushedSessions = [
-        ...sessionsOf(readCommits([update.localSha, `^${liveRemoteSha}`])),
-      ];
+      // Everything reachable from the local tip, NOT `local ^live`. When the
+      // local tip is an ancestor of the live tip — an ordinary solo rollback —
+      // that range is empty, so every discarded commit was classified foreign
+      // INCLUDING THE PUSHER'S OWN: the guard named your own session as
+      // "another session" and told you to acknowledge yourself as a second
+      // writer. That trains the override habit on pushes where no second
+      // writer ever existed, which disarms the refusal for the case it exists
+      // to catch.
+      //
+      // Cost was measured, not feared: the full walk is 32-56 ms over this
+      // repo's 176 commits against the 515 ms `ls-remote` already paid on
+      // every push. Revisit if history grows enough to invert that ratio. A
+      // `--grep` prefilter was rejected: `--grep` matches substrings, so one
+      // session id would match any id containing it.
+      facts.pushedSessions = [...sessionsOf(readCommits([update.localSha]))];
     } else {
       facts.discarded = readCommits([liveRemoteSha, '--max-count=20']);
     }
