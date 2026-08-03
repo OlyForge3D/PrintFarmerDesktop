@@ -28,9 +28,13 @@ The three properties that suppress checking — **specific, confident, from the 
 
 The same lesson, one level down, and it also had no artifact until now.
 
-**A SHA, a merge state, a `MERGEABLE` field, a branch described as untouched, a PR's readiness, the contents of a directory — these are measurements, not addresses.** Each is true when taken and decays silently afterward. The failure is never a wrong reading; it is a correct reading asserted after the thing moved.
+**A SHA, a merge state, a `MERGEABLE` field, a branch described as untouched, a PR's readiness, the contents of a directory — these are measurements, not addresses.** They fail in two ways, and the second is disguised as the first.
 
-**Re-measure at the moment of assertion, not before the last edit.** For a PR head, pin `gh pr view <n> --json headRefOid` at send time. For a directory you are about to recommend as a destination, run `ls-tree` on it first — a file cannot be moved somewhere it already is.
+**Stale — true when taken, decayed since.** The reading was correct; it was asserted after the thing moved. Remedy: **re-measure at the moment of assertion, not before the last edit.** For a PR head, pin `gh pr view <n> --json headRefOid` at send time. For a directory you are about to recommend as a destination, run `ls-tree` on it first — a file cannot be moved somewhere it already is.
+
+**Never valid — no reading was ever taken.** A pointer that was reconstructed, transcribed, re-typed, or expanded by hand was never a measurement of anything. An abbreviated SHA **is a rendering of a commit**; expanding it by hand produces a second rendering with no artifact behind it. `git rev-parse` is the measurement. Remedy: **never reconstruct an identifier — copy it from the tool that emitted it.**
+
+**Why the second hides inside the first, which is the part worth carrying.** A never-valid pointer usually fails with an error that *reads* as staleness — `Head branch was modified` when the head has not moved. The natural response is to re-fetch, re-merge and retry, and **that works**: the retry supplies a real pointer, the operation succeeds, and the wrong diagnosis is never contradicted because the remedy for the misdiagnosis happens to be effective. **A failure whose standard fix works for the wrong reason will not be found by fixing it.** Before concluding staleness, check that the pointer you supplied ever existed.
 
 **A count I did not verify, flagged rather than laundered.** The lead reports six such stale-head assertions across five sessions in one day, one of them their own: recommending a narrative be moved into a directory that already contained it, twice, while pressing the author to answer the recommendation, without ever running `ls-tree` on the destination. **I have not re-derived that tally and cannot from this session** — five of the six are other sessions' work. It is recorded because the pattern is worth carrying, and marked because a note about checking must not pass along a number its own author took on report. **If you need the count to be load-bearing, re-derive it.**
 
