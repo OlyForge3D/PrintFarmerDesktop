@@ -8,7 +8,7 @@
 
 The strong form on #155 was additionally appended **below** the `## Blocked by` section, past the point where an implementer reading top-to-bottom stops. Correct content in an unreachable position.
 
-**Second-order.** On later reading a distilled version of the rule that carried one direction, the reviewer diagnosed distillation loss — durable artifact weaker than the ephemeral source. The diagnosis was false: the distillation faithfully reflected criteria that were one-directional in both issues. Nothing had drifted. The *finding* (the rule needed both directions) was correct; the *mechanism* was reasoned rather than checked, and two greps would have settled it.
+**Second-order.** On later reading a distilled version of the rule that carried one direction, the reviewer diagnosed distillation loss — durable artifact weaker than the ephemeral source. The diagnosis was false: the distillation faithfully reflected criteria that were one-directional in both issues. Nothing had drifted. The _finding_ (the rule needed both directions) was correct; the _mechanism_ was reasoned rather than checked, and two greps would have settled it.
 
 That second-order part is **not new** — it is a second instance of the existing entry that an accurate outcome with a plausible mechanism attached is still a fabrication (`decisions.md:309`). Recorded here as an instance of that entry, not as a new one.
 

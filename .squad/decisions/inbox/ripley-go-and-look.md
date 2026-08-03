@@ -2,19 +2,19 @@
 
 **By:** Ripley
 
-**Read this before the four mechanism notes filed alongside it.** They tell you *what* to check. This one tells you *why you will not*.
+**Read this before the four mechanism notes filed alongside it.** They tell you _what_ to check. This one tells you _why you will not_.
 
 ---
 
 **Everything settled on 2026-08-03 was settled by an artifact that was already in the repository.** Every one of these was available, unchanged, before the wrong claim was published as easily as after:
 
-| Artifact | What it settled |
-|---|---|
-| `a32ecf9` | Contained no arithmetic, refuting an account of what its author had derived |
-| `0d1215f` | Stated a sum as the *output* of a measurement, not as its method |
-| `tests/viewer.partTree.test.tsx:678` — `diamondDag` | The graph, from which every disputed figure follows |
-| `tests/viewer.partTree.test.tsx:792` | *"Was 32,767+ rows when the cycle guard was path-local"* |
-| `741459de` vs `1c80bdb381` | `nextSeen` per branch and no row cap pre-fix; four cap occurrences post-fix |
+| Artifact                                            | What it settled                                                             |
+| --------------------------------------------------- | --------------------------------------------------------------------------- |
+| `a32ecf9`                                           | Contained no arithmetic, refuting an account of what its author had derived |
+| `0d1215f`                                           | Stated a sum as the _output_ of a measurement, not as its method            |
+| `tests/viewer.partTree.test.tsx:678` — `diamondDag` | The graph, from which every disputed figure follows                         |
+| `tests/viewer.partTree.test.tsx:792`                | _"Was 32,767+ rows when the cycle guard was path-local"_                    |
+| `741459de` vs `1c80bdb381`                          | `nextSeen` per branch and no row cap pre-fix; four cap occurrences post-fix |
 
 **None of it required being right in advance. All of it required going to look, and the going-to-look was about four minutes each time.**
 
@@ -34,7 +34,7 @@ The same lesson, one level down, and it also had no artifact until now.
 
 **Never valid — no reading was ever taken.** A pointer that was reconstructed, transcribed, re-typed, or expanded by hand was never a measurement of anything. An abbreviated SHA **is a rendering of a commit**; expanding it by hand produces a second rendering with no artifact behind it. `git rev-parse` is the measurement. Remedy: **never reconstruct an identifier — copy it from the tool that emitted it.**
 
-**Why the second hides inside the first, which is the part worth carrying.** A never-valid pointer usually fails with an error that *reads* as staleness — `Head branch was modified` when the head has not moved. The natural response is to re-fetch, re-merge and retry, and **that works**: the retry supplies a real pointer, the operation succeeds, and the wrong diagnosis is never contradicted because the remedy for the misdiagnosis happens to be effective. **A failure whose standard fix works for the wrong reason will not be found by fixing it.** Before concluding staleness, check that the pointer you supplied ever existed.
+**Why the second hides inside the first, which is the part worth carrying.** A never-valid pointer usually fails with an error that _reads_ as staleness — `Head branch was modified` when the head has not moved. The natural response is to re-fetch, re-merge and retry, and **that works**: the retry supplies a real pointer, the operation succeeds, and the wrong diagnosis is never contradicted because the remedy for the misdiagnosis happens to be effective. **A failure whose standard fix works for the wrong reason will not be found by fixing it.** Before concluding staleness, check that the pointer you supplied ever existed.
 
 **A count I did not verify, flagged rather than laundered.** The lead reports six such stale-head assertions across five sessions in one day, one of them their own: recommending a narrative be moved into a directory that already contained it, twice, while pressing the author to answer the recommendation, without ever running `ls-tree` on the destination. **I have not re-derived that tally and cannot from this session** — five of the six are other sessions' work. It is recorded because the pattern is worth carrying, and marked because a note about checking must not pass along a number its own author took on report. **If you need the count to be load-bearing, re-derive it.**
 
