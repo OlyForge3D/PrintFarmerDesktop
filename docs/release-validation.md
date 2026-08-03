@@ -106,7 +106,7 @@ $env:PRINTFARMER_E2E_GPU_REQUIRE_HARDWARE = '1'
 $env:PRINTFARMER_E2E_GPU_PROFILE = 'windows-x64-nvidia'
 $env:PRINTFARMER_E2E_COMMIT_SHA = (git rev-parse HEAD)
 $env:PRINTFARMER_E2E_GPU_REPORT = (Join-Path $PWD 'gpu-qualification\webgl.json')
-npx playwright test release.gpu.spec.ts
+npx playwright test e2e/release.gpu.spec.ts
 $env:PRINTFARMER_GPU_EVIDENCE_REPORT = (Join-Path $PWD 'gpu-qualification\windows-x64-nvidia.json')
 node scripts\release-gpu-qualification.mjs capture
 ```
@@ -134,11 +134,11 @@ After packaging with the CI-only dialog automation enabled, the focused local
 commands are:
 
 ```powershell
-npx playwright test release.accessibility.spec.ts
+npx playwright test e2e/release.accessibility.spec.ts
 $env:PRINTFARMER_E2E_GPU_MODE = 'default'
-npx playwright test release.gpu.spec.ts
+npx playwright test e2e/release.gpu.spec.ts
 $env:PRINTFARMER_E2E_GPU_MODE = 'swiftshader'
-npx playwright test release.gpu.spec.ts
+npx playwright test e2e/release.gpu.spec.ts
 ```
 
 ```sh

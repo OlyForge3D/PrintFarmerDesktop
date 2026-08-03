@@ -532,6 +532,9 @@ describe('<App />', () => {
     });
 
     render(<App />);
+    expect(
+      await screen.findByText('0 available · 1 needs attention'),
+    ).toBeVisible();
     fireEvent.click(
       await screen.findByRole('button', { name: 'Manage sources' }),
     );

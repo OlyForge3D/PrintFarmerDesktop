@@ -265,7 +265,7 @@ function SourceHealth({
   const detail =
     roots.length === 0
       ? 'Add a folder to index local model files.'
-      : `${availableCount} available · ${attentionCount} need attention`;
+      : `${availableCount} available · ${attentionCount} ${attentionCount === 1 ? 'needs' : 'need'} attention`;
   return (
     <div className="sidebar-source-health" role="status" aria-live="polite">
       <span

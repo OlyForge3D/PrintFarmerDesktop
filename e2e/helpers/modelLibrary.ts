@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,9 +18,12 @@ export async function refreshCatalog(page: Page): Promise<void> {
     name: 'Catalog sources',
   });
   await sourcesDialog.getByRole('button', { name: 'Refresh catalog' }).click();
-  await sourcesDialog
-    .getByRole('button', { name: 'Close catalog sources' })
-    .click();
+  const close = sourcesDialog.getByRole('button', {
+    name: 'Close catalog sources',
+  });
+  await expect(sourcesDialog).toHaveAttribute('aria-busy', 'false');
+  await expect(close).toBeEnabled();
+  await close.click();
   await sourcesDialog.waitFor({ state: 'detached' });
 }
 
