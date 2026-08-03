@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use model_core::model::ModelFormat;
 use model_core::scene::{load_scene, SCENE_DTO_VERSION};
+use model_core::scene_status::SceneLoadStatus;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -51,6 +52,12 @@ fn step_fixture_manifest_matches_tessellated_scenes() {
         let elapsed = started.elapsed();
 
         assert_eq!(scene.source_format, ModelFormat::Step, "{}", fixture.label);
+        assert_eq!(scene.status, SceneLoadStatus::Complete, "{}", fixture.label);
+        assert!(
+            scene.status_messages.is_empty(),
+            "STEP geometry-only import should not emit status messages: {}",
+            fixture.label
+        );
         assert_eq!(
             scene.vertex_count(),
             fixture.expected.vertex_count,
@@ -69,6 +76,30 @@ fn step_fixture_manifest_matches_tessellated_scenes() {
             "{}",
             fixture.label
         );
+        for (index, part) in scene.parts.iter().enumerate() {
+            assert_eq!(
+                part.name,
+                format!("Part {}", index + 1),
+                "{}",
+                fixture.label
+            );
+            assert_eq!(part.status, SceneLoadStatus::Complete, "{}", fixture.label);
+            assert!(
+                part.status_detail.is_none(),
+                "STEP geometry-only import should not invent status details: {}",
+                fixture.label
+            );
+            assert!(
+                part.part_number.is_none(),
+                "STEP parser does not expose part numbers: {}",
+                fixture.label
+            );
+            assert!(
+                part.material_label.is_none(),
+                "STEP parser does not expose material labels: {}",
+                fixture.label
+            );
+        }
         assert_eq!(
             scene.bounds.min, fixture.expected.bounds_min,
             "{}",
