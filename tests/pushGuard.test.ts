@@ -37,6 +37,7 @@ import {
   PROTECTED_REFS,
   ZERO_SHA,
   evaluateRefUpdate,
+  isAncestor,
   parseStdin,
 } from '../scripts/push-guard.mjs';
 import { HOOKS_PATH } from '../scripts/install-git-hooks.mjs';
@@ -542,6 +543,52 @@ describe('the passing side goes through the real hook', () => {
   });
 });
 
+describe('the ancestry probe reports three outcomes, not two', () => {
+  // `git merge-base --is-ancestor` exits 0, 1, or 128, and the guard collapses
+  // 1 and 128 into one refusal. A comment saying that collapse is deliberate is
+  // a commitment; this is the control. Both non-zero cases are separately
+  // constructible, so a suite that exercises only one cannot tell you which
+  // branch it took — and a refactor that merged them would stay green.
+  let root: string;
+  let cwd: string;
+  let head: string;
+  let parent: string;
+
+  beforeAll(() => {
+    cwd = process.cwd();
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-ancestry-'));
+    git(['init', '--initial-branch=feature', root], os.tmpdir());
+    configure(root);
+    commit(root, 'base', 'session-one');
+    commit(root, 'second', 'session-one');
+    head = git(['rev-parse', 'HEAD'], root);
+    parent = git(['rev-parse', 'HEAD~1'], root);
+    // The guard runs git in its own working directory, which is what the hook
+    // gives it. Nothing is stubbed.
+    process.chdir(root);
+  });
+
+  afterAll(() => {
+    process.chdir(cwd);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('returns true for a real ancestor — exit 0, the only outcome that is evidence', () => {
+    expect(isAncestor(parent, head)).toBe(true);
+  });
+
+  it('returns false when the answer is genuinely no — exit 1', () => {
+    expect(isAncestor(head, parent)).toBe(false);
+  });
+
+  it('returns null when the object is absent — exit 128, which is not an answer', () => {
+    // Distinct from `false`. "No" and "I cannot tell" are different facts even
+    // though they take the same branch, and keeping them distinct at the source
+    // is what lets the caller's two diagnostics stay honest.
+    expect(isAncestor('b'.repeat(40), head)).toBe(null);
+  });
+});
+
 describe('the guard decides from the advertised tip when its live query fails', () => {
   // Driving the hook directly rather than through `git push`, and saying so.
   // After the push-URL fix there is no longer a *configuration* that makes the
@@ -614,7 +661,27 @@ describe('the guard decides from the advertised tip when its live query fails', 
 
     expect(result.stderr).toContain('push-guard.unverifiable-remote');
     expect(result.stderr).toContain('cannot be determined');
+    // The two refusals must stay distinguishable. Both come from a non-zero
+    // exit, and if a refactor merged them the reader would be told "not a
+    // fast-forward" about a question that was never answered.
+    expect(result.stderr).not.toContain('not a fast-forward');
     expect(result.status).not.toBe(0);
+  });
+
+  it('allows a new branch, which reaches exit 128 for the opposite reason', () => {
+    // Exit 128 has TWO meanings in this fallback and they are told apart only
+    // by the explicit zero-sha case: a new ref advertises the zero sha, which
+    // is not a valid commit name, so a fallback that refused on non-zero would
+    // refuse the most common push there is. That case is therefore not a
+    // nicety — it is what makes 128 decidable at all, and it is asserted
+    // separately from the refusal above so a refactor cannot merge them.
+    const head = git(['rev-parse', 'HEAD'], work);
+
+    const result = runHook(head, ZERO_SHA);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).not.toContain('cannot be determined');
+    expect(result.stderr).not.toContain('REFUSED');
   });
 });
 

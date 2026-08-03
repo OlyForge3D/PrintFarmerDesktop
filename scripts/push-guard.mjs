@@ -369,6 +369,17 @@ export function readLiveRemoteSha(remote, ref) {
  * Callers collapse `false` and `null` into the same refusal. That collapse is
  * deliberate rather than incidental: only exit 0 is evidence of anything, and
  * treating 128 as 1 is safe while treating it as 0 would be fail-open.
+ *
+ * A comment saying so is a commitment, not a control, so all three outcomes are
+ * separately constructed in the tests and the two refusals carry different
+ * diagnostics — `not a fast-forward` for 1, `cannot be determined` for 128 —
+ * each pinned. Collapse the tri-state here and a test fails.
+ *
+ * 128 has TWO meanings, which is the trap: a new ref advertises the zero sha,
+ * which is not a valid commit name either. `gatherFacts` answers that case
+ * before calling this, and that is not a nicety — it is what makes 128
+ * decidable at all. Remove it and every new-branch push is refused, which is
+ * also pinned.
  */
 export function isAncestor(ancestor, descendant) {
   try {
