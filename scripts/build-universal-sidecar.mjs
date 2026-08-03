@@ -72,11 +72,7 @@ function main() {
     ],
     'combining the universal sidecar',
   );
-  run(
-    'lipo',
-    verifyArchArgs(),
-    'verifying universal sidecar architectures',
-  );
+  run('lipo', verifyArchArgs(), 'verifying universal sidecar architectures');
 }
 
 if (
