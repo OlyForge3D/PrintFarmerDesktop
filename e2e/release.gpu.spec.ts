@@ -18,6 +18,12 @@ import {
   modelFixtureDirectory,
   modelFixtureName,
 } from './helpers/modelLibrary';
+import {
+  assertPhysicalGpuCapability,
+  createHardwareGpuEvidence,
+  hardwareGpuRequestFromEnvironment,
+  writeHardwareGpuEvidence,
+} from './helpers/gpuQualification';
 import { findPackagedExecutable } from './helpers/retargetFixture';
 
 const repoRoot = path.resolve(
@@ -25,8 +31,9 @@ const repoRoot = path.resolve(
   '..',
 );
 const requestedGpuMode = process.env.PRINTFARMER_E2E_GPU_MODE ?? 'default';
+const hardwareRequest = hardwareGpuRequestFromEnvironment();
 
-test(`@gpu packaged WebGL2 renders and interacts in ${requestedGpuMode} mode`, async ({
+test(`@gpu packaged WebGL2 renders and interacts in ${hardwareRequest?.profile.id ?? `${requestedGpuMode} mode`}`, async ({
   browserName,
 }, testInfo) => {
   expect(browserName).toBe('chromium');
@@ -116,7 +123,9 @@ test(`@gpu packaged WebGL2 renders and interacts in ${requestedGpuMode} mode`, a
       expect(capability.webgl2).toBe(true);
       expect(capability.vendor).not.toBe('');
       expect(capability.renderer).not.toBe('');
-      if (gpuMode === 'swiftshader') {
+      if (hardwareRequest !== null) {
+        assertPhysicalGpuCapability(hardwareRequest, capability, gpuMode);
+      } else if (gpuMode === 'swiftshader') {
         expect(`${capability.vendor} ${capability.renderer}`).toMatch(
           /SwiftShader/i,
         );
@@ -134,17 +143,39 @@ test(`@gpu packaged WebGL2 renders and interacts in ${requestedGpuMode} mode`, a
 
       await launched.page.waitForTimeout(300);
       const baseline = await canvas.screenshot();
+      expect(baseline.byteLength).toBeGreaterThan(0);
       await viewer.focus();
       await launched.page.keyboard.press('ArrowRight');
       await launched.page.waitForTimeout(300);
       const orbited = await canvas.screenshot();
-      expect(orbited.equals(baseline)).toBe(false);
+      const orbitChangedImage = !orbited.equals(baseline);
+      expect(orbitChangedImage).toBe(true);
 
       await launched.page.getByRole('button', { name: 'Reset' }).click();
       await launched.page.waitForTimeout(300);
       const reset = await canvas.screenshot();
-      expect(reset.equals(baseline)).toBe(true);
+      const resetRestoredImage = reset.equals(baseline);
+      expect(resetRestoredImage).toBe(true);
       await expect(viewer).toBeVisible();
+
+      if (hardwareRequest !== null) {
+        const evidence = createHardwareGpuEvidence(
+          hardwareRequest,
+          capability,
+          gpuMode,
+          {
+            modelRendered: baseline.byteLength > 0,
+            orbitChangedImage,
+            resetRestoredImage,
+            viewerRemainedResponsive: await viewer.isVisible(),
+          },
+        );
+        writeHardwareGpuEvidence(hardwareRequest, evidence);
+        await testInfo.attach('physical-gpu-webgl-evidence.json', {
+          body: Buffer.from(JSON.stringify(evidence, null, 2)),
+          contentType: 'application/json',
+        });
+      }
     },
     async () => {
       await cleanupPackagedApp(launched, root === null ? [] : [root]);

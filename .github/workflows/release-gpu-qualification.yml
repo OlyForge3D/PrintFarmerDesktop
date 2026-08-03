@@ -1,0 +1,136 @@
+name: Release GPU qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-gpu-qualification-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  matrix:
+    name: Resolve physical GPU matrix
+    runs-on: ubuntu-latest
+    outputs:
+      profiles: ${{ steps.profiles.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Load committed GPU profiles
+        id: profiles
+        shell: bash
+        run: node scripts/release-gpu-qualification.mjs matrix --github-output >> "$GITHUB_OUTPUT"
+
+  physical-gpu:
+    name: Physical GPU (${{ matrix.profileId }})
+    needs: matrix
+    runs-on: ${{ matrix.runnerLabels }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.profiles) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build release sidecar
+        run: cargo build --manifest-path native/Cargo.toml --locked --release -p model-core --features sqlite
+
+      - name: Package hardware-test application
+        env:
+          PRINTFARMER_SKIP_SIDECAR_BUILD: '1'
+          PRINTFARMER_BUILD_E2E: '1'
+        run: npm run package
+
+      - name: Run packaged physical GPU scenario
+        env:
+          PRINTFARMER_E2E_GPU_MODE: default
+          PRINTFARMER_E2E_GPU_REQUIRE_HARDWARE: '1'
+          PRINTFARMER_E2E_GPU_PROFILE: ${{ matrix.profileId }}
+          PRINTFARMER_E2E_GPU_REPORT: ${{ github.workspace }}/gpu-qualification/webgl.json
+          PRINTFARMER_E2E_COMMIT_SHA: ${{ github.sha }}
+        run: npx playwright test e2e/release.gpu.spec.ts
+
+      - name: Capture driver and adapter evidence
+        env:
+          PRINTFARMER_E2E_GPU_REPORT: ${{ github.workspace }}/gpu-qualification/webgl.json
+          PRINTFARMER_GPU_EVIDENCE_REPORT: ${{ github.workspace }}/gpu-qualification/${{ matrix.profileId }}.json
+        run: node scripts/release-gpu-qualification.mjs capture
+
+      - name: Upload physical GPU evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-qualification-${{ matrix.profileId }}-attempt-${{ github.run_attempt }}
+          path: gpu-qualification/${{ matrix.profileId }}.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-diagnostics-${{ matrix.profileId }}-attempt-${{ github.run_attempt }}
+          path: |
+            gpu-qualification/
+            test-results/
+          if-no-files-found: warn
+          retention-days: 30
+
+  qualification:
+    name: Physical GPU matrix gate
+    needs: physical-gpu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download physical GPU evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: gpu-qualification-*-attempt-${{ github.run_attempt }}
+          path: gpu-qualification/reports
+          merge-multiple: true
+
+      - name: Verify complete same-commit physical matrix
+        env:
+          PRINTFARMER_GPU_EVIDENCE_DIRECTORY: ${{ github.workspace }}/gpu-qualification/reports
+          PRINTFARMER_GPU_EXPECTED_SHA: ${{ github.sha }}
+          PRINTFARMER_GPU_EXPECTED_REPOSITORY: ${{ github.repository }}
+          PRINTFARMER_GPU_EXPECTED_RUN_ID: ${{ github.run_id }}
+          PRINTFARMER_GPU_EXPECTED_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PRINTFARMER_GPU_SUMMARY_REPORT: ${{ github.workspace }}/gpu-qualification/summary.json
+        run: npm run verify:gpu-qualification
+
+      - name: Upload qualified matrix
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-qualification-${{ github.sha }}-attempt-${{ github.run_attempt }}
+          path: gpu-qualification/
+          if-no-files-found: error
+          retention-days: 90

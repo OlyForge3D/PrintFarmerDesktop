@@ -141,18 +141,49 @@ describe('catalog multi-selection and upload queue UI', () => {
     expect(reset).toHaveBeenCalledOnce();
   });
 
-  it('confirms before deliberately resetting approved folders', async () => {
-    const resetApprovedRoots = vi.fn().mockResolvedValue({ reset: true });
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    installApi({ resetApprovedRoots });
-    render(<App />);
+  it('manages source folders in one modal and confirms catalog reset inline', async () => {
+    const resetCatalog = vi.fn().mockResolvedValue({
+      reset: true,
+      modelsRemoved: 3,
+      sourceRootsRemoved: 1,
+    });
+    installApi({ resetCatalog });
+    const { container } = render(<App />);
+    const manage = await screen.findByRole('button', {
+      name: 'Manage sources',
+    });
+    manage.focus();
+    fireEvent.click(manage);
+
+    expect(
+      screen.getByRole('dialog', { name: 'Catalog sources' }),
+    ).toBeVisible();
+    expect(container.querySelector('.workspace')).toHaveAttribute('inert');
+    expect(screen.getByText('Configured folders')).toBeVisible();
+    expect(screen.getByText('C:\\models')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset catalog' }));
+    expect(resetCatalog).not.toHaveBeenCalled();
+    expect(screen.getByText('Clear this local catalog?')).toBeVisible();
+    expect(
+      screen.getByText(/original files, tags and collection definitions/i),
+    ).toBeVisible();
+
     fireEvent.click(
-      await screen.findByRole('button', { name: 'Reset approved folders' }),
+      screen.getByRole('button', { name: 'Clear local catalog' }),
     );
-    expect(confirm).toHaveBeenCalledWith(
-      expect.stringContaining('require reauthorization'),
+    await waitFor(() => expect(resetCatalog).toHaveBeenCalledOnce());
+    expect(
+      await screen.findByText(
+        'Catalog cleared. Removed 3 indexed models and 1 source folder.',
+      ),
+    ).toBeVisible();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Close catalog sources' }),
     );
-    await waitFor(() => expect(resetApprovedRoots).toHaveBeenCalledOnce());
+    await waitFor(() => expect(manage).toHaveFocus());
+    expect(container.querySelector('.workspace')).not.toHaveAttribute('inert');
   });
 
   it('offers ordinary retry for modern recoverable uncertainty', () => {

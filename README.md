@@ -29,8 +29,9 @@ Source models are never moved, modified, or uploaded without an explicit user
 action.
 
 The packaged Windows/macOS release matrix, WebGL2 capability reporting,
-SwiftShader fallback, accessibility gate, and physical-GPU limitation are
-documented in [release validation](./docs/release-validation.md).
+SwiftShader fallback, accessibility gate, and manual physical-GPU qualification
+workflow are documented in
+[release validation](./docs/release-validation.md).
 
 The trust boundaries behind that claim, the adversaries they defend against, and
 the accepted residual risks are documented in

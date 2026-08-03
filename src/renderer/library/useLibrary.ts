@@ -6,6 +6,7 @@ import type {
   ImportRootResponse,
   LogicalModel,
   ReconcileReport,
+  ResetCatalogResponse,
   ScanRootResponse,
   Tag,
 } from '@shared/ipc';
@@ -21,7 +22,8 @@ import {
   type StoredSourceRoot,
 } from './sourceRoots';
 
-export type LibraryStatus = 'idle' | 'loading' | 'preparing' | 'scanning';
+export type LibraryStatus =
+  'idle' | 'loading' | 'preparing' | 'scanning' | 'resetting';
 
 export interface LibraryScanActivity {
   phase: 'idle' | 'preparing' | 'scanning';
@@ -67,6 +69,8 @@ export interface Library {
   rescanRoot: (rootId: string) => Promise<ScanRootResponse | null>;
   /** Hide a source root in the UI until the sidecar grows root deletion. */
   removeRoot: (rootId: string) => void;
+  /** Clear indexed models and source roots without deleting source files. */
+  resetCatalog: () => Promise<ResetCatalogResponse | null>;
   /** Close the import preview without changing the catalog. */
   cancelImport: () => void;
   /** Re-read the catalog without scanning. */
@@ -415,6 +419,31 @@ export function useLibrary(): Library {
     setImportDraft(null);
   }, []);
 
+  const resetCatalog = useCallback(async () => {
+    if (importInFlightRef.current) {
+      setError('Wait for the current library operation to finish.');
+      return null;
+    }
+    importInFlightRef.current = true;
+    setError(null);
+    setStatus('resetting');
+    try {
+      const result = await window.printFarmer.resetCatalog();
+      setCatalogModels([]);
+      setStoredRoots([]);
+      setLastReport(null);
+      setLastImport(null);
+      setImportDraft(null);
+      return result;
+    } catch (err: unknown) {
+      setError(`Catalog reset failed: ${messageOf(err)}`);
+      return null;
+    } finally {
+      importInFlightRef.current = false;
+      setStatus('idle');
+    }
+  }, []);
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
@@ -433,6 +462,7 @@ export function useLibrary(): Library {
     confirmImport,
     rescanRoot,
     removeRoot,
+    resetCatalog,
     cancelImport,
     refresh,
   };

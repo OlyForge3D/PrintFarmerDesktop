@@ -22,6 +22,7 @@ import {
   type ImportRootRequest,
   type ImportRootResponse,
   type ListModelsResponse,
+  type ResetCatalogResponse,
   type ListFavoritesResponse,
   type FavoriteModelRequest,
   type FavoriteModelResponse,
@@ -209,6 +210,10 @@ const api: PrintFarmerApi = {
     ) as Promise<ImportRootResponse>,
   listModels: (): Promise<ListModelsResponse> =>
     ipcRenderer.invoke(IpcChannel.ListModels) as Promise<ListModelsResponse>,
+  resetCatalog: (): Promise<ResetCatalogResponse> =>
+    ipcRenderer.invoke(
+      IpcChannel.ResetCatalog,
+    ) as Promise<ResetCatalogResponse>,
   listFavorites: (): Promise<ListFavoritesResponse> =>
     ipcRenderer.invoke(
       IpcChannel.ListFavorites,
