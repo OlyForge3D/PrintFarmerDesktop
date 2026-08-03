@@ -379,7 +379,12 @@ describe('correlation across one calibration operation', () => {
       expect(id).not.toBe('');
       expect(id).not.toBeUndefined();
     }
-    expect(new Set(correlationIds).size).toBe(1);
+    expect(
+      new Set(correlationIds).size,
+      `the flow split across correlation IDs: ${staged
+        .map((record) => `${record.event}=${String(record.correlationId)}`)
+        .join(', ')}`,
+    ).toBe(1);
   });
 
   it('carries distinct operation ID values where the stages use distinct idempotency keys', async () => {
