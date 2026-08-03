@@ -7,6 +7,8 @@ description: The validation commands for PrintFarmer Desktop and the traps that 
 
 Run the **smallest complete** validation that covers your change. Complete matters more than small: a targeted run that skips the layer you changed is not validation.
 
+**Before reporting a negative result — "that path is unreachable", "this is safe", "I could not reproduce it" — state the observation that would have produced the opposite finding.** If you cannot name one, you measured a case, not the class. An experiment that _confirms_ a prediction and one that _risked_ it are both real measurements, and only the second licenses a claim about a class. This is the same rule as "an assertion that cannot fail proves nothing", pointed at reports rather than at tests, where nothing else is checking. See `.squad/decisions/inbox/vasquez-falsifiable-negatives.md` — it cost PR #149 two retractions, one of them a shared conclusion the lead had already ratified.
+
 ## TypeScript / renderer / main
 
 ```powershell

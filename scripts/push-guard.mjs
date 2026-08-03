@@ -516,15 +516,22 @@ export function gatherFacts(update, remote, env = process.env) {
       // are disabled or expired.
       //
       // Cost was measured, not feared: the full walk is 32-56 ms over this
-      // repo's 176 commits, and each reflog read is ~30 ms, against the 515 ms
-      // `ls-remote` already paid on every push. Revisit if history grows enough
-      // to invert that ratio. A
-      // `--grep` prefilter was rejected twice over: it matches substrings, so
-      // one session id would match any id containing it, and it takes a POSIX
-      // regex rather than a literal, so an id containing a metacharacter would
-      // fail to match its own commits — a false negative, which is the fatal
-      // direction for a prefilter, since the exact check never sees what the
-      // prefilter dropped.
+      // repo's 176 commits — roughly 0.2-0.3 ms per commit — and each reflog
+      // read is ~30 ms, against the 515 ms `ls-remote` the guard already pays
+      // unconditionally on every push. At that rate the walk would not reach
+      // the cost of the network call it sits beside until somewhere around
+      // 2,000 commits on the branch. The threshold is written down so the next
+      // reader does not re-derive the fear from scratch — and if it is ever
+      // crossed, measure again rather than assuming this estimate held.
+      //
+      // A `--grep` prefilter was rejected twice over, and is recorded because
+      // the fear outlives the reasoning. It matches substrings, so one session
+      // id would match any id containing it. And it takes a POSIX regex rather
+      // than a literal, so an id containing a metacharacter would fail to match
+      // its own commits — a false NEGATIVE, which is the fatal direction for a
+      // prefilter, because the exact check downstream only ever inspects what
+      // the prefilter admitted. Fail-open by construction. The cheap option and
+      // the exact option are the same option here; there was no trade to make.
       facts.ownSessions = [
         ...new Set([
           ...sessionsOf(readCommits([update.localSha])),
