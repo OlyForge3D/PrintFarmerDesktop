@@ -78,6 +78,30 @@ nonexistent file.
 The package version must exactly match the tag (`package.json` version `1.2.3`
 requires tag `v1.2.3`).
 
+## Beta prereleases
+
+A semver prerelease tag (`v1.2.3-beta.1`, matched by the `-` in the tag name)
+publishes an unsigned GitHub prerelease. Every signing, notarization, and
+metadata-signing step is gated on a stable tag, so a beta cannot reach a
+credential even if one is configured. Betas ship:
+
+| Platform | Artifacts                                      | Trust state                                     |
+| -------- | ---------------------------------------------- | ----------------------------------------------- |
+| Windows  | Unsigned Squirrel `Setup.exe` and portable ZIP | No Authenticode signature, so SmartScreen warns |
+| macOS    | Universal ZIP and DMG                          | Ad-hoc signed only, not notarized or stapled    |
+
+`package.json` must carry the prerelease version too, so tag `v1.2.3-beta.1`
+requires version `1.2.3-beta.1`.
+
+A beta never publishes `latest.json`, and the publish job fails if one is
+present. GitHub excludes prereleases from `releases/latest`, which is the URL
+the app reads, so a beta is never offered as an automatic update. Beta builds
+still embed the update public key when it is configured, so an installed beta
+upgrades itself once the next stable release is published. Because a beta signs
+no metadata, the publish job verifies the private key still matches that
+embedded public key, rather than leaving a mismatched pair to surface at the
+next stable release.
+
 ## In-app update trust and recovery
 
 Release builds embed only the Ed25519 public key. On startup the main process

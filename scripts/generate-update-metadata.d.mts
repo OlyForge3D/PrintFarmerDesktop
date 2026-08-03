@@ -11,3 +11,4 @@ export const UPDATE_METADATA_SCHEMA_VERSION: 1;
 export function createSignedUpdateMetadata(
   options: GenerateUpdateMetadataOptions,
 ): { payload: string; signature: string };
+export function verifyUpdateKeyPair(environment: NodeJS.ProcessEnv): void;
