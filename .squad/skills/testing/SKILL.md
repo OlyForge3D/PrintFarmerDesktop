@@ -93,6 +93,18 @@ Never hand back a red PR. If a check fails, read the failing job log, fix the ca
 
 `mergeStateStatus: UNSTABLE` means CI is still running or has failed — it is **not** ready to merge. `CLEAN` plus seven passes is the bar.
 
+## Fixture traps
+
+**A fixture built from a repeated byte does not test the limit it is named for.** Padding made of one byte repeated compresses roughly 1000:1, so it trips the **compression-ratio** guard long before the **size** guard it was written to exercise. The test keeps passing while testing a different control entirely. Two people hit this independently, which makes it a trap rather than a mistake.
+
+Three rules follow:
+
+- Pad with incompressible bytes (a seeded PRNG, deterministic across platforms) when the size limit is the thing under test.
+- Size the fixture to the **named constant** — `COMPRESSION_RATIO_FLOOR_BYTES` — not to a round number that happens to sit near it. A round number stops tracking the limit the moment the limit moves.
+- Assert the violating **part name** alongside the diagnostic code, so the test cannot pass by tripping a neighbouring guard that emits the same code.
+
+This is the shadowing problem from `test-discipline`: when two guards defend the same budget, the cheaper one fires first on every honest input, and the guard you meant to test is live, correct, and untested.
+
 ## Green CI is necessary, not sufficient
 
 CI stayed green for hours while `development` was missing an entire native engine, because the tests covering it mocked the sidecar rather than invoking the real binary. Ask what your tests would _fail_ to notice.
