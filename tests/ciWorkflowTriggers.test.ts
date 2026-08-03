@@ -33,12 +33,22 @@ function topLevelSection(workflow: string, key: string): string[] {
   return end < 0 ? body : body.slice(0, end);
 }
 
-/** Event names a workflow subscribes to, in file order. */
+/**
+ * Event names a workflow subscribes to, sorted.
+ *
+ * Sorted rather than in file order because declaration order carries no
+ * meaning to GitHub: `on: {pull_request, push, merge_group}` is the same
+ * subscription however it is written. Comparing sorted arrays keeps the
+ * failure diff naming the offending event — dropping `merge_group:` still
+ * reports `- "merge_group"` — without failing a harmless reordering.
+ */
 function triggersOf(workflow: string): string[] {
-  return topLevelSection(workflow, 'on').flatMap((line) => {
-    const match = /^ {2}([A-Za-z_][A-Za-z0-9_]*):/.exec(line);
-    return match?.[1] === undefined ? [] : [match[1]];
-  });
+  return topLevelSection(workflow, 'on')
+    .flatMap((line) => {
+      const match = /^ {2}([A-Za-z_][A-Za-z0-9_]*):/.exec(line);
+      return match?.[1] === undefined ? [] : [match[1]];
+    })
+    .sort();
 }
 
 interface WorkflowJob {
@@ -98,11 +108,9 @@ describe('CI is safe to run under a merge queue', () => {
   it('subscribes to merge_group alongside the existing push and pull_request triggers', () => {
     // Without this the required contexts of a queued entry are never reported,
     // so the queue waits permanently instead of failing.
-    expect(triggersOf(ciWorkflow)).toEqual([
-      'push',
-      'pull_request',
-      'merge_group',
-    ]);
+    expect(triggersOf(ciWorkflow)).toEqual(
+      ['push', 'pull_request', 'merge_group'].sort(),
+    );
   });
 
   it('still restricts push runs to the two long-lived branches', () => {
@@ -111,7 +119,16 @@ describe('CI is safe to run under a merge queue', () => {
     );
   });
 
-  it('gates no job on the event name, which would skip it under merge_group', () => {
+  it('declares no job-level `if:` and no event-name branching, so no job can be skipped under a merge queue', () => {
+    // Deliberately broader than the deadlock it guards. Any job-level
+    // condition can skip a job, and a skipped job reports no check run, so a
+    // required context is never satisfied and the queued entry waits forever.
+    // Enumerating which conditions are safe under `merge_group` is harder to
+    // get right than banning the category, so the category is banned. A
+    // legitimate job-level `if:` is not forbidden by policy — it just has to
+    // arrive with the required-contexts question answered, and failing here is
+    // how that question gets asked.
+    //
     // A job-level `if:` sits at four spaces; the two `runner.os` guards in
     // `sidecar` are step-level (eight spaces) and are unaffected by the event.
     const jobLevelConditions = jobsOf(ciWorkflow).flatMap(({ key, body }) =>
@@ -120,6 +137,8 @@ describe('CI is safe to run under a merge queue', () => {
         .map((line) => `${key}:${line}`),
     );
     expect(jobLevelConditions).toEqual([]);
+    // Belt and braces on the specific deadlock: even outside a job-level
+    // `if:`, branching on the event name reintroduces it.
     expect(ciWorkflow).not.toContain('github.event_name');
   });
 
@@ -153,7 +172,7 @@ describe('publication workflows stay outside the merge queue', () => {
   ])(
     '$file publishes from a tag or a human, never per queued entry',
     ({ contents, triggers }) => {
-      expect(triggersOf(contents)).toEqual(triggers);
+      expect(triggersOf(contents)).toEqual([...triggers].sort());
       expect(triggersOf(contents)).not.toContain('merge_group');
     },
   );
