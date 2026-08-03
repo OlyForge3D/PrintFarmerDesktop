@@ -123,9 +123,34 @@ describe('CI is safe to run under a merge queue', () => {
   });
 
   it('declares no job-level `if:` and no event-name branching, so no job can be skipped under a merge queue', () => {
-    // Deliberately broader than the deadlock it guards. Any job-level
-    // condition can skip a job, and a skipped job reports no check run, so a
-    // required context is never satisfied and the queued entry waits forever.
+    // Deliberately broader than the deadlock it guards, and the harm here is
+    // the opposite of the one the trigger test guards. Two distinct mechanisms:
+    //
+    //   Workflow never runs (no `merge_group:` trigger, or a path/branch
+    //   filter excludes the event) — its checks stay Pending forever and the
+    //   entry blocks. That is #122, and the trigger test above guards it.
+    //
+    //   Job skipped by a job-level `if:` in a workflow that *does* run — the
+    //   check run is reported with a `skipped` conclusion, and `skipped`
+    //   counts as success. The required context is *satisfied by a job that
+    //   never executed*: a green merge with the check silently not run.
+    //
+    // So this test does not guard a hang. It guards a false green, which is
+    // the worse of the two because nothing waits to be investigated.
+    //
+    // Verified, not inferred. GitHub, "Troubleshooting required status
+    // checks" — "Successful check statuses are `success`, `skipped`, and
+    // `neutral`", and under "Handling skipped but required checks": a job
+    // skipped by a conditional "reports Success", while a workflow skipped by
+    // path/branch filtering "stays in a Pending state and blocks merging".
+    // Observed in this repository: release.yml run 30838613800 skipped the
+    // conditional `publish` job, and the check-runs API for that commit lists
+    // it as `conclusion=skipped` — a reported check run, not an absent one.
+    //
+    // Not verified: the behaviour of a `skipped` required context inside a
+    // real merge queue specifically. It is documented for branch protection;
+    // no merge queue has run on this repository yet to confirm it there.
+    //
     // Enumerating which conditions are safe under `merge_group` is harder to
     // get right than banning the category, so the category is banned. A
     // legitimate job-level `if:` is not forbidden by policy — it just has to
