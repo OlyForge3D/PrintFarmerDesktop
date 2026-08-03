@@ -63,6 +63,7 @@ It resolves the tip with a live `git ls-remote`, prints every commit the push wo
 | `push-guard.unacknowledged-discard` | the push destroys commits and you named no tip                            |
 | `push-guard.ack-mismatch`           | you named a tip that is not the one on the remote                         |
 | `push-guard.stale-lease`            | the remote moved during the push                                          |
+| `push-guard.unfetched-remote-tip`   | the remote tip is not in your object store — `git fetch` and look         |
 
 To proceed after actually reading the work you are overwriting, name it — the value has to be read, not remembered:
 

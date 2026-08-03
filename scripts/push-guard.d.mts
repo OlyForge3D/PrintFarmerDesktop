@@ -13,6 +13,7 @@ export interface GuardedCommit {
 
 export interface PushFacts {
   liveRemoteSha: string | null;
+  liveTipPresent?: boolean;
   discarded: GuardedCommit[];
   pushedSessions?: Iterable<string>;
   ack?: string | undefined;
@@ -22,6 +23,7 @@ export interface PushFacts {
 export type GuardCode =
   | 'push-guard.protected-ref'
   | 'push-guard.stale-lease'
+  | 'push-guard.unfetched-remote-tip'
   | 'push-guard.branch-delete'
   | 'push-guard.acknowledged-delete'
   | 'push-guard.new-branch'
@@ -47,6 +49,7 @@ export function evaluateRefUpdate(
   facts: PushFacts,
 ): GuardResult;
 export function readLiveRemoteSha(remote: string, ref: string): string | null;
+export function hasCommit(sha: string): boolean;
 export function readCommits(range: string[]): Required<GuardedCommit>[];
 export function gatherFacts(
   update: RefUpdate,

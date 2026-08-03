@@ -59,7 +59,6 @@ export const ACK_ENV = 'PF_PUSH_ACK';
 export const ACK_FOREIGN_ENV = 'PF_PUSH_ACK_FOREIGN';
 
 const isAbsent = (sha) => !sha || sha === ZERO_SHA;
-
 function sessionsOf(commits) {
   const seen = new Set();
   for (const commit of commits) {
@@ -162,6 +161,35 @@ export function evaluateRefUpdate(update, facts) {
     };
   }
 
+  // The remote tip is not in this repository's object store, so the set of
+  // commits this push would destroy CANNOT BE ENUMERATED — `git log <live>
+  // ^<local>` dies with `fatal: bad object`.
+  //
+  // Read this before deciding the refusal is over-cautious: in this state
+  // "the push is non-destructive" is not merely unproven, it is NOT
+  // DETERMINABLE, so failing closed is the only honest option rather than the
+  // conservative one of two workable choices. A fast-forward can never reach
+  // here — a fast-forward's remote tip is by definition an ancestor of local
+  // HEAD and therefore present — so nothing provably harmless is being
+  // refused, and widening this to fail open would trade a determinate refusal
+  // for a guess. It is also the single most dangerous case the guard exists
+  // for: unfetched commits on a shared branch is precisely the PR #78 clobber.
+  if (facts.liveTipPresent === false) {
+    return {
+      verdict: 'refuse',
+      code: 'push-guard.unfetched-remote-tip',
+      message: [
+        `${remoteRef} is at ${live} on the remote, and that commit is not in your`,
+        'object store — you have never fetched what this push would overwrite, so',
+        'the guard cannot show you what would be destroyed.',
+        '',
+        'Fetch it and look before deciding:',
+        `  git fetch origin ${remoteRef}`,
+        `  git log --oneline ${localSha}..${live}`,
+      ].join('\n'),
+    };
+  }
+
   if (discarded.length === 0) {
     return {
       verdict: 'allow',
@@ -249,6 +277,21 @@ export function readLiveRemoteSha(remote, ref) {
   return sha && sha.length > 0 ? sha : null;
 }
 
+/**
+ * Is the remote tip in our object store? Asked before enumerating the discarded
+ * commits, because `git log <live> ^<local>` on an absent object dies with
+ * `fatal: bad object` — a diagnostic that says nothing about what is actually
+ * wrong, on the most dangerous path the guard has.
+ */
+export function hasCommit(sha) {
+  try {
+    git(['cat-file', '-e', `${sha}^{commit}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const RECORD = '\u001e';
 const FIELD = '\u001f';
 
@@ -279,6 +322,7 @@ export function gatherFacts(update, remote, env = process.env) {
   const liveRemoteSha = readLiveRemoteSha(remote, update.remoteRef);
   const facts = {
     liveRemoteSha,
+    liveTipPresent: true,
     discarded: [],
     pushedSessions: [],
     ack: env[ACK_ENV],
@@ -287,6 +331,8 @@ export function gatherFacts(update, remote, env = process.env) {
   // Only meaningful once the live tip agrees with the lease; when it does not,
   // the refusal happens before these are read.
   if (liveRemoteSha && liveRemoteSha === update.remoteSha) {
+    facts.liveTipPresent = hasCommit(liveRemoteSha);
+    if (!facts.liveTipPresent) return facts;
     if (!isAbsent(update.localSha)) {
       facts.discarded = readCommits([liveRemoteSha, `^${update.localSha}`]);
       facts.pushedSessions = [
@@ -334,7 +380,12 @@ function main(argv, stdinText) {
     try {
       result = evaluateRefUpdate(update, gatherFacts(update, remote));
     } catch (error) {
-      // A guard that cannot check must not report success.
+      // A guard that cannot check must not report success. This is the residual
+      // path only — the two failures that are actually reachable have their own
+      // codes (`stale-lease`, `unfetched-remote-tip`). Anything landing here is
+      // a state the guard could not characterise at all, and by the same
+      // argument recorded above, a push whose destroyed set cannot be
+      // enumerated is not knowably safe. Do not soften this to a warning.
       console.error(
         `[push-guard] REFUSED ${update.remoteRef}: the guard could not verify the remote (${error.message}).`,
       );

@@ -204,6 +204,53 @@ describe('the guard checks the pusher\u2019s belief, not only git\u2019s cache o
   });
 });
 
+describe('the guard says so when it cannot see what the push would destroy', () => {
+  it('refuses with its own code when the remote tip is not in the local object store', () => {
+    // Reachable by bare `--force` when another session pushed commits we never
+    // fetched. Before this had its own code the generic catch leaked
+    // `fatal: bad object`, which is the worst diagnostic in the system on the
+    // most dangerous path the guard has.
+    const result = evaluateRefUpdate(update({}), {
+      liveRemoteSha: THEIRS,
+      liveTipPresent: false,
+      discarded: [],
+    });
+
+    expect(result.verdict).toBe('refuse');
+    expect(result.code).toBe('push-guard.unfetched-remote-tip');
+    expect(result.message).toContain('git fetch');
+  });
+
+  it('does not let an unreadable tip fall through to the fast-forward allow', () => {
+    // `discarded: []` here means "could not be computed", not "nothing is
+    // discarded". If the check were ordered after the fast-forward case, this
+    // exact input would be ALLOWED — the emptiness is indistinguishable at
+    // that point. Pins the ordering, not just the code.
+    const unreadable = evaluateRefUpdate(update({}), {
+      liveRemoteSha: THEIRS,
+      liveTipPresent: false,
+      discarded: [],
+    });
+    const genuinelyEmpty = evaluateRefUpdate(update({}), {
+      liveRemoteSha: THEIRS,
+      liveTipPresent: true,
+      discarded: [],
+    });
+
+    expect(unreadable.verdict).toBe('refuse');
+    expect(genuinelyEmpty.code).toBe('push-guard.fast-forward');
+  });
+
+  it('treats a tip whose presence was never probed as present, so callers supplying facts are unaffected', () => {
+    const result = evaluateRefUpdate(update({}), {
+      liveRemoteSha: THEIRS,
+      discarded: [],
+    });
+
+    expect(result.code).toBe('push-guard.fast-forward');
+  });
+});
+
 describe('the guard refuses direct writes to the branches that take pull requests only', () => {
   it.each(PROTECTED_REFS)('refuses a push to %s', (ref) => {
     const result = evaluateRefUpdate(update({ remoteRef: ref }), {
@@ -393,5 +440,39 @@ describe('a second session on one branch cannot be force-pushed over', () => {
       '\t',
     )[0];
     expect(tip).toBe(git(['rev-parse', 'HEAD'], one));
+  });
+
+  it('refuses a bare --force over commits it has never fetched, naming that specifically', () => {
+    // Bare `--force` skips the lease, so git is willing; the remote tip is then
+    // an object we do not have, and the destroyed set cannot be enumerated. The
+    // guard must say that rather than leak `fatal: bad object` from the
+    // enumeration it could not run — a refusal for the right reason and a
+    // refusal with a useless message are different outcomes, and this is the
+    // two-writer clobber, the most dangerous case the guard exists for.
+    commit(two, 'work session one has never fetched', 'session-two');
+    git(['push', '--no-verify', '--force', 'origin', 'feature'], two);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], one);
+
+    const theirs = git(['rev-parse', 'HEAD'], two);
+    expect(() => git(['cat-file', '-e', `${theirs}^{commit}`], one)).toThrow();
+
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force', 'origin', 'feature'], one);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    expect(stderr).toContain('push-guard.unfetched-remote-tip');
+    expect(stderr).toContain('git fetch');
+    expect(stderr).not.toContain('bad object');
+
+    const tip = git(['ls-remote', remote, 'refs/heads/feature'], one).split(
+      '\t',
+    )[0];
+    expect(tip).toBe(theirs);
   });
 });
