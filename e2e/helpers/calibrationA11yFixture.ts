@@ -15,6 +15,7 @@
  * observes the scenario from startup.
  */
 import AxeBuilder from '@axe-core/playwright';
+import type { Result } from 'axe-core';
 import {
   expect,
   _electron as electron,
@@ -894,11 +895,44 @@ export async function openProfileView(page: Page): Promise<void> {
 }
 
 /**
- * Asserts the surface actually rendered before scanning it.
+ * A control with no accessible name. Injected into a surface to prove the
+ * scanner reports, because `0 violations` and `scanner not wired` are the same
+ * observation until non-zero has been shown to be reachable. Sized explicitly
+ * so it cannot be skipped as a zero-area element.
+ */
+const AXE_PROBE_RULE = 'button-name';
+
+async function withAxeProbe<T>(
+  container: Locator,
+  run: () => Promise<T>,
+): Promise<T> {
+  await container.evaluate((node) => {
+    const probe = document.createElement('button');
+    probe.type = 'button';
+    probe.setAttribute('data-axe-probe', 'true');
+    probe.style.cssText = 'width:44px;height:44px;opacity:0.01;';
+    node.append(probe);
+  });
+  try {
+    return await run();
+  } finally {
+    await container.evaluate((node) => {
+      node.querySelector('[data-axe-probe]')?.remove();
+    });
+  }
+}
+
+/**
+ * Asserts the surface actually rendered, that the scanner reports violations
+ * in it, and only then that it has none.
  *
- * An axe scan of a container that never rendered reports zero violations, so a
- * scan without this precondition is green regardless of the truth. `present`
- * must be a locator unique to the surface under test.
+ * Two independent lies are defeated here. An axe scan of a container that
+ * never rendered reports zero violations, so `present` must be visible and
+ * non-empty first. And a misconfigured scanner — wrong scope, disabled rules,
+ * a failed injection — reports zero violations on a fully rendered page, which
+ * the render precondition cannot see. So a known violation is injected into
+ * this specific surface and the scan must report it before the clean scan is
+ * believed. `present` must be a locator unique to the surface under test.
  */
 export async function scanSurface(
   page: Page,
@@ -920,18 +954,33 @@ export async function scanSurface(
     `${name} rendered empty, so an axe scan of it would prove nothing`,
   ).toBeGreaterThan(0);
 
-  // Electron's CDP target cannot create Axe's blank aggregation page. This app
-  // has no frames, so legacy mode runs the same rules against the complete UI.
-  let builder = new AxeBuilder({ page }).setLegacyMode().withTags(WCAG_TAGS);
-  if (options.include !== undefined) {
-    builder = builder.include(options.include);
-  }
-  const results = await builder.analyze();
-  const material = results.violations.filter(
-    (violation) =>
-      typeof violation.impact === 'string' &&
-      MATERIAL_IMPACTS.has(violation.impact),
-  );
+  const scan = async (): Promise<Result[]> => {
+    // Electron's CDP target cannot create Axe's blank aggregation page. This
+    // app has no frames, so legacy mode runs the same rules against the UI.
+    let builder = new AxeBuilder({ page }).setLegacyMode().withTags(WCAG_TAGS);
+    if (options.include !== undefined) {
+      builder = builder.include(options.include);
+    }
+    const results = await builder.analyze();
+    return results.violations.filter(
+      (violation) =>
+        typeof violation.impact === 'string' &&
+        MATERIAL_IMPACTS.has(violation.impact),
+    );
+  };
+
+  const probed = await withAxeProbe(present, scan);
+  const detected = probed.find((violation) => violation.id === AXE_PROBE_RULE);
+  expect(
+    detected?.id,
+    `the axe scan of ${name} did not report a deliberately unnamed button, so it is not scanning this surface and its zero-violation result would prove nothing (reported: ${probed.map((violation) => violation.id).join(', ') || 'nothing'})`,
+  ).toBe(AXE_PROBE_RULE);
+  expect(
+    detected?.nodes.length ?? 0,
+    `the axe scan of ${name} reported ${AXE_PROBE_RULE} with no nodes`,
+  ).toBeGreaterThan(0);
+
+  const material = await scan();
   if (material.length > 0) {
     await testInfo.attach(`axe-${name.replaceAll(' ', '-')}.json`, {
       body: Buffer.from(JSON.stringify(material, null, 2)),
@@ -954,17 +1003,21 @@ export async function focusedDescription(page: Page): Promise<string> {
 }
 
 /**
- * Tabs forward until `target` is focused, and asserts focus actually moved.
+ * Tabs forward until `target` is focused, and asserts focus actually moved and
+ * stayed inside `within` when given.
  *
  * A traversal that ends where it started, or that never reaches the named
  * element, is a dead end — this reports which named element it could not
- * reach and where focus ended up.
+ * reach and where focus ended up. `start !== end` alone is satisfied by focus
+ * escaping the surface entirely, which is the worst keyboard outcome, not a
+ * pass, so containment is asserted separately.
  */
 export async function expectTabReaches(
   page: Page,
   target: Locator,
   description: string,
   maxPresses = 60,
+  within?: Locator,
 ): Promise<void> {
   const start = await focusedDescription(page);
   const seen: string[] = [];
@@ -977,6 +1030,12 @@ export async function expectTabReaches(
         current,
         `Tab left focus on ${start}; a traversal that does not move proves nothing`,
       ).not.toBe(start);
+      if (within !== undefined) {
+        expect(
+          await focusIsInside(within),
+          `Tab reached ${description} but focus is outside the surface under test (focus is ${current})`,
+        ).toBe(true);
+      }
       return;
     }
   }

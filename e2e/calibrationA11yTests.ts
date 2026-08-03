@@ -225,6 +225,9 @@ test('@a11y calibration surfaces are traversable to named controls', async ({
     });
 
     await openCalibrationWorkspace(page);
+    const workspace = page.getByRole('main', {
+      name: 'Printer calibration workspace',
+    });
     await page
       .getByRole('link', { name: 'Skip to printer calibration' })
       .focus();
@@ -234,6 +237,8 @@ test('@a11y calibration surfaces are traversable to named controls', async ({
         name: 'Import a legacy calibration backup file',
       }),
       'button "Import a legacy calibration backup file" on the dashboard',
+      60,
+      workspace,
     );
 
     await page.getByRole('button', { name: 'New calibration project' }).click();
@@ -248,6 +253,8 @@ test('@a11y calibration surfaces are traversable to named controls', async ({
         .getByRole('textbox')
         .first(),
       'the first field of group "Project and PrintFarmer printer"',
+      60,
+      workspace,
     );
 
     await openFixtureProject(page);
@@ -259,6 +266,8 @@ test('@a11y calibration surfaces are traversable to named controls', async ({
       page,
       page.getByRole('button', { name: /Open Temperature,/i }),
       'the "Open Temperature" stage button on the project overview',
+      60,
+      workspace,
     );
 
     await openTemperatureStage(page);
@@ -271,6 +280,7 @@ test('@a11y calibration surfaces are traversable to named controls', async ({
       page.getByRole('button', { name: 'Generate calibration model' }),
       'button "Generate calibration model" on the step workflow',
       120,
+      workspace,
     );
 
     // The report is reachable by keyboard alone: focus its nav control and
