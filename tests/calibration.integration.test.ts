@@ -842,9 +842,9 @@ describe('CalibrationSyncEngine integration', () => {
 
 describe('CalibrationHttpClient identity fencing and error mapping', () => {
   it('sends JWT in Authorization header (never in logs)', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      json(printFarmerCapabilitiesResponse()),
-    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(json(printFarmerCapabilitiesResponse()));
     const tokens = fakeTokenProvider();
     const client = new CalibrationHttpClient(tokens, { fetch: fetchMock });
     await client.getCapabilities(

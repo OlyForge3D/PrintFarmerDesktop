@@ -340,9 +340,9 @@ describe('CalibrationHttpClient profile/identity fencing', () => {
         binding: BINDING,
       });
 
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      json(printFarmerCapabilitiesResponse()),
-    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json(printFarmerCapabilitiesResponse()));
 
     const client = makeClient(fetchMock, {
       getAuthenticatedContext: getAuthCtx,
@@ -368,9 +368,9 @@ describe('CalibrationHttpClient profile/identity fencing', () => {
         binding: NEW_BINDING,
       });
 
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      json(printFarmerCapabilitiesResponse()),
-    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json(printFarmerCapabilitiesResponse()));
 
     const client = makeClient(fetchMock, {
       getAuthenticatedContext: getAuthCtx,
