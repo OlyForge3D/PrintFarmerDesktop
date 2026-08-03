@@ -18,11 +18,19 @@
 //      half the suite could pass against a hook that refuses everything, or one
 //      git never runs.
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from 'vitest';
 import {
   ACK_ENV,
   ACK_FOREIGN_ENV,
@@ -59,6 +67,9 @@ function facts(
   return {
     liveRemoteSha: THEIRS,
     liveTipPresent: true,
+    liveQueryFailed: false,
+    liveQueryError: '',
+    provablyFastForward: null,
     discarded: [],
     ...overrides,
   };
@@ -169,6 +180,19 @@ describe('the guard separates another session\u2019s commits from your own', () 
     expect(both.verdict).toBe('allow');
     expect(both.code).toBe('push-guard.acknowledged-discard');
   });
+
+  it('will not accept a prefix of the foreign session id as the override', () => {
+    // Substring matching would let an acknowledgement of `032c` satisfy a
+    // refusal naming `032c3f16` — a value you can guess from the first line of
+    // the diagnostic is not evidence of having read the work.
+    const prefix = evaluateRefUpdate(update({}), {
+      ...foreign,
+      ackForeign: '032c',
+      ack: THEIRS,
+    });
+    expect(prefix.verdict).toBe('refuse');
+    expect(prefix.code).toBe('push-guard.foreign-session');
+  });
 });
 
 describe('the guard checks the pusher\u2019s belief, not only git\u2019s cache of it', () => {
@@ -210,6 +234,63 @@ describe('the guard checks the pusher\u2019s belief, not only git\u2019s cache o
 
     expect(result.verdict).toBe('allow');
     expect(result.code).toBe('push-guard.acknowledged-discard');
+  });
+});
+
+describe('a failed live query decides from the advertised tip instead of refusing everything', () => {
+  // B1. `ls-remote` failing used to put the whole decision behind a catch, so
+  // no allow was reachable — including a plain fast-forward that git was always
+  // going to accept. Only exit 0 from `merge-base --is-ancestor` is evidence.
+  const failed = { liveQueryFailed: true, liveQueryError: 'boom' };
+
+  it('allows a push proven to discard nothing, and says the check was degraded', () => {
+    const result = evaluateRefUpdate(
+      update({}),
+      facts({ ...failed, provablyFastForward: true }),
+    );
+
+    expect(result.verdict).toBe('allow');
+    expect(result.code).toBe('push-guard.unverified-fast-forward');
+    // Allowing quietly would hide that the guard ran degraded.
+    expect(result.message).toContain('WARNING');
+  });
+
+  it('refuses when the advertised tip proves the push destroys commits', () => {
+    const result = evaluateRefUpdate(
+      update({}),
+      facts({ ...failed, provablyFastForward: false }),
+    );
+
+    expect(result.verdict).toBe('refuse');
+    expect(result.code).toBe('push-guard.unverifiable-remote');
+    expect(result.message).toContain('not a fast-forward');
+  });
+
+  it('refuses when the question is unanswerable, and does not describe it as destructive', () => {
+    // `null` is the third state: exit 128, the advertised object is absent.
+    // Collapsing it into the `false` branch would be safe but would print a
+    // claim we cannot support — the code that fires must be the code that
+    // describes what happened.
+    const result = evaluateRefUpdate(
+      update({}),
+      facts({ ...failed, provablyFastForward: null }),
+    );
+
+    expect(result.verdict).toBe('refuse');
+    expect(result.code).toBe('push-guard.unverifiable-remote');
+    expect(result.message).toContain('cannot be determined');
+    expect(result.message).not.toContain('not a fast-forward');
+  });
+
+  it('still refuses a protected ref before considering any of this', () => {
+    // Ordering: the degraded path must not become a way around the checks that
+    // do not depend on the remote at all.
+    const result = evaluateRefUpdate(
+      update({ remoteRef: PROTECTED_REFS[0] as string }),
+      facts({ ...failed, provablyFastForward: true }),
+    );
+
+    expect(result.code).toBe('push-guard.protected-ref');
   });
 });
 
@@ -280,6 +361,9 @@ describe('the guard refuses direct writes to the branches that take pull request
       facts({ discarded: everything }),
     );
     expect(anonymous.code).toBe('push-guard.branch-delete');
+    // The refusal that discards the most must not be the one that says the
+    // least: a delete drops everything, so it names what it would drop.
+    expect(anonymous.message).toContain('everything');
 
     const acknowledged = evaluateRefUpdate(
       update({ localSha: ZERO_SHA }),
@@ -353,11 +437,186 @@ function commit(cwd: string, message: string, session: string) {
   git(['commit', '-m', `${message}\n\nCopilot-Session: ${session}`], cwd);
 }
 
+/**
+ * A push that is expected to SUCCEED, returning the hook's stderr. `git()`
+ * discards stderr on success, which is exactly where the guard writes its
+ * verdict — so asserting the allow fired needs its own reader. Fails loudly if
+ * the push did not succeed, since a silent non-zero would make the assertion
+ * below vacuous.
+ */
+function pushExpectingSuccess(
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv = {},
+) {
+  const result = spawnSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+  });
+  if (result.status !== 0) {
+    throw new Error(
+      `expected the push to succeed, got ${result.status}:\n${result.stderr}`,
+    );
+  }
+  return result.stderr;
+}
+
 function configure(cwd: string) {
   git(['config', 'user.email', 'guard@test.local'], cwd);
   git(['config', 'user.name', 'Guard Test'], cwd);
   git(['config', 'commit.gpgsign', 'false'], cwd);
 }
+
+describe('the passing side goes through the real hook', () => {
+  // B3. Every integration test before this one was a force-push. Nothing drove
+  // an ordinary push through `gatherFacts`, and B1 and B2 both lived there.
+  let root: string;
+  let remote: string;
+  let work: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-pass-'));
+    remote = path.join(root, 'remote.git');
+    work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, work], root);
+    configure(work);
+    git(['checkout', '-b', 'feature'], work);
+    commit(work, 'base', 'session-one');
+    git(['push', '--no-verify', '-u', 'origin', 'feature'], work);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const tipOf = (ref = 'refs/heads/feature') =>
+    git(['ls-remote', remote, ref], work).split('\t')[0];
+
+  it('lets an ordinary fast-forward through and lands it', () => {
+    commit(work, 'ordinary work', 'session-one');
+
+    const stderr = pushExpectingSuccess(['push', 'origin', 'feature'], work);
+
+    expect(stderr).toContain('push-guard.fast-forward');
+    expect(tipOf()).toBe(git(['rev-parse', 'HEAD'], work));
+  });
+
+  it('lets a new branch through', () => {
+    git(['checkout', '-b', 'second'], work);
+    commit(work, 'on a new branch', 'session-one');
+
+    git(['push', '-u', 'origin', 'second'], work);
+
+    expect(tipOf('refs/heads/second')).toBe(git(['rev-parse', 'HEAD'], work));
+  });
+
+  it('lets a fast-forward through from a clone whose push URL differs from its fetch URL', () => {
+    // The B1 lockout, end to end: `git push` resolves `remote.<n>.pushurl`,
+    // the guard's `ls-remote` used to resolve `remote.<n>.url`. A clone that
+    // fetches over HTTPS and pushes over SSH has these pointing at different
+    // places by design, and the guard refused every push from such a clone —
+    // permanently, including the push that would carry the fix.
+    //
+    // Note what is asserted: the ordinary `fast-forward` code, not a degraded
+    // one. Resolving the push URL means there is nothing degraded about it.
+    git(['remote', 'set-url', 'origin', path.join(root, 'nowhere.git')], work);
+    git(['config', 'remote.origin.pushurl', remote], work);
+    commit(work, 'ordinary work behind a divergent pushurl', 'session-one');
+
+    const stderr = pushExpectingSuccess(['push', 'origin', 'feature'], work);
+
+    expect(stderr).toContain('push-guard.fast-forward');
+    expect(tipOf()).toBe(git(['rev-parse', 'HEAD'], work));
+  });
+
+  it('lets a tag through', () => {
+    git(['tag', 'v9.9.9'], work);
+
+    git(['push', 'origin', 'v9.9.9'], work);
+
+    expect(tipOf('refs/tags/v9.9.9')).toBe(git(['rev-parse', 'HEAD'], work));
+  });
+});
+
+describe('the guard decides from the advertised tip when its live query fails', () => {
+  // Driving the hook directly rather than through `git push`, and saying so.
+  // After the push-URL fix there is no longer a *configuration* that makes the
+  // guard's query fail while the push succeeds — that was the whole bug. What
+  // remains is transient (a flake between the advertisement and the hook), and
+  // the honest way to exercise it is to hand the real hook a remote it cannot
+  // read. Everything else here is real: real repo, real git, real guard.
+  let root: string;
+  let work: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-degraded-'));
+    work = path.join(root, 'work');
+    git(['init', '--initial-branch=feature', work], root);
+    configure(work);
+    commit(work, 'base', 'session-one');
+    commit(work, 'second', 'session-one');
+    git(['remote', 'add', 'origin', path.join(root, 'nowhere.git')], work);
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const runHook = (localSha: string, remoteSha: string) =>
+    spawnSync(
+      process.execPath,
+      [
+        path.join(repoRoot, 'scripts', 'push-guard.mjs'),
+        'origin',
+        path.join(root, 'nowhere.git'),
+      ],
+      {
+        cwd: work,
+        encoding: 'utf8',
+        input: `refs/heads/feature ${localSha} refs/heads/feature ${remoteSha}\n`,
+      },
+    );
+
+  it('allows an update the advertised tip proves destroys nothing', () => {
+    const head = git(['rev-parse', 'HEAD'], work);
+    const parent = git(['rev-parse', 'HEAD~1'], work);
+
+    const result = runHook(head, parent);
+
+    expect(result.stderr).toContain('push-guard.unverified-fast-forward');
+    // Degraded but not silent: allowing without saying so would hide that the
+    // guard never reached the remote.
+    expect(result.stderr).toContain('WARNING');
+    expect(result.status).toBe(0);
+  });
+
+  it('refuses the reverse update, which the same advertised tip proves is destructive', () => {
+    // Identical failure of the live query; only the direction differs. Degrading
+    // the check must not degrade the control.
+    const head = git(['rev-parse', 'HEAD'], work);
+    const parent = git(['rev-parse', 'HEAD~1'], work);
+
+    const result = runHook(parent, head);
+
+    expect(result.stderr).toContain('push-guard.unverifiable-remote');
+    expect(result.stderr).toContain('not a fast-forward');
+    expect(result.status).not.toBe(0);
+  });
+
+  it('refuses when the advertised tip is not an object it has', () => {
+    const head = git(['rev-parse', 'HEAD'], work);
+
+    const result = runHook(head, 'b'.repeat(40));
+
+    expect(result.stderr).toContain('push-guard.unverifiable-remote');
+    expect(result.stderr).toContain('cannot be determined');
+    expect(result.status).not.toBe(0);
+  });
+});
 
 describe('a solo rollback is not reported as a second writer', () => {
   // B2. The bug lived entirely in `gatherFacts`, which the unit tests bypass by

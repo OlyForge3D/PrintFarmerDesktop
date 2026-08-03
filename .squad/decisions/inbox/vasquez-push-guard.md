@@ -56,6 +56,44 @@ A fast-forward can never reach that state, since a fast-forward's remote tip is
 by definition an ancestor of local `HEAD` and therefore present. Recorded so that
 nobody later "fixes" the fail-closed behaviour by widening it.
 
+## Where that corollary was over-generalised, and what corrected it
+
+The paragraph above was measured and it was **not general**, and the gap is the
+durable lesson. The failure of the live query was tested with an _unreachable
+remote_, found to be unreachable in practice, and the whole class was concluded
+unreachable from that one sample. Review found the case never sampled: **`git
+push` resolves `remote.<name>.pushurl`; `git ls-remote <name>` resolves
+`remote.<name>.url`.** They differ **by design** in any clone that fetches over
+HTTPS and pushes over SSH (`pushurl`, `url.<base>.pushInsteadOf`). Every push
+from such a clone was refused — including the push carrying the fix. A permanent
+lockout, and the victim could not ship the repair.
+
+Two things follow, and the second is worth more than the first:
+
+- **`git ls-remote --push` does not exist.** The supported spelling is
+  `git remote get-url --push <remote>`, which is what the guard now uses.
+- **"I measured it" and "I measured the general case" are different claims.** An
+  artifact never exercised in the failure direction you have not yet tried is an
+  assumption wearing an artifact's clothes. The remedy is to go and configure the
+  case, not to reason about whether it exists.
+
+The fail-closed _principle_ survives intact — what changed is that the guard now
+answers "is this provably non-destructive?" from the **advertised tip it was
+handed**, using `git merge-base --is-ancestor`, before it refuses. In the pushurl
+case that resolves with **no network at all**, because the advertised tip is
+present locally precisely because the update is a fast-forward. `--is-ancestor`
+is a **tri-state**: `0` ancestor, `1` not an ancestor, `128` object absent. Only
+`0` is evidence; `1` and `128` are collapsed into one refusal deliberately.
+
+## What installing the hook does to the clone
+
+Stated because it is invisible and it fails in the unguarded direction.
+`core.hooksPath` is written **clone-wide**, so it covers every worktree, while
+`.githooks/` is **per-worktree** — a worktree on a branch without that directory
+is silently unguarded, since git skips a missing hook without error (#164). And
+setting `core.hooksPath` **disables every pre-existing `.git/hooks/*`**,
+including personal hooks. `node` on `PATH` becomes a precondition of pushing.
+
 ---
 
 # Branch ownership is asserted at the push, not at the assignment
@@ -85,7 +123,20 @@ branches is filed as #151 rather than claimed here — `development` is protecte
 against force-pushes and deletions, but no feature branch is protected by
 anything, and every #81 incident happened on a feature branch.
 
+**A control that cries wolf on the safe case gets disarmed on the dangerous one.**
+The first version computed "commits you are pushing" as `local ^live`, which is
+**empty whenever the local tip is an ancestor of the live tip** — an ordinary solo
+rollback. Every discarded commit was then classified foreign, so the guard named
+_the pusher's own session_ as "another session" and printed the override
+instruction with their own id in it. Fail-closed, so not a bypass — but it trains
+the override habit on pushes where no second writer exists, which is the failure
+mode #81 exists to prevent, reintroduced by the fix for it. The set is now taken
+from everything reachable from the local tip. Cost was measured, not feared:
+32–56 ms against the 515 ms `ls-remote` already paid on every push.
+
 **Evidence, not assertion.** `tests/pushGuard.test.ts` drives a real push through
 the real hook against a real remote and pins the counterfactual: the identical
 push with the hook removed succeeds and destroys the other session's commit. A
-suite without that half would also pass against a hook git never runs.
+suite without that half would also pass against a hook git never runs. Both
+defects above were found by writing the **passing**-side cases the first suite
+lacked — that is the argument for the requirement, not coverage hygiene.

@@ -64,6 +64,19 @@ It resolves the tip with a live `git ls-remote`, prints every commit the push wo
 | `push-guard.ack-mismatch`           | you named a tip that is not the one on the remote                         |
 | `push-guard.stale-lease`            | the remote moved during the push                                          |
 | `push-guard.unfetched-remote-tip`   | the remote tip is not in your object store — `git fetch` and look         |
+| `push-guard.unverifiable-remote`    | the live query failed and the push is not provably non-destructive        |
+
+One code is an **allow**, not a refusal: `push-guard.unverified-fast-forward`. The live query
+failed, but the tip git advertised is an ancestor of what you are pushing, so the update provably
+destroys nothing and it is let through with a warning. Nothing is asserted that was not measured —
+if the ancestry cannot be established, the refusal above fires instead.
+
+**Two properties of the installation to know before you rely on it.** `core.hooksPath` is written
+**clone-wide**, so it applies to every worktree of the clone, while `.githooks/` is **per-worktree**
+— a worktree on a branch without that directory is unguarded, silently, because git skips a
+missing hook without error (#164). And setting `core.hooksPath` **disables every pre-existing
+`.git/hooks/*`**, including your own personal hooks; move them into `.githooks/` if you need them.
+The guard also makes `node` on `PATH` a precondition of pushing.
 
 To proceed after actually reading the work you are overwriting, name it — the value has to be read, not remembered:
 

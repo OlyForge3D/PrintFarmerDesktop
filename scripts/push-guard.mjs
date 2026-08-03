@@ -114,6 +114,48 @@ export function evaluateRefUpdate(update, facts) {
     };
   }
 
+  // The live query failed. Deciding from the advertised value is not a
+  // fallback to a worse fact — for THIS question it is a sufficient one: if
+  // the advertised tip is an ancestor of what we are pushing, the update adds
+  // commits and removes none, and that is true regardless of what `ls-remote`
+  // would have said. Fail open only where destruction is provably impossible.
+  //
+  // `provablyFastForward` is a tri-state and only `true` is evidence. `false`
+  // (not an ancestor) and `null` (we do not have the object, so the question
+  // is unanswerable) collapse into the same refusal. That collapse is
+  // deliberate: treating "unanswerable" as "destructive" is safe, treating it
+  // as "harmless" would be fail-open.
+  if (facts.liveQueryFailed) {
+    if (facts.provablyFastForward === true) {
+      return {
+        verdict: 'allow',
+        code: 'push-guard.unverified-fast-forward',
+        message: [
+          `WARNING: could not read ${remoteRef} from the remote, so this push was`,
+          'checked against the tip the remote advertised rather than a live query.',
+          'It adds commits and discards none, so nothing can be lost. A destructive',
+          'push in this state would have been refused.',
+          `  (${facts.liveQueryError.split('\n')[0]})`,
+        ].join('\n'),
+      };
+    }
+    const why =
+      facts.provablyFastForward === false
+        ? 'this push is not a fast-forward — it would discard commits that are on the remote.'
+        : 'the advertised tip is not in your object store, so what this push would discard cannot be determined.';
+    return {
+      verdict: 'refuse',
+      code: 'push-guard.unverifiable-remote',
+      message: [
+        `Could not read ${remoteRef} from the remote, and ${why}`,
+        `  (${facts.liveQueryError.split('\n')[0]})`,
+        '',
+        'Fetch, read what is there, and push again:',
+        `  git fetch origin ${remoteRef}`,
+      ].join('\n'),
+    };
+  }
+
   // git hands the hook the tip the remote advertised, which is normally the
   // truth. If our own live query disagrees, the remote moved mid-push and no
   // decision below can be trusted — refuse rather than pick a value. This is a
@@ -148,6 +190,9 @@ export function evaluateRefUpdate(update, facts) {
       code: 'push-guard.branch-delete',
       message: [
         `This deletes ${remoteRef}, discarding everything at ${live}.`,
+        '',
+        describe(discarded),
+        '',
         `If that is intended:  ${ACK_ENV}=${live} git push ...`,
       ].join('\n'),
     };
@@ -210,8 +255,18 @@ export function evaluateRefUpdate(update, facts) {
     (session) => !pushedSessions.has(session),
   );
   if (foreign.length > 0) {
+    // Exact membership, not substring. `includes` on the raw string would let
+    // an acknowledgement of `abc` satisfy a refusal naming `abc-def`, which is
+    // the same defect the trailer matching had to avoid: a session id is a
+    // token, and a prefix of it is not evidence of having read anything.
+    const acknowledgedIds = new Set(
+      ackForeign
+        .split(/[\s,]+/)
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0),
+    );
     const acknowledged = foreign.every((session) =>
-      ackForeign.includes(session),
+      acknowledgedIds.has(session),
     );
     if (!acknowledged) {
       return {
@@ -275,13 +330,53 @@ function git(args, options = {}) {
   });
 }
 
+/**
+ * The URL `git push` will actually use. `git push` resolves
+ * `remote.<name>.pushurl`; `git ls-remote <name>` resolves `remote.<name>.url`.
+ * Those differ by design in any clone that fetches over HTTPS and pushes over
+ * SSH (`pushurl`, `url.<base>.pushInsteadOf`), and querying the wrong one made
+ * the guard refuse plain fast-forwards that git was always going to accept —
+ * a permanent lockout, since the fix would have to be pushed through it.
+ *
+ * `git ls-remote --push` does not exist; this is the supported spelling. Falls
+ * back to the argument itself, which is correct when a bare URL was passed to
+ * `git push` rather than a remote name.
+ */
+export function readPushUrl(remote) {
+  try {
+    return git(['remote', 'get-url', '--push', remote]).trim() || remote;
+  } catch {
+    return remote;
+  }
+}
+
 /** Live remote tip. `ls-remote` queries the remote; `refs/remotes/**` does not. */
 export function readLiveRemoteSha(remote, ref) {
-  const output = git(['ls-remote', remote, ref]).trim();
+  const output = git(['ls-remote', readPushUrl(remote), ref]).trim();
   if (!output) return null;
   const first = output.split('\n')[0] ?? '';
   const sha = first.split('\t')[0]?.trim();
   return sha && sha.length > 0 ? sha : null;
+}
+
+/**
+ * Tri-state, and the three states are NOT interchangeable:
+ *   true  (exit 0)   — ancestor, so the update destroys nothing
+ *   false (exit 1)   — not an ancestor, so it does
+ *   null  (exit 128) — `fatal: Not a valid commit name`: we do not have the
+ *                      object, so the question is unanswerable
+ *
+ * Callers collapse `false` and `null` into the same refusal. That collapse is
+ * deliberate rather than incidental: only exit 0 is evidence of anything, and
+ * treating 128 as 1 is safe while treating it as 0 would be fail-open.
+ */
+export function isAncestor(ancestor, descendant) {
+  try {
+    git(['merge-base', '--is-ancestor', ancestor, descendant]);
+    return true;
+  } catch (error) {
+    return error && error.status === 1 ? false : null;
+  }
 }
 
 /**
@@ -326,9 +421,32 @@ export function readCommits(range) {
 }
 
 export function gatherFacts(update, remote, env = process.env) {
-  const liveRemoteSha = readLiveRemoteSha(remote, update.remoteRef);
+  // The live query is the one fact that depends on the network, so its failure
+  // is recorded as a FACT rather than thrown. Letting it throw put the whole
+  // decision behind a catch, so no branch of `evaluateRefUpdate` — including
+  // every allow — was reachable once it failed.
+  let liveRemoteSha = null;
+  let liveQueryFailed = false;
+  let liveQueryError = '';
+  try {
+    liveRemoteSha = readLiveRemoteSha(remote, update.remoteRef);
+  } catch (error) {
+    liveQueryFailed = true;
+    liveQueryError = error instanceof Error ? error.message : String(error);
+  }
+
   const facts = {
     liveRemoteSha,
+    liveQueryFailed,
+    liveQueryError,
+    // Only consulted when the live query failed; measured only then, because
+    // the advertised value is what it is measured against. `null` means the
+    // question could not be answered, which is not the same as `false`.
+    provablyFastForward: liveQueryFailed
+      ? isAbsent(update.remoteSha)
+        ? true
+        : isAncestor(update.remoteSha, update.localSha)
+      : null,
     // Measured on every path, so no caller can construct a `facts` shape this
     // function does not produce. Vacuously true when the remote has no tip:
     // there is then no object to be missing, and the new-branch allow returns
