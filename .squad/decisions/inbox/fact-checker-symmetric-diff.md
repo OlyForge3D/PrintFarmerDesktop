@@ -33,8 +33,18 @@ What that section requires, for any agent running the check:
   (one commit writing both, a long verbatim run, a repair recorded as made by reading
   the other), while **independence cannot be proved by provenance alone** — separate
   commits and authors are evidence, never proof, because a figure can be copied a week
-  later. ⚠️ is therefore the default, and ✅ requires positive evidence that the two
-  could not have been copied.
+  later. ⚠️ is therefore the default for any bare clean diff.
+- **✅ is conformance to the object, not a history of authorship.** Requiring proof that
+  two renderings could not have been copied makes ✅ unreachable, and a grade nothing can
+  earn is redefined the first time someone needs a clean result. Independence is a
+  precondition for **agreement** being informative, not a route to ✅. ✅ requires a
+  derivation from the non-rendering source that is published, re-runnable and
+  deterministic, with every enumerated rendering conforming to it. **Copying from the
+  object is verification; copying from another rendering is contagion.** The determinism
+  requirement is what discharges the author's own prior exposure to the figure — a
+  re-runner gets the same value whatever the author believed — though it does not
+  discharge bias in _what the author chose to measure_, which is why the derivation
+  itself must be published and not merely its output.
 - **A symmetric diff establishes divergence, not truth.** It cannot say which rendering
   is right, so never resolve by counting renderings: two that agree are **one** if they
   are dependent. Derive the value from the thing that is not a rendering — the code, the
@@ -61,10 +71,9 @@ What that section requires, for any agent running the check:
 
 The corrected check has been run, and `.squad/fact-checker/audit-trail.md` is no longer
 a single `n/a` entry. Five runs are recorded there: the two historical pairs in opposite
-directions, one dependent pair whose clean result is graded ⚠️ rather than ✅, one
-agreeing set that also grades ⚠️ under the tightened independence rule while still
-proving the check does not blanket-deny, and one live finding. No run earned ✅, which
-is the rule working rather than a gap in the evidence.
+directions, one dependent pair whose clean result is graded ⚠️ rather than ✅, one live
+finding, and one agreeing set graded **✅ by conformance to the enforcing constant** —
+which also proves the check does not blanket-deny.
 
 The live finding is the same diamond-DAG row count the log already records. Its repair
 fixed `.squad/skills/test-discipline/SKILL.md` and left a third rendering in
@@ -108,6 +117,23 @@ finding is unaffected and its decomposition is correct — the threat model clai
 quantity, so its phrase should pin which one it means. Suggested wording:
 _"32,767 rows are emitted for `m`-chain nodes — `2^15-1`, the paths summed over the
 chain, not the 16,384 distinct paths to its tail."_
+
+Harness output, so the correction can be checked rather than taken on trust. Rebuilds
+`diamondDag(14)` as `tests/viewer.partTree.test.tsx` defines it and walks it with a
+path-local `seen` set — the pre-fix behaviour the figure describes — counting each
+population separately rather than subtracting one reported figure from the other:
+
+```
+objects in fixture           : 29
+TOTAL rows emitted           : 49150
+  rows for m-chain nodes     : 32767
+  rows for s nodes           : 16383
+distinct paths to tail m14   : 16384
+m + s == total               : true
+```
+
+The harness source is in the pull request that closes #121, self-contained and runnable
+with `node`.
 
 Recorded rather than quietly fixed: the same imprecision was present in
 `.squad/skills/test-discipline/SKILL.md` and in the fact-checker's own first repair, and

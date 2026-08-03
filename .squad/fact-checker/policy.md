@@ -26,12 +26,12 @@ Empirical check of claims against sources. Triggered by `"fact-check this"`, `"v
 
 ### Confidence rating (every verified item gets one)
 
-| Rating                     | Meaning                                                       | Required next step                                            |
-| -------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------- |
-| ✅ **Verified**            | Confirmed via source, test, or direct observation             | None — proceed                                                |
-| ⚠️ **Unverified**          | Plausible but could not confirm (no source, source ambiguous) | Flag in the verification report; team decides whether to ship |
-| ❌ **Contradicted**        | Found evidence that contradicts the claim                     | **Blocking** — must be revised before ship                    |
-| 🔍 **Needs Investigation** | Requires deeper analysis beyond current scope                 | Flag + recommend a follow-up                                  |
+| Rating                     | Meaning                                                                                                                                                                                                                     | Required next step                                            |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| ✅ **Verified**            | Confirmed via source, test, or direct observation. For a symmetric diff, agreement between renderings is **not** confirmation — see [Grading](#grading--verified-is-conformance-to-the-object-not-a-history-of-authorship). | None — proceed                                                |
+| ⚠️ **Unverified**          | Plausible but could not confirm (no source, source ambiguous)                                                                                                                                                               | Flag in the verification report; team decides whether to ship |
+| ❌ **Contradicted**        | Found evidence that contradicts the claim                                                                                                                                                                                   | **Blocking** — must be revised before ship                    |
+| 🔍 **Needs Investigation** | Requires deeper analysis beyond current scope                                                                                                                                                                               | Flag + recommend a follow-up                                  |
 
 ---
 
@@ -59,7 +59,27 @@ The check is sound only where the renderings were **derived independently**. Whe
 - **Dependence can be proved.** One commit writing both renderings, a long verbatim run between the two sentences against a control of unrelated lines, or a repair whose own record says it was made by reading the other rendering — any of these settles it.
 - **Independence cannot be proved by provenance alone.** Separate commits, separate PRs and separate authors are **evidence** of independence, never proof: a figure can be copied across files a week later, and nothing in the history distinguishes that from two people measuring the same thing.
 
-So **⚠️ Unverified is the default for a clean result**, and ✅ Verified requires positive evidence that the renderings could not have been copied — a derivation from the underlying object, a measurement re-run at the source, or an author statement of method. Absence of a copying signal is not that evidence.
+So **⚠️ Unverified is the default for a clean result**, and a clean diff on its own never reaches ✅ however many renderings agree.
+
+**But independence is not the route to ✅, and defining it as such would make ✅ unreachable.** No repository records that two authors never read each other's files, so a grade requiring proof of that is decorative — and a grade nothing can earn gets quietly redefined the first time someone needs a clean result. Independence is a precondition for **agreement** being informative, and nothing more. It distinguishes a ⚠️ that is uninformative by construction from a ⚠️ that might mean something. It is not evidence of truth in either direction.
+
+### Grading — Verified is conformance to the object, not a history of authorship
+
+**Copying from the object is verification. Copying from another rendering is contagion.** That is the whole distinction, and it is what makes ✅ reachable.
+
+- **❌ Contradicted.** The renderings disagree, or one contradicts the object. Reported against the pair or the set.
+- **⚠️ Unverified.** The renderings agree and no derivation was performed. This is the **default** and the common case. Agreement is not evidence; it is the absence of one kind of evidence of error.
+- **✅ Verified.** All four required, and each stated in the record:
+  1. the value is derived from the **non-rendering source** — the enforcing constant, the fixture, the computation, the object itself;
+  2. the derivation is **published and re-runnable** by someone who does not trust the author;
+  3. it is **deterministic** — its output does not depend on what its author believed;
+  4. **every enumerated rendering conforms to it**, with the enumeration performed at the current head.
+
+Under this definition a document written by reading the constant is not a defect but the outcome the check wants: it conforms to the object, and no amount of copying can make it match a constant it does not match. What copying threatens is agreement _between renderings_, which is why agreement alone is graded ⚠️.
+
+**Requirement 3 is what discharges an author's own assumptions.** A deterministic derivation returns the same value to a re-runner regardless of what its author expected, so prior exposure to the figure does not contaminate the result. It does still bias **what the author chose to measure**, which is a real limitation, is not discharged by determinism, and is why the record must publish the derivation rather than its output.
+
+A worked example is on record: the part-tree row budget run in `.squad/fact-checker/audit-trail.md`, where `MAX_PART_TREE_ROWS` is the enforcing constant and the documents are checked against it rather than against each other.
 
 **A clean result on a dependent pair is a false negative, and must not be reported as a pass.** Dependence threatens the **clean** result. A disagreement between dependent renderings is still a finding: they were supposed to agree by construction and do not, which means a repair touched one and not the other.
 
