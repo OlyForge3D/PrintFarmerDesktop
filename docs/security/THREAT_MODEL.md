@@ -803,9 +803,9 @@ policies now consume it so that _acceptability_ is checked too:
   loudly (see T4.2).
 - **Third-party notices.** `scripts/generate-notices.mjs` enumerates the SBOM into
   `build/third-party-licenses.md`, staged and verified by regenerate-and-compare
-  (`scripts/verify-notices.mjs`) in both package smoke and release builds before any artifact can
-  be uploaded or published; the enumeration is code-unit ordered so it is byte-identical across
-  runners.
+  (`scripts/verify-notices.mjs`) in both the Release package job and release builds before any
+  artifact can be uploaded or published; the enumeration is code-unit ordered so it is
+  byte-identical across runners.
 
 Both lockfiles (`package-lock.json`, `native/Cargo.lock`) are committed. CI installs with
 `npm ci`; every workspace Cargo build, test and clippy command uses `--locked`; and package/release
@@ -886,10 +886,12 @@ mitigation is to separate deterministic checks (licences, bans, sources) from li
 checks (advisories), and to let only the deterministic ones block a pull request.
 
 **Implemented.** The licence gate (`verify-licenses.mjs`, T4.1) is deterministic and blocks in
-the Package job. The advisory gate (`audit-advisories.mjs`) runs in a dedicated non-required
-`advisories` job in **report mode**: findings at or above the threshold surface as `::warning::`
-annotations and the job stays green, so a newly published advisory never retroactively fails an
-unrelated pull request. The gate is nonetheless a real gate — `--mode block` exits non-zero on
+the Package job. The advisory gate (`audit-advisories.mjs`) runs in a dedicated `advisories` job
+in **report mode**: findings at or above the threshold surface as `::warning::` annotations and
+the job stays green, so a newly published advisory never retroactively fails an unrelated pull
+request. Its `Dependency advisories` context _is_ required by branch protection (verified against
+`branches/development/protection`); what makes it non-blocking is report mode, not absence from
+the required list. The gate is nonetheless a real gate — `--mode block` exits non-zero on
 any blocking advisory, and the threshold/waiver logic is unit-tested from both sides in
 `tests/supplyChainPolicy.test.ts`; only the CI wiring is non-blocking. Crucially, an inability to
 run the audit — tool missing, unparseable output, registry unreachable — exits non-zero in
