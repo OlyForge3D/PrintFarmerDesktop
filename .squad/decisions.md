@@ -438,3 +438,17 @@ Both statements were false within three minutes of being written, and the ruling
 **Why:** `:285` records that an unpinned present-tense claim about mutable text can be falsified by the act of writing it. This is the future-tense case, and it is worse in one specific way: the object is the author's own conduct, so there is no world-event to blame and no interval in which it was true. It is `:293`'s retelling pointed forward — a narrative with nothing to fail against — except that the author is also the mechanism that falsifies it.
 
 The freeze protocol at `:323` is the working form of this: a freeze is a control because it is **announced on the PR and checkable against the ref**, not because anyone promised to honour it.
+
+## 2026-08-03 — Ralph drives the whole backlog; epic exclusion lifted
+
+**By:** Ripley, at Jeff Papiez's direction.
+
+**What:** (1) Every open issue in `OlyForge3D/PrintFarmerDesktop` is triaged and carries a `squad:{member}` label. (2) The 2026-07-24 standing exclusion of epics #42 (Printer Calibration) and #44 (Snapmaker U1) and their children is **lifted**. Ralph's mandate is now to drive the entire open backlog to zero open issues, with nothing filtered out at the scan step.
+
+**Context.** An audit of the open board found all 14 open issues both unassigned on GitHub and unlabelled by member: `squad:{member}` appeared on none of them, and only #42 and #57 sat in the `squad` inbox. The routing table in `.squad/routing.md` was therefore inert — no issue could be picked up by anyone, because pickup is keyed on a label that no open issue carried. Triage assigned: Ripley #2, #42, #44, #57, #109; Bishop #80, #136, #138; Hicks #65, #122, #127; Vasquez #81; Fact Checker #119, #121; Dallas none (UI/a11y work is expected to fall out of #57's decomposition).
+
+**Why the exclusion is lifted:** it was scoped "until Jeff says otherwise" and he has. The original rationale — #42 was licensing-blocked and #44 was held out of sequencing — no longer holds for #42: its body records all twelve declared blockers closed as of 2026-07-29, #54 having merged via PR #137.
+
+**Note on #57.** It is a child of #42 and is not executable as a single unit: its acceptance criteria span licensing/provenance, capability rollout ordering, a cross-repository E2E matrix, security authorization, accessibility, reliability and documentation. It is held by Ripley to be decomposed into per-member child issues before any of it is delegated. Treating it as one deliverable would produce exactly the kind of scattered, unfinishable work item the 2026-07-24 sequencing policy exists to prevent.
+
+**Mechanism:** the existing hourly `Ralph - Backlog Driver` workflow was updated in place rather than duplicated. Its SCOPE EXCLUSION section was replaced with a no-exclusions mandate, and its embedded backlog snapshot — which still named epics #4, #5 and #6 as the in-scope chain weeks after all three closed — was replaced with the post-triage state. **The snapshot going stale unnoticed is itself the lesson**: a prompt-embedded board state is a claim about a mutable object, and this one was wrong for as long as it took anyone to look. The workflow already instructs Ralph to verify the board from `gh` each round; the snapshot is a hint, never an authority.
