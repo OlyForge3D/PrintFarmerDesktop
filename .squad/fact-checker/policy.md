@@ -53,11 +53,27 @@ Designating an authority makes the check one-directional: it can only fire when 
 
 The check is sound only where the renderings were **derived independently**. Where one was written from the other, they agree by construction and the diff returns nothing.
 
-**A clean result on a dependent pair is a false negative, and must not be reported as a pass.** Record it as ⚠️ **Unverified** with the dependence named and measured — one commit writing both files, a long verbatim run between the two sentences against a control of unrelated lines, or any equivalent evidence. ✅ **Verified** is available only when independence has been established, not assumed.
+**The test is asymmetric, and the asymmetry is the whole value of the grade.**
 
-Dependence threatens the **clean** result. A disagreement between dependent renderings is still a finding: they were supposed to agree by construction and do not, which means a repair touched one and not the other.
+- **Dependence can be proved.** One commit writing both renderings, a long verbatim run between the two sentences against a control of unrelated lines, or a repair whose own record says it was made by reading the other rendering — any of these settles it.
+- **Independence cannot be proved by provenance alone.** Separate commits, separate PRs and separate authors are **evidence** of independence, never proof: a figure can be copied across files a week later, and nothing in the history distinguishes that from two people measuring the same thing.
+
+So **⚠️ Unverified is the default for a clean result**, and ✅ Verified requires positive evidence that the renderings could not have been copied — a derivation from the underlying object, a measurement re-run at the source, or an author statement of method. Absence of a copying signal is not that evidence.
+
+**A clean result on a dependent pair is a false negative, and must not be reported as a pass.** Dependence threatens the **clean** result. A disagreement between dependent renderings is still a finding: they were supposed to agree by construction and do not, which means a repair touched one and not the other.
+
+### Resolution — the diff establishes divergence, not truth
+
+A symmetric diff with no authority tells you the renderings disagree. **It cannot tell you which one is right**, and nothing about the procedure entitles it to.
+
+- **Never resolve by counting renderings.** Two renderings that agree are **one rendering** if they are dependent, so a majority can be a single source copied twice. Repairing the minority to match the majority without establishing independence is the dependent-pair false negative committed deliberately, by the instrument built to catch it.
+- **Derive the value from the thing that is not a rendering** — the code, the constant, the fixture, the computation, the object itself. Publish the derivation so it can be re-run. Ground truth lives there, not in the prose.
+- **Where no such source exists**, the finding stands as a divergence and the resolution is escalated to the artifact owners. A guess dressed as a repair is worse than an open finding.
+- **Rule out "different quantities" before ruling "stale".** A symmetric diff cannot distinguish _one rendering is out of date_ from _the two are measuring different things_. Check the units and the slot first. Reporting the second as the first is a **false finding manufactured by the check itself**, and it will be believed, because the check that produced it was built to be trusted.
 
 ### Discharge
+
+**Resolve first, then repair.** Discharge acts on the value established by the resolution step above, never on the value the majority of renderings happened to carry.
 
 **A disagreement is discharged only by repairing every rendering.** Not by explaining why the two differ, and not by repairing the one whose author is nearest to hand. A note recording the difference leaves both readers with a defect, and a rule whose only requirement is that a disagreement be _detected_ is satisfied the moment detection occurs — so it cannot compel repair, and a rule that can be satisfied without protecting anything is worse than no rule.
 
