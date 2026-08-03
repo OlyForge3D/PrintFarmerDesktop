@@ -16,6 +16,14 @@
  * - A record can only carry the fields in {@link CALIBRATION_LOG_FIELDS}. There
  *   is no key for a header, a token, a credential, a photo, or a path, so no
  *   caller can put one in a record even by accident.
+ * - An allowlist of field *names* is not an allowlist of field *values*. Two
+ *   fields carry server-supplied content, so both are validated at the emitter
+ *   rather than trusted because their key is declared safe:
+ *   `errorCode` is checked for **runtime** membership of
+ *   {@link CALIBRATION_LOG_ERROR_CODES} — the union is erased at runtime, so a
+ *   cast or a parse could otherwise land arbitrary backend text in it — and
+ *   `dispatchRevision` must match {@link OPAQUE_REVISION_SHAPE}, because the
+ *   wire schema bounds it to 512 arbitrary characters and nothing else.
  * - {@link CalibrationLogInput} has **no `message` key**. Free text cannot be
  *   supplied at all; `message` is looked up from a fixed catalog keyed by
  *   `errorCode`, falling back to `event`. In particular a
@@ -94,9 +102,30 @@ export const CALIBRATION_LOG_ERROR_CODES = [
   'DISPOSED',
   // Neither of the above.
   'unexpected',
+  // Substituted when a caller supplies a code that is not a runtime member of
+  // this list. The unions are erased at runtime, so without this a cast or a
+  // parse could put backend text into an allowlisted field.
+  'unknownErrorCode',
 ] as const;
 export type CalibrationLogErrorCode =
   (typeof CALIBRATION_LOG_ERROR_CODES)[number];
+
+/** Runtime membership set for {@link CALIBRATION_LOG_ERROR_CODES}. */
+const KNOWN_ERROR_CODES: ReadonlySet<string> = new Set(
+  CALIBRATION_LOG_ERROR_CODES,
+);
+
+/**
+ * Coerce a caller-supplied error code to a vocabulary member. A value that is
+ * not a runtime member is replaced rather than dropped, so a drifted or
+ * server-influenced code leaves visible evidence instead of silently becoming
+ * a field that reads as trustworthy.
+ */
+export function safeErrorCode(value: string): CalibrationLogErrorCode {
+  return KNOWN_ERROR_CODES.has(value)
+    ? (value as CalibrationLogErrorCode)
+    : 'unknownErrorCode';
+}
 
 type AssertCovered<TUnion extends CalibrationLogErrorCode> = TUnion;
 /** Fails `tsc` if a member is added to `CalibrationHttpErrorCode` and not here. */
@@ -104,6 +133,31 @@ export type HttpErrorCodesAreLoggable = AssertCovered<CalibrationHttpErrorCode>;
 /** Fails `tsc` if a member is added to `CalibrationEngineErrorCode` and not here. */
 export type EngineErrorCodesAreLoggable =
   AssertCovered<CalibrationEngineErrorCode>;
+
+/**
+ * Where a record's `correlationId` came from.
+ *
+ * `flowStart` — this stage minted it because it *is* the start of a
+ * user-initiated flow (`generation.requested`).
+ *
+ * `continued` — resolved from an identifier bound by an earlier stage. The
+ * normal case, and the one that proves correlation is working.
+ *
+ * `resumed` — this stage could not resolve any identifier it holds, so it
+ * minted a new ID mid-flow. That happens when the app restarted, when the user
+ * resumed a job the desktop never generated, **or when the registry evicted the
+ * flow's bindings under its capacity bound**. See the eviction policy in
+ * `calibrationCorrelation.ts`. A `resumed` origin on a non-generation event is
+ * the signature that a flow's logs stopped correlating — it is emitted
+ * precisely so that condition is diagnosable rather than silent.
+ */
+export const CALIBRATION_CORRELATION_ORIGINS = [
+  'flowStart',
+  'continued',
+  'resumed',
+] as const;
+export type CalibrationCorrelationOrigin =
+  (typeof CALIBRATION_CORRELATION_ORIGINS)[number];
 
 /**
  * The complete set of keys a record may carry, in emission order. Adding a key
@@ -116,6 +170,7 @@ export const CALIBRATION_LOG_FIELDS = [
   'component',
   'event',
   'correlationId',
+  'correlationOrigin',
   'operationId',
   'dispatchId',
   'dispatchRevision',
@@ -140,11 +195,17 @@ export interface CalibrationLogRecord {
   event: string;
   /** Stable across every stage of one user-initiated calibration flow. */
   correlationId?: string;
+  /** How this stage obtained {@link CalibrationLogRecord.correlationId}. */
+  correlationOrigin?: CalibrationCorrelationOrigin;
   /** Per-call idempotency key; the value support gives the server team. */
   operationId?: string;
   /** Queue job id. Present on queue dispatch and bed-clear acknowledgement. */
   dispatchId?: string;
-  /** Dispatch-state ETag/rowversion. Opaque and safe. */
+  /**
+   * Dispatch-state ETag/rowversion. **Server-controlled text**, validated at
+   * the emitter against {@link OPAQUE_REVISION_SHAPE} — the wire schema bounds
+   * it to 512 arbitrary characters and constrains nothing else.
+   */
   dispatchRevision?: string;
   profileId?: string;
   projectId?: string;
@@ -168,6 +229,7 @@ export interface CalibrationLogInput {
   component: CalibrationLogComponent;
   event: string;
   correlationId?: string | null;
+  correlationOrigin?: CalibrationCorrelationOrigin;
   operationId?: string | null;
   dispatchId?: string | null;
   dispatchRevision?: string | null;
@@ -219,6 +281,8 @@ const ERROR_MESSAGES: Record<CalibrationLogErrorCode, string> = {
   CANCELLED: 'The calibration operation was cancelled.',
   DISPOSED: 'The calibration engine was disposed mid-operation.',
   unexpected: 'An unexpected error interrupted the calibration operation.',
+  unknownErrorCode:
+    'The operation failed with a code this build does not recognise; the server may be newer than the desktop app.',
 };
 
 const EVENT_MESSAGES: Record<string, string> = {
@@ -236,13 +300,15 @@ const EVENT_MESSAGES: Record<string, string> = {
 
 /**
  * The safe text for a record. Error code wins over event, because when an
- * operation fails the code is the more specific fact.
+ * operation fails the code is the more specific fact. An unrecognised code
+ * resolves through {@link safeErrorCode}, so a lookup can never return
+ * `undefined` and leave a record with no message.
  */
 export function calibrationLogMessage(
   event: string,
   errorCode?: CalibrationLogErrorCode,
 ): string {
-  if (errorCode !== undefined) return ERROR_MESSAGES[errorCode];
+  if (errorCode !== undefined) return ERROR_MESSAGES[safeErrorCode(errorCode)];
   return EVENT_MESSAGES[event] ?? event;
 }
 
@@ -279,13 +345,45 @@ function safeNumber(value: number): number | undefined {
   return Math.trunc(value);
 }
 
+// --- Opaque revision guard --------------------------------------------------
+
+/** Substituted for a revision that fails {@link safeOpaqueRevision}. */
+export const UNSAFE_REVISION_PLACEHOLDER = '[unsafe-revision-dropped]';
+
+/**
+ * Base-64, optionally padded. A SQL Server rowversion is 8 bytes, so 12
+ * characters plus padding; the bound is generous enough for any real ETag and
+ * far short of anything that could carry a payload.
+ */
+const OPAQUE_REVISION_SHAPE = /^[A-Za-z0-9+/]{1,64}={0,2}$/;
+
+/**
+ * Constrain a dispatch revision to a shape *we* specify.
+ *
+ * `calibrationWire.ts` documents these as "opaque base-64" and validates them
+ * only as `z.string().max(512)`. Opaque means we do not know what is in it,
+ * which is the opposite of safe: whatever the server puts there would otherwise
+ * reach a log record through a field whose key is on the allowlist. So the
+ * emitter enforces the documented shape and substitutes a placeholder
+ * otherwise, leaving evidence rather than either a leak or a silent drop.
+ */
+export function safeOpaqueRevision(value: string): string {
+  return OPAQUE_REVISION_SHAPE.test(value)
+    ? value
+    : UNSAFE_REVISION_PLACEHOLDER;
+}
+
 // --- Record construction ----------------------------------------------------
 
+/**
+ * Client-minted or server-minted identifiers. `dispatchRevision` is deliberately
+ * *not* here: it is base-64, and base-64 contains `/`, which
+ * {@link safeIdentifier} rejects as a path separator. It gets its own guard.
+ */
 const IDENTIFIER_FIELDS = [
   'correlationId',
   'operationId',
   'dispatchId',
-  'dispatchRevision',
   'profileId',
   'projectId',
   'attemptId',
@@ -294,7 +392,9 @@ const IDENTIFIER_FIELDS = [
 
 /**
  * Build a record from an input. Only allowlisted fields survive, identifiers
- * pass {@link safeIdentifier}, and `message` comes from the catalog.
+ * pass {@link safeIdentifier}, the dispatch revision passes
+ * {@link safeOpaqueRevision}, the error code must be a runtime member of the
+ * vocabulary, and `message` comes from the catalog.
  */
 export function buildCalibrationLogRecord(
   input: CalibrationLogInput,
@@ -310,9 +410,17 @@ export function buildCalibrationLogRecord(
     const value = input[field];
     if (typeof value === 'string') record[field] = safeIdentifier(value);
   }
+  if (typeof input.dispatchRevision === 'string') {
+    record.dispatchRevision = safeOpaqueRevision(input.dispatchRevision);
+  }
+  if (input.correlationOrigin !== undefined) {
+    record.correlationOrigin = input.correlationOrigin;
+  }
   if (input.outcome !== undefined) record.outcome = input.outcome;
-  if (input.errorCode !== undefined) record.errorCode = input.errorCode;
-  record.message = calibrationLogMessage(input.event, input.errorCode);
+  const errorCode =
+    input.errorCode === undefined ? undefined : safeErrorCode(input.errorCode);
+  if (errorCode !== undefined) record.errorCode = errorCode;
+  record.message = calibrationLogMessage(input.event, errorCode);
   if (typeof input.httpStatus === 'number') {
     const status = safeNumber(input.httpStatus);
     if (status !== undefined) record.httpStatus = status;
@@ -375,8 +483,6 @@ export function emitCalibrationLog(
 }
 
 // --- Error classification ---------------------------------------------------
-
-const KNOWN_ERROR_CODES = new Set<string>(CALIBRATION_LOG_ERROR_CODES);
 
 /**
  * Classify a thrown value into a typed code and an HTTP status.

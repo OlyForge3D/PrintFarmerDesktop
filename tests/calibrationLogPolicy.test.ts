@@ -19,25 +19,51 @@
  * the calibration handlers. `sceneCache.ts`, `updates.ts` and `main.ts` are
  * deliberately out of scope — main.ts forwards the *renderer's* console, which
  * is a different problem.
+ *
+ * ## Why the surface is named, and then checked against disk
+ *
+ * A surface resolved only by glob can silently cover nothing: rename a module,
+ * or let a path pattern drift, and the scan runs over fewer files — or zero —
+ * and still passes every "no offender" assertion. Planting a console call
+ * proves the detector fires for a file *still in the set*; it says nothing
+ * about the files that dropped out.
+ *
+ * So the list below is written out by name, and two assertions guard it from
+ * both sides: every named file must exist on disk, and the disk must contain no
+ * calibration module the list omits. One side going empty breaks the other.
  */
 
 import path from 'node:path';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const mainDir = path.join(repoRoot, 'src', 'main');
 
-/** The calibration surface, resolved from disk so a new module cannot slip past. */
-const CALIBRATION_SURFACE: string[] = [
-  ...readdirSync(mainDir).filter(
-    (name) => name.startsWith('calibration') && name.endsWith('.ts'),
-  ),
+/**
+ * The calibration surface, named rather than globbed. See the module docblock:
+ * a glob that resolves to fewer files still passes every scan below.
+ */
+const CALIBRATION_SURFACE: readonly string[] = [
+  'calibrationAssetManifest.ts',
+  'calibrationCorrelation.ts',
+  'calibrationDiagnostics.ts',
+  'calibrationEngine.ts',
+  'calibrationFreshness.ts',
+  'calibrationHttp.ts',
+  'calibrationImportV4.ts',
+  'calibrationLog.ts',
+  'calibrationPhotos.ts',
+  'calibrationService.ts',
+  'calibrationWire.ts',
   'syncEngine.ts',
   'serverProfiles.ts',
   'sidecar.ts',
   'ipc.ts',
 ];
+
+/** The cardinality the list above is expected to have, pinned so a deletion is loud. */
+const EXPECTED_SURFACE_SIZE = 15;
 
 /**
  * Direct stream writes are the obvious way to evade a console ban, so the two
@@ -64,9 +90,9 @@ function offendingLines(source: string, pattern: RegExp): number[] {
 
 describe('calibration logging policy', () => {
   it('resolves a non-empty calibration surface including every quoted module', () => {
-    // Without this the scan below is vacuous: an empty file list passes every
-    // "no offender" assertion while proving nothing at all.
-    expect(CALIBRATION_SURFACE.length).toBeGreaterThan(8);
+    // Without this the scan below is vacuous: an empty or shrunken file list
+    // passes every "no offender" assertion while proving nothing at all.
+    expect(CALIBRATION_SURFACE.length).toBe(EXPECTED_SURFACE_SIZE);
     for (const required of [
       'calibrationHttp.ts',
       'calibrationEngine.ts',
@@ -78,6 +104,33 @@ describe('calibration logging policy', () => {
     ]) {
       expect(CALIBRATION_SURFACE).toContain(required);
     }
+  });
+
+  it('scans only files that exist on disk', () => {
+    // A named list can drift the other way: an entry that no longer exists
+    // would throw on read, or worse, be quietly skipped by a future refactor.
+    const missing = CALIBRATION_SURFACE.filter(
+      (file) => !existsSync(path.join(mainDir, file)),
+    );
+    expect(
+      missing,
+      `calibration surface names files that are not on disk: ${missing.join(', ') || '(none)'}`,
+    ).toEqual([]);
+  });
+
+  it('names every calibration module on disk', () => {
+    // The other half of the symmetry. A new calibration module that nobody adds
+    // to the list would otherwise be exempt from the console ban forever.
+    const onDisk = readdirSync(mainDir).filter(
+      (name) => name.startsWith('calibration') && name.endsWith('.ts'),
+    );
+    const unlisted = onDisk.filter(
+      (name) => !CALIBRATION_SURFACE.includes(name),
+    );
+    expect(
+      unlisted,
+      `calibration modules exist that the surface list omits: ${unlisted.join(', ') || '(none)'}`,
+    ).toEqual([]);
   });
 
   it('detects a bare console call when one is present', () => {

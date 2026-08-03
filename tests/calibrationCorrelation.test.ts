@@ -131,4 +131,67 @@ describe('CalibrationCorrelationRegistry', () => {
       'corr-orchestration',
     );
   });
+
+  it('reports how it answered, so a continued flow is distinguishable', () => {
+    const { registry } = counted();
+    const first = registry.beginFlow({ attempt: ATTEMPT });
+    const later = registry.resolveOrBeginWithOrigin([['attempt', ATTEMPT]]);
+    expect(later.correlationId).toBe(first);
+    expect(later.origin).toBe('continued');
+  });
+
+  it('marks a flow it has never seen as resumed rather than continued', () => {
+    const { registry } = counted();
+    const cold = registry.resolveOrBeginWithOrigin([['job', JOB]]);
+    // Assert the value, not the key: an origin that were always undefined
+    // would satisfy a presence check and tell an operator nothing.
+    expect(cold.origin).toBe('resumed');
+    expect(cold.correlationId).not.toBe('');
+  });
+
+  it('declares a lost correlation when eviction drops a flow mid-operation', () => {
+    // The eviction trapdoor: the flow whose bindings age out is a long, slow,
+    // failing one, which is exactly the incident the runbooks exist for. This
+    // pins what a stage emits *after* that has happened, so #160 can describe a
+    // signature rather than a silence.
+    const { registry, minted } = counted();
+    const original = registry.beginFlow({ attempt: ATTEMPT });
+    registry.bind('job', JOB, original);
+
+    // Push the flow's bindings past the bound with unrelated traffic.
+    const bound = new CalibrationCorrelationRegistry({
+      maxEntries: 4,
+      mintId: () => 'unused',
+    });
+    bound.bind('attempt', ATTEMPT, 'corr-victim');
+    bound.bind('job', JOB, 'corr-victim');
+    for (let index = 0; index < 8; index += 1) {
+      bound.bind(
+        'job',
+        `filler-${String(index)}`,
+        `corr-filler-${String(index)}`,
+      );
+    }
+    expect(
+      bound.resolve('job', JOB),
+      'the eviction never happened, so the assertions below prove nothing',
+    ).toBeNull();
+
+    const after = bound.resolveOrBeginWithOrigin([['job', JOB]]);
+    expect(
+      after.correlationId,
+      'an evicted flow must not silently reuse the correlation ID it lost',
+    ).not.toBe('corr-victim');
+    expect(
+      after.origin,
+      'an evicted flow must announce that its later stages are no longer correlated',
+    ).toBe('resumed');
+
+    // The unevicted registry is the control: same call, and it continues.
+    expect(registry.resolveOrBeginWithOrigin([['job', JOB]])).toEqual({
+      correlationId: original,
+      origin: 'continued',
+    });
+    expect(minted()).toBe(1);
+  });
 });

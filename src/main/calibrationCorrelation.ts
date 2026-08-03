@@ -16,10 +16,28 @@
  * Entries are bounded and evicted oldest-first: a long-running desktop session
  * starts many flows and none of them may accumulate without limit.
  *
+ * ## Eviction policy, and why it is visible
+ *
+ * The bound is {@link DEFAULT_MAX_ENTRIES} bindings — not flows; a flow holds
+ * three or four. Eviction is least-recently-bound first, and a binding is
+ * re-inserted on every resolve, so an active flow stays alive and the entries
+ * that go are the ones nothing has touched.
+ *
+ * A capacity limit that degrades silently would be a trapdoor: the flow whose
+ * bindings get evicted is a long, slow one, which is exactly the failing
+ * calibration an incident is about. So {@link CalibrationCorrelationRegistry.resolveOrBegin}
+ * reports **how** it answered. When it cannot resolve any identifier it holds
+ * and mints a new ID mid-flow — after an eviction, after an app restart, or on
+ * a job the desktop never generated — the stage emits
+ * `correlationOrigin: 'resumed'`. A `resumed` origin on anything other than a
+ * generation event is the operator-visible signature that a flow's logs have
+ * stopped correlating, and #160 documents it as such.
+ *
  * @module calibrationCorrelation
  */
 
 import { randomUUID } from 'node:crypto';
+import type { CalibrationCorrelationOrigin } from './calibrationLog.js';
 
 /** The kinds of identifier a correlation ID can be reached through. */
 export type CalibrationCorrelationKey =
@@ -90,21 +108,32 @@ export class CalibrationCorrelationRegistry {
    * new flow if none is. Used by stages that may legitimately be entered
    * without a preceding generation request — polling a job after a restart, for
    * instance — so a record always carries a correlation ID rather than a hole.
+   *
+   * Returns the origin alongside the ID. A caller that discards the origin
+   * turns an eviction into silence; see the eviction policy in the module
+   * docblock.
    */
-  resolveOrBegin(
+  resolveOrBeginWithOrigin(
     candidates: ReadonlyArray<[CalibrationCorrelationKey, string | null]>,
-  ): string {
+  ): { correlationId: string; origin: CalibrationCorrelationOrigin } {
     for (const [kind, id] of candidates) {
       const found = this.resolve(kind, id);
       if (found !== null) {
         // Bind the remaining identifiers so later stages resolve too.
         this.bindAll(candidates, found);
-        return found;
+        return { correlationId: found, origin: 'continued' };
       }
     }
     const correlationId = this.mintId();
     this.bindAll(candidates, correlationId);
-    return correlationId;
+    return { correlationId, origin: 'resumed' };
+  }
+
+  /** {@link resolveOrBeginWithOrigin} when the caller already knows the origin. */
+  resolveOrBegin(
+    candidates: ReadonlyArray<[CalibrationCorrelationKey, string | null]>,
+  ): string {
+    return this.resolveOrBeginWithOrigin(candidates).correlationId;
   }
 
   private bindAll(

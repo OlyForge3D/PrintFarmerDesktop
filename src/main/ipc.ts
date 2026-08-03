@@ -88,6 +88,7 @@ import {
   emitCalibrationLog,
   describeCalibrationFailure,
 } from './calibrationLog.js';
+import type { CalibrationCorrelationOrigin } from './calibrationLog.js';
 import { calibrationCorrelation } from './calibrationCorrelation.js';
 import { calibrationDiagnostics } from './calibrationDiagnostics.js';
 
@@ -1781,12 +1782,14 @@ export function registerIpcHandlers(
         attempt: request.attemptId,
         operation: request.operationId,
       });
+      const correlationOrigin = 'flowStart' as const;
       const startedAt = Date.now();
       emitCalibrationLog({
         level: 'info',
         component: 'calibration.http',
         event: 'generation.requested',
         correlationId,
+        correlationOrigin,
         operationId: request.operationId,
         profileId: selectedId,
         projectId: request.projectId,
@@ -1811,6 +1814,7 @@ export function registerIpcHandlers(
           component: 'calibration.http',
           event: 'generation.submitted',
           correlationId,
+          correlationOrigin,
           operationId: request.operationId,
           profileId: selectedId,
           projectId: request.projectId,
@@ -1831,6 +1835,7 @@ export function registerIpcHandlers(
           component: 'calibration.http',
           event: 'generation.requested',
           correlationId,
+          correlationOrigin,
           operationId: request.operationId,
           profileId: selectedId,
           projectId: request.projectId,
@@ -1874,9 +1879,10 @@ export function registerIpcHandlers(
       // Resolves the ID minted at the generation request. `resolveOrBegin`
       // rather than `resolve` so a poll that follows an app restart still
       // carries an ID a runbook can grep, instead of a hole.
-      const correlationId = calibrationCorrelation.resolveOrBegin([
-        ['orchestration', request.orchestrationId],
-      ]);
+      const { correlationId, origin: correlationOrigin } =
+        calibrationCorrelation.resolveOrBeginWithOrigin([
+          ['orchestration', request.orchestrationId],
+        ]);
       const startedAt = Date.now();
       try {
         const remote = await calibrationHttp.getOrchestrationStatus(
@@ -1899,6 +1905,7 @@ export function registerIpcHandlers(
           component: 'calibration.http',
           event: 'orchestration.polled',
           correlationId,
+          correlationOrigin,
           operationId: remote.operationId,
           profileId: selectedId,
           projectId: remote.projectId,
@@ -1949,6 +1956,7 @@ export function registerIpcHandlers(
           component: 'calibration.http',
           event: 'orchestration.polled',
           correlationId,
+          correlationOrigin,
           profileId: selectedId,
           orchestrationId: request.orchestrationId,
           outcome: 'failed',
@@ -2023,11 +2031,17 @@ export function registerIpcHandlers(
       // until the response reveals the attempt this job belongs to — minting
       // eagerly would split one flow across two correlation IDs.
       let correlationId = calibrationCorrelation.resolve('job', request.jobId);
-      const flowId = (): string =>
-        correlationId ??
-        (correlationId = calibrationCorrelation.resolveOrBegin([
+      let correlationOrigin: CalibrationCorrelationOrigin =
+        correlationId === null ? 'resumed' : 'continued';
+      const flowId = (): string => {
+        if (correlationId !== null) return correlationId;
+        const resolved = calibrationCorrelation.resolveOrBeginWithOrigin([
           ['job', request.jobId ?? null],
-        ]));
+        ]);
+        correlationId = resolved.correlationId;
+        correlationOrigin = resolved.origin;
+        return correlationId;
+      };
       const startedAt = Date.now();
       try {
         const remote = await calibrationHttp.getQueueJob(
@@ -2042,6 +2056,7 @@ export function registerIpcHandlers(
             component: 'calibration.http',
             event: 'queue.stateRead',
             correlationId: flowId(),
+            correlationOrigin,
             dispatchId: request.jobId,
             profileId: selectedId,
             projectId: request.projectId,
@@ -2063,15 +2078,18 @@ export function registerIpcHandlers(
         }
         // The attempt binding ties the queue job back to the flow that
         // generated it, so a job seen first here still resolves later stages.
-        correlationId = calibrationCorrelation.resolveOrBegin([
+        const resolved = calibrationCorrelation.resolveOrBeginWithOrigin([
           ['job', remote.id],
           ['attempt', remote.calibrationAttemptId],
         ]);
+        correlationId = resolved.correlationId;
+        correlationOrigin = resolved.origin;
         emitCalibrationLog({
           level: 'info',
           component: 'calibration.http',
           event: 'queue.stateRead',
           correlationId,
+          correlationOrigin,
           dispatchId: remote.id,
           dispatchRevision: remote.dispatchStateRowVersion,
           profileId: selectedId,
@@ -2106,6 +2124,7 @@ export function registerIpcHandlers(
           component: 'calibration.http',
           event: 'queue.stateRead',
           correlationId: flowId(),
+          correlationOrigin,
           dispatchId: request.jobId,
           profileId: selectedId,
           projectId: request.projectId,
@@ -2147,10 +2166,11 @@ export function registerIpcHandlers(
       // specific queue job — the prerequisite sync check is not applicable here.
       const signal = AbortSignal.timeout(15_000);
       const ctx = await profiles.getAuthenticatedContext(selectedId);
-      const correlationId = calibrationCorrelation.resolveOrBegin([
-        ['job', request.jobId],
-        ['operation', request.operationId],
-      ]);
+      const { correlationId, origin: correlationOrigin } =
+        calibrationCorrelation.resolveOrBeginWithOrigin([
+          ['job', request.jobId],
+          ['operation', request.operationId],
+        ]);
       const startedAt = Date.now();
       try {
         const result = await calibrationHttp.acknowledgeBedClearAndStart(
@@ -2170,6 +2190,7 @@ export function registerIpcHandlers(
             component: 'calibration.http',
             event: 'bedClear.revisionConflict',
             correlationId,
+            correlationOrigin,
             operationId: request.operationId,
             dispatchId: request.jobId,
             dispatchRevision: result.dispatchStateETag,
@@ -2191,6 +2212,7 @@ export function registerIpcHandlers(
           component: 'calibration.http',
           event: 'bedClear.acknowledged',
           correlationId,
+          correlationOrigin,
           operationId: request.operationId,
           dispatchId: request.jobId,
           dispatchRevision: result.dispatchStateETag,
@@ -2211,6 +2233,7 @@ export function registerIpcHandlers(
           component: 'calibration.http',
           event: 'bedClear.acknowledged',
           correlationId,
+          correlationOrigin,
           operationId: request.operationId,
           dispatchId: request.jobId,
           profileId: selectedId,

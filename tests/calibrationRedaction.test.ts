@@ -51,7 +51,8 @@ import {
   it,
   vi,
 } from 'vitest';
-import { rmSync } from 'node:fs';
+import { readdirSync, rmSync } from 'node:fs';
+import path from 'node:path';
 import { IpcChannel } from '@shared/ipc';
 import {
   captureCalibrationLogs,
@@ -70,6 +71,19 @@ type Handler = (event: unknown, request: unknown) => unknown;
  * unhandled `EPERM: rmdir`. Retarget is irrelevant here, so give this file its
  * own temp root.
  */
+/**
+ * `retargetArtifacts` claims `<tmpdir>/PrintFarmer/retarget` and, on
+ * `initialize()`, reaps sibling instance directories whose owner process is
+ * gone. That is right in production and hostile in a test: this file registers
+ * the IPC handlers several times, so several instances reap the same tree
+ * concurrently and race each other into `EPERM: rmdir` / `ENOENT: lstat`.
+ * Vitest reports those as unhandled rejections and exits non-zero even with
+ * every test green.
+ *
+ * The initialize call is also a floating promise in `ipc.ts`, so the test
+ * cannot await it. Handing every caller its own fresh root removes the shared
+ * tree the instances were fighting over.
+ */
 const tempRootRef = vi.hoisted(() => ({ path: '' }));
 
 vi.mock('node:os', async (importOriginal) => {
@@ -79,7 +93,14 @@ vi.mock('node:os', async (importOriginal) => {
   tempRootRef.path = fs.mkdtempSync(
     p.join(actual.tmpdir(), 'pf-calibration-log-'),
   );
-  return { ...actual, default: actual, tmpdir: () => tempRootRef.path };
+  // `retargetArtifacts.ts` imports the default export, so the override has to
+  // be on the default too. Returning the unmodified `actual` as `default` left
+  // the real temp dir in play and made this mock silently do nothing.
+  const patched = {
+    ...actual,
+    tmpdir: () => fs.mkdtempSync(p.join(tempRootRef.path, 'root-')),
+  };
+  return { ...patched, default: patched };
 });
 
 const electronState = vi.hoisted(() => ({
@@ -301,10 +322,33 @@ afterEach(() => {
   calibrationCorrelation.clear();
 });
 
-afterAll(() => {
-  if (tempRootRef.path !== '') {
-    rmSync(tempRootRef.path, { recursive: true, force: true });
+const TEMP_ROOT_PREFIX = 'pf-calibration-log-';
+
+/**
+ * Remove the roots left behind by previous runs. Safe because nothing in this
+ * process owns them; see the comment in `afterAll` for why cleanup cannot
+ * happen at the end of the run that created them.
+ */
+function reapStaleTempRoots(): void {
+  if (tempRootRef.path === '') return;
+  const parent = path.dirname(tempRootRef.path);
+  for (const entry of readdirSync(parent)) {
+    if (!entry.startsWith(TEMP_ROOT_PREFIX)) continue;
+    const candidate = path.join(parent, entry);
+    if (candidate === tempRootRef.path) continue;
+    rmSync(candidate, { recursive: true, force: true });
   }
+}
+
+afterAll(() => {
+  // Deliberately no `rmSync` here. `ipc.ts:237` calls
+  // `retargetArtifacts.initialize()` as a floating promise, so this file has no
+  // handle to await; deleting the tree in `afterAll` removed directories out
+  // from under an initialize still in flight and produced an unhandled
+  // `ENOENT: lstat`, which fails the run with every test green. Instead the
+  // roots are left in the OS temp directory and reaped by the *next* run, when
+  // nothing is holding them. See the known non-fixes in the PR body.
+  reapStaleTempRoots();
 });
 
 // ==========================================================================
@@ -420,6 +464,41 @@ describe('correlation across one calibration operation', () => {
         .map((record) => `${record.event}=${String(record.correlationId)}`)
         .join(', ')}`,
     ).toBe(1);
+  });
+
+  it('reports the correlation origin as a value on every stage of a live flow', async () => {
+    // The origin is what makes a lost correlation diagnosable rather than
+    // silent, so it has to be a real value on real records — not a field that
+    // only ever gets set in a unit test. A whole flow that never restarts and
+    // never evicts must show `flowStart` once and `continued` thereafter; a
+    // `resumed` here would mean correlation broke in the happy path.
+    const records = await runWholeFlow();
+    const staged = records.filter((record) =>
+      [
+        'generation.submitted',
+        'orchestration.polled',
+        'queue.stateRead',
+        'bedClear.acknowledged',
+      ].includes(record.event),
+    );
+    expect(staged).toHaveLength(4);
+    const origins = staged.map(
+      (record) => `${record.event}=${String(record.correlationOrigin)}`,
+    );
+    for (const record of staged) {
+      expect(
+        record.correlationOrigin,
+        `a stage emitted no correlation origin: ${origins.join(', ')}`,
+      ).toBeDefined();
+    }
+    expect(
+      staged.filter((record) => record.correlationOrigin === 'resumed'),
+      `an uninterrupted flow reported a lost correlation: ${origins.join(', ')}`,
+    ).toEqual([]);
+    expect(
+      staged[0]?.correlationOrigin,
+      `the flow start did not declare itself: ${origins.join(', ')}`,
+    ).toBe('flowStart');
   });
 
   it('carries distinct operation ID values where the stages use distinct idempotency keys', async () => {

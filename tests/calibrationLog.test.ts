@@ -22,8 +22,12 @@ import {
   describeCalibrationFailure,
   emitCalibrationLog,
   resetCalibrationLogSink,
+  safeErrorCode,
   safeIdentifier,
+  safeOpaqueRevision,
+  UNSAFE_REVISION_PLACEHOLDER,
 } from '../src/main/calibrationLog.js';
+import type { CalibrationLogErrorCode } from '../src/main/calibrationLog.js';
 import { CalibrationHttpError } from '../src/main/calibrationHttp.js';
 import { CalibrationEngineError } from '../src/main/calibrationEngine.js';
 
@@ -269,5 +273,95 @@ describe('sink', () => {
     second.stop();
     expect(second.records).toHaveLength(1);
     expect(capture.records).toHaveLength(1);
+  });
+});
+
+/**
+ * An allowlist of field *names* is not an allowlist of field *values*. Two of
+ * the declared-safe fields carry text the server chose: `errorCode`, whose
+ * TypeScript union is erased at runtime and so does not constrain what a cast
+ * or a parse can put there, and `dispatchRevision`, an ETag whose format is the
+ * server's decision and not ours.
+ *
+ * Every other redaction test in this suite injects a secret into the *input*
+ * and asserts it does not reach the output. A leak through one of these two
+ * fields arrives through a field those tests already trust, so it is invisible
+ * to all of them. These tests close that specific hole.
+ */
+describe('server-controlled values inside allowlisted fields', () => {
+  it('replaces an error code outside the union with a fixed one', () => {
+    // The cast is the point: this is what a `response.code as ErrorCode`, or a
+    // schema that widened on the server, would actually do at runtime.
+    const hostile = `unauthorized_${JWT}` as unknown as CalibrationLogErrorCode;
+    const record = buildCalibrationLogRecord({
+      level: 'error',
+      component: 'calibration.http',
+      event: 'generation.requested',
+      outcome: 'failed',
+      errorCode: hostile,
+    });
+    expect(record.errorCode).toBe('unknownErrorCode');
+    expect(naiveEmit(record)).not.toContain(JWT);
+    // Control: the same value through an emitter that trusts the field does
+    // surface it. Without this, "absent" is indistinguishable from
+    // "never present" — the code could be dropped entirely and this passes.
+    expect(naiveEmit({ errorCode: hostile })).toContain(JWT);
+  });
+
+  it('keeps the message catalogued when the code is unrecognised', () => {
+    // A code that misses the catalog must not produce `message: undefined`;
+    // an operator reading the line still needs to be told what happened.
+    const record = buildCalibrationLogRecord({
+      level: 'error',
+      component: 'calibration.http',
+      event: 'generation.requested',
+      outcome: 'failed',
+      errorCode: 'totally_made_up' as unknown as CalibrationLogErrorCode,
+    });
+    expect(record.message).toBe(
+      'The operation failed with a code this build does not recognise; the server may be newer than the desktop app.',
+    );
+  });
+
+  it('passes every declared error code through unchanged', () => {
+    // The guard must not be so blunt that it flattens real codes into
+    // `unknownErrorCode`, which would make the field useless for triage.
+    for (const code of CALIBRATION_LOG_ERROR_CODES) {
+      expect(safeErrorCode(code)).toBe(code);
+    }
+  });
+
+  it('admits a real dispatch ETag, including one containing a slash', () => {
+    // A base-64 rowversion legitimately contains `/`. An earlier revision of
+    // this module ran the field through the path-separator guard, which would
+    // have mangled a valid ETag into a placeholder and cost an operator the
+    // one value that identifies the dispatch state they are looking at.
+    expect(safeOpaqueRevision('AAAAAAAAF/8=')).toBe('AAAAAAAAF/8=');
+    expect(safeOpaqueRevision('W6JHhw==')).toBe('W6JHhw==');
+  });
+
+  it('rejects a revision that does not match the shape it specified', () => {
+    const smuggled = `x ${JWT}`;
+    expect(safeOpaqueRevision(smuggled)).toBe(UNSAFE_REVISION_PLACEHOLDER);
+    expect(safeOpaqueRevision('a'.repeat(200))).toBe(
+      UNSAFE_REVISION_PLACEHOLDER,
+    );
+    expect(safeOpaqueRevision(ABSOLUTE_POSIX_PATH)).toBe(
+      UNSAFE_REVISION_PLACEHOLDER,
+    );
+    // Control, as above: unfiltered, the same input carries the secret.
+    expect(naiveEmit({ dispatchRevision: smuggled })).toContain(JWT);
+  });
+
+  it('applies the revision guard at the emitter, not only in the helper', () => {
+    // Testing the helper alone would pass even if the builder never called it.
+    const record = buildCalibrationLogRecord({
+      level: 'info',
+      component: 'calibration.http',
+      event: 'bedClear.acknowledged',
+      dispatchRevision: `bearer ${JWT}`,
+    });
+    expect(record.dispatchRevision).toBe(UNSAFE_REVISION_PLACEHOLDER);
+    expect(naiveEmit(record)).not.toContain(JWT);
   });
 });
