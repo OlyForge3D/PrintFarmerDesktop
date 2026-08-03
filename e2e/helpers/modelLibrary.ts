@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,6 +11,21 @@ export const modelFixtureDirectory = path.resolve(
 
 export const modelFixtureName =
   'precision-calibration-fixture-with-an-intentionally-long-name.obj';
+
+export async function refreshCatalog(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Manage sources' }).click();
+  const sourcesDialog = page.getByRole('dialog', {
+    name: 'Catalog sources',
+  });
+  await sourcesDialog.getByRole('button', { name: 'Refresh catalog' }).click();
+  const close = sourcesDialog.getByRole('button', {
+    name: 'Close catalog sources',
+  });
+  await expect(sourcesDialog).toHaveAttribute('aria-busy', 'false');
+  await expect(close).toBeEnabled();
+  await close.click();
+  await sourcesDialog.waitFor({ state: 'detached' });
+}
 
 export async function importModelFixture(
   page: Page,
@@ -53,5 +68,5 @@ export async function importModelFixture(
       `Packaged fixture import added ${result.report.added} and organized ${result.modelsOrganized} models.`,
     );
   }
-  await page.getByRole('button', { name: 'Refresh catalog' }).click();
+  await refreshCatalog(page);
 }

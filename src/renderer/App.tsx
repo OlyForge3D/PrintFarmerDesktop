@@ -32,6 +32,7 @@ import { plateHiddenObjectIds } from './viewer/plateSelection';
 import type { PlateSelection } from './viewer/plateSelection';
 import { ImportWizard } from './library/ImportWizard';
 import { LibraryOnboarding } from './library/LibraryOnboarding';
+import { CatalogSourcesDialog } from './library/CatalogSourcesDialog';
 import {
   forgetImportPlan,
   rememberImportPlan,
@@ -59,6 +60,7 @@ const MAX_UPLOAD_SELECTION = 500;
 
 type ModalOwner =
   | 'none'
+  | 'sources'
   | 'profiles'
   | 'import'
   | 'previewPreparation'
@@ -81,6 +83,7 @@ export function App(): React.JSX.Element {
       selectedProfileId: null,
     });
   const [profilesOpen, setProfilesOpen] = useState(false);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
   const [importPreparing, setImportPreparing] = useState(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
   const [modalOwner, setModalOwnerState] = useState<ModalOwner>('none');
@@ -127,6 +130,7 @@ export function App(): React.JSX.Element {
   const retargetReturnFocusRef = useRef<HTMLElement | null>(null);
   const importReturnFocusRef = useRef<HTMLElement | null>(null);
   const profileReturnFocusRef = useRef<HTMLElement | null>(null);
+  const sourcesReturnFocusRef = useRef<HTMLElement | null>(null);
   const uploadReturnFocusRef = useRef<HTMLElement | null>(null);
   const onboardingReturnFocusRef = useRef<HTMLElement | null>(null);
   const restoreProfileFocusRef = useRef(false);
@@ -205,6 +209,7 @@ export function App(): React.JSX.Element {
     activeWorkspace === 'library' &&
     !onboardingDismissed &&
     library.status !== 'loading' &&
+    !sourcesOpen &&
     !profilesOpen &&
     !retargetTarget &&
     !previewOpen &&
@@ -217,12 +222,14 @@ export function App(): React.JSX.Element {
     onboardingOpen ||
     previewOpen ||
     library.importDraft !== null ||
+    sourcesOpen ||
     profilesOpen ||
     uploadQueueOpen ||
     retargetOpen;
   const backgroundExcluded =
     previewOpen ||
     library.importDraft !== null ||
+    sourcesOpen ||
     profilesOpen ||
     uploadQueueOpen ||
     retargetOpen;
@@ -566,6 +573,8 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     if (modalOwnerRef.current === 'profiles' && !profilesOpen) {
       releaseModal('profiles');
+    } else if (modalOwnerRef.current === 'sources' && !sourcesOpen) {
+      releaseModal('sources');
     } else if (
       modalOwnerRef.current === 'import' &&
       !importPreparing &&
@@ -584,6 +593,7 @@ export function App(): React.JSX.Element {
     library.importDraft,
     previewOpen,
     profilesOpen,
+    sourcesOpen,
     uploadQueueOpen,
     releaseModal,
   ]);
@@ -948,6 +958,34 @@ export function App(): React.JSX.Element {
     previewOpen ||
     library.importDraft !== null ||
     profilesOpen;
+  const openSources = (): void => {
+    if (busy || modalOwnerRef.current !== 'none') return;
+    if (reserveModal('sources') === null) return;
+    setOnboardingDismissed(true);
+    sourcesReturnFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setSourcesOpen(true);
+  };
+  const closeSources = (): void => {
+    if (library.status !== 'idle') return;
+    setSourcesOpen(false);
+    releaseModal('sources');
+    setTimeout(() => {
+      const previous = sourcesReturnFocusRef.current;
+      const fallback = document.querySelector<HTMLElement>(
+        '.manage-catalog-sources',
+      );
+      (previous?.isConnected ? previous : fallback)?.focus();
+    });
+  };
+  const addFolderFromSources = (): void => {
+    if (library.status !== 'idle') return;
+    setSourcesOpen(false);
+    releaseModal('sources');
+    beginImport();
+  };
   const openProfiles = (): void => {
     if (serverProfilesDisabled) return;
     if (reserveModal('profiles') === null) return;
@@ -1196,21 +1234,12 @@ export function App(): React.JSX.Element {
               filter={filter}
               counts={counts}
               scanningFolder={scanningFolder}
-              lastReport={library.lastReport}
-              lastImport={library.lastImport}
               busy={workspaceActionsDisabled}
               sourceRoots={library.sourceRoots}
-              scanActivity={library.scanActivity}
               onQueryChange={setQuery}
               onFilterChange={setFilter}
               onAddFolder={beginImport}
-              onRefresh={() => {
-                void library.refresh();
-              }}
-              onRescanRoot={(rootId) => {
-                void library.rescanRoot(rootId);
-              }}
-              onRemoveRoot={library.removeRoot}
+              onManageSources={openSources}
               serverProfile={activeServer}
               serverProfilesDisabled={serverProfilesDisabled}
               onManageServerProfiles={openProfiles}
@@ -1334,29 +1363,6 @@ export function App(): React.JSX.Element {
                   disabled={selectedHashes.size === 0}
                 >
                   Clear selection
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (
-                      !window.confirm(
-                        'Reset all approved folders? Catalog files will require reauthorization before they can be opened or uploaded.',
-                      )
-                    ) {
-                      return;
-                    }
-                    void window.printFarmer
-                      .resetApprovedRoots()
-                      .then(() => library.refresh())
-                      .catch((err: unknown) =>
-                        setAppError(
-                          err instanceof Error ? err.message : String(err),
-                        ),
-                      );
-                  }}
-                  disabled={workspaceActionsDisabled}
-                >
-                  Reset approved folders
                 </button>
                 {activeServer?.availability.modelUpload.mode ===
                   'legacyModelOnly' && selectedHashes.size > 0 ? (
@@ -1518,9 +1524,11 @@ export function App(): React.JSX.Element {
               ? 'Loading catalog'
               : library.status === 'preparing'
                 ? 'Analyzing source'
-                : isScanning
-                  ? 'Scanning source'
-                  : 'Ready'}
+                : library.status === 'resetting'
+                  ? 'Clearing local catalog'
+                  : isScanning
+                    ? 'Scanning source'
+                    : 'Ready'}
         </span>
         {appError ? (
           <span className="statusbar-error" role="alert">
@@ -1543,6 +1551,26 @@ export function App(): React.JSX.Element {
           error={library.error}
           onCancel={cancelImport}
           onConfirm={confirmImport}
+        />
+      ) : null}
+
+      {sourcesOpen ? (
+        <CatalogSourcesDialog
+          roots={library.sourceRoots}
+          modelCount={library.models.length}
+          busy={library.status !== 'idle'}
+          error={library.error}
+          scanActivity={library.scanActivity}
+          onAddFolder={addFolderFromSources}
+          onRefresh={() => {
+            void library.refresh();
+          }}
+          onRescanRoot={(rootId) => {
+            void library.rescanRoot(rootId);
+          }}
+          onRemoveRoot={library.removeRoot}
+          onResetCatalog={library.resetCatalog}
+          onClose={closeSources}
         />
       ) : null}
 

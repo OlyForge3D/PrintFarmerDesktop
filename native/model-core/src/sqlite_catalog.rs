@@ -22,7 +22,7 @@ use crate::calibration::{
     CalibrationUnhydratedProjectDto, CalibrationWorkspaceStageId, CalibrationWorkspaceStateDto,
     SaveCalibrationWorkspaceStateParams, StageCalibrationPhotoParams, StagedCalibrationPhotoDto,
 };
-use crate::catalog::{new_collection_id, normalize_tag};
+use crate::catalog::{new_collection_id, normalize_tag, CatalogResetSummary};
 use crate::catalog::{
     CatalogStore, Collection, LocationUpsert, LogicalModel, ModelLocation, StoredLocation, Tag,
 };
@@ -926,6 +926,41 @@ impl CatalogStore for SqliteCatalog {
             .into_iter()
             .filter_map(|h| self.build_model(&h))
             .collect()
+    }
+
+    fn reset_catalog(&mut self) -> CatalogResetSummary {
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("catalog reset failed: begin transaction");
+        let result = (|| -> rusqlite::Result<CatalogResetSummary> {
+            let models_removed: i64 =
+                self.conn
+                    .query_row("SELECT COUNT(*) FROM models", [], |row| row.get(0))?;
+            let source_roots_removed: i64 =
+                self.conn
+                    .query_row("SELECT COUNT(*) FROM source_roots", [], |row| row.get(0))?;
+            // Root deletion removes every location first. Model deletion can
+            // then cascade favorites, memberships, tags assignments, and
+            // thumbnail rows without touching tag/collection definitions.
+            self.conn.execute("DELETE FROM source_roots", [])?;
+            self.conn.execute("DELETE FROM models", [])?;
+            Ok(CatalogResetSummary {
+                models_removed: models_removed as usize,
+                source_roots_removed: source_roots_removed as usize,
+            })
+        })();
+        match result {
+            Ok(summary) => {
+                self.conn
+                    .execute_batch("COMMIT")
+                    .expect("catalog reset failed: commit transaction");
+                summary
+            }
+            Err(error) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                panic!("catalog reset failed: {error}");
+            }
+        }
     }
 
     fn favorite_hashes(&self) -> Vec<String> {
@@ -5380,6 +5415,74 @@ mod tests {
             })
             .unwrap();
         assert_eq!(path, "/models/root");
+    }
+
+    #[test]
+    fn reset_catalog_is_transactional_and_preserves_unrelated_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let model_path = dir.path().join("m.stl");
+        write(&model_path, b"bytes");
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        reconcile_root(&mut store, "r", &scan(dir.path()));
+        store.ensure_root("empty", Path::new("/models/empty"));
+        let hash = store.models()[0].hash.clone();
+        store.add_favorite(&hash);
+        store.add_model_tag(&hash, "Keep tag").unwrap();
+        let collection = store.create_collection("Keep collection").unwrap();
+        store.add_model_to_collection(&collection.id, &hash);
+        store
+            .conn
+            .execute(
+                "INSERT INTO thumbnails(model_hash, recipe, path, width, height, source)
+                 VALUES(?1, 'grid', '/thumb.png', 64, 64, 'rendered')",
+                params![hash],
+            )
+            .unwrap();
+        store
+            .bind_sync_profile("profile-a", "binding-a", 1)
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO calibration_projects(
+                    profile_id, project_id, display_name, status, printer_id,
+                    created_at, updated_at
+                 ) VALUES('profile-a', 'project-a', 'Calibration', 'draft',
+                          'printer-a', '1', '1')",
+                [],
+            )
+            .unwrap();
+
+        let summary = store.reset_catalog();
+
+        assert_eq!(
+            summary,
+            CatalogResetSummary {
+                models_removed: 1,
+                source_roots_removed: 2,
+            }
+        );
+        assert!(store.models().is_empty());
+        assert!(store.favorite_hashes().is_empty());
+        assert_eq!(store.all_tags()[0].name, "Keep tag");
+        assert_eq!(store.all_collections()[0].name, "Keep collection");
+        assert_eq!(store.all_collections()[0].member_count, 0);
+        let thumbnail_count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM thumbnails", [], |row| row.get(0))
+            .unwrap();
+        let calibration_count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM calibration_projects", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(thumbnail_count, 0);
+        assert_eq!(calibration_count, 1);
+        store
+            .validate_sync_profile_binding("profile-a", "binding-a")
+            .unwrap();
+        assert!(model_path.exists(), "reset must not delete source files");
     }
 
     #[test]

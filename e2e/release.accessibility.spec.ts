@@ -86,6 +86,32 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
       await importButton.click();
       await expect(importDialog).toHaveCount(0);
 
+      const manageSources = page.getByRole('button', {
+        name: 'Manage sources',
+      });
+      await manageSources.click();
+      const sourcesDialog = page.getByRole('dialog', {
+        name: 'Catalog sources',
+      });
+      await expect(sourcesDialog).toBeVisible();
+      await expect(
+        page.getByRole('button', { name: 'Close catalog sources' }),
+      ).toBeFocused();
+      await expect(
+        page
+          .locator('.workspace')
+          .evaluate((element) => element.hasAttribute('inert')),
+      ).resolves.toBe(true);
+      await expectNoMaterialViolations(page, 'catalog sources', testInfo);
+      await page.getByRole('button', { name: 'Reset catalog' }).click();
+      await expect(
+        page.getByRole('button', { name: 'Keep catalog' }),
+      ).toBeFocused();
+      await expect(page.getByText('Clear this local catalog?')).toBeVisible();
+      await page.getByRole('button', { name: 'Keep catalog' }).click();
+      await page.getByRole('button', { name: 'Close catalog sources' }).click();
+      await expect(manageSources).toBeFocused();
+
       const selectModel = page.getByRole('button', {
         name: `Select ${modelFixtureName}`,
       });
@@ -133,6 +159,20 @@ test('@a11y packaged onboarding, library, and viewer meet material WCAG checks',
       await back.click();
       await expect(viewerDialog).toHaveCount(0);
       await expect(previewButton).toBeFocused();
+
+      await manageSources.click();
+      await page.getByRole('button', { name: 'Reset catalog' }).click();
+      await page.getByRole('button', { name: 'Clear local catalog' }).click();
+      await expect(
+        page.getByText(
+          'Catalog cleared. Removed 1 indexed model and 1 source folder.',
+        ),
+      ).toBeVisible();
+      await expect(
+        sourcesDialog.getByText('No folders connected'),
+      ).toBeVisible();
+      await page.getByRole('button', { name: 'Close catalog sources' }).click();
+      await expect(selectModel).toHaveCount(0);
     },
     async () => {
       await cleanupPackagedApp(launched, root === null ? [] : [root]);
