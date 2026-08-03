@@ -193,7 +193,7 @@ jobs:
           app_path="$(find out -type d -name 'PrintFarmer Desktop.app' -print -quit)"
           [[ -n "$app_path" ]] || { echo 'Packaged app not found' >&2; exit 1; }
           sidecar="$app_path/Contents/Resources/sidecar/model-core"
-          lipo -verify_arch x86_64 arm64 "$sidecar"
+          lipo "$sidecar" -verify_arch x86_64 arm64
           codesign --verify --strict --verbose=2 "$sidecar"
           codesign --verify --deep --strict --verbose=2 "$app_path"
           xcrun stapler validate "$app_path"

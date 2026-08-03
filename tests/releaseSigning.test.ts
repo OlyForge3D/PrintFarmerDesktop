@@ -17,6 +17,7 @@ import {
 import {
   UNIVERSAL_MAC_TARGETS,
   UNIVERSAL_SIDECAR_PATH,
+  verifyArchArgs,
 } from '../scripts/build-universal-sidecar.mjs';
 
 const temporaryDirectories: string[] = [];
@@ -190,5 +191,14 @@ describe('dedicated platform signing', () => {
     expect(UNIVERSAL_SIDECAR_PATH).toContain(
       path.join('target', 'universal-apple-darwin', 'release', 'model-core'),
     );
+  });
+
+  it('verifies architectures with the lipo input file before the command', () => {
+    expect(verifyArchArgs('/tmp/model-core')).toEqual([
+      '/tmp/model-core',
+      '-verify_arch',
+      'x86_64',
+      'arm64',
+    ]);
   });
 });

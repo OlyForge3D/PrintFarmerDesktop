@@ -3,3 +3,4 @@ export const UNIVERSAL_MAC_TARGETS: readonly [
   'aarch64-apple-darwin',
 ];
 export const UNIVERSAL_SIDECAR_PATH: string;
+export function verifyArchArgs(sidecarPath?: string): string[];
