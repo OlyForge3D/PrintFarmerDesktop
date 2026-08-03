@@ -35,6 +35,17 @@ What that section requires, for any agent running the check:
   are dependent. Derive the value from the thing that is not a rendering — the code, the
   constant, the fixture, the computation — and publish the derivation. Where no such
   source exists, the finding stands and resolution escalates to the artifact owners.
+- **Prefer a recorded derivation where one exists.** A no-authority instrument is the
+  right tool when no artifact is privileged; where one records the method that
+  established a value, it _is_ an authority for that value, and reaching past it for the
+  diff is choosing the weaker tool. Find the divergence with the diff, then cite the
+  derivation so a reader can reproduce the conclusion and not only the disagreement.
+- **Arithmetic consistent with a decomposition is not its derivation** — that two figures
+  sum is true whatever the residue consists of. Measure the populations separately, and
+  either take the measurement or attribute it. An accurate outcome with a plausible
+  mechanism attached is still a fabrication.
+- **Repair with the source's own noun.** Where the defect is a quantity attached to the
+  wrong unit, restating the correction in the unit that caused the error re-seeds it.
 - **Rule out "different quantities" before ruling "stale."** A symmetric diff cannot tell
   those apart, and reporting the second as the first is a false finding manufactured by
   the check itself.
@@ -54,14 +65,20 @@ The live finding is the same diamond-DAG row count the log already records. Its 
 fixed `.squad/skills/test-discipline/SKILL.md` and left a third rendering in
 `docs/security/THREAT_MODEL.md` § _T2.2 — Structurally valid input that reaches an
 untested code path (A1)_ still reading `32,767 rows`. **It was resolved by measurement,
-not by majority** — the two agreeing `49,150`s are dependent, so rebuilding
-`diamondDag(14)` from `tests/viewer.partTree.test.tsx` and walking it with a path-local
-`seen` set is what settled it: 32,767 m-chain rows plus 16,383 `s`-node rows is 49,150
-total, against 16,384 distinct paths to the tail. `32,767` names a real sub-quantity and
-is not the total the threat model claimed. That rendering has been repaired in the same
-change, carrying the decomposition so it stays checkable against the fixture, because
-filing it and leaving it would have been the discharge failure the new rule exists to
-prevent.
+not by majority** — the two agreeing `49,150`s are dependent, the log itself recording
+that the figure enters the shared token set by being written into the skills file to
+repair it, so by this policy's own rule their agreement grades ⚠️ and could not decide
+it. Rebuilding `diamondDag(14)` from `tests/viewer.partTree.test.tsx` and walking it with
+a path-local `seen` set, measuring each population separately, is what settled it: 49,150
+rows total, 32,767 emitted for `m`-chain nodes and 16,383 for `s` nodes, against 16,384
+distinct paths to the tail. So `2^15-1 = 32,767` is paths through the `m` chain summed
+over the chain — each emitting one row, which is how a path count came to be written as a
+row total — and the threat model's sentence claimed the total. A units mislabel rather
+than a merely stale number; both readings were tested before repairing. That rendering
+has been repaired in the same change, because filing it and leaving it would have been the
+discharge failure the new rule exists to prevent. The decomposition and its method were
+already on record in `.squad/decisions.md`; the run should have cited that authority
+rather than resting on the divergence, and the policy now requires it.
 
 Governing entry, cited by heading: `.squad/decisions.md` →
 **2026-07-26 — Diffing two renderings of one incident finds what neither rendering's own

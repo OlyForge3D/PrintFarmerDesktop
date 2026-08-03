@@ -541,9 +541,12 @@ maintained set. T2.5 covers it. Read "the ZIP-bomb work is done" as scoped to th
 a parser state machine into a panic, an unbounded allocation, or a non-terminating loop.
 Superlinear output is the shape to fear: in #68 a 29-node diamond DAG expanded to 49,150 rows
 because the tests covered ancestor cycles and nobody had drawn a diamond. (The fixture's doc
-comment in `tests/viewer.partTree.test.tsx` reports `2^15-1 = 32,767`. That is the rows
-attributable to the `m` chain alone; the remaining 16,383 are `s`-node rows. Rebuilding
-`diamondDag(14)` and walking it with a path-local `seen` set yields 32,767 + 16,383 = 49,150.)
+comment in `tests/viewer.partTree.test.tsx` reports `2^15-1 = 32,767` paths through the `m`
+chain — summed over the chain, not the 16,384 distinct paths to its tail. Each such path emits
+one row, which is how that figure came to be written here as a row total. Rebuilding
+`diamondDag(14)` and walking it with a path-local `seen` set measures the two populations
+separately: 32,767 from the `m` chain and 16,383 from `s` nodes. The decomposition is recorded
+in `.squad/decisions.md`, established the same way.)
 
 **Controls.** The limits bound the obvious cases. Beyond them, correctness rests entirely on
 hand-written parsing in `threemf.rs`, `stl.rs`, `obj.rs`, and `vendor.rs`.

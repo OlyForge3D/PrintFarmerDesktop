@@ -43,11 +43,12 @@ Designating an authority makes the check one-directional: it can only fire when 
 
 ### Procedure
 
-1. **Enumerate every rendering, not two.** Search the whole tree for the quantity or claim — `.squad/`, `docs/`, source comments, test doc comments, issue and PR bodies. A pair-wise habit is how a third rendering survives a repair that fixed the other two.
-2. **Publish the extraction rule with the result.** State the pattern, the filter, and the head. A shared-figure count is not reproducible without them, and a count that cannot be re-derived is the next defect rather than evidence.
-3. **Run a control that can report non-empty.** A rule that returns nothing is not the same as a rule that finds agreement.
-4. **Compare the renderings against each other** and report any disagreement as a finding **against the pair or the set**, never against whichever member is not the decision log.
-5. **Establish the slot before treating a difference as a defect.** Two documents giving different values for one quantity entail that at least one is wrong, with no further premise. Two artifacts of other kinds — test corpora, fixtures, harnesses — may legitimately differ in coverage, so a difference there is a **lead to be measured**, not a proof. The deduction needs the added premise that both artifacts render the same slot.
+1. **Look for a derivation already on the record before choosing this instrument.** A symmetric diff is the right tool when no artifact is privileged. Where one artifact records not just the value but **the method that established it** — a fixture rebuilt, a walk run, a measurement taken — that artifact _is_ an authority for this quantity, and choosing a no-authority instrument in its presence is choosing the weaker one. Use the diff to find the divergence, then cite the recorded derivation so a reader can reproduce the **conclusion** and not merely the disagreement.
+2. **Enumerate every rendering, not two.** Search the whole tree for the quantity or claim — `.squad/`, `docs/`, source comments, test doc comments, issue and PR bodies. A pair-wise habit is how a third rendering survives a repair that fixed the other two.
+3. **Publish the extraction rule with the result.** State the pattern, the filter, and the head. A shared-figure count is not reproducible without them, and a count that cannot be re-derived is the next defect rather than evidence.
+4. **Run a control that can report non-empty.** A rule that returns nothing is not the same as a rule that finds agreement.
+5. **Compare the renderings against each other** and report any disagreement as a finding **against the pair or the set**, never against whichever member is not the decision log.
+6. **Establish the slot before treating a difference as a defect.** Two documents giving different values for one quantity entail that at least one is wrong, with no further premise. Two artifacts of other kinds — test corpora, fixtures, harnesses — may legitimately differ in coverage, so a difference there is a **lead to be measured**, not a proof. The deduction needs the added premise that both artifacts render the same slot.
 
 ### Independence precondition
 
@@ -69,6 +70,8 @@ A symmetric diff with no authority tells you the renderings disagree. **It canno
 - **Never resolve by counting renderings.** Two renderings that agree are **one rendering** if they are dependent, so a majority can be a single source copied twice. Repairing the minority to match the majority without establishing independence is the dependent-pair false negative committed deliberately, by the instrument built to catch it.
 - **Derive the value from the thing that is not a rendering** — the code, the constant, the fixture, the computation, the object itself. Publish the derivation so it can be re-run. Ground truth lives there, not in the prose.
 - **Where no such source exists**, the finding stands as a divergence and the resolution is escalated to the artifact owners. A guess dressed as a repair is worse than an open finding.
+- **Arithmetic consistent with a decomposition is not its derivation.** If two reported figures differ by some residue, restating that they sum is true by construction and evidence for nothing — it holds whatever the residue actually consists of, including a coincidence. **Measure the populations separately.** And keep the verbs honest: _"rebuilding it yields"_ asserts a measurement, so either take it, or attribute it to whoever did. An accurate outcome with a plausible mechanism attached is still a fabrication, and a reader of the repaired document has no way to tell.
+- **Repair with the source's own noun.** Where the defect is a quantity attached to the wrong unit, restating the correction in the unit that caused the error re-seeds it. If the source's word is itself ambiguous across two readings, say which reading the measurement names, and give the other quantity so the ambiguity cannot re-form.
 - **Rule out "different quantities" before ruling "stale".** A symmetric diff cannot distinguish _one rendering is out of date_ from _the two are measuring different things_. Check the units and the slot first. Reporting the second as the first is a **false finding manufactured by the check itself**, and it will be believed, because the check that produced it was built to be trusted.
 
 ### Discharge
