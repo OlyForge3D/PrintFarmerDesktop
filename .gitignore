@@ -52,6 +52,8 @@ test-results/
 *.mobileprovision
 *.cer
 *.key
+# Base64-encoded key material staged for `gh secret set`
+*.b64
 .env
 .env.*
 !.env.example
