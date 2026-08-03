@@ -19,6 +19,12 @@ import {
 } from './helpers/modelLibrary';
 import { findPackagedExecutable } from './helpers/retargetFixture';
 
+// CI runs the accessibility gate as `playwright test e2e/release.accessibility.spec.ts`,
+// so every accessibility test must be registered from this file. The calibration
+// suite (issue #153) lives in its own module for readability and is registered
+// here by import.
+import './calibrationA11yTests';
+
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
