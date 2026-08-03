@@ -179,6 +179,24 @@ export class CalibrationHttpError extends Error {
 }
 
 /**
+ * Renders a response validation failure so the operator can see *which* field
+ * drifted, not just that something was `Required`. Never includes the received
+ * value, which could carry server data the renderer must not see.
+ */
+function describeValidationError(error: unknown): string {
+  if (!(error instanceof z.ZodError)) return String(error);
+  const issues = error.errors.slice(0, 3).map((issue) => {
+    const path = issue.path.length > 0 ? issue.path.join('.') : '(root)';
+    return `${path}: ${issue.message}`;
+  });
+  if (issues.length === 0) return 'unknown validation error';
+  const remaining = error.errors.length - issues.length;
+  return remaining > 0
+    ? `${issues.join('; ')} (+${remaining} more)`
+    : issues.join('; ');
+}
+
+/**
  * Result type for bed-clear acknowledgement operations.
  * Discriminated by `kind` to distinguish the 412 conflict case (which carries
  * current ETags for retry) from success and generic errors.
@@ -1308,11 +1326,9 @@ export class CalibrationHttpClient {
     try {
       return schema.parse(json);
     } catch (error) {
-      const detail =
-        error instanceof z.ZodError ? error.errors[0]?.message : String(error);
       throw new CalibrationHttpError(
         'invalidResponse',
-        `Calibration API response validation failed: ${detail}`,
+        `Calibration API response validation failed: ${describeValidationError(error)}`,
       );
     }
   }

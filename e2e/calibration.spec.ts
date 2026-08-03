@@ -498,7 +498,7 @@ test.beforeAll(async () => {
         unavailableReason: null,
         unavailableDetail: null,
         negotiatedApiVersion: '2',
-        negotiatedSchemaVersion: 2,
+        negotiatedSchemaVersion: '2.0',
         capabilityFlags: {
           calibrationApiEnabled: true,
           calibrationChangeFeedEnabled: true,

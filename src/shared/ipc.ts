@@ -1041,8 +1041,8 @@ export const CalibrationAvailability = z
     unavailableDetail: z.string().max(512).nullable(),
     /** Negotiated server API version that gates calibration. */
     negotiatedApiVersion: z.string().max(64).nullable(),
-    /** Negotiated schema version for the calibration change feed. */
-    negotiatedSchemaVersion: z.number().int().nonnegative().nullable(),
+    /** Negotiated schema version for the calibration change feed (e.g. "1.0"). */
+    negotiatedSchemaVersion: z.string().max(64).nullable(),
     /** The effective capability flags discovered during negotiation. */
     capabilityFlags: CalibrationCapabilityFlags.nullable(),
     /** The JWT scopes present in the current token (never the token itself). */

@@ -27,6 +27,13 @@ import {
   CalibrationHttpError,
   type CalibrationHttpClient,
 } from './calibrationHttp.js';
+import {
+  REQUIRED_FIRMWARE_FAMILY,
+  REQUIRED_SLICER_ENGINE,
+  missingCalibrationFlags,
+  supportsKlipper,
+  supportsOrcaSlicer,
+} from './calibrationWire.js';
 import type {
   RemoteCalibrationChange,
   RemoteCalibrationApplyRequest,
@@ -328,35 +335,30 @@ export class CalibrationSyncEngine {
         context.baseUrl,
         signal,
       );
-      // All required flags must be true
-      const flags = caps.flags ?? {};
-      const required: Array<keyof typeof flags> = [
+      // All required flags must be true. Offline drafts and the change feed
+      // are the minimum this engine needs to push and pull.
+      const missing = missingCalibrationFlags(caps, [
         'calibrationApiEnabled',
         'calibrationChangeFeedEnabled',
         'calibrationOfflineDraftEnabled',
-      ];
-      for (const flag of required) {
-        if (!flags[flag]) {
-          throw new CalibrationEngineError(
-            'CAPABILITIES_MISMATCH',
-            `Calibration capability flag '${flag}' is not enabled on this server.`,
-          );
-        }
-      }
-      // Firmware/dialect/slicer requirements
-      if (
-        caps.requiredFirmware !== 'Klipper' ||
-        caps.requiredGcodeDialect !== 'Klipper'
-      ) {
+      ]);
+      if (missing.length > 0) {
         throw new CalibrationEngineError(
           'CAPABILITIES_MISMATCH',
-          'Server requires Klipper firmware and Klipper G-code dialect for calibration.',
+          `Calibration capability flag '${missing[0]}' is not enabled on this server.`,
         );
       }
-      if (caps.requiredSlicer !== 'OrcaSlicer') {
+      // Firmware/dialect/slicer requirements
+      if (!supportsKlipper(caps)) {
         throw new CalibrationEngineError(
           'CAPABILITIES_MISMATCH',
-          'Server requires OrcaSlicer as the upstream slicer for calibration.',
+          `Server requires ${REQUIRED_FIRMWARE_FAMILY} firmware and ${REQUIRED_FIRMWARE_FAMILY} G-code dialect for calibration.`,
+        );
+      }
+      if (!supportsOrcaSlicer(caps)) {
+        throw new CalibrationEngineError(
+          'CAPABILITIES_MISMATCH',
+          `Server requires ${REQUIRED_SLICER_ENGINE} as the upstream slicer for calibration.`,
         );
       }
     } catch (error) {

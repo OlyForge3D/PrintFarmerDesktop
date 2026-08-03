@@ -37,11 +37,16 @@ import {
   CalibrationHttpError,
 } from './calibrationHttp.js';
 import {
+  REQUIRED_FIRMWARE_FAMILY,
+  REQUIRED_SLICER_ENGINE,
   isExplicitCalibrationEligibilityComplete,
+  missingCalibrationFlags,
   prepareCalibrationWorkspaceSave,
   projectCalibrationEligibility,
   projectCalibrationPrinterContext,
   projectPrintFarmerOrcaProfile,
+  supportsKlipper,
+  supportsOrcaSlicer,
 } from './calibrationWire.js';
 import {
   CalibrationPhotoApprovalStore,
@@ -1124,18 +1129,11 @@ export function registerIpcHandlers(
         ctx.profile.baseUrl,
         signal,
       );
-      const allFlagsEnabled =
-        caps.flags.calibrationApiEnabled &&
-        caps.flags.calibrationChangeFeedEnabled &&
-        caps.flags.calibrationOfflineDraftEnabled &&
-        caps.flags.calibrationPhotoUploadEnabled &&
-        caps.flags.calibrationGenerationEnabled;
-      const firmwareOk =
-        caps.requiredFirmware === 'Klipper' &&
-        caps.requiredGcodeDialect === 'Klipper';
-      const slicerOk = caps.requiredSlicer === 'OrcaSlicer';
+      const missingFlags = missingCalibrationFlags(caps);
+      const firmwareOk = supportsKlipper(caps);
+      const slicerOk = supportsOrcaSlicer(caps);
 
-      if (!allFlagsEnabled || !firmwareOk || !slicerOk) {
+      if (missingFlags.length > 0 || !firmwareOk || !slicerOk) {
         return ipcSchemas[IpcChannel.CalibrationGetAvailability].response.parse(
           {
             available: false,
@@ -1144,14 +1142,16 @@ export function registerIpcHandlers(
               : !slicerOk
                 ? 'unsupportedSlicer'
                 : 'missingCapabilityFlags',
-            unavailableDetail:
-              'Server does not meet all calibration capability requirements.',
+            unavailableDetail: !firmwareOk
+              ? `Server does not advertise ${REQUIRED_FIRMWARE_FAMILY} firmware and G-code dialect support for calibration.`
+              : !slicerOk
+                ? `Server does not advertise a supported ${REQUIRED_SLICER_ENGINE} engine for calibration.`
+                : `Server has not enabled required calibration capabilities: ${missingFlags.join(', ')}.`,
             negotiatedApiVersion: caps.apiVersion,
             negotiatedSchemaVersion: caps.schemaVersion,
             capabilityFlags: caps.flags,
-            grantedScopes: caps.requiredScopes,
-            offlineEditingEnabled:
-              caps.flags.calibrationOfflineDraftEnabled ?? false,
+            grantedScopes: caps.grantedScopes,
+            offlineEditingEnabled: caps.flags.calibrationOfflineDraftEnabled,
           },
         );
       }
@@ -1163,9 +1163,8 @@ export function registerIpcHandlers(
         negotiatedApiVersion: caps.apiVersion,
         negotiatedSchemaVersion: caps.schemaVersion,
         capabilityFlags: caps.flags,
-        grantedScopes: caps.requiredScopes,
-        offlineEditingEnabled:
-          caps.flags.calibrationOfflineDraftEnabled ?? false,
+        grantedScopes: caps.grantedScopes,
+        offlineEditingEnabled: caps.flags.calibrationOfflineDraftEnabled,
       });
     } catch (error) {
       const reason =

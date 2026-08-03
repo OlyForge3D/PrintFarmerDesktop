@@ -109,7 +109,7 @@ describe('CalibrationAvailability schema', () => {
       unavailableReason: null,
       unavailableDetail: null,
       negotiatedApiVersion: '2.0',
-      negotiatedSchemaVersion: 1,
+      negotiatedSchemaVersion: '1.0',
       capabilityFlags: {
         calibrationApiEnabled: true,
         calibrationChangeFeedEnabled: true,
@@ -757,7 +757,7 @@ describe('ipcSchemas calibration channel registry', () => {
       unavailableReason: 'missingScopes',
       unavailableDetail: 'Token lacks CalibrationRead scope.',
       negotiatedApiVersion: '2.0',
-      negotiatedSchemaVersion: 1,
+      negotiatedSchemaVersion: '1.0',
       capabilityFlags: null,
       grantedScopes: ['ModelRead'],
       offlineEditingEnabled: false,

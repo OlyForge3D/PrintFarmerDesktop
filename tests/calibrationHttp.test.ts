@@ -19,6 +19,12 @@ import {
   type CalibrationTokenProvider,
 } from '../src/main/calibrationHttp.js';
 import type { RemoteCalibrationApplyRequest } from '../src/main/calibrationWire.js';
+import {
+  missingCalibrationFlags,
+  supportsKlipper,
+  supportsOrcaSlicer,
+} from '../src/main/calibrationWire.js';
+import { printFarmerCapabilitiesResponse } from './fixtures/printFarmerCapabilities.js';
 
 const BASE_URL = 'http://farm.local';
 const PROFILE_ID = '11111111-1111-4111-8111-111111111111';
@@ -76,6 +82,121 @@ const applyRequest: RemoteCalibrationApplyRequest = {
     },
   ],
 };
+
+// ==========================================================================
+// Capability negotiation contract (regression for the calibration tab failure)
+// ==========================================================================
+
+describe('CalibrationHttpClient capability contract', () => {
+  it('parses the live PrintFarmer PlatformCapabilitiesDto response', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(json(printFarmerCapabilitiesResponse()));
+    const client = makeClient(fetchMock);
+
+    const caps = await client.getCapabilities(
+      PROFILE_ID,
+      BASE_URL,
+      AbortSignal.timeout(5000),
+    );
+
+    expect(caps.apiVersion).toBe('1.0');
+    expect(caps.schemaVersion).toBe('1.0');
+    expect(caps.grantedScopes).toEqual([
+      'calibration:create',
+      'calibration:read',
+    ]);
+    expect(caps.supportedFirmwareFamilies).toEqual(['Klipper']);
+    expect(caps.supportedGcodeDialects).toEqual(['Klipper']);
+    expect(caps.flags).toEqual({
+      calibrationApiEnabled: true,
+      calibrationChangeFeedEnabled: true,
+      calibrationOfflineDraftEnabled: true,
+      calibrationPhotoUploadEnabled: true,
+      calibrationGenerationEnabled: true,
+    });
+    expect(supportsKlipper(caps)).toBe(true);
+    expect(supportsOrcaSlicer(caps)).toBe(true);
+    expect(missingCalibrationFlags(caps)).toEqual([]);
+  });
+
+  it('treats capability switches an older server omits as disabled', async () => {
+    const body = printFarmerCapabilitiesResponse();
+    delete body.calibrationGenerationEnabled;
+    delete body.calibrationPhotosEnabled;
+    const fetchMock = vi.fn().mockResolvedValue(json(body));
+    const client = makeClient(fetchMock);
+
+    const caps = await client.getCapabilities(
+      PROFILE_ID,
+      BASE_URL,
+      AbortSignal.timeout(5000),
+    );
+
+    expect(caps.flags.calibrationGenerationEnabled).toBe(false);
+    expect(caps.flags.calibrationPhotoUploadEnabled).toBe(false);
+    expect(missingCalibrationFlags(caps)).toEqual([
+      'calibrationPhotoUploadEnabled',
+      'calibrationGenerationEnabled',
+    ]);
+  });
+
+  it('reports the failing field path when a capability response is malformed', async () => {
+    const malformed = printFarmerCapabilitiesResponse({
+      calibrationSyncEnabled: 'yes-please',
+    });
+    const fetchMock = vi.fn(() => Promise.resolve(json(malformed)));
+    const client = makeClient(fetchMock);
+
+    await expect(
+      client.getCapabilities(PROFILE_ID, BASE_URL, AbortSignal.timeout(5000)),
+    ).rejects.toMatchObject({ code: 'invalidResponse' });
+    await expect(
+      client.getCapabilities(PROFILE_ID, BASE_URL, AbortSignal.timeout(5000)),
+    ).rejects.toThrowError(
+      /calibrationSyncEnabled: Expected boolean, received string/,
+    );
+  });
+
+  it('rejects a response missing the server API contract version', async () => {
+    const body = printFarmerCapabilitiesResponse();
+    delete body.apiContractVersion;
+    const fetchMock = vi.fn(() => Promise.resolve(json(body)));
+    const client = makeClient(fetchMock);
+
+    await expect(
+      client.getCapabilities(PROFILE_ID, BASE_URL, AbortSignal.timeout(5000)),
+    ).rejects.toMatchObject({ code: 'invalidResponse' });
+    await expect(
+      client.getCapabilities(PROFILE_ID, BASE_URL, AbortSignal.timeout(5000)),
+    ).rejects.toThrowError(/apiContractVersion: Required/);
+  });
+
+  it('does not advertise OrcaSlicer support when the engine is unsupported', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      json(
+        printFarmerCapabilitiesResponse({
+          supportedSlicerEngines: [
+            {
+              type: 'OrcaSlicer',
+              version: '2.3.1',
+              distribution: 'upstream',
+              supported: false,
+            },
+          ],
+        }),
+      ),
+    );
+    const client = makeClient(fetchMock);
+
+    const caps = await client.getCapabilities(
+      PROFILE_ID,
+      BASE_URL,
+      AbortSignal.timeout(5000),
+    );
+    expect(supportsOrcaSlicer(caps)).toBe(false);
+  });
+});
 
 // ==========================================================================
 // Token refresh — exactly one bounded 401 refresh
@@ -219,23 +340,9 @@ describe('CalibrationHttpClient profile/identity fencing', () => {
         binding: BINDING,
       });
 
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      json({
-        apiVersion: '2.0',
-        schemaVersion: 1,
-        requiredScopes: ['CalibrationRead'],
-        requiredFirmware: 'Klipper',
-        requiredGcodeDialect: 'Klipper',
-        requiredSlicer: 'OrcaSlicer',
-        flags: {
-          calibrationApiEnabled: true,
-          calibrationChangeFeedEnabled: true,
-          calibrationOfflineDraftEnabled: true,
-          calibrationPhotoUploadEnabled: true,
-          calibrationGenerationEnabled: true,
-        },
-      }),
-    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json(printFarmerCapabilitiesResponse()));
 
     const client = makeClient(fetchMock, {
       getAuthenticatedContext: getAuthCtx,
@@ -261,23 +368,9 @@ describe('CalibrationHttpClient profile/identity fencing', () => {
         binding: NEW_BINDING,
       });
 
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      json({
-        apiVersion: '2.0',
-        schemaVersion: 1,
-        requiredScopes: ['CalibrationRead'],
-        requiredFirmware: 'Klipper',
-        requiredGcodeDialect: 'Klipper',
-        requiredSlicer: 'OrcaSlicer',
-        flags: {
-          calibrationApiEnabled: true,
-          calibrationChangeFeedEnabled: true,
-          calibrationOfflineDraftEnabled: true,
-          calibrationPhotoUploadEnabled: true,
-          calibrationGenerationEnabled: true,
-        },
-      }),
-    );
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(json(printFarmerCapabilitiesResponse()));
 
     const client = makeClient(fetchMock, {
       getAuthenticatedContext: getAuthCtx,
@@ -379,21 +472,7 @@ describe('CalibrationHttpClient body limit enforcement', () => {
   });
 
   it('does not throw bodyTooLarge for a response within the limit', async () => {
-    const validBody = JSON.stringify({
-      apiVersion: '2.0',
-      schemaVersion: 1,
-      requiredScopes: ['CalibrationRead'],
-      requiredFirmware: 'Klipper',
-      requiredGcodeDialect: 'Klipper',
-      requiredSlicer: 'OrcaSlicer',
-      flags: {
-        calibrationApiEnabled: true,
-        calibrationChangeFeedEnabled: true,
-        calibrationOfflineDraftEnabled: true,
-        calibrationPhotoUploadEnabled: true,
-        calibrationGenerationEnabled: true,
-      },
-    });
+    const validBody = JSON.stringify(printFarmerCapabilitiesResponse());
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(validBody, {
         status: 200,
@@ -409,7 +488,7 @@ describe('CalibrationHttpClient body limit enforcement', () => {
       BASE_URL,
       AbortSignal.timeout(5000),
     );
-    expect(result.apiVersion).toBe('2.0');
+    expect(result.apiVersion).toBe('1.0');
   });
 });
 

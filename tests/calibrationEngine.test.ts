@@ -34,12 +34,20 @@ const BINDING = 'binding-abc';
 
 function fakeCapabilities() {
   return {
-    apiVersion: '2.0',
-    schemaVersion: 1,
-    requiredScopes: ['CalibrationRead', 'CalibrationWrite'],
-    requiredFirmware: 'Klipper',
-    requiredGcodeDialect: 'Klipper',
-    requiredSlicer: 'OrcaSlicer',
+    apiVersion: '1.0',
+    schemaVersion: '1.0',
+    apiContractVersion: '1.0',
+    grantedScopes: ['calibration:read', 'calibration:update'],
+    supportedFirmwareFamilies: ['Klipper'],
+    supportedGcodeDialects: ['Klipper'],
+    supportedSlicerEngines: [
+      {
+        type: 'OrcaSlicer',
+        version: '2.3.1',
+        distribution: 'upstream',
+        supported: true,
+      },
+    ],
     flags: {
       calibrationApiEnabled: true,
       calibrationChangeFeedEnabled: true,
@@ -655,7 +663,11 @@ describe('CalibrationSyncEngine capability validation', () => {
   });
 
   it('fails sync when firmware requirement is not Klipper', async () => {
-    const caps = { ...fakeCapabilities(), requiredFirmware: 'Marlin' };
+    const caps = {
+      ...fakeCapabilities(),
+      supportedFirmwareFamilies: ['Marlin'],
+      supportedGcodeDialects: ['Marlin'],
+    };
     const http = fakeHttp({ getCapabilities: vi.fn().mockResolvedValue(caps) });
     const engine = createEngine(http, fakeSidecar());
 
@@ -669,7 +681,17 @@ describe('CalibrationSyncEngine capability validation', () => {
   });
 
   it('fails sync when upstream slicer is not OrcaSlicer', async () => {
-    const caps = { ...fakeCapabilities(), requiredSlicer: 'PrusaSlicer' };
+    const caps = {
+      ...fakeCapabilities(),
+      supportedSlicerEngines: [
+        {
+          type: 'PrusaSlicer',
+          version: '2.8.0',
+          distribution: 'upstream',
+          supported: true,
+        },
+      ],
+    };
     const http = fakeHttp({ getCapabilities: vi.fn().mockResolvedValue(caps) });
     const engine = createEngine(http, fakeSidecar());
 
