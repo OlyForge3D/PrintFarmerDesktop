@@ -1105,7 +1105,10 @@ export function registerIpcHandlers(
 
   ipcMain.handle(IpcChannel.CalibrationGetAvailability, async () => {
     // Real capability negotiation: fetch the calibration capabilities endpoint
-    // from the selected server profile and validate all required flags.
+    // from the selected server profile and validate the flags calibration
+    // cannot run without. Optional feature switches (photos, generation) are
+    // reported through `capabilityFlags` so the workspace can narrow what it
+    // offers rather than refusing to open.
     const profileList = await profiles.list();
     const selectedId = profileList.selectedProfileId;
     if (!selectedId) {
@@ -1146,7 +1149,7 @@ export function registerIpcHandlers(
               ? `Server does not advertise ${REQUIRED_FIRMWARE_FAMILY} firmware and G-code dialect support for calibration.`
               : !slicerOk
                 ? `Server does not advertise a supported ${REQUIRED_SLICER_ENGINE} engine for calibration.`
-                : `Server has not enabled required calibration capabilities: ${missingFlags.join(', ')}.`,
+                : `Server has not enabled calibration capabilities required to run calibration at all: ${missingFlags.join(', ')}.`,
             negotiatedApiVersion: caps.apiVersion,
             negotiatedSchemaVersion: caps.schemaVersion,
             capabilityFlags: caps.flags,

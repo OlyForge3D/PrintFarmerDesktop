@@ -386,6 +386,9 @@ export function CalibrationProfileEntry(): React.JSX.Element {
     physicalMatch,
     bedClearConfirmed: false,
     operatorPresent: false,
+    serverGenerationEnabled:
+      store.availability?.capabilityFlags?.calibrationGenerationEnabled ===
+      true,
   };
   const applyDecision = decideCalibrationAction(state, runtime, 'applyPatch');
   const profileBlockers = [

@@ -13,6 +13,9 @@ import { adhocSignMacApps } from './scripts/adhoc-sign-macos-app.mjs';
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
 const iconBasePath = path.join(repoRoot, 'assets', 'icon');
 const windowsIconPath = `${iconBasePath}.ico`;
+// Squirrel's bundled default is a pale-green spinner with no relation to the
+// app. Regenerate with `node scripts/generate-installer-gif.mjs`.
+const installerLoadingGifPath = path.join(repoRoot, 'assets', 'installing.gif');
 
 function runBuildScript(scriptName: string, description: string): void {
   const script = path.join(repoRoot, 'scripts', scriptName);
@@ -66,6 +69,7 @@ const config: ForgeConfig = {
   makers: [
     new MakerSquirrel({
       setupIcon: windowsIconPath,
+      loadingGif: installerLoadingGifPath,
       iconUrl:
         'https://raw.githubusercontent.com/OlyForge3D/PrintFarmerDesktop/development/assets/icon.ico',
     }),

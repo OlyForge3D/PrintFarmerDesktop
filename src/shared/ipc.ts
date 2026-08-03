@@ -972,21 +972,31 @@ export type ResetApprovedRootsResponse = z.infer<
 // --- Calibration capability flags ------------------------------------------
 
 /**
- * Negotiated end-to-end capability flags that must ALL be present for the
- * Printer Calibration feature to be available. If any are false/missing the
- * feature gate returns a typed unavailable reason.
+ * Negotiated end-to-end capability flags discovered during availability
+ * negotiation.
+ *
+ * `calibrationApiEnabled`, `calibrationChangeFeedEnabled` and
+ * `calibrationOfflineDraftEnabled` are preconditions: if any is false the
+ * feature gate returns a typed unavailable reason. The remaining flags switch
+ * individual features on and off and are surfaced so the workspace can disable
+ * just those actions.
  */
 export const CalibrationCapabilityFlags = z
   .object({
-    /** Server exposes calibration REST APIs. */
+    /** Server exposes calibration REST APIs. Required. */
     calibrationApiEnabled: z.boolean(),
-    /** Server emits calibration change-feed events. */
+    /** Server emits calibration change-feed events. Required. */
     calibrationChangeFeedEnabled: z.boolean(),
-    /** Server accepts offline draft push via calibration sync. */
+    /** Server accepts offline draft push via calibration sync. Required. */
     calibrationOfflineDraftEnabled: z.boolean(),
-    /** Server can accept staged photo uploads for calibration. */
+    /** Server can accept staged photo uploads for calibration. Optional. */
     calibrationPhotoUploadEnabled: z.boolean(),
-    /** Server supports generation and G-code promotion. */
+    /**
+     * Server supports generation and G-code promotion. Optional: this needs an
+     * online slicing worker attesting a pinned upstream OrcaSlicer build, which
+     * many deployments will not run. Recording measured results by hand stays
+     * available when it is false.
+     */
     calibrationGenerationEnabled: z.boolean(),
   })
   .passthrough();
