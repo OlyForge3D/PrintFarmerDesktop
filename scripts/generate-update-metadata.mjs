@@ -72,6 +72,16 @@ function assertMatchingKeys(privateKey, expectedPublicKey) {
   }
 }
 
+export function verifyUpdateKeyPair(environment) {
+  const privateKey = createPrivateKey(
+    decodeKey(environment, 'UPDATE_SIGNING_PRIVATE_KEY_BASE64'),
+  );
+  assertMatchingKeys(
+    privateKey,
+    decodeKey(environment, 'PRINTFARMER_UPDATE_PUBLIC_KEY_BASE64'),
+  );
+}
+
 export function createSignedUpdateMetadata({
   artifactsDirectory,
   version,
