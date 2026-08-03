@@ -42,7 +42,16 @@
  * silently changed.
  */
 
-import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  beforeEach,
+  afterAll,
+  afterEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+import { rmSync } from 'node:fs';
 import { IpcChannel } from '@shared/ipc';
 import {
   captureCalibrationLogs,
@@ -52,6 +61,26 @@ import {
 import { calibrationCorrelation } from '../src/main/calibrationCorrelation.js';
 
 type Handler = (event: unknown, request: unknown) => unknown;
+
+/**
+ * `registerIpcHandlers` builds a real `RetargetArtifactService`, which claims a
+ * directory under the OS temp dir and, on initialize, reaps instance
+ * directories whose owning process is gone. Registering handlers once per test
+ * in the shared real temp dir races the retarget suite and surfaces as an
+ * unhandled `EPERM: rmdir`. Retarget is irrelevant here, so give this file its
+ * own temp root.
+ */
+const tempRootRef = vi.hoisted(() => ({ path: '' }));
+
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>();
+  const fs = await import('node:fs');
+  const p = await import('node:path');
+  tempRootRef.path = fs.mkdtempSync(
+    p.join(actual.tmpdir(), 'pf-calibration-log-'),
+  );
+  return { ...actual, default: actual, tmpdir: () => tempRootRef.path };
+});
 
 const electronState = vi.hoisted(() => ({
   handlers: new Map<string, Handler>(),
@@ -270,6 +299,12 @@ afterEach(() => {
   // The registry is process-wide, so without this a job ID bound by one test
   // resolves to the previous test's flow.
   calibrationCorrelation.clear();
+});
+
+afterAll(() => {
+  if (tempRootRef.path !== '') {
+    rmSync(tempRootRef.path, { recursive: true, force: true });
+  }
 });
 
 // ==========================================================================
