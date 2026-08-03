@@ -174,7 +174,14 @@ export function evaluateRefUpdate(update, facts) {
   // refused, and widening this to fail open would trade a determinate refusal
   // for a guess. It is also the single most dangerous case the guard exists
   // for: unfetched commits on a shared branch is precisely the PR #78 clobber.
-  if (facts.liveTipPresent === false) {
+  // Fail closed on anything that is not an explicit, measured `true`. This is
+  // deliberately not `=== false`: an absent field would then be read as "tip
+  // present" and skip this refusal, which is a fail-open default inside a
+  // fail-closed control — a call site that forgets to measure would silently
+  // get the permissive answer. `gatherFacts` always measures it, so there is no
+  // legitimate way to arrive here without it. The vacuous case (no live tip at
+  // all) never reaches this line; the new-branch allow above returns first.
+  if (facts.liveTipPresent !== true) {
     return {
       verdict: 'refuse',
       code: 'push-guard.unfetched-remote-tip',
@@ -322,7 +329,11 @@ export function gatherFacts(update, remote, env = process.env) {
   const liveRemoteSha = readLiveRemoteSha(remote, update.remoteRef);
   const facts = {
     liveRemoteSha,
-    liveTipPresent: true,
+    // Measured on every path, so no caller can construct a `facts` shape this
+    // function does not produce. Vacuously true when the remote has no tip:
+    // there is then no object to be missing, and the new-branch allow returns
+    // before anything tries to enumerate from it.
+    liveTipPresent: isAbsent(liveRemoteSha) ? true : hasCommit(liveRemoteSha),
     discarded: [],
     pushedSessions: [],
     ack: env[ACK_ENV],
@@ -331,7 +342,6 @@ export function gatherFacts(update, remote, env = process.env) {
   // Only meaningful once the live tip agrees with the lease; when it does not,
   // the refusal happens before these are read.
   if (liveRemoteSha && liveRemoteSha === update.remoteSha) {
-    facts.liveTipPresent = hasCommit(liveRemoteSha);
     if (!facts.liveTipPresent) return facts;
     if (!isAbsent(update.localSha)) {
       facts.discarded = readCommits([liveRemoteSha, `^${update.localSha}`]);

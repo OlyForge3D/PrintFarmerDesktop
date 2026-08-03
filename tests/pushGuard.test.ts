@@ -49,16 +49,28 @@ function update(overrides: Partial<Parameters<typeof evaluateRefUpdate>[0]>) {
   };
 }
 
+// Mirrors what `gatherFacts` always produces. `liveTipPresent` is supplied here
+// rather than defaulted inside the guard, so no fixture below constructs a
+// `facts` shape production cannot produce — a test passing against an
+// impossible state is not evidence about the code.
+function facts(
+  overrides: Partial<Parameters<typeof evaluateRefUpdate>[1]>,
+): Parameters<typeof evaluateRefUpdate>[1] {
+  return {
+    liveRemoteSha: THEIRS,
+    liveTipPresent: true,
+    discarded: [],
+    ...overrides,
+  };
+}
+
 describe('the guard resolves the remote tip live rather than trusting the lease', () => {
   it('refuses when the live tip differs from the value git computed the lease against', () => {
     // git normally hands the hook the tip the remote advertised, so this fires
     // only when the remote moves during the push — a narrow window, kept
     // because the alternative is deciding from a value already known to be
     // wrong. The #78 clobber is caught by the foreign-session block below.
-    const result = evaluateRefUpdate(update({ remoteSha: OURS }), {
-      liveRemoteSha: THEIRS,
-      discarded: [],
-    });
+    const result = evaluateRefUpdate(update({ remoteSha: OURS }), facts({}));
 
     expect(result.verdict).toBe('refuse');
     expect(result.code).toBe('push-guard.stale-lease');
@@ -66,20 +78,17 @@ describe('the guard resolves the remote tip live rather than trusting the lease'
   });
 
   it('admits a push whose lease matches the live tip and discards nothing', () => {
-    const result = evaluateRefUpdate(update({}), {
-      liveRemoteSha: THEIRS,
-      discarded: [],
-    });
+    const result = evaluateRefUpdate(update({}), facts({}));
 
     expect(result.verdict).toBe('allow');
     expect(result.code).toBe('push-guard.fast-forward');
   });
 
   it('admits a branch that does not exist on the remote yet', () => {
-    const result = evaluateRefUpdate(update({ remoteSha: ZERO_SHA }), {
-      liveRemoteSha: null,
-      discarded: [],
-    });
+    const result = evaluateRefUpdate(
+      update({ remoteSha: ZERO_SHA }),
+      facts({ liveRemoteSha: null }),
+    );
 
     expect(result.verdict).toBe('allow');
     expect(result.code).toBe('push-guard.new-branch');
@@ -87,10 +96,10 @@ describe('the guard resolves the remote tip live rather than trusting the lease'
 
   it('refuses a "new branch" push when the branch has appeared on the remote since the fetch', () => {
     // Distinct from the case above by one fact only — the live query.
-    const result = evaluateRefUpdate(update({ remoteSha: ZERO_SHA }), {
-      liveRemoteSha: THEIRS,
-      discarded: [],
-    });
+    const result = evaluateRefUpdate(
+      update({ remoteSha: ZERO_SHA }),
+      facts({}),
+    );
 
     expect(result.verdict).toBe('refuse');
     expect(result.code).toBe('push-guard.stale-lease');
@@ -98,8 +107,7 @@ describe('the guard resolves the remote tip live rather than trusting the lease'
 });
 
 describe('the guard separates another session\u2019s commits from your own', () => {
-  const foreign = {
-    liveRemoteSha: THEIRS,
+  const foreign = facts({
     discarded: [
       {
         sha: THEIRS,
@@ -108,7 +116,7 @@ describe('the guard separates another session\u2019s commits from your own', () 
       },
     ],
     pushedSessions: ['8dd289e7'],
-  };
+  });
 
   it('refuses a force-push over commits carrying a session id absent from what is being pushed', () => {
     const result = evaluateRefUpdate(update({}), foreign);
@@ -125,12 +133,14 @@ describe('the guard separates another session\u2019s commits from your own', () 
     // Amending or rebasing your own work discards commits whose trailer matches
     // the one you are pushing. That is the ordinary case and must not be
     // shadowed by the foreign-session refusal, or the guard becomes noise.
-    const result = evaluateRefUpdate(update({}), {
-      liveRemoteSha: THEIRS,
-      discarded: [{ sha: THEIRS, subject: 'wip', sessions: ['8dd289e7'] }],
-      pushedSessions: ['8dd289e7'],
-      ack: THEIRS,
-    });
+    const result = evaluateRefUpdate(
+      update({}),
+      facts({
+        discarded: [{ sha: THEIRS, subject: 'wip', sessions: ['8dd289e7'] }],
+        pushedSessions: ['8dd289e7'],
+        ack: THEIRS,
+      }),
+    );
 
     expect(result.verdict).toBe('allow');
     expect(result.code).toBe('push-guard.acknowledged-discard');
@@ -162,11 +172,10 @@ describe('the guard separates another session\u2019s commits from your own', () 
 });
 
 describe('the guard checks the pusher\u2019s belief, not only git\u2019s cache of it', () => {
-  const discarding = {
-    liveRemoteSha: THEIRS,
+  const discarding = facts({
     discarded: [{ sha: THEIRS, subject: 'work nobody read', sessions: [] }],
     pushedSessions: [],
-  };
+  });
 
   it('refuses a destructive push that acknowledges nothing', () => {
     const result = evaluateRefUpdate(update({}), discarding);
@@ -210,11 +219,10 @@ describe('the guard says so when it cannot see what the push would destroy', () 
     // fetched. Before this had its own code the generic catch leaked
     // `fatal: bad object`, which is the worst diagnostic in the system on the
     // most dangerous path the guard has.
-    const result = evaluateRefUpdate(update({}), {
-      liveRemoteSha: THEIRS,
-      liveTipPresent: false,
-      discarded: [],
-    });
+    const result = evaluateRefUpdate(
+      update({}),
+      facts({ liveTipPresent: false }),
+    );
 
     expect(result.verdict).toBe('refuse');
     expect(result.code).toBe('push-guard.unfetched-remote-tip');
@@ -226,54 +234,57 @@ describe('the guard says so when it cannot see what the push would destroy', () 
     // discarded". If the check were ordered after the fast-forward case, this
     // exact input would be ALLOWED — the emptiness is indistinguishable at
     // that point. Pins the ordering, not just the code.
-    const unreadable = evaluateRefUpdate(update({}), {
-      liveRemoteSha: THEIRS,
-      liveTipPresent: false,
-      discarded: [],
-    });
-    const genuinelyEmpty = evaluateRefUpdate(update({}), {
-      liveRemoteSha: THEIRS,
-      liveTipPresent: true,
-      discarded: [],
-    });
+    const unreadable = evaluateRefUpdate(
+      update({}),
+      facts({ liveTipPresent: false }),
+    );
+    const genuinelyEmpty = evaluateRefUpdate(
+      update({}),
+      facts({ liveTipPresent: true }),
+    );
 
     expect(unreadable.verdict).toBe('refuse');
     expect(genuinelyEmpty.code).toBe('push-guard.fast-forward');
   });
 
-  it('treats a tip whose presence was never probed as present, so callers supplying facts are unaffected', () => {
-    const result = evaluateRefUpdate(update({}), {
-      liveRemoteSha: THEIRS,
-      discarded: [],
-    });
+  it('refuses rather than allows when the measurement is missing altogether', () => {
+    // The field is required, so this cannot happen through the type — hence the
+    // cast. It is asserted anyway because the failure it guards against is a
+    // future call site that builds facts by hand and omits the probe. A
+    // permissive default would make that omission silently skip the refusal:
+    // fail-open by forgetfulness, inside a control whose whole point is fail-
+    // closed. The refusal must be what you get for not measuring.
+    const unmeasured = { liveRemoteSha: THEIRS, discarded: [] };
+    const result = evaluateRefUpdate(
+      update({}),
+      unmeasured as unknown as Parameters<typeof evaluateRefUpdate>[1],
+    );
 
-    expect(result.code).toBe('push-guard.fast-forward');
+    expect(result.verdict).toBe('refuse');
+    expect(result.code).toBe('push-guard.unfetched-remote-tip');
   });
 });
 
 describe('the guard refuses direct writes to the branches that take pull requests only', () => {
   it.each(PROTECTED_REFS)('refuses a push to %s', (ref) => {
-    const result = evaluateRefUpdate(update({ remoteRef: ref }), {
-      liveRemoteSha: THEIRS,
-      discarded: [],
-    });
+    const result = evaluateRefUpdate(update({ remoteRef: ref }), facts({}));
 
     expect(result.verdict).toBe('refuse');
     expect(result.code).toBe('push-guard.protected-ref');
   });
 
   it('refuses a branch deletion that names no tip, and admits one that names the live tip', () => {
-    const anonymous = evaluateRefUpdate(update({ localSha: ZERO_SHA }), {
-      liveRemoteSha: THEIRS,
-      discarded: [{ sha: THEIRS, subject: 'everything', sessions: [] }],
-    });
+    const everything = [{ sha: THEIRS, subject: 'everything', sessions: [] }];
+    const anonymous = evaluateRefUpdate(
+      update({ localSha: ZERO_SHA }),
+      facts({ discarded: everything }),
+    );
     expect(anonymous.code).toBe('push-guard.branch-delete');
 
-    const acknowledged = evaluateRefUpdate(update({ localSha: ZERO_SHA }), {
-      liveRemoteSha: THEIRS,
-      discarded: [{ sha: THEIRS, subject: 'everything', sessions: [] }],
-      ack: THEIRS,
-    });
+    const acknowledged = evaluateRefUpdate(
+      update({ localSha: ZERO_SHA }),
+      facts({ discarded: everything, ack: THEIRS }),
+    );
     expect(acknowledged.verdict).toBe('allow');
     expect(acknowledged.code).toBe('push-guard.acknowledged-delete');
   });

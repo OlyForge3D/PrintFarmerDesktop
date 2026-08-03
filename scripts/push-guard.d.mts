@@ -13,7 +13,13 @@ export interface GuardedCommit {
 
 export interface PushFacts {
   liveRemoteSha: string | null;
-  liveTipPresent?: boolean;
+  /**
+   * Whether the live remote tip is readable in this object store. Required, not
+   * optional: `gatherFacts` measures it on every path, so an optional field
+   * would only ever be omitted by a test fixture — a shape production cannot
+   * produce. The guard refuses on anything but `true`.
+   */
+  liveTipPresent: boolean;
   discarded: GuardedCommit[];
   pushedSessions?: Iterable<string>;
   ack?: string | undefined;
