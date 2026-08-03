@@ -18,4 +18,10 @@ Then I transcribed `diamondDag` from `tests/viewer.partTree.test.tsx` and walked
 
 **So: state the falsifier, and then take the measurement it names.** Writing the condition down is what makes the error recoverable. It is not what makes it not happen.
 
+**A residual I had to be shown, and it downgrades my own measurement.** I described the walk as transcribed from the fixture. Only half of it was. `diamondDag` gave me the **graph**; the **traversal** — one row per visit, a path-local `seen` copied per branch, no row cap — I supplied from a prose description of the pre-fix behaviour. So my numbers were a correct model of a traversal I had assumed. Had the assumption been wrong, every figure would have been internally consistent, agreed with two other walks, and measured the wrong thing.
+
+That was settled by reading `741459de` — the pre-fix `flattenPartTree` as shipped, off PR #68's commit list: `const nextSeen = new Set(seen).add(objectId)` per branch, `rows.push` per visit, and `MAX_PART_TREE_ROWS` absent from the blob entirely, against four occurrences in the fix `1c80bdb381`. **The assumption held.** But it held as a checked fact only after someone else pointed at the artifact; until then it was a guess that happened to be right, which is the thing this entry is about, one level underneath the finding it retracts.
+
+**The general form:** a reconstruction and the thing reconstructed are not two renderings of one quantity. Agreement among reconstructions built from the same description cannot detect an error in the description. **Terminating in the artifact is categorically different from agreeing with another model of it** — and the artifact has to be named, or the claim is unauditable.
+
 **One more thing this instance shows.** It occurred *inside* an investigation that had just correctly overturned someone else's false finding, and while I was drafting this entry. **Having checked one claim carefully confers nothing on the next one.** Verification is per-claim; the confidence it produces is not.
