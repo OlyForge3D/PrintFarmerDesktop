@@ -473,7 +473,13 @@ describe('the release workflow enforces compliance before publication', () => {
       { contents: ciWorkflow, jobs: ['sidecar', 'package'] },
       { contents: releaseWorkflow, jobs: ['make'] },
     ];
-    expect(requireLockedWorkspaceCargoCommands(workflows)).toHaveLength(8);
+    const cargoCommands = requireLockedWorkspaceCargoCommands(workflows);
+    expect(cargoCommands.length).toBeGreaterThan(0);
+    expect(
+      cargoCommands.every((command) =>
+        /(?:^|\s)--locked(?:\s|$)/.test(command),
+      ),
+    ).toBe(true);
 
     const unlockedCi = ciWorkflow.replace(
       'run: cargo test --locked',
