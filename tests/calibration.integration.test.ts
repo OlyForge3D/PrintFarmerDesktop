@@ -42,6 +42,7 @@ import {
   CalibrationSyncStatus,
 } from '@shared/ipc';
 import type { CalibrationConflict as CalibrationConflictType } from '@shared/ipc';
+import { printFarmerCapabilitiesResponse } from './fixtures/printFarmerCapabilities.js';
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -91,12 +92,20 @@ function fakeCursor(
 
 function fakeCapabilities() {
   return {
-    apiVersion: '2.0',
-    schemaVersion: 1,
-    requiredScopes: ['CalibrationRead', 'CalibrationWrite'],
-    requiredFirmware: 'Klipper',
-    requiredGcodeDialect: 'Klipper',
-    requiredSlicer: 'OrcaSlicer',
+    apiVersion: '1.0',
+    schemaVersion: '1.0',
+    apiContractVersion: '1.0',
+    grantedScopes: ['calibration:read', 'calibration:update'],
+    supportedFirmwareFamilies: ['Klipper'],
+    supportedGcodeDialects: ['Klipper'],
+    supportedSlicerEngines: [
+      {
+        type: 'OrcaSlicer',
+        version: '2.3.1',
+        distribution: 'upstream',
+        supported: true,
+      },
+    ],
     flags: {
       calibrationApiEnabled: true,
       calibrationChangeFeedEnabled: true,
@@ -749,8 +758,8 @@ describe('CalibrationSyncEngine integration', () => {
   it('validateProfileContext rejects unsupported firmware', async () => {
     const badCaps = {
       ...fakeCapabilities(),
-      requiredFirmware: 'Marlin',
-      requiredGcodeDialect: 'Marlin',
+      supportedFirmwareFamilies: ['Marlin'],
+      supportedGcodeDialects: ['Marlin'],
     };
     const http = fakeHttp({
       getCapabilities: vi.fn().mockResolvedValue(badCaps),
@@ -772,7 +781,17 @@ describe('CalibrationSyncEngine integration', () => {
   });
 
   it('validateProfileContext rejects unsupported slicer', async () => {
-    const badCaps = { ...fakeCapabilities(), requiredSlicer: 'PrusaSlicer' };
+    const badCaps = {
+      ...fakeCapabilities(),
+      supportedSlicerEngines: [
+        {
+          type: 'PrusaSlicer',
+          version: '2.8.0',
+          distribution: 'upstream',
+          supported: true,
+        },
+      ],
+    };
     const http = fakeHttp({
       getCapabilities: vi.fn().mockResolvedValue(badCaps),
     });
@@ -824,21 +843,7 @@ describe('CalibrationSyncEngine integration', () => {
 describe('CalibrationHttpClient identity fencing and error mapping', () => {
   it('sends JWT in Authorization header (never in logs)', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      json({
-        apiVersion: '2.0',
-        schemaVersion: 1,
-        requiredScopes: [],
-        requiredFirmware: 'Klipper',
-        requiredGcodeDialect: 'Klipper',
-        requiredSlicer: 'OrcaSlicer',
-        flags: {
-          calibrationApiEnabled: true,
-          calibrationChangeFeedEnabled: true,
-          calibrationOfflineDraftEnabled: true,
-          calibrationPhotoUploadEnabled: true,
-          calibrationGenerationEnabled: true,
-        },
-      }),
+      json(printFarmerCapabilitiesResponse()),
     );
     const tokens = fakeTokenProvider();
     const client = new CalibrationHttpClient(tokens, { fetch: fetchMock });
@@ -1750,8 +1755,8 @@ describe('Calibration IPC schema additive compatibility', () => {
         available: true,
         unavailableReason: null,
         unavailableDetail: null,
-        negotiatedApiVersion: '2.0',
-        negotiatedSchemaVersion: 1,
+        negotiatedApiVersion: '1.0',
+        negotiatedSchemaVersion: '1.0',
         capabilityFlags: {
           calibrationApiEnabled: true,
           calibrationChangeFeedEnabled: true,

@@ -675,40 +675,159 @@ export function doesCalibrationWorkspaceMatchContext(
 
 // --- Capability negotiation wire types ------------------------------------
 
+/** Required upstream slicer engine identity for calibration. */
+export const REQUIRED_SLICER_ENGINE = 'OrcaSlicer';
+/** Required firmware family and G-code dialect for calibration. */
+export const REQUIRED_FIRMWARE_FAMILY = 'Klipper';
+
+/**
+ * A boolean capability switch that a server may not know about yet.
+ *
+ * Absent means "not advertised", which is treated as *disabled* so negotiation
+ * stays fail-closed on older servers. A present value of the wrong type is
+ * still a contract violation and fails validation.
+ */
+const AdvertisedFlag = z.boolean().optional().default(false);
+
+const RemoteSlicerEngineCapability = z
+  .object({
+    type: z.string().max(128).optional().default(''),
+    version: z.string().max(128).optional().default(''),
+    distribution: z.string().max(128).optional().default(''),
+    supported: AdvertisedFlag,
+  })
+  .passthrough();
+
 /**
  * Remote capability-negotiation response from
  * `GET /api/calibration/capabilities`.
- * Required fields are strict; optional future fields use passthrough.
+ *
+ * The server returns `PlatformCapabilitiesDto` — the same shape as the
+ * anonymous `GET /api/system/capabilities` response plus the authenticated
+ * `effectivePermissions` and `effectiveCapabilities` members. Parsing is
+ * additive: unknown members pass through and capability switches this client
+ * does not receive are treated as disabled rather than as a malformed body.
+ *
+ * The parsed value is normalised into the negotiation shape the calibration
+ * feature gate consumes, so callers never depend on raw wire naming.
  */
 export const RemoteCalibrationCapabilities = z
   .object({
-    /** Minimum required negotiated API version. */
-    apiVersion: z.string().min(1).max(64),
-    /** Minimum required schema version for the change feed. */
-    schemaVersion: z.number().int().nonnegative(),
-    /** Required JWT scopes (must all be present). */
-    requiredScopes: z.array(z.string().min(1).max(64)).max(32),
-    /** Firmware dialect requirement. Must be 'Klipper'. */
-    requiredFirmware: z.string().min(1).max(64),
-    /** G-code dialect requirement. Must be 'Klipper'. */
-    requiredGcodeDialect: z.string().min(1).max(64),
-    /** Required upstream slicer identity. Must be 'OrcaSlicer'. */
-    requiredSlicer: z.string().min(1).max(64),
-    /** Capability flags — all must be true. */
-    flags: z
-      .object({
-        calibrationApiEnabled: z.boolean(),
-        calibrationChangeFeedEnabled: z.boolean(),
-        calibrationOfflineDraftEnabled: z.boolean(),
-        calibrationPhotoUploadEnabled: z.boolean(),
-        calibrationGenerationEnabled: z.boolean(),
-      })
-      .passthrough(),
+    /** Server-wide API contract version. Always present since contract 1.0. */
+    apiContractVersion: z.string().min(1).max(64),
+    /** Calibration API contract version; null when calibration is unavailable. */
+    calibrationApiVersion: z
+      .string()
+      .max(64)
+      .nullish()
+      .transform((value) => value ?? null),
+    /** Calibration persistence schema version; null when unavailable. */
+    calibrationSchemaVersion: z
+      .string()
+      .max(64)
+      .nullish()
+      .transform((value) => value ?? null),
+    /** Calibration project persistence is implemented and enabled. */
+    calibrationPersistenceEnabled: AdvertisedFlag,
+    /** Calibration synchronisation (change feed + offline draft push). */
+    calibrationSyncEnabled: AdvertisedFlag,
+    /** Calibration photo capture and upload. */
+    calibrationPhotosEnabled: AdvertisedFlag,
+    /** Calibration command generation and G-code promotion. */
+    calibrationGenerationEnabled: AdvertisedFlag,
+    /** Firmware families the calibration contract supports. */
+    supportedFirmwareFamilies: z
+      .array(z.string().max(64))
+      .max(32)
+      .optional()
+      .default([]),
+    /** G-code dialects the calibration contract supports. */
+    supportedGcodeDialects: z
+      .array(z.string().max(64))
+      .max(32)
+      .optional()
+      .default([]),
+    /** Slicer engines this deployment supports. */
+    supportedSlicerEngines: z
+      .array(RemoteSlicerEngineCapability)
+      .max(32)
+      .optional()
+      .default([]),
+    /**
+     * The caller's effective `resource:action` permissions. Only the
+     * authenticated calibration capability endpoint populates this.
+     */
+    effectivePermissions: z
+      .array(z.string().max(64))
+      .max(64)
+      .nullish()
+      .transform((value) => value ?? []),
   })
-  .passthrough();
+  .passthrough()
+  .transform((value) => ({
+    /** Negotiated calibration API version, or null when not advertised. */
+    apiVersion: value.calibrationApiVersion,
+    /** Negotiated calibration schema version, or null when not advertised. */
+    schemaVersion: value.calibrationSchemaVersion,
+    /** Server-wide API contract version. */
+    apiContractVersion: value.apiContractVersion,
+    /** Permissions the current token actually grants. */
+    grantedScopes: value.effectivePermissions,
+    supportedFirmwareFamilies: value.supportedFirmwareFamilies,
+    supportedGcodeDialects: value.supportedGcodeDialects,
+    supportedSlicerEngines: value.supportedSlicerEngines,
+    /**
+     * End-to-end capability flags the calibration feature gate requires.
+     * Offline drafts are pushed through the calibration sync endpoint, so they
+     * are gated by the same server switch as the change feed.
+     */
+    flags: {
+      calibrationApiEnabled: value.calibrationPersistenceEnabled,
+      calibrationChangeFeedEnabled: value.calibrationSyncEnabled,
+      calibrationOfflineDraftEnabled: value.calibrationSyncEnabled,
+      calibrationPhotoUploadEnabled: value.calibrationPhotosEnabled,
+      calibrationGenerationEnabled: value.calibrationGenerationEnabled,
+    },
+  }));
 export type RemoteCalibrationCapabilities = z.infer<
   typeof RemoteCalibrationCapabilities
 >;
+
+/** Capability flags that must all be true before calibration is offered. */
+export const REQUIRED_CALIBRATION_FLAGS = [
+  'calibrationApiEnabled',
+  'calibrationChangeFeedEnabled',
+  'calibrationOfflineDraftEnabled',
+  'calibrationPhotoUploadEnabled',
+  'calibrationGenerationEnabled',
+] as const;
+
+/** Names the capability flags the server did not advertise as enabled. */
+export function missingCalibrationFlags(
+  capabilities: RemoteCalibrationCapabilities,
+  required: readonly (keyof RemoteCalibrationCapabilities['flags'])[] = REQUIRED_CALIBRATION_FLAGS,
+): string[] {
+  return required.filter((flag) => !capabilities.flags[flag]);
+}
+
+/** True when the server supports Klipper firmware *and* the Klipper dialect. */
+export function supportsKlipper(
+  capabilities: RemoteCalibrationCapabilities,
+): boolean {
+  return (
+    capabilities.supportedFirmwareFamilies.includes(REQUIRED_FIRMWARE_FAMILY) &&
+    capabilities.supportedGcodeDialects.includes(REQUIRED_FIRMWARE_FAMILY)
+  );
+}
+
+/** True when the server advertises a supported upstream OrcaSlicer engine. */
+export function supportsOrcaSlicer(
+  capabilities: RemoteCalibrationCapabilities,
+): boolean {
+  return capabilities.supportedSlicerEngines.some(
+    (engine) => engine.type === REQUIRED_SLICER_ENGINE && engine.supported,
+  );
+}
 
 // --- Change feed -----------------------------------------------------------
 
