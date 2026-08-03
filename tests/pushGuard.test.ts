@@ -126,7 +126,7 @@ describe('the guard separates another session\u2019s commits from your own', () 
         sessions: ['032c3f16'],
       },
     ],
-    pushedSessions: ['8dd289e7'],
+    ownSessions: ['8dd289e7'],
   });
 
   it('refuses a force-push over commits carrying a session id absent from what is being pushed', () => {
@@ -148,7 +148,7 @@ describe('the guard separates another session\u2019s commits from your own', () 
       update({}),
       facts({
         discarded: [{ sha: THEIRS, subject: 'wip', sessions: ['8dd289e7'] }],
-        pushedSessions: ['8dd289e7'],
+        ownSessions: ['8dd289e7'],
         ack: THEIRS,
       }),
     );
@@ -198,7 +198,7 @@ describe('the guard separates another session\u2019s commits from your own', () 
 describe('the guard checks the pusher\u2019s belief, not only git\u2019s cache of it', () => {
   const discarding = facts({
     discarded: [{ sha: THEIRS, subject: 'work nobody read', sessions: [] }],
-    pushedSessions: [],
+    ownSessions: [],
   });
 
   it('refuses a destructive push that acknowledges nothing', () => {
@@ -618,10 +618,65 @@ describe('the guard decides from the advertised tip when its live query fails', 
   });
 });
 
+describe('a solo rollback of ALL of its own work is not reported as a second writer', () => {
+  // The harder input, and the one that shows reachability is a proxy rather
+  // than the property. Rolling back SOME of your commits leaves your session id
+  // reachable from the local tip. Rolling back ALL of them does not — every
+  // commit carrying it is exactly what is being removed — so a reachability
+  // test classifies your own work as foreign again, on the single most likely
+  // destructive push a solo session ever makes: "that branch was wrong, take it
+  // all back".
+  let root: string;
+  let remote: string;
+  let work: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-fullroll-'));
+    remote = path.join(root, 'remote.git');
+    work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, work], root);
+    configure(work);
+    git(['checkout', '-b', 'feature'], work);
+    // The base carries a different session: it is somebody else's starting
+    // point, which is what makes the rollback a genuine full retreat.
+    commit(work, 'base', 'session-base');
+    git(['push', '--no-verify', '-u', 'origin', 'feature'], work);
+    for (const name of ['mine one', 'mine two']) {
+      commit(work, name, 'session-mine');
+    }
+    git(['push', '--no-verify', 'origin', 'feature'], work);
+    git(['reset', '--hard', 'HEAD~2'], work);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('refuses as an unacknowledged discard, not as another session', () => {
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force-with-lease', 'origin', 'feature'], work);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    expect(stderr).toContain('push-guard.unacknowledged-discard');
+    expect(stderr).not.toContain('push-guard.foreign-session');
+    expect(stderr).not.toContain('another session');
+    expect(stderr).not.toContain(ACK_FOREIGN_ENV);
+  });
+});
+
 describe('a solo rollback is not reported as a second writer', () => {
   // B2. The bug lived entirely in `gatherFacts`, which the unit tests bypass by
   // supplying `facts` directly — so this can only be caught through the real
-  // hook. `pushedSessions` came from `local ^live`, which is empty whenever the
+  // hook. `ownSessions` came from `local ^live`, which is empty whenever the
   // local tip is an ancestor of the live tip, and every commit being discarded
   // was then classified as another session's work.
   let root: string;

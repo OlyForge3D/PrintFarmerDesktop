@@ -88,7 +88,7 @@ function describe(commits) {
  * @param {{
  *   liveRemoteSha: string | null,
  *   discarded: Array<{sha: string, subject?: string, sessions?: string[]}>,
- *   pushedSessions?: Iterable<string>,
+ *   ownSessions?: Iterable<string>,
  *   ack?: string,
  *   ackForeign?: string,
  * }} facts
@@ -250,9 +250,9 @@ export function evaluateRefUpdate(update, facts) {
     };
   }
 
-  const pushedSessions = new Set(facts.pushedSessions ?? []);
+  const ownSessions = new Set(facts.ownSessions ?? []);
   const foreign = [...sessionsOf(discarded)].filter(
-    (session) => !pushedSessions.has(session),
+    (session) => !ownSessions.has(session),
   );
   if (foreign.length > 0) {
     // Exact membership, not substring. `includes` on the raw string would let
@@ -397,6 +397,42 @@ export function hasCommit(sha) {
 const RECORD = '\u001e';
 const FIELD = '\u001f';
 
+/**
+ * Sessions this clone can account for having held — read from the reflog, which
+ * is a direct observation of local provenance rather than a proxy for it.
+ *
+ * "Is this commit mine?" was previously answered with "is some other commit of
+ * the same session still reachable from my tip?", which is merely correlated
+ * with it. It fails on the most likely destructive push a lone session makes:
+ * rolling back ALL of its own work, where every commit carrying its id is
+ * exactly what is being removed, so the guard called the pusher's own work
+ * another session's.
+ *
+ * The reflog answers the real question. A commit that arrived by `git fetch`
+ * does NOT enter `HEAD`'s or the branch's reflog — measured, not assumed — so
+ * the commits another session pushed and this one merely fetched are still
+ * correctly foreign. Both reflogs are read: the branch's covers commits made on
+ * it, HEAD's covers work that passed through this worktree on any branch.
+ *
+ * If reflogs are disabled the set is empty, which fails toward MORE refusals,
+ * not fewer.
+ */
+export function readReflogSessions(localRef) {
+  const refs = ['HEAD', ...(localRef ? [localRef] : [])];
+  const sessions = new Set();
+  for (const ref of refs) {
+    try {
+      for (const commit of readCommits(['-g', '--max-count=1000', ref])) {
+        for (const session of commit.sessions) sessions.add(session);
+      }
+    } catch {
+      // A ref with no reflog is not evidence of anything; the other one still
+      // contributes, and an empty set only makes the guard stricter.
+    }
+  }
+  return sessions;
+}
+
 export function readCommits(range) {
   const output = git([
     'log',
@@ -453,7 +489,7 @@ export function gatherFacts(update, remote, env = process.env) {
     // before anything tries to enumerate from it.
     liveTipPresent: isAbsent(liveRemoteSha) ? true : hasCommit(liveRemoteSha),
     discarded: [],
-    pushedSessions: [],
+    ownSessions: [],
     ack: env[ACK_ENV],
     ackForeign: env[ACK_FOREIGN_ENV],
   };
@@ -463,21 +499,38 @@ export function gatherFacts(update, remote, env = process.env) {
     if (!facts.liveTipPresent) return facts;
     if (!isAbsent(update.localSha)) {
       facts.discarded = readCommits([liveRemoteSha, `^${update.localSha}`]);
-      // Everything reachable from the local tip, NOT `local ^live`. When the
-      // local tip is an ancestor of the live tip — an ordinary solo rollback —
-      // that range is empty, so every discarded commit was classified foreign
-      // INCLUDING THE PUSHER'S OWN: the guard named your own session as
-      // "another session" and told you to acknowledge yourself as a second
-      // writer. That trains the override habit on pushes where no second
-      // writer ever existed, which disarms the refusal for the case it exists
-      // to catch.
+      // Two sources, because reachability alone is a PROXY for ownership and
+      // the proxy breaks on the case that matters most.
+      //
+      // It was `local ^live`, which is empty whenever the local tip is an
+      // ancestor of the live tip — an ordinary solo rollback — so every
+      // discarded commit was classified foreign INCLUDING THE PUSHER'S OWN.
+      // Widening it to everything reachable from the local tip fixes a partial
+      // rollback but NOT a full one: roll back all of your work and every
+      // commit carrying your session id is exactly what you are removing, so it
+      // is reachable from nothing and you are named as a second writer again —
+      // on the most likely destructive push a lone session ever makes.
+      //
+      // The reflog answers the question directly rather than by correlation.
+      // Union, not replacement: reachability still covers a clone whose reflogs
+      // are disabled or expired.
       //
       // Cost was measured, not feared: the full walk is 32-56 ms over this
-      // repo's 176 commits against the 515 ms `ls-remote` already paid on
-      // every push. Revisit if history grows enough to invert that ratio. A
-      // `--grep` prefilter was rejected: `--grep` matches substrings, so one
-      // session id would match any id containing it.
-      facts.pushedSessions = [...sessionsOf(readCommits([update.localSha]))];
+      // repo's 176 commits, and each reflog read is ~30 ms, against the 515 ms
+      // `ls-remote` already paid on every push. Revisit if history grows enough
+      // to invert that ratio. A
+      // `--grep` prefilter was rejected twice over: it matches substrings, so
+      // one session id would match any id containing it, and it takes a POSIX
+      // regex rather than a literal, so an id containing a metacharacter would
+      // fail to match its own commits — a false negative, which is the fatal
+      // direction for a prefilter, since the exact check never sees what the
+      // prefilter dropped.
+      facts.ownSessions = [
+        ...new Set([
+          ...sessionsOf(readCommits([update.localSha])),
+          ...readReflogSessions(update.localRef),
+        ]),
+      ];
     } else {
       facts.discarded = readCommits([liveRemoteSha, '--max-count=20']);
     }

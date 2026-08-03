@@ -35,7 +35,7 @@ export interface PushFacts {
    */
   provablyFastForward: boolean | null;
   discarded: GuardedCommit[];
-  pushedSessions?: Iterable<string>;
+  ownSessions?: Iterable<string>;
   ack?: string | undefined;
   ackForeign?: string | undefined;
 }
@@ -78,6 +78,7 @@ export function isAncestor(
 ): boolean | null;
 export function hasCommit(sha: string): boolean;
 export function readCommits(range: string[]): Required<GuardedCommit>[];
+export function readReflogSessions(localRef?: string): Set<string>;
 export function gatherFacts(
   update: RefUpdate,
   remote: string,

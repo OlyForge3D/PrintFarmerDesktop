@@ -130,9 +130,25 @@ rollback. Every discarded commit was then classified foreign, so the guard named
 _the pusher's own session_ as "another session" and printed the override
 instruction with their own id in it. Fail-closed, so not a bypass — but it trains
 the override habit on pushes where no second writer exists, which is the failure
-mode #81 exists to prevent, reintroduced by the fix for it. The set is now taken
-from everything reachable from the local tip. Cost was measured, not feared:
-32–56 ms against the 515 ms `ls-remote` already paid on every push.
+mode #81 exists to prevent, reintroduced by the fix for it.
+
+**The first repair was still a proxy, and the proxy broke on the case that
+matters most.** Widening the set to "sessions reachable from the local tip" fixes
+a _partial_ rollback, because your other commits still carry your id. It does not
+fix a **full** one: roll back all of your work and every commit carrying your
+session id is exactly what you are removing, so it is reachable from nothing and
+you are named a second writer again — on "that branch was wrong, take it all
+back", the most likely destructive push a lone session ever makes. Reachability
+answers _"do I still have some other commit from the same session?"_, which is
+**correlated** with ownership and not equal to it.
+
+**The reflog answers it directly.** A commit that arrived by `git fetch` does not
+enter `HEAD`'s or the branch's reflog — measured in a two-clone repro, not
+assumed — while a commit written in this worktree does. The guard now takes the
+union of reachability and the reflogs, and both directions are pinned by
+mutation: drop the reflog source and the full-rollback case is misnamed again;
+widen it to `--all` and the two-session refusal stops firing. Cost is 32–56 ms
+for the walk plus ~30 ms per reflog, against the 515 ms `ls-remote` already paid.
 
 **Evidence, not assertion.** `tests/pushGuard.test.ts` drives a real push through
 the real hook against a real remote and pins the counterfactual: the identical
