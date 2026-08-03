@@ -19,6 +19,10 @@ export const UNIVERSAL_SIDECAR_PATH = path.join(
   'model-core',
 );
 
+export function verifyArchArgs(sidecarPath = UNIVERSAL_SIDECAR_PATH) {
+  return [sidecarPath, '-verify_arch', 'x86_64', 'arm64'];
+}
+
 function run(command, args, description) {
   const result = spawnSync(command, args, {
     cwd: nativeDir,
@@ -68,11 +72,7 @@ function main() {
     ],
     'combining the universal sidecar',
   );
-  run(
-    'lipo',
-    ['-verify_arch', 'x86_64', 'arm64', UNIVERSAL_SIDECAR_PATH],
-    'verifying universal sidecar architectures',
-  );
+  run('lipo', verifyArchArgs(), 'verifying universal sidecar architectures');
 }
 
 if (

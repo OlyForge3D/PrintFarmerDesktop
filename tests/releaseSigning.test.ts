@@ -17,7 +17,12 @@ import {
 import {
   UNIVERSAL_MAC_TARGETS,
   UNIVERSAL_SIDECAR_PATH,
+  verifyArchArgs,
 } from '../scripts/build-universal-sidecar.mjs';
+import {
+  adhocSignArgs,
+  macAppPaths,
+} from '../scripts/adhoc-sign-macos-app.mjs';
 
 const temporaryDirectories: string[] = [];
 
@@ -190,5 +195,31 @@ describe('dedicated platform signing', () => {
     expect(UNIVERSAL_SIDECAR_PATH).toContain(
       path.join('target', 'universal-apple-darwin', 'release', 'model-core'),
     );
+  });
+
+  it('verifies architectures with the lipo input file before the command', () => {
+    expect(verifyArchArgs('/tmp/model-core')).toEqual([
+      '/tmp/model-core',
+      '-verify_arch',
+      'x86_64',
+      'arm64',
+    ]);
+  });
+
+  it('ad-hoc signs the packaged app bundle rather than each architecture', () => {
+    expect(macAppPaths(['/out/PrintFarmer Desktop-darwin-universal'])).toEqual([
+      path.join(
+        '/out/PrintFarmer Desktop-darwin-universal',
+        'PrintFarmer Desktop.app',
+      ),
+    ]);
+    expect(adhocSignArgs('/out/app.app')).toEqual([
+      '--sign',
+      '-',
+      '--force',
+      '--preserve-metadata=entitlements,requirements,flags,runtime',
+      '--deep',
+      '/out/app.app',
+    ]);
   });
 });
