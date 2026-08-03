@@ -14,8 +14,13 @@ or more artifacts rendering one incident, and points at a new
 
 What that section requires, for any agent running the check:
 
-- Enumerate **every** rendering, not two. A pair-wise habit is how a third rendering
-  survives a repair that fixed the other two.
+- Enumerate **every** rendering, not two — the question is which renderings **exist**, not
+  which ones disagree. **Corrections do not propagate to renderings that do not yet
+  exist**: a repair fixes the copies visible at the time, and the next author reaches for
+  whichever copy is nearest, which may be a superseded one. The live finding in this
+  batch is exactly that shape — a figure re-rendered into a new document 45 minutes after
+  its correction was published. No diff between the copies known at repair time could
+  have seen it; enumeration at the current head is what does.
 - Publish the extraction rule and the head with the result, and run a control that can
   report non-empty.
 - Report a disagreement against the **pair or the set**, never against whichever member
@@ -84,3 +89,27 @@ Governing entry, cited by heading: `.squad/decisions.md` →
 **2026-07-26 — Diffing two renderings of one incident finds what neither rendering's own
 review found**. This change is the remedy that entry names, and it was authored by the
 fact-checker, so per that entry it must be reviewed by someone else.
+
+## One wording correction for Scribe, in `.squad/decisions.md` itself
+
+Not made here, because `.squad/decisions.md` is Scribe's artifact and this is a wording
+change rather than a finding.
+
+The entry recording the diamond-DAG decomposition renders the sub-quantity as
+_"paths through the `m` chain alone"_. The measurement above shows that phrase names
+**neither** figure cleanly:
+
+- rows attributable to `m`-chain nodes = **32,767** (= `2^15-1`, paths summed over the chain),
+- distinct paths **through** the chain to its tail `m14` = **16,384** (= `2^14`).
+
+The phrase most naturally reads as the second and is used for the first. The entry's
+finding is unaffected and its decomposition is correct — the threat model claimed the
+**total**, and the total is 49,150. But the entry is cited as the authority for this
+quantity, so its phrase should pin which one it means. Suggested wording:
+_"32,767 rows are emitted for `m`-chain nodes — `2^15-1`, the paths summed over the
+chain, not the 16,384 distinct paths to its tail."_
+
+Recorded rather than quietly fixed: the same imprecision was present in
+`.squad/skills/test-discipline/SKILL.md` and in the fact-checker's own first repair, and
+both are corrected in this change. An authority whose phrasing is imprecise is still the
+authority; it just needs to say which quantity it names.
