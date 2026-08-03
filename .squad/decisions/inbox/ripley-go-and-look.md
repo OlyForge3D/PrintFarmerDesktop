@@ -36,6 +36,12 @@ The same lesson, one level down, and it also had no artifact until now.
 
 **Why the second hides inside the first, which is the part worth carrying.** A never-valid pointer usually fails with an error that _reads_ as staleness — `Head branch was modified` when the head has not moved. The natural response is to re-fetch, re-merge and retry, and **that works**: the retry supplies a real pointer, the operation succeeds, and the wrong diagnosis is never contradicted because the remedy for the misdiagnosis happens to be effective. **A failure whose standard fix works for the wrong reason will not be found by fixing it.** Before concluding staleness, check that the pointer you supplied ever existed.
 
+**The targeting rule, which is the general form and the only enforceable thing on this page.** Beyond pointers: **a failure in the alarming direction will be investigated; a failure that resolves quietly will not.** The loud one recruits attention for free — somebody is already looking, because something looked broken. The quiet one consumes its own evidence: the retry succeeds, the task closes, and the successful repair gets logged as confirmation of whatever the operator already believed.
+
+So the check does not belong everywhere. **It belongs on the operations that succeed on retry.** That is a set you can enumerate, not a disposition you have to sustain. Nearly every rule written today is a _be careful_ rule and is therefore unenforceable — it asks for more attention without saying where to take it from. **This one names the place.**
+
+The asymmetry is the whole content: **the loud half is self-policing and the quiet half is not**, so a rule that treats them alike spends its budget on the half that did not need it. A same-class defect that fails noisily needs no rule — it was found because it shouted.
+
 **A count I did not verify, flagged rather than laundered.** The lead reports six such stale-head assertions across five sessions in one day, one of them their own: recommending a narrative be moved into a directory that already contained it, twice, while pressing the author to answer the recommendation, without ever running `ls-tree` on the destination. **I have not re-derived that tally and cannot from this session** — five of the six are other sessions' work. It is recorded because the pattern is worth carrying, and marked because a note about checking must not pass along a number its own author took on report. **If you need the count to be load-bearing, re-derive it.**
 
 ---
