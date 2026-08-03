@@ -1,0 +1,117 @@
+/**
+ * Measures the diamond-DAG row explosion from #68, so the figure that appears in
+ * `docs/security/THREAT_MODEL.md`, `.squad/decisions.md` and
+ * `.squad/skills/test-discipline/SKILL.md` can be re-derived instead of copied.
+ *
+ * Run it:  node scripts/measure-diamond-dag.mjs
+ *
+ * WHAT THIS IS, AND WHAT IT IS NOT
+ *
+ * This file is a *model* of the pre-fix `flattenPartTree`, which makes it a
+ * rendering like any other. It is not the authority for these numbers and must
+ * not be cited as one. The authority is the shipped pre-fix implementation at
+ * commit 741459dee50af3a0dd387253cfbf8b9ddc71315f, in
+ * `src/renderer/library/partTreeModel.ts`. Three properties of that revision are
+ * what this model reproduces, and each is checkable there directly:
+ *
+ *   1. one `rows.push` per visit, so rows are visits and not distinct nodes;
+ *   2. `const nextSeen = new Set(seen).add(objectId)` — the cycle guard is
+ *      path-local, so a node reached by two paths is expanded twice;
+ *   3. no `MAX_PART_TREE_ROWS` in that revision, so the output is uncapped.
+ *
+ * A derivation is only discharged when it terminates in an artifact that is not
+ * itself a rendering. That artifact is 741459de, not this file. Agreement between
+ * this model and the prose is therefore evidence about the model; disagreement
+ * between either of them and 741459de is evidence about them.
+ *
+ * The fixture is `diamondDag` from `tests/viewer.partTree.test.tsx`, transcribed
+ * rather than imported so this runs under plain `node` with no build step and no
+ * test runner. If that fixture changes, this file is stale — check it there.
+ */
+
+/** Transcribed from `diamondDag` in `tests/viewer.partTree.test.tsx`. */
+function diamondDag(levels) {
+  const objects = [];
+  for (let i = 0; i <= levels; i += 1) {
+    objects.push({
+      id: `m${i}`,
+      children: i < levels ? [`s${i}`, `m${i + 1}`] : [],
+    });
+  }
+  for (let i = 0; i < levels; i += 1) {
+    objects.push({ id: `s${i}`, children: [`m${i + 1}`] });
+  }
+  return { objects, rootObjectIds: ['m0'] };
+}
+
+/**
+ * The pre-fix walk: one row per visit, path-local `seen`, no cap.
+ * Counts each population separately rather than deriving one by subtracting
+ * the other — a sum consistent with a decomposition is not its derivation.
+ */
+function pathLocalWalk({ objects, rootObjectIds }) {
+  const byId = new Map(objects.map((o) => [o.id, o]));
+  let total = 0;
+  const perId = new Map();
+  const stack = rootObjectIds.map((id) => ({ id, path: new Set() }));
+
+  while (stack.length > 0) {
+    const { id, path } = stack.pop();
+    if (path.has(id)) continue;
+    total += 1;
+    perId.set(id, (perId.get(id) ?? 0) + 1);
+    const next = new Set(path).add(id);
+    for (const child of byId.get(id)?.children ?? []) {
+      stack.push({ id: child, path: next });
+    }
+  }
+
+  return { total, perId };
+}
+
+const LEVELS = 14;
+const fixture = diamondDag(LEVELS);
+const { total, perId } = pathLocalWalk(fixture);
+
+let mRows = 0;
+let sRows = 0;
+for (const [id, count] of perId) {
+  if (id.startsWith('m')) mRows += count;
+  else sRows += count;
+}
+const tailPaths = perId.get(`m${LEVELS}`) ?? 0;
+
+const results = [
+  ['objects in fixture', fixture.objects.length, 29],
+  ['TOTAL rows emitted', total, 49150],
+  ['rows for m-chain nodes', mRows, 32767],
+  ['rows for s nodes', sRows, 16383],
+  ['distinct paths to tail', tailPaths, 16384],
+];
+
+let ok = true;
+for (const [label, actual, expected] of results) {
+  const pass = actual === expected;
+  if (!pass) ok = false;
+  console.log(
+    `${pass ? 'ok  ' : 'FAIL'} ${label.padEnd(24)}: ${actual} (expected ${expected})`,
+  );
+}
+
+console.log('');
+console.log(
+  '`2^15-1 = 32,767` is paths through the m chain summed over the chain, each',
+);
+console.log(
+  `emitting one row — not the ${tailPaths} distinct paths to its tail, and not the`,
+);
+console.log(
+  `${total} row total. The threat model's sentence claimed the total.`,
+);
+
+if (!ok) {
+  console.error(
+    '\nA figure moved. Check the fixture and 741459de before editing any prose.',
+  );
+  process.exitCode = 1;
+}

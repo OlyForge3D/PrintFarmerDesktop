@@ -63,23 +63,19 @@ So **⚠️ Unverified is the default for a clean result**, and a clean diff on 
 
 **But independence is not the route to ✅, and defining it as such would make ✅ unreachable.** No repository records that two authors never read each other's files, so a grade requiring proof of that is decorative — and a grade nothing can earn gets quietly redefined the first time someone needs a clean result. Independence is a precondition for **agreement** being informative, and nothing more. It distinguishes a ⚠️ that is uninformative by construction from a ⚠️ that might mean something. It is not evidence of truth in either direction.
 
-### Grading — Verified is conformance to the object, not a history of authorship
+### Grading — Verified is discharged by a route that terminates outside the renderings
 
-**Copying from the object is verification. Copying from another rendering is contagion.** That is the whole distinction, and it is what makes ✅ reachable.
+**Copying from the object is verification. Copying from another rendering is contagion.** That is the distinction; the hard part is knowing when you have actually reached the object.
 
 - **❌ Contradicted.** The renderings disagree, or one contradicts the object. Reported against the pair or the set.
-- **⚠️ Unverified.** The renderings agree and no derivation was performed. This is the **default** and the common case. Agreement is not evidence; it is the absence of one kind of evidence of error.
-- **✅ Verified.** All four required, and each stated in the record:
-  1. the value is derived from the **non-rendering source** — the enforcing constant, the fixture, the computation, the object itself;
-  2. the derivation is **published and re-runnable** by someone who does not trust the author;
-  3. it is **deterministic** — its output does not depend on what its author believed;
-  4. **every enumerated rendering conforms to it**, with the enumeration performed at the current head.
+- **⚠️ Unverified.** The renderings agree and no derivation was performed, **or the derivation stopped at something that is itself a rendering.** This is the **default** and the common case. Agreement is not evidence; it is the absence of one kind of evidence of error.
+- **✅ Verified.** The value is established by a derivation that **terminates in an artifact that is not a rendering** — the shipped code, the enforcing constant, the fixture the tests actually build — **and that artifact is identified in the record by path and commit**, so the route can be walked again by someone who does not trust the author. Every enumerated rendering must conform, enumerated at the current head.
 
-Under this definition a document written by reading the constant is not a defect but the outcome the check wants: it conforms to the object, and no amount of copying can make it match a constant it does not match. What copying threatens is agreement _between renderings_, which is why agreement alone is graded ⚠️.
+**A harness is not the object. A harness is a fourth rendering.** A model of the behaviour under test, however carefully written and however often re-run, is still someone's account of that behaviour; three agreeing implementations are three renderings, not corroboration. What discharges ✅ is retrieving the thing they are renderings _of_ — reading the shipped implementation at the revision in question and naming it. This is the failure mode most likely to pass for success, because a harness emits numbers and numbers feel like measurement.
 
-**Requirement 3 is what discharges an author's own assumptions.** A deterministic derivation returns the same value to a re-runner regardless of what its author expected, so prior exposure to the figure does not contaminate the result. It does still bias **what the author chose to measure**, which is a real limitation, is not discharged by determinism, and is why the record must publish the derivation rather than its output.
+So the question to ask of any derivation is: **where does this route terminate?** If the last step is a document, a summary, a harness or a recollection, the grade is ⚠️ however exact the arithmetic. If the last step is an artifact that renders nothing — code that ran, a constant the program enforces, a fixture a test builds — the grade is ✅, and the artifact goes in the record.
 
-A worked example is on record: the part-tree row budget run in `.squad/fact-checker/audit-trail.md`, where `MAX_PART_TREE_ROWS` is the enforcing constant and the documents are checked against it rather than against each other.
+Two worked examples are in `.squad/fact-checker/audit-trail.md`: the part-tree row budget, terminating in `MAX_PART_TREE_ROWS`; and the diamond-DAG row count, which reached ✅ **only** once the pre-fix implementation itself was retrieved — the harness alone did not get there.
 
 **A clean result on a dependent pair is a false negative, and must not be reported as a pass.** Dependence threatens the **clean** result. A disagreement between dependent renderings is still a finding: they were supposed to agree by construction and do not, which means a repair touched one and not the other.
 
@@ -88,7 +84,7 @@ A worked example is on record: the part-tree row budget run in `.squad/fact-chec
 A symmetric diff with no authority tells you the renderings disagree. **It cannot tell you which one is right**, and nothing about the procedure entitles it to.
 
 - **Never resolve by counting renderings.** Two renderings that agree are **one rendering** if they are dependent, so a majority can be a single source copied twice. Repairing the minority to match the majority without establishing independence is the dependent-pair false negative committed deliberately, by the instrument built to catch it.
-- **Derive the value from the thing that is not a rendering** — the code, the constant, the fixture, the computation, the object itself. Publish the derivation so it can be re-run. Ground truth lives there, not in the prose.
+- **Derive the value from the thing that is not a rendering** — the code, the constant, the fixture, the computation, the object itself. Publish the derivation so it can be re-run, and **publish it as a file in the repository rather than only in a pull-request body**. A correction that lives somewhere less durable than the thing it corrects loses to it: the next author reaches for the artifact that is still there. A harness in a merged PR description is a correction with a shorter half-life than the figure it fixes.
 - **Where no such source exists**, the finding stands as a divergence and the resolution is escalated to the artifact owners. A guess dressed as a repair is worse than an open finding.
 - **Arithmetic consistent with a decomposition is not its derivation.** If two reported figures differ by some residue, restating that they sum is true by construction and evidence for nothing — it holds whatever the residue actually consists of, including a coincidence. **Measure the populations separately.** And keep the verbs honest: _"rebuilding it yields"_ asserts a measurement, so either take it, or attribute it to whoever did. An accurate outcome with a plausible mechanism attached is still a fabrication, and a reader of the repaired document has no way to tell.
 - **Repair with the source's own noun.** Where the defect is a quantity attached to the wrong unit, restating the correction in the unit that caused the error re-seeds it. If the source's word is itself ambiguous across two readings, say which reading the measurement names, and give the other quantity so the ambiguity cannot re-form.

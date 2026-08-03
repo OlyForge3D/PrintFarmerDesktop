@@ -34,17 +34,16 @@ What that section requires, for any agent running the check:
   the other), while **independence cannot be proved by provenance alone** — separate
   commits and authors are evidence, never proof, because a figure can be copied a week
   later. ⚠️ is therefore the default for any bare clean diff.
-- **✅ is conformance to the object, not a history of authorship.** Requiring proof that
-  two renderings could not have been copied makes ✅ unreachable, and a grade nothing can
-  earn is redefined the first time someone needs a clean result. Independence is a
+- **✅ is discharged by a route that terminates outside the renderings.** Requiring proof
+  that two renderings could not have been copied makes ✅ unreachable, and a grade nothing
+  can earn is redefined the first time someone needs a clean result. Independence is a
   precondition for **agreement** being informative, not a route to ✅. ✅ requires a
-  derivation from the non-rendering source that is published, re-runnable and
-  deterministic, with every enumerated rendering conforming to it. **Copying from the
-  object is verification; copying from another rendering is contagion.** The determinism
-  requirement is what discharges the author's own prior exposure to the figure — a
-  re-runner gets the same value whatever the author believed — though it does not
-  discharge bias in _what the author chose to measure_, which is why the derivation
-  itself must be published and not merely its output.
+  derivation ending in an artifact that is **not a rendering** — shipped code, an enforcing
+  constant, the fixture a test builds — **named in the record by path and commit**, with
+  every enumerated rendering conforming. **A harness is not the object; a harness is a
+  fourth rendering**, and three agreeing implementations are three renderings rather than
+  corroboration. **Copying from the object is verification; copying from another rendering
+  is contagion.**
 - **A symmetric diff establishes divergence, not truth.** It cannot say which rendering
   is right, so never resolve by counting renderings: two that agree are **one** if they
   are dependent. Derive the value from the thing that is not a rendering — the code, the
@@ -72,8 +71,9 @@ What that section requires, for any agent running the check:
 The corrected check has been run, and `.squad/fact-checker/audit-trail.md` is no longer
 a single `n/a` entry. Five runs are recorded there: the two historical pairs in opposite
 directions, one dependent pair whose clean result is graded ⚠️ rather than ✅, one live
-finding, and one agreeing set graded **✅ by conformance to the enforcing constant** —
-which also proves the check does not blanket-deny.
+finding whose resolution reaches ✅ only once the pre-fix implementation itself is
+retrieved, and one agreeing set graded **✅ against the enforcing constant** — which also
+proves the check does not blanket-deny.
 
 The live finding is the same diamond-DAG row count the log already records. Its repair
 fixed `.squad/skills/test-discipline/SKILL.md` and left a third rendering in
@@ -132,8 +132,24 @@ distinct paths to tail m14   : 16384
 m + s == total               : true
 ```
 
-The harness source is in the pull request that closes #121, self-contained and runnable
-with `node`.
+The harness source is `scripts/measure-diamond-dag.mjs`, runnable with plain `node`, no
+build step and no test runner. It is in the repository rather than only in a pull-request
+body, because a correction that lives somewhere less durable than the thing it corrects
+loses to it.
+
+**The harness is not the authority, and the entry should not cite it as one.** A model of
+the pre-fix walk is a fourth rendering of that behaviour. What settles the decomposition
+is the shipped pre-fix `flattenPartTree` at
+**`741459dee50af3a0dd387253cfbf8b9ddc71315f`** — one `rows.push` per visit, a path-local
+`const nextSeen = new Set(seen).add(objectId)`, and no `MAX_PART_TREE_ROWS` in that
+revision, so rows are visits and uncapped. That commit is on no ref; it was recovered via
+`gh pr view 68 --json commits`.
+
+**Two mechanisms reached the same finding independently.** The noun defect was found here
+by measurement — rebuilding the fixture and walking it — and reached separately in the #57
+session by reading `a32ecf9`'s wording against the measured figures, with no harness and no
+walk. Different routes, same conclusion. That convergence is worth recording alongside the
+derivation, because it is the kind the log asks for and rarely gets.
 
 Recorded rather than quietly fixed: the same imprecision was present in
 `.squad/skills/test-discipline/SKILL.md` and in the fact-checker's own first repair, and

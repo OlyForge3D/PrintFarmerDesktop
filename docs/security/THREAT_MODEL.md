@@ -543,10 +543,11 @@ Superlinear output is the shape to fear: in #68 a 29-node diamond DAG expanded t
 because the tests covered ancestor cycles and nobody had drawn a diamond. (The fixture's doc
 comment in `tests/viewer.partTree.test.tsx` reports `2^15-1 = 32,767` paths through the `m`
 chain — summed over the chain, not the 16,384 distinct paths to its tail. Each such path emits
-one row, which is how that figure came to be written here as a row total. Rebuilding
-`diamondDag(14)` and walking it with a path-local `seen` set measures the two populations
-separately: 32,767 from the `m` chain and 16,383 from `s` nodes. The decomposition is recorded
-in `.squad/decisions.md`, established the same way.)
+one row, which is how that figure came to be written here as a row total. `scripts/measure-diamond-dag.mjs`
+rebuilds the fixture and measures the two populations separately: 32,767 from the `m` chain and
+16,383 from `s` nodes. The behaviour being measured is the shipped pre-fix `flattenPartTree` at
+commit `741459dee50af3a0dd387253cfbf8b9ddc71315f` — one row per visit, path-local cycle guard,
+no `MAX_PART_TREE_ROWS` — which is the authority for these figures; the script models it.)
 
 **Controls.** The limits bound the obvious cases. Beyond them, correctness rests entirely on
 hand-written parsing in `threemf.rs`, `stl.rs`, `obj.rs`, and `vendor.rs`.
