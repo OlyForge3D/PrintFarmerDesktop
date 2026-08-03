@@ -91,8 +91,11 @@ function jobsOf(workflow: string): WorkflowJob[] {
 }
 
 /**
- * The check-run names GitHub renders, which is what a branch ruleset matches
- * required contexts against. A rename here is a breaking change.
+ * The check-run names GitHub renders from this workflow — the *emitted* side.
+ * A branch ruleset matches its required contexts against strings of this shape,
+ * so a rename here is a breaking change for any ruleset that pins the old name.
+ * This function does not read branch protection and cannot tell you which of
+ * these are actually required.
  */
 function renderedContexts(workflow: string): string[] {
   return jobsOf(workflow)
@@ -142,7 +145,17 @@ describe('CI is safe to run under a merge queue', () => {
     expect(ciWorkflow).not.toContain('github.event_name');
   });
 
-  it('renders exactly the required contexts a ruleset would pin, byte-identical', () => {
+  it('emits exactly the seven check-run names ci.yml produces, byte-identical', () => {
+    // The emitted side only. Whether these are the *required* contexts lives in
+    // branch protection, which this test does not read:
+    //   gh api repos/{owner}/{repo}/branches/development/protection \
+    //     --jq '.required_status_checks.contexts[]'
+    //
+    // The two sets can diverge in both directions, and one direction is the
+    // deadlock #122 is about: a required context that no workflow emits is
+    // never reported and waits forever. This test cannot see that — it only
+    // pins what ci.yml produces, so a rename here is caught before it can
+    // silently orphan a required context.
     expect(renderedContexts(ciWorkflow)).toEqual([
       'Dependency advisories',
       'Desktop (macos-latest)',
