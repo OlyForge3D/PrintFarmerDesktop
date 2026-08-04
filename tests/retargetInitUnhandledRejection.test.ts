@@ -22,6 +22,22 @@
  * Node does not report at all. The control rejects a promise with no handler in
  * the same harness and requires the listener to see it.
  *
+ * Scope boundary, because a green here means less than it looks. All three
+ * claims are about the startup path and none of them invokes an awaiter, so
+ * this file cannot distinguish "the rejection is handled and still delivered
+ * to its awaiters" from "the rejection is swallowed and every awaiting handler
+ * resolves as though initialize succeeded" — which is a worse defect than the
+ * one guarded here. Reassigning `retargetReady` to the caught promise leaves
+ * all three specs below green. Measured, not assumed.
+ *
+ * That property is pinned in `retargetProfileFailureClassification.test.ts`,
+ * which invokes `retarget:listProfiles`; the same reassignment fails three of
+ * its specs — "reports the workspace, not the profile bundle, when the reaper
+ * fails", "makes the two fault sources distinguishable to the operator", and
+ * "reports the workspace on the import channel too". If that file ever stops
+ * invoking a handler, the property loses its only guard and nothing here will
+ * notice.
+ *
  * @module retargetInitUnhandledRejection.test
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
