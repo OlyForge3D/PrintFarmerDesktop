@@ -127,3 +127,51 @@ passing ones return the same value in that field. It is not wrong — both were
 behind — but it cannot carry health, and reading health off it is how a red
 pull request sits unnoticed under a board that looks clean. Ask the checks by
 `head_sha`; do not infer them from the summary.
+
+## A broken instrument and a working one read too late
+
+The four cases above share a mechanism, and there is a fifth failure that
+looks identical from the outside and is not the same thing. A pointer that was
+correct when taken and has since moved is a working instrument read too late.
+A field that could never have answered the question is a broken instrument.
+Both produce a confident wrong statement, and the remedies do not overlap:
+re-reading fixes the first and does nothing at all for the second.
+
+The tell is a counterfactual, and it is cheap. Ask whether reading the same
+field again, right now, would have produced the right answer. If yes, it was
+staleness. If no, the field was never carrying the distinction and re-reading
+it a third time only produces the same wrong answer with more conviction.
+
+The live example is worth recording because it was three readings with two
+instruments, all of them measuring the wrong thing. To determine whether a
+pull request had merged, `headRefOid` was read from the PR view. It is
+invariant under merge: the head commit of the branch is the same object before
+and after, so the field is correct and silent on the question asked. Reading
+it again, and reading it from a second path, produced the same value for the
+same reason. The question was never asked. `state`, `merged` and `mergedAt`
+are the fields that can come out either way, and only a field that can come
+out either way is evidence.
+
+The remedy that generalises past all of this is to prefer the instrument that
+makes a wrong answer unreturnable over the one that makes it detectable. A
+detector is a check about correctness, and checks about correctness are the
+first thing dropped on the day the work is heavy, which is the same day the
+error arrives. A constraint carried in the request cannot be dropped, because
+the operation fails without it: `--match-head-commit` on a merge,
+`expected_head_sha` on a branch update, a SHA as a query selector rather than
+a field inspected afterwards. That last one has a limit worth naming, since it
+is easy to over-trust: selecting by a SHA guarantees the answer describes that
+SHA, and guarantees nothing about whether that SHA is still the one anyone
+cares about. It defends against a stale answer, not against a stale question.
+
+The empty case has the last word here, because it caught the remedy itself.
+`ls-remote refs/heads/<branch>` is the authoritative read for where a branch
+points, and it was prescribed as the instrument to use in place of memory. Run
+against a merged pull request whose branch has since been deleted, it returns
+nothing — successfully, exit 0, no error. That empty result is
+indistinguishable from a misspelled branch name, from a branch that never
+existed, and from a network path returning a truncated advertisement. The
+authoritative instrument answers the question "where does this branch point"
+perfectly and cannot represent "it merged and was cleaned up", which is the
+state most worth knowing. Nothing about being authoritative repairs a field
+that has no value for the answer.
