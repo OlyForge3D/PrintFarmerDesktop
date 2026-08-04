@@ -80,8 +80,40 @@ squad met twice in one day from opposite directions, and the general rule is the
 same: a restraint that can outlive its issuer must be liftable by somebody who
 is still here, or carry an expiry. This one is, so it does not need one.
 
-The mechanism is not fully pinned and the claim should not be stretched. It has
-not been separated whether the allowlist bypass comes from repository admin or
-organisation admin, because both are this principal and the operational
-conclusion is identical either way. That is a limit on the explanation, not on
-the result.
+A second mechanism binds, and recording it matters because the paragraphs above
+would otherwise read as an exhaustive survey when they are a survey of one
+object. A repository ruleset carrying the `non_fast_forward` rule with an empty
+`bypass_actors` refuses a history rewrite by this account, with the distinct
+`GH013: Repository rule violations found`, and the refusal is attributable to
+enforcement rather than to the ruleset's existence because flipping that single
+field to `disabled` lets the identical rewrite through. Ordinary fast-forward
+pushes are accepted throughout, so the inverted cost described above holds on
+this instrument too. This is a second independent instance of the finding this
+note opens with, arrived at through a different API against a different kind of
+object, which is what moves the rule from a generalisation over one measurement
+to something worth predicting from.
+
+It also sharpens the unresolved question rather than leaving it. The allowlist's
+failure to reach this account cannot be attributed to admin status as such,
+because a ruleset with no bypass actors reaches the same account at the same
+privilege. Being admin does not confer a general exemption; the allowlist
+mechanism specifically does not bind, and the two facts were previously
+indistinguishable.
+
+For holding a single named branch the two instruments cost the same — one call
+to apply, one to lift, either way — so nothing above needs revising. They
+diverge when the question is coverage rather than a hold: a ruleset's reference
+pattern matches branches that did not exist when it was written, verified by
+creating a branch after the fact and having its rewrite refused, so blanket
+protection of feature branches needs no applier at creation and no lifter at
+merge and cannot be stranded at all. That is the shape #151 is asking about, and
+the tension it raises there is real and unresolved: a rule broad enough to cover
+the branches where work has actually been destroyed would also refuse the stack
+repair that `.squad/skills/git-workflow/SKILL.md` documents, and naming this
+principal as a bypass actor returns the whole thing to a control that reads as
+enforced and cannot fire. That decision belongs in #151 and is not taken here.
+
+What has not been separated is whether the allowlist bypass would come from
+repository or organisation admin, because both are this principal and the
+operational conclusion is identical either way. That is a limit on the
+explanation, not on the result.
