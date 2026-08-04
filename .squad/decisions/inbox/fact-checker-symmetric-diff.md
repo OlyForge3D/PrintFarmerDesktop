@@ -60,6 +60,14 @@ What that section requires, for any agent running the check:
   an absent one is not. **An over-broad rule against pins fails toward _less_ evidence, the
   one direction no reviewer can detect**, because a reader who cannot reproduce a figure sees
   their own failure rather than the omission that caused it.
+  **And stating a head is a disclosure, not a check — state it _and assert it live at
+  publication_, re-read from the remote at send rather than at draft.** A head true when the
+  work was done and false when the report shipped satisfies every disclosure rule and misleads
+  every reader, so _"say which head"_ is not the repair it looks like: **it has no falsifier,
+  since you can always say which head.** The gap is the **drafting interval**, and four sessions
+  have now shipped a stale-SHA warning **from a stale SHA** while stating the rule correctly in
+  the same artifact — **the warning does not protect the party issuing it.** Adopted from the
+  coordinator, whose formulation is stronger than the one first proposed here.
 - Run a control that can report non-empty — and hold any instrument reporting **identical**
   or **absent** to the same requirement, over the space actually searched. Agreement from an
   instrument that always agrees is not evidence, and a re-enumeration rule that has only ever
@@ -112,6 +120,16 @@ What that section requires, for any agent running the check:
   removed together, each sitting beside a measurement nobody ever contested. An accurate
   outcome with a plausible mechanism attached is still a fabrication, and the repair never
   needs it.
+- **A SHA identifies an object, not the party who cited it — a set of SHAs carries no
+  attribution.** Two sessions examining one pull request cite the **same** identifiers, because
+  identifiers belong to objects and not to readers, so an enumeration cannot be attributed to an
+  author by its contents. Measured: a coordinator attributed an eight-row table to this session
+  because its SHAs matched; **six of the eight are the `commit_id` fields of another party's
+  reviews**, and the table was that party's. **The tokens agreed because they were always going
+  to.** Third member of the common-mode family — two parties reading one ref produce one reading,
+  two parties citing one object produce one token set — and the general form is that **agreement
+  is evidence only when disagreement was available.** Attribution needs a lookup against
+  something that discriminates: who pushed, who authored, which review id.
 - **Two measurements of the same mutable ref, taken at the same moment by two parties, are
   not two readings — they are one reading, reported twice.** Measured: two sessions with no
   contact, each pinning a head from **two sources** at read time, converged on the same value

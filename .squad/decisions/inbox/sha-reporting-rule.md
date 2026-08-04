@@ -61,6 +61,35 @@ must never be sent. _"Which tree did this measurement range over?"_, _"what did 
 what?"_, _"which revision is under review?"_ are closed facts about the past. **Send those by
 value, always.**
 
+### Stating a head is a disclosure. It is not a check
+
+The obvious repair — _"say which head you measured at"_ — **has no falsifier, because you can
+always say which head.** A pin that was true when the work was done and false when the report
+shipped **satisfies every disclosure rule and misleads every reader**, and nothing in the format
+distinguishes the two cases. So the rule has to be stronger:
+
+> **State the head, and assert it live at publication — re-read from the remote at send, not at
+> draft.**
+
+_"This was live at send"_ can be wrong, and a rule that cannot be wrong is not a control.
+
+**The gap is the drafting interval**, and no amount of care at read time reaches it: the pin is
+taken while the work is being done, the report ships later, and nothing between the two re-reads
+it. **Four sessions have now shipped a stale-SHA warning from a stale SHA**, each having stated
+the rule correctly in the same artifact that violated it. **The warning does not protect the party
+issuing it** — which is the whole reason this needs to be a mechanical step at send rather than a
+principle anyone is asked to remember.
+
+### Attribution does not travel with a SHA
+
+**A SHA identifies an object, not the party who cited it.** Two sessions examining one pull request
+cite the **same** identifiers, so **a table of SHAs looks identical whoever assembled it** and
+cannot be attributed by its contents. Measured here: an eight-row enumeration was attributed to the
+wrong session on the strength of matching revisions, when **six of the eight were the `commit_id`
+fields of a different party's reviews.** Attribution requires a lookup against something that
+discriminates — who pushed, who authored, which review id — because **agreement between two
+citations is evidence only when disagreement was available**, and here it never was.
+
 ## Why the sender and not the dispatcher
 
 The failure this prevents was first diagnosed as a dispatch problem: a coordinator pins a
