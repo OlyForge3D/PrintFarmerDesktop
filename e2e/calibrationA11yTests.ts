@@ -82,10 +82,18 @@ async function expectRecoveryState(options: {
   await expect(message, `${state} produced no announced message`).toBeVisible({
     timeout: 15_000,
   });
-  const role = await message.getAttribute('role');
+  // The live region is frequently an ancestor of the text-bearing node rather
+  // than the node itself: a region must be mounted before its content to be
+  // announced at all (#242), so the persistent container and the element that
+  // carries the words are usually different elements. Resolve the role the way
+  // assistive technology does — nearest live-region ancestor, self included.
+  const role = await message.evaluate((el) => {
+    const owner = (el as Element).closest('[role="alert"],[role="status"]');
+    return owner ? owner.getAttribute('role') : null;
+  });
   expect(
     role,
-    `${state} message is not announced (role=${String(role)})`,
+    `${state} message is not inside a live region (nearest role=${String(role)})`,
   ).toMatch(/^(alert|status)$/);
   const text = (await message.innerText()).trim();
   expect(
@@ -549,10 +557,18 @@ test('@a11y calibration announces stale, conflict, generation and dispatch recov
       signalDescription: 'a "Starting…" dispatch status',
       message: uncertainMessage,
     });
-    // Criterion 9: an uncertain start must not offer a blind retry.
+    // Criterion 9: an uncertain start must not offer a blind retry. After #225
+    // the panel deliberately carries a control named "Retry loading status",
+    // which names the fetch it retries and is the opposite of blind — so the
+    // old /^Retry/ prefix would fail on the fix for the very hazard it guards.
+    // What must never exist is a control that reads as retrying the print.
     await expect(
-      page.getByRole('button', { name: /^Retry/ }),
-      'an uncertain start offered a retry control, which risks a duplicate print',
+      page.getByRole('button', { name: /^retry$/i }),
+      'an uncertain start offered an unqualified Retry, which reads as retrying the print',
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole('button', { name: /retry.*(print|dispatch|job)/i }),
+      'an uncertain start offered a control naming a print/dispatch retry, which risks a duplicate print',
     ).toHaveCount(0);
 
     // Negative control for all four.
