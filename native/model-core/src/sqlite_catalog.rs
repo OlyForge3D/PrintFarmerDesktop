@@ -7053,10 +7053,13 @@ mod tests {
         let conflict_id = seed_conflict(&mut store, None, 9);
 
         let error = store
-            .resolve_calibration_conflict(&resolve_params(
-                &conflict_id,
-                CalibrationConflictResolutionKind::ManualFieldMerge,
-            ))
+            .resolve_calibration_conflict(&ResolveCalibrationConflictParams {
+                merged_fields: Some(serde_json::json!({ "flow_ratio": 0.98 })),
+                ..resolve_params(
+                    &conflict_id,
+                    CalibrationConflictResolutionKind::ManualFieldMerge,
+                )
+            })
             .expect_err("a conflict with no ratified kind has no per-kind policy");
         assert!(
             error.starts_with(calibration_resolution_error::UNCLASSIFIED),
