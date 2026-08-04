@@ -51,7 +51,13 @@ What that section requires, for any agent running the check:
   unreachable is not a citation.
 - Publish the extraction rule and the head with the result — naming the **mainline** commit
   the enumeration was current with, since a set closed on a branch is closed only as of that
-  branch's base — and run a control that can report non-empty.
+  branch's base — and read that base **by ref name**, never from a SHA quoted in a message,
+  because such a SHA resolves and greps perfectly while being stale and so fails silently.
+  A push report (_pushed X from Y_) is exempt: it records an event, and events do not decay.
+- Run a control that can report non-empty — and hold any instrument reporting **identical**
+  or **absent** to the same requirement, over the space actually searched. Agreement from an
+  instrument that always agrees is not evidence, and a re-enumeration rule that has only ever
+  produced changes cannot be distinguished from one that always reports change.
 - Report a disagreement against the **pair or the set**, never against whichever member
   is not the decision log.
 - Establish that both artifacts fill the same slot before treating a difference as a
@@ -95,6 +101,14 @@ What that section requires, for any agent running the check:
   removed together, each sitting beside a measurement nobody ever contested. An accurate
   outcome with a plausible mechanism attached is still a fabrication, and the repair never
   needs it.
+- **Two measurements of the same mutable ref, taken at the same moment by two parties, are
+  not two readings — they are one reading, reported twice.** Measured: two sessions with no
+  contact, each pinning a head from **two sources** at read time, converged on the same value
+  and both were wrong when it was used. Neither made an error. Two sources protect against a
+  wrong answer at the instant of reading and do nothing about the interval before use, which
+  both shared. **Lateness is common-mode**, so a current ref value cannot be carried between
+  parties at all; re-read it by name at the point of use. Credited to the coordinator session
+  that measured the convergence.
 - **A reconstruction and the thing reconstructed are not two renderings of one quantity.**
   A reconstruction built from a _description_ of the object inherits every error in the
   description, so **agreement among reconstructions cannot detect an error in the

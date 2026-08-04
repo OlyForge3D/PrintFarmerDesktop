@@ -16,6 +16,29 @@ pushed <new-sha> from <old-sha>
 Two elements, no poll, no cache window, and no freeze. They let any reader run the staleness
 check themselves without asking the author anything.
 
+### A head SHA in a message is a different object from a push report, and only one of them decays
+
+The rule above was later read as licence to put head SHAs in messages, and a coordinator ruled
+against that: **no message between sessions carries a head SHA; the receiver re-reads the ref by
+name.** That ruling is correct and this section is not an exception to it, because the two
+statements are about different kinds of claim:
+
+- **_"the head is X"_ is a claim about a mutable ref's current value.** It is true when read and
+  false whenever the ref moves — including while the message is in transit, which no care at
+  either end can prevent. **Never send it. Send the ref name.**
+- **_"I pushed X from Y"_ is a claim about an event at a time.** It does not decay, because the
+  push happened and goes on having happened. It stays useful precisely when the head has moved
+  on, since it is what lets a reader run `--is-ancestor` and `patch-id --stable` afterwards.
+
+**The distinction is between a value and a reading of a value.** A push report is a record; a
+head assertion is a measurement whose timestamp the reader cannot see. **The reason head SHAs are
+dangerous is not that they are wrong — they resolve, they grep, they answer every question put to
+them.** They are dangerous because nothing in the token marks when it was read.
+
+So: **name the ref when the reader needs the current value; give the SHA when the reader needs
+the event.** Historical and archival SHAs — a commit under review, a merge commit, a pre-squash
+revision — are events too and are unaffected by the ruling.
+
 ## Why the sender and not the dispatcher
 
 The failure this prevents was first diagnosed as a dispatch problem: a coordinator pins a
@@ -93,3 +116,30 @@ git rev-parse <reported-sha>:<path>   against   git rev-parse <head>:<path>
 Use the ancestry check to decide whether _findings_ survive, and blob identity to decide
 whether a _pointer into a file_ survives. They answer different questions and only the second
 one tracks what a reader will actually re-open.
+
+## After a rebase, ancestry answers the wrong question
+
+`--is-ancestor` asks **was I rewritten**. After a rebase the answer is always yes, and it says
+nothing about whether the work survived. The question worth asking is **is my change still
+here**, and it is answered by content:
+
+```
+git show <sha> | git patch-id --stable
+```
+
+A rebased commit and its pre-rebase twin produce **identical** patch-ids while
+`--is-ancestor` reports the original as gone. Measured on this branch: all **22** commits
+matched a twin across a rebase, `0` lost, while `--is-ancestor` on the old head exited `1`.
+
+**Run the discrimination control before trusting a match.** An instrument that reports
+_identical_ has to be shown capable of reporting _different_ — here, 22 commits yielded 22
+distinct patch-ids with no collisions. Without that, agreement is consistent with a hash that
+always agrees, which is the same defect as a positive control that only ever searches one
+region.
+
+**Two limits, both measured rather than assumed.** `patch-id` hashes the **diff only** — not the
+message, not the author, not the parent — so it answers _did this change survive_ and not _did
+this commit survive_, and those separate under rebase, cherry-pick and squash. And **whole-tree
+comparison is the wrong instrument for the same question**: after a rebase the tree legitimately
+differs, because the base advanced and other people's work arrived. On this branch the trees
+differed while every one of the 22 changes was present. **Compare per-commit patches, not trees.**
