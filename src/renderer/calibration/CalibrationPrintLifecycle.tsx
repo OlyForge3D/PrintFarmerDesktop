@@ -315,12 +315,9 @@ export const CalibrationPrintLifecycle: React.FC<
       <div className="calibration-print-lifecycle__history">
         <h4 className="calibration-print-lifecycle__history-heading">
           Observations
-          <span
-            className="calibration-print-lifecycle__count"
-            aria-label="observation count"
-          >
+          <span className="calibration-print-lifecycle__count">
             {' '}
-            ({observations.length})
+            ({observations.length} recorded)
           </span>
         </h4>
 
