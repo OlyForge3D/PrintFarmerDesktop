@@ -15,9 +15,9 @@ or more artifacts rendering one incident, and points at a new
 What that section requires, for any agent running the check:
 
 - Enumerate **every** rendering, not two — the question is which renderings **exist**, not
-  which ones disagree. **Corrections do not propagate to renderings that do not yet
-  exist**: a repair fixes the copies visible at the time, and the next author reaches for
-  whichever copy is nearest, which may be a superseded one. The live finding in this
+  which ones disagree. The reason is structural: **a repair can only cover the renderings
+  that existed when it was made**, so any rendering created afterwards is outside its
+  scope. The live finding in this
   batch is that shape: when `32,767 rows` was written into the threat model, the correct
   total for the same fixture had been in the tree that commit was written against for
   **4h46m27s**. No diff between the copies known at repair time could have seen it;
@@ -40,24 +40,31 @@ What that section requires, for any agent running the check:
   the other), while **independence cannot be proved by provenance alone** — separate
   commits and authors are evidence, never proof, because a figure can be copied a week
   later. ⚠️ is therefore the default for any bare clean diff.
-- **✅ is discharged by a route that terminates outside the renderings.** Requiring proof
-  that two renderings could not have been copied makes ✅ unreachable, and a grade nothing
-  can earn is redefined the first time someone needs a clean result. Independence is a
-  precondition for **agreement** being informative, not a route to ✅. ✅ requires a
-  derivation ending in an artifact that is **not a rendering** — shipped code, an enforcing
-  constant, the fixture a test builds — **named in the record by path and commit**, with
-  every enumerated rendering conforming. **A harness is not the object; a harness is a
-  fourth rendering**, and three agreeing implementations are three renderings rather than
-  corroboration — routes count by **class of mechanism**, not by author, so three people who
+- **✅ grades independence, and only an author's statement of method reaches it.** The grade
+  asks one thing: is the agreement between these renderings evidence of anything? It is
+  **not** a grade of the value. So a derivation from the object, or a measurement re-run at
+  the source, does **not** earn ✅ however strong it is — those establish that the value is
+  **right**, and a pair can be a copy of a copy and still be right. Grading ✅ on them fails
+  open: they would license ✅ on a pair the same policy proves dependent, whenever the
+  copied value happens to be true, and they are the cheapest routes to reach for. They
+  belong under **Discharge**. What is left for ✅ is direct testimony about
+  provenance-of-belief — an author saying how they arrived at the value — which history
+  provably cannot supply, so **⚠️ is the overwhelmingly common honest grade**. Record the
+  **grade** and the **resolution** as two separate lines, so a run that derived the value
+  from the object and found every rendering conforming has somewhere truthful to say so
+  instead of inflating the grade. **A harness is not the object; a harness is a fourth
+  rendering**, and routes count by **class of mechanism**, not by author — three people who
   each rebuild the fixture and walk it have replicated one method rather than corroborated
-  it. **Copying from the object is verification; copying from another rendering
-  is contagion.** Two cautions that cost this batch a round: a derivation or a
-  re-measurement is **not** evidence of independence — it shows the value is right, and a
-  pair can be a copy of a copy and still be right — and once the value is derived from the
-  object the independence question **has no work left**, because you stop reasoning from
-  agreement and check each rendering against ground truth individually. The diff is
-  superseded, not validated. ✅ therefore asserts conformance to a named non-rendering
-  artifact and nothing about authorship.
+  it. **Copying from the object is verification; copying from another rendering is
+  contagion.** The strongest instrument this batch found — retrieving the pre-fix
+  implementation at `741459de` — is a **Discharge** example and not a ✅ example, and it was
+  very nearly recorded as the latter.
+- **Report the divergence and the measurement; do not report how the defect happened unless
+  the mechanism was measured.** This cost the batch more rounds than anything else: three
+  unmeasured causal sentences accumulated across the review, none removed until they were
+  removed together, each sitting beside a measurement nobody ever contested. An accurate
+  outcome with a plausible mechanism attached is still a fabrication, and the repair never
+  needs it.
 - **A symmetric diff establishes divergence, not truth.** It cannot say which rendering
   is right, so never resolve by counting renderings: two that agree are **one** if they
   are dependent. Derive the value from the thing that is not a rendering — the code, the
@@ -90,9 +97,10 @@ What that section requires, for any agent running the check:
 The corrected check has been run, and `.squad/fact-checker/audit-trail.md` is no longer
 a single `n/a` entry. Five runs are recorded there: the two historical pairs in opposite
 directions, one dependent pair whose clean result is graded ⚠️ rather than ✅, one live
-finding whose resolution reaches ✅ only once the pre-fix implementation itself is
-retrieved, and one agreeing set graded **✅ against the enforcing constant** — which also
-proves the check does not blanket-deny.
+finding resolved only once the pre-fix implementation itself is
+retrieved, and one agreeing set that comes back clean — which also
+proves the check does not blanket-deny. **No run earns ✅**, on the settled definition
+above, and that is reported as the grade being narrow rather than the check being broken.
 
 The live finding is the same diamond-DAG row count the log already records. Its repair
 fixed `.squad/skills/test-discipline/SKILL.md` and left a third rendering in
@@ -105,13 +113,17 @@ it. Rebuilding `diamondDag(14)` from `tests/viewer.partTree.test.tsx` and walkin
 a path-local `seen` set, measuring each population separately, is what settled it: 49,150
 rows total, 32,767 emitted for `m`-chain nodes and 16,383 for `s` nodes, against 16,384
 distinct paths to the tail. So `2^15-1 = 32,767` is paths through the `m` chain summed
-over the chain — each emitting one row, which is how a path count came to be written as a
-row total — and the threat model's sentence claimed the total. A units mislabel rather
-than a merely stale number; both readings were tested before repairing. That rendering
-has been repaired in the same change, because filing it and leaving it would have been the
+over the chain, and it is not the total, which the threat model's sentence claimed. A units
+mislabel rather
+than a merely stale number; both readings were tested before repairing. **How the mislabel
+came about is not established and is not asserted**, and nothing needs it: at that commit's
+own tree the fixture comment already attached the word _rows_ to `32,767`, so no conflation
+need be posited. That rendering
+has been repaired in the same change, since filing it and leaving it would be the
 discharge failure the new rule exists to prevent. The decomposition and its method were
-already on record in `.squad/decisions.md`; the run should have cited that authority
-rather than resting on the divergence, and the policy now requires it.
+already on record in `.squad/decisions.md`; the run should have **cited** that derivation
+rather than resting on the divergence alone — as a reporting duty, not as an authority,
+since designating one would reinstate the very defect #121 names.
 
 Governing entry, cited by heading: `.squad/decisions.md` →
 **2026-07-26 — Diffing two renderings of one incident finds what neither rendering's own
