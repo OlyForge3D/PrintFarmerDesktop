@@ -988,6 +988,152 @@ describe('the advisory gate fails closed when npm SBOM coverage degrades', () =>
   });
 });
 
+describe('an unreadable npm tree is reported as an unreadable npm tree', () => {
+  // #201: `npm ls` reported `parse-color` with no version after a failed
+  // Windows install cleanup. The gate threw
+  // `npm SBOM completeness check cannot identify npm ls package parse-color`,
+  // so a reader's first two moves — inspect the package, inspect the SBOM —
+  // were both wrong. Two lines earlier in the same step the SBOM had verified.
+  //
+  // Both sides are pushed here: an unreadable tree must classify as input, and
+  // a real policy violation must NOT, or the flag distinguishes nothing.
+
+  /** The shape npm emits for a package it can see but cannot version. */
+  const treeWithVersionlessPackage = {
+    name: 'printfarmer-desktop',
+    version: '0.1.0-beta.2',
+    dependencies: {
+      react: { version: '18.3.1' },
+      'parse-color': {},
+    },
+  };
+
+  const readableTree = {
+    name: 'printfarmer-desktop',
+    version: '0.1.0-beta.2',
+    dependencies: { react: { version: '18.3.1' } },
+  };
+
+  const sbomCovering = (identities: string[]): Sbom =>
+    ({
+      components: identities.map((identity) => {
+        const at = identity.lastIndexOf('@');
+        return {
+          name: identity.slice(0, at),
+          version: identity.slice(at + 1),
+          properties: [
+            { name: 'printfarmer:ecosystem', value: 'npm' },
+            { name: 'printfarmer:shipped', value: 'true' },
+          ],
+        };
+      }),
+    }) as unknown as Sbom;
+
+  const thrownBy = (run: () => unknown): Error => {
+    try {
+      run();
+    } catch (error) {
+      return error as Error;
+    }
+    throw new Error('expected a throw, got none');
+  };
+
+  it('classifies a version-less package as unreadable input', () => {
+    const error = thrownBy(() =>
+      evaluateNpmSbomCoverage(sbomCovering([]), treeWithVersionlessPackage, []),
+    );
+    expect(error).toMatchObject({ unreadableInput: true });
+  });
+
+  it('does NOT classify a real coverage shortfall as unreadable input', () => {
+    // The control. Without it, `unreadableInput: true` could be set on every
+    // error and every assertion above would still pass.
+    const error = thrownBy(() =>
+      requireNpmSbomCoverage(sbomCovering([]), readableTree, []),
+    );
+    expect(error.message).toContain('missing: react@18.3.1');
+    expect(error).not.toHaveProperty('unreadableInput');
+  });
+
+  it('does not describe an unreadable tree as a completeness check', () => {
+    // The specific misattribution #201 was filed for.
+    const error = thrownBy(() =>
+      evaluateNpmSbomCoverage(sbomCovering([]), treeWithVersionlessPackage, []),
+    );
+    expect(error.message).not.toContain('completeness check');
+  });
+
+  it('still describes a real coverage shortfall as a completeness check', () => {
+    // The other side: the wording change must be confined to the input failure.
+    // If this also lost the phrase, the previous test would pass for the wrong
+    // reason — the phrase having been deleted everywhere.
+    const error = thrownBy(() =>
+      requireNpmSbomCoverage(sbomCovering([]), readableTree, []),
+    );
+    expect(error.message).toContain('npm SBOM completeness check');
+  });
+
+  it('names the package npm could not describe, and the install as the suspect', () => {
+    const error = thrownBy(() =>
+      evaluateNpmSbomCoverage(sbomCovering([]), treeWithVersionlessPackage, []),
+    );
+    // The package name is evidence and stays. What changes is what the reader
+    // is told to suspect because of it.
+    expect(error.message).toContain('parse-color');
+    expect(error.message).toContain('install');
+    expect(error.message).toContain('not an SBOM policy violation');
+  });
+
+  it('classifies a tree npm produced nothing for', () => {
+    const error = thrownBy(() =>
+      evaluateNpmSbomCoverage(sbomCovering([]), undefined, []),
+    );
+    expect(error).toMatchObject({ unreadableInput: true });
+    expect(error.message).not.toContain('completeness check');
+  });
+
+  it('classifies a dependency entry that is not an object', () => {
+    // Note: the walk's own `!isRecord(node)` guard is unreachable — `walk` is
+    // only ever called with a value already proven to be a record, by the tree
+    // check above it or by the `isRecord(child)` check in the loop. It is left
+    // in place as defensive depth; removing it is not this PR's business. A
+    // non-record dependency is caught by the child check instead, and still
+    // classifies as input rather than policy, which is the property that matters.
+    const error = thrownBy(() =>
+      evaluateNpmSbomCoverage(
+        sbomCovering([]),
+        { dependencies: { react: 'not-an-object' } },
+        [],
+      ),
+    );
+    expect(error).toMatchObject({ unreadableInput: true });
+    expect(error.message).not.toContain('completeness check');
+  });
+
+  it('admits the legitimate maximum: a fully readable tree does not throw', () => {
+    // A gate that only ever rejects proves nothing a reject-everything stub
+    // would not also pass.
+    expect(() =>
+      evaluateNpmSbomCoverage(sbomCovering(['react@18.3.1']), readableTree, []),
+    ).not.toThrow();
+  });
+
+  it('reads the real installed tree without classifying it as unreadable', () => {
+    // Fixtures prove the walk; they cannot prove it matches what npm emits.
+    // This is the only assertion here bound to real `npm ls` output.
+    const coverage = evaluateNpmSbomCoverage(
+      sbomCovering([]),
+      readNpmProductionTree(repoRoot),
+      [],
+    );
+    // Incomplete against a deliberately empty SBOM — but *readable*, which is
+    // the distinction this suite exists to hold. A shortfall is returned, not
+    // thrown; only unreadable input throws.
+    expect(coverage.complete).toBe(false);
+    expect(coverage.diagnostic).toContain('npm SBOM completeness check');
+  });
+});
+
 describe('the advisory gate fails closed when Cargo SBOM coverage degrades', () => {
   const cargoPackages = [
     { name: 'quick-xml', version: '0.36.2' },
