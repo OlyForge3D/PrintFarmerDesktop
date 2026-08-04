@@ -95,6 +95,40 @@ gh pr checks <N> --repo OlyForge3D/PrintFarmerDesktop --watch --interval 20
 
 Never hand back a red PR. If a check fails, read the failing job log, fix the cause, and push again.
 
+### Reading a failing job log after a re-run
+
+**`gh run view --log --job <id>` serves the _latest_ attempt's log regardless of which attempt
+the job id belongs to.** It exits 0 and returns a complete, well-formed log naming the right
+job — it is simply the wrong object. If the run was re-run and passed, you get a clean log for
+a job that failed, and the investigation ends there.
+
+Measured against run `30880293283` (attempt 1 failed 05:18:39Z, attempt 2 passed 05:54:42Z):
+
+| command                                    | job id asked for   | `##[error]` | first timestamp |
+| ------------------------------------------ | ------------------ | ----------- | --------------- |
+| `gh run view --log --job 91900014923`      | the **failed** one | 0           | 05:54:49Z       |
+| `gh run view --log --job 91905697047`      | the **passed** one | 0           | 05:54:49Z       |
+| `gh api .../actions/jobs/91900014923/logs` | the **failed** one | 2           | 05:18:45Z       |
+
+The two CLI outputs are **byte-identical**, so no diff, length anomaly or truncation marker
+distinguishes them. (Control: the token `checkout` appears 8 times in all three, so the zero
+counts are a property of the content, not of a broken search.)
+
+The tell is free and already in the output:
+
+> **A log whose first timestamp postdates the attempt you asked for is serving something else.**
+
+Use the REST endpoints instead, which are attempt-correct:
+
+```powershell
+gh api repos/OlyForge3D/PrintFarmerDesktop/actions/runs/<run-id>/attempts/<n>/jobs   # per-attempt job ids
+gh api repos/OlyForge3D/PrintFarmerDesktop/actions/jobs/<job-id>/logs                # true log for that job id
+```
+
+Check `attempt` before trusting any log: `gh run list --json attempt`. Only 1 of the 200 most
+recent runs has `attempt >= 2` — but re-runs are concentrated on exactly the failures someone
+cared enough to re-run, which is the population an investigation samples from. See #261.
+
 `mergeStateStatus: UNSTABLE` means CI is still running or has failed — it is **not** ready to merge. `CLEAN` plus seven passes is the bar.
 
 ## Fixture traps

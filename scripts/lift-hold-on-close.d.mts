@@ -35,6 +35,19 @@ export function formatLift(
   repository: { owner: string; repo: string },
 ): string;
 
+/**
+ * Summarises a backfill sweep. Distinguishes the two ways a sweep lifts
+ * nothing, because they mean opposite things: the index offered no rows, or it
+ * offered rows whose objects were already clear. The second is the measured
+ * steady state — label removals on merged pull requests are the one mutation
+ * this search index does not reconcile — and reads as a fault unless said.
+ */
+export function formatBackfillSummary(input: {
+  candidates: number;
+  lifted: number;
+  repository: { owner: string; repo: string };
+}): string;
+
 export function fetchPullRequest(options: {
   owner: string;
   repo: string;

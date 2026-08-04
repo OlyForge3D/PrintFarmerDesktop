@@ -43,6 +43,18 @@ export interface PushFacts {
   preserved?: string[];
   ownSessions?: Iterable<string>;
   /**
+   * The exact commit objects this worktree created. Optional, and the safe
+   * default is empty for the same reason as `preserved`: omitting it can only
+   * make the guard stricter, never more permissive.
+   *
+   * This exists because `ownSessions` cannot answer the question. A
+   * `Copilot-Session` trailer reaches a commit through its author's prompt, so
+   * two sessions handed the same brief carry the same id and each is exempted
+   * from the other's ownership check. A sha is not transcribable from an
+   * instruction. See `readOwnedCommits`.
+   */
+  ownCommits?: Iterable<string>;
+  /**
    * Whether this clone authored anything, i.e. whether it created a commit at
    * all. Required, because absence of a session id from `ownSessions` is only
    * evidence when the instrument that records it was running AND had something
@@ -66,6 +78,7 @@ export type GuardCode =
   | 'push-guard.fast-forward'
   | 'push-guard.rewrite-preserves-all'
   | 'push-guard.foreign-session'
+  | 'push-guard.unowned-discard'
   | 'push-guard.unacknowledged-discard'
   | 'push-guard.ack-mismatch'
   | 'push-guard.acknowledged-discard';
@@ -102,10 +115,11 @@ export function readEquivalentCommits(
   liveSha: string,
 ): Set<string>;
 export function readReflogSessions(): Set<string>;
+export function readOwnedCommits(): Set<string>;
 export function authoredHere(): boolean;
 export function readReflogEntries(
   ref: string,
-): { reflogSubject: string; sessions: string[] }[];
+): { sha: string; reflogSubject: string; sessions: string[] }[];
 export function gatherFacts(
   update: RefUpdate,
   remote: string,

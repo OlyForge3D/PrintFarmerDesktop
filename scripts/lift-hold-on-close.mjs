@@ -224,12 +224,43 @@ export async function removeLabel({
  * existed. It is in the invisible cohort by construction, and no amount of
  * correct behaviour from the trigger will ever reach it.
  *
- * Uses the search API, whose index is eventually consistent and has been
- * measured lagging the object by over an hour on this repository. That is
- * acceptable *here* and nowhere else in this file: a sweep that misses a pull
- * request leaves a stale label for the next sweep, whereas the per-event path
- * must never mistake a stale read for a decision. Each hit is confirmed
- * against the object before anything is removed.
+ * Uses the search API, whose index does not track every label mutation. An
+ * earlier version of this comment said it "lags the object by over an hour",
+ * which is the wrong shape of claim: an hour reads as a *bound on a converging
+ * process*, and invites the mitigation of waiting and retrying. It does not
+ * converge in the case that matters here. Measured on this repository, all four
+ * cells:
+ *
+ *                     label ADD          label REMOVE
+ *   open pull request  < 20 s             ~12 min
+ *   merged             < 20 s             > 11 h, not reconciled
+ *
+ * Three of the four are healthy, so none of the single-variable readings
+ * survive: it is not that closed pull requests are stale (an add on a merged
+ * one appeared in 20 s), nor that removals are broken (a removal on an open one
+ * reconciled in 12 minutes), nor that the whole index simply lags. Only the
+ * intersection fails -- and **that intersection is the entire job of this
+ * file**, which removes a label from a merged pull request and does nothing
+ * else. This script operates exclusively in the one cell that does not
+ * reconcile.
+ *
+ * The consequence is specific, and it is the opposite of what the earlier
+ * comment reasoned about. That version justified the search API on the grounds
+ * that "a sweep that misses a pull request leaves a stale label for the next
+ * sweep" -- a defence against *under*-reporting. The measured failure is
+ * *over*-reporting: after this script correctly lifts a label, the index keeps
+ * listing that pull request as merged-and-labelled for hours. So the expected
+ * signature of a healthy backfill is **selecting N candidates and lifting
+ * zero**, repeatedly, until the index catches up. That looks like a fault and
+ * is not one.
+ *
+ * Which makes the object re-read below load-bearing rather than belt-and-braces.
+ * The tempting cleanup -- "the search already filtered on the label, so
+ * re-fetching it is redundant" -- deletes the only step that can tell a real
+ * hold from a phantom row, in the exact cell where phantom rows are the norm.
+ * Run live against five such rows, this path lifted nothing and said so five
+ * times, which is the control refusing the write the index would have
+ * authorised.
  */
 export async function findMergedPullRequestsCarryingHolds({
   owner,
@@ -261,6 +292,51 @@ export async function findMergedPullRequestsCarryingHolds({
   return payload.items.map((item) => item.number);
 }
 
+/**
+ * What a backfill sweep prints once it has re-read every candidate at the
+ * object.
+ *
+ * This exists because the honest result is indistinguishable from a fault. The
+ * search index does not reconcile label *removals* on *merged* pull requests --
+ * the one cell of the matrix this file operates in -- so rows this script has
+ * already cleared keep being offered back for hours. A sweep that selects five
+ * candidates and lifts zero is therefore the *expected* steady state, not a
+ * broken sweep, and an operator who is not told so has every reason to go
+ * looking for the bug that is not there.
+ *
+ * The wrong repair is specific and worth naming: "the search already filtered
+ * on the label, so re-fetching the object is redundant." That deletes the only
+ * step able to tell a real hold from a phantom row.
+ */
+export function formatBackfillSummary({ candidates, lifted, repository }) {
+  if (!Number.isInteger(candidates) || !Number.isInteger(lifted)) {
+    throw new Error(
+      'formatBackfillSummary needs integer counts; a missing count must not be summarised as zero',
+    );
+  }
+  if (candidates === 0) {
+    return [
+      'Backfill: no merged pull request carries a hold label, per the search index.',
+      'The index lags the objects in both directions, so this is neither proof that',
+      'none exists nor, when it returns rows, proof that any does.',
+    ].join('\n');
+  }
+  if (lifted > 0) {
+    return `Backfill: ${candidates} candidate(s) offered, ${lifted} hold label(s) removed.`;
+  }
+  const { owner, repo } = repository;
+  return [
+    `Backfill: the index offered ${candidates} candidate(s) and the objects carried no`,
+    'hold label on any of them. Nothing was lifted because there was nothing to lift.',
+    'These are phantom rows, not missed work: label removals on merged pull requests',
+    'are the one mutation this search index has been measured not to reconcile.',
+    '',
+    'The object is authoritative:',
+    '',
+    `  gh api repos/${owner}/${repo}/issues/<N>/labels`,
+  ].join('\n');
+}
+
 async function main() {
   const token = process.env.GITHUB_TOKEN;
   if (!token) {
@@ -281,11 +357,15 @@ async function main() {
     });
     if (candidates.length === 0) {
       console.log(
-        'Backfill: no merged pull request carries a hold label, per the search index.\n' +
-          'The index lags the objects, so this is not proof that none exists.',
+        formatBackfillSummary({
+          candidates: 0,
+          lifted: 0,
+          repository,
+        }),
       );
       return;
     }
+    let liftedTotal = 0;
     for (const prNumber of candidates) {
       // Re-read at the object. The search index is the thing that told us to
       // look; it is not allowed to be the thing that justifies the write.
@@ -298,9 +378,17 @@ async function main() {
       const decision = evaluateHoldsToLift({ labels, merged });
       for (const label of decision.lift) {
         await removeLabel({ owner, repo, prNumber, label, token });
+        liftedTotal += 1;
       }
       console.log(formatLift(decision, prNumber, repository));
     }
+    console.log(
+      formatBackfillSummary({
+        candidates: candidates.length,
+        lifted: liftedTotal,
+        repository,
+      }),
+    );
     return;
   }
 

@@ -89,6 +89,7 @@ function describe(commits) {
  *   liveRemoteSha: string | null,
  *   discarded: Array<{sha: string, subject?: string, sessions?: string[]}>,
  *   ownSessions?: Iterable<string>,
+ *   ownCommits?: Iterable<string>,
  *   ownershipEvidence: boolean,
  *   ack?: string,
  *   ackForeign?: string,
@@ -101,6 +102,10 @@ function describe(commits) {
  *   the ownership question at all. It is NOT "are these commits mine"; it is "is
  *   the instrument working". Absence of a session id from `ownSessions` means
  *   something only when the instrument that would have recorded it was running.
+ *
+ *   `ownCommits` is the sha set this worktree actually created. It defaults to
+ *   empty, which is the strict reading: nothing was created here, so nothing is
+ *   exempt. `ownSessions` cannot substitute for it — see `readOwnedCommits`.
  * @returns {{verdict: 'allow' | 'refuse', code: string, message: string}}
  */
 export function evaluateRefUpdate(update, facts) {
@@ -273,7 +278,13 @@ export function evaluateRefUpdate(update, facts) {
   }
 
   const ownSessions = new Set(facts.ownSessions ?? []);
-  const foreign = [...sessionsOf(discarded)].filter(
+  const ownCommits = new Set(facts.ownCommits ?? []);
+  // Ownership is a question about objects, not about what those objects say
+  // about themselves. A discarded commit is this worktree's only if this
+  // worktree created that exact commit — see `readOwnedCommits` for why the
+  // session id cannot carry this and what it measured.
+  const unowned = discarded.filter((commit) => !ownCommits.has(commit.sha));
+  const foreign = [...sessionsOf(unowned)].filter(
     (session) => !ownSessions.has(session),
   );
   // A session id missing from `ownSessions` is only evidence of a second writer
@@ -293,19 +304,21 @@ export function evaluateRefUpdate(update, facts) {
   //
   // So absence is split by whether it is informative, and the two cases get
   // different codes and different remedies.
+  // Exact membership, not substring. `includes` on the raw string would let an
+  // acknowledgement of `abc` satisfy a refusal naming `abc-def`, which is the
+  // same defect the trailer matching had to avoid: a token is a token, and a
+  // prefix of it is not evidence of having read anything. Shared by both arms
+  // that consume it, so the two cannot drift apart.
+  const acknowledgedTokens = new Set(
+    ackForeign
+      .split(/[\s,]+/)
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0),
+  );
+
   if (foreign.length > 0 && facts.ownershipEvidence) {
-    // Exact membership, not substring. `includes` on the raw string would let
-    // an acknowledgement of `abc` satisfy a refusal naming `abc-def`, which is
-    // the same defect the trailer matching had to avoid: a session id is a
-    // token, and a prefix of it is not evidence of having read anything.
-    const acknowledgedIds = new Set(
-      ackForeign
-        .split(/[\s,]+/)
-        .map((value) => value.trim())
-        .filter((value) => value.length > 0),
-    );
     const acknowledged = foreign.every((session) =>
-      acknowledgedIds.has(session),
+      acknowledgedTokens.has(session),
     );
     if (!acknowledged) {
       return {
@@ -350,6 +363,67 @@ export function evaluateRefUpdate(update, facts) {
         'in it, which a fresh clone doing a pure rewind always looks like.',
       ].join('\n'),
     };
+  }
+
+  // Commits this worktree did not create, whose session ids it nonetheless has
+  // authored under. `foreign` cannot see these — the id matches, so the strong
+  // check is satisfied by a literal rather than by provenance, which is the #264
+  // hole: two sessions handed the same brief emit the same trailer, and the one
+  // refusal that cannot be cleared without reading the other writer's work
+  // silently degrades into one that a reflex clears.
+  //
+  // This arm is deliberately NOT folded into `foreign-session`. That refusal
+  // says "written by another session" and names the id; here the id is one of
+  // ours, so that sentence would be a claim the evidence does not support. What
+  // is known is narrower and is what the operator has to act on: these objects
+  // were not created here. Expiry produces the same observation as a second
+  // writer — `gc.reflogExpireUnreachable` is 30 days and a commit under
+  // adjudication has just become unreachable — so the message states the
+  // ambiguity rather than picking the alarming reading of it.
+  //
+  // The acknowledgement is per-sha and not per-id on purpose. A sha cannot be
+  // derived from the refusal's own wording the way a shared id can; naming it
+  // requires having looked at the commit, which is the property that made the
+  // foreign refusal worth having.
+  if (unowned.length > 0 && facts.ownershipEvidence) {
+    const unacknowledged = unowned.filter((commit) => {
+      if (acknowledgedTokens.has(commit.sha)) return false;
+      // A commit whose FOREIGN id was named is already covered. The strong arm
+      // above printed that id, the operator supplied it, and requiring the sha
+      // as well would refuse a push whose remedy has just been performed —
+      // turning one refusal into two and teaching that the way through is to
+      // keep adding tokens until it stops complaining.
+      //
+      // Only ids absent from `ownSessions` count. Accepting an id this worktree
+      // has authored under would restore the exact hole this arm exists to
+      // close: the shared value is one the operator can supply from their own
+      // commits without ever having looked at the other writer's.
+      return !(commit.sessions ?? []).some(
+        (session) =>
+          !ownSessions.has(session) && acknowledgedTokens.has(session),
+      );
+    });
+    if (unacknowledged.length > 0) {
+      return {
+        verdict: 'refuse',
+        code: 'push-guard.unowned-discard',
+        message: [
+          `This push destroys ${unacknowledged.length} commit(s) that this worktree did not`,
+          'create. Their session id is one this worktree has authored under, so the',
+          'id alone cannot tell your work apart from a second writer handed the',
+          'same brief.',
+          '',
+          describe(unacknowledged),
+          '',
+          'That is an absence, not a finding: no creation of these commits is',
+          'recorded here, which is equally what a second writer and an expired',
+          'reflog look like. Read them.',
+          '',
+          'If they are genuinely yours or genuinely obsolete, name them:',
+          `  ${ACK_FOREIGN_ENV}="${unacknowledged.map((commit) => commit.sha).join(' ')}" ${ACK_ENV}=${live} git push ...`,
+        ].join('\n'),
+      };
+    }
   }
 
   if (ack.length === 0) {
@@ -739,12 +813,111 @@ export function readReflogSessions() {
  * session trailers. The reflog subject is what distinguishes authorship from
  * arrival, and it is not available from `readCommits`.
  */
+/**
+ * Reflog subjects for operations that CREATE a commit object in this worktree,
+ * as distinct from operations that merely move a ref onto one.
+ *
+ * `CREATED_HERE` is deliberately not reused. It answers "did this clone author
+ * anything", where a single entry settles it; this answers "which objects exist
+ * because of work done here", where every producing operation has to be
+ * enumerated or its output is misread as someone else's.
+ *
+ * Measured, not assumed — a rebase of two commits writes:
+ *
+ *     ddd98128  rebase (finish): returning to refs/heads/feature
+ *     ddd98128  rebase (pick): mine two
+ *     891bb383  rebase (pick): mine one
+ *     8e6b85a5  rebase (start): checkout master
+ *
+ * The picks carry the NEW shas, which is the whole reason this matters: after a
+ * rebase the remote holds objects that no `commit:` entry ever named, so a
+ * predicate built only from `commit:` would call a solo session's own rebased
+ * work unowned. `tests/pushGuard.test.ts` predicted that failure in a comment
+ * before this function existed, and produced it on the first run.
+ *
+ * `rebase (start)` and `rebase (finish)` are excluded on purpose. `start` is a
+ * checkout — an arrival, and the one entry here that names a commit this
+ * worktree did not write. `finish` repeats the last pick's sha and so adds
+ * nothing except a second way to be wrong later.
+ *
+ * `merge` is excluded although it can create a commit, because it can also
+ * fast-forward, and the reflog subject does not distinguish the two. Including
+ * it would let an arrival be claimed as authorship; excluding it can only
+ * withhold ownership from a real merge commit, which refuses rather than allows.
+ */
+const PRODUCED_HERE =
+  /^(?:commit(?: \((?:initial|amend)\))?|rebase(?: -[ir])* \((?:pick|reword|squash|fixup|edit|continue)\)|cherry-pick|revert|am|applying):/;
+
+/**
+ * The exact commit objects this worktree created, by sha.
+ *
+ * `readReflogSessions` answers ownership at the granularity of a session id, and
+ * that granularity is wrong for the question. Measured on `development` at
+ * `ce4a7515`: one `Copilot-Session` value carries 74 commits spanning 2026-07-21
+ * 21:06 to 2026-07-23 10:54 — 37 hours, which no single session runs for. The
+ * trailer reaches a committer through its PROMPT, not its environment, so its
+ * uniqueness is a property of how many distinct briefs were written rather than
+ * of how many sessions ran. Two sessions given the same brief emit the same id
+ * and nothing anywhere reports that they have.
+ *
+ * The consequence is specific and it is the fatal direction. With distinct ids
+ * the strong refusal cannot be cleared by the ordinary remedy at all — the
+ * operator must name the id in `PF_PUSH_ACK_FOREIGN`, which is underivable
+ * without having read the other writer's work. Sharing the id deletes exactly
+ * that property, and the refusal degrades to one a reflex clears. Measured
+ * against `evaluateRefUpdate` with the other writer's trailer as the only
+ * variable:
+ *
+ *     distinct trailer, no ack    REFUSE  foreign-session
+ *     distinct trailer, ACK=live  REFUSE  foreign-session
+ *     SHARED trailer,  no ack     REFUSE  unacknowledged-discard
+ *     SHARED trailer,  ACK=live   ALLOW   acknowledged-discard
+ *
+ * So ownership is read per COMMIT rather than per id. A creation entry names the
+ * object it created, and that object is either the one being destroyed or it is
+ * not — a question no shared literal can launder, because it is answered by the
+ * sha rather than by anything the commit says about itself.
+ *
+ * This does NOT replace `ownSessions`, and the difference is the reason both are
+ * kept. A sha set cannot survive an operation that rewrites objects on a machine
+ * other than this one; the id can, because the rewritten copies carry the
+ * original's trailer. So the id remains the instrument for the strong
+ * `foreign-session` claim and this set only ever adds refusals underneath it —
+ * see the `unowned-discard` arm, which is reachable solely for commits an id
+ * check has already let through.
+ *
+ * The env var is not an alternative source and was measured before being
+ * rejected: `COPILOT_AGENT_SESSION_ID` is `e5a64133-…` in this process while the
+ * commits it writes carry `b459f162-…`. Comparing against it would match no
+ * trailer at all and classify 100% of the pusher's own work as foreign — the
+ * failure mode that trains the override, which is worse than the leak it fixes.
+ *
+ * Same sources and same limits as `readReflogSessions`: this worktree's HEAD
+ * only, so a sibling worktree's authorship is never claimed as this session's;
+ * expiry and disabled reflogs shrink the set, and a smaller set here can only
+ * refuse more, never less. `authoredHere` is what stops that absence from being
+ * reported as a finding about somebody else.
+ */
+export function readOwnedCommits() {
+  const owned = new Set();
+  try {
+    for (const entry of readReflogEntries('HEAD')) {
+      if (entry.sha && PRODUCED_HERE.test(entry.reflogSubject)) {
+        owned.add(entry.sha);
+      }
+    }
+  } catch {
+    // Absent reflog. The empty set is the strict answer; see `authoredHere`.
+  }
+  return owned;
+}
+
 export function readReflogEntries(ref) {
   const output = git([
     'log',
     '-g',
     '--max-count=1000',
-    `--format=%gs${FIELD}%(trailers:key=Copilot-Session,valueonly,separator=%x2c)${RECORD}`,
+    `--format=%H${FIELD}%gs${FIELD}%(trailers:key=Copilot-Session,valueonly,separator=%x2c)${RECORD}`,
     ref,
   ]);
   return output
@@ -752,8 +925,9 @@ export function readReflogEntries(ref) {
     .map((record) => record.trim())
     .filter((record) => record.length > 0)
     .map((record) => {
-      const [reflogSubject, trailers] = record.split(FIELD);
+      const [sha, reflogSubject, trailers] = record.split(FIELD);
       return {
+        sha: sha ?? '',
         reflogSubject: reflogSubject ?? '',
         sessions: (trailers ?? '')
           .split(',')
@@ -866,6 +1040,9 @@ export function gatherFacts(update, remote, env = process.env, location = '') {
     // is the strict answer, so the default and every failure path are safe.
     preserved: [],
     ownSessions: [],
+    // The commit objects this worktree created. Empty is the strict default:
+    // nothing claimed as ours, so nothing exempt from the ownership arm.
+    ownCommits: [],
     // Conservative default, and the conservative direction here is `false`: with
     // no evidence the guard declines to CLAIM foreignness rather than declining
     // to allow. It still refuses; it just refuses for the reason it can support.
@@ -953,6 +1130,9 @@ export function gatherFacts(update, remote, env = process.env, location = '') {
       // there is no id here to compare with — and using the env var would call
       // every one of the pusher's own commits foreign.
       facts.ownSessions = [...readReflogSessions()];
+      // The id set answers "written under a brief like mine"; this answers
+      // "created here". #264 is the gap between those two sentences.
+      facts.ownCommits = [...readOwnedCommits()];
       // Measured alongside the sessions, because the set alone cannot say
       // whether an absent id was never recorded or never existed.
       facts.ownershipEvidence = authoredHere();
