@@ -75,7 +75,7 @@ const noopSidecar = {
   request: () => Promise.resolve({}),
 };
 
-function availabilityHandler(): Handler {
+function registeredHandler(channel: string): Handler {
   electronState.handlers.clear();
   registerIpcHandlers(
     undefined,
@@ -95,11 +95,13 @@ function availabilityHandler(): Handler {
       purge: () => Promise.resolve(),
     } as never,
   );
-  const handler = electronState.handlers.get(
-    IpcChannel.CalibrationGetAvailability,
-  );
-  if (!handler) throw new Error('availability handler was not registered');
+  const handler = electronState.handlers.get(channel);
+  if (!handler) throw new Error(`no handler was registered for ${channel}`);
   return handler;
+}
+
+function availabilityHandler(): Handler {
+  return registeredHandler(IpcChannel.CalibrationGetAvailability);
 }
 
 function respondWith(body: unknown, status = 200): void {
@@ -195,5 +197,66 @@ describe('CalibrationGetAvailability against the live PrintFarmer contract', () 
       'calibrationPersistenceEnabled: Expected boolean, received number',
     );
     expect(result.capabilityFlags).toBeNull();
+  });
+});
+
+/**
+ * Executable annotation for the calibration conflict resolution surface.
+ *
+ * `window.printFarmer.resolveCalibrationConflict` is exposed by the preload
+ * bridge and typed as though it works. It does not: model-core has no
+ * calibration resolve RPC, so the registered handler rejects every call. This
+ * test exists so the gap is visible from the test suite rather than only from a
+ * comment, and so that whoever implements the resolve path is forced to delete
+ * it rather than leaving a stale annotation behind.
+ *
+ * It asserts the *code*, not merely that a rejection happened -- the handler
+ * would also reject on a bad profile or a malformed request, and "it threw" is
+ * not evidence that it threw for the documented reason.
+ */
+describe('Calibration conflict resolution is not implemented end to end', () => {
+  it('rejects a well-formed resolve request with the documented code', async () => {
+    const handler = registeredHandler(IpcChannel.CalibrationResolveConflict);
+
+    const rejection = await (
+      handler(
+        {},
+        {
+          profileId: PROFILE_ID,
+          conflictId: '66666666-6666-4666-8666-666666666666',
+          resolution: 'acceptServer',
+        },
+      ) as Promise<unknown>
+    ).then(
+      () => null,
+      (error: unknown) => error as { code?: string; message?: string },
+    );
+
+    expect(rejection).not.toBeNull();
+    expect(rejection?.code).toBe('CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE');
+    expect(rejection?.message).toContain('resolution RPC');
+  });
+
+  it('rejects a malformed resolve request differently, so the check above is reached', async () => {
+    const handler = registeredHandler(IpcChannel.CalibrationResolveConflict);
+
+    const rejection = await (
+      handler(
+        {},
+        {
+          profileId: PROFILE_ID,
+          conflictId: '66666666-6666-4666-8666-666666666666',
+          resolution: 'lastWriteWins',
+        },
+      ) as Promise<unknown>
+    ).then(
+      () => null,
+      (error: unknown) => error as { code?: string },
+    );
+
+    expect(rejection).not.toBeNull();
+    expect(rejection?.code).not.toBe(
+      'CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE',
+    );
   });
 });
