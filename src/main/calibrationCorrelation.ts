@@ -19,9 +19,16 @@
  * ## Eviction policy, and why it is visible
  *
  * The bound is {@link DEFAULT_MAX_ENTRIES} bindings — not flows; a flow holds
- * three or four. Eviction is least-recently-bound first, and a binding is
- * re-inserted on every resolve, so an active flow stays alive and the entries
- * that go are the ones nothing has touched.
+ * three or four. Eviction is least-recently-bound first, and refresh happens on
+ * *binding*, not on lookup: {@link CalibrationCorrelationRegistry.resolveOrBegin}
+ * and {@link CalibrationCorrelationRegistry.resolveOrBeginWithOrigin} re-bind
+ * every candidate on a hit, so a flow driven through them stays alive and the
+ * entries that go are the ones nothing has touched.
+ *
+ * The bare {@link CalibrationCorrelationRegistry.resolve} accessor is a lookup
+ * only and does **not** refresh, so a stage that reaches a flow through it
+ * leaves that flow ageing towards eviction. Prefer the `resolveOrBegin*` pair
+ * on any stage that repeats.
  *
  * A capacity limit that degrades silently would be a trapdoor: the flow whose
  * bindings get evicted is a long, slow one, which is exactly the failing
@@ -97,7 +104,12 @@ export class CalibrationCorrelationRegistry {
     }
   }
 
-  /** Resolve a flow through one identifier, or `null` if it is not bound. */
+  /**
+   * Resolve a flow through one identifier, or `null` if it is not bound.
+   *
+   * Lookup only: unlike {@link bind}, this does **not** re-insert the entry, so
+   * it does not refresh the binding's position for eviction.
+   */
   resolve(kind: CalibrationCorrelationKey, id: string | null): string | null {
     if (id === null || id.length === 0) return null;
     return this.bindings.get(`${kind}:${id}`) ?? null;

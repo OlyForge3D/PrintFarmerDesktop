@@ -288,6 +288,7 @@ same flow but no longer share a `correlationId`. Bridge them with the
 | `[unsafe-identifier-dropped]` | any identifier field | The value failed the identifier guard — empty, over 128 characters, containing whitespace or a path separator or a control character, or JWT-shaped. It is replaced rather than omitted so a bad call site leaves evidence. Report it as a desktop defect with the surrounding record. |
 | `[unsafe-revision-dropped]`   | `dispatchRevision`   | The server-supplied ETag did not match the documented base-64 shape (up to 64 characters plus padding). The operation is unaffected; the value was withheld from the record. Report the server build.                                                                                  |
 | `unknownErrorCode`            | `errorCode`          | The failure code is not one this desktop build recognises. Most often this means **the server is newer than the desktop app**. Check versions before investigating further.                                                                                                            |
+| `unavailable (unknown)`       | `outbox`             | The outbox is unavailable and the snapshot carried no reason for it. Every path through the IPC handler sets a reason, so this is only reachable from a hand-built snapshot — you should not see it. Report it rather than acting on it, and attach the whole diagnostics output.      |
 
 #### `message` is never backend text
 
