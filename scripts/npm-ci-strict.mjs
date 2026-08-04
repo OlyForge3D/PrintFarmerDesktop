@@ -595,7 +595,7 @@ async function main() {
       '',
       `\`${NPM_PRODUCTION_TREE_COMMAND}\` reports these even when it exits 0, which`,
       'is how a partially-wiped tree reaches the SBOM gate several steps later and',
-      'reads there as an unrelated failure. See #195.',
+      'reads there as an unrelated failure. Origin: #195. This control: #274.',
       '',
     ]);
   }
@@ -611,7 +611,8 @@ async function main() {
       `\`${NPM_PRODUCTION_TREE_COMMAND}\` returned nodes with no version, or marked`,
       'extraneous/invalid. That is the same condition the npm SBOM completeness',
       'gate fails on, detected here at the install step instead of several steps',
-      'later where it reads as an unrelated test failure. See #195.',
+      'later where it reads as an unrelated test failure. Origin: #195. This',
+      'control: #274.',
       '',
     ]);
   }

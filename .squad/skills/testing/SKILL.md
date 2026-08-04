@@ -55,6 +55,8 @@ npx prettier --write <file>
 
 **Do not clear an npm-tree or downstream SBOM completeness failure with a direct re-run.** On Windows, `npm ci` can report an `EPERM` cleanup failure as a warning and exit 0 while leaving a partial `node_modules` tree. `scripts/npm-ci-strict.mjs` retries only the directories npm itself requested, then validates the production tree; an unrecoverable failure is recorded durably on #274. The only authorized re-run path is `.github/workflows/npm-cleanup-recovery.yml`, with the exact run id, full head SHA, and a substantive justification. It verifies that every failed job's `Install dependencies` step failed and contains the discriminating anchor `could not finish removing node_modules`, records the authorization before rerunning, and refuses mixed failures. A downstream SBOM, licence, notice, advisory, test, or unrelated install failure is never eligible. See `docs/npm-cleanup-recovery.md`.
 
+**The gate's bounded directory retry is not the forbidden job re-run (#274).** It acts only on npm-recorded `EPERM` / `rmdir` entries in the same job and still requires the production-tree check. A job re-run starts on a fresh runner and can orphan the failed attempt from ordinary commit queries, which is why it requires the durable, justified workflow above.
+
 **`git grep` uses basic regex.** `|` is a literal unless you pass `-E`. This produced false "no matches" results while verifying acceptance criteria.
 
 **PowerShell has no heredocs.** Use a single-quoted here-string piped to a command (`@'` … `'@ | python -`), or write the file with a file tool.
