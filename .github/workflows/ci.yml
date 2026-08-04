@@ -1,5 +1,12 @@
 name: CI
 
+# merge-queue: reports
+#
+# Subscribes to merge_group, so its check runs report for a queued entry. This
+# is the only class whose contexts may appear in a branch ruleset. See #122 for
+# what happens otherwise, and scripts/check-merge-queue-contexts.mjs for the
+# check that now enforces it in both directions.
+
 on:
   push:
     branches: [development, main]
