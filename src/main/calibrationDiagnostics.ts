@@ -161,11 +161,12 @@ export class CalibrationDiagnosticsStore {
   }
 
   /**
-   * Collect a full diagnostics report. Reads the outbox counts from the
-   * sidecar; if that read fails, `outbox` is null rather than throwing, because
-   * a diagnostics command that cannot run when something is broken is useless.
-   * `outboxUnavailableReason` says which of the three null causes applied, so
-   * the absence is diagnosable rather than merely visible.
+   * Collect a full diagnostics report. `outbox` is null for three distinct
+   * reasons — no source was wired, no profile is selected, or the read threw —
+   * and the read never throws out of here, because a diagnostics command that
+   * cannot run when something is broken is useless. Only the third is a fault,
+   * so `outboxUnavailableReason` carries which one applied. Null alone cannot
+   * tell them apart, which is the defect this docstring previously had (#236).
    */
   async collect(options: {
     profileId: string | null;
