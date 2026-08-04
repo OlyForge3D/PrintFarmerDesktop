@@ -376,3 +376,54 @@ own rollback from another session's work. Those are the same observation. It
 refuses either way and still lists the commits with their ids, but it withholds
 the second-writer claim and the `PF_PUSH_ACK_FOREIGN` instruction, because
 neither is established. That case is a test, not a comment.
+
+## Removing what is destroyed is not the same as removing it from the ref
+
+`rev-list live ^local` answers _which commits does this push take off the ref_.
+The guard needed _what does this push destroy_, and treated the first as the
+second for four rounds.
+
+They come apart on the single path the guard's own refusal recommends. Do what it
+says — _"read that work and rebase onto it rather than over it"_ — and the other
+session's commits are replayed under **new shas**. The originals leave the ref,
+so they were counted destroyed, and the push that **preserved every line of their
+work** was refused as `foreign-session` naming that session. Measured at
+`822c5ed`.
+
+`git cherry <local> <live>` answers the content question directly, by patch-id:
+
+```
+- 08099fba   rebased by me      equivalent exists locally
++ cd80dab3   genuinely dropped
+```
+
+### Why this one is safe to subtract
+
+It may only ever **shrink** the destroyed set, so it is evidence of innocence and
+never of guilt, and a failure returns the empty set — the strict answer. Every
+way it can go wrong goes wrong toward refusing.
+
+### The merge hole, checked before relying on it
+
+`git cherry` **ignores merge commits.** Measured, not assumed: over a range
+`rev-list` reported as three commits including a merge, `git cherry` printed two
+lines and omitted the merge. So a merge can never enter the preserved set and is
+always counted destroyed.
+
+That is the behaviour this repository specifically needs, because the incident in
+`decisions.md` is an **orphaned merge commit** that dropped ~6000 lines while CI
+stayed green. It is pinned by a test, because it is a property of another program
+that can change underneath us — and the mutation confirms the shape of the harm:
+subtract merges and the push is still refused, but the merge silently vanishes
+from the list of what is at risk.
+
+### The part worth remembering
+
+This defect was **masked by a bug**. The reachability proxy put the other
+session's id back into the owned set precisely because their commits had been
+rebased forward, so the case came out right for a reason that had nothing to do
+with what was destroyed. Removing the proxy is what exposed it.
+
+A wrong mechanism that produces right answers on the cases you sample is not a
+half-correct mechanism — it is an untested one, and fixing anything nearby will
+surface every case it was covering by accident.

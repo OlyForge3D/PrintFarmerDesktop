@@ -35,13 +35,19 @@ export interface PushFacts {
    */
   provablyFastForward: boolean | null;
   discarded: GuardedCommit[];
+  /**
+   * Commits the push removes from the ref whose content survives locally under
+   * a different sha. Optional because the safe default is empty: omitting it
+   * can only make the guard stricter, unlike `ownershipEvidence`.
+   */
+  preserved?: string[];
   ownSessions?: Iterable<string>;
   /**
-   * Whether this clone records authorship at all, i.e. whether the reflog
-   * exists. Required, because absence of a session id from `ownSessions` is
-   * only evidence when the instrument that records it was running. Deliberately
-   * not optional: a caller that omits it would silently get the over-claiming
-   * behaviour this field was added to remove.
+   * Whether this clone authored anything, i.e. whether it created a commit at
+   * all. Required, because absence of a session id from `ownSessions` is only
+   * evidence when the instrument that records it was running AND had something
+   * to record. Deliberately not optional: a caller that omits it would silently
+   * get the over-claiming behaviour this field was added to remove.
    */
   ownershipEvidence: boolean;
   ack?: string | undefined;
@@ -58,6 +64,7 @@ export type GuardCode =
   | 'push-guard.acknowledged-delete'
   | 'push-guard.new-branch'
   | 'push-guard.fast-forward'
+  | 'push-guard.rewrite-preserves-all'
   | 'push-guard.foreign-session'
   | 'push-guard.unacknowledged-discard'
   | 'push-guard.ack-mismatch'
@@ -90,6 +97,10 @@ export function isAncestor(
 ): boolean | null;
 export function hasCommit(sha: string): boolean;
 export function readCommits(range: string[]): Required<GuardedCommit>[];
+export function readEquivalentCommits(
+  localSha: string,
+  liveSha: string,
+): Set<string>;
 export function readReflogSessions(localRef?: string): Set<string>;
 export function authoredHere(localRef?: string): boolean;
 export function readReflogEntries(

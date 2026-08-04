@@ -105,7 +105,7 @@ function describe(commits) {
  */
 export function evaluateRefUpdate(update, facts) {
   const { localSha, remoteRef } = update;
-  const { liveRemoteSha, discarded = [] } = facts;
+  const { liveRemoteSha, discarded = [], preserved = [] } = facts;
   const ack = (facts.ack ?? '').trim();
   const ackForeign = facts.ackForeign ?? '';
 
@@ -249,6 +249,22 @@ export function evaluateRefUpdate(update, facts) {
   }
 
   if (discarded.length === 0) {
+    // Two different situations reach zero, and calling both a fast-forward
+    // would be a false statement in the one place the guard is trying to make
+    // true ones. The decision function cannot tell them apart from a count, so
+    // `preserved` is measured and passed in rather than inferred here.
+    if (preserved.length > 0) {
+      return {
+        verdict: 'allow',
+        code: 'push-guard.rewrite-preserves-all',
+        message: [
+          `${remoteRef} is rewritten, and every commit it removes from the ref`,
+          `survives locally under a new sha (${preserved.length} carried forward).`,
+          'Nothing is destroyed, so this is the outcome the foreign-session',
+          'refusal asks for rather than a case to be overridden.',
+        ].join('\n'),
+      };
+    }
     return {
       verdict: 'allow',
       code: 'push-guard.fast-forward',
@@ -609,6 +625,48 @@ export function readReflogEntries(ref) {
     });
 }
 
+/**
+ * Commits on the remote whose CONTENT already exists locally under a different
+ * sha — the ones a rewrite carried forward rather than destroyed.
+ *
+ * `rev-list live ^local` answers "which commits does this push remove from the
+ * ref", which is not the same as "which work does this push destroy". Rebase
+ * another session's commits under your own — exactly what this guard's refusal
+ * tells you to do — and their originals stop being reachable from the local tip
+ * while every line of them survives under new shas. Measured at 822c5ed: that
+ * push was REFUSED as `foreign-session`, naming the session whose work it had
+ * just preserved. A false refusal on the did-the-right-thing path is the worst
+ * place in the system to put one, and it is the path the guard advertises.
+ *
+ * `git cherry` compares patch-ids, so it answers the content question directly.
+ *
+ * Two properties make this safe to subtract from the destroyed set:
+ *
+ * 1. It can only ever SHRINK that set, so it is evidence of innocence and never
+ *    of guilt. A failure returns the empty set, which is the strict answer, so
+ *    every way this can go wrong goes wrong toward refusing.
+ *
+ * 2. `git cherry` ignores merge commits — measured, not assumed: on a three
+ *    commit range containing a merge it printed two lines and omitted the merge.
+ *    A merge therefore can never enter this set and is always counted destroyed.
+ *    That is the behaviour this repository needs, because the incident in
+ *    `.squad/decisions.md` is an orphaned merge commit that dropped ~6000 lines
+ *    while every other signal stayed green.
+ */
+export function readEquivalentCommits(localSha, liveSha) {
+  try {
+    return new Set(
+      git(['cherry', localSha, liveSha])
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('- '))
+        .map((line) => line.slice(2).trim())
+        .filter((sha) => sha.length > 0),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
 export function readCommits(range) {
   const output = git([
     'log',
@@ -665,6 +723,10 @@ export function gatherFacts(update, remote, env = process.env, location = '') {
     // before anything tries to enumerate from it.
     liveTipPresent: isAbsent(liveRemoteSha) ? true : hasCommit(liveRemoteSha),
     discarded: [],
+    // Commits the remote has that this push removes from the ref but does NOT
+    // destroy, because an equivalent patch is already reachable locally. Empty
+    // is the strict answer, so the default and every failure path are safe.
+    preserved: [],
     ownSessions: [],
     // Conservative default, and the conservative direction here is `false`: with
     // no evidence the guard declines to CLAIM foreignness rather than declining
@@ -678,7 +740,12 @@ export function gatherFacts(update, remote, env = process.env, location = '') {
   if (liveRemoteSha && liveRemoteSha === update.remoteSha) {
     if (!facts.liveTipPresent) return facts;
     if (!isAbsent(update.localSha)) {
-      facts.discarded = readCommits([liveRemoteSha, `^${update.localSha}`]);
+      const equivalent = readEquivalentCommits(update.localSha, liveRemoteSha);
+      const removed = readCommits([liveRemoteSha, `^${update.localSha}`]);
+      facts.discarded = removed.filter((entry) => !equivalent.has(entry.sha));
+      facts.preserved = removed
+        .filter((entry) => equivalent.has(entry.sha))
+        .map((entry) => entry.sha);
       // Two sources, because reachability alone is a PROXY for ownership and
       // the proxy breaks on the case that matters most.
       //

@@ -1267,6 +1267,160 @@ describe('a clone that has authored nothing says so instead of guessing', () => 
   });
 });
 
+describe('rebasing another session\u2019s work forward is not destroying it', () => {
+  // Measured at 822c5ed and live: doing exactly what the guard's own refusal
+  // tells you to do — "read that work and rebase onto it rather than over it" —
+  // was REFUSED as `foreign-session`, naming the session whose every line the
+  // push had just preserved. The rewritten copies carry new shas, so the
+  // originals fall out of `rev-list live ^local` and were counted destroyed.
+  //
+  // A false refusal on the did-the-right-thing path is the worst place in the
+  // system to put one, and removing the reachability proxy is what exposed it:
+  // that proxy had been masking this case by accident, because the rebased
+  // copies carried the other session's id back into the owned set. Right answer,
+  // wrong reason — which is why it survived until the reason was removed.
+  let root: string;
+  let mine: string;
+  let dropped: string;
+
+  // Each case gets its OWN remote. Sharing one made the second push see a tip
+  // the first had just rewritten, so it refused as `unfetched-remote-tip` and
+  // the control silently stopped testing what it claimed to.
+  const world = (label: string, take: number) => {
+    const base = path.join(root, label);
+    const remote = path.join(base, 'remote.git');
+    const theirs = path.join(base, 'theirs');
+    const dir = path.join(base, 'mine');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, theirs], root);
+    configure(theirs);
+    git(['checkout', '-b', 'feature'], theirs);
+    commit(theirs, 'base', 'session-base');
+    git(['push', '--no-verify', '-u', 'origin', 'feature'], theirs);
+    commit(theirs, 'their one', 'session-theirs');
+    commit(theirs, 'their two', 'session-theirs');
+    git(['push', '--no-verify', 'origin', 'feature'], theirs);
+
+    git(['clone', '--branch', 'feature', remote, dir], root);
+    configure(dir);
+    const first = git(['rev-parse', 'HEAD~1'], dir).trim();
+    const second = git(['rev-parse', 'HEAD'], dir).trim();
+    git(['reset', '--hard', 'HEAD~2'], dir);
+    commit(dir, 'mine one', 'session-mine');
+    // Replay their work on top of mine. `take` is the one variable: 2 preserves
+    // all of it, 1 drops their second commit while preserving the first.
+    git(['cherry-pick', ...[first, second].slice(0, take)], dir);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], dir);
+    return dir;
+  };
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-rebase-'));
+    mine = world('preserve-all', 2);
+    dropped = world('drop-one', 1);
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('allows the push and says why it is not a fast-forward', () => {
+    const stderr = pushExpectingSuccess(
+      ['push', '--force', 'origin', 'feature'],
+      mine,
+    );
+
+    expect(stderr).toContain('push-guard.rewrite-preserves-all');
+    // Not `fast-forward`: it is not one, and saying so would be exactly the
+    // kind of true-sounding false statement this guard exists to stop.
+    expect(stderr).not.toContain('push-guard.fast-forward');
+    expect(stderr).not.toContain(ACK_FOREIGN_ENV);
+  });
+
+  it('still refuses when one of their commits is genuinely dropped', () => {
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force', 'origin', 'feature'], dropped);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    // The control. Without it, the test above could be satisfied by a guard
+    // that had simply stopped looking at the discarded set at all.
+    expect(stderr).toContain('push-guard.foreign-session');
+    expect(stderr).toContain('session-theirs');
+    expect(stderr).toContain('their two');
+    // The preserved one is not named, because it is not being destroyed.
+    expect(stderr).not.toContain('their one');
+  });
+});
+
+describe('a dropped merge commit is never counted as preserved', () => {
+  // The hazard `.squad/decisions.md` records: two merges seconds apart orphaned
+  // a merge commit and dropped ~6000 lines from `development` for hours while CI
+  // stayed green. Patch-id equivalence is what lets the guard subtract commits
+  // from the destroyed set, so it must not be able to subtract a merge.
+  //
+  // Measured before relying on it: over a three-commit range containing a merge,
+  // `git cherry` printed two lines and omitted the merge entirely. A merge can
+  // therefore never enter the preserved set. This test pins that, because it is
+  // a property of another program that could change under us.
+  let root: string;
+  let remote: string;
+  let work: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-merge-'));
+    remote = path.join(root, 'remote.git');
+    work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, work], root);
+    configure(work);
+    git(['checkout', '-b', 'feature'], work);
+    commit(work, 'base', 'session-base');
+    git(['push', '--no-verify', '-u', 'origin', 'feature'], work);
+    git(['checkout', '-b', 'side'], work);
+    commit(work, 'side work', 'session-theirs');
+    git(['checkout', 'feature'], work);
+    commit(work, 'trunk work', 'session-theirs');
+    git(['merge', '--no-ff', '-m', 'merge of side', 'side'], work);
+    git(['push', '--no-verify', 'origin', 'feature'], work);
+
+    // Rewrite that reproduces the CONTENT of both parents but loses the merge.
+    git(['reset', '--hard', 'HEAD~2'], work);
+    commit(work, 'trunk work', 'session-theirs');
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('refuses, naming the merge that would be orphaned', () => {
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force', 'origin', 'feature'], work);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    expect(stderr).toContain('merge of side');
+    // Not asserted: which refusal code. The point is that the merge is in the
+    // destroyed set at all — whether it is reported as foreign or merely
+    // unacknowledged depends on authorship, which is a different question and
+    // is covered elsewhere.
+    expect(stderr).not.toContain('push-guard.rewrite-preserves-all');
+  });
+});
+
 describe('rebasing your own work does not cost you ownership of it', () => {
   // The passing side of the creation filter, and the case that filter could
   // plausibly break: a rebase rewrites every commit through `rebase (pick)`
