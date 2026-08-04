@@ -8,8 +8,9 @@
  * WHAT THIS IS, AND WHAT IT IS NOT
  *
  * This file is a *model* of the pre-fix `flattenPartTree`, which makes it a
- * rendering like any other. It is not the authority for these numbers and must
- * not be cited as one. The authority is the shipped pre-fix implementation at
+ * rendering like any other. It settles nothing on its own and must not be cited
+ * as though it did. What these figures are figures *of* is the shipped pre-fix
+ * implementation at
  * commit 741459dee50af3a0dd387253cfbf8b9ddc71315f, in
  * `src/renderer/library/partTreeModel.ts`. Three properties of that revision are
  * what this model reproduces, and each is checkable there directly:

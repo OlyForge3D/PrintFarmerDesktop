@@ -89,11 +89,14 @@ What that section requires, for any agent running the check:
   are dependent. Derive the value from the thing that is not a rendering — the code, the
   constant, the fixture, the computation — and publish the derivation. Where no such
   source exists, the finding stands and resolution escalates to the artifact owners.
-- **Prefer a recorded derivation where one exists.** A no-authority instrument is the
-  right tool when no artifact is privileged; where one records the method that
-  established a value, it _is_ an authority for that value, and reaching past it for the
-  diff is choosing the weaker tool. Find the divergence with the diff, then cite the
-  derivation so a reader can reproduce the conclusion and not only the disagreement.
+- **Report any derivation already on the record, and do not treat it as an authority.**
+  Where an artifact records not just a value but the method that established it, say so
+  and cite it, so a reader can reproduce the conclusion and not only the disagreement.
+  That is a **reporting duty, not a licence to privilege the artifact**: a recorded
+  method still has to be re-run to be worth anything, and you cannot tell a recorded
+  derivation from a recorded non-derivation without evaluating it — at which point the
+  evaluation, not the record, is what carries the weight. Designating any rendering an
+  authority reinstates the one-directional defect this section exists to remove.
 - **Arithmetic consistent with a decomposition is not its derivation** — that two figures
   sum is true whatever the residue consists of. Measure the populations separately, and
   either take the measurement or attribute it. An accurate outcome with a plausible
