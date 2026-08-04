@@ -425,10 +425,17 @@ describe('SidecarCalibrationAdapter', () => {
     expect(conflicts[0]!.entityId).toBe(STEP_ID);
     // Not toContain('acceptServer'): that passed against a hard-coded literal in
     // the adapter, so it held whatever the conflict was and whether or not any
-    // resolution could run. Every strategy routes through
-    // IpcChannel.CalibrationResolveConflict, which throws
-    // CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE, so offering one is a lie.
-    expect(conflicts[0]!.availableResolutions).toEqual([]);
+    // resolution could run.
+    //
+    // The set is now non-empty because the adapter can resolve (issue #216),
+    // and it is exactly the set the ratified per-kind policy permits for
+    // stepDraft. Asserting the exact set rather than "non-empty" is what keeps
+    // this from passing against an adapter that offers everything to everyone.
+    expect(conflicts[0]!.availableResolutions).toEqual([
+      'acceptServer',
+      'keepLocalAsNewRevision',
+      'manualFieldMerge',
+    ]);
   });
 
   it('listCalibrationConflicts carries the payloads the sidecar returns', async () => {
