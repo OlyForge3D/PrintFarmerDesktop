@@ -62,7 +62,9 @@ export function collectFiles(directory: string, accumulator: string[] = []) {
 export function extractFileReferences(markdown: string) {
   const references: string[] = [];
   for (const match of markdown.matchAll(CODE_SPAN)) {
-    const token = match[1].trim();
+    const captured = match[1];
+    if (captured === undefined) continue;
+    const token = captured.trim();
     if (ROOTED_REFERENCE.test(token) || BARE_FILENAME.test(token)) {
       references.push(token);
     }
