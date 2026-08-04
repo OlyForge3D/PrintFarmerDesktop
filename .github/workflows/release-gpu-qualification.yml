@@ -39,6 +39,8 @@ jobs:
     name: Physical GPU (${{ matrix.profileId }})
     needs: matrix
     runs-on: ${{ matrix.runnerLabels }}
+    permissions:
+      contents: read
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -57,7 +59,19 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
+        id: npm_ci
+        env:
+          NPM_CLEANUP_EVIDENCE_PATH: ${{ runner.temp }}/npm-cleanup-evidence.json
         run: node scripts/npm-ci-strict.mjs
+
+      - name: Upload npm cleanup failure evidence
+        if: failure() && steps.npm_ci.outputs.cleanup_evidence == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-cleanup-evidence-${{ github.job }}-${{ matrix.profileId }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/npm-cleanup-evidence.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Build release sidecar
         run: cargo build --manifest-path native/Cargo.toml --locked --release -p model-core --features sqlite

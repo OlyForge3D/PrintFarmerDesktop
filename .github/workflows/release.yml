@@ -29,6 +29,8 @@ jobs:
   make:
     name: Make (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -41,6 +43,8 @@ jobs:
             arch: universal
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -51,7 +55,19 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
+        id: npm_ci
+        env:
+          NPM_CLEANUP_EVIDENCE_PATH: ${{ runner.temp }}/npm-cleanup-evidence.json
         run: node scripts/npm-ci-strict.mjs
+
+      - name: Upload npm cleanup failure evidence
+        if: failure() && steps.npm_ci.outputs.cleanup_evidence == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-cleanup-evidence-${{ github.job }}-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/npm-cleanup-evidence.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Calibration provenance
         run: npm run check:provenance
@@ -268,8 +284,12 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs: make
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -277,7 +297,19 @@ jobs:
           cache: npm
 
       - name: Install dependencies
+        id: npm_ci
+        env:
+          NPM_CLEANUP_EVIDENCE_PATH: ${{ runner.temp }}/npm-cleanup-evidence.json
         run: node scripts/npm-ci-strict.mjs
+
+      - name: Upload npm cleanup failure evidence
+        if: failure() && steps.npm_ci.outputs.cleanup_evidence == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-cleanup-evidence-${{ github.job }}-single-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/npm-cleanup-evidence.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Download verified platform artifacts
         uses: actions/download-artifact@v4

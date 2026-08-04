@@ -17,6 +17,9 @@ on:
   # tests/ciWorkflowTriggers.test.ts.
   merge_group:
 
+permissions:
+  contents: read
+
 jobs:
   desktop:
     name: Desktop (${{ matrix.os }})
@@ -27,6 +30,8 @@ jobs:
         os: [windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -34,7 +39,19 @@ jobs:
           cache: npm
 
       - name: Install dependencies
+        id: npm_ci
+        env:
+          NPM_CLEANUP_EVIDENCE_PATH: ${{ runner.temp }}/npm-cleanup-evidence.json
         run: node scripts/npm-ci-strict.mjs
+
+      - name: Upload npm cleanup failure evidence
+        if: failure() && steps.npm_ci.outputs.cleanup_evidence == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-cleanup-evidence-${{ github.job }}-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/npm-cleanup-evidence.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Calibration provenance
         run: npm run check:provenance
@@ -107,6 +124,8 @@ jobs:
         os: [windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -117,7 +136,19 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
+        id: npm_ci
+        env:
+          NPM_CLEANUP_EVIDENCE_PATH: ${{ runner.temp }}/npm-cleanup-evidence.json
         run: node scripts/npm-ci-strict.mjs
+
+      - name: Upload npm cleanup failure evidence
+        if: failure() && steps.npm_ci.outputs.cleanup_evidence == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-cleanup-evidence-${{ github.job }}-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/npm-cleanup-evidence.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Build sidecar (release)
         working-directory: native
@@ -176,6 +207,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -189,7 +222,19 @@ jobs:
         run: cargo install cargo-audit --locked
 
       - name: Install dependencies
+        id: npm_ci
+        env:
+          NPM_CLEANUP_EVIDENCE_PATH: ${{ runner.temp }}/npm-cleanup-evidence.json
         run: node scripts/npm-ci-strict.mjs
+
+      - name: Upload npm cleanup failure evidence
+        if: failure() && steps.npm_ci.outputs.cleanup_evidence == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-cleanup-evidence-${{ github.job }}-single-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/npm-cleanup-evidence.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Generate SBOM (scopes advisories to what ships)
         run: npm run sbom
