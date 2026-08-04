@@ -77,6 +77,13 @@ export interface CalibrationOutboxSnapshot {
  * Precedence when more than one applies: `notAttempted` before
  * `noProfileSelected`, because a missing source makes the profile irrelevant.
  * Pinned by test rather than left to the order of the conditions.
+ *
+ * Reachability is not uniform, and the runbooks depend on that: the only
+ * production caller (`calibration:getDiagnostics`) passes the sidecar adapter
+ * unconditionally, so an operator can meet `noProfileSelected` and `readFailed`
+ * but not `notAttempted`. The member is kept for callers that embed the store
+ * directly, and the call site is pinned by test so the documentation cannot go
+ * false silently.
  */
 export type CalibrationOutboxUnavailableReason =
   'notAttempted' | 'noProfileSelected' | 'readFailed';

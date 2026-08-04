@@ -87,8 +87,10 @@ silent loss. Do one of:
      it as the same underlying fault presenting differently.
    - `noProfileSelected` — no server profile is selected. Benign. Select a
      profile and read diagnostics again before concluding anything.
-   - `notAttempted` — no outbox source was wired for this call. Benign, and not
-     a statement about the database.
+   - `notAttempted` — no outbox source was wired for this call. **You should not
+     see this from `calibration:getDiagnostics`**, which always supplies the
+     sidecar adapter. If you do, the handler has changed and that is a bug worth
+     reporting on its own. It is still not a statement about the database.
 
 ## If this fails
 
