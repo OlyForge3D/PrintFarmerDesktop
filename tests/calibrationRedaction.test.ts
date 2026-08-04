@@ -91,7 +91,7 @@ vi.mock('node:os', async (importOriginal) => {
   const fs = await import('node:fs');
   const p = await import('node:path');
   tempRootRef.path = fs.mkdtempSync(
-    p.join(actual.tmpdir(), 'pf-calibration-log-'),
+    p.join(actual.tmpdir(), `pf-calibration-log-${process.pid}-`),
   );
   // `retargetArtifacts.ts` imports the default export, so the override has to
   // be on the default too. Returning the unmodified `actual` as `default` left
@@ -323,12 +323,40 @@ afterEach(() => {
 });
 
 const TEMP_ROOT_PREFIX = 'pf-calibration-log-';
+const TEMP_ROOT_OWNER = /^pf-calibration-log-(\d+)-/;
 
 /**
- * Remove the roots left behind by previous runs. Safe because nothing in this
- * process owns them; see the comment in `afterAll` for why cleanup cannot
- * happen at the end of the run that created them.
+ * Reap roots left by *dead* runs only.
+ *
+ * The first version of this swept every `pf-calibration-log-*` in `%TEMP%`
+ * except its own, on the reasoning that anything else was left over from a
+ * previous run. That reasoning holds for one checkout and is false on any
+ * machine running two — `os.tmpdir()` is shared process-wide *and*
+ * worktree-wide, so a concurrent run of this file in another checkout had its
+ * root deleted mid-test and failed with `ENOENT: mkdtemp`. CI never saw it:
+ * each job is an isolated runner with exactly one checkout, so the sweep had
+ * nothing foreign to hit. It reproduced roughly one run in four locally.
+ *
+ * So ownership is now explicit rather than inferred: the root name carries the
+ * pid that created it, and a root is only removed once that process is gone.
+ * This mirrors `retargetArtifacts.ts`, which already gates instance cleanup on
+ * `isProcessRunning(marker.pid)` for the same reason.
  */
+function ownerIsGone(entry: string): boolean {
+  const owner = TEMP_ROOT_OWNER.exec(entry);
+  // Unattributable roots predate this scheme; leave them rather than guess.
+  if (!owner) return false;
+  const pid = Number(owner[1]);
+  if (pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    // EPERM means the pid is alive and owned by someone else.
+    return (error as NodeJS.ErrnoException).code === 'ESRCH';
+  }
+}
+
 function reapStaleTempRoots(): void {
   if (tempRootRef.path === '') return;
   const parent = path.dirname(tempRootRef.path);
@@ -336,6 +364,7 @@ function reapStaleTempRoots(): void {
     if (!entry.startsWith(TEMP_ROOT_PREFIX)) continue;
     const candidate = path.join(parent, entry);
     if (candidate === tempRootRef.path) continue;
+    if (!ownerIsGone(entry)) continue;
     rmSync(candidate, { recursive: true, force: true });
   }
 }
