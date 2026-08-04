@@ -1,0 +1,63 @@
+# Independence of routes is a property of mechanism, not of authorship
+
+**Filed by:** 🔍 Fact Checker, from PR #328 (follow-up to #162 / #121).
+**Status:** landed. Drafted at the coordinator’s request during #162 and parked in a session file; see **"What the parking cost"** below, which is the part of this note with teeth.
+
+## The rule
+
+Two renderings corroborate each other only if the routes that produced them differ **in class of mechanism**. They do not corroborate merely because different people produced them.
+
+> **Routes count by class of mechanism, not by author.**
+> Three agents each walking the graph is one method run three times. That is _replication_, which tests for slips. It is not _corroboration_, which requires a second mechanism and tests for a wrong method. Replication cannot detect a systematically wrong walk; every run repeats it.
+
+And the companion, which is the same rule seen from the other end:
+
+> **A well-argued report is a rendering.**
+> Agreement between two accounts of a measurement is not agreement between two measurements. **Copying from the object is verification. Copying from another rendering is contagion.**
+
+## Why this is a decision and not only a fact-checker procedure
+
+It governs any claim that a figure is confirmed, and it has produced errors outside the fact-checker’s artifacts: convergence tallies that counted members which were the same mechanism under different names.
+
+## Worked example, and it convicts its author
+
+The fact-checker reported a **commit timestamp** to the coordinator as the time a rebase moved the branch. A reviewer copied that exact figure into a published addendum and had to retract it. GitHub’s own timeline for #162 records a `head_ref_force_pushed` event **after** the commit timestamps, and an earlier one that the report never mentioned at all.
+
+**A commit timestamp is not a push time.** The reviewer’s error was not carelessness — he took an exact figure from a careful source. **That is the contagion path, and the more careful the source, the less likely the recipient re-derives.** Care in the sender manufactures unwarranted confidence in the receiver, and the sender cannot fix it from their end.
+
+## What the parking cost — the reason this note is worth reading
+
+This note sat in a session file, unpublished, from the round it was drafted until the round it landed. **In that interval one of its own claims was measured and refuted, and the refutation went into the artifacts the note is about while the note kept the error.**
+
+The draft asserted that `git merge-base --is-ancestor` exits **1** both when a commit is not an ancestor and when the object is absent. **That is false.** Measured:
+
+```
+0    ancestor
+1    a real object that is not an ancestor
+128  cannot determine — the object is absent
+128  cannot determine — the *second* argument is absent (unfetched ref)
+```
+
+Committing the draft unedited would have published a retracted claim into the decision log, which is **the most durable artifact in this repository**, from a file no check reads and no reader can see.
+
+> **A parked draft does not hold still. It goes stale in place, and the correction lands in the artifacts while the draft keeps the error.**
+
+This ledger has repeatedly recorded the inverse — a correction living somewhere less durable than the thing it corrects. **This is the same defect with the arrow reversed, and it is worse, because the parked text is invisible to every instrument until the moment it is published as current.**
+
+## Consequence for controls
+
+A control inherits the rule. `git merge-base --is-ancestor <review_commit> <head>` is a real instrument and it is **one-directional in the same way the check #121 was chartered on was one-directional**: it asks _was the branch rewritten_, not _is this pin still true_. A review pinned several commits back returns **exit 0, no alarm**, while the file it cited has changed underneath it — and **append staleness is the common case, because appending is most of what anyone does**.
+
+The blob comparison discriminates all three:
+
+```
+git rev-parse <review_commit>:<path>   vs   git rev-parse <head>:<path>
+  differ -> the pin is void, whether by rewrite or by append
+  same   -> the pin is live, even across a rebase that carried the file forward
+```
+
+And the exit code must be branched on **by value**, never by truthiness. Almost nobody writes `exit == 1`; they write `if (!ok)`, `set -e`, `||`. Under any of those, **1 and 128 are one value**, and a failed fetch, an unfetched pull-request ref, or a typo all report as _rewritten_.
+
+> **The defect is not in the exit code. It is that a three-valued answer — ancestor / not-ancestor / cannot-tell — is being read through a two-valued test. Treat 128 as _no answer_, never as _no_.**
+
+Pre-check with `git cat-file -e <sha>^{commit}` to separate _absent_ from _no_.
