@@ -519,24 +519,39 @@ describe('formatCommitViolations', () => {
 });
 
 describe('fetchPullRequestCommits', () => {
-  it('paginates rather than under-reporting, because short reads look clean', async () => {
-    const pages = [
-      Array.from({ length: 100 }, (_, index) => ({
-        sha: `a${index}`,
-        commit: { message: 'noop' },
-      })),
-      [{ sha: 'last', commit: { message: 'closes #57' } }],
-    ];
+  const respondJson = (payload: unknown, ok = true, status = 200) =>
+    (() =>
+      Promise.resolve({
+        ok,
+        status,
+        statusText: 'Test',
+        json: () => Promise.resolve(payload),
+      } as unknown as Response)) as unknown as typeof fetch;
+
+  const respondInSequence = (payloads: readonly unknown[]) => {
     let call = 0;
+    return (() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        statusText: 'Test',
+        json: () => Promise.resolve(payloads[call++]),
+      } as unknown as Response)) as unknown as typeof fetch;
+  };
+
+  it('paginates rather than under-reporting, because short reads look clean', async () => {
     const commits = await fetchPullRequestCommits({
       owner: 'o',
       repo: 'r',
       prNumber: 1,
       token: 't',
-      fetchImpl: (async () => ({
-        ok: true,
-        json: async () => pages[call++],
-      })) as unknown as typeof fetch,
+      fetchImpl: respondInSequence([
+        Array.from({ length: 100 }, (_, index) => ({
+          sha: `a${index}`,
+          commit: { message: 'noop' },
+        })),
+        [{ sha: 'last', commit: { message: 'closes #57' } }],
+      ]),
     });
     expect(commits).toHaveLength(101);
     expect(collectArmedCommitReferences(commits).has(57)).toBe(true);
@@ -549,10 +564,7 @@ describe('fetchPullRequestCommits', () => {
         repo: 'r',
         prNumber: 1,
         token: 't',
-        fetchImpl: (async () => ({
-          ok: true,
-          json: async () => ({ message: 'Not Found' }),
-        })) as unknown as typeof fetch,
+        fetchImpl: respondJson({ message: 'Not Found' }),
       }),
     ).rejects.toThrow(/refusing to treat an unreadable response/i);
   });
@@ -564,32 +576,33 @@ describe('fetchPullRequestCommits', () => {
         repo: 'r',
         prNumber: 1,
         token: 't',
-        fetchImpl: (async () => ({
-          ok: false,
-          status: 500,
-          statusText: 'Server Error',
-        })) as unknown as typeof fetch,
+        fetchImpl: respondJson(null, false, 500),
       }),
     ).rejects.toThrow(/500/);
   });
 });
 
 describe('fetchIssuesByNumber', () => {
+  const respondJson = (payload: unknown, ok = true, status = 200) =>
+    (() =>
+      Promise.resolve({
+        ok,
+        status,
+        statusText: 'Test',
+        json: () => Promise.resolve(payload),
+      } as unknown as Response)) as unknown as typeof fetch;
+
   it('flattens labels so the derived rule can run on the commit channel', async () => {
     const issues = await fetchIssuesByNumber({
       owner: 'o',
       repo: 'r',
       numbers: [42],
       token: 't',
-      fetchImpl: (async () => ({
-        ok: true,
-        status: 200,
-        json: async () => ({
-          number: 42,
-          title: 'Epic',
-          labels: [{ name: 'epic' }, 'squad'],
-        }),
-      })) as unknown as typeof fetch,
+      fetchImpl: respondJson({
+        number: 42,
+        title: 'Epic',
+        labels: [{ name: 'epic' }, 'squad'],
+      }),
     });
     expect(issues).toEqual([
       { number: 42, title: 'Epic', labels: ['epic', 'squad'] },
@@ -602,11 +615,7 @@ describe('fetchIssuesByNumber', () => {
       repo: 'r',
       numbers: [4200],
       token: 't',
-      fetchImpl: (async () => ({
-        ok: false,
-        status: 404,
-        statusText: 'Not Found',
-      })) as unknown as typeof fetch,
+      fetchImpl: respondJson(null, false, 404),
     });
     expect(issues).toEqual([]);
   });
@@ -618,11 +627,7 @@ describe('fetchIssuesByNumber', () => {
         repo: 'r',
         numbers: [57],
         token: 't',
-        fetchImpl: (async () => ({
-          ok: true,
-          status: 200,
-          json: async () => ({}),
-        })) as unknown as typeof fetch,
+        fetchImpl: respondJson({}),
       }),
     ).rejects.toThrow(/refusing to treat an unreadable response/i);
   });
