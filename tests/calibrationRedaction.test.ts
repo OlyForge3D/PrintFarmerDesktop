@@ -668,9 +668,11 @@ describe('correlation across one calibration operation', () => {
 
 describe('redaction on real calibration failure paths', () => {
   let capture: ReturnType<typeof captureCalibrationLogs>;
+  let sentBodies: Promise<string>[] = [];
 
   beforeEach(() => {
     capture = captureCalibrationLogs();
+    sentBodies = [];
   });
 
   afterEach(() => {
@@ -679,25 +681,60 @@ describe('redaction on real calibration failure paths', () => {
 
   /**
    * A server that fails every calibration route with a ProblemDetails body
-   * whose `detail` carries every secret class. `statusError` copies `detail`
-   * into `CalibrationHttpError.message`, so this is the real production route
-   * by which server-controlled text reaches the desktop error path.
+   * whose `detail` carries every secret class.
+   *
+   * Before issue #177, `statusError` copied `detail` into
+   * `CalibrationHttpError.message`, so this was the live production route by
+   * which server-controlled text reached the renderer. It no longer is: the
+   * catalogued string wins and `detail` is carried on `serverDetail`, which
+   * reaches neither `CalibrationApiError.message` nor
+   * `CalibrationSyncStatus.error`.
    */
   function leakyServer(): ReturnType<typeof vi.fn> {
-    const fetchMock = vi.fn(() =>
-      Promise.resolve(
-        json(
-          {
-            title: 'Calibration worker rejected the request',
-            detail: `token=${JWT} apiKey=${API_KEY} exif=${EXIF_GPS} path=${ABSOLUTE_PATH}`,
-            errorCode: 'worker_unavailable',
-          },
-          503,
-        ),
-      ),
-    );
+    const fetchMock = vi.fn(() => {
+      const response = json(
+        {
+          title: 'Calibration worker rejected the request',
+          detail: `token=${JWT} apiKey=${API_KEY} exif=${EXIF_GPS} path=${ABSOLUTE_PATH}`,
+          errorCode: 'worker_unavailable',
+        },
+        503,
+      );
+      // Capture the body now. Production consumes it, and a `Response` body can
+      // only be read once -- cloning after the call under test has run throws
+      // `Body has already been consumed`, which is how the first version of
+      // this control failed.
+      sentBodies.push(response.clone().text());
+      return Promise.resolve(response);
+    });
     vi.stubGlobal('fetch', fetchMock);
     return fetchMock;
+  }
+
+  /**
+   * Returns what the stubbed server actually put on the wire.
+   *
+   * This is the control that survives the #177 fix. The old control asserted
+   * the secret reached `response.error.message` -- which was only ever a proxy
+   * for "the secret was present", and it stops being available the moment the
+   * leak is closed. Deleting it would leave every `not.toContain` assertion
+   * below passing against a server that had sent nothing at all.
+   *
+   * Reading the body proves presence at the source instead, which is true both
+   * before and after the fix.
+   */
+  async function serverBodyOf(
+    fetchMock: ReturnType<typeof vi.fn>,
+  ): Promise<string> {
+    expect(
+      fetchMock.mock.calls.length,
+      'the stubbed server was never called, so nothing was ever sent to redact',
+    ).toBeGreaterThan(0);
+    expect(
+      sentBodies.length,
+      'the stubbed server was called but captured no body',
+    ).toBeGreaterThan(0);
+    return (await Promise.all(sentBodies)).join('\n');
   }
 
   it('keeps every secret class out of the records emitted by a failing generation', async () => {
@@ -733,16 +770,38 @@ describe('redaction on real calibration failure paths', () => {
       'the client never sent the token, so its absence from the log proves nothing',
     ).toContain(JWT);
 
-    // --- Control B: the backend detail genuinely reached the error path. ---
-    // This is the leak channel a naive logger would have used. It is asserted
-    // as a control and flagged in the module docblock, not endorsed.
-    expect(response.status).toBe('error');
-    expect(
-      response.error?.message,
-      'the backend detail did not reach the IPC error, so the log-side claim is untested',
-    ).toContain(JWT);
+    // --- Control B: the backend detail was genuinely in the response. ---
+    // Asserted at the source rather than at the error surface, because after
+    // #177 the error surface is exactly what must NOT carry it -- so the old
+    // form of this control now asserts the bug.
+    const body = await serverBodyOf(fetchMock);
+    for (const [label, secret] of SECRETS) {
+      expect(
+        body,
+        `the server never sent ${label}, so its absence downstream proves nothing`,
+      ).toContain(secret);
+    }
 
-    // --- The claim. ---
+    // --- The claim, renderer side (#177). ---
+    expect(response.status).toBe('error');
+    const rendered = response.error?.message ?? '';
+    // Non-empty first: an empty string satisfies every not.toContain below.
+    expect(
+      rendered.length,
+      'the IPC error carried no message at all, so the assertions below are vacuous',
+    ).toBeGreaterThan(0);
+    for (const [label, secret] of SECRETS) {
+      expect(
+        rendered,
+        `${label} reached CalibrationApiError.message`,
+      ).not.toContain(secret);
+    }
+    expect(
+      rendered,
+      'the server title reached the renderer; title is as server-controlled as detail',
+    ).not.toContain('Calibration worker rejected');
+
+    // --- The claim, log side. ---
     const logFile = asLogFile(records);
     for (const [label, secret] of SECRETS) {
       expect(logFile, `${label} reached an emitted record`).not.toContain(
@@ -772,7 +831,7 @@ describe('redaction on real calibration failure paths', () => {
   });
 
   it('keeps every secret class out of the records emitted by a failing sync', async () => {
-    leakyServer();
+    const fetchMock = leakyServer();
     const registered = handlers();
     const status = (await invoke(registered, IpcChannel.CalibrationSyncNow, {
       profileId: PROFILE_ID,
@@ -788,13 +847,29 @@ describe('redaction on real calibration failure paths', () => {
     expect(failure, 'the failing sync emitted no failure record').toBeDefined();
     expect(failure?.correlationId).toBeDefined();
 
-    // Control: the sync status genuinely carries the backend detail, so the
-    // secret was present at this layer. (Flagged finding, see docblock.)
+    // Control: the secrets were genuinely in the response at this layer.
+    const body = await serverBodyOf(fetchMock);
+    for (const [label, secret] of SECRETS) {
+      expect(
+        body,
+        `the server never sent ${label}, so its absence from the sync status proves nothing`,
+      ).toContain(secret);
+    }
+
+    // The claim (#177): the sync status is renderer-visible and must not carry
+    // any of it.
     expect(status.phase).toBe('failed');
+    const rendered = status.error ?? '';
     expect(
-      status.error,
-      'the backend detail did not reach the sync status, so the claim is untested',
-    ).toContain(JWT);
+      rendered.length,
+      'the sync status carried no error text at all, so the assertions below are vacuous',
+    ).toBeGreaterThan(0);
+    for (const [label, secret] of SECRETS) {
+      expect(
+        rendered,
+        `${label} reached CalibrationSyncStatus.error`,
+      ).not.toContain(secret);
+    }
 
     const logFile = asLogFile(records);
     for (const [label, secret] of SECRETS) {

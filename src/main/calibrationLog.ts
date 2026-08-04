@@ -27,9 +27,12 @@
  * - {@link CalibrationLogInput} has **no `message` key**. Free text cannot be
  *   supplied at all; `message` is looked up from a fixed catalog keyed by
  *   `errorCode`, falling back to `event`. In particular a
- *   `CalibrationHttpError.message` is never logged — `statusError` copies the
- *   backend's ProblemDetails `detail` into it, so it is backend-controlled text
- *   and issue #159 names stringifying a backend body as a failure.
+ *   `CalibrationHttpError.message` is never logged. That field no longer
+ *   carries the backend's ProblemDetails `detail` (issue #177 moved it to
+ *   `serverDetail`, which this module also does not read), but the rule stands
+ *   on its own: issue #159 names stringifying a backend body as a failure, and
+ *   a guarantee that holds by construction should not be downgraded to one that
+ *   holds because a neighbouring module currently behaves.
  * - Identifier values still pass {@link safeIdentifier} as a secondary guard,
  *   because a *caller* could pass the wrong variable into a legitimate key.
  *
@@ -488,9 +491,11 @@ export function emitCalibrationLog(
  * Classify a thrown value into a typed code and an HTTP status.
  *
  * Reads only `code` and `status`, both structurally safe. It deliberately never
- * reads `message`: on a `CalibrationHttpError` that field carries the backend's
- * ProblemDetails `detail` (`calibrationHttp.ts` `statusError`), which is
- * server-controlled text and could echo anything the server was sent.
+ * reads `message`. Before issue #177 that field carried the backend's
+ * ProblemDetails `detail` outright; it now carries a catalogued string, and the
+ * untrusted text lives on `CalibrationHttpError.serverDetail`, which this
+ * function also does not read. Neither is read here, so this stays correct
+ * whichever way `calibrationHttp` changes next.
  *
  * Duck-typed rather than `instanceof` so this module stays free of a runtime
  * import cycle with `calibrationHttp` and `calibrationEngine`.
