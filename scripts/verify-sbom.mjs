@@ -105,10 +105,26 @@ console.log(
 
 const sbom = JSON.parse(staged);
 
-for (const coverage of [
-  evaluateNpmSbomCoverage(sbom, npmProductionTree, importedNpmComponents),
-  evaluateCargoSbomCoverage(sbom, cargoMetadata),
-]) {
+// An unreadable npm tree is an input failure, not a policy finding, and before
+// #201 it escaped this loop uncaught — surfacing as a stack trace under a step
+// named for the SBOM, which had in fact already verified two lines earlier.
+let coverages;
+try {
+  coverages = [
+    evaluateNpmSbomCoverage(sbom, npmProductionTree, importedNpmComponents),
+    evaluateCargoSbomCoverage(sbom, cargoMetadata),
+  ];
+} catch (error) {
+  if (error?.unreadableInput) {
+    fail(
+      `the npm dependency tree could not be read, so no conclusion about SBOM ` +
+        `coverage is available. ${error.message}`,
+    );
+  }
+  throw error;
+}
+
+for (const coverage of coverages) {
   if (!coverage.complete) fail(coverage.diagnostic);
   console.log(
     `[verify-sbom] OK: independent completeness check matched ${coverage.expectedCount} shipped component(s)`,
