@@ -550,7 +550,6 @@ commit `741459dee50af3a0dd387253cfbf8b9ddc71315f` — one row per visit, path-lo
 no `MAX_PART_TREE_ROWS` — which is what these figures are figures of; the script models it.
 That commit is pre-squash, so no branch reaches it; fetch it with
 `git fetch origin refs/pull/68/head`.)
-
 **Controls.** The limits bound the obvious cases. Beyond them, correctness rests entirely on
 hand-written parsing in `threemf.rs`, `stl.rs`, `obj.rs`, and `vendor.rs`.
 

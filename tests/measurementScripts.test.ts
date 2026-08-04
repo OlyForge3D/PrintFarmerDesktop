@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -100,32 +100,46 @@ describe('the measurement scripts this change cites are executed, not merely pre
     expect(output).toMatch(/-quoted/);
   });
 
-  it('still finds the unrepaired third rendering in the threat model', () => {
+  it('confirms run D is discharged on the mainline and would notice a regression', () => {
     const { output, status } = runScript('scripts/measure-mention-filter.mjs');
 
-    if (mainlineVisible) {
-      // Run D's finding, expressed as a condition instead of a sentence. While
-      // THREAT_MODEL.md on the mainline carries 32,767 it must appear in this
-      // table; when the repair lands, this assertion is the thing that notices,
-      // because it fails and forces the ledger entry to be updated with it.
-      expect(status).toBe(0);
-      const row = output
-        .split('\n')
-        .find((line) => line.includes('THREAT_MODEL.md'));
-
-      expect(row).toBeDefined();
-      expect(row).toContain('32,767');
+    if (!mainlineVisible) {
+      // Same reason as above: without the mainline ref there is nothing to
+      // check, and the property worth pinning is that the script says so.
+      expect(status).toBe(2);
+      expect(output).toContain('INCOMPLETE');
       return;
     }
 
-    // Without the mainline ref the script cannot answer at all, and the
-    // property worth pinning is that it says so. It previously printed a
-    // MISSING line and exited 0, so a caller could not distinguish "measured,
-    // found nothing" from "could not measure" - the same indistinguishability
-    // that makes an uninvoked check look like a passing one. The exit status
-    // now separates them, and this assertion is what keeps it separated.
-    expect(status).toBe(2);
-    expect(output).toContain('INCOMPLETE');
-    expect(output).toContain('MISSING origin/development');
+    expect(status).toBe(0);
+
+    // Run D found docs/security/THREAT_MODEL.md rendering the diamond-DAG row
+    // count as 32,767 where every other artifact rendered it 49,150. That
+    // divergence was repaired on the mainline by c8d379ff0dfd06095defb36792b8b1d1393bdd41,
+    // whose parent still reads "expanded to 32,767 rows".
+    //
+    // The table alone cannot certify the repair: the file legitimately still
+    // carries 32,767 as a *path* count, so a row-level substring test passes
+    // whether the figure is used or mentioned. The discriminator has to be the
+    // sentence, which is why this reads the blob rather than trusting the row.
+    const sentence = execFileSync(
+      'git',
+      ['show', 'origin/development:docs/security/THREAT_MODEL.md'],
+      { encoding: 'utf8', cwd: repositoryRoot, maxBuffer: 1 << 28 },
+    )
+      .split('\n')
+      .find((line) => line.includes('diamond DAG expanded to'));
+
+    expect(sentence).toBeDefined();
+    expect(sentence).toContain('49,150 rows');
+    expect(sentence).not.toContain('32,767 rows');
+
+    // And the figure must still be one the script actually reports, so this
+    // cannot pass against a table that has silently stopped being produced.
+    const rows = output
+      .split('\n')
+      .filter((line) => line.includes('THREAT_MODEL.md'));
+
+    expect(rows.some((line) => line.includes('49,150'))).toBe(true);
   });
 });
