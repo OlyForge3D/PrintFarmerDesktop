@@ -619,12 +619,21 @@ describe('dischargeCleanupFailure wires the pieces together, not just defines th
 
     await dischargeCleanupFailure(RECORDED_CLEANUP_FAILURE, depsWithoutPaths);
 
+    // The wipe and the artifact write must actually have been called. Without
+    // these guards an absent collaborator coerces to String(undefined), and the
+    // dirname comparison below would pass vacuously on "." === "." -- a green
+    // produced by two absences. Non-vacuity must be intrinsic to this test, not
+    // inherited from the endsWith asserts (which a reorder or delete could drop).
+    const removeCall = rig.first('remove');
+    const writeCall = rig.first('writeArtifact');
+    expect(removeCall).toBeDefined();
+    expect(writeCall).toBeDefined();
     // The wipe targets the repo's own node_modules by default, not the injected
     // '/repo/node_modules' every other test supplies.
-    const removed = String(rig.first('remove')?.args[0]);
+    const removed = String(removeCall?.args[0]);
     expect(removed.endsWith('node_modules')).toBe(true);
     // The artifact is written to the repo-root repair file by default.
-    const artifactTarget = String(rig.first('writeArtifact')?.args[1]);
+    const artifactTarget = String(writeCall?.args[1]);
     expect(artifactTarget.endsWith('npm-ci-strict-repair.json')).toBe(true);
     // Stronger than the two basename checks above: both defaults are built from
     // the same repoRoot, so they must share a parent directory. A default that
