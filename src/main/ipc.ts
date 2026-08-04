@@ -1703,10 +1703,11 @@ export function registerIpcHandlers(
         );
       await requireSelectedCalibrationProfile(request.profileId);
       // Same predicate that decides CalibrationConflict.availableResolutions.
-      // If this handler refused on its own hard-coded assumption, the two could
-      // disagree -- the UI offering actions this channel rejects, or the
-      // reverse. One fact, two readers.
-      const resolve = calibrationSidecarAdapter.resolveCalibrationConflict;
+      // If this handler decided on its own, the two could disagree -- the UI
+      // offering actions this channel rejects, or the reverse. One fact, two
+      // readers. It stays a runtime check even though the adapter now always
+      // carries the method: the check is what makes "it resolved" evidence
+      // that the capability was present rather than an unconditional success.
       if (!supportsConflictResolution(calibrationSidecarAdapter)) {
         throw Object.assign(
           new Error(
@@ -1715,10 +1716,7 @@ export function registerIpcHandlers(
           { code: 'CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE' },
         );
       }
-      return (resolve as (input: typeof request) => Promise<unknown>).call(
-        calibrationSidecarAdapter,
-        request,
-      );
+      return calibrationSidecarAdapter.resolveCalibrationConflict(request);
     },
   );
 

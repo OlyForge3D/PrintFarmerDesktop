@@ -4364,6 +4364,14 @@ fn sqlite_outbound_matches_input(
         && existing.created_at == input.created_at
 }
 
+/// Tests for the SQLite catalog.
+///
+/// These compile only under `--features sqlite`. A bare `cargo test` prints
+/// `ok. 0 passed; 328 filtered out` — a green run against code that was never
+/// compiled, in the same colour as a real one. CI runs `cargo test --locked
+/// --features sqlite` so the gate is honest there; it is the local runner who
+/// gets the false green. Use `cargo test --features sqlite` and read the
+/// count, not the colour.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6273,8 +6281,17 @@ mod tests {
         })
     }
 
+    /// Named after the field it checks, not after the contract.
+    ///
+    /// It was called `..._is_readable_through_the_ipc_contract` and asserted
+    /// one field of the eleven that contract constrains. A test name is a
+    /// durable claim that outlives everyone who knew what it meant, and this
+    /// one would have been cited as evidence that the whole shape was proven.
+    /// The other fields are supplied by the caller rather than the store, so
+    /// this test is not the place to assert them — which is exactly why the
+    /// name had to shrink to what it does cover.
     #[test]
-    fn recorded_calibration_conflict_is_readable_through_the_ipc_contract() {
+    fn recorded_calibration_conflict_gets_the_uuid_the_ipc_contract_requires() {
         let mut store = SqliteCatalog::open_in_memory().unwrap();
         let input = workspace_input(
             "profile-1",

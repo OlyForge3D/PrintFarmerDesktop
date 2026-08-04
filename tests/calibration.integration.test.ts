@@ -20,6 +20,7 @@
 /* eslint-disable @typescript-eslint/unbound-method, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/require-await, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-explicit-any */
 import { describe, expect, it, vi } from 'vitest';
 import {
+  conflictResolutionsFor,
   ServerProfileCalibrationTokenProvider,
   SidecarCalibrationAdapter,
 } from '../src/main/calibrationService.js';
@@ -423,12 +424,21 @@ describe('SidecarCalibrationAdapter', () => {
     expect(conflicts).toHaveLength(1);
     expect(conflicts[0]!.kind).toBe('stepDraft');
     expect(conflicts[0]!.entityId).toBe(STEP_ID);
-    // Not toContain('acceptServer'): that passed against a hard-coded literal in
-    // the adapter, so it held whatever the conflict was and whether or not any
-    // resolution could run. Every strategy routes through
-    // IpcChannel.CalibrationResolveConflict, which throws
-    // CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE, so offering one is a lie.
-    expect(conflicts[0]!.availableResolutions).toEqual([]);
+    // This asserted `[]` while no resolve capability existed. It was never
+    // edited: the resolve path landing made it non-empty on its own, which is
+    // the property the derivation was built for and the reason this line is
+    // now the opposite claim.
+    //
+    // Still not a literal list. `stepDraft` is one of the two kinds the
+    // schema doc allows manualFieldMerge for, so what is asserted is the
+    // policy distinction rather than the contents -- a flat list here would
+    // pass equally against a hard-coded one.
+    expect(conflicts[0]!.availableResolutions).toContain('manualFieldMerge');
+    expect(
+      conflictResolutionsFor({}, 'stepDraft'),
+      'a transport with no resolve capability still advertised resolutions, ' +
+        'so the non-empty result above is not evidence the capability was read',
+    ).toEqual([]);
   });
 
   it('listCalibrationConflicts carries the payloads the sidecar returns', async () => {
