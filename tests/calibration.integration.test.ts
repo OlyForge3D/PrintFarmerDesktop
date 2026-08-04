@@ -423,7 +423,79 @@ describe('SidecarCalibrationAdapter', () => {
     expect(conflicts).toHaveLength(1);
     expect(conflicts[0]!.kind).toBe('stepDraft');
     expect(conflicts[0]!.entityId).toBe(STEP_ID);
-    expect(conflicts[0]!.availableResolutions).toContain('acceptServer');
+    // Not toContain('acceptServer'): that passed against a hard-coded literal in
+    // the adapter, so it held whatever the conflict was and whether or not any
+    // resolution could run. Every strategy routes through
+    // IpcChannel.CalibrationResolveConflict, which throws
+    // CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE, so offering one is a lie.
+    expect(conflicts[0]!.availableResolutions).toEqual([]);
+  });
+
+  it('listCalibrationConflicts carries the payloads the sidecar returns', async () => {
+    const raw = [
+      {
+        conflictId: '66666666-6666-4666-8666-666666666666',
+        profileId: PROFILE_ID,
+        projectId: PROJECT_ID,
+        kind: 'CalibrationStep',
+        entityId: STEP_ID,
+        operationId: OP_ID,
+        localPayload: { displayName: 'Local name' },
+        serverPayload: { displayName: 'Server name' },
+        serverRevision: 3,
+        createdAt: NOW,
+      },
+    ];
+    const sidecarClient = {
+      listCalibrationConflicts: vi.fn().mockResolvedValue(raw),
+    } as any;
+    const adapter = new SidecarCalibrationAdapter(sidecarClient);
+    const conflicts = await adapter.listCalibrationConflicts(
+      PROFILE_ID,
+      PROJECT_ID,
+    );
+
+    // The difference between local and server is the only thing a conflict UI
+    // can show. The adapter used to return null here regardless of input.
+    expect(conflicts[0]!.localPayloadSummary).toBe(
+      '{"displayName":"Local name"}',
+    );
+    expect(conflicts[0]!.serverPayloadSummary).toBe(
+      '{"displayName":"Server name"}',
+    );
+  });
+
+  it('listCalibrationConflicts bounds an oversized payload to the IPC contract', async () => {
+    const raw = [
+      {
+        conflictId: '66666666-6666-4666-8666-666666666666',
+        profileId: PROFILE_ID,
+        projectId: PROJECT_ID,
+        kind: 'CalibrationProject',
+        entityId: PROJECT_ID,
+        operationId: OP_ID,
+        localPayload: { note: 'x'.repeat(8000) },
+        serverPayload: null,
+        serverRevision: 3,
+        createdAt: NOW,
+      },
+    ];
+    const sidecarClient = {
+      listCalibrationConflicts: vi.fn().mockResolvedValue(raw),
+    } as any;
+    const adapter = new SidecarCalibrationAdapter(sidecarClient);
+    const conflicts = await adapter.listCalibrationConflicts(
+      PROFILE_ID,
+      PROJECT_ID,
+    );
+
+    const summary = conflicts[0]!.localPayloadSummary!;
+    expect(summary.length).toBe(4096);
+    expect(summary.endsWith('...')).toBe(true);
+    expect(conflicts[0]!.serverPayloadSummary).toBeNull();
+    // The bounded value must still satisfy the schema the main process parses
+    // the list response against, or the whole response is rejected.
+    expect(() => CalibrationConflict.parse(conflicts[0])).not.toThrow();
   });
 
   it('countCalibrationPendingOperations returns numeric count', async () => {
