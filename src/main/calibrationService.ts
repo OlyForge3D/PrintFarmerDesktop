@@ -29,6 +29,7 @@ import { ServerProfileService } from './serverProfiles.js';
 import type { SidecarClient } from './sidecar.js';
 import type {
   CalibrationConflict,
+  CalibrationConflictKind,
   CalibrationConflictResolution,
 } from '@shared/ipc';
 import { z } from 'zod';
@@ -147,6 +148,59 @@ function summarizeConflictPayload(payload: unknown): string | null {
   return rendered.length > 4096 ? `${rendered.slice(0, 4093)}...` : rendered;
 }
 
+/**
+ * Resolutions this build can actually execute for a conflict of `kind`.
+ *
+ * Derived from two facts. Neither is a literal written into this function:
+ *
+ * 1. Whether the conflict transport exposes a resolve capability at all.
+ *    Today it does not, so this returns `[]` for every kind -- but it returns
+ *    `[]` *because the capability is absent*, not because somebody typed `[]`.
+ * 2. The per-kind policy already ratified in the `CalibrationConflictResolution`
+ *    schema doc: `manualFieldMerge` is "only available for metadata/draft
+ *    conflicts where a textual merge is well-defined. Not available for
+ *    measurements, exact profile JSON, or outcome selections." That is
+ *    transcribed here, not authored. This function sets no new policy about
+ *    what is semantically safe to resolve; that decision belongs in an issue
+ *    where the model-core owner can see it, not in a diff.
+ *
+ * When the authoritative resolve RPC lands, giving the transport a
+ * `resolveCalibrationConflict` method makes this non-empty and makes the IPC
+ * handler stop refusing -- without either site being edited. A field that
+ * starts telling the truth on its own cannot go stale; a literal has to be
+ * remembered, and the previous hard-coded
+ * `['acceptServer', 'keepLocalAsNewRevision']` is what forgetting looks like.
+ */
+export function conflictResolutionsFor(
+  transport: ConflictResolutionCapable,
+  kind: CalibrationConflictKind,
+): CalibrationConflictResolution[] {
+  if (!supportsConflictResolution(transport)) {
+    return [];
+  }
+  const textuallyMergeable = kind === 'projectMetadata' || kind === 'stepDraft';
+  return textuallyMergeable
+    ? ['acceptServer', 'keepLocalAsNewRevision', 'manualFieldMerge']
+    : ['acceptServer', 'keepLocalAsNewRevision'];
+}
+
+/** Anything that may one day carry an authoritative conflict resolve call. */
+export interface ConflictResolutionCapable {
+  readonly resolveCalibrationConflict?: unknown;
+}
+
+/**
+ * The single fact behind both "which resolutions may we advertise" and
+ * "may the resolve IPC handler proceed". Two sites that agree only because the
+ * same author wrote both will drift the moment one of them is edited; two
+ * sites reading one predicate cannot.
+ */
+export function supportsConflictResolution(
+  transport: ConflictResolutionCapable,
+): boolean {
+  return typeof transport.resolveCalibrationConflict === 'function';
+}
+
 // ---------------------------------------------------------------------------
 // SidecarCalibrationAdapter — bridges SidecarClient to CalibrationSidecar
 // ---------------------------------------------------------------------------
@@ -186,6 +240,26 @@ function mapCalibrationConflictKind(
  */
 export class SidecarCalibrationAdapter implements CalibrationSidecar {
   constructor(private readonly sidecar: SidecarClient) {}
+
+  /**
+   * Absent. There is no `resolveCalibrationConflict` arm in the sidecar's RPC
+   * dispatch (`native/model-core/src/serve.rs` has `recordCalibrationConflict`
+   * and `listCalibrationConflicts` only; the `resolveSyncConflict` that does
+   * exist is a different table). Declared optional rather than omitted so that
+   * assigning an implementation is the *whole* change: `conflictResolutionsFor`
+   * starts returning resolutions and the resolve IPC handler stops refusing,
+   * with no second edit to remember. Tracked as the write-path half of #179.
+   *
+   * `declare` is load-bearing. This project targets ES2022, so
+   * `useDefineForClassFields` is on and a plain optional field declaration
+   * emits an own property initialised to `undefined` on every instance --
+   * which shadows the prototype and makes the seam inert. `declare` is
+   * type-only and emits nothing. The test that grants the capability on the
+   * prototype is what caught this; it failed with the handler still refusing.
+   */
+  declare readonly resolveCalibrationConflict?: (
+    request: unknown,
+  ) => Promise<unknown>;
 
   async listCalibrationPendingOperations(
     profileId: string,
@@ -328,14 +402,10 @@ export class SidecarCalibrationAdapter implements CalibrationSidecar {
         localPayloadSummary: summarizeConflictPayload(parsed.localPayload),
         serverPayloadSummary: summarizeConflictPayload(parsed.serverPayload),
         serverRevision: parsed.serverRevision,
-        // Empty on purpose. Every resolution strategy routes through
-        // IpcChannel.CalibrationResolveConflict, whose handler throws
-        // CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE because no resolve RPC
-        // exists in the sidecar. This previously returned a hard-coded
-        // ['acceptServer', 'keepLocalAsNewRevision'] -- a literal, not a fact
-        // about the conflict, offering the user two actions that always fail.
-        // Populate this from the conflict kind when the resolve path lands.
-        availableResolutions: [] as CalibrationConflictResolution[],
+        // Derived, not declared. Empty today because this adapter has no
+        // resolveCalibrationConflict method -- and it becomes non-empty by
+        // itself on the day one is added. See conflictResolutionsFor.
+        availableResolutions: conflictResolutionsFor(this, kind),
         createdAt: parsed.createdAt,
         resolution: null,
         resolvedAt: null,
