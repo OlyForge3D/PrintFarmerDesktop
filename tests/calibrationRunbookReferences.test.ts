@@ -33,6 +33,11 @@
  *    test whose failure reads `expected [] to deeply equal [...]` costs the
  *    next person an hour.
  *
+ * Defences 3 and 4 are load-bearing together and neither is alone: the positive
+ * control and the loop that reports real offenders **share no code**, so the
+ * control cannot prove `offenders.push` still fires, and the offender loop
+ * cannot prove the extractor still matches. Each covers the other's blind spot.
+ *
  * ## What counts as a reference
  *
  * The docs are prose, so the extractor keys off inline code spans and then
@@ -50,6 +55,32 @@
  * is not checked. That is a real limit of this test, stated rather than hidden:
  * it constrains the identifier shapes an operator would grep for, not every
  * word in the documents.
+ *
+ * ## Fenced blocks are scanned, but only for the two command-shaped classes
+ *
+ * Inline code spans are prose; fenced blocks are not. Scanning fenced blocks for
+ * every class would be wrong, because a fenced sample log record legitimately
+ * contains `"correlationId"` and a fenced sample response legitimately contains
+ * contract field names — that is good documentation, not a reference to police,
+ * and treating it as one would either produce noise or push authors to stop
+ * showing real records.
+ *
+ * But excluding fenced blocks entirely has a specific cost that has to be named
+ * rather than implied: **a command is the reference class that most naturally
+ * lives inside a fence**, so a prose-only extractor leaves the `npm run` and
+ * IPC-channel checks close to inert exactly where they would matter most, while
+ * still looking like coverage.
+ *
+ * So the split is by shape, not by location. `calibration:<channel>` and
+ * `npm run <script>` are unambiguous and self-delimiting, so they are matched
+ * **inside fenced blocks as well as in prose**, with or without backticks.
+ * camelCase and dotted-name classification stays prose-only, because in a fence
+ * those shapes are indistinguishable from sample data.
+ *
+ * The residual limit, stated: a fenced block that deliberately shows a
+ * *hypothetical* channel or script will fail this test. That is the intended
+ * trade — a hypothetical command in operator documentation is a bug report
+ * waiting to happen — but it is a constraint on authors, so it is written down.
  */
 
 import path from 'node:path';
@@ -256,6 +287,10 @@ const CODE_SPAN = /`([^`\n]+)`/g;
 const CAMEL_FIELD = /^[a-z]+(?:[A-Z0-9][A-Za-z0-9]*)+$/;
 const CHANNEL = /^calibration:[A-Za-z]+$/;
 const NPM_SCRIPT = /^npm run ([A-Za-z0-9:_-]+)$/;
+/** The same two classes, matched unanchored so a fenced block is covered. */
+const CHANNEL_ANYWHERE = /calibration:([A-Za-z]+)/g;
+const NPM_SCRIPT_ANYWHERE = /npm run ([A-Za-z0-9:_-]+)/g;
+const FENCED_BLOCK = /```[\s\S]*?```/g;
 
 export interface DocReferences {
   fields: string[];
@@ -264,9 +299,14 @@ export interface DocReferences {
   scripts: string[];
 }
 
-/** Classify every inline code span in a document. Fenced blocks are excluded. */
+/**
+ * Classify every inline code span in a document, then sweep the fenced blocks
+ * for the two command-shaped classes. See the module docblock for why the two
+ * passes see different amounts of the document.
+ */
 export function extractReferences(markdown: string): DocReferences {
-  const prose = markdown.replace(/```[\s\S]*?```/g, '');
+  const fenced = markdown.match(FENCED_BLOCK) ?? [];
+  const prose = markdown.replace(FENCED_BLOCK, '');
   const references: DocReferences = {
     fields: [],
     dotted: [],
@@ -284,6 +324,14 @@ export function extractReferences(markdown: string): DocReferences {
       references.dotted.push(token);
     } else if (CAMEL_FIELD.test(token)) {
       references.fields.push(token);
+    }
+  }
+  for (const block of fenced) {
+    for (const match of block.matchAll(NPM_SCRIPT_ANYWHERE)) {
+      references.scripts.push(match[1]!);
+    }
+    for (const match of block.matchAll(CHANNEL_ANYWHERE)) {
+      references.channels.push(`calibration:${match[1]!}`);
     }
   }
   return references;
@@ -308,8 +356,12 @@ const DOCUMENTS: readonly { label: string; file: string }[] = [
 ];
 
 /**
- * A document referencing four things that do not exist, plus one of each kind
- * that does. Drives the positive control below.
+ * A document referencing things that do not exist, plus one of each kind that
+ * does. Drives the positive control below.
+ *
+ * The fenced block at the end is the second half of the control: it proves the
+ * fenced sweep sees a command-shaped reference, and that it does *not* promote
+ * sample data (`calibrationSessionIdInFence`) into a field reference.
  */
 const PLANTED_DOC = [
   '# Planted',
@@ -318,6 +370,12 @@ const PLANTED_DOC = [
   'Look for `sync.neverEmitted` alongside `sync.failed`.',
   'Call `calibration:bogusChannel`, not `calibration:getDiagnostics`.',
   'Run `npm run definitely-not-a-script` and then `npm run typecheck`.',
+  '',
+  '```sh',
+  'npm run also-not-a-script',
+  'invoke calibration:alsoBogusChannel',
+  'echo \'{"calibrationSessionIdInFence": "sample", "sync.alsoNeverEmitted": 1}\'',
+  '```',
 ].join('\n');
 
 describe('calibration documentation reference integrity', () => {
@@ -372,6 +430,9 @@ describe('calibration documentation reference integrity', () => {
     expect(planted.dotted).toContain('sync.neverEmitted');
     expect(planted.channels).toContain('calibration:bogusChannel');
     expect(planted.scripts).toContain('definitely-not-a-script');
+    // The fenced sweep, proven live rather than assumed from the prose pass.
+    expect(planted.channels).toContain('calibration:alsoBogusChannel');
+    expect(planted.scripts).toContain('also-not-a-script');
 
     const fields = knownFieldNames();
     const dotted = knownDottedNames();
@@ -385,10 +446,19 @@ describe('calibration documentation reference integrity', () => {
     ]);
     expect(planted.channels.filter((token) => !channels.has(token))).toEqual([
       'calibration:bogusChannel',
+      'calibration:alsoBogusChannel',
     ]);
     expect(planted.scripts.filter((token) => !scripts.has(token))).toEqual([
       'definitely-not-a-script',
+      'also-not-a-script',
     ]);
+
+    // Sample data inside a fence stays sample data: the fenced sweep carries
+    // only the two command-shaped classes, so a JSON key in an example record
+    // is not promoted into a field or event reference. Documentation that shows
+    // a real log line must not be punished for it.
+    expect(planted.fields).not.toContain('calibrationSessionIdInFence');
+    expect(planted.dotted).not.toContain('sync.alsoNeverEmitted');
 
     // And the real tokens in the same fixture must survive, so the check is not
     // simply rejecting everything.
