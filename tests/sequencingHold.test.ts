@@ -11,6 +11,8 @@ import {
   formatHold,
 } from '../scripts/check-sequencing-hold.mjs';
 
+type LabelInput = readonly (string | { name?: unknown })[];
+
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -59,7 +61,7 @@ describe('evaluateSequencingHold', () => {
     // person creating it would have no way to discover that.
     const result = evaluateSequencingHold(['hold:release']);
     expect(result.held).toBe(true);
-    expect(result.holds[0].reason).toContain('Undocumented');
+    expect(result.holds[0]?.reason).toContain('Undocumented');
   });
 
   it('does not match a label that merely contains the prefix', () => {
@@ -78,14 +80,18 @@ describe('evaluateSequencingHold', () => {
     // The #182 defect in miniature: a value that CANNOT carry a label must not
     // produce the same answer as one that carries none. `undefined` is what a
     // missing field deserialises to, so this is the realistic failure.
-    expect(() => evaluateSequencingHold(undefined)).toThrow(/must be an array/);
-    expect(() => evaluateSequencingHold(null)).toThrow(/must be an array/);
+    expect(() =>
+      evaluateSequencingHold(undefined as unknown as LabelInput),
+    ).toThrow(/must be an array/);
+    expect(() => evaluateSequencingHold(null as unknown as LabelInput)).toThrow(
+      /must be an array/,
+    );
   });
 
   it('refuses a label entry with no name', () => {
-    expect(() => evaluateSequencingHold([{ colour: 'red' }])).toThrow(
-      /no name/,
-    );
+    expect(() =>
+      evaluateSequencingHold([{ colour: 'red' }] as unknown as LabelInput),
+    ).toThrow(/no name/);
   });
 
   it('documents the label the repository actually uses', () => {
@@ -138,21 +144,30 @@ describe('formatHold', () => {
 });
 
 describe('fetchPullRequestLabels', () => {
-  const ok = (payload) => ({
-    ok: true,
-    status: 200,
-    statusText: 'OK',
-    json: async () => payload,
-  });
+  const request = {
+    owner: 'OlyForge3D',
+    repo: 'PrintFarmerDesktop',
+    prNumber: 175,
+    token: 'test-token',
+  };
+
+  // Same shape as tests/prClosureScope.test.ts: a literal is not a Response,
+  // and the double assertion is what lets a two-field stub stand in for one.
+  const respondWith = (payload: unknown, ok = true, status = 200) =>
+    (() =>
+      Promise.resolve({
+        ok,
+        status,
+        statusText: 'Test',
+        json: () => Promise.resolve(payload),
+      } as unknown as Response)) as unknown as typeof fetch;
 
   it('returns the label names', async () => {
     const labels = await fetchPullRequestLabels({
-      owner: 'OlyForge3D',
-      repo: 'PrintFarmerDesktop',
-      prNumber: 175,
-      token: 't',
-      fetchImpl: async () =>
-        ok({ labels: [{ name: 'hold:sequenced' }, { name: 'ci' }] }),
+      ...request,
+      fetchImpl: respondWith({
+        labels: [{ name: 'hold:sequenced' }, { name: 'ci' }],
+      }),
     });
     expect(labels).toEqual(['hold:sequenced', 'ci']);
   });
@@ -160,15 +175,8 @@ describe('fetchPullRequestLabels', () => {
   it('throws on a non-ok response', async () => {
     await expect(
       fetchPullRequestLabels({
-        owner: 'o',
-        repo: 'r',
-        prNumber: 1,
-        token: 't',
-        fetchImpl: async () => ({
-          ok: false,
-          status: 403,
-          statusText: 'Forbidden',
-        }),
+        ...request,
+        fetchImpl: respondWith({}, false, 403),
       }),
     ).rejects.toThrow(/403/);
   });
@@ -179,11 +187,8 @@ describe('fetchPullRequestLabels', () => {
     // precisely the moment the API is least reliable.
     await expect(
       fetchPullRequestLabels({
-        owner: 'o',
-        repo: 'r',
-        prNumber: 1,
-        token: 't',
-        fetchImpl: async () => ok({ message: 'API rate limit exceeded' }),
+        ...request,
+        fetchImpl: respondWith({ message: 'API rate limit exceeded' }),
       }),
     ).rejects.toThrow(/unreadable/);
   });
@@ -207,20 +212,20 @@ describe('the sequencing-hold workflow sees label-only changes', () => {
    * tests/prClosureScope.test.ts and tests/ciWorkflowTriggers.test.ts are
    * textual: the repository ships no YAML parser.
    */
-  const triggersOf = (contents) => {
+  const triggersOf = (contents: string): string[] => {
     const start = contents.indexOf('\non:\n');
     if (start < 0) throw new Error('workflow has no top-level "on:" block');
     const rest = contents.slice(start + 5);
     const end = rest.search(/\n[a-z]/);
     const block = end < 0 ? rest : rest.slice(0, end);
     return [...block.matchAll(/^ {2}([a-z_]+):/gm)]
-      .map((match) => match[1])
+      .map((match) => match[1] ?? '')
       .sort();
   };
 
-  const typesOf = (contents) => {
+  const typesOf = (contents: string): string[] => {
     const match = /^ {4}types: \[(.+)\]$/m.exec(contents);
-    if (!match) throw new Error('workflow declares no pull_request types');
+    if (!match?.[1]) throw new Error('workflow declares no pull_request types');
     return match[1].split(',').map((entry) => entry.trim());
   };
 
@@ -279,7 +284,7 @@ describe('the sequencing-hold workflow sees label-only changes', () => {
     // documented, the more certainly the search reported it as present. Read
     // the `run:` directives instead, where the polarity lives in the syntax.
     const runSteps = [...workflow.matchAll(/^ +run: (.+)$/gm)].map(
-      (match) => match[1],
+      (match) => match[1] ?? '',
     );
     expect(runSteps.length).toBeGreaterThan(0);
     expect(runSteps.some((step) => step.includes('npm ci'))).toBe(false);
