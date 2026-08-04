@@ -261,9 +261,10 @@ export function evaluateRefUpdate(update, facts) {
     (session) => !ownSessions.has(session),
   );
   // A session id missing from `ownSessions` is only evidence of a second writer
-  // if the thing that records authorship was running. It is the reflog, and it
-  // is not always there: `core.logAllRefUpdates=false` turns it off, entries
-  // expire, and a fresh clone has none for work it did not do.
+  // if the thing that records authorship was running AND had something to
+  // record. It is the reflog, and it is not always either: `logAllRefUpdates=
+  // false` turns it off, entries expire, and a clone that has authored nothing
+  // has no `commit` entry to put any id into the set.
   //
   // Measured, with that config as the only variable: a solo total rollback is
   // reported as `foreign-session`, "written by another session", naming the
@@ -295,8 +296,9 @@ export function evaluateRefUpdate(update, facts) {
         verdict: 'refuse',
         code: 'push-guard.foreign-session',
         message: [
-          `This push destroys ${discarded.length} commit(s) written by another session.`,
-          `Session id(s) not present in what you are pushing: ${foreign.join(', ')}`,
+          `This push destroys ${discarded.length} commit(s) carrying a session id`,
+          'this clone has never authored a commit under.',
+          `Session id(s) never authored here: ${foreign.join(', ')}`,
           '',
           describe(discarded),
           '',
@@ -315,19 +317,21 @@ export function evaluateRefUpdate(update, facts) {
       message: [
         `This push destroys ${discarded.length} commit(s), and this clone cannot`,
         'establish whether they are yours.',
-        `Session id(s) not present in what you are pushing: ${foreign.join(', ')}`,
+        `Session id(s) never authored here: ${foreign.join(', ')}`,
         '',
         describe(discarded),
         '',
-        'That is an absence, not a finding: this clone has no reflog recording',
-        'what was authored here, so the same absence is produced by another',
-        "session's work and by a rollback of all of your own. Read the commits.",
+        'That is an absence, not a finding: this clone has recorded no authorship',
+        "of its own, so the same absence is produced by another session's work",
+        'and by a rollback of all of your own. Read the commits.',
         '',
         'Acknowledge the tip you are overwriting:',
         `  npm run push:force`,
         '',
-        'To let the guard tell those two cases apart on this clone:',
+        'This clone records no authorship either because reflogs are off:',
         '  git config core.logAllRefUpdates true',
+        'or because everything here arrived by fetch and nothing was committed',
+        'in it, which a fresh clone doing a pure rewind always looks like.',
       ].join('\n'),
     };
   }
@@ -511,27 +515,47 @@ const FIELD = '\u001f';
  * the set is empty — which is NOT safely "stricter". An empty set makes every
  * discarded commit look foreign, including the pusher's own, and the remedy the
  * guard then prints is the override that turns this check off. See
- * `reflogIsUsable`, which is what keeps that absence from being read as a
+ * `authoredHere`, which is what keeps that absence from being read as a
  * finding.
+ *
+ * This is the ONLY source of ownership. A reachability term was unioned in
+ * alongside it and has been removed: it let a session id be claimed as "held
+ * here" merely because one commit carrying it was still reachable from the local
+ * tip, which is true of anything fetched. That silenced the foreign claim for
+ * the REST of that session's work in the same push. Measured, and reached by
+ * following this guard's own advice to rebase onto another session's work
+ * rather than over it.
  */
 const CREATED_HERE = /^commit\b/;
 
 /**
- * Whether this clone records authorship at all.
+ * Whether this clone authored anything, and so whether the absence of a session
+ * id from `readReflogSessions` carries information.
  *
- * This is deliberately NOT "did the reflog yield any session ids". A working
- * reflog that shows you authored nothing here is a real finding — it supports
- * calling the discarded work foreign. A reflog that does not exist is no
- * finding at all, and the two are indistinguishable from the session set alone,
- * because both produce the empty set.
+ * This used to ask whether the reflog produced ANY entry, on the reasoning that
+ * a working reflog showing you authored nothing here is a real finding that
+ * supports calling the discarded work foreign. That reasoning was wrong, and the
+ * case that falsifies it is a fresh clone: `git clone` writes reflog entries, so
+ * the mechanism is plainly working, but every commit arrived by fetch and none
+ * was created here. Roll back your own work in a clone you did not author it in
+ * and the old test says "evidence present, your id is absent" — which is the
+ * original defect, reached by a different road.
  *
- * So the question asked here is whether the mechanism produced ANY entry,
- * regardless of what the entries say.
+ * So the question is narrowed to whether this clone CREATED a commit, which is
+ * the only thing that can put a session id into the authored set. No creation
+ * means the set is empty for want of input rather than for want of a match, and
+ * an empty set for that reason is not evidence of a second writer.
+ *
+ * Note this is satisfied by a single new commit of your own, which is why the
+ * fresh-clone rollback that adds one behaves correctly rather than falling to
+ * the degraded path: that commit carries your id, so your id is in the set.
  */
-export function reflogIsUsable(localRef) {
+export function authoredHere(localRef) {
   for (const ref of ['HEAD', ...(localRef ? [localRef] : [])]) {
     try {
-      for (const _entry of readReflogEntries(ref)) return true;
+      for (const entry of readReflogEntries(ref)) {
+        if (CREATED_HERE.test(entry.reflogSubject)) return true;
+      }
     } catch {
       // This ref has no reflog; the other may still have one.
     }
@@ -667,20 +691,17 @@ export function gatherFacts(update, remote, env = process.env, location = '') {
       // is reachable from nothing and you are named as a second writer again —
       // on the most likely destructive push a lone session ever makes.
       //
-      // The reflog answers the question directly rather than by correlation.
-      // Union, not replacement: reachability covers a partial rollback, the
-      // reflog covers a total one. Neither covers a clone with no reflog at
-      // all — measured, `core.logAllRefUpdates=false` reproduces the original
-      // defect exactly — which is what `ownershipEvidence` is for.
+      // Widening it also broke the check in the other direction, which is what
+      // finally removed it — see below. Reachability is gone; the reflog is the
+      // only source. A clone that recorded no authorship is covered by
+      // `ownershipEvidence` rather than by a second guess.
       //
-      // Cost was measured, not feared: the full walk is 32-56 ms over this
-      // repo's 176 commits — roughly 0.2-0.3 ms per commit — and each reflog
-      // read is ~30 ms, against the 515 ms `ls-remote` the guard already pays
-      // unconditionally on every push. At that rate the walk would not reach
-      // the cost of the network call it sits beside until somewhere around
-      // 2,000 commits on the branch. The threshold is written down so the next
-      // reader does not re-derive the fear from scratch — and if it is ever
-      // crossed, measure again rather than assuming this estimate held.
+      // Cost was measured, not feared: each reflog read is ~30 ms, against the
+      // 515 ms `ls-remote` the guard already pays unconditionally on every push.
+      // Dropping the reachability walk removed a 32-56 ms full-history walk over
+      // this repo's 176 commits, so the correct answer is also the cheaper one
+      // and there was no trade to make. If the reflog read is ever suspected,
+      // measure again rather than assuming this estimate held.
       //
       // A `--grep` prefilter was rejected twice over, and is recorded because
       // the fear outlives the reasoning. It matches substrings, so one session
@@ -690,15 +711,46 @@ export function gatherFacts(update, remote, env = process.env, location = '') {
       // prefilter, because the exact check downstream only ever inspects what
       // the prefilter admitted. Fail-open by construction. The cheap option and
       // the exact option are the same option here; there was no trade to make.
-      facts.ownSessions = [
-        ...new Set([
-          ...sessionsOf(readCommits([update.localSha])),
-          ...readReflogSessions(update.localRef),
-        ]),
-      ];
+      // Ownership is read from the reflog ALONE. Reachability used to be
+      // unioned in here and it was the wrong signal: "this commit is reachable
+      // from my tip" means "I have it", which is true of everything I fetched.
+      //
+      // Measured at 37f1715, with whether any of their work is carried forward
+      // as the only variable:
+      //
+      //   rewind over all of their work  -> foreign-session, names them
+      //   keep ONE of their commits      -> unacknowledged-discard, silent
+      //
+      // Keeping one of their commits put THEIR id into the reachable set and
+      // silenced the foreign claim for every other commit of theirs the push
+      // destroyed — including one titled "never read by me". That is reached by
+      // following the guard's own printed advice, which says to rebase onto
+      // their work rather than over it; rebasing onto PART of it is the ordinary
+      // outcome when some is kept and some is obsolete. A control whose
+      // documented remedy disables it is not a control.
+      //
+      // The same proxy failed in the opposite direction on a total rollback,
+      // where nothing of mine survives to be reachable. One quantity, two
+      // opposite failures, so no threshold fixes it — it is not a tuning
+      // problem, it is the wrong question. Reachability answers "do I still
+      // hold some commit of session X"; the question is "did session X's work
+      // originate here".
+      //
+      // A `commit` reflog entry answers that directly, and it survives a rebase
+      // of your own work because the rewritten copies carry the same session id
+      // as the originals, whose entries are still there.
+      //
+      // The guard cannot simply compare against its own id, which would be
+      // simpler still. Measured: COPILOT_AGENT_SESSION_ID is
+      // e5a64133-826a-4d6e-8849-31b58386792f while the commits this very
+      // session writes carry b459f162-b5f3-4fd4-bb46-408e4357d6ca. The trailer
+      // value reaches the committer through its prompt, not its environment, so
+      // there is no id here to compare with — and using the env var would call
+      // every one of the pusher's own commits foreign.
+      facts.ownSessions = [...readReflogSessions(update.localRef)];
       // Measured alongside the sessions, because the set alone cannot say
       // whether an absent id was never recorded or never existed.
-      facts.ownershipEvidence = reflogIsUsable(update.localRef);
+      facts.ownershipEvidence = authoredHere(update.localRef);
     } else {
       facts.discarded = readCommits([liveRemoteSha, '--max-count=20']);
     }

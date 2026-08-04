@@ -91,7 +91,7 @@ export function isAncestor(
 export function hasCommit(sha: string): boolean;
 export function readCommits(range: string[]): Required<GuardedCommit>[];
 export function readReflogSessions(localRef?: string): Set<string>;
-export function reflogIsUsable(localRef?: string): boolean;
+export function authoredHere(localRef?: string): boolean;
 export function readReflogEntries(
   ref: string,
 ): { reflogSubject: string; sessions: string[] }[];

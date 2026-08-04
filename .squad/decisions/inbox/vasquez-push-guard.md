@@ -310,3 +310,69 @@ push with the hook removed succeeds and destroys the other session's commit. A
 suite without that half would also pass against a hook git never runs. Both
 defects above were found by writing the **passing**-side cases the first suite
 lacked — that is the argument for the requirement, not coverage hygiene.
+
+## A proxy that fails in both directions is not a threshold problem
+
+Ownership — "is this discarded commit mine?" — was answered for two rounds by a
+proxy: _is any commit carrying that session id still reachable from my local
+tip._ That is correlated with the real question, not equal to it, and it came
+apart in both directions.
+
+```
+too strict   total rollback        every commit carrying my id is what I am
+                                   discarding, so my id is reachable from
+                                   nothing -> my own work called foreign
+
+too permissive  carry one of their commits forward
+                                   their id is reachable, so the foreign claim
+                                   is silenced for every OTHER commit of theirs
+                                   the same push destroys
+```
+
+Both measured through the real hook. Tighten the proxy and the first gets worse;
+loosen it and the second does. There is no setting that is right, because the
+quantity is wrong.
+
+**The permissive side is reached by following the guard's own advice.** Its
+refusal says _"read that work and rebase onto it rather than over it"_, and
+rebasing onto **part** of another session's work — some kept, some obsolete — is
+the ordinary outcome. A control whose documented remediation path degrades it is
+not a tuning problem.
+
+### The guard cannot compare against its own id
+
+The obvious fix is to ask the direct question: _is this discarded commit's
+trailer id equal to mine._ Measured, and it is not available:
+
+```
+COPILOT_AGENT_SESSION_ID  e5a64133-826a-4d6e-8849-31b58386792f
+trailer on my own commits b459f162-b5f3-4fd4-bb46-408e4357d6ca
+```
+
+The trailer value reaches the committing agent through its **prompt**, not its
+environment. Using the env var would not merely fail to help — it matches
+nothing, so every one of the pusher's own commits would be classified foreign.
+
+### What replaced it
+
+Local authorship, read from `commit` reflog entries alone, with reachability
+removed entirely. That answers "did work under this id originate here" rather
+than "do I still hold some of it", and it does not degrade with history shape.
+It is also cheaper: it deleted a full-history walk.
+
+### The evidence test had the same bug one level up
+
+`ownershipEvidence` asked whether the reflog produced **any** entry, on the
+reasoning that a working reflog showing you authored nothing is a real finding.
+A fresh clone falsifies that: `git clone` writes reflog entries, so the
+mechanism is visibly working, but everything arrived by fetch. Roll back your
+own work in a clone you did not author it in and the old test says "evidence
+present, your id absent" — the original defect by a different road. Narrowed to
+_did this clone create a commit_, which is the only thing that can put an id
+into the set at all.
+
+**Accepted and pinned limit:** a clone that has authored nothing cannot tell its
+own rollback from another session's work. Those are the same observation. It
+refuses either way and still lists the commits with their ids, but it withholds
+the second-writer claim and the `PF_PUSH_ACK_FOREIGN` instruction, because
+neither is established. That case is a test, not a comment.

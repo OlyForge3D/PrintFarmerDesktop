@@ -856,7 +856,7 @@ describe('a solo rollback of ALL of its own work is not reported as a second wri
 
     expect(stderr).toContain('push-guard.unacknowledged-discard');
     expect(stderr).not.toContain('push-guard.foreign-session');
-    expect(stderr).not.toContain('another session');
+    expect(stderr).not.toContain('Two sessions are writing');
     expect(stderr).not.toContain(ACK_FOREIGN_ENV);
   });
 });
@@ -918,7 +918,11 @@ describe('a clone with no reflog does not get a finding it has not made', () => 
     // about evidence. What changes is the claim and the remedy.
     expect(stderr).toContain('push-guard.unattributed-discard');
     expect(stderr).toContain('cannot');
-    expect(stderr).not.toContain('written by another session');
+    // Pinned against the CLAIM, not against a literal sentence that a reword
+    // would silently retire: `foreign-session` is the verdict that asserts a
+    // second writer, and the override is what it demands.
+    expect(stderr).not.toContain('push-guard.foreign-session');
+    expect(stderr).not.toContain('Two sessions are writing');
     expect(stderr).not.toContain(ACK_FOREIGN_ENV);
     // Not asserted: that the session id is absent from the message. Naming
     // `session-mine` as the id it could not attribute is true and useful; the
@@ -1058,6 +1062,12 @@ describe('checking out another session\u2019s branch does not launder it into yo
     // The laundering step: B never wrote any of this, it only looked at it.
     git(['checkout', '-B', 'feature', 'origin/feature'], sessionB);
     git(['reset', '--hard', 'HEAD~2'], sessionB);
+    // B is a second WRITER, which is what makes it the #81 scenario: it rewinds
+    // their work and puts its own on top. Without this commit B has authored
+    // nothing in this clone, and "are these commits yours?" is genuinely
+    // undecidable rather than answerable — that case is pinned separately below,
+    // because it is a real limit and it should fail visibly if it ever moves.
+    commit(sessionB, 'mine', 'session-b');
     git(
       ['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)],
       sessionB,
@@ -1080,9 +1090,180 @@ describe('checking out another session\u2019s branch does not launder it into yo
     }).toThrow();
 
     expect(stderr).toContain('push-guard.foreign-session');
-    expect(stderr).toContain('another session');
+    expect(stderr).toContain('Two sessions are writing');
     expect(stderr).toContain('session-theirs');
     expect(stderr).toContain(ACK_FOREIGN_ENV);
+    // The checkout entry named their tip. If it were being read as authorship,
+    // `session-theirs` would be in the owned set and this refusal would not
+    // exist at all — so the assertion above is the whole point. This one pins
+    // the other half: B's OWN id is not among what it is being asked to
+    // acknowledge, because B did author that commit here.
+    expect(stderr).toContain('never authored here: session-theirs');
+  });
+});
+
+describe('carrying part of another session\u2019s work forward does not silence the rest', () => {
+  // The defect this closes, measured at 37f1715 before the fix. Ownership was
+  // reachability UNIONED with the reflog, and the reachability half is what
+  // broke: keeping ONE of the other session's commits put their id into the
+  // owned set, so every OTHER commit of theirs the same push destroyed was no
+  // longer foreign. Verdict dropped from `foreign-session` to
+  // `unacknowledged-discard` and authorisation from two env vars to one.
+  //
+  // It is reached by following the guard's own printed advice — "rebase onto it
+  // rather than over it" — because rebasing onto PART of another session's work
+  // is the ordinary outcome when some of it is kept and some is obsolete.
+  //
+  // The two cases below differ in exactly one variable: whether any of their
+  // work is carried forward. The control is what makes the result mean
+  // something, because `foreign-session` on its own could be produced by a
+  // guard that never looked at ownership at all.
+  let root: string;
+  let remote: string;
+  let theirs: string;
+  let kept: string;
+  let none: string;
+
+  const rewind = (label: string, back: number) => {
+    const dir = path.join(root, label);
+    git(['clone', '--branch', 'feature', remote, dir], root);
+    configure(dir);
+    git(['reset', '--hard', `HEAD~${back}`], dir);
+    // Authoring here is what gives this clone any ownership record at all; a
+    // clone that has committed nothing lands in the degraded path instead,
+    // which is pinned separately below.
+    commit(dir, 'mine', 'session-mine');
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], dir);
+    return dir;
+  };
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-carry-'));
+    remote = path.join(root, 'remote.git');
+    theirs = path.join(root, 'theirs');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, theirs], root);
+    configure(theirs);
+    git(['checkout', '-b', 'feature'], theirs);
+    commit(theirs, 'base', 'session-base');
+    git(['push', '--no-verify', '-u', 'origin', 'feature'], theirs);
+    // Authored in THEIR clone, so this clone's reflog can never claim them.
+    // Authoring them locally would make them genuinely owned and the test
+    // vacuous — that mistake was made once while measuring this.
+    commit(theirs, 'their first', 'session-theirs');
+    commit(theirs, 'their second, never read by me', 'session-theirs');
+    git(['push', '--no-verify', 'origin', 'feature'], theirs);
+
+    kept = rewind('kept-one', 1);
+    none = rewind('kept-none', 2);
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('names the other session even when one of their commits is kept', () => {
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force-with-lease', 'origin', 'feature'], kept);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    expect(stderr).toContain('push-guard.foreign-session');
+    expect(stderr).toContain('session-theirs');
+    expect(stderr).toContain(ACK_FOREIGN_ENV);
+    expect(stderr).toContain('never read by me');
+  });
+
+  it('names the other session when none of their commits is kept', () => {
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force-with-lease', 'origin', 'feature'], none);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    expect(stderr).toContain('push-guard.foreign-session');
+    expect(stderr).toContain('session-theirs');
+    expect(stderr).toContain(ACK_FOREIGN_ENV);
+  });
+});
+
+describe('a clone that has authored nothing says so instead of guessing', () => {
+  // The deliberate limit of reading ownership from local authorship, and the
+  // reason the reachability term could not simply be made stricter instead.
+  //
+  // A fresh clone rewinding work it authored on another machine and a fresh
+  // clone rewinding another session's work are the same observation: no local
+  // authorship, discarded commits carrying some id. The guard cannot compare
+  // against its own id — measured, COPILOT_AGENT_SESSION_ID does not match the
+  // trailer the committing agent writes — so this is undecidable rather than
+  // merely unimplemented, and the honest answer is the degraded one.
+  //
+  // It still refuses, and it still prints the commits with their session ids.
+  // What it withholds is the claim of a second writer and the
+  // PF_PUSH_ACK_FOREIGN instruction, because neither is established.
+  let root: string;
+  let remote: string;
+  let author: string;
+  let fresh: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-noauthor-'));
+    remote = path.join(root, 'remote.git');
+    author = path.join(root, 'author');
+    fresh = path.join(root, 'fresh');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, author], root);
+    configure(author);
+    git(['checkout', '-b', 'feature'], author);
+    commit(author, 'base', 'session-base');
+    git(['push', '--no-verify', '-u', 'origin', 'feature'], author);
+    commit(author, 'work one', 'session-elsewhere');
+    commit(author, 'work two', 'session-elsewhere');
+    git(['push', '--no-verify', 'origin', 'feature'], author);
+
+    git(['clone', '--branch', 'feature', remote, fresh], root);
+    configure(fresh);
+    git(['reset', '--hard', 'HEAD~2'], fresh);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], fresh);
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('refuses without claiming a second writer', () => {
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force-with-lease', 'origin', 'feature'], fresh);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    expect(stderr).toContain('push-guard.unattributed-discard');
+    expect(stderr).toContain('cannot');
+    // The commits are still shown with their ids: naming what is at risk is
+    // not the same as claiming who wrote it.
+    expect(stderr).toContain('session-elsewhere');
+    // Not asserted: that the verdict is `foreign-session`. Before this change
+    // it was, and that is precisely the bug — a clone with no authorship record
+    // of its own would tell a lone developer rolling back their own work to
+    // acknowledge themselves as a second writer.
+    expect(stderr).not.toContain('push-guard.foreign-session');
+    expect(stderr).not.toContain(ACK_FOREIGN_ENV);
   });
 });
 
@@ -1192,7 +1373,7 @@ describe('a solo rollback is not reported as a second writer', () => {
     // changes is that the refusal is true.
     expect(stderr).toContain('push-guard.unacknowledged-discard');
     expect(stderr).not.toContain('push-guard.foreign-session');
-    expect(stderr).not.toContain('another session');
+    expect(stderr).not.toContain('Two sessions are writing');
     // The specific harm: it must not instruct a lone pusher to acknowledge
     // themselves as a second writer. That is the habit that disarms the real
     // refusal, taught on a push where no second writer existed.
