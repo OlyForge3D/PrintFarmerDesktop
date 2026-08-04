@@ -54,10 +54,21 @@ What that section requires, for any agent running the check:
   branch's base — and read that base **by ref name**, never from a SHA quoted in a message,
   because such a SHA resolves and greps perfectly while being stale and so fails silently.
   A push report (_pushed X from Y_) is exempt: it records an event, and events do not decay.
+  **Then publish the value read, not the command that read it.** The exemption is a
+  **requirement**, not a permission: suppressing a base pin does not make a claim safer, it
+  makes it **unreproducible** — worse than a stale pin, since a stale pin is falsifiable and
+  an absent one is not. **An over-broad rule against pins fails toward _less_ evidence, the
+  one direction no reviewer can detect**, because a reader who cannot reproduce a figure sees
+  their own failure rather than the omission that caused it.
 - Run a control that can report non-empty — and hold any instrument reporting **identical**
   or **absent** to the same requirement, over the space actually searched. Agreement from an
   instrument that always agrees is not evidence, and a re-enumeration rule that has only ever
   produced changes cannot be distinguished from one that always reports change.
+  **Run the pattern where the answer is known, in both directions**: a detector that fires in
+  the passing case has no discriminating power, and a pattern matching nowhere may be dead
+  rather than describing an absence. **Absence must be tested for directly, never inferred** —
+  not from two things comparing equal, not from an empty grep, not from a zero count, not from
+  an empty ref listing, since in each case _no result_ and _no such thing_ arrive as one value.
 - Report a disagreement against the **pair or the set**, never against whichever member
   is not the decision log.
 - Establish that both artifacts fill the same slot before treating a difference as a
@@ -109,6 +120,16 @@ What that section requires, for any agent running the check:
   both shared. **Lateness is common-mode**, so a current ref value cannot be carried between
   parties at all; re-read it by name at the point of use. Credited to the coordinator session
   that measured the convergence.
+- **A property is not stale only through the passage of time — it is stale the moment another
+  writer can change it.** This batch verified `git rev-list --merges` empty immediately before
+  a push and reported **no merge commits**; within the hour a coordinator ran the REST
+  `update-branch` to keep an approving review reachable, which **creates a merge commit**. The
+  action was correct and the property was gone anyway. **A branch-shape claim is therefore an
+  event claim** — _"no merge commits at `<sha>`, verified at push"_ holds forever, while _"the
+  branch has no merge commits"_ can be falsified by a non-author with no push and no warning.
+  **The instrument closest to hand is the one that cannot see it:** the local worktree stayed
+  clean and correct and knew nothing. Re-read shape from the **remote ref** at the moment of
+  use.
 - **A reconstruction and the thing reconstructed are not two renderings of one quantity.**
   A reconstruction built from a _description_ of the object inherits every error in the
   description, so **agreement among reconstructions cannot detect an error in the

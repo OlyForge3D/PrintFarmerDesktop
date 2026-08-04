@@ -39,6 +39,28 @@ So: **name the ref when the reader needs the current value; give the SHA when th
 the event.** Historical and archival SHAs — a commit under review, a merge commit, a pre-squash
 revision — are events too and are unaffected by the ruling.
 
+### The exemption is a requirement, and this file broke it in the commit that wrote it
+
+**An archival pin is not merely permitted, it is owed.** The enumeration entry added alongside
+this section named the **command** that reads the mainline head and not the **value** it
+returned — so it recorded how to obtain the base rather than which base the measurement ranged
+over. **The rule and its violation shipped in one commit**, which is the clearest available
+evidence that a broad prohibition does not distinguish load-bearing pins from decaying ones.
+
+**Suppressing a required pin does not make a claim safer; it makes it unreproducible, and that
+is strictly worse than a stale one.** A stale pin is falsifiable — the first reader who runs it
+finds out. An absent pin produces a claim nobody can check, and **the reader's failure to
+reproduce looks like the reader's error.** Measured: a reviewer tried four different corpora,
+all at the wrong head, and came within one step of filing a blocker against a correct figure.
+
+> **An over-broad rule against pins fails silently in the direction of _less_ evidence — the
+> one direction no reviewer can detect.**
+
+**The discriminator is the question the pin answers.** _"What is the head right now?"_ decays and
+must never be sent. _"Which tree did this measurement range over?"_, _"what did I push, and from
+what?"_, _"which revision is under review?"_ are closed facts about the past. **Send those by
+value, always.**
+
 ## Why the sender and not the dispatcher
 
 The failure this prevents was first diagnosed as a dispatch problem: a coordinator pins a
