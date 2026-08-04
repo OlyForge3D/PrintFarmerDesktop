@@ -65,6 +65,25 @@ What that section requires, for any agent running the check:
   removed together, each sitting beside a measurement nobody ever contested. An accurate
   outcome with a plausible mechanism attached is still a fabrication, and the repair never
   needs it.
+- **A reconstruction and the thing reconstructed are not two renderings of one quantity.**
+  A reconstruction built from a _description_ of the object inherits every error in the
+  description, so **agreement among reconstructions cannot detect an error in the
+  description** — they agree exactly as hard when it is wrong. This batch's own harness
+  took its **graph** from the fixture and its **traversal rule** from prose; had the prose
+  been wrong, every figure would have been internally consistent, agreed with two
+  independent walks, and measured the wrong thing. That is why three agreeing walks bought
+  nothing and one `git grep` against `741459de` bought everything. Where a reconstruction
+  is used, **record which inputs came from the artifact and which from a description of
+  it.** Credited to the #57 session.
+- **✅ is unavailable for judgement claims, and is reported as unavailable rather than
+  approximated.** The grade presupposes something the renderings are renderings _of_.
+  Claims about artifacts have one — what code did at a revision, what a document says,
+  what a constant enforces. Judgements do not: whether a rollout order is correct, whether
+  a decomposition is honest, whether a criterion is checkable. No route reaches ✅ there
+  and none ever will, so say so — the failure mode is **a judgement dressed in the
+  vocabulary of a measurement**, carrying a grade, a figure and a citation with nothing
+  underneath any of them. **A grade only some claims can earn is worth more than one every
+  claim can simulate.** Credited to the #57 session.
 - **A symmetric diff establishes divergence, not truth.** It cannot say which rendering
   is right, so never resolve by counting renderings: two that agree are **one** if they
   are dependent. Derive the value from the thing that is not a rendering — the code, the

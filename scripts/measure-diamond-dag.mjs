@@ -14,10 +14,30 @@
  * `src/renderer/library/partTreeModel.ts`. Three properties of that revision are
  * what this model reproduces, and each is checkable there directly:
  *
- *   1. one `rows.push` per visit, so rows are visits and not distinct nodes;
- *   2. `const nextSeen = new Set(seen).add(objectId)` — the cycle guard is
- *      path-local, so a node reached by two paths is expanded twice;
- *   3. no `MAX_PART_TREE_ROWS` in that revision, so the output is uncapped.
+ *   1. one `rows.push` per visit, so rows are visits and not distinct nodes.
+ *      There are three `rows.push` sites at that revision (:107, :134, :176).
+ *      The first two are inside `pushObject` and mutually exclusive per
+ *      invocation — the cycle-hit branch at :107 is followed by `return` at
+ *      :126 — and the third emits a *plate* row, outside the object walk. The
+ *      fixture calls `flatten({ objects, rootObjectIds, plates: [] })`, so the
+ *      plate site never fires and the object walk is the whole row count.
+ *   2. `const nextSeen = new Set(seen).add(objectId)` at :157 — the cycle guard
+ *      is path-local, so a node reached by two paths is expanded twice;
+ *   3. no `MAX_PART_TREE_ROWS` in that revision (0 occurrences; 4 at the fix,
+ *      1c80bdb381), so the output is uncapped.
+ *
+ * PROVENANCE OF THIS MODEL'S TWO HALVES — read this before trusting it.
+ *
+ * The *graph* is transcribed from the fixture, so it comes from an artifact.
+ * The *traversal rule* — items 1 to 3 above — originally came from a prose
+ * description of the pre-fix walk, and only later from the blob. That matters:
+ * a reconstruction and the thing reconstructed are not two renderings of one
+ * quantity, so agreement between this model and any other model built from the
+ * same description could never have detected an error in the description. Had
+ * the prose been wrong, every figure below would have been internally
+ * consistent, would have agreed with independently written walks, and would
+ * have measured the wrong thing. Each item above is now cited to a line at
+ * 741459de and is checkable with `git grep`. Verify there, not here.
  *
  * A derivation is only discharged when it terminates in an artifact that is not
  * itself a rendering. That artifact is 741459de, not this file. Agreement between
