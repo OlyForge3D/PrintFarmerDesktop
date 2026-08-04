@@ -11,6 +11,21 @@ All exit codes below were measured on git 2.53.0 against this repository at
 `origin/development` = `c8d379f`, read 2026-08-04T19:21Z. They are not quoted
 from documentation, and several contradict it.
 
+**Related entries, and what this one does not repeat.** Two files in this
+directory already cover ground next to this. `dallas-ancestry-is-not-content.md`
+owns `--is-ancestor` under squash, its exit-code polarity, and tree identity as
+the remedy — **that treatment is better than the one this entry originally
+carried, and this entry now defers to it.** `sha-reporting-rule.md` owns the
+citation rule that a cited object must be reachable by the *reader*, and notes
+the shared object database as the reason it often is not. What is left here and
+found nowhere else: the **grading** of `git branch -r --contains`, the
+demonstration that it **reads a local cache and inherits the defect of #81**,
+the enumeration of how many worktrees share this object store, and the rule that
+a **stale claim is not a false claim**. `fact-checker-symmetric-diff.md` names a
+different limit of the same family — `git branch --contains` searches branches
+and so cannot see `refs/pull/N/head` — which is complementary to the staleness
+defect recorded here, not the same finding.
+
 ## Three failure modes, and they are not degrees of one thing
 
 ```
@@ -154,6 +169,12 @@ branch rebased onto main
 a squash and a fast-forward, because it compares content instead of position.
 When the claim is about content, pin the content.
 
+**For a whole-commit comparison, prefer the tree over any set of paths:**
+`git show -s --format=%T` on each side, per
+`.squad/decisions/inbox/dallas-ancestry-is-not-content.md`. The per-path form
+below is for a claim about one file; reach for it only when that is genuinely
+the claim, because a path list is a place to forget a file and a tree is not.
+
 **It is sufficient and not necessary, and the gap is worth naming.** A
 comment-only edit changes the blob — measured — so the check reports _changed_
 for a file whose behaviour did not move, and buys a re-derivation nobody needed.
@@ -265,73 +286,59 @@ number is not evidence.** The ordinal reading — none / one / many — survives
 prune; the counts are not comparable across clones or across time, and should
 never be quoted as though they were.
 
-## Squash does not break ancestry, it replaces the object
+## Squash and ancestry: see Dallas's entry, which got here first and got it righter
 
-A rule went round this squad in the opposite direction, and it is worth
-recording because it is stated with real measurements attached:
+This entry originally carried a full parallel account of what `--is-ancestor`
+does under a squash merge. **It is deleted, because
+`.squad/decisions/inbox/dallas-ancestry-is-not-content.md` was already on trunk
+saying the same thing more precisely.** That entry has the exit-0 polarity, the
+same-call direction control, the observation that the inverted reading was
+circulated to three sessions, and the distinction this one was reaching for and
+did not name as cleanly:
 
-> `--is-ancestor` cannot adjudicate a merge at all under squash. The landed
-> commit is convicted exactly as hard as a stale candidate.
+| operand passed to `--is-ancestor`             | meaningful? |
+| --------------------------------------------- | ----------- |
+| verified **branch head** vs the squash        | no          |
+| the **squash merge commit** vs `origin/<ref>` | yes         |
 
-**Measured, that is false**, and the direction control has to come first,
-because the claim was circulated with its polarity inverted — `exit 0` means
-_is an ancestor_, and it was being read as _is not_:
+Its remedy is also stronger than the one this entry proposed. Where this note
+suggested per-path blob identity, Dallas compares the **whole tree** —
+`git show -s --format=%T` on each side — which "cannot be weakened by accident:
+there are no pathspecs to forget." That is the correct instrument and the reason
+is the same one this entry is about. **Use theirs.**
 
-```
-git merge-base --is-ancestor <dev~1> <dev>    exit 0    IS an ancestor
-git merge-base --is-ancestor <dev> <dev~1>    exit 1    is NOT
-```
-
-With the instrument's direction pinned, the two commits from one squashed PR
-separate cleanly:
-
-```
-PR #149, squash-merged
-
-  the squash commit on the mainline
-    subject   feat(git): refuse force-pushes that destroy unread commits (#149)
-    --is-ancestor -> development      exit 0        IS an ancestor
-    git log --grep="(#149)"           one hit       on the mainline
-
-  the PR head branch commit
-    subject   Refuse ownership of commits you only re-committed
-    --is-ancestor -> development      exit 1        is NOT an ancestor
-    git grep -c AMENDED_HERE          content is on trunk
-```
-
-The same holds for the commit offered as the counter-example: the squash commit
-that landed **#203** returns **exit 0** and appears in
-`git log origin/development --grep="(#203)"`. It is an ancestor. It was cited as
-proof that ancestry convicts the innocent, and it is the demonstration that
-ancestry works.
-
-**The obvious defence of that claim was tested and does not hold.** Readings
-here are routinely hours apart, so the natural explanation is that the commit
-was measured before it landed. It was not:
+One measurement is kept because it is additive. The claim in circulation was
+that the commit which landed **#203** proves ancestry convicts landed work.
+Dallas measured that it reads `exit 0`. The obvious defence — that it was read
+before it landed — was not tested by anyone, and it fails:
 
 ```
-the #203 squash commit    authored 08-03 20:47
-the pin it was measured against   08-04 12:01   -- ~15h later
---is-ancestor <#203 squash> <that pin>    exit 0    already an ancestor then
+the #203 squash commit             authored 08-03 20:47
+the pin it was measured against             08-04 12:01   ~15h later
+--is-ancestor <#203 squash> <that pin>      exit 0        already an ancestor then
 ```
 
 It was an ancestor of the reporting session's own pin at the moment of
 reporting. **Stating the alternative explanation and showing it fails is what
-makes this a correction rather than a counter-assertion**, and it is the check
-that the original claim skipped.
+makes a correction different from a counter-assertion.**
 
-**So the instrument is sound and the input was stale.** Squash discards the head
-commit and writes a new object; ancestry then answers, correctly, about whichever
-of the two you hand it. The head you remember was never going to be an ancestor,
-because it is not the commit that landed. Nothing was mis-measured except which
-object the question was about.
+### The way this section got written is the entry's own subject
 
-The operational advice — use `git log --grep="(#N)"` on the mainline, or blob
-identity — **survives, and the reason matters more than the advice.** "Ancestry
-is broken under squash" also discards it everywhere it is exact: it is still the
-only cheap check that answers _is this object on the chain_, which is the
-question no amount of `cat-file` will touch. A rule that throws away a working
-instrument to route around a stale input costs more than the input did.
+This note is about instruments that answer an adjacent question. It was filed
+without anyone running the cheapest query available: **does an entry for this
+already exist?** Two sessions independently measured the same commit, wrote the
+same finding, and neither knew — in an inbox of thirty-four files, in a
+repository whose whole current difficulty is that the same work appears under
+several identifiers.
+
+The three questions this entry proposes for a SHA apply unchanged to a claim.
+**Existence** — is there an entry? **Membership** — is it on trunk, or only in
+someone's branch? **Content** — does it actually say this, or merely sound like
+it? I ran all three against commits all evening and none against the inbox.
+
+⇒ **Before filing a finding, grep the inbox for it.** Duplicate entries are
+worse than a missing one: they diverge under editing, and a reader who finds
+the weaker of two has no signal that the stronger exists.
 
 ## One subject, several SHAs, and only one of them reachable by name
 
