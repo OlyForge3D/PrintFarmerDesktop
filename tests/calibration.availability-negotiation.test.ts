@@ -73,11 +73,18 @@ function fakeProfiles() {
   };
 }
 
+/** Every `resolveCalibrationConflict` the adapter forwards to the sidecar. */
+const sidecarResolveCalls: unknown[][] = [];
+
 const noopSidecar = {
   initialize: () => Promise.resolve(),
   dispose: () => Promise.resolve(),
   disposeAll: () => Promise.resolve(),
   request: () => Promise.resolve({}),
+  resolveCalibrationConflict: (...args: unknown[]) => {
+    sidecarResolveCalls.push(args);
+    return Promise.resolve();
+  },
 };
 
 function registeredHandler(channel: string): Handler {
@@ -225,88 +232,207 @@ describe('CalibrationGetAvailability against the live PrintFarmer contract', () 
 });
 
 /**
- * Executable annotation for the calibration conflict resolution surface.
+ * Production-path tests for the calibration conflict resolve channel.
  *
- * `window.printFarmer.resolveCalibrationConflict` is exposed by the preload
- * bridge and typed as though it works. It does not: model-core has no
- * calibration resolve RPC, so the registered handler rejects every call. This
- * test exists so the gap is visible from the test suite rather than only from a
- * comment, and so that whoever implements the resolve path is forced to delete
- * it rather than leaving a stale annotation behind.
+ * This block previously asserted that the channel refused every call, because
+ * model-core had no resolve RPC. It now has one, so the annotation had to go
+ * rather than be left behind as a passing description of a world that ended.
  *
- * It asserts the *code*, not merely that a rejection happened -- the handler
- * would also reject on a bad profile or a malformed request, and "it threw" is
- * not evidence that it threw for the documented reason.
+ * Every rejection here asserts the *code*, and every code is asserted to
+ * differ from the others. "It threw" is not evidence that it threw for the
+ * documented reason: a bad profile, a malformed request and a forbidden
+ * resolution all reject, and only one of them means the policy check ran.
  */
-describe('Calibration conflict resolution is not implemented end to end', () => {
-  it('rejects a well-formed resolve request with the documented code', async () => {
-    const handler = registeredHandler(IpcChannel.CalibrationResolveConflict);
+describe('Calibration conflict resolution over the registered IPC channel', () => {
+  const OPEN_CONFLICT_ID = '66666666-6666-4666-8666-666666666666';
 
-    const rejection = await (
-      handler(
-        {},
+  /** Replaces the store read the adapter performs to learn a conflict's kind. */
+  function withOpenConflict(kind: string): void {
+    (
+      SidecarCalibrationAdapter.prototype as {
+        listCalibrationConflicts?: unknown;
+      }
+    ).listCalibrationConflicts = () =>
+      Promise.resolve([
         {
+          conflictId: OPEN_CONFLICT_ID,
           profileId: PROFILE_ID,
-          conflictId: '66666666-6666-4666-8666-666666666666',
-          resolution: 'acceptServer',
+          projectId: '77777777-7777-4777-8777-777777777777',
+          kind,
+          entityId: '88888888-8888-4888-8888-888888888888',
+          localPayloadSummary: null,
+          serverPayloadSummary: null,
+          serverRevision: 4,
+          availableResolutions: [],
+          resolvedAt: null,
+          resolution: null,
+          createdAt: '2026-07-26T15:01:00.000Z',
         },
-      ) as Promise<unknown>
-    ).then(
-      () => null,
-      (error: unknown) => error as { code?: string; message?: string },
-    );
+      ]);
+  }
 
-    expect(rejection).not.toBeNull();
-    expect(rejection?.code).toBe('CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE');
-    expect(rejection?.message).toContain('resolution RPC');
+  function resolveRequest(resolution: string, conflictId = OPEN_CONFLICT_ID) {
+    return {
+      profileId: PROFILE_ID,
+      conflictId,
+      resolution,
+    };
+  }
+
+  async function callResolve(request: unknown): Promise<{
+    value?: unknown;
+    error?: { code?: string; message?: string };
+  }> {
+    const handler = registeredHandler(IpcChannel.CalibrationResolveConflict);
+    return (handler({}, request) as Promise<unknown>).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error: error as { code?: string } }),
+    );
+  }
+
+  beforeEach(() => {
+    sidecarResolveCalls.length = 0;
   });
 
-  it('rejects a malformed resolve request differently, so the check above is reached', async () => {
-    const handler = registeredHandler(IpcChannel.CalibrationResolveConflict);
+  afterEach(() => {
+    delete (
+      SidecarCalibrationAdapter.prototype as {
+        listCalibrationConflicts?: unknown;
+      }
+    ).listCalibrationConflicts;
+  });
 
-    const rejection = await (
-      handler(
-        {},
-        {
-          profileId: PROFILE_ID,
-          conflictId: '66666666-6666-4666-8666-666666666666',
-          resolution: 'lastWriteWins',
-        },
-      ) as Promise<unknown>
-    ).then(
-      () => null,
-      (error: unknown) => error as { code?: string },
-    );
+  it('resolves an open conflict with a resolution its kind permits', async () => {
+    withOpenConflict('projectMetadata');
 
-    expect(rejection).not.toBeNull();
-    expect(rejection?.code).not.toBe(
-      'CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE',
-    );
+    const outcome = await callResolve(resolveRequest('acceptServer'));
+
+    expect(
+      outcome.error,
+      `resolving a projectMetadata conflict with acceptServer was rejected: ${
+        outcome.error?.message ?? ''
+      }`,
+    ).toBeUndefined();
+    expect(
+      sidecarResolveCalls,
+      'the handler reported success without the sidecar being asked to ' +
+        'resolve anything, so nothing was written',
+    ).toHaveLength(1);
+    expect(sidecarResolveCalls[0]).toEqual([
+      PROFILE_ID,
+      OPEN_CONFLICT_ID,
+      'acceptServer',
+    ]);
   });
 
   /*
-   * The counterfactual for the refusal above, and for the empty
-   * `availableResolutions` this adapter reports.
-   *
-   * "The handler refuses" and "the array is empty" are both satisfied by code
-   * that unconditionally refuses and unconditionally returns []. Asserting them
-   * proves the *values*, not that anything was derived. A hard-coded [] and a
-   * derived [] are indistinguishable until the capability is present.
-   *
-   * So the capability is granted here, on the prototype the predicate actually
-   * reads through, and both sites are required to change on their own. If they
-   * do not, "derived" was decoration.
+   * The acceptance item this whole PR turns on. A test that only proves a
+   * permitted resolution succeeds cannot tell an enforced policy from an
+   * absent one -- both accept it. Only a refusal of a forbidden one can.
    */
-  describe('the refusal is derived from the absent capability, not asserted', () => {
-    afterEach(() => {
-      delete (
+  it('refuses a resolution the conflict kind does not permit, before writing', async () => {
+    withOpenConflict('outcomeSelection');
+
+    const outcome = await callResolve(resolveRequest('manualFieldMerge'));
+
+    expect(outcome.error?.code).toBe(
+      'CALIBRATION_CONFLICT_RESOLUTION_NOT_PERMITTED',
+    );
+    expect(
+      outcome.error?.message,
+      'the refusal must name the kind and what it does allow, or an ' +
+        'operator cannot tell a policy from a malfunction',
+    ).toContain('outcomeSelection');
+    expect(
+      sidecarResolveCalls,
+      'a forbidden resolution reached the store; refusing after the write ' +
+        'is not refusing',
+    ).toHaveLength(0);
+  });
+
+  /*
+   * The control for the test above. manualFieldMerge must be refused because
+   * *this kind* forbids it -- not because the handler refuses manualFieldMerge
+   * always, which would pass the previous test just as well.
+   */
+  it('permits manualFieldMerge for a kind the schema does allow it for', async () => {
+    withOpenConflict('stepDraft');
+
+    const outcome = await callResolve(resolveRequest('manualFieldMerge'));
+
+    expect(
+      outcome.error,
+      'manualFieldMerge was refused for stepDraft, so the refusal above is ' +
+        'about the resolution rather than about the conflict kind',
+    ).toBeUndefined();
+    expect(sidecarResolveCalls).toHaveLength(1);
+  });
+
+  it('refuses a conflict that is not open, with its own code', async () => {
+    withOpenConflict('projectMetadata');
+
+    const outcome = await callResolve(
+      resolveRequest('acceptServer', '99999999-9999-4999-8999-999999999999'),
+    );
+
+    expect(outcome.error?.code).toBe('CALIBRATION_CONFLICT_NOT_OPEN');
+    expect(sidecarResolveCalls).toHaveLength(0);
+  });
+
+  it('rejects a malformed resolution differently, so the checks above are reached', async () => {
+    withOpenConflict('projectMetadata');
+
+    const outcome = await callResolve(resolveRequest('lastWriteWins'));
+
+    expect(outcome.error).toBeDefined();
+    // Rejected by the request schema before any of this handler's logic runs.
+    // If this shared a code with the policy refusal, a passing policy test
+    // could be the parser firing and nobody would know.
+    expect(outcome.error?.code).not.toBe(
+      'CALIBRATION_CONFLICT_RESOLUTION_NOT_PERMITTED',
+    );
+    expect(outcome.error?.code).not.toBe('CALIBRATION_CONFLICT_NOT_OPEN');
+    expect(sidecarResolveCalls).toHaveLength(0);
+  });
+
+  /*
+   * The derivation counterfactual, inverted.
+   *
+   * It used to grant the absent capability and require both sites to switch
+   * on. The capability now ships, so the same control runs the other way:
+   * remove it and require both sites to switch back off. "The handler
+   * resolves" and "availableResolutions is non-empty" are equally satisfied by
+   * code that unconditionally resolves and unconditionally returns a list.
+   * Removing the capability is what separates those.
+   */
+  describe('both sites are derived from the capability, not asserted', () => {
+    let real: unknown;
+
+    beforeEach(() => {
+      real = (
         SidecarCalibrationAdapter.prototype as {
           resolveCalibrationConflict?: unknown;
         }
       ).resolveCalibrationConflict;
     });
 
-    it('offers nothing while the transport has no resolve capability', () => {
+    afterEach(() => {
+      (
+        SidecarCalibrationAdapter.prototype as {
+          resolveCalibrationConflict?: unknown;
+        }
+      ).resolveCalibrationConflict = real;
+    });
+
+    it('reports the shipped adapter as capable of resolving', () => {
+      expect(
+        supportsConflictResolution(SidecarCalibrationAdapter.prototype),
+        'the adapter no longer carries a resolve method, so every ' +
+          'capability-present assertion below is vacuous',
+      ).toBe(true);
+    });
+
+    it('offers nothing while a transport has no resolve capability', () => {
       expect(supportsConflictResolution({})).toBe(false);
       for (const kind of CalibrationConflictKind.options) {
         expect(
@@ -342,41 +468,23 @@ describe('Calibration conflict resolution is not implemented end to end', () => 
       expect(withMerge).toEqual(['projectMetadata', 'stepDraft']);
     });
 
-    it('stops refusing at the IPC boundary once the capability appears', async () => {
-      const resolved: unknown[] = [];
-      (
+    it('refuses at the IPC boundary again once the capability is taken away', async () => {
+      delete (
         SidecarCalibrationAdapter.prototype as {
           resolveCalibrationConflict?: unknown;
         }
-      ).resolveCalibrationConflict = function (
-        request: unknown,
-      ): Promise<unknown> {
-        resolved.push(request);
-        return Promise.resolve({ ok: true });
-      };
+      ).resolveCalibrationConflict;
+      withOpenConflict('projectMetadata');
 
-      const handler = registeredHandler(IpcChannel.CalibrationResolveConflict);
-      const outcome = await (
-        handler(
-          {},
-          {
-            profileId: PROFILE_ID,
-            conflictId: '66666666-6666-4666-8666-666666666666',
-            resolution: 'acceptServer',
-          },
-        ) as Promise<unknown>
-      ).then(
-        (value) => ({ value }),
-        (error: unknown) => ({ error: error as { code?: string } }),
-      );
+      const outcome = await callResolve(resolveRequest('acceptServer'));
 
       expect(
-        'error' in outcome ? outcome.error.code : null,
-        'the resolve handler still refused after the transport gained a ' +
-          'resolve capability, so its refusal is hard-coded rather than ' +
-          'derived from the same predicate that empties availableResolutions',
-      ).not.toBe('CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE');
-      expect(resolved).toHaveLength(1);
+        outcome.error?.code,
+        'the resolve handler still succeeded with no resolve capability on ' +
+          'the transport, so its success is unconditional rather than ' +
+          'derived from the same predicate that fills availableResolutions',
+      ).toBe('CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE');
+      expect(sidecarResolveCalls).toHaveLength(0);
     });
   });
 });

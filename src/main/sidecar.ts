@@ -981,6 +981,18 @@ export class SidecarClient {
     });
   }
 
+  async resolveCalibrationConflict(
+    profileId: string,
+    conflictId: string,
+    resolution: string,
+  ): Promise<void> {
+    await this.mutationRequest('resolveCalibrationConflict', {
+      profileId,
+      conflictId,
+      resolution,
+    });
+  }
+
   async getCalibrationCursorState(
     profileId: string,
     projectId: string | null,

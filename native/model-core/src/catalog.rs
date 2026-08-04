@@ -876,6 +876,25 @@ pub trait CatalogStore {
         Ok(())
     }
 
+    /// Mark a calibration conflict resolved with the given strategy.
+    ///
+    /// The default refuses rather than returning `Ok(())`. A no-op default
+    /// would report success to a caller whose conflict is still unresolved,
+    /// and the list query filters on `resolved_at IS NULL`, so the conflict
+    /// would reappear with nothing having gone wrong anywhere a caller can see.
+    fn resolve_calibration_conflict(
+        &mut self,
+        profile_id: &str,
+        conflict_id: &str,
+        resolution: &str,
+    ) -> Result<(), String> {
+        let _ = (profile_id, resolution);
+        Err(format!(
+            "cannot resolve calibration conflict {conflict_id}: \
+             this catalog store has no calibration conflict storage",
+        ))
+    }
+
     /// Get the current cursor/checkpoint state for a profile+project pair.
     fn get_calibration_cursor_state(
         &self,

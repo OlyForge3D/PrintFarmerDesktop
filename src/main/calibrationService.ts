@@ -31,6 +31,7 @@ import type {
   CalibrationConflict,
   CalibrationConflictKind,
   CalibrationConflictResolution,
+  CalibrationResolveConflictRequest,
 } from '@shared/ipc';
 import { z } from 'zod';
 
@@ -154,8 +155,10 @@ function summarizeConflictPayload(payload: unknown): string | null {
  * Derived from two facts. Neither is a literal written into this function:
  *
  * 1. Whether the conflict transport exposes a resolve capability at all.
- *    Today it does not, so this returns `[]` for every kind -- but it returns
- *    `[]` *because the capability is absent*, not because somebody typed `[]`.
+ *    It now does, so this returns a non-empty set -- and it does so *because
+ *    the capability is present*, not because somebody replaced `[]` with a
+ *    list. This function was not edited when the capability landed; that is
+ *    the property it was built for.
  * 2. The per-kind policy already ratified in the `CalibrationConflictResolution`
  *    schema doc: `manualFieldMerge` is "only available for metadata/draft
  *    conflicts where a textual merge is well-defined. Not available for
@@ -164,11 +167,11 @@ function summarizeConflictPayload(payload: unknown): string | null {
  *    what is semantically safe to resolve; that decision belongs in an issue
  *    where the model-core owner can see it, not in a diff.
  *
- * When the authoritative resolve RPC lands, giving the transport a
- * `resolveCalibrationConflict` method makes this non-empty and makes the IPC
- * handler stop refusing -- without either site being edited. A field that
- * starts telling the truth on its own cannot go stale; a literal has to be
- * remembered, and the previous hard-coded
+ * Both readers of this function are consequences, not copies:
+ * `CalibrationConflict.availableResolutions` is what the UI may offer, and
+ * `SidecarCalibrationAdapter.resolveCalibrationConflict` refuses anything
+ * outside it. A field that starts telling the truth on its own cannot go
+ * stale; a literal has to be remembered, and the previous hard-coded
  * `['acceptServer', 'keepLocalAsNewRevision']` is what forgetting looks like.
  */
 export function conflictResolutionsFor(
@@ -242,24 +245,61 @@ export class SidecarCalibrationAdapter implements CalibrationSidecar {
   constructor(private readonly sidecar: SidecarClient) {}
 
   /**
-   * Absent. There is no `resolveCalibrationConflict` arm in the sidecar's RPC
-   * dispatch (`native/model-core/src/serve.rs` has `recordCalibrationConflict`
-   * and `listCalibrationConflicts` only; the `resolveSyncConflict` that does
-   * exist is a different table). Declared optional rather than omitted so that
-   * assigning an implementation is the *whole* change: `conflictResolutionsFor`
-   * starts returning resolutions and the resolve IPC handler stops refusing,
-   * with no second edit to remember. Tracked as the write-path half of #179.
+   * Resolve a conflict, refusing any resolution this build does not advertise
+   * for that conflict's kind.
    *
-   * `declare` is load-bearing. This project targets ES2022, so
-   * `useDefineForClassFields` is on and a plain optional field declaration
-   * emits an own property initialised to `undefined` on every instance --
-   * which shadows the prototype and makes the seam inert. `declare` is
-   * type-only and emits nothing. The test that grants the capability on the
-   * prototype is what caught this; it failed with the handler still refusing.
+   * The permitted set comes from `conflictResolutionsFor` — the same call that
+   * produced `CalibrationConflict.availableResolutions` for this conflict.
+   * Not a matching copy of it: the same expression. A second list here would
+   * agree with the first only until one of them was edited, and the two
+   * disagreement modes are both bad in ways that are hard to diagnose from
+   * the outside — a button the channel rejects, or a resolution the UI never
+   * offered being accepted anyway.
+   *
+   * Why this check is here rather than in the sidecar: the conflict kind is
+   * derived in the main process (`mapCalibrationConflictKind`) from the entity
+   * type the store holds. The store has no access to that derivation, so
+   * enforcing per-kind policy down there would require a second copy of the
+   * mapping in Rust. The sidecar enforces what it can see on its own — that
+   * the conflict exists, is unresolved, and the strategy is a real one.
+   *
+   * The kind is read back from the store rather than taken from the request.
+   * A caller that supplied its own kind could name `projectMetadata` to unlock
+   * `manualFieldMerge` for a conflict that is not textually mergeable, which
+   * is the one thing this check exists to prevent.
    */
-  declare readonly resolveCalibrationConflict?: (
-    request: unknown,
-  ) => Promise<unknown>;
+  async resolveCalibrationConflict(
+    request: CalibrationResolveConflictRequest,
+  ): Promise<{ resolved: true }> {
+    const open = await this.listCalibrationConflicts(request.profileId, null);
+    const conflict = open.find(
+      (candidate) => candidate.conflictId === request.conflictId,
+    );
+    if (!conflict) {
+      throw Object.assign(
+        new Error(
+          `Calibration conflict ${request.conflictId} is not open; it may have been resolved already.`,
+        ),
+        { code: 'CALIBRATION_CONFLICT_NOT_OPEN' },
+      );
+    }
+    const permitted = conflictResolutionsFor(this, conflict.kind);
+    if (!permitted.includes(request.resolution)) {
+      throw Object.assign(
+        new Error(
+          `Resolution "${request.resolution}" is not available for a ${conflict.kind} conflict. ` +
+            `Available: ${permitted.length > 0 ? permitted.join(', ') : 'none'}.`,
+        ),
+        { code: 'CALIBRATION_CONFLICT_RESOLUTION_NOT_PERMITTED' },
+      );
+    }
+    await this.sidecar.resolveCalibrationConflict(
+      request.profileId,
+      request.conflictId,
+      request.resolution,
+    );
+    return { resolved: true };
+  }
 
   async listCalibrationPendingOperations(
     profileId: string,

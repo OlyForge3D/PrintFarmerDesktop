@@ -326,6 +326,19 @@ pub struct ListCalibrationPendingOpsParams {
     pub limit: usize,
 }
 
+/// Parameters for `resolveCalibrationConflict`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveCalibrationConflictParams {
+    pub profile_id: String,
+    pub conflict_id: String,
+    /// A `CalibrationConflictResolutionKind` name. Carried as a string so an
+    /// unrecognised value reaches the store and is refused there by name,
+    /// rather than being rejected as a malformed params object — the two mean
+    /// different things to whoever reads the error.
+    pub resolution: String,
+}
+
 /// Parameters for `listCalibrationConflicts`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

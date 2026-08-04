@@ -58,8 +58,8 @@ use crate::calibration::{
     GetCalibrationWorkspaceStateParams, IsPrinterContextFreshParams,
     ListCalibrationConflictsParams, ListCalibrationPendingOpsParams,
     ListCalibrationWorkspaceStatesParams, RecordCalibrationConflictParams,
-    ReplayCalibrationOpParams, SaveCalibrationWorkspaceStateParams, SettleCalibrationOpParams,
-    StageCalibrationPhotoParams,
+    ReplayCalibrationOpParams, ResolveCalibrationConflictParams,
+    SaveCalibrationWorkspaceStateParams, SettleCalibrationOpParams, StageCalibrationPhotoParams,
 };
 use crate::catalog::{reconcile_root, CatalogStore, InMemoryCatalog};
 use crate::retarget::{
@@ -1203,6 +1203,12 @@ fn dispatch(
                 p.server_revision,
             )?;
             Ok(serde_json::json!({ "recorded": true }))
+        }
+        "resolveCalibrationConflict" => {
+            let p: ResolveCalibrationConflictParams = serde_json::from_value(params)
+                .map_err(|e| format!("invalid resolveCalibrationConflict params: {e}"))?;
+            store.resolve_calibration_conflict(&p.profile_id, &p.conflict_id, &p.resolution)?;
+            Ok(serde_json::json!({ "resolved": true }))
         }
         "getCalibrationCursorState" => {
             let p: GetCalibrationCursorParams = serde_json::from_value(params)

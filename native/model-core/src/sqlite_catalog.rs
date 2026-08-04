@@ -32,12 +32,12 @@ use crate::schema::{
     SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_VERSION,
 };
 use crate::sync::{
-    self, ApplyPullBatchDto, CalibrationEntityType, CalibrationOutboxState,
-    ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution, DisposeFailedBatchDto,
-    EnqueueOutboundOperationDto, EntityRevisionDto, FailOutboundBatchDto, OutboundFailureOutcome,
-    OutboundOperationDto, OutboundState, ReconcileUncertainBatchDto, RemoteModelLinkDto,
-    RemoteUploadStatus, SettleOutboundBatchDto, SettledOutboundBatchDto, SyncConflictDto,
-    SyncEntityType, SyncStatusDto, SyncVisibility, UnknownOutcomeResolution,
+    self, ApplyPullBatchDto, CalibrationConflictResolutionKind, CalibrationEntityType,
+    CalibrationOutboxState, ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution,
+    DisposeFailedBatchDto, EnqueueOutboundOperationDto, EntityRevisionDto, FailOutboundBatchDto,
+    OutboundFailureOutcome, OutboundOperationDto, OutboundState, ReconcileUncertainBatchDto,
+    RemoteModelLinkDto, RemoteUploadStatus, SettleOutboundBatchDto, SettledOutboundBatchDto,
+    SyncConflictDto, SyncEntityType, SyncStatusDto, SyncVisibility, UnknownOutcomeResolution,
 };
 
 /// A SQLite-backed catalog. Wraps one connection; use single-threaded per the
@@ -3757,6 +3757,71 @@ impl CatalogStore for SqliteCatalog {
         Ok(())
     }
 
+    fn resolve_calibration_conflict(
+        &mut self,
+        profile_id: &str,
+        conflict_id: &str,
+        resolution: &str,
+    ) -> Result<(), String> {
+        // Reject a resolution this build has no meaning for before touching the
+        // row. Left to the UPDATE, an unknown string would be written verbatim
+        // and read back later as if the system had agreed to it.
+        if !is_known_calibration_resolution(resolution) {
+            return Err(format!(
+                "cannot resolve calibration conflict {conflict_id}: \
+                 {resolution:?} is not a resolution this build recognises \
+                 (acceptServer, keepLocalAsNewRevision, manualFieldMerge)",
+            ));
+        }
+        // Read before writing so "no such conflict" and "already resolved" are
+        // distinguishable. An UPDATE reporting zero changed rows cannot tell
+        // them apart, and they call for opposite operator responses.
+        let existing: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT resolved_at FROM calibration_conflicts
+                 WHERE profile_id = ?1 AND conflict_id = ?2",
+                params![profile_id, conflict_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        let resolved_at = existing.ok_or_else(|| {
+            format!(
+                "cannot resolve calibration conflict {conflict_id}: \
+                 no such conflict for profile {profile_id}",
+            )
+        })?;
+        if let Some(previous) = resolved_at {
+            return Err(format!(
+                "cannot resolve calibration conflict {conflict_id}: \
+                 already resolved at {previous}",
+            ));
+        }
+        let now = now_ts();
+        let changed = self
+            .conn
+            .execute(
+                // resolved_at IS NULL is repeated in the predicate so that two
+                // concurrent resolves cannot both write; the second changes no
+                // rows and is reported rather than silently overwriting the
+                // first one's resolution.
+                "UPDATE calibration_conflicts
+                    SET resolved_at = ?3, resolution = ?4
+                  WHERE profile_id = ?1 AND conflict_id = ?2
+                    AND resolved_at IS NULL",
+                params![profile_id, conflict_id, now, resolution],
+            )
+            .map_err(sql_error)?;
+        if changed == 0 {
+            return Err(format!(
+                "cannot resolve calibration conflict {conflict_id}: \
+                 it was resolved concurrently",
+            ));
+        }
+        Ok(())
+    }
+
     fn list_calibration_conflicts(
         &self,
         profile_id: &str,
@@ -4112,6 +4177,21 @@ fn staged_calibration_photo_from_row(row: &Row<'_>) -> rusqlite::Result<StagedCa
         caption: row.get(14)?,
         order: row.get(15)?,
     })
+}
+
+/// Whether `value` names a resolution strategy this build understands.
+///
+/// Answered by deserializing into `CalibrationConflictResolutionKind` rather
+/// than by matching a list of strings here. A second list would have to be
+/// remembered when the enum gains a variant, and the failure mode of
+/// forgetting is silent: a resolution the rest of the system supports would be
+/// refused by this function alone, with a message asserting the build does not
+/// recognise it.
+fn is_known_calibration_resolution(value: &str) -> bool {
+    serde_json::from_value::<CalibrationConflictResolutionKind>(serde_json::Value::String(
+        value.to_string(),
+    ))
+    .is_ok()
 }
 
 fn calibration_conflict_from_row(row: &Row<'_>) -> rusqlite::Result<CalibrationConflictDto> {
@@ -6244,6 +6324,199 @@ mod tests {
             )
             .unwrap();
         assert_eq!(state, "conflict");
+    }
+
+    #[test]
+    fn resolving_a_calibration_conflict_removes_it_from_the_unresolved_list() {
+        let (mut store, conflict_id) = recorded_conflict();
+
+        store
+            .resolve_calibration_conflict("profile-1", &conflict_id, "acceptServer")
+            .unwrap();
+
+        let remaining = store
+            .list_calibration_conflicts("profile-1", Some("project-1"))
+            .unwrap();
+        assert!(
+            remaining.is_empty(),
+            "a resolved conflict must leave the unresolved list, but {} remain",
+            remaining.len()
+        );
+
+        let (resolved_at, resolution): (Option<String>, Option<String>) = store
+            .conn
+            .query_row(
+                "SELECT resolved_at, resolution FROM calibration_conflicts
+                 WHERE profile_id = 'profile-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            resolution.as_deref(),
+            Some("acceptServer"),
+            "the chosen resolution must be persisted, not merely the fact of resolving"
+        );
+        assert!(
+            resolved_at.is_some(),
+            "resolved_at must be stamped; the list query filters on it"
+        );
+    }
+
+    /// The list emptying is not by itself evidence that resolving works: a
+    /// method that deleted the row, or one that stamped every conflict, would
+    /// also empty it. This pins the effect to the conflict that was named.
+    #[test]
+    fn resolving_one_conflict_leaves_the_other_unresolved() {
+        let (mut store, first_id) = recorded_conflict();
+        store
+            .record_calibration_conflict(
+                "profile-1",
+                "operation-1",
+                "CalibrationStep",
+                "step-1",
+                "second conflict",
+                10,
+            )
+            .unwrap();
+        let before = store
+            .list_calibration_conflicts("profile-1", Some("project-1"))
+            .unwrap();
+        assert_eq!(before.len(), 2, "fixture must produce two open conflicts");
+
+        store
+            .resolve_calibration_conflict("profile-1", &first_id, "acceptServer")
+            .unwrap();
+
+        let remaining = store
+            .list_calibration_conflicts("profile-1", Some("project-1"))
+            .unwrap();
+        assert_eq!(
+            remaining.len(),
+            1,
+            "resolving one conflict must leave exactly the other one open"
+        );
+        assert_ne!(
+            remaining[0].conflict_id, first_id,
+            "the conflict that was resolved is the one that must have left the list"
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_resolution_is_refused_and_never_written() {
+        let (mut store, conflict_id) = recorded_conflict();
+
+        let error = store
+            .resolve_calibration_conflict("profile-1", &conflict_id, "lastWriteWins")
+            .expect_err("a resolution outside the enum must be refused");
+        assert!(
+            error.contains("lastWriteWins") && error.contains("not a resolution"),
+            "the refusal must name the rejected strategy; got {error:?}"
+        );
+
+        let stored: Option<String> = store
+            .conn
+            .query_row(
+                "SELECT resolution FROM calibration_conflicts WHERE profile_id = 'profile-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored, None,
+            "a refused resolution must leave no trace; writing it would be read \
+             back later as a strategy the system agreed to"
+        );
+        assert_eq!(
+            store
+                .list_calibration_conflicts("profile-1", Some("project-1"))
+                .unwrap()
+                .len(),
+            1,
+            "a refused resolution must leave the conflict open"
+        );
+    }
+
+    #[test]
+    fn resolving_an_unknown_conflict_is_distinguishable_from_resolving_it_twice() {
+        let (mut store, conflict_id) = recorded_conflict();
+
+        let missing = store
+            .resolve_calibration_conflict(
+                "profile-1",
+                "11111111-2222-4333-8444-555555555555",
+                "acceptServer",
+            )
+            .expect_err("resolving a conflict that does not exist must fail");
+        assert!(
+            missing.contains("no such conflict"),
+            "an absent conflict must say so; got {missing:?}"
+        );
+
+        store
+            .resolve_calibration_conflict("profile-1", &conflict_id, "acceptServer")
+            .unwrap();
+        let twice = store
+            .resolve_calibration_conflict("profile-1", &conflict_id, "keepLocalAsNewRevision")
+            .expect_err("resolving an already-resolved conflict must fail");
+        assert!(
+            twice.contains("already resolved"),
+            "a second resolve must say the conflict was already resolved; got {twice:?}"
+        );
+        assert_ne!(
+            missing, twice,
+            "these are opposite operator situations and must not share a message"
+        );
+
+        let stored: Option<String> = store
+            .conn
+            .query_row(
+                "SELECT resolution FROM calibration_conflicts WHERE profile_id = 'profile-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some("acceptServer"),
+            "the second resolve must not overwrite the first one's strategy"
+        );
+    }
+
+    /// Records one conflict through the production writer and returns its id.
+    ///
+    /// The id is taken from the store rather than written as a literal here.
+    /// A hand-written UUID would be a fixture the writer cannot produce, and
+    /// the tests above would then be exercising a shape that never occurs —
+    /// which is how the `conflict-` prefix survived until #179.
+    fn recorded_conflict() -> (SqliteCatalog, String) {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let input = workspace_input(
+            "profile-1",
+            "project-1",
+            "operation-1",
+            &"e".repeat(64),
+            "2026-07-26T15:01:00.000Z",
+        );
+        store.save_calibration_workspace_state(&input).unwrap();
+        store
+            .record_calibration_conflict(
+                "profile-1",
+                "operation-1",
+                "CalibrationProject",
+                "project-1",
+                "server revision moved ahead",
+                9,
+            )
+            .unwrap();
+        let conflict_id = store
+            .list_calibration_conflicts("profile-1", Some("project-1"))
+            .unwrap()
+            .first()
+            .expect("the writer must have produced a conflict to resolve")
+            .conflict_id
+            .clone();
+        (store, conflict_id)
     }
 
     #[test]
