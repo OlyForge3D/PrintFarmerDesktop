@@ -793,11 +793,34 @@ export type RemoteCalibrationCapabilities = z.infer<
   typeof RemoteCalibrationCapabilities
 >;
 
-/** Capability flags that must all be true before calibration is offered. */
+/**
+ * Capability flags without which the calibration workspace cannot function at
+ * all: durable persistence plus the change feed and offline draft push the sync
+ * engine relies on. These are preconditions, not features — if any is disabled
+ * there is nothing the workspace could usefully do, so calibration is withheld.
+ *
+ * This is deliberately the same set `CalibrationSyncEngine` enforces, so the
+ * availability gate and the sync gate cannot disagree about what "usable" means.
+ */
 export const REQUIRED_CALIBRATION_FLAGS = [
   'calibrationApiEnabled',
   'calibrationChangeFeedEnabled',
   'calibrationOfflineDraftEnabled',
+] as const;
+
+/**
+ * Capability flags that switch individual features on and off rather than
+ * gating the workspace.
+ *
+ * A deployment can legitimately run calibration without them. `calibrationPhotos`
+ * only adds evidence attachments, and `calibrationGeneration` requires an entire
+ * slicing fleet server-side (an online worker attesting a pinned upstream
+ * OrcaSlicer build), which many deployments will not have. Recording measured
+ * results by hand stays fully usable in both cases, so these are surfaced to the
+ * renderer through `capabilityFlags` and gate their own actions instead of
+ * blocking the tab.
+ */
+export const OPTIONAL_CALIBRATION_FEATURE_FLAGS = [
   'calibrationPhotoUploadEnabled',
   'calibrationGenerationEnabled',
 ] as const;
@@ -808,6 +831,21 @@ export function missingCalibrationFlags(
   required: readonly (keyof RemoteCalibrationCapabilities['flags'])[] = REQUIRED_CALIBRATION_FLAGS,
 ): string[] {
   return required.filter((flag) => !capabilities.flags[flag]);
+}
+
+/**
+ * Names the optional calibration features this server has switched off.
+ *
+ * Callers use this for diagnostics only: a disabled feature narrows what the
+ * workspace offers, it never makes calibration unavailable.
+ */
+export function disabledCalibrationFeatures(
+  capabilities: RemoteCalibrationCapabilities,
+): string[] {
+  return missingCalibrationFlags(
+    capabilities,
+    OPTIONAL_CALIBRATION_FEATURE_FLAGS,
+  );
 }
 
 /** True when the server supports Klipper firmware *and* the Klipper dialect. */

@@ -286,6 +286,17 @@ export function decideCalibrationAction(
   }
   blockers.push(...physicalMatchBlockers(state, runtime));
   if (
+    (action === 'generate' || action === 'applyPatch') &&
+    !runtime.serverGenerationEnabled
+  ) {
+    blockers.push(
+      error(
+        'SERVER_GENERATION_DISABLED',
+        'This server does not have calibration generation enabled, so G-code and profile patches cannot be produced. Measured results can still be recorded.',
+      ),
+    );
+  }
+  if (
     action === 'applyPatch' &&
     state.stages.finalVerification.status !== 'completed'
   ) {
