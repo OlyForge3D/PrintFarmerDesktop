@@ -57,8 +57,15 @@ function git(args: string[], cwd: string) {
 
 const temps: string[] = [];
 
+// `realpathSync.native`, not `realpathSync`: on Windows only the native form
+// expands an 8.3 short name. `os.tmpdir()` yields `C:\Users\RUNNER~1\...` on a
+// runner whose account name exceeds eight characters, while git's
+// `rev-parse --show-toplevel` returns the canonical long form, so the two
+// disagree on a path that names the same directory.
 function tempRepo() {
-  const dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'hookcov-')));
+  const dir = realpathSync.native(
+    mkdtempSync(path.join(os.tmpdir(), 'hookcov-')),
+  );
   temps.push(dir);
   git(['init', '--quiet', '-b', 'main'], dir);
   git(['config', 'user.email', 'test@example.com'], dir);
@@ -240,7 +247,7 @@ describe('the installer CLI', () => {
 
 describe('the coverage property, driven through a real push', () => {
   function remoteFor(work: string) {
-    const bare = realpathSync(
+    const bare = realpathSync.native(
       mkdtempSync(path.join(os.tmpdir(), 'hookcov-remote-')),
     );
     temps.push(bare);
