@@ -1036,6 +1036,71 @@ describe('CalibrationHttpClient identity fencing and error mapping', () => {
     }
   });
 
+  it('withholds the ProblemDetails body from message and keeps it on serverDetail', async () => {
+    // Issue #177. `statusError` used to build the message as `detail ?? catalogued`,
+    // so a server-supplied string silently outranked every reviewed literal and
+    // reached the renderer through `toApiError()` and `CalibrationSyncStatus.error`.
+    //
+    // The fix must be a *withholding*, not a deletion: the operator's only
+    // actionable string still has to exist somewhere. This test pins both halves,
+    // and is the falsifier for the `serverDetail` constructor parameter -- remove
+    // it and this fails by name instead of the field becoming dead weight.
+    const detail = 'upstream slicer pool exhausted at node worker-7';
+    // A fresh Response per call. `mockResolvedValue` hands back the same object
+    // every time, so once the client retries, the body is already consumed and
+    // `statusError` silently reads an empty string -- which looks exactly like a
+    // server that sent no detail at all.
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(() =>
+        Promise.resolve(
+          json({ title: 'Worker rejected', detail, errorCode: 'x' }, 503),
+        ),
+      );
+    const client = new CalibrationHttpClient(fakeTokenProvider(), {
+      fetch: fetchMock,
+    });
+
+    try {
+      await client.getChanges(
+        PROFILE_ID,
+        BASE_URL,
+        null,
+        null,
+        100,
+        AbortSignal.timeout(5000),
+      );
+      expect.fail('Should have thrown');
+    } catch (error) {
+      expect(error).toBeInstanceOf(CalibrationHttpError);
+      const httpError = error as CalibrationHttpError;
+
+      // Withheld from the renderer-visible surface.
+      expect(
+        httpError.message,
+        'the backend detail is the error message again, which is the #177 defect',
+      ).not.toContain(detail);
+      expect(
+        httpError.message,
+        'the backend title is the error message, and title is as server-controlled as detail',
+      ).not.toContain('Worker rejected');
+      expect(httpError.message).toBe(
+        'Calibration generation or telemetry service is unavailable.',
+      );
+      // `toApiError` is the actual IPC boundary, so assert there too rather than
+      // trusting that it forwards `message` unchanged.
+      expect(httpError.toApiError().message).toBe(
+        'Calibration generation or telemetry service is unavailable.',
+      );
+
+      // Retained for the operator.
+      expect(
+        httpError.serverDetail,
+        'the backend detail was dropped entirely; #177 withholds it from the renderer, it does not destroy it',
+      ).toBe(detail);
+    }
+  });
+
   it('maps HTTP 412 to revisionConflict', async () => {
     const applyRequest = {
       profileId: PROFILE_ID,
@@ -1099,7 +1164,20 @@ describe('CalibrationHttpClient identity fencing and error mapping', () => {
     } catch (error) {
       expect(error).toBeInstanceOf(CalibrationHttpError);
       expect((error as CalibrationHttpError).code).toBe('invalidData');
-      expect((error as CalibrationHttpError).message).toContain('Field X');
+      // This assertion used to read `.message`, which passed only because
+      // `statusError` copied the server's `detail` over the catalogued string
+      // -- it was asserting issue #177's defect as though it were the contract.
+      // The intent (the backend's explanation is captured) is preserved; only
+      // the location changes, because `message` is renderer-visible and
+      // `serverDetail` is not.
+      // `toContain` on a null receiver reports an argument-type complaint, not
+      // the missing value, so state the presence claim separately.
+      expect(
+        (error as CalibrationHttpError).serverDetail,
+        'the backend explanation was dropped rather than moved to serverDetail',
+      ).not.toBeNull();
+      expect((error as CalibrationHttpError).serverDetail).toContain('Field X');
+      expect((error as CalibrationHttpError).message).not.toContain('Field X');
     }
   });
 
