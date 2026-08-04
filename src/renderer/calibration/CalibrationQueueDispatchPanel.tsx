@@ -381,8 +381,21 @@ export const CalibrationQueueDispatchPanel: React.FC<
   }
 
   return (
+    /*
+     * issue #226: `role="region"` is load-bearing, not decoration. A plain
+     * <div> has an implicit role of `generic`, and `generic` does not support
+     * an accessible name — assistive technology is specified to ignore
+     * `aria-label` there, so the panel had no accessible name at all.
+     *
+     * Note the attribute alone tests clean: `getByLabelText` matches the
+     * `aria-label` attribute directly, so twelve existing assertions in
+     * calibration.workspace.test.tsx passed against the inert version and
+     * still do. Only `getByRole('region', { name })` computes the accessible
+     * name, so only a role query can fail when this role is removed.
+     */
     <div
       className="calibration-queue-dispatch"
+      role="region"
       aria-label="Queue and dispatch status"
     >
       <h3 className="calibration-queue-dispatch__heading">Queue State</h3>
@@ -394,12 +407,27 @@ export const CalibrationQueueDispatchPanel: React.FC<
           aria-live="assertive"
         >
           {fetchError}
+          {/*
+           * issue #225: this control retries the *fetch*, not the print. It
+           * can co-render with the unknown-outcome guidance below, because the
+           * success path clears `fetchError` but the failure path does not
+           * clear `queueState` — so a failed refetch while an outcome is
+           * unresolved renders both. An unqualified "Retry" beside "Do not
+           * retry" makes the operator resolve a contradiction at the one
+           * moment the instruction has physical consequences.
+           *
+           * The name is what fixes it: "no blind-retry affordance" is a
+           * statement about the rendered panel, not about one branch, and a
+           * control that names what it retries cannot be read as the dispatch
+           * retry it never was. Suppressing it instead would remove the only
+           * recovery control exactly when connectivity is degraded.
+           */}
           <button
             type="button"
             className="calibration-queue-dispatch__retry"
             onClick={() => void refetchJobState()}
           >
-            Retry
+            Retry loading status
           </button>
         </div>
       )}
@@ -449,23 +477,6 @@ export const CalibrationQueueDispatchPanel: React.FC<
               <dt>Dispatch Outcome</dt>
               <dd aria-live="polite" aria-atomic="true">
                 {outcomeLabel(queueState.dispatchAttemptOutcome)}
-                {/*
-                 * criterion 9: Unknown outcome stays "Starting".
-                 * No blind-retry affordance — only show reconciliation guidance.
-                 */}
-                {queueState.dispatchAttemptOutcome === 'Unknown' && (
-                  <p
-                    className="calibration-queue-dispatch__unknown-guidance"
-                    role="status"
-                    aria-live="polite"
-                  >
-                    The server has not yet confirmed whether the print started.
-                    The status will update automatically when the result is
-                    known. Do not retry — a duplicate print may result. Wait for
-                    this status to change, and check the printer before taking
-                    any manual action.
-                  </p>
-                )}
               </dd>
             </div>
           )}
@@ -487,6 +498,45 @@ export const CalibrationQueueDispatchPanel: React.FC<
           )}
         </dl>
       )}
+
+      {/*
+       * criterion 9 / issue #242: the reconciliation guidance for an Unknown
+       * dispatch outcome. This container is mounted unconditionally and
+       * deliberately, including when it has nothing to say.
+       *
+       * A live region announces *changes to content it already held*. A region
+       * inserted already carrying its text is a new subtree, and is broadly not
+       * announced at all. The guidance used to live inside the Dispatch Outcome
+       * <dd>, nested under two conditionals and under the <dl>'s own
+       * `queueState &&` gate — so on the path that matters most, opening this
+       * view on a job whose outcome is *already* Unknown, region and text
+       * arrived in a single commit and nothing was announced. That is the one
+       * instruction in the product that prevents an unattended duplicate print.
+       *
+       * Consequences for anyone editing this block:
+       *  - Do not wrap it in a conditional. Emptiness is the point: it must
+       *    exist before it has content.
+       *  - Do not move it back inside the <dl>; the <dl> is itself conditional.
+       *  - Do not nest another live region inside it. `role="status"` already
+       *    implies polite + atomic, and nested live regions double or drop.
+       *  - `role="alert"` is not an alternative fix — politeness is not
+       *    presence, and an assertive subtree that was never observed changing
+       *    has the same problem.
+       */}
+      <div
+        className="calibration-queue-dispatch__guidance-live"
+        role="status"
+        aria-label="Dispatch reconciliation guidance"
+      >
+        {queueState?.dispatchAttemptOutcome === 'Unknown' && (
+          <p className="calibration-queue-dispatch__unknown-guidance">
+            The server has not yet confirmed whether the print started. The
+            status will update automatically when the result is known. Do not
+            retry — a duplicate print may result. Wait for this status to
+            change, and check the printer before taking any manual action.
+          </p>
+        )}
+      </div>
 
       {isReordered && (
         <p
