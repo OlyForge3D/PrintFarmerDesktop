@@ -702,6 +702,23 @@ test('@a11y calibration report prints without local paths or credentials', async
 // 8. Reduced motion, dark theme and 200% zoom
 // ---------------------------------------------------------------------------
 
+/*
+ * What the dark-theme half of this test does NOT prove, stated here rather than
+ * in a pull request body, because the PR body is not what the next author reads
+ * and a test's *name* is a durable claim that outlives everyone who knew what it
+ * meant.
+ *
+ * There are no `prefers-color-scheme` rules anywhere in this codebase. Emulating
+ * `colorScheme: 'dark'` therefore does not select a dark theme, because there is
+ * no dark theme to select. What this asserts is narrower and still worth having:
+ * an axe contrast regression guard that runs with the dark preference set, so
+ * that if a dark theme is ever added, contrast failures surface here rather than
+ * at a user.
+ *
+ * Do not read "in dark theme" in the surface names below as evidence that a dark
+ * theme exists. If one is added, this comment is the thing to delete.
+ */
+
 test('@a11y calibration holds up under reduced motion, dark theme and 200% zoom', async ({
   browserName,
 }, testInfo) => {
