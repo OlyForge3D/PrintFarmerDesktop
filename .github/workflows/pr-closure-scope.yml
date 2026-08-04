@@ -1,0 +1,57 @@
+name: PR closure scope
+
+# Deliberately a separate workflow rather than a job in ci.yml.
+#
+# The check needs a pull request number: `closingIssuesReferences` is a property
+# of a pull request, and neither `push` nor `merge_group` carries one. Adding it
+# to ci.yml would have required either a job-level `if:` or a `github.event_name`
+# branch, both of which tests/ciWorkflowTriggers.test.ts bans outright — a job
+# skipped by a conditional reports `skipped`, which counts as success, so the
+# required context would be satisfied by a job that never executed.
+#
+# Consequence, stated plainly rather than left to be discovered: this workflow
+# does not report under `merge_group`, so it MUST NOT be added to a branch
+# ruleset's required contexts while that remains true. A required context that
+# no workflow emits stays Pending forever and blocks the entry instead of
+# failing it. tests/prClosureScope.test.ts pins this subscription so the
+# constraint is checked rather than remembered.
+#
+# `edited` is in the type list for a reason found the hard way on this very
+# pull request: `closingIssuesReferences` is derived from the pull request
+# BODY, and a body can be rewritten with no commit and no push. The default
+# type set (opened, synchronize, reopened) is commit-shaped, so without
+# `edited` a pull request could pass this check, have a closing keyword typed
+# into its description afterwards, and merge green — the check would never run
+# again. That is the whole hazard, reachable by an edit box.
+#
+# Note that `types:` REPLACES the default set rather than extending it, so the
+# three defaults are listed explicitly here. Writing `types: [edited]` alone
+# would silently stop this workflow running on new pull requests at all, which
+# is the failure mode this guard exists to prevent, applied to itself.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  closure-scope:
+    name: PR closure scope
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # No `npm ci`: the check imports nothing outside node: builtins, so it
+      # runs against the checkout alone. That keeps it off the scarce
+      # macos-latest pool and finishes in seconds rather than minutes.
+      - name: Verify no gate issue is armed for closure
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run check:closure-scope
