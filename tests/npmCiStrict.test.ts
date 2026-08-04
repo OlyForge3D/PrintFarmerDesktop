@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -624,6 +626,13 @@ describe('dischargeCleanupFailure wires the pieces together, not just defines th
     // The artifact is written to the repo-root repair file by default.
     const artifactTarget = String(rig.first('writeArtifact')?.args[1]);
     expect(artifactTarget.endsWith('npm-ci-strict-repair.json')).toBe(true);
+    // Stronger than the two basename checks above: both defaults are built from
+    // the same repoRoot, so they must share a parent directory. A default that
+    // keeps the right basename under the wrong parent (repoRoot/WRONG/node_modules)
+    // passes endsWith() but fails this. Measured limit: it binds the two defaults
+    // to each other, not to repoRoot -- moving BOTH under repoRoot/X/ still passes.
+    // A total bind needs repoRoot exported, which it is not.
+    expect(path.dirname(removed)).toBe(path.dirname(artifactTarget));
   });
 });
 
