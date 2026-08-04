@@ -45,7 +45,7 @@ checked by anyone; "CI is green" cannot, and is indistinguishable from a
 memory of the previous run.
 
 Prefer instruments that make a stale answer unreturnable over instruments that
-make it detectable. Querying workflow runs *by* `head_sha` cannot hand back a
+make it detectable. Querying workflow runs _by_ `head_sha` cannot hand back a
 different head's run, because the SHA is the selector. Reading a run and then
 verifying its `head_sha` afterwards works too, but only if the check is
 remembered every time — and it is a check about staleness, so it will be
