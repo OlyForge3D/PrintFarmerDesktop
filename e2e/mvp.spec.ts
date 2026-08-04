@@ -138,6 +138,51 @@ test('shows onboarding CTA for a fresh empty catalog', async () => {
       name: 'Add your first folder',
     }),
   ).toBeVisible();
+
+  // Regression guard for #222.
+  //
+  // The onboarding dialog mounts only after library.status leaves 'loading'.
+  // On slow CI runners the initial loadCatalog call can complete AFTER the
+  // two dismissOnboardingIfVisible snapshot checks in test 7 have already
+  // seen count()=0 and returned without setting onboardingDismissed=true.
+  // When the load then resolves, onboardingOpen becomes true, the backdrop
+  // mounts at z-index 24 over the sidebar, and the 'Manage sources' click
+  // inside refreshCatalog retries behind it for 30 s.
+  //
+  // Wait here until the dialog (and its backdrop) are mounted so that the
+  // initial catalog load is guaranteed to have completed by the time test 7
+  // runs. This also exercises the two regression checks below.
+  const onboardingDialog = page.getByRole('dialog', {
+    name: 'Set up your model library',
+  });
+  await expect(onboardingDialog).toBeVisible();
+
+  // Mechanism check: the backdrop is aria-hidden and purely decorative.
+  // Focus containment is handled by JS document listeners in
+  // LibraryOnboarding.tsx, not by pointer-event blocking. Without
+  // pointer-events:none the fixed layer intercepts every click to the
+  // sidebar beneath it.
+  await expect(page.locator('.onboarding-backdrop')).toHaveCSS(
+    'pointer-events',
+    'none',
+  );
+
+  // End-to-end behavioral check: click 'Manage sources' while the dialog and
+  // its backdrop are still mounted — the onboarding is NOT dismissed before
+  // this click. With pointer-events:none the event reaches the sidebar button;
+  // openSources() fires, dismisses the onboarding as a side-effect, and
+  // opens the Catalog sources panel. Without the fix Playwright's
+  // actionability check reports "intercepted by .onboarding-backdrop" and
+  // times out, reproducing the exact #222 CI failure on this deterministic
+  // path.
+  await page.getByRole('button', { name: 'Manage sources' }).click();
+  const sourcesPanel = page.getByRole('dialog', { name: 'Catalog sources' });
+  await expect(sourcesPanel).toBeVisible();
+  // Restore state: close the sources panel so subsequent tests start clean.
+  await sourcesPanel
+    .getByRole('button', { name: 'Close catalog sources' })
+    .click();
+  await sourcesPanel.waitFor({ state: 'detached' });
 });
 
 test('uses reliable custom window chrome', async () => {
