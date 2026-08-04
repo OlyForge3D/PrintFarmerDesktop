@@ -104,6 +104,7 @@ import {
   CalibrationAssetManifestEntry,
   CalibrationUnavailableReason,
   CalibrationWorkspaceStageId,
+  CalibrationOutboxUnavailableReason,
 } from '@shared/ipc';
 import type { ZodTypeAny } from 'zod';
 import {
@@ -306,6 +307,7 @@ function knownFieldNames(): Set<string> {
     // Workspace stage IDs. An operator guide walks a user through the stages
     // by name, so these are exactly the identifiers a document is expected to say.
     ...CalibrationWorkspaceStageId.options,
+    ...CalibrationOutboxUnavailableReason.options,
   ]);
   for (const schema of CONTRACT_SCHEMAS) collectSchemaKeys(schema, names);
   return names;
