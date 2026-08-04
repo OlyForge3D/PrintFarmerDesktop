@@ -61,11 +61,27 @@ Disable pagers: `git --no-pager ...`.
 
 ## CI gate
 
-Six required checks must pass:
+Seven required checks must pass:
 
-- Desktop (macos-latest, windows-latest)
-- Sidecar (macos-latest, windows-latest)
-- Package smoke (macos-latest, windows-latest)
+- Desktop (windows-latest)
+- Desktop (macos-latest)
+- Sidecar (windows-latest)
+- Sidecar (macos-latest)
+- Release package (windows-latest)
+- Release package (macos-latest)
+- Dependency advisories
+
+**This list is a transcription, and the authoritative source is the branch-protection
+endpoint — not this file.** It has been wrong before (see #152: it named a packaging job that
+has never existed, and omitted `Dependency advisories`), and every agent reads this file on
+activation, so a stale copy here misleads everyone at once. Re-verify rather than trust it:
+
+```powershell
+gh api repos/OlyForge3D/PrintFarmerDesktop/branches/development/protection `
+  --jq '.required_status_checks.contexts[]'
+```
+
+If that output disagrees with the list above, the endpoint wins — fix this file.
 
 ```powershell
 gh pr checks <N> --repo OlyForge3D/PrintFarmerDesktop --watch --interval 20
@@ -73,7 +89,7 @@ gh pr checks <N> --repo OlyForge3D/PrintFarmerDesktop --watch --interval 20
 
 Never hand back a red PR. If a check fails, read the failing job log, fix the cause, and push again.
 
-`mergeStateStatus: UNSTABLE` means CI is still running or has failed — it is **not** ready to merge. `CLEAN` plus six passes is the bar.
+`mergeStateStatus: UNSTABLE` means CI is still running or has failed — it is **not** ready to merge. `CLEAN` plus seven passes is the bar.
 
 ## Green CI is necessary, not sufficient
 
