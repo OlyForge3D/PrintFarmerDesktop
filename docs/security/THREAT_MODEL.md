@@ -510,13 +510,25 @@ See T2.5. A search that expects `open_package` to be the only door will not find
 `MAX_COMPRESSION_RATIO = 300` above a 4 MiB floor, an aggregate
 `MAX_TOTAL_DECOMPRESSED_BYTES = 2 GiB`, `MAX_XML_DEPTH = 64`,
 `MAX_XML_EVENTS = 200_000_000`, and a `DEFAULT_PARSE_TIMEOUT` of 120 seconds. Path traversal,
-DTD and entity attacks, deep nesting, and component cycles are covered by
+DTD and entity attacks, deep nesting, the XML event budget, and component cycles are covered by
 `native/model-core/tests/threemf_security.rs` with the fixtures `malformed_zip_bomb.3mf` and
 `malformed_path_traversal.3mf`.
 
 **Coverage. Good, and deliberately not rebuilt.** #20 is the strongest-tested area of the
 product, including the harder cases where a cheap preflight guard shadows a stricter
 accumulator on all honest input.
+
+**`MAX_XML_EVENTS` is the one control here whose _shipped value_ no test reaches, and that is
+structural rather than an oversight (#127).** The densest construct quick-xml emits is `<a/>x`
+— five bytes, two events — so 200,000,000 events need a model part of roughly 500 MB to reach,
+barely inside the 512 MB `MAX_MODEL_XML_BYTES` ceiling. For metadata parts it is unreachable
+outright: `MAX_METADATA_XML_BYTES = 8 MiB` caps them near 3.2M events, some sixty times below
+the budget. What is covered end-to-end is that the budget is _wired_ — each of the four
+documents the reader walks builds its own `XmlGuard`, and `threemf_security.rs` drives real
+packages through `parse_bytes_with_limits` at a reduced budget and asserts each part charges
+exactly one event per element. Read that as "a reader that forgets to `observe` is caught",
+not as "200,000,000 is the right number". Raising `MAX_MODEL_XML_BYTES` makes this cap the
+only defence against a document that is cheap to store and expensive to walk.
 
 **Scope of these controls, which is narrower than it looks.** Every limit above is enforced by
 `ParseGuard` on the `threemf::open_package` path. The retarget archive reader does not use
@@ -791,9 +803,9 @@ policies now consume it so that _acceptability_ is checked too:
   loudly (see T4.2).
 - **Third-party notices.** `scripts/generate-notices.mjs` enumerates the SBOM into
   `build/third-party-licenses.md`, staged and verified by regenerate-and-compare
-  (`scripts/verify-notices.mjs`) in both package smoke and release builds before any artifact can
-  be uploaded or published; the enumeration is code-unit ordered so it is byte-identical across
-  runners.
+  (`scripts/verify-notices.mjs`) in both the Release package job and release builds before any
+  artifact can be uploaded or published; the enumeration is code-unit ordered so it is
+  byte-identical across runners.
 
 Both lockfiles (`package-lock.json`, `native/Cargo.lock`) are committed. CI installs with
 `npm ci`; every workspace Cargo build, test and clippy command uses `--locked`; and package/release

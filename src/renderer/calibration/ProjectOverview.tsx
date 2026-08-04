@@ -286,7 +286,9 @@ export function ProjectOverview(): React.JSX.Element {
       {project.record.hasConflicts ? (
         <p className="cal-alert" role="alert">
           This project has an unresolved conflict. Synchronization cannot
-          silently overwrite it, and hardware actions are blocked.
+          silently overwrite it, and hardware actions are blocked. Resolve the
+          conflict in PrintFarmer, then refresh this workspace to unblock
+          printing.
         </p>
       ) : null}
       {!project.record.isPrinterContextFresh ? (
