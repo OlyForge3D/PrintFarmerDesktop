@@ -1003,21 +1003,37 @@ export async function focusedDescription(page: Page): Promise<string> {
 }
 
 /**
- * Tabs forward until `target` is focused, and asserts focus actually moved and
- * stayed inside `within` when given.
+ * Tabs forward until `target` is focused, asserting focus actually moved and
+ * that the element reached sits inside `expectedContainer` when given.
  *
  * A traversal that ends where it started, or that never reaches the named
  * element, is a dead end — this reports which named element it could not
- * reach and where focus ended up. `start !== end` alone is satisfied by focus
- * escaping the surface entirely, which is the worst keyboard outcome, not a
- * pass, so containment is asserted separately.
+ * reach and where focus ended up.
+ *
+ * **What `expectedContainer` does not do.** It is checked once, after
+ * `target === document.activeElement`, so it asserts a structural fact — the
+ * element reached is inside that container — and *not* that focus stayed
+ * inside during the traversal. It cannot detect focus escaping and returning,
+ * because it never runs while focus is in transit.
+ *
+ * This comment previously claimed containment was asserted "separately" as a
+ * guard against focus escaping the surface. That was wrong, and the review of
+ * #174 caught it. The check is not strengthened to run per press because
+ * three of its four call sites *deliberately* begin outside `<main>` and cross
+ * the sibling navigation landmark to get there — per-press containment would
+ * fail them for doing the thing they are testing. **The check is correct; the
+ * claim about it was not, so the claim is what changed.**
+ *
+ * A false constraint in a comment gets cited later as a rule by someone who
+ * was not here, which is the reason this is a paragraph rather than a
+ * deletion.
  */
 export async function expectTabReaches(
   page: Page,
   target: Locator,
   description: string,
   maxPresses = 60,
-  within?: Locator,
+  expectedContainer?: Locator,
 ): Promise<void> {
   const start = await focusedDescription(page);
   const seen: string[] = [];
@@ -1030,10 +1046,10 @@ export async function expectTabReaches(
         current,
         `Tab left focus on ${start}; a traversal that does not move proves nothing`,
       ).not.toBe(start);
-      if (within !== undefined) {
+      if (expectedContainer !== undefined) {
         expect(
-          await focusIsInside(within),
-          `Tab reached ${description} but focus is outside the surface under test (focus is ${current})`,
+          await focusIsInside(expectedContainer),
+          `Tab reached ${description}, but that element is not inside the surface under test (focus is ${current})`,
         ).toBe(true);
       }
       return;
