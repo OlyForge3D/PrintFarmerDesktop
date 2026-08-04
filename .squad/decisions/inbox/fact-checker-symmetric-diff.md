@@ -21,14 +21,19 @@ What that section requires, for any agent running the check:
   batch is that shape: when `32,767 rows` was written into the threat model, the correct
   total for the same fixture had been in the tree that commit was written against for
   **4h46m27s**. No diff between the copies known at repair time could have seen it;
-  enumeration at the current head is what does.
+  enumeration at the current head is what does — and **_the current head_ means the
+  mainline's, not the checking branch's.** Measured here rather than supposed: while this
+  branch sat behind, three new renderings of the same quantity landed on the mainline, and
+  an enumeration at the branch head would have returned the earlier set and reported it
+  closed. A branch that is behind is a stale enumeration by construction.
 - **Establish precedence by ancestry, not by timestamps.** Two commits minutes apart can
   sit on branches that never met, and a squash merge lands content without the commit — so
   a claim that something was written _after_ a correction was available needs
   `--is-ancestor`, or the correction present in the rendering's own parent tree. This rule
   is here because this batch published the inference without it and had to retract it.
-- Publish the extraction rule and the head with the result, and run a control that can
-  report non-empty.
+- Publish the extraction rule and the head with the result — naming the **mainline** commit
+  the enumeration was current with, since a set closed on a branch is closed only as of that
+  branch's base — and run a control that can report non-empty.
 - Report a disagreement against the **pair or the set**, never against whichever member
   is not the decision log.
 - Establish that both artifacts fill the same slot before treating a difference as a
