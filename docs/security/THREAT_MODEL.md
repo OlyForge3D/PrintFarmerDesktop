@@ -886,12 +886,10 @@ mitigation is to separate deterministic checks (licences, bans, sources) from li
 checks (advisories), and to let only the deterministic ones block a pull request.
 
 **Implemented.** The licence gate (`verify-licenses.mjs`, T4.1) is deterministic and blocks in
-the Package job. The advisory gate (`audit-advisories.mjs`) runs in a dedicated `advisories` job
-in **report mode**: findings at or above the threshold surface as `::warning::` annotations and
-the job stays green, so a newly published advisory never retroactively fails an unrelated pull
-request. Its `Dependency advisories` context _is_ required by branch protection (verified against
-`branches/development/protection`); what makes it non-blocking is report mode, not absence from
-the required list. The gate is nonetheless a real gate — `--mode block` exits non-zero on
+the Package job. The advisory gate (`audit-advisories.mjs`) runs in a dedicated non-required
+`advisories` job in **report mode**: findings at or above the threshold surface as `::warning::`
+annotations and the job stays green, so a newly published advisory never retroactively fails an
+unrelated pull request. The gate is nonetheless a real gate — `--mode block` exits non-zero on
 any blocking advisory, and the threshold/waiver logic is unit-tested from both sides in
 `tests/supplyChainPolicy.test.ts`; only the CI wiring is non-blocking. Crucially, an inability to
 run the audit — tool missing, unparseable output, registry unreachable — exits non-zero in
