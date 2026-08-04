@@ -27,7 +27,10 @@ import type {
 } from './calibrationEngine.js';
 import { ServerProfileService } from './serverProfiles.js';
 import type { SidecarClient } from './sidecar.js';
-import type { CalibrationConflict } from '@shared/ipc';
+import type {
+  CalibrationConflict,
+  CalibrationConflictResolution,
+} from '@shared/ipc';
 import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
@@ -114,10 +117,35 @@ const CalibrationConflictWire = z
     kind: z.string(),
     entityId: z.string(),
     operationId: z.string().nullable().default(null),
+    localPayload: z.unknown().nullable().default(null),
+    serverPayload: z.unknown().nullable().default(null),
     serverRevision: z.number().int(),
     createdAt: z.string(),
   })
   .passthrough();
+
+/**
+ * Renders a conflict payload as the bounded string the IPC contract expects
+ * (`CalibrationConflict.localPayloadSummary`, max 4096 chars).
+ *
+ * Note for the next reader: these are null in practice today. The sidecar
+ * selects `local_payload_json` / `server_payload_json` and carries them on
+ * CalibrationConflictDto, but `record_calibration_conflict` takes no payload
+ * arguments and never writes those columns, so nothing populates them yet.
+ * This mapping exists so the summaries arrive intact the moment a producer
+ * does -- it is not evidence that a producer exists.
+ */
+function summarizeConflictPayload(payload: unknown): string | null {
+  if (payload === null || payload === undefined) {
+    return null;
+  }
+  const rendered =
+    typeof payload === 'string' ? payload : JSON.stringify(payload);
+  if (rendered === undefined) {
+    return null;
+  }
+  return rendered.length > 4096 ? `${rendered.slice(0, 4093)}...` : rendered;
+}
 
 // ---------------------------------------------------------------------------
 // SidecarCalibrationAdapter — bridges SidecarClient to CalibrationSidecar
@@ -297,13 +325,17 @@ export class SidecarCalibrationAdapter implements CalibrationSidecar {
         projectId: parsed.projectId,
         entityId: parsed.entityId,
         kind,
-        localPayloadSummary: null,
-        serverPayloadSummary: null,
+        localPayloadSummary: summarizeConflictPayload(parsed.localPayload),
+        serverPayloadSummary: summarizeConflictPayload(parsed.serverPayload),
         serverRevision: parsed.serverRevision,
-        availableResolutions: [
-          'acceptServer',
-          'keepLocalAsNewRevision',
-        ] as const,
+        // Empty on purpose. Every resolution strategy routes through
+        // IpcChannel.CalibrationResolveConflict, whose handler throws
+        // CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE because no resolve RPC
+        // exists in the sidecar. This previously returned a hard-coded
+        // ['acceptServer', 'keepLocalAsNewRevision'] -- a literal, not a fact
+        // about the conflict, offering the user two actions that always fail.
+        // Populate this from the conflict kind when the resolve path lands.
+        availableResolutions: [] as CalibrationConflictResolution[],
         createdAt: parsed.createdAt,
         resolution: null,
         resolvedAt: null,
