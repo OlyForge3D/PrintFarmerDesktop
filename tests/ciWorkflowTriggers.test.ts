@@ -107,7 +107,93 @@ function renderedContexts(workflow: string): string[] {
     .sort();
 }
 
+/**
+ * Every `concurrency:` key in a workflow, at any nesting depth, with the two
+ * lines that decide whether it is dangerous.
+ *
+ * Textual for the same reason as everything else here: the repository ships no
+ * YAML parser and this change does not add one.
+ */
+function concurrencyDeclarations(
+  workflow: string,
+): Array<{ line: string; group: string | undefined; cancels: boolean }> {
+  const lines = workflow.split(/\r?\n/);
+  return lines.flatMap((line, index) => {
+    if (!/^\s*concurrency:/.test(line)) return [];
+    const block = lines.slice(index + 1, index + 6);
+    const group = block
+      .flatMap((entry) => {
+        const match = /^\s*group:\s*(.+)$/.exec(entry);
+        return match?.[1] === undefined ? [] : [match[1].trim()];
+      })
+      .at(0);
+    const cancels = block.some((entry) =>
+      /^\s*cancel-in-progress:\s*true\s*$/.test(entry),
+    );
+    return [{ line: line.trim(), group, cancels }];
+  });
+}
+
 describe('CI is safe to run under a merge queue', () => {
+  it('declares no `concurrency:` group, which could cancel a queued entry’s required contexts', () => {
+    // Third way to break a merge queue from this file, and the only one not
+    // already guarded above. The other two are a workflow that never runs
+    // (Pending forever, #122) and a job that is skipped (`skipped` counts as
+    // success, so a false green). This one is a third outcome again:
+    //
+    //   A `concurrency:` group whose key is not unique per merge group, with
+    //   `cancel-in-progress: true`, cancels the in-flight run for an earlier
+    //   queued entry when a later one is dispatched. A cancelled check run has
+    //   conclusion `cancelled`, which is not a success conclusion, so the
+    //   entry is removed from the queue — for a reason that has nothing to do
+    //   with its own changes, and that reads on the pull request as a CI
+    //   failure rather than as a configuration problem.
+    //
+    // The queue dispatches one `merge_group` build per entry and does not
+    // combine them ("Merge limits do not combine merge_group builds" —
+    // GitHub, "Managing a merge queue"), so concurrent in-flight runs of this
+    // workflow for the same base branch are the normal steady state under a
+    // queue, not an edge case.
+    //
+    // Banning the key outright rather than trying to validate it, for the same
+    // reason the job-level `if:` test bans the category: deciding which keys
+    // are unique per merge group is harder to get right than requiring the
+    // question be asked. A safe form does exist and this repository already
+    // uses it — see the positive control below. A legitimate `concurrency:` in
+    // ci.yml is therefore not forbidden by policy; it just has to arrive with
+    // this question answered, and failing here is how it gets asked.
+    //
+    // Not verified: no merge queue has run on this repository, so the
+    // cancellation behaviour above is from documentation, not observation.
+    //
+    // The three mutations were taken rather than assumed. Adding
+    // `group: ci-${{ github.workflow }}` with `cancel-in-progress: true`
+    // fails this test and nothing else; deleting the block below fails the
+    // positive control and nothing else; and adding a *safe*
+    // `group: ci-${{ github.sha }}` with `cancel-in-progress: false` also
+    // fails here — deliberately — with `"cancels": false` in the diagnostic.
+    // So the failure hands the reviewer the evidence needed to answer the
+    // question it asks, rather than only telling them to look.
+    expect(concurrencyDeclarations(ciWorkflow)).toEqual([]);
+  });
+
+  it('finds a `concurrency:` block when one is present, so the guard above is not vacuous', () => {
+    // Positive control on the extractor. Without it, `toEqual([])` above would
+    // pass just as well against a matcher that can never match anything, and
+    // the guard would be green for the wrong reason for as long as it lived.
+    //
+    // release-gpu-qualification.yml carries the only `concurrency:` block in
+    // the repository, and it is in the shape that would be safe under a queue:
+    // keyed on github.sha, so unique per merge group, and not cancelling.
+    expect(concurrencyDeclarations(gpuQualificationWorkflow)).toEqual([
+      {
+        line: 'concurrency:',
+        group: 'release-gpu-qualification-${{ github.sha }}',
+        cancels: false,
+      },
+    ]);
+  });
+
   it('subscribes to merge_group alongside the existing push and pull_request triggers', () => {
     // Without this the required contexts of a queued entry are never reported,
     // so the queue waits permanently instead of failing.
