@@ -366,6 +366,12 @@ export interface RuntimeCalibrationContext {
   readonly physicalMatch: PhysicalMatchConfirmation | null;
   readonly bedClearConfirmed: boolean;
   readonly operatorPresent: boolean;
+  /**
+   * Whether the negotiated server advertises `calibrationGenerationEnabled`.
+   * Generation and profile-patch actions are withheld when it does not, because
+   * the server has no slicing path to satisfy them.
+   */
+  readonly serverGenerationEnabled: boolean;
 }
 
 export type GuardedCalibrationAction =
