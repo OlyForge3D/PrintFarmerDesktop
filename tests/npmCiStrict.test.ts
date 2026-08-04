@@ -595,6 +595,36 @@ describe('dischargeCleanupFailure wires the pieces together, not just defines th
     expect(rig.first('inspect')).toBeUndefined();
     expect(rig.first('fail')).toBeDefined();
   });
+
+  it('ships the real repo-root defaults for nodeModulesPath and artifactPath (#274)', async () => {
+    // Every other test injects nodeModulesPath / artifactPath, but production
+    // calls dischargeCleanupFailure(output) with NO deps -- so the script's
+    // *default* arguments (path.join(repoRoot, 'node_modules') and the repair
+    // JSON at repoRoot) are what actually run in the job. The injection seam did
+    // not delete the untested region, it relocated it into those defaults: point
+    // a default at the wrong directory and every other test stays green while the
+    // job wipes the wrong path and the repair silently no-ops. Omit the two path
+    // keys here so the shipped defaults flow through and are asserted.
+    const rig = recordingDischargeDeps({
+      second: { code: 0, output: 'added 1174 packages in 40s' },
+      tree: { problems: [], unresolved: [] },
+    });
+    const depsWithoutPaths: NonNullable<
+      Parameters<typeof dischargeCleanupFailure>[1]
+    > = { ...rig.deps };
+    delete depsWithoutPaths.nodeModulesPath;
+    delete depsWithoutPaths.artifactPath;
+
+    await dischargeCleanupFailure(RECORDED_CLEANUP_FAILURE, depsWithoutPaths);
+
+    // The wipe targets the repo's own node_modules by default, not the injected
+    // '/repo/node_modules' every other test supplies.
+    const removed = String(rig.first('remove')?.args[0]);
+    expect(removed.endsWith('node_modules')).toBe(true);
+    // The artifact is written to the repo-root repair file by default.
+    const artifactTarget = String(rig.first('writeArtifact')?.args[1]);
+    expect(artifactTarget.endsWith('npm-ci-strict-repair.json')).toBe(true);
+  });
 });
 
 type MainRig = {
