@@ -71,12 +71,15 @@ let afterFence = 0;
 let afterQuote = 0;
 const suppressed = [];
 
+const missing = [];
+
 for (const [rev, path] of TARGETS) {
   let text;
   try {
     text = show(rev, path);
   } catch {
     console.log(`  MISSING ${rev}:${path}`);
+    missing.push(`${rev}:${path}`);
     continue;
   }
   const a = stripFences(text);
@@ -121,3 +124,20 @@ console.log(
 );
 console.log('\nevery occurrence candidate B removed, for checking by hand:');
 for (const s of suppressed) console.log(`  ${s}`);
+
+// Every row of this table is read from `origin/development`, so in any checkout without that
+// ref -- a CI job, a fresh clone, a branch-only fetch -- the whole table is MISSING and the
+// script previously still exited 0. A measurement instrument that cannot reach its inputs and
+// reports success is the same defect this repository has now catalogued six times: the output
+// is indistinguishable from a run that found nothing to report. The condition is announced in
+// the exit status so a caller can tell the two apart without parsing prose.
+if (missing.length > 0) {
+  console.log(
+    `\nINCOMPLETE: ${missing.length} of ${TARGETS.length} revisions could not be read.`,
+  );
+  console.log(
+    'The figures above are a partial table. Fetch the missing revision and re-run:',
+  );
+  console.log('  git fetch origin development:refs/remotes/origin/development');
+  process.exit(2);
+}

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -37,16 +37,38 @@ const repositoryRoot = path.resolve(
  * build when it stops holding.
  */
 
-const runScript = (relativePath: string): string =>
-  execFileSync('node', [path.join(repositoryRoot, relativePath)], {
+const runScript = (
+  relativePath: string,
+): { output: string; status: number } => {
+  const result = spawnSync('node', [path.join(repositoryRoot, relativePath)], {
     encoding: 'utf8',
     cwd: repositoryRoot,
     maxBuffer: 1 << 28,
   });
+  return {
+    output: `${result.stdout ?? ''}${result.stderr ?? ''}`,
+    status: result.status ?? -1,
+  };
+};
+
+/**
+ * Whether this checkout can see the mainline. CI checks out the pull request
+ * head alone, so `origin/development` does not resolve there, while a developer
+ * worktree has it. That difference is not incidental: the first version of
+ * these tests asserted the mainline divergence unconditionally, passed locally,
+ * and failed on CI - the author-position defect this pull request is about,
+ * arriving in the test written to guard against it.
+ */
+const mainlineVisible =
+  spawnSync('git', ['rev-parse', '--verify', 'origin/development^{commit}'], {
+    cwd: repositoryRoot,
+    encoding: 'utf8',
+  }).status === 0;
 
 describe('the measurement scripts this change cites are executed, not merely present', () => {
   it('rebuilds the diamond DAG and reports the total the threat model names', () => {
-    const output = runScript('scripts/measure-diamond-dag.mjs');
+    const { output, status } = runScript('scripts/measure-diamond-dag.mjs');
+    expect(status).toBe(0);
 
     // The divergence run D found: the log and the skill say 49,150 rows, and
     // THREAT_MODEL.md section T2.2 said 32,767. Both numbers are real and they
@@ -57,7 +79,8 @@ describe('the measurement scripts this change cites are executed, not merely pre
   });
 
   it('separates the two populations rather than reporting one as the total', () => {
-    const output = runScript('scripts/measure-diamond-dag.mjs');
+    const { output, status } = runScript('scripts/measure-diamond-dag.mjs');
+    expect(status).toBe(0);
 
     // 32,767 is the m-chain row count and 16,383 comes from the s nodes. The
     // failure mode this guards is a future edit that collapses them back into a
@@ -67,7 +90,7 @@ describe('the measurement scripts this change cites are executed, not merely pre
   });
 
   it('reports the mention-filtered figure counts across the artifacts', () => {
-    const output = runScript('scripts/measure-mention-filter.mjs');
+    const { output } = runScript('scripts/measure-mention-filter.mjs');
 
     // The filter exists because a figure quoted inside a fence or a quotation
     // is a mention, not a claim, and counting mentions as claims manufactures
@@ -78,17 +101,31 @@ describe('the measurement scripts this change cites are executed, not merely pre
   });
 
   it('still finds the unrepaired third rendering in the threat model', () => {
-    const output = runScript('scripts/measure-mention-filter.mjs');
+    const { output, status } = runScript('scripts/measure-mention-filter.mjs');
 
-    // Run D's finding, expressed as a condition instead of a sentence. While
-    // THREAT_MODEL.md carries 32,767 it must appear in this table; when the
-    // repair lands on the mainline this assertion is the thing that notices,
-    // because it will fail and force the ledger entry to be updated with it.
-    const row = output
-      .split('\n')
-      .find((line) => line.includes('THREAT_MODEL.md'));
+    if (mainlineVisible) {
+      // Run D's finding, expressed as a condition instead of a sentence. While
+      // THREAT_MODEL.md on the mainline carries 32,767 it must appear in this
+      // table; when the repair lands, this assertion is the thing that notices,
+      // because it fails and forces the ledger entry to be updated with it.
+      expect(status).toBe(0);
+      const row = output
+        .split('\n')
+        .find((line) => line.includes('THREAT_MODEL.md'));
 
-    expect(row).toBeDefined();
-    expect(row).toContain('32,767');
+      expect(row).toBeDefined();
+      expect(row).toContain('32,767');
+      return;
+    }
+
+    // Without the mainline ref the script cannot answer at all, and the
+    // property worth pinning is that it says so. It previously printed a
+    // MISSING line and exited 0, so a caller could not distinguish "measured,
+    // found nothing" from "could not measure" - the same indistinguishability
+    // that makes an uninvoked check look like a passing one. The exit status
+    // now separates them, and this assertion is what keeps it separated.
+    expect(status).toBe(2);
+    expect(output).toContain('INCOMPLETE');
+    expect(output).toContain('MISSING origin/development');
   });
 });
