@@ -92,8 +92,14 @@ reconstructed identifier that is wrong returns empty, and empty reads as a
 finding about the world rather than a fault in the query. His own
 `ripley-go-and-look.md` already carries the guard — _"never reconstruct an
 identifier — copy it from the tool that emitted it"_ — under the heading
-**"Never valid — no reading was ever taken."** (That file is not yet on
-`development`; it is in open PR #163. Cite the heading, not a line number.)
+**"Never valid — no reading was ever taken."** (`ripley-go-and-look.md` reached
+`development` in #163 after this note was drafted. Cite the heading rather than a
+line number regardless: that rule has been read at `:35`, `:37`, `:45` and `:49`
+across four commits without once being edited — every move came from text
+inserted above it, and a `prettier` pass that rewrote the file moved it not at
+all. A positional pointer is invalidated by edits it has no relationship to and
+preserved by edits to its own line, so no reader can form a rule about when to
+distrust it. The heading text survives all four.)
 
 These two also sit alongside `hicks-empty-query-results.md`, which is the same
 defect reached from the query side: a field that can never hold the property
