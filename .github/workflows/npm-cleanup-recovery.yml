@@ -1,6 +1,11 @@
 name: NPM cleanup recovery
 run-name: Discharge npm cleanup run ${{ inputs.run_id }} by @${{ github.actor }}
 
+# merge-queue: publication
+#
+# This manual workflow never reports on pull requests or queued entries, so its
+# job must not become a required branch context.
+
 on:
   workflow_dispatch:
     inputs:

@@ -1,5 +1,10 @@
 name: Publish npm cleanup evidence
 
+# merge-queue: publication
+#
+# This completion-triggered publisher never reports on pull requests or queued
+# entries, so its job must not become a required branch context.
+
 on:
   workflow_run:
     workflows: [CI, Release (signed), Release GPU qualification]
