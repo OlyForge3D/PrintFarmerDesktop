@@ -36,6 +36,7 @@ The draft asserted that `git merge-base --is-ancestor` exits **1** both when a c
 1    a real object that is not an ancestor
 128  cannot determine — the object is absent
 128  cannot determine — the *second* argument is absent (unfetched ref)
+129  the command never ran — malformed invocation (see below)
 ```
 
 Committing the draft unedited would have published a retracted claim into the decision log, which is **the most durable artifact in this repository**, from a file no check reads and no reader can see.
@@ -167,3 +168,35 @@ consistent with a figure that was never re-taken, and those two cases are indist
 value alone. The discriminator is to run the instrument over several points and confirm it returns
 **different** answers — a control this squad already requires of reachability and patch-identity
 checks, and had not applied to its own status reporting.
+
+### The exit-code taxonomy is a property of the tool _and_ the shell, and ours has a fourth value
+
+**`129` is not in the three-valued rule this squad has adopted, and it means something the other
+three do not: the command never ran.** _Could not answer_ and _was never asked_ are different facts,
+and only the second is the caller's own error.
+
+**It arrives from the remedy, not from the hazard.** The guard prescribed to disambiguate `128` is
+`git cat-file -e <sha>^{commit}`, published with the argument bare. Measured on PowerShell, which is
+what this repository is built and tested on:
+
+```
+                      real object   absent object
+  unquoted                129           129
+  quoted                    0           128
+```
+
+**Unquoted, the pre-check returns the identical code for a present object and an absent one.** It
+destroys precisely the distinction it exists to make, and silently — `129` is non-zero, and every
+published example tests non-zero.
+
+> **A control that can only answer _cannot tell_ never fires and never alarms, which is
+> indistinguishable from a control that passes.**
+
+**So quote the argument, and branch by value across four codes: `0` yes, `1` no, `128` no answer,
+`129` not asked.** More generally: **a rule stated about a command is not thereby true of the line
+someone will paste.** Every rendering of this taxonomy in the repository states the tool and omits
+the shell, and the shell is where the fourth value comes from.
+
+**The correction propagated faster than its verification.** The three-valued form now appears in six
+notes under five authors, which is the same mechanism this note already records for figures: a
+result is copied because it is right about the thing it names, and the recipient does not re-derive.

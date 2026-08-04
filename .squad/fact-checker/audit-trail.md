@@ -256,14 +256,46 @@ body        total += 1;
 - **The repair's own gate then caught a third thing, and it had been there for four rounds.** The script that maintains this block wrote its API payload to `.b.json` **in the repository root**, untracked, on every run. `prettier --check .` fails on it, so had it ever been swept up by a `git add -A` it would have turned the branch red on a file no reviewer could account for — and it carries the pull-request body, which is content, not scratch. **A tool that reports on a working tree should not write into it**; the payload now goes to the system temporary directory. **Nothing detected it for four rounds because every commit here was made by naming paths explicitly**, which is a habit rather than a control, and habits are not visible to the next person.
 - **Observed while writing this, and it is the same shape one field up:** `mergeable` read `null` at write time and `mergeable_state` read `unknown` — GitHub had not finished computing them. **`null` is a third value, not a false**, and any reader testing it truthily gets `CONFLICTING` and `not yet known` as one answer.
 
+### Run AF — two reports, one source, and a fourth exit value that disables the pre-check written to rescue the third
+
+- **The pair.** Two cross-session reports of #162's state, against #162. Read at `2026-08-04T23:10:04Z`. **Verdict ❌ against both reports; the artifact is correct.**
+
+- **Both reports say `OPEN` at `d64704d7a4c74dcf5dd9373e1ed7b87571e894ab`. Two GitHub code paths disagree with them and with nothing else.** REST `pulls/162` and the GraphQL view both return **`MERGED`**, `merged_at` `2026-08-04T19:29:29Z`, merge commit `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`, head `e5a90df74722f586670e18472da5ffe3fd424ba3`, closing #121.
+
+- **The reported SHA is real and was genuinely this pull request's head.** `d64704d7` is an ancestor of `e5a90df7` — exit **0** — and was committed at `11:21:44-07:00`, fifty-one minutes before the merge base commit and sixty-eight before the merge. **Both reports were true when taken.** What neither carried is when that was.
+
+- **The finding, and it is the one this round is for: agreement between two reports is evidence only if the reporters are causally independent, and a report does not disclose its provenance.** Two messages from two sessions carrying the **identical superseded value** is the signature of **one upstream reading relayed twice**, not of two readings that agree. **This is the snapshot rule one level out:** run AE established that two readings inside one window are one snapshot; **two reporters drawing on one source are one reader**, and the second arrival adds confidence without adding information.
+
+- **The second report attached the word _verified live_ to a value roughly four hours stale.** A freshness assertion is **metadata**, and run AC already recorded what metadata is worth here: **a field that is occasionally right is the failure mode, because it is trusted in the cases where it is wrong.** The remedy is unchanged and cheap — **open the artifact the report is about.** Two API calls settled this one.
+
+- **A fourth exit value, measured while checking the above, and it is not in the taxonomy this squad has adopted in six files.** `git merge-base --is-ancestor` and `git cat-file -e` return **0**, **1** and **128** as recorded — and **129 for a malformed invocation**, which means _the command never ran_ and is a different fact from _git could not answer_.
+
+- **It arrives from the prescribed remedy itself, on the shell this repository is built on.** The guard written to disambiguate 128 is `git cat-file -e <sha>^{commit}`, published unquoted. Measured on PowerShell:
+
+  ```
+                          real object   absent object
+    unquoted                  129           129
+    quoted                      0           128
+  ```
+
+  **Unquoted, the pre-check returns the same code for a present object and an absent one** — it destroys exactly the distinction it was added to make, and it does so silently, because `129` is non-zero and every caller in the published examples tests non-zero. **A control that can only return _cannot tell_ never fires and never alarms, which is indistinguishable from a control that passes.** That is #121's shape arriving inside #121's own remedy, two corrections deep.
+
+- **The general form: an exit-code taxonomy is a property of the tool _and_ the shell that invokes it, and every rendering of it in this repository states only the tool.** The documents give the argument bare; `^{commit}` survives one shell and not another. **A rule that is true of a command is not thereby true of the line someone will paste.**
+
+- **Recorded but not repaired here, because they are not this session's files.** The three-valued taxonomy appears in five further notes under other authors. **The correction propagated faster than its verification**, which is itself the pattern this ledger keeps finding: a fix is copied because it is right about the thing it names, and nobody re-runs it.
+
+- **Fourth instance of the string-keyed citation defect, produced by this entry, and the harness stopped the commit.** The report gave the head at full length and **this entry quoted it verbatim**, which does not resolve against the declarations already standing for `d64704d` and `d64704d7`. Exit **1**, one orphan, no verdict published. **Every previous instance of this defect was created the same way — by copying someone else's abbreviation — and that is now four for four.** Quoting a revision is not citing the one already declared; it is minting a new citation that happens to denote the same object. Declared as a twin of `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` rather than as unreachable, **because its content is on the mainline and a twin is the true statement**; counts re-derived from the rows per run Z, now **44 rows naming 41 distinct commits**.
+- **The positive result, since a run that only reports errors is not a check.** `d64704d7`'s content fully survived the squash: `scripts/check-citation-reachability.mjs` is **byte-identical** on the mainline, and all **six** lines it added to this trail are present there. **None of that branch's commits exist as objects on the mainline and all of its work does** — which is what a squash means and why content, not ancestry, is the question worth asking.
+
 ## Superseded citations and their live twins
 
-**Post-squash declaration (#162).** The 43 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
+**Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
 
 - `762cd70` — squashed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` when #162 merged; live twin `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`
 - `b8ae4d7f` — squashed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` when #162 merged; live twin `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`
 - `bef4bcf` — squashed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` when #162 merged; live twin `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`
 - `d64704d` — squashed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` when #162 merged; live twin `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`
+- `d64704d7a4c74dcf5dd9373e1ed7b87571e894ab` — squashed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` when #162 merged; live twin `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`. The same revision as `d64704d` and `d64704d7` above at full length, quoted verbatim from a cross-session report; a citation is matched as a string, so each abbreviation needs its own row.
 - `e5a90df7` — squashed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` when #162 merged; live twin `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`
 - `01e73855` — squashed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` when #162 merged; live twin `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`
 - `063e4be` — squashed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` when #162 merged; live twin `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`
