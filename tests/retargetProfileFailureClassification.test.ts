@@ -207,6 +207,29 @@ describe('retarget profile failure classification', () => {
     expect(response.error?.message).toBe('native said the store is corrupt');
   });
 
+  it('does not name a cause for an error it cannot classify', async () => {
+    // Remedy item 2 of #316, asserted directly — and this test exists because a
+    // mutation survived without it. After the try-split the reaper failure is
+    // handled before the mapper is reached, so nothing else in this file
+    // exercises the unclassified arm: changing its code back to
+    // `sidecarUnavailable` left all six other cases green. That mutation is the
+    // behaviour on `development`, so the suite would have been certifying a fix
+    // for a branch it never ran.
+    //
+    // The `.not.toBe` below is falsifiable rather than decorative because the
+    // sidecar case above produces that exact code from this exact handler.
+    faultState.profileFault = new Error(
+      'EPERM: operation not permitted, rmdir',
+    );
+
+    const response = await invoke(LIST_CHANNEL);
+
+    expect(response.status).toBe('error');
+    expect(response.error?.code).toBe('internalError');
+    expect(response.error?.code).not.toBe('sidecarUnavailable');
+    expect(response.error?.action).toMatch(/not identified/i);
+  });
+
   it('makes the two fault sources distinguishable to the operator', async () => {
     // The claim #178 recorded as untestable, because the handler then returned
     // a byte-identical envelope for both. Values, not key presence: identical
