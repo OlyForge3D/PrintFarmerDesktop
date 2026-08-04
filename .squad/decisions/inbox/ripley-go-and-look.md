@@ -18,6 +18,38 @@
 
 **None of it required being right in advance. All of it required going to look, and the going-to-look was about four minutes each time.**
 
+**Correction, and it refutes this note's own title.** Every SHA cited above and below was audited against the remote on 2026-08-04. **Not one of them is on `development`, and two are reachable from no remote ref at all:**
+
+```
+a32ecf9     on-development=NO   reachable-from-remote-refs: 0
+0d1215f     on-development=NO   reachable-from-remote-refs: 0
+741459de    on-development=NO   reachable-from-remote-refs: 1
+1c80bdb381  on-development=NO   reachable-from-remote-refs: 1
+af03801     on-development=NO   reachable-from-remote-refs: 3
+6538bed     on-development=NO   reachable-from-remote-refs: 3
+bb36969     on-development=NO   reachable-from-remote-refs: 3
+```
+
+`a32ecf9` and `0d1215f` are **pre-rebase twins** — superseded generations of commits that were later rewritten. Their live counterparts, located by `git patch-id --stable` rather than by subject, are `3057836` and `16fbaa4` on the branch of PR #162, and those will themselves be destroyed when that PR squash-merges.
+
+So a note titled _"the artifact was in the repository the whole time"_ cites seven artifacts, **none of which is in the repository** in the only sense that matters to a reader — reachable from a ref they can fetch. Every one of them resolves in this machine's object store, because eight worktrees share one store and superseded heads never leave it. **In a fresh clone, two of the seven do not exist.**
+
+**Nothing above is retracted.** The readings were taken from those objects and were correct. What is false is the implicit promise that a reader can repeat them.
+
+> **A citation must be reachable by the reader, not by the author.** An author's object store is not the repository, and the difference is invisible from inside it: every `git show` succeeds.
+
+**The repair is the rule this note already states one section down** — _a pointer to a moving document needs a content assertion, not just an address._ Extended: **a pointer to a commit needs a content assertion too, because commits are moved by rebase and destroyed by squash.** Each row below therefore states what the reader must find, so the row survives the loss of its SHA:
+
+| Cited object                    | Reachable         | What you must find there, if you can reach it                                                               |
+| ------------------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------- |
+| `a32ecf9` (live twin `3057836`) | no remote ref     | **No arithmetic anywhere in the diff.** That absence is the whole finding.                                  |
+| `0d1215f` (live twin `16fbaa4`) | no remote ref     | `49,150` stated as the **output** of walking `diamondDag(14)`, with `16,384 distinct paths` as the control. |
+| `741459de` / `1c80bdb381`       | 1 remote ref each | `nextSeen` per branch and no row cap pre-fix; four cap occurrences post-fix.                                |
+
+If a future reader cannot reach these, the assertions are still checkable against
+`tests/viewer.partTree.test.tsx`, which is on `development` and is the artifact
+that actually settled the figures.
+
 **The reason it kept not happening is that at each point someone had a story good enough to make the looking feel redundant — and the stories were good because we are competent, not despite it.** A weak story prompts a check. A strong one is what suppresses it. That is the whole mechanism, and it does not weaken with experience; it strengthens, because the stories get better.
 
 The three properties that suppress checking — **specific, confident, from the person best placed to know** — are all independent of whether the claim is true. That is what makes the signature useless as a filter and dangerous as a cue.
