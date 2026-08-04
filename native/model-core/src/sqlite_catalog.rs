@@ -3400,12 +3400,27 @@ impl CatalogStore for SqliteCatalog {
             .optional()
             .map_err(sql_error)?
             .flatten();
-        let project_id = project_id.unwrap_or_default();
-        let conflict_id = format!("conflict-{}", uuid_v4_placeholder());
+        // An empty project_id cannot satisfy the calibration_projects foreign key.
+        // Left to SQLite this surfaces as "FOREIGN KEY constraint failed", which
+        // names nothing the sync engine or an operator can act on. Refuse here
+        // instead, naming the operation whose project could not be resolved.
+        let project_id = project_id.filter(|id| !id.is_empty()).ok_or_else(|| {
+            format!(
+                "cannot record calibration conflict: operation {operation_id} has no owning project",
+            )
+        })?;
+        // The IPC contract declares conflictId as a UUID (CalibrationConflict in
+        // src/shared/ipc.ts), and the main process parses the list response against
+        // it. A "conflict-" prefix makes every recorded conflict unreadable.
+        let conflict_id = uuid_v4_placeholder();
         let now = now_ts();
         self.conn
             .execute(
-                "INSERT OR IGNORE INTO calibration_conflicts
+                // Plain INSERT, not INSERT OR IGNORE: conflict_id is freshly
+                // generated so the primary key can never collide, which left
+                // OR IGNORE with nothing to suppress. (It never suppressed the
+                // foreign key failure above -- SQLite raises those regardless.)
+                "INSERT INTO calibration_conflicts
                      (profile_id, conflict_id, project_id, kind, entity_id,
                       operation_id, server_revision, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -6159,6 +6174,112 @@ mod tests {
         assert_eq!(projects[0].recovery_state, "migrationRequired");
         assert!(projects[0].is_synced);
         assert!(!projects[0].is_printer_context_fresh);
+    }
+
+    /// Shape check for the UUID the IPC contract requires (`z.string().uuid()`
+    /// on CalibrationConflict.conflictId in src/shared/ipc.ts). Written out here
+    /// rather than pulling a uuid dependency into the test build.
+    fn is_contract_uuid(value: &str) -> bool {
+        let bytes = value.as_bytes();
+        if bytes.len() != 36 {
+            return false;
+        }
+        bytes.iter().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                *byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+    }
+
+    #[test]
+    fn recorded_calibration_conflict_is_readable_through_the_ipc_contract() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let input = workspace_input(
+            "profile-1",
+            "project-1",
+            "operation-1",
+            &"e".repeat(64),
+            "2026-07-26T15:01:00.000Z",
+        );
+        store.save_calibration_workspace_state(&input).unwrap();
+
+        store
+            .record_calibration_conflict(
+                "profile-1",
+                "operation-1",
+                "CalibrationProject",
+                "project-1",
+                "server revision moved ahead",
+                9,
+            )
+            .unwrap();
+
+        let conflicts = store
+            .list_calibration_conflicts("profile-1", Some("project-1"))
+            .unwrap();
+        assert_eq!(
+            conflicts.len(),
+            1,
+            "recording a conflict must persist a row the reader can find"
+        );
+        assert_eq!(conflicts[0].project_id, "project-1");
+        assert_eq!(conflicts[0].entity_id, "project-1");
+        assert_eq!(conflicts[0].server_revision, 9);
+        assert!(
+            is_contract_uuid(&conflicts[0].conflict_id),
+            "conflictId {:?} is not a UUID, so the main process rejects the whole \
+             list response (src/main/ipc.ts CalibrationListConflicts)",
+            conflicts[0].conflict_id
+        );
+
+        let state: String = store
+            .conn
+            .query_row(
+                "SELECT state FROM calibration_outbox
+                 WHERE profile_id = 'profile-1' AND operation_id = 'operation-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "conflict");
+    }
+
+    #[test]
+    fn calibration_conflict_without_an_owning_project_names_the_operation() {
+        // Before the guard, this path did not lose the conflict -- SQLite raised
+        // "catalog sync operation failed: FOREIGN KEY constraint failed", which
+        // identifies neither the operation nor the missing project. The assertion
+        // below is on the diagnostic, because that was the actual defect.
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let input = workspace_input(
+            "profile-1",
+            "project-1",
+            "operation-1",
+            &"f".repeat(64),
+            "2026-07-26T15:01:00.000Z",
+        );
+        store.save_calibration_workspace_state(&input).unwrap();
+
+        let error = store
+            .record_calibration_conflict(
+                "profile-1",
+                "operation-missing",
+                "CalibrationProject",
+                "project-1",
+                "server revision moved ahead",
+                9,
+            )
+            .expect_err("a conflict that cannot be stored must surface an error");
+        assert!(
+            error.contains("operation-missing"),
+            "error {error:?} should name the operation it could not resolve"
+        );
+        assert!(store
+            .list_calibration_conflicts("profile-1", None)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
