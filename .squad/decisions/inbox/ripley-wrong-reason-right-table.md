@@ -30,6 +30,18 @@ observation would contradict it. The arm built to break the reason needs its own
 control, for the ordinary cause — an arm with no divergent control is not a
 refutation, it is an unrun experiment.
 
+The same error costs more when the false reason is attached to a capability
+rather than to a result. A reason explains why a measurement came out as it did,
+and a wrong one distorts the next inference. A reason offered for why something
+cannot be done closes the search entirely, and nothing downstream ever reopens
+it, because the conclusion it supports is usually true. A negative result
+obtained from two attempts, generalised to a mechanism, will be repeated as a
+property of the system by people who never ran even those two. The tell is a
+universal quantifier that no measurement could have established: never, cannot,
+not available to us. Where the evidence is a handful of specific failures, the
+claim must name those failures and stop, because the untested remainder is
+exactly where the capability turns out to live.
+
 An asymmetry follows that is worth stating plainly. A prediction derived from an
 explanation and then falsified is a better outcome than a prediction that holds,
 because it is the only one that produces the discriminating case. Agreement
