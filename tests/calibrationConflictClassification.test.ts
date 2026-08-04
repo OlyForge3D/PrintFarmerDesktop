@@ -20,6 +20,7 @@ import {
   SidecarCalibrationAdapter,
   classifyCalibrationConflictKind,
   conflictResolutionsFor,
+  supportsConflictResolution,
 } from '../src/main/calibrationService.js';
 import type { SidecarClient } from '../src/main/sidecar.js';
 
@@ -59,27 +60,26 @@ function conflictRow(entityType: string): Record<string, unknown> {
 }
 
 /**
- * A transport that is fully resolve-capable. This matters: if the transport
- * lacked `resolveCalibrationConflict`, `conflictResolutionsFor` would return
- * `[]` for every kind and every assertion below would pass for the wrong
- * reason -- the masking-guard failure this squad has hit before.
+ * A sidecar stub supplying only what the list path consumes.
+ *
+ * Note what does *not* make the adapter resolve-capable: this object. The
+ * adapter passes **itself** to `conflictResolutionsFor`, and it owns a
+ * `resolveCalibrationConflict` method (#296), so advertisement is driven by the
+ * adapter class rather than by the injected client. An earlier version of this
+ * helper carried a `resolveCalibrationConflict` stub and a comment claiming it
+ * guarded against the masking-guard failure. **Removing that stub changed
+ * nothing, which is how the claim was found to be false** -- the comment
+ * described a mechanism that was not there, the same defect class as #304.
+ *
+ * The real guard against "everything is `[]`, so the assertions pass for the
+ * wrong reason" is the positive control below, which fails if advertisement is
+ * empty for a classifiable kind.
  */
 function capableSidecar(
   rows: readonly Record<string, unknown>[],
 ): SidecarClient {
   return {
     listCalibrationConflicts: () => Promise.resolve(rows),
-    resolveCalibrationConflict: () =>
-      Promise.resolve({
-        conflictId: 'c',
-        profileId: 'profile-1',
-        projectId: 'project-1',
-        kind: 'projectMetadata',
-        resolution: 'acceptServer',
-        resolvedAt: '2026-01-01T00:00:00Z',
-        revisionId: null,
-        supersededObservations: [],
-      }),
   } as unknown as SidecarClient;
 }
 
@@ -141,6 +141,11 @@ describe('#219 classification gates what an adapter may advertise', () => {
     // Positive control. Without this, returning `[]` unconditionally would
     // satisfy both tests above, and the fix would be indistinguishable from
     // breaking advertisement entirely.
+    //
+    // The capability that makes advertisement non-empty belongs to the adapter,
+    // not to the injected client -- asserted rather than assumed, because
+    // assuming it is exactly what produced the false comment on capableSidecar.
+    expect(supportsConflictResolution(adapter)).toBe(true);
     for (const conflict of conflicts) {
       const expected = conflictResolutionsFor(
         { resolveCalibrationConflict: () => undefined },
