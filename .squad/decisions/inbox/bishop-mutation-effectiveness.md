@@ -53,6 +53,19 @@ mutated code may be dead, and _that_ is the finding to report instead. A
 mutation that cannot be shown to change behaviour is reported as **ineffective**,
 explicitly, and is not evidence about any test.
 
+**It is not really a rule about mutations.** It binds **any intervention whose
+result you intend to read** — a bisect, a feature-flag flip, a mock, a disabled
+cache — because each is an edit made in order to interpret an outcome, and each
+is worthless until shown to have changed the system. The trap with teeth is an
+intervention applied to **one of N copies of the mechanism, where N is not
+visible from the file you are editing**: disabling `reapStaleTempRoots` in
+`tests/calibrationRedaction.test.ts` and still seeing the failure twice in eight
+runs reads as _reaper exonerated_ — but that helper sweeps every
+`pf-calibration-log-*` in the shared OS temp directory, skipping only its own
+root, and this machine carries twenty-plus worktrees each running their own
+copy. The bisect changed nothing the failure could see, and _exonerated_ is a
+conclusion someone will quote.
+
 ## Rule 2 — when the bad input and the misread output are the same event, there is no second signal
 
 **Some failures produce a clean-looking result as their symptom.** When the
