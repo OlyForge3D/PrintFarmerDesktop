@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   compareClosures,
   formatFailure,
+  formatUnsettled,
+  main,
   parseDeclaredClosures,
   readSettled,
 } from '../scripts/check-closing-references.mjs';
@@ -224,5 +226,114 @@ describe('formatFailure', () => {
       hasBlock: true,
       declared: [123],
     });
+  });
+});
+
+/**
+ * Reviewer finding on #366: `main` destructured `settled`, printed it in the
+ * summary, and never branched on it -- so a read that never stabilised passed
+ * whenever its last value happened to match the declaration.
+ *
+ * Every other unit in the script was covered. The one that decides the exit
+ * code was not, because `main` was the only export the test file did not
+ * import. These specs exist as much to close that seam as to pin the branch.
+ */
+describe('main', () => {
+  const BODY = ['```' + KEYWORD, '#231', '```'].join('\n');
+
+  /** `gh` stub: body on the first call shape, closures on the other. */
+  function ghStub(closures: number[]) {
+    return (args: string[]) =>
+      args.includes('body') ? BODY : JSON.stringify(closures);
+  }
+
+  function silenced() {
+    return {
+      log: vi.spyOn(console, 'log').mockImplementation(() => undefined),
+      error: vi.spyOn(console, 'error').mockImplementation(() => undefined),
+    };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    process.exitCode = undefined;
+  });
+
+  it('fails an unsettled read even when the value matches', async () => {
+    const spies = silenced();
+    const result = await main(['231'], {
+      run: ghStub([231]),
+      // Matches the declaration exactly. Under the previous implementation
+      // this was the passing case, which is the defect: the value may still
+      // be arriving, so the match is not evidence of anything.
+      readClosures: async () => ({
+        value: [231],
+        reads: 20,
+        settled: false,
+        elapsedMs: 95000,
+      }),
+    });
+
+    expect(result).toEqual({ ok: false, settled: false });
+    expect(process.exitCode).toBe(1);
+    const printed = spies.error.mock.calls.map((call) => call[0]).join('\n');
+    // It must not be reported as a mismatch: the references may be correct.
+    expect(printed).toContain('Could not read the closing references');
+    expect(printed).not.toContain('do not match its declaration');
+  });
+
+  it('passes a settled read that matches', async () => {
+    // CONTROL. Without it, the assertion above is satisfied by a `main` that
+    // fails unconditionally, which would also "not pass an unsettled read".
+    const spies = silenced();
+    const result = await main(['231'], {
+      run: ghStub([231]),
+      readClosures: async () => ({
+        value: [231],
+        reads: 13,
+        settled: true,
+        elapsedMs: 61000,
+      }),
+    });
+
+    expect(result).toEqual({ ok: true, settled: true });
+    expect(process.exitCode).toBeUndefined();
+    expect(spies.log.mock.calls.map((call) => call[0]).join('\n')).toContain(
+      'match the declaration',
+    );
+  });
+
+  it('reports a settled mismatch as a mismatch, not as an unsettled read', async () => {
+    // The other direction of the same discrimination: the two failures must
+    // stay distinguishable, or consulting `settled` just moves the conflation
+    // from the exit code into the message.
+    const spies = silenced();
+    const result = await main(['231'], {
+      run: ghStub([231, 999]),
+      readClosures: async () => ({
+        value: [231, 999],
+        reads: 13,
+        settled: true,
+        elapsedMs: 61000,
+      }),
+    });
+
+    expect(result).toEqual({ ok: false, settled: true });
+    expect(process.exitCode).toBe(1);
+    const printed = spies.error.mock.calls.map((call) => call[0]).join('\n');
+    expect(printed).toContain('do not match its declaration');
+    expect(printed).toContain('#999');
+    expect(printed).not.toContain('Could not read the closing references');
+  });
+
+  it('does not report the last value as a result when unsettled', async () => {
+    const message = formatUnsettled({
+      prNumber: 366,
+      reads: 20,
+      elapsedMs: 95000,
+      value: [231],
+    });
+    expect(message).toContain('It is not reported as a result');
+    expect(message).toContain('reading too early');
   });
 });

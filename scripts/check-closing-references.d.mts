@@ -49,3 +49,23 @@ export function formatFailure(input: {
   hasBlock: boolean;
   prNumber: number | string;
 }): string;
+
+export function formatUnsettled(input: {
+  prNumber: number | string;
+  reads: number;
+  elapsedMs: number;
+  value: number[];
+}): string;
+
+export interface MainDeps {
+  run?: (args: string[]) => string;
+  readClosures?: (
+    read: () => number[] | Promise<number[]>,
+    options?: SettleOptions,
+  ) => Promise<SettledRead>;
+}
+
+export function main(
+  argv: string[],
+  deps?: MainDeps,
+): Promise<{ ok: boolean; settled: boolean }>;

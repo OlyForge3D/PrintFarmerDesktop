@@ -166,8 +166,9 @@ export function formatFailure({ unexpected, missing, hasBlock, prNumber }) {
       '',
       `  DECLARED BUT NOT ARMED: ${missing.map((n) => `#${n}`).join(', ')}`,
       '  The declaration says this PR closes them and GitHub has not registered',
-      '  it. Note that the field is briefly stale after an edit; this check',
-      '  already re-reads until it settles, so a persistent mismatch means the',
+      '  it. The field is briefly stale after an edit, so this check re-reads',
+      '  against a wall-clock floor and reports separately when it cannot',
+      '  settle -- meaning this result was read from a settled value, and the',
       '  keyword is absent, misspelled, or the issue is in another repository.',
     );
   }
@@ -188,25 +189,58 @@ export function formatFailure({ unexpected, missing, hasBlock, prNumber }) {
   return lines.join('\n');
 }
 
+/**
+ * Rendered when the read never settled. This is deliberately not the mismatch
+ * message: "the references do not match" and "I could not determine what the
+ * references are" are different findings, and reporting the second as the
+ * first would be a false accusation as easily as a false pass.
+ */
+export function formatUnsettled({ prNumber, reads, elapsedMs, value }) {
+  return [
+    `Could not read the closing references for PR #${prNumber} reliably.`,
+    '',
+    `  ${reads} reads over ${Math.round(elapsedMs / 1000)}s never produced a`,
+    '  stable value for the required interval. The field is eventually',
+    '  consistent, so an unstable read means the answer is still arriving --',
+    '  not that it is empty.',
+    '',
+    `  Last value seen: [${value.join(', ')}]. It is not reported as a result,`,
+    '  because a value that may still change cannot support either verdict:',
+    '  if it happens to match the declaration, the match may be an artifact of',
+    '  reading too early.',
+    '',
+    '  Re-run this check. If it persists, GitHub is not converging and the',
+    '  declaration must be confirmed by hand before merging.',
+  ].join('\n');
+}
+
 function gh(args) {
   return execFileSync('gh', args, { encoding: 'utf8' }).trim();
 }
 
-async function main(argv) {
+/**
+ * Exported and dependency-injected so the decision below is reachable from a
+ * test. It was not, and that is exactly how `settled` came to be computed,
+ * printed, and never consulted: every unit in this file was covered except the
+ * one that decides the exit code.
+ */
+export async function main(argv, deps = {}) {
+  const { run = gh, readClosures = readSettled } = deps;
   const prNumber = argv[0];
   if (!prNumber || !/^\d+$/.test(prNumber)) {
     throw new Error('usage: check-closing-references.mjs <pr-number>');
   }
 
-  const body = gh(['pr', 'view', prNumber, '--json', 'body', '--jq', '.body']);
+  const body = run(['pr', 'view', prNumber, '--json', 'body', '--jq', '.body']);
   const { declared, hasBlock } = parseDeclaredClosures(body);
 
   const {
     value: actual,
     reads,
     settled,
-  } = await readSettled(() => {
-    const raw = gh([
+    elapsedMs = 0,
+  } = await readClosures(() => {
+    const raw = run([
       'pr',
       'view',
       prNumber,
@@ -223,14 +257,25 @@ async function main(argv) {
     `declared=[${declared.join(', ')}] armed=[${actual.join(', ')}] ` +
     `reads=${reads} settled=${settled}`;
 
+  // Before the comparison, not after. An unsettled read that happens to match
+  // is not a pass: `compareClosures` is being handed a value that may still
+  // change, so its `ok` says nothing about the merged state.
+  if (!settled) {
+    console.error(formatUnsettled({ prNumber, reads, elapsedMs, value: actual }));
+    console.error(`\n  ${summary}`);
+    process.exitCode = 1;
+    return { ok: false, settled: false };
+  }
+
   if (!result.ok) {
     console.error(formatFailure({ ...result, hasBlock, prNumber }));
     console.error(`\n  ${summary}`);
     process.exitCode = 1;
-    return;
+    return { ok: false, settled: true };
   }
 
   console.log(`Closing references match the declaration. ${summary}`);
+  return { ok: true, settled: true };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
