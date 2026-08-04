@@ -89,64 +89,89 @@ export const CalibrationProvenance: React.FC<CalibrationProvenanceProps> = ({
         updated. It uniquely identifies what was generated and what environment
         was used.
       </p>
-      <dl className="calibration-provenance__details">
-        {/* Identity */}
-        <div className="calibration-provenance__section-header">
-          <span>Job Identity</span>
-        </div>
-        <IdLine label="Job ID" id={provenance.jobId} />
-        <IdLine label="Assigned Printer" id={provenance.assignedPrinterId} />
-        <IdLine label="G-code File" id={provenance.gcodeFileId} />
-        <TextLine label="Queue Revision (ETag)" value={provenance.rowVersion} />
+      <section aria-labelledby="provenance-identity">
+        <h4
+          id="provenance-identity"
+          className="calibration-provenance__section-header"
+        >
+          Job Identity
+        </h4>
+        <dl className="calibration-provenance__details">
+          <IdLine label="Job ID" id={provenance.jobId} />
+          <IdLine label="Assigned Printer" id={provenance.assignedPrinterId} />
+          <IdLine label="G-code File" id={provenance.gcodeFileId} />
+          <TextLine
+            label="Queue Revision (ETag)"
+            value={provenance.rowVersion}
+          />
+        </dl>
+      </section>
 
-        {/* Environment */}
-        <div className="calibration-provenance__section-header">
-          <span>Generation Environment</span>
-        </div>
-        <TextLine
-          label="Upstream Orca Version"
-          value={provenance.requiredSlicerVersion}
-        />
-        <TextLine
-          label="Klipper Dialect"
-          value={provenance.requiredGcodeDialect}
-        />
-        <TextLine
-          label="Firmware Family"
-          value={provenance.requiredFirmwareFamily}
-        />
-        <TextLine
-          label="Slicer Container Digest"
-          value={provenance.requiredSlicerContainerDigest}
-        />
-        <TextLine
-          label="Printer Config Revision"
-          value={provenance.pinnedPrinterConfigRevision}
-        />
+      <section aria-labelledby="provenance-environment">
+        <h4
+          id="provenance-environment"
+          className="calibration-provenance__section-header"
+        >
+          Generation Environment
+        </h4>
+        <dl className="calibration-provenance__details">
+          <TextLine
+            label="Upstream Orca Version"
+            value={provenance.requiredSlicerVersion}
+          />
+          <TextLine
+            label="Klipper Dialect"
+            value={provenance.requiredGcodeDialect}
+          />
+          <TextLine
+            label="Firmware Family"
+            value={provenance.requiredFirmwareFamily}
+          />
+          <TextLine
+            label="Slicer Container Digest"
+            value={provenance.requiredSlicerContainerDigest}
+          />
+          <TextLine
+            label="Printer Config Revision"
+            value={provenance.pinnedPrinterConfigRevision}
+          />
+        </dl>
+      </section>
 
-        {/* Content hashes */}
-        <div className="calibration-provenance__section-header">
-          <span>Content Hashes (SHA-256)</span>
-        </div>
-        <HashLine label="G-code Content" hash={provenance.gcodeContentSha256} />
-        <HashLine label="Specification" hash={provenance.specificationSha256} />
-        <HashLine
-          label="Machine Profile"
-          hash={provenance.machineProfileSha256}
-        />
-        <HashLine
-          label="Process Profile"
-          hash={provenance.processProfileSha256}
-        />
-        <HashLine
-          label="Filament Profile"
-          hash={provenance.filamentProfileSha256}
-        />
-        <HashLine
-          label="Printer Config Snapshot"
-          hash={provenance.printerConfigSnapshotSha256}
-        />
-      </dl>
+      <section aria-labelledby="provenance-hashes">
+        <h4
+          id="provenance-hashes"
+          className="calibration-provenance__section-header"
+        >
+          Content Hashes (SHA-256)
+        </h4>
+        <dl className="calibration-provenance__details">
+          <HashLine
+            label="G-code Content"
+            hash={provenance.gcodeContentSha256}
+          />
+          <HashLine
+            label="Specification"
+            hash={provenance.specificationSha256}
+          />
+          <HashLine
+            label="Machine Profile"
+            hash={provenance.machineProfileSha256}
+          />
+          <HashLine
+            label="Process Profile"
+            hash={provenance.processProfileSha256}
+          />
+          <HashLine
+            label="Filament Profile"
+            hash={provenance.filamentProfileSha256}
+          />
+          <HashLine
+            label="Printer Config Snapshot"
+            hash={provenance.printerConfigSnapshotSha256}
+          />
+        </dl>
+      </section>
     </section>
   );
 };
