@@ -40,6 +40,13 @@ What that section requires, for any agent running the check:
   the other), while **independence cannot be proved by provenance alone** — separate
   commits and authors are evidence, never proof, because a figure can be copied a week
   later. ⚠️ is therefore the default for any bare clean diff.
+- **Routes count by class of mechanism, not by author.** Three agents each walking the
+  graph is one method run three times. That is replication, which tests for slips and
+  cannot detect a systematically wrong walk, because every run repeats the walk.
+  Corroboration needs a second **class** of mechanism, and only corroboration bears on
+  whether the method was right. Counting agreeing agents as agreeing routes inflates the
+  evidence by the number of people involved. This is the same rule as **a well-argued
+  report is a rendering**, seen from the other end.
 - **✅ grades independence, and only an author's own first-person statement of method reaches it — nobody can give it on their behalf.** The grade
   asks one thing: is the agreement between these renderings evidence of anything? It is
   **not** a grade of the value. So a derivation from the object, or a measurement re-run at

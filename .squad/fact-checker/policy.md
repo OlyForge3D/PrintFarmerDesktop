@@ -59,6 +59,7 @@ The check is sound only where the renderings were **derived independently**. Whe
 
 - **Dependence can be proved.** One commit writing both renderings, a long verbatim run between the two sentences against a control of unrelated lines, or a repair whose own record says it was made by reading the other rendering — any of these settles it.
 - **Independence cannot be proved by provenance alone.** Separate commits, separate PRs and separate authors are **evidence** of independence, never proof: a figure can be copied across files a week later, and nothing in the history distinguishes that from two people measuring the same thing.
+- **Routes count by class of mechanism, not by author.** Three agents each walking the graph is one method run three times. That is _replication_, and replication tests for slips: it cannot detect a systematically wrong walk, because every run repeats the walk. _Corroboration_ requires a second **class** of mechanism, and only corroboration bears on whether the method was right. Counting agreeing agents as agreeing routes inflates the evidence by the number of people involved, which is the failure this precondition exists to prevent — it just wears a more convincing costume than a copied figure does.
 
 So **⚠️ Unverified is the default for a clean result**, and a clean diff on its own never reaches ✅ however many renderings agree.
 
