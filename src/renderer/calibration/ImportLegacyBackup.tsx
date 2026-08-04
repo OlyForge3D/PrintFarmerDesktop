@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import type {
   LegacyBackupPreflight,
   LegacyBackupProjectOutcome,
@@ -7,6 +7,7 @@ import type {
   CalibrationImportLegacyBackupV4Response,
 } from '@shared/ipc';
 import type { CalibrationEnvironment } from './api';
+import { useDialogFocusLifecycle, useFocusTrap } from './useDialogFocus';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -312,6 +313,15 @@ export function ImportLegacyBackup({
     { status: 'ok' }
   > | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  // Escape must not abandon a native pick or an in-flight import.
+  const dismissable = step !== 'importing' && step !== 'picking';
+  const handleEscape = useCallback(() => {
+    if (dismissable) onClose();
+  }, [dismissable, onClose]);
+
+  useDialogFocusLifecycle(dialogRef, true);
+  useFocusTrap(dialogRef, true, handleEscape);
 
   // Initialise mapping entries when preflight completes
   const initMappings = useCallback((pf: LegacyBackupPreflight) => {
@@ -446,6 +456,7 @@ export function ImportLegacyBackup({
 
   return (
     <div
+      ref={dialogRef}
       className="cal-import-legacy-backup"
       role="dialog"
       aria-modal="true"
