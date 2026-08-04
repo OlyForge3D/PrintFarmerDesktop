@@ -99,40 +99,6 @@ The lead (Ripley). In practice, whoever is sequencing the work — but the label
 asserts that a specific person is holding it, so applying it without being that
 person makes the assertion false.
 
-### Nothing applies it for you, and nothing can
-
-**A hold is an abstention, and an abstention emits no event.** Merging emits
-`pull_request: closed`; reviewing emits a review; pushing emits a push. Deciding
-_not_ to merge emits nothing at all — in every artifact GitHub produces it is
-indistinguishable from never having looked at the pull request. So there is no
-occurrence for automation to hang the label on.
-
-The obvious candidate signals were measured against all six pull requests that
-have ever carried `hold:sequenced` (#154, #169, #172, #174, #175, #212):
-
-| candidate signal                       | instances across the six |
-| -------------------------------------- | ------------------------ |
-| draft / ready-for-review               | 0                        |
-| `CHANGES_REQUESTED` review             | 0                        |
-| a base branch other than `development` | 0                        |
-
-**These are not signals that are hard to read. They are absent.** In particular
-"held PRs are stacked PRs" is falsified six times over: every held PR targeted
-`development`, as does every open PR in the repository.
-
-**The application record shows the cost, and it is already measurable.** Five of
-the six labels were applied inside a **three-second window** — `23:27:40Z` to
-`23:27:43Z` on 3 Aug — between 0.3 and 1.6 hours after each PR was opened. That
-is not five decisions being recorded as they were taken; it is one sweep
-remembering five earlier decisions afterwards. During every one of those windows
-the pull request was held in fact and green-and-unlabelled in the repository.
-
-So the honest statement is: **applying this label is a second, separate,
-forgettable step, and no arming point exists that would make it a consequence of
-holding rather than a thing to remember.** Do not rely on the absence of the
-label as evidence that a pull request is free to merge. The label's presence is
-informative; its absence is not.
-
 ### Who may lift it
 
 The person who applied it, or the lead. **Removing this label is a decision, not
@@ -321,11 +287,31 @@ so no honest mechanism can be built there.** Saying so is a better answer than a
 procedure that asks people to be diligent, because a rule you have to remember
 is not a control and dressing one up as a control is worse than having none.
 
-**One hypothesis worth recording as falsified, so nobody re-derives it:** held
-PRs are not stacked PRs, so `base.ref` cannot serve as an arming signal. All six
-PRs that have ever carried this label (#154, #169, #172, #174, #175, #212)
-targeted `development`, and at the time of measurement **zero** open PRs
-repository-wide had any other base.
+**Three candidate arming signals, measured rather than assumed**, against all
+six PRs that have ever carried this label (#154, #169, #172, #174, #175, #212):
+
+| candidate signal                       | instances across the six |
+| -------------------------------------- | ------------------------ |
+| draft / ready-for-review transitions   | 0                        |
+| `CHANGES_REQUESTED` reviews            | 0                        |
+| a base branch other than `development` | 0                        |
+
+**These are not signals that are hard to read. They are absent.** Record the
+third as falsified so nobody re-derives it: held PRs are **not** stacked PRs, so
+`base.ref` cannot serve as an arming signal — every held PR targeted
+`development`, as did every open PR repository-wide at the time of measurement.
+
+**The application record measures what that costs, and it is the strongest
+evidence here.** Five of the six labels were applied inside a **three-second
+window** — `23:27:40Z` to `23:27:43Z` on 3 Aug — between 0.3 and 1.6 hours after
+each PR was opened. That is not five decisions recorded as they were taken; it is
+one sweep remembering five earlier decisions afterwards. During every one of
+those lags the pull request was held in fact and green-and-unlabelled in the
+repository. The sixth, applied 10 seconds after its PR opened, is the author
+labelling their own PR — self-reminding, not a control firing.
+
+**So do not read the absence of this label as evidence that a PR is free to
+merge.** Its presence is informative; its absence is not.
 
 ## Escalation when the owner is unreachable
 
