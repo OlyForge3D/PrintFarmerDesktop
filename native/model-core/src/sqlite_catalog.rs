@@ -7015,11 +7015,17 @@ mod tests {
             9,
         );
 
+        // Merged fields are supplied so the required-fields guard cannot fire.
+        // Without this the test passes on whichever rejection happens to come
+        // first, and would still pass with the per-kind policy deleted.
         let error = store
-            .resolve_calibration_conflict(&resolve_params(
-                &conflict_id,
-                CalibrationConflictResolutionKind::ManualFieldMerge,
-            ))
+            .resolve_calibration_conflict(&ResolveCalibrationConflictParams {
+                merged_fields: Some(serde_json::json!({ "flow_ratio": 0.98 })),
+                ..resolve_params(
+                    &conflict_id,
+                    CalibrationConflictResolutionKind::ManualFieldMerge,
+                )
+            })
             .expect_err("manualFieldMerge is not permitted for a deletionVsLocalEdit conflict");
         assert!(
             error.starts_with(calibration_resolution_error::NOT_PERMITTED),
