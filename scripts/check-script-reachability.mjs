@@ -40,7 +40,8 @@ export const UNINVOKED_SCRIPTS = {
     'ORPHANED, not manual: a headless end-to-end smoke test with zero references ' +
     'anywhere in the repository — no npm script, no workflow, no import, no ' +
     'documentation. Recorded here so it is visible rather than silently dead. ' +
-    'Either wire it into CI or delete it; see the issue tracking this.',
+    'Either wire it into CI or delete it — tracked by issue #300, which is the ' +
+    'discharge path for removing this entry.',
 };
 
 // npm scripts named check:*/verify:* that no workflow invokes. Same rule: the
