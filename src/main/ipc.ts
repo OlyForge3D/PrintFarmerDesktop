@@ -84,6 +84,13 @@ import {
 import type { PreflightResult } from './calibrationImportV4.js';
 import { LegacyBackupProjectOutcome } from '@shared/ipc';
 import { CalibrationAssetManifestService } from './calibrationAssetManifest.js';
+import {
+  emitCalibrationLog,
+  describeCalibrationFailure,
+} from './calibrationLog.js';
+import type { CalibrationCorrelationOrigin } from './calibrationLog.js';
+import { calibrationCorrelation } from './calibrationCorrelation.js';
+import { calibrationDiagnostics } from './calibrationDiagnostics.js';
 
 declare const __PRINTFARMER_E2E_BUILD__: boolean;
 
@@ -210,7 +217,13 @@ export function registerIpcHandlers(
   // Eager initialization starts the sidecar so obsolete recipe namespaces are
   // evicted before the first scene request.
   void sceneCache.initialize().catch((error: unknown) => {
-    console.error('[scene-cache] startup invalidation failed', error);
+    emitCalibrationLog({
+      level: 'error',
+      component: 'calibration.sidecar',
+      event: 'sceneCache.startupInvalidationFailed',
+      ...describeCalibrationFailure(error),
+      outcome: 'failed',
+    });
   });
   const targetProfiles = new TargetProfileService({
     userDataPath: app.getPath('userData'),
@@ -242,10 +255,13 @@ export function registerIpcHandlers(
   );
   void cleanupStaleCalibrationPhotoTemps(calibrationPhotoRoot).catch(
     (error: unknown) => {
-      console.error(
-        '[calibration-photo] stale temporary cleanup failed',
-        error,
-      );
+      emitCalibrationLog({
+        level: 'error',
+        component: 'calibration.photo',
+        event: 'photo.staleTemporaryCleanupFailed',
+        ...describeCalibrationFailure(error),
+        outcome: 'failed',
+      });
     },
   );
   const authorizeRendererFile = async (
@@ -409,7 +425,13 @@ export function registerIpcHandlers(
         try {
           await sceneCache.adoptRecipe(sceneCacheRecipe);
         } catch (error) {
-          console.error('[scene-cache] recipe adoption failed', error);
+          emitCalibrationLog({
+            level: 'error',
+            component: 'calibration.sidecar',
+            event: 'sceneCache.recipeAdoptionFailed',
+            ...describeCalibrationFailure(error),
+            outcome: 'failed',
+          });
         }
       }
       const response: SidecarPingResponse = {
@@ -1129,6 +1151,16 @@ export function registerIpcHandlers(
         ctx.profile.baseUrl,
         signal,
       );
+      // Snapshot the negotiation so diagnostics can report capability health
+      // without a network call — which is exactly when it is needed.
+      calibrationDiagnostics.recordCapabilities(caps);
+      emitCalibrationLog({
+        level: 'info',
+        component: 'calibration.http',
+        event: 'capabilities.negotiated',
+        profileId: selectedId,
+        outcome: 'ok',
+      });
       const missingFlags = missingCalibrationFlags(caps);
       const firmwareOk = supportsKlipper(caps);
       const slicerOk = supportsOrcaSlicer(caps);
@@ -1673,6 +1705,8 @@ export function registerIpcHandlers(
       const controller = new AbortController();
       activeSyncControllers.set(syncKey, controller);
       try {
+        // The engine emits the sync record and records the diagnostics
+        // outcome: it is the only layer that still holds the typed error code.
         const result = await calibrationEngine.syncNow(
           selectedId,
           request.projectId ?? null,
@@ -1682,6 +1716,29 @@ export function registerIpcHandlers(
       } finally {
         activeSyncControllers.delete(syncKey);
       }
+    },
+  );
+
+  ipcMain.handle(
+    IpcChannel.CalibrationGetDiagnostics,
+    async (_event, rawRequest: unknown) => {
+      const request =
+        ipcSchemas[IpcChannel.CalibrationGetDiagnostics].request.parse(
+          rawRequest,
+        );
+      // Falls back to the selected profile rather than requiring one, so the
+      // command still answers when no profile is selected — "no profile" is
+      // itself a diagnosis.
+      const profileList = await profiles.list();
+      const profileId = request.profileId ?? profileList.selectedProfileId;
+      const diagnostics = await calibrationDiagnostics.collect({
+        profileId,
+        projectId: request.projectId ?? null,
+        outbox: calibrationSidecarAdapter,
+      });
+      return ipcSchemas[IpcChannel.CalibrationGetDiagnostics].response.parse(
+        diagnostics,
+      );
     },
   );
 
@@ -1719,6 +1776,25 @@ export function registerIpcHandlers(
       }
       const signal = AbortSignal.timeout(30_000);
       const ctx = await profiles.getAuthenticatedContext(selectedId);
+      // Mint the flow here: this is the user-initiated start of the operation.
+      // The later stages resolve it through the orchestration and job IDs.
+      const correlationId = calibrationCorrelation.beginFlow({
+        attempt: request.attemptId,
+        operation: request.operationId,
+      });
+      const correlationOrigin = 'flowStart' as const;
+      const startedAt = Date.now();
+      emitCalibrationLog({
+        level: 'info',
+        component: 'calibration.http',
+        event: 'generation.requested',
+        correlationId,
+        correlationOrigin,
+        operationId: request.operationId,
+        profileId: selectedId,
+        projectId: request.projectId,
+        attemptId: request.attemptId,
+      });
       try {
         const result = await calibrationHttp.startGeneration(
           selectedId,
@@ -1732,6 +1808,21 @@ export function registerIpcHandlers(
           request.baseRevision,
           signal,
         );
+        calibrationCorrelation.bind('orchestration', result.id, correlationId);
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'generation.submitted',
+          correlationId,
+          correlationOrigin,
+          operationId: request.operationId,
+          profileId: selectedId,
+          projectId: request.projectId,
+          attemptId: request.attemptId,
+          orchestrationId: result.id,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
         return ipcSchemas[IpcChannel.CalibrationStartGeneration].response.parse(
           {
             status: 'submitted',
@@ -1739,6 +1830,20 @@ export function registerIpcHandlers(
           },
         );
       } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'generation.requested',
+          correlationId,
+          correlationOrigin,
+          operationId: request.operationId,
+          profileId: selectedId,
+          projectId: request.projectId,
+          attemptId: request.attemptId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
         const apiError =
           error instanceof CalibrationHttpError
             ? error.toApiError()
@@ -1771,6 +1876,14 @@ export function registerIpcHandlers(
       );
       const signal = AbortSignal.timeout(15_000);
       const ctx = await profiles.getAuthenticatedContext(selectedId);
+      // Resolves the ID minted at the generation request. `resolveOrBegin`
+      // rather than `resolve` so a poll that follows an app restart still
+      // carries an ID a runbook can grep, instead of a hole.
+      const { correlationId, origin: correlationOrigin } =
+        calibrationCorrelation.resolveOrBeginWithOrigin([
+          ['orchestration', request.orchestrationId],
+        ]);
+      const startedAt = Date.now();
       try {
         const remote = await calibrationHttp.getOrchestrationStatus(
           selectedId,
@@ -1778,6 +1891,29 @@ export function registerIpcHandlers(
           request.orchestrationId,
           signal,
         );
+        // The server echoes the operationId that started this orchestration;
+        // binding it keeps the two searchable from one another.
+        if (remote.operationId !== null) {
+          calibrationCorrelation.bind(
+            'operation',
+            remote.operationId,
+            correlationId,
+          );
+        }
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'orchestration.polled',
+          correlationId,
+          correlationOrigin,
+          operationId: remote.operationId,
+          profileId: selectedId,
+          projectId: remote.projectId,
+          attemptId: remote.attemptId,
+          orchestrationId: remote.id,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
         return ipcSchemas[
           IpcChannel.CalibrationGetOrchestrationStatus
         ].response.parse({
@@ -1815,6 +1951,18 @@ export function registerIpcHandlers(
           },
         });
       } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'orchestration.polled',
+          correlationId,
+          correlationOrigin,
+          profileId: selectedId,
+          orchestrationId: request.orchestrationId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
         const apiError =
           error instanceof CalibrationHttpError
             ? error.toApiError()
@@ -1877,6 +2025,24 @@ export function registerIpcHandlers(
       }
       const signal = AbortSignal.timeout(15_000);
       const ctx = await profiles.getAuthenticatedContext(selectedId);
+      // A queue job is often seen here for the first time: the generation stage
+      // binds the attempt, and the server only names the job later. So resolve
+      // through the job if it is already known, and otherwise defer minting
+      // until the response reveals the attempt this job belongs to — minting
+      // eagerly would split one flow across two correlation IDs.
+      let correlationId = calibrationCorrelation.resolve('job', request.jobId);
+      let correlationOrigin: CalibrationCorrelationOrigin =
+        correlationId === null ? 'resumed' : 'continued';
+      const flowId = (): string => {
+        if (correlationId !== null) return correlationId;
+        const resolved = calibrationCorrelation.resolveOrBeginWithOrigin([
+          ['job', request.jobId ?? null],
+        ]);
+        correlationId = resolved.correlationId;
+        correlationOrigin = resolved.origin;
+        return correlationId;
+      };
+      const startedAt = Date.now();
       try {
         const remote = await calibrationHttp.getQueueJob(
           selectedId,
@@ -1885,6 +2051,19 @@ export function registerIpcHandlers(
           signal,
         );
         if (remote === null) {
+          emitCalibrationLog({
+            level: 'warn',
+            component: 'calibration.http',
+            event: 'queue.stateRead',
+            correlationId: flowId(),
+            correlationOrigin,
+            dispatchId: request.jobId,
+            profileId: selectedId,
+            projectId: request.projectId,
+            outcome: 'failed',
+            errorCode: 'jobNotFound',
+            durationMs: Date.now() - startedAt,
+          });
           return ipcSchemas[IpcChannel.CalibrationGetQueueState].response.parse(
             {
               status: 'error',
@@ -1897,6 +2076,28 @@ export function registerIpcHandlers(
             },
           );
         }
+        // The attempt binding ties the queue job back to the flow that
+        // generated it, so a job seen first here still resolves later stages.
+        const resolved = calibrationCorrelation.resolveOrBeginWithOrigin([
+          ['job', remote.id],
+          ['attempt', remote.calibrationAttemptId],
+        ]);
+        correlationId = resolved.correlationId;
+        correlationOrigin = resolved.origin;
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'queue.stateRead',
+          correlationId,
+          correlationOrigin,
+          dispatchId: remote.id,
+          dispatchRevision: remote.dispatchStateRowVersion,
+          profileId: selectedId,
+          projectId: remote.calibrationProjectId,
+          attemptId: remote.calibrationAttemptId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
         return ipcSchemas[IpcChannel.CalibrationGetQueueState].response.parse({
           status: 'ok',
           job: {
@@ -1918,6 +2119,19 @@ export function registerIpcHandlers(
           },
         });
       } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'queue.stateRead',
+          correlationId: flowId(),
+          correlationOrigin,
+          dispatchId: request.jobId,
+          profileId: selectedId,
+          projectId: request.projectId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
         const apiError =
           error instanceof CalibrationHttpError
             ? error.toApiError()
@@ -1952,6 +2166,12 @@ export function registerIpcHandlers(
       // specific queue job — the prerequisite sync check is not applicable here.
       const signal = AbortSignal.timeout(15_000);
       const ctx = await profiles.getAuthenticatedContext(selectedId);
+      const { correlationId, origin: correlationOrigin } =
+        calibrationCorrelation.resolveOrBeginWithOrigin([
+          ['job', request.jobId],
+          ['operation', request.operationId],
+        ]);
+      const startedAt = Date.now();
       try {
         const result = await calibrationHttp.acknowledgeBedClearAndStart(
           selectedId,
@@ -1965,6 +2185,20 @@ export function registerIpcHandlers(
           signal,
         );
         if (result.kind === 'revisionConflict') {
+          emitCalibrationLog({
+            level: 'warn',
+            component: 'calibration.http',
+            event: 'bedClear.revisionConflict',
+            correlationId,
+            correlationOrigin,
+            operationId: request.operationId,
+            dispatchId: request.jobId,
+            dispatchRevision: result.dispatchStateETag,
+            profileId: selectedId,
+            outcome: 'failed',
+            errorCode: 'dispatchRevisionConflict',
+            durationMs: Date.now() - startedAt,
+          });
           return ipcSchemas[
             IpcChannel.CalibrationAcknowledgeBedClear
           ].response.parse({
@@ -1973,6 +2207,19 @@ export function registerIpcHandlers(
             dispatchStateRowVersion: result.dispatchStateETag,
           });
         }
+        emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.http',
+          event: 'bedClear.acknowledged',
+          correlationId,
+          correlationOrigin,
+          operationId: request.operationId,
+          dispatchId: request.jobId,
+          dispatchRevision: result.dispatchStateETag,
+          profileId: selectedId,
+          outcome: 'ok',
+          durationMs: Date.now() - startedAt,
+        });
         return ipcSchemas[
           IpcChannel.CalibrationAcknowledgeBedClear
         ].response.parse({
@@ -1981,6 +2228,19 @@ export function registerIpcHandlers(
           dispatchStateRowVersion: result.dispatchStateETag,
         });
       } catch (error) {
+        emitCalibrationLog({
+          level: 'error',
+          component: 'calibration.http',
+          event: 'bedClear.acknowledged',
+          correlationId,
+          correlationOrigin,
+          operationId: request.operationId,
+          dispatchId: request.jobId,
+          profileId: selectedId,
+          outcome: 'failed',
+          durationMs: Date.now() - startedAt,
+          ...describeCalibrationFailure(error),
+        });
         const apiError =
           error instanceof CalibrationHttpError
             ? error.toApiError()
