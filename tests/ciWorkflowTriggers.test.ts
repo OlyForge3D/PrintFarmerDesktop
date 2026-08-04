@@ -292,6 +292,59 @@ describe('CI is safe to run under a merge queue', () => {
     expect(notOnAStepCondition).toEqual([]);
   });
 
+  it('guards every step that reads PR context, so none can run under a queue entry', () => {
+    // The dual of the assertion above, and the one that actually fails closed.
+    //
+    // Narrowing the `github.event_name` ban to step level opens a gap that the
+    // narrowed assertion cannot see: DELETING a step's guard leaves the file
+    // with no event branching at all, so that test goes green. The step then
+    // runs under `merge_group`, where `github.event.pull_request` expands to
+    // nothing, the step fails, and the job fails -- so a required context
+    // reports failure on every queued entry and the queue never drains. That
+    // is #122's deadlock arriving through the fix for #231.
+    //
+    // Stated as a property over the file rather than as a list of known steps:
+    // a new step added later gets the same treatment without anyone
+    // remembering this test exists. A list would have to be maintained to keep
+    // working, and the failure of an unmaintained list here is a merge queue
+    // that hangs.
+    const steps: string[][] = [];
+    ciWorkflow.split('\n').forEach((line) => {
+      if (/^ {6}- /.test(line)) steps.push([line]);
+      else if (steps.length > 0 && /^ {8}\S/.test(line))
+        steps[steps.length - 1]?.push(line);
+    });
+
+    const unguarded = steps
+      .filter((step) =>
+        step.some((line) => line.includes('github.event.pull_request')),
+      )
+      .filter(
+        (step) =>
+          !step.some(
+            (line) =>
+              /^ {8}if:/.test(line) &&
+              line.includes("github.event_name == 'pull_request'"),
+          ),
+      )
+      .map((step) => step[0]?.trim() ?? '');
+
+    expect(unguarded).toEqual([]);
+
+    // Harness control, and it has already earned its place: the first draft of
+    // the splitter reset on each job header, which discarded every step of
+    // every job but the last. `unguarded` was [] -- not because the steps were
+    // guarded, but because the only PR-context step in the file lives in the
+    // FIRST job and was never collected. An empty result reads identically
+    // whether nothing is wrong or nothing was examined.
+    expect(steps.length).toBeGreaterThan(10);
+    expect(
+      steps.filter((step) =>
+        step.some((line) => line.includes('github.event.pull_request')),
+      ).length,
+    ).toBeGreaterThan(0);
+  });
+
   it('emits exactly the seven check-run names ci.yml produces, byte-identical', () => {
     // The emitted side only. Whether these are the *required* contexts lives in
     // branch protection, which this test does not read:
