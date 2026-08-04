@@ -8,6 +8,7 @@ import type {
 } from '@shared/ipc';
 import type { CalibrationEnvironment } from './api';
 import { useDialogFocusLifecycle, useFocusTrap } from './useDialogFocus';
+import { calibrationErrorText } from './workspaceTypes';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -373,7 +374,7 @@ export function ImportLegacyBackup({
       return;
     }
     if (pickResult.status === 'error') {
-      setErrorMessage(pickResult.error.message);
+      setErrorMessage(calibrationErrorText(pickResult.error));
       setStep('error');
       return;
     }
@@ -436,7 +437,7 @@ export function ImportLegacyBackup({
       return;
     }
     if (result.status === 'error') {
-      setErrorMessage(result.error.message);
+      setErrorMessage(calibrationErrorText(result.error));
       setStep('error');
       return;
     }

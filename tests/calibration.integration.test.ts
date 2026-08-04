@@ -1927,4 +1927,3 @@ describe('Calibration IPC schema additive compatibility', () => {
     ).not.toThrow();
   });
 });
-

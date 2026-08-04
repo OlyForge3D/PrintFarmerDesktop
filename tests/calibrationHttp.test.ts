@@ -883,4 +883,3 @@ describe('CalibrationHttpClient JWT security', () => {
     expect(typeof headers['authorization']).toBe('string');
   });
 });
-

@@ -1510,4 +1510,3 @@ describe('Typed blocked reasons — CalibrationBlockedReason discriminated union
     ).toThrow();
   });
 });
-

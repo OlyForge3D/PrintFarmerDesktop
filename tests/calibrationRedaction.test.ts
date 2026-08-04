@@ -830,6 +830,96 @@ describe('redaction on real calibration failure paths', () => {
     expect(failure?.message).not.toContain('Calibration worker rejected');
   });
 
+  /**
+   * The #177 ruling is catalogued-plus-opaque-reference. The catalogued half is
+   * asserted above and by the `not.toContain` controls; these two assert the
+   * reference half.
+   *
+   * The load-bearing assertion is not that `reference` is populated -- a
+   * hard-coded constant would satisfy that, and so would a field nothing reads.
+   * It is that the reference the renderer receives is *the same value* as the
+   * correlation ID on the log record that retained the withheld detail. That is
+   * what makes a quoted reference resolvable, and it is the only form of the
+   * assertion that a decorative field fails.
+   */
+  it('gives the renderer a reference that resolves to the record carrying the withheld detail', async () => {
+    leakyServer();
+    const registered = handlers();
+    const response = (await invoke(
+      registered,
+      IpcChannel.CalibrationGetQueueState,
+      { profileId: PROFILE_ID, projectId: PROJECT_ID, jobId: JOB_ID },
+    )) as { status: string; error: { reference: string | null } };
+
+    expect(
+      response.status,
+      'the handler did not fail, so there is no withheld detail and nothing to reference',
+    ).toBe('error');
+
+    const failure = capture.records.find(
+      (record) => record.outcome === 'failed',
+    );
+    expect(
+      failure,
+      'no failure record was emitted, so any reference would resolve to nothing',
+    ).toBeDefined();
+    expect(
+      failure?.correlationId,
+      'the failure record carries no correlation ID, so a quoted reference cannot be looked up',
+    ).toEqual(expect.any(String));
+
+    expect(
+      response.error.reference,
+      'the renderer error carries no reference, so the operator has nothing to quote for a detail that was withheld',
+    ).not.toBeNull();
+    expect(
+      response.error.reference,
+      'the reference the renderer received is not the correlation ID of the record that retained the detail, so quoting it resolves to nothing',
+    ).toBe(failure?.correlationId);
+  });
+
+  /**
+   * The reference is typed `z.string().uuid()` precisely so server-chosen prose
+   * cannot ride on it. This asserts the shape guarantee holds on a live failure
+   * rather than trusting the schema declaration: a producer that passed the
+   * ProblemDetails `detail` here instead of a correlation ID would be rejected
+   * at the boundary, not filtered.
+   */
+  it('carries an opaque identifier as the reference, never server text', async () => {
+    const fetchMock = leakyServer();
+    const registered = handlers();
+    const response = (await invoke(
+      registered,
+      IpcChannel.CalibrationGetQueueState,
+      { profileId: PROFILE_ID, projectId: PROJECT_ID, jobId: JOB_ID },
+    )) as {
+      status: string;
+      error: { message: string; reference: string | null };
+    };
+
+    // Positive control: the secret really was on the wire for this request.
+    const body = await serverBodyOf(fetchMock);
+    expect(
+      body,
+      'the stubbed server did not send the detail, so every absence assertion below is vacuous',
+    ).toContain(JWT);
+
+    const reference = response.error.reference;
+    expect(reference).not.toBeNull();
+    expect(
+      reference,
+      'the reference is not an opaque UUID, so it is carrying something other than a correlation ID',
+    ).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+    // The reference must not be a channel for the text the message stopped carrying.
+    expect(reference).not.toContain(JWT);
+    expect(reference).not.toContain(API_KEY);
+    expect(reference).not.toContain(EXIF_GPS);
+    expect(reference).not.toContain(ABSOLUTE_PATH);
+    expect(response.error.message).not.toContain(JWT);
+  });
+
   it('keeps every secret class out of the records emitted by a failing sync', async () => {
     const fetchMock = leakyServer();
     const registered = handlers();
