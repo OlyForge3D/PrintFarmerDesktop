@@ -1,4 +1,4 @@
-# Empty query results are not answers
+# Query results are not answers when the field cannot carry the distinction
 
 A query that returns nothing is satisfied by two different states: the thing
 does not exist, and the thing is not stored where the query looked. Nothing in
@@ -33,3 +33,45 @@ it is measuring nothing.
 The practical test for a query is cheap. Construct the positive case and
 confirm the query finds it. If a review is known to exist and `reviews` is
 still `[]`, the query is wrong rather than the world being empty.
+
+## The mirror case: a full result conceals better than an empty one
+
+Emptiness is not the defect. The defect is asking a field that cannot carry the
+distinction, and it can return everything just as easily as nothing.
+
+Every pull request in this repository is authored by the same account, because
+each squad member authenticates as it. So:
+
+    gh pr list --author "@me" --state open   ->  N
+    gh pr list                --state open   ->  N        (same N, always)
+    distinct authors across open PRs         ->  one
+
+The filter matches every row. It does not fail, and it does not look like it
+failed — it returns a complete, correct list of open pull requests. The reader
+asked *which of these are mine* and received an answer to *which are open*, in
+a shape that answers the first question plausibly.
+
+The counts are written as `N` deliberately. When this was first measured the
+answer was nine, and it was twelve a few hours later; the number is not the
+finding and pinning it would date the note while teaching nothing. The finding
+is that the two queries are equal for every N, and that there is one distinct
+author.
+
+This is worse than the empty case, and the reason is about the reader rather
+than the query. A blank result is uncomfortable and invites a second look; a
+plausible count, when a plausible count is what you expected, terminates the
+inquiry. The empty-result failure is caught by the first person who expected
+something. The full-result failure is caught by nobody, because there is no
+state of the world in which the output looks wrong.
+
+Both fail the same test. Ask what observation would make the result come out
+the other way. For `--author "@me"` here, none would: no reachable state of
+this repository produces a result that differs from the unfiltered list, so the
+flag is measuring nothing while appearing to narrow. That it appears to narrow
+is precisely the harm.
+
+The remedy is the same and generalises across both cases. Do not ask whether
+the result looks reasonable — make the query return something you control. Ask
+it a question whose answer you already know and which the field could only get
+right if it carried the distinction. A filter that cannot exclude anything is
+not a filter, and the way to discover that is to give it something to exclude.
