@@ -1,0 +1,11 @@
+#!/bin/sh
+# Installed by the `prepare` npm script (scripts/install-git-hooks.mjs), which
+# points core.hooksPath at this directory. The logic lives in
+# scripts/push-guard.mjs so it is unit-tested and behaves identically on
+# Windows, macOS and Linux; this is only a shim.
+#
+# git passes the remote name and URL as arguments and the ref updates on stdin.
+# The guard is resolved relative to this file, not to the toplevel of whatever
+# repository is being pushed, so a hooksPath pointed here from elsewhere works.
+hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+exec node "$hook_dir/../scripts/push-guard.mjs" "$@"

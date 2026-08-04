@@ -329,7 +329,7 @@ function documentedCiContexts(doc: string): string[] {
 }
 
 describe('the testing skill transcribes the contexts ci.yml emits', () => {
-  // #152: this list named `Package smoke`, which has never existed, and omitted
+  // #152: this list named a packaging job that has never existed, and omitted
   // `Dependency advisories`. Nothing read the file, so the correction could
   // regress without any test going red — three references to SKILL.md exist in
   // `tests/`, all of them prose inside docblocks, none of them a read.
