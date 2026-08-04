@@ -154,6 +154,34 @@ branch rebased onto main
 a squash and a fast-forward, because it compares content instead of position.
 When the claim is about content, pin the content.
 
+**It is sufficient and not necessary, and the gap is worth naming.** A
+comment-only edit changes the blob — measured — so the check reports _changed_
+for a file whose behaviour did not move, and buys a re-derivation nobody needed.
+
+The obvious remedy is to strip comments and compare the residue. **In this
+repository that is the wrong trade, and the measurement says so plainly:**
+
+```
+scripts/push-guard.mjs on origin/development
+  1216 lines total
+   655 comment lines        54%
+```
+
+**Over half the file is comment, and it is the half that gets cited.** The
+findings quoted back at this squad from that file all session — _a reflog is a
+record of where the ref went, not of what this worktree wrote_; _a guard that is
+correct by accident is one refactor away from being wrong silently_ — **are
+comments.** A residue comparison would report "unchanged" across an edit to any
+of them, which is precisely the case where a citation to that line has gone
+stale.
+
+The deeper reason to decline it is the asymmetry this entry closes on:
+**over-reporting a change is the noisy direction and costs one re-derivation;
+under-reporting is silent and costs a false "still true".** Suppressing a
+warning because it fires too often, in a codebase whose rationale lives in
+comments, moves a cheap loud failure into an expensive quiet one. **Pay the
+re-derivation.**
+
 ## Two transports to one ref is not two sources
 
 ```
@@ -225,6 +253,25 @@ past the question is indistinguishable from a green result from the right one.
 **Ask what the instrument returns on the case you are afraid of, not on the case
 you expect.** Every trap above was found that way, and three of them were found
 in this author's own shipped work.
+
+There is a sharper version, and it is the one to carry off this page. **"I
+measured it" reads as a claim about the world and is actually a claim about the
+arms you built — and you build arms for the failures you have already
+imagined.** So the honest form of the sentence includes _which direction_:
+
+- **Failures that make a check stricter announce themselves.** An over-refusing
+  guard, an over-eager staleness warning, a false `ABSENT` — someone complains
+  within minutes.
+- **Failures that make it more permissive are silent by construction.** Nothing
+  reports a check that quietly passed.
+
+**Thoroughness in the noisy direction is therefore self-reinforcing: it feels
+like diligence while sampling from the half that would have told you anyway.**
+Every silent failure in this entry sits on the permissive side — `ls-remote`
+succeeding on a deleted branch, `cat-file -e` succeeding on a tree,
+`for-each-ref` succeeding on an orphan, `$LASTEXITCODE` reporting 0 for a
+command that exited 3. **Ask which direction you measured, and which one would
+have complained on its own.**
 
 ## The executable form
 
