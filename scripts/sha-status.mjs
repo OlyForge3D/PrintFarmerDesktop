@@ -27,8 +27,21 @@
 //
 //   * `git rev-parse --verify <fabricated 40-hex>` EXITS 0. The flag named
 //     `--verify` does not verify existence; it validates the syntax of a rev
-//     expression. `cat-file -e` is the only existence test. A handoff citing an
-//     invented SHA therefore passes the check most people reach for.
+//     expression. A handoff citing an invented SHA therefore passes the check
+//     most people reach for.
+//   * `cat-file -e` is the existence test, but the BARE form answers a
+//     different question than the one a handoff asks. Measured:
+//
+//       cat-file -e <absent>            -> 1
+//       cat-file -e <absent>^{commit}   -> 128
+//       cat-file -e <a TREE sha>        -> 0     <- an object, not a commit
+//       cat-file -e <a TREE sha>^{commit} -> 128
+//
+//     A SHA in a handoff is claimed to be a COMMIT, so the `^{commit}` peel is
+//     load-bearing and not decoration. Note the peel also moves the absent case
+//     from 1 to 128: anyone branching on `exit === 1` to mean "absent" reads a
+//     peeled miss as something else entirely. This code tests `=== 0` and
+//     treats every other code as "not a commit I can see".
 //   * Base ancestry answers question 2 and nothing else. A squash merge lands
 //     the CONTENT and discards the commit object, so `--is-ancestor <sha>
 //     development` is FALSE for work that shipped an hour ago. Four sessions in
@@ -44,6 +57,11 @@
 //     contain — defeats `cat-file`, `ls-remote` and `gh api commits/<sha>`
 //     simultaneously. All three return success. Question 3 is the only
 //     discriminator, and it requires the PR ref to have been fetched.
+//   * `git ls-remote origin refs/heads/<branch>` is widely prescribed as the
+//     authoritative currency check. On a DELETED branch it prints nothing and
+//     EXITS 0 — measured. The remedy fails silently in the one case someone was
+//     told to trust it, so a caller must test the OUTPUT, never the status.
+//     This code never uses it; question 3 reads a pull ref by ancestry instead.
 //
 // What this refuses to do: guess. Without `--pr`, `stale` and `twin` are not
 // distinguishable, and the verdict says so rather than picking the flattering

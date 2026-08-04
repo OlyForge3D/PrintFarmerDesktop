@@ -95,6 +95,59 @@ describe('the instrument everyone reaches for does not answer the question', () 
     expect(result.stdout).toContain('ABSENT');
     expect(result.status).toBe(1);
   });
+
+  it('needs the ^{commit} peel, because a bare cat-file passes on a tree', () => {
+    // `cat-file -e` is usually described as "the existence test", which is true
+    // and answers a NEIGHBOURING question. A SHA in a handoff is claimed to be
+    // a COMMIT; the bare form accepts any object, so a tree hash — which is a
+    // 40-hex string indistinguishable from a commit in a message — reports
+    // present. The peel is load-bearing, and this pins that rather than
+    // trusting the `^{commit}` suffix to look decorative to a future reader.
+    const tree = git(['rev-parse', 'development^{tree}'], root);
+
+    expect(gitExit(['cat-file', '-e', tree], root)).toBe(0);
+    expect(gitExit(['cat-file', '-e', `${tree}^{commit}`], root)).not.toBe(0);
+
+    const result = run([tree, '--base', 'development'], root);
+    expect(result.stdout).toContain('ABSENT');
+    expect(result.status).toBe(1);
+  });
+
+  it('does not let a peeled miss be read as the exit code 1 everyone expects', () => {
+    // The absent case changes exit code depending on the form: bare is 1,
+    // peeled is 128. Code that branches on `=== 1` to mean "absent" therefore
+    // reads a peeled miss as neither absent nor present. The tool tests `=== 0`
+    // and treats everything else as "not a commit I can see", which is why this
+    // asserts the two codes DIFFER rather than asserting either value alone.
+    const fabricated = 'b'.repeat(40);
+
+    expect(gitExit(['cat-file', '-e', fabricated], root)).toBe(1);
+    expect(gitExit(['cat-file', '-e', `${fabricated}^{commit}`], root)).toBe(
+      128,
+    );
+  });
+
+  it('exits 0 from ls-remote for a branch that does not exist', () => {
+    // Prescribed repeatedly here as the authoritative currency check. On a
+    // deleted branch it prints nothing and SUCCEEDS, so a caller testing the
+    // status rather than the output is told "fine" in the exact case the check
+    // existed for. This tool never uses it; the pin exists so the prescription
+    // cannot come back on the strength of it sounding authoritative.
+    const bare = mkdtempSync(path.join(os.tmpdir(), 'sha-status-remote-'));
+    try {
+      git(['init', '-q', '--bare', bare], os.tmpdir());
+      git(['remote', 'add', 'origin', bare], root);
+      git(['push', '-q', 'origin', 'development'], root);
+
+      expect(
+        git(['ls-remote', 'origin', 'refs/heads/development'], root),
+      ).not.toBe('');
+      expect(gitExit(['ls-remote', 'origin', 'refs/heads/gone'], root)).toBe(0);
+      expect(git(['ls-remote', 'origin', 'refs/heads/gone'], root)).toBe('');
+    } finally {
+      rmSync(bare, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('a SHA quoted in a handoff has three failure modes and one instrument each', () => {
