@@ -37,6 +37,22 @@ const electronState = {
 /** Lets a single test flip `initialize()` between rejecting and resolving. */
 const retargetState = { failInit: true };
 
+/**
+ * Same control for the scene cache, which is stubbed for a different reason:
+ * the real `SceneCacheService.initialize()` spawns the sidecar binary, so
+ * whether it rejects depends on whether `resources/sidecar/` exists on disk.
+ * That directory is gitignored, so the outcome of this spec used to depend on
+ * an untracked build artifact (#267).
+ */
+const sceneCacheState = { failInit: false };
+
+/**
+ * Emitted by the test itself to prove the capture is live. It has to be a
+ * record this spec owns: any record produced by other startup machinery makes
+ * the liveness check a measurement of that machinery instead.
+ */
+const SINK_LIVENESS_SENTINEL = 'test.sinkLivenessProbe';
+
 vi.mock('electron', () => ({
   app: {
     getPath: () => '/test/userData',
@@ -82,6 +98,18 @@ vi.mock('../src/main/retargetArtifacts.js', () => ({
   },
 }));
 
+vi.mock('../src/main/sceneCache.js', () => ({
+  SceneCacheService: class {
+    initialize = () =>
+      sceneCacheState.failInit
+        ? Promise.reject(new Error('scene cache stub: initialize rejected'))
+        : Promise.resolve();
+    loadScene = () => Promise.resolve({ status: 'canceled' });
+    adoptRecipe = () => Promise.resolve({ status: 'canceled' });
+    purge = () => Promise.resolve();
+  },
+}));
+
 /**
  * Collects `unhandledRejection` events raised while `run` executes, then drains
  * the microtask queue and one macrotask turn — Node reports at the end of the
@@ -122,6 +150,7 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
   beforeEach(() => {
     electronState.handlers.clear();
     retargetState.failInit = true;
+    sceneCacheState.failInit = false;
   });
 
   afterEach(() => {
@@ -138,11 +167,25 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
    */
   async function loadIpcWithCapture(): Promise<{
     registerIpcHandlers: (...args: unknown[]) => () => Promise<void>;
+    emitSinkLivenessProbe: () => void;
   }> {
     const log = await import('../src/main/calibrationLog.js');
     capture = log.captureCalibrationLogs();
-    return (await import('../src/main/ipc.js')) as unknown as {
+    const ipc = (await import('../src/main/ipc.js')) as unknown as {
       registerIpcHandlers: (...args: unknown[]) => () => Promise<void>;
+    };
+    return {
+      registerIpcHandlers: ipc.registerIpcHandlers,
+      // Emitted through the same module instance `ipc.ts` imports, so if the
+      // capture were installed on a different copy this probe would go missing
+      // and the liveness assertion would fail rather than pass vacuously.
+      emitSinkLivenessProbe: () =>
+        log.emitCalibrationLog({
+          level: 'info',
+          component: 'calibration.sidecar',
+          event: SINK_LIVENESS_SENTINEL,
+          outcome: 'ok',
+        }),
     };
   }
 
@@ -193,16 +236,25 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
     // survive deleting the rejection entirely. Same input path, one variable
     // changed: initialize resolves.
     retargetState.failInit = false;
-    const { registerIpcHandlers } = await loadIpcWithCapture();
+    const { registerIpcHandlers, emitSinkLivenessProbe } =
+      await loadIpcWithCapture();
+    emitSinkLivenessProbe();
 
     const seen = await collectUnhandledRejections(() => {
       registerIpcHandlers();
     });
     expect(seen).toEqual([]);
 
-    // The capture is live and other startup records land in it, so a zero here
-    // is a statement about this event rather than about an empty sink.
-    expect(capture.records.length).toBeGreaterThan(0);
+    // The capture is live -- proven by a record this spec emitted itself, so
+    // the zero below is a statement about the event rather than about an empty
+    // sink. A bare `records.length > 0` used to stand here, and it was
+    // satisfied by `sceneCache.startupInvalidationFailed`, which is emitted
+    // only when the sidecar binary is MISSING. That made the control pass
+    // because an unrelated subsystem was broken, and fail on any machine where
+    // it works.
+    expect(capture.records.map((record) => record.event)).toContain(
+      SINK_LIVENESS_SENTINEL,
+    );
     expect(
       capture.records.filter(
         (record) =>
