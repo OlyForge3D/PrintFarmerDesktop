@@ -87,6 +87,10 @@ export function severityRank(severity: string): number;
 export function severityFromCvss(vector: string | undefined): string;
 export function normalizeNpmAudit(report: unknown): Advisory[];
 export function normalizeCargoAudit(report: unknown): Advisory[];
+export const UNREADABLE_TREE_REMEDY: string;
+export class NpmProductionTreeUnreadableError extends Error {
+  readonly unreadableInput: true;
+}
 export function evaluateNpmSbomCoverage(
   sbom: Sbom,
   npmProductionTree: unknown,
