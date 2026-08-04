@@ -159,6 +159,58 @@ filter that felt natural — look at open PRs — excludes the entire population
 construction. **The defect and the failure to measure it have the same cause:
 merging is the moment attention leaves.**
 
+### The instrument, which is a second lagged copy — and the worked example above uses it
+
+Read the two paragraphs above carefully and they disagree with each other. The
+rule says _query the events, not the labels_, and the code block it offers does
+exactly that, at the object. Then the worked example demonstrates the point with
+`gh pr list --label` — **which is neither the events nor the labels. It is a
+search index built over the labels.** The section teaching the good instrument
+illustrates itself with the worst one available. That was mine, and it is left
+here rather than quietly swapped, because the substitution is so natural that
+the author of the rule made it three paragraphs after stating it.
+
+There are three renderings of a hold, not two:
+
+| rendering                          | what it is                               |
+| ---------------------------------- | ---------------------------------------- |
+| `issues/{n}/timeline` label events | the immutable log — authoritative        |
+| `issues/{n}/labels`                | a mutable summary of the log             |
+| `gh pr list --label` / search API  | a **lagged copy of the mutable summary** |
+
+**The third one has a cell that does not reconcile.** Measured on this
+repository, all four combinations of operation and pull-request state:
+
+|               | label **add** | label **remove**           |
+| ------------- | ------------- | -------------------------- |
+| **open** PR   | < 20 s        | ~12 min                    |
+| **merged** PR | < 20 s        | **> 11 h, not reconciled** |
+
+Three cells are healthy, which is what makes the fourth worth stating precisely.
+It is **not** that closed pull requests are stale — an add on a merged PR
+appeared in twenty seconds. It is **not** that removals are broken — a removal
+on an open PR reconciled in twelve minutes. It is **not** general lag — twelve
+minutes and eleven hours are not the same process. **Only the intersection
+fails**, and a hypothesis that survives one observation looks identical, from
+inside that observation, to one that survives four.
+
+**Removing a hold label from a merged pull request is that intersection**, and
+it is precisely and exclusively what the automation above does.
+
+Two consequences worth knowing before you audit anything:
+
+- **The error direction is over-reporting.** The index lists holds that have
+  already been lifted, so it errs toward _don't touch that_ — and inaction on a
+  merged PR produces no symptom, no complaint and no bug report. Nobody escalates
+  because a merged pull request looked held.
+- **The wrong answer is stable across re-runs.** The obvious response to a
+  surprising result — run it again — returns the same populated, well-formed,
+  plausible list, and reads as confirmation.
+
+So a backfill that reports **_selected five candidates, lifted zero_** is a
+healthy backfill seeing phantom rows, not a broken one. `gh api
+repos/OWNER/REPO/issues/{n}/labels` settles it in one call and is authoritative.
+
 If you find a **closed but unmerged** PR still carrying the label, that is the
 case the workflow deliberately does not touch. Decide whether it will be
 reopened before removing it by hand.
