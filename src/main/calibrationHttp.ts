@@ -125,7 +125,11 @@ export type CalibrationHttpErrorCode =
   | 'jobNotDispatchable'
   | 'dispatchRevisionConflict'
   | 'calibrationJobIncompatible'
-  | 'filamentCheckFailed';
+  | 'filamentCheckFailed'
+  // A 409 whose server-supplied error code this build does not recognise.
+  // Deliberately distinct from every diagnosed 409 so that an unclassified
+  // refusal cannot be read as a diagnosed one (#326).
+  | 'unclassifiedConflict';
 
 export class CalibrationHttpError extends Error {
   constructor(
@@ -159,6 +163,12 @@ export class CalibrationHttpError extends Error {
       calibrationJobIncompatible: 'calibrationJobIncompatible',
       filamentCheckFailed: 'filamentCheckFailed',
     };
+    // 'unclassifiedConflict' is deliberately absent from this map. The shared
+    // IPC enum has no unclassified member and widening it is a contract change
+    // owned by #219, so the fall-through to 'serverError' is a *rendering*
+    // fallback and not a classification. The honest code survives where it can
+    // be acted on: in the main process, in the structured log vocabulary, and
+    // in this error's message, which carries the raw server code (#326).
     const apiCode = codeMap[this.code] ?? 'serverError';
     const retryable = [
       'timeout',
@@ -362,7 +372,15 @@ function isTransient(error: CalibrationHttpError): boolean {
 
 /**
  * Map a 409 error code string from the bed-clear endpoint to a typed error code.
- * Unrecognised codes fall back to 'idempotencyPayloadChanged'.
+ *
+ * Unrecognised codes return `'unclassifiedConflict'`, which no named case
+ * produces. Returning a diagnosed code here would make *"the server told us the
+ * payload changed"* and *"the server told us something we have never seen"*
+ * byte-identical to every consumer — including the runbooks, which assign the
+ * diagnosed code a definite cause (#326).
+ *
+ * This matches {@link mapBedClearErrorCode422}, whose fallback is likewise a
+ * code that none of its named cases produces.
  */
 function mapBedClearErrorCode409(
   errorCode: string | null,
@@ -377,7 +395,7 @@ function mapBedClearErrorCode409(
     case 'idempotency_payload_mismatch':
       return 'idempotencyPayloadChanged';
     default:
-      return 'idempotencyPayloadChanged';
+      return 'unclassifiedConflict';
   }
 }
 

@@ -105,6 +105,7 @@ import {
   CalibrationUnavailableReason,
   CalibrationWorkspaceStageId,
   CalibrationOutboxUnavailableReason,
+  RetargetErrorCode,
 } from '@shared/ipc';
 import type { ZodTypeAny } from 'zod';
 import {
@@ -310,6 +311,13 @@ function knownFieldNames(): Set<string> {
     // by name, so these are exactly the identifiers a document is expected to say.
     ...CalibrationWorkspaceStageId.options,
     ...CalibrationOutboxUnavailableReason.options,
+    // Renderer-visible retarget error codes. These are the identifiers an
+    // operator actually reads out of a failure dialog, and until #316 they were
+    // the one class the runbooks could not cite: the vocabulary above is
+    // assembled from log fields and calibration contracts, so a runbook naming
+    // `sidecarUnavailable` failed this test while the operator staring at that
+    // exact string had nowhere to look it up.
+    ...RetargetErrorCode.options,
   ]);
   for (const schema of CONTRACT_SCHEMAS) collectSchemaKeys(schema, names);
   return names;
