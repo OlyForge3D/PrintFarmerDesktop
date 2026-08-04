@@ -102,6 +102,7 @@ import {
   CalibrationQueueState,
   CalibrationStartPrintRequest,
   CalibrationUnavailableReason,
+  CalibrationOutboxUnavailableReason,
 } from '@shared/ipc';
 import type { ZodTypeAny } from 'zod';
 import {
@@ -256,6 +257,7 @@ function knownFieldNames(): Set<string> {
     ...CALIBRATION_CORRELATION_ORIGINS,
     ...CALIBRATION_LOG_OUTCOMES,
     ...CalibrationUnavailableReason.options,
+    ...CalibrationOutboxUnavailableReason.options,
   ]);
   for (const schema of CONTRACT_SCHEMAS) collectSchemaKeys(schema, names);
   return names;
