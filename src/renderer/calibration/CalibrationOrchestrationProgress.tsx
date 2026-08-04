@@ -111,11 +111,13 @@ export const CalibrationOrchestrationProgress: React.FC<
 
   const displayStatus = formatStatus(orchestration.status);
   const role = statusAriaRole(orchestration.status);
+  const hasFailed = role === 'alert';
 
   return (
     <div
       className="calibration-orchestration-progress"
       role={role}
+      aria-label="Calibration generation status"
       aria-live="polite"
       aria-atomic="true"
     >
@@ -185,6 +187,13 @@ export const CalibrationOrchestrationProgress: React.FC<
           </div>
         )}
       </dl>
+      {hasFailed && (
+        <p className="calibration-orchestration-progress__next-action">
+          Generation failed. Review the problems listed above, then select
+          Generate calibration model to start a new generation. Nothing was
+          printed.
+        </p>
+      )}
     </div>
   );
 };
