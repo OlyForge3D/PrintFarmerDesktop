@@ -803,9 +803,9 @@ policies now consume it so that _acceptability_ is checked too:
   loudly (see T4.2).
 - **Third-party notices.** `scripts/generate-notices.mjs` enumerates the SBOM into
   `build/third-party-licenses.md`, staged and verified by regenerate-and-compare
-  (`scripts/verify-notices.mjs`) in both package smoke and release builds before any artifact can
-  be uploaded or published; the enumeration is code-unit ordered so it is byte-identical across
-  runners.
+  (`scripts/verify-notices.mjs`) in both the Release package job and release builds before any
+  artifact can be uploaded or published; the enumeration is code-unit ordered so it is
+  byte-identical across runners.
 
 Both lockfiles (`package-lock.json`, `native/Cargo.lock`) are committed. CI installs with
 `npm ci`; every workspace Cargo build, test and clippy command uses `--locked`; and package/release

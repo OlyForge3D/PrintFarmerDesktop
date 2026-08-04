@@ -1315,7 +1315,9 @@ export function CalibrationWorkspaceStoreProvider({
       });
       if (profileIdRef.current !== profileId) return;
       if (result.status === 'error') {
-        reportError(`Profile installation failed: ${result.error.message}`);
+        reportError(
+          `Profile installation failed: ${result.error.message}. Your existing OrcaSlicer profile was not changed. Select Restore from backup if a backup exists, then select Install transactionally to retry.`,
+        );
         return;
       }
       setGeneratedProfile((prev) =>
@@ -1366,7 +1368,7 @@ export function CalibrationWorkspaceStoreProvider({
         prev ? { ...prev, installedHash: null, backupHash: null } : prev,
       );
       setLiveMessage(
-        `Profile restored from backup. Hash: ${result.restoredHash.slice(0, 12)}…`,
+        `Profile restored from backup. Hash: ${result.restoredHash.slice(0, 12)}…. Your previous OrcaSlicer profile is back in place. Select Generate OrcaSlicer profile to try the calibrated profile again.`,
       );
     } catch (cause) {
       if (profileIdRef.current !== profileId) return;
