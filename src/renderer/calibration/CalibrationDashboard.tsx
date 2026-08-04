@@ -8,14 +8,17 @@ const availabilityCopy = {
   serverVersionTooLow:
     'Update the selected PrintFarmer server before creating a calibration.',
   missingScopes:
-    'The selected profile does not have every required calibration permission.',
+    'The selected profile does not have every required calibration permission. Ask a PrintFarmer administrator to grant calibration read, write, generation, and print permissions to this profile.',
   unsupportedFirmware:
-    'PrintFarmer did not confirm compatible Klipper firmware and dialect.',
-  unsupportedSlicer: 'Upstream OrcaSlicer capability was not confirmed.',
+    'PrintFarmer did not confirm compatible Klipper firmware and dialect. Update the printer to a confirmed Klipper firmware in PrintFarmer, then refresh this workspace.',
+  unsupportedSlicer:
+    'Upstream OrcaSlicer capability was not confirmed. Configure an upstream OrcaSlicer distribution in PrintFarmer, then refresh this workspace.',
   missingCapabilityFlags:
-    'One or more required calibration capabilities are disabled.',
-  operatorDisabled: 'Printer Calibration was disabled by the server operator.',
-  legacyServer: 'This profile points to a server without the calibration API.',
+    'One or more required calibration capabilities are disabled. Ask a PrintFarmer administrator to enable the calibration capabilities for this server, then refresh this workspace.',
+  operatorDisabled:
+    'Printer Calibration was disabled by the server operator. Ask the server operator to re-enable Printer Calibration, then refresh this workspace.',
+  legacyServer:
+    'This profile points to a server without the calibration API. Select a profile for a PrintFarmer server that exposes the calibration API, or upgrade that server.',
   noProfile: 'Select a PrintFarmer profile to continue.',
 } as const;
 
@@ -121,13 +124,25 @@ export function CalibrationDashboard(): React.JSX.Element {
       {store.offline ? (
         <p className="cal-alert cal-alert--warning" role="alert">
           Offline: saved projects can be edited and queued locally.
-          Synchronization and hardware actions are blocked.
+          Synchronization and hardware actions are blocked. Reconnect to
+          PrintFarmer, then select Sync and retry to restore hardware actions.
         </p>
       ) : null}
       {store.availability?.unavailableReason === 'missingScopes' ? (
         <p className="cal-alert" role="alert">
           Permission denied: calibration read, write, generation, and print
-          permissions are required.
+          permissions are required. Ask a PrintFarmer administrator to grant
+          those permissions to this profile, then select Refresh.
+        </p>
+      ) : null}
+      {!store.offline &&
+      unavailableReason !== undefined &&
+      unavailableReason !== null &&
+      unavailableReason !== 'missingScopes' ? (
+        <p className="cal-alert cal-alert--warning" role="alert">
+          Calibration is unavailable on this PrintFarmer server.{' '}
+          {store.availability?.unavailableDetail ??
+            availabilityCopy[unavailableReason]}
         </p>
       ) : null}
 

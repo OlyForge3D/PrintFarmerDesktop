@@ -30,6 +30,7 @@ export const IpcChannel = {
   CalibrationListConflicts: 'calibration:listConflicts',
   CalibrationResolveConflict: 'calibration:resolveConflict',
   CalibrationSyncNow: 'calibration:syncNow',
+  CalibrationGetDiagnostics: 'calibration:getDiagnostics',
   CalibrationStartGeneration: 'calibration:startGeneration',
   CalibrationGetOrchestrationStatus: 'calibration:getOrchestrationStatus',
   CalibrationGetQueueState: 'calibration:getQueueState',
@@ -3135,6 +3136,98 @@ export type CalibrationSyncNowResponse = z.infer<
   typeof CalibrationSyncNowResponse
 >;
 
+// --- Diagnostics (issue #159) ---------------------------------------------
+
+/**
+ * Copyable calibration health report.
+ *
+ * Every field here is either a version string, a boolean flag, a
+ * `resource:action` scope, a count, a typed error code, or an identifier. There
+ * is deliberately no field for a token, a credential, a photo, a server message
+ * or a filesystem path, so the response cannot carry a secret by construction —
+ * the same structural rule the log records follow.
+ *
+ * `capability` and `lastSync` are observed in memory during the current app run
+ * and are null until calibration has negotiated and synced at least once since
+ * the app started. A null is "not observed yet", not "broken".
+ */
+export const CalibrationCapabilitySnapshot = z
+  .object({
+    negotiatedApiVersion: z.string().max(64).nullable(),
+    negotiatedSchemaVersion: z.string().max(64).nullable(),
+    apiContractVersion: z.string().max(64),
+    flags: CalibrationCapabilityFlags,
+    grantedScopes: z.array(z.string().max(64)).max(64),
+    negotiatedAt: z.string().datetime(),
+  })
+  .strict();
+export type CalibrationCapabilitySnapshot = z.infer<
+  typeof CalibrationCapabilitySnapshot
+>;
+
+export const CalibrationOutboxSnapshot = z
+  .object({
+    pendingOperationCount: z.number().int().nonnegative(),
+    unresolvedConflictCount: z.number().int().nonnegative(),
+  })
+  .strict();
+export type CalibrationOutboxSnapshot = z.infer<
+  typeof CalibrationOutboxSnapshot
+>;
+
+/**
+ * Why `outbox` is null. Only `readFailed` indicates a fault; the other two are
+ * benign "nothing was asked" states. Keeping them distinct is what lets a
+ * runbook name a cause instead of keying on absence (issue #236).
+ */
+export const CalibrationOutboxUnavailableReason = z.enum([
+  'notAttempted',
+  'noProfileSelected',
+  'readFailed',
+]);
+export type CalibrationOutboxUnavailableReason = z.infer<
+  typeof CalibrationOutboxUnavailableReason
+>;
+
+export const CalibrationLastSyncSnapshot = z
+  .object({
+    outcome: z.enum(['ok', 'failed']),
+    at: z.string().datetime(),
+    errorCode: z.string().max(64).nullable(),
+    correlationId: z.string().max(128).nullable(),
+  })
+  .strict();
+export type CalibrationLastSyncSnapshot = z.infer<
+  typeof CalibrationLastSyncSnapshot
+>;
+
+export const CalibrationGetDiagnosticsRequest = z
+  .object({
+    profileId: z.string().uuid().optional(),
+    projectId: z.string().uuid().optional(),
+  })
+  .strict();
+export type CalibrationGetDiagnosticsRequest = z.infer<
+  typeof CalibrationGetDiagnosticsRequest
+>;
+
+export const CalibrationGetDiagnosticsResponse = z
+  .object({
+    generatedAt: z.string().datetime(),
+    profileId: z.string().uuid().nullable(),
+    capability: CalibrationCapabilitySnapshot.nullable(),
+    outbox: CalibrationOutboxSnapshot.nullable(),
+    outboxUnavailableReason: CalibrationOutboxUnavailableReason.nullable(),
+    lastSync: CalibrationLastSyncSnapshot.nullable(),
+    observedSinceAppStart: z.boolean(),
+    /** Pre-formatted plain text for pasting into a bug report. */
+    report: z.string().max(8192),
+  })
+  .strict();
+export type CalibrationGetDiagnosticsResponse = z.infer<
+  typeof CalibrationGetDiagnosticsResponse
+>;
+
 // --- Conflicts and resolutions -------------------------------------------
 
 export const CalibrationConflictKind = z.enum([
@@ -5187,6 +5280,10 @@ export const ipcSchemas = {
     request: CalibrationSyncNowRequest,
     response: CalibrationSyncNowResponse,
   },
+  [IpcChannel.CalibrationGetDiagnostics]: {
+    request: CalibrationGetDiagnosticsRequest,
+    response: CalibrationGetDiagnosticsResponse,
+  },
   [IpcChannel.CalibrationStartGeneration]: {
     request: CalibrationStartGenerationRequest,
     response: CalibrationStartGenerationResponse,
@@ -5401,6 +5498,9 @@ export interface PrintFarmerApi {
   syncCalibrationNow(
     request: CalibrationSyncNowRequest,
   ): Promise<CalibrationSyncNowResponse>;
+  getCalibrationDiagnostics(
+    request: CalibrationGetDiagnosticsRequest,
+  ): Promise<CalibrationGetDiagnosticsResponse>;
   startCalibrationGeneration(
     request: CalibrationStartGenerationRequest,
   ): Promise<CalibrationStartGenerationResponse>;
