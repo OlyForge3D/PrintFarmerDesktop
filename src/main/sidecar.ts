@@ -970,6 +970,7 @@ export class SidecarClient {
     entityId: string,
     reason: string,
     serverRevision: number,
+    conflictKind?: string,
   ): Promise<void> {
     await this.mutationRequest('recordCalibrationConflict', {
       profileId,
@@ -978,6 +979,29 @@ export class SidecarClient {
       entityId,
       reason,
       serverRevision,
+      conflictKind: conflictKind ?? null,
+    });
+  }
+
+  /**
+   * Resolve a calibration conflict under the ratified policy (issue #216).
+   *
+   * A mutation, not a read: it writes `resolved_at`, and for
+   * `keepLocalAsNewRevision` it mints a revision. Routed through
+   * `mutationRequest` so it inherits the same retry/settlement treatment as
+   * every other calibration write.
+   */
+  async resolveCalibrationConflict(request: {
+    profileId: string;
+    conflictId: string;
+    resolution: string;
+    mergedFields?: Record<string, string> | undefined;
+  }): Promise<unknown> {
+    return await this.mutationRequest('resolveCalibrationConflict', {
+      profileId: request.profileId,
+      conflictId: request.conflictId,
+      resolution: request.resolution,
+      mergedFields: request.mergedFields ?? null,
     });
   }
 
