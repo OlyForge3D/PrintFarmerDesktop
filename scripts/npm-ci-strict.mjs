@@ -323,11 +323,23 @@ export function repairOutcome(evidence) {
  * Human-readable `$GITHUB_STEP_SUMMARY` section recording that a repair ran.
  *
  * This is durable evidence in the job-log sense only. State plainly (in the PR
- * body, and here) what it does NOT achieve: it does not survive commit
- * supersession on the branch view — a superseded commit's summary is not what a
- * reader of the branch sees next. A record that survives the next push needs an
- * issue comment or a label, which needs a token and a workflow permission, and
- * is out of scope for this script. See #274, defect 2.
+ * body, and here) what it does NOT achieve, because it is less than it looks:
+ *
+ *   - It does not survive a RE-RUN of this same job. `actions/runs?head_sha=…`
+ *     returns only the latest attempt, so a summary written on attempt 1 is not
+ *     in the attempt-2 view anyone reads. Measured on #269 `e639e72`: attempt 1
+ *     failed on this exact install, attempt 2 passed, and the head_sha view
+ *     shows three greens with no sign attempt 1 existed — only `run_attempt: 2`
+ *     betrays it. A record with the same lifetime as the failure it records is
+ *     not a record.
+ *   - It does not survive commit supersession on the branch view either — a
+ *     superseded commit's summary is not what a reader of the branch sees next.
+ *
+ * The real value of the repair is that it makes the re-run UNNECESSARY (the
+ * repair happens in this attempt), not that this summary outlives one. A record
+ * that survives a re-run or a push needs cross-run mutable state — an issue
+ * comment or a label — which needs a token and a workflow permission, and is out
+ * of scope for this script. See #274, defect 2.
  *
  * @param {{ firstPaths: string[], secondExitCode: number, secondWarned: boolean, problems: string[], unresolved: string[], succeeded: boolean }} record
  * @returns {string}
