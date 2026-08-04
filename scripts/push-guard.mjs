@@ -97,9 +97,9 @@ function describe(commits) {
  *   `refs/remotes/**` read. `discarded` is `rev-list <live> ^<local>` — the
  *   commits this push would remove from the remote.
  *
- *   `ownershipEvidence` is required and says whether this clone can answer the
- *   ownership question at all. It is NOT "are these commits mine"; it is "is the
- *   instrument working". Absence of a session id from `ownSessions` means
+ *   `ownershipEvidence` is required and says whether this worktree can answer
+ *   the ownership question at all. It is NOT "are these commits mine"; it is "is
+ *   the instrument working". Absence of a session id from `ownSessions` means
  *   something only when the instrument that would have recorded it was running.
  * @returns {{verdict: 'allow' | 'refuse', code: string, message: string}}
  */
@@ -313,7 +313,7 @@ export function evaluateRefUpdate(update, facts) {
         code: 'push-guard.foreign-session',
         message: [
           `This push destroys ${discarded.length} commit(s) carrying a session id`,
-          'this clone has never authored a commit under.',
+          'this worktree has never authored a commit under.',
           `Session id(s) never authored here: ${foreign.join(', ')}`,
           '',
           describe(discarded),
@@ -331,20 +331,20 @@ export function evaluateRefUpdate(update, facts) {
       verdict: 'refuse',
       code: 'push-guard.unattributed-discard',
       message: [
-        `This push destroys ${discarded.length} commit(s), and this clone cannot`,
+        `This push destroys ${discarded.length} commit(s), and this worktree cannot`,
         'establish whether they are yours.',
         `Session id(s) never authored here: ${foreign.join(', ')}`,
         '',
         describe(discarded),
         '',
-        'That is an absence, not a finding: this clone has recorded no authorship',
+        'That is an absence, not a finding: this worktree has recorded no authorship',
         "of its own, so the same absence is produced by another session's work",
         'and by a rollback of all of your own. Read the commits.',
         '',
         'Acknowledge the tip you are overwriting:',
         `  npm run push:force`,
         '',
-        'This clone records no authorship either because reflogs are off:',
+        'This worktree records no authorship either because reflogs are off:',
         '  git config core.logAllRefUpdates true',
         'or because everything here arrived by fetch and nothing was committed',
         'in it, which a fresh clone doing a pure rewind always looks like.',
@@ -502,7 +502,7 @@ const RECORD = '\u001e';
 const FIELD = '\u001f';
 
 /**
- * Sessions this clone can account for having held — read from the reflog, which
+ * Sessions this worktree can account for having held — read from the reflog, which
  * is a direct observation of local provenance rather than a proxy for it.
  *
  * "Is this commit mine?" was previously answered with "is some other commit of
@@ -526,13 +526,43 @@ const FIELD = '\u001f';
  * and it survives a rebase of your own work: the rewritten copies carry the same
  * session id as the originals, whose `commit` entries are still in the reflog.
  *
- * Both reflogs are read: the branch's covers commits made on it, HEAD's covers
- * work that passed through this worktree on any branch. If reflogs are disabled
- * the set is empty — which is NOT safely "stricter". An empty set makes every
- * discarded commit look foreign, including the pusher's own, and the remedy the
- * guard then prints is the override that turns this check off. See
- * `authoredHere`, which is what keeps that absence from being read as a
- * finding.
+ * Only HEAD's reflog is read, and which file that is decides the answer.
+ * Measured, in the layout this squad actually runs — eight-plus worktrees off
+ * one clone:
+ *
+ *     <git-dir>/logs/HEAD              PER-WORKTREE
+ *     <common-dir>/logs/refs/heads/…   SHARED by every worktree
+ *
+ * The branch reflog used to be read too, on the reasoning that it "covers
+ * commits made on that branch". It does — including commits made on it from
+ * SOMEBODY ELSE'S worktree, which is this guard's entire subject matter. A
+ * worktree is retired (routine here); its branch reflog stays behind in the
+ * common dir; the next session to pick that branch up reads the departed
+ * session's `commit` entries as its own and the foreign alarm is silenced for
+ * exactly the work it was built to protect. Measured: session A destroyed two
+ * of session B's commits and was told `unacknowledged-discard`, the LONE-WRITER
+ * verdict, with the two-writer warning and the foreign override both withheld.
+ * Authorisation dropped from two acknowledgements to one, silently.
+ *
+ * Dropping the branch reflog costs nothing, because HEAD's is a superset of it
+ * for the only thing being asked. Every `git commit` moves the HEAD of the
+ * worktree it runs in and writes a `commit` entry there, whatever branch is
+ * checked out and even when none is. So the branch reflog contributed no
+ * authorship of this worktree's that HEAD lacks — it contributed only other
+ * worktrees'. The narrowing removes the leak and nothing else.
+ *
+ * If reflogs are disabled the set is empty — which is NOT safely "stricter". An
+ * empty set makes every discarded commit look foreign, including the pusher's
+ * own, and the remedy the guard then prints is the override that turns this
+ * check off. See `authoredHere`, which is what keeps that absence from being
+ * read as a finding.
+ *
+ * Expiry degrades the same way and faster than it looks: `gc.reflogExpire` is 90
+ * days, but `gc.reflogExpireUnreachable` is 30, and a commit this guard
+ * adjudicates is by construction one that has just become unreachable. So the
+ * evidence for the ids that matter most decays on the shortest clock git offers.
+ * That direction is toward `unattributed-discard` — refuse, and claim less —
+ * which is the one direction it is safe to fail in.
  *
  * This is the ONLY source of ownership. A reachability term was unioned in
  * alongside it and has been removed: it let a session id be claimed as "held
@@ -545,7 +575,7 @@ const FIELD = '\u001f';
 const CREATED_HERE = /^commit\b/;
 
 /**
- * Whether this clone authored anything, and so whether the absence of a session
+ * Whether this worktree authored anything, and so whether the absence of a session
  * id from `readReflogSessions` carries information.
  *
  * This used to ask whether the reflog produced ANY entry, on the reasoning that
@@ -557,7 +587,7 @@ const CREATED_HERE = /^commit\b/;
  * and the old test says "evidence present, your id is absent" — which is the
  * original defect, reached by a different road.
  *
- * So the question is narrowed to whether this clone CREATED a commit, which is
+ * So the question is narrowed to whether this worktree CREATED a commit, which is
  * the only thing that can put a session id into the authored set. No creation
  * means the set is empty for want of input rather than for want of a match, and
  * an empty set for that reason is not evidence of a second writer.
@@ -565,33 +595,34 @@ const CREATED_HERE = /^commit\b/;
  * Note this is satisfied by a single new commit of your own, which is why the
  * fresh-clone rollback that adds one behaves correctly rather than falling to
  * the degraded path: that commit carries your id, so your id is in the set.
+ *
+ * Scoped to this worktree's HEAD for the same reason as `readReflogSessions`:
+ * a sibling worktree's authorship is not evidence that THIS session authored
+ * anything, and treating it as such would license the strong two-writer claim
+ * on somebody else's record.
  */
-export function authoredHere(localRef) {
-  for (const ref of ['HEAD', ...(localRef ? [localRef] : [])]) {
-    try {
-      for (const entry of readReflogEntries(ref)) {
-        if (CREATED_HERE.test(entry.reflogSubject)) return true;
-      }
-    } catch {
-      // This ref has no reflog; the other may still have one.
+export function authoredHere() {
+  try {
+    for (const entry of readReflogEntries('HEAD')) {
+      if (CREATED_HERE.test(entry.reflogSubject)) return true;
     }
+  } catch {
+    // No reflog at all; absence is handled by the caller, not read as a finding.
   }
   return false;
 }
 
-export function readReflogSessions(localRef) {
-  const refs = ['HEAD', ...(localRef ? [localRef] : [])];
+export function readReflogSessions() {
   const sessions = new Set();
-  for (const ref of refs) {
-    try {
-      for (const entry of readReflogEntries(ref)) {
-        if (!CREATED_HERE.test(entry.reflogSubject)) continue;
-        for (const session of entry.sessions) sessions.add(session);
-      }
-    } catch {
-      // A ref with no reflog is not evidence of anything; the other one still
-      // contributes, and an empty set only makes the guard stricter.
+  try {
+    for (const entry of readReflogEntries('HEAD')) {
+      if (!CREATED_HERE.test(entry.reflogSubject)) continue;
+      for (const session of entry.sessions) sessions.add(session);
     }
+  } catch {
+    // An absent reflog is not evidence of anything. The empty set only makes
+    // the guard stricter, and `authoredHere` is what stops that strictness
+    // from being reported as a finding about somebody else.
   }
   return sessions;
 }
@@ -814,10 +845,10 @@ export function gatherFacts(update, remote, env = process.env, location = '') {
       // value reaches the committer through its prompt, not its environment, so
       // there is no id here to compare with — and using the env var would call
       // every one of the pusher's own commits foreign.
-      facts.ownSessions = [...readReflogSessions(update.localRef)];
+      facts.ownSessions = [...readReflogSessions()];
       // Measured alongside the sessions, because the set alone cannot say
       // whether an absent id was never recorded or never existed.
-      facts.ownershipEvidence = authoredHere(update.localRef);
+      facts.ownershipEvidence = authoredHere();
     } else {
       facts.discarded = readCommits([liveRemoteSha, '--max-count=20']);
     }

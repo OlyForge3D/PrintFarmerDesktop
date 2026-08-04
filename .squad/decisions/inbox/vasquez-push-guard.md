@@ -427,3 +427,106 @@ with what was destroyed. Removing the proxy is what exposed it.
 A wrong mechanism that produces right answers on the cases you sample is not a
 half-correct mechanism — it is an untested one, and fixing anything nearby will
 surface every case it was covering by accident.
+
+## Which file a signal lives in is a design decision, not a detail
+
+`push-guard.mjs` reads a reflog to answer "did this session author that commit".
+Reflogs are not one thing, and the split is invisible from the command you type:
+
+    <git-dir>/logs/HEAD              PER-WORKTREE
+    <common-dir>/logs/refs/heads/…   SHARED by every worktree of the clone
+
+We run eight-plus worktrees off one clone. The guard read both, on the reasoning
+that the branch reflog "covers commits made on that branch". It does — including
+commits made on it from **somebody else's worktree**, which is the exact thing
+the guard exists to detect.
+
+Git forbids two worktrees holding one branch at once, so the way this is reached
+is that a worktree is **retired**. The worktree goes; its branch reflog stays in
+the common dir. Measured: the next session picked the branch up, destroyed two of
+the departed session's commits, and was told `unacknowledged-discard` — the
+lone-writer verdict. The two-writer claim and the foreign override were both
+withheld. **Authorisation dropped from two acknowledgements to one, silently.**
+
+The fix was a narrowing to HEAD's reflog alone, and it cost nothing: every
+`git commit` moves the HEAD of the worktree it runs in, so HEAD's reflog is a
+superset of the branch's for this worktree's authorship. The branch reflog was
+contributing **only** other worktrees' work — that is, only the leak.
+
+The general form: when a control reads a signal, "which file" and "whose" are the
+same question. A signal whose scope is wider than the thing being adjudicated
+does not merely add noise; it adds the adversary's own testimony to the evidence
+for the defence.
+
+## A test can be green because of a precondition nobody wrote down
+
+The case for "a clone with no reflog" set `core.logAllRefUpdates=false` and
+looked. Both arms, measured:
+
+    config false, logs/ never created (empty remote)   ->  0 entries
+    config false, logs/ already exist (seeded remote)  ->  4 entries, 2 `commit`
+
+**Git honours that setting when it would CREATE a reflog file, and ignores it for
+a file that already exists.** So in any clone of a non-empty remote the config
+does nothing at all. Our test was green — but not for the reason its own name
+gave. It was green because the fixture's remote happened to be empty at clone
+time, an unstated precondition three lines away from the config that was getting
+the credit.
+
+Nothing was wrong with the assertion. What was wrong is that the **stated cause
+was not the actual cause**, so the next person to need "reflogs are off" would
+have copied the config line into a fixture with a seeded remote and got a test
+that decides nothing while reading as though it decides something.
+
+Two changes, and the second is the one that generalises:
+
+1. Remove the logs explicitly, so the state under test is the stated one.
+2. **Assert the precondition.** `expect(reflog).toBe('')` fails loudly the moment
+   the fixture stops producing the situation the case is named for.
+
+A fixture is an argument that a particular state has been reached. If the state
+is never checked, the argument is a commitment — and a commitment is not a
+control, including when the thing it constrains is a test.
+
+## I destroyed my own uncommitted fix with `git checkout --`, building a guard against destroying work
+
+Mutation-checking a new test means breaking the code deliberately, running the
+test, and putting the code back. I put it back with:
+
+    git checkout -- scripts/push-guard.mjs
+
+which restores the **committed** version. The fix under test was uncommitted. So
+the restore silently reverted the mutation _and the fix together_, and every
+measurement after that point was taken against the old code.
+
+The failure had exactly the signature that wastes the most time: the new test
+passed alone and failed in the full run, which reads as flakiness or test
+pollution. It was neither. It was deterministic, and the variable was **which
+file was on disk**, changed by me two steps earlier.
+
+Two controls would each have caught it, and neither existed:
+
+- **Restore from a copy, not from the index.** `Copy-Item` of the pre-mutation
+  file restores what was actually there. `git checkout --` restores what was
+  committed, which is a different thing whenever the work is in progress — that
+  is, always, during a mutation check.
+- **Assert the restore.** After putting the file back, check that the mutation is
+  gone _and_ that the fix is present. I checked only the first, which passes
+  identically whether the file was restored or reverted.
+
+And the thing that found it was `npm test`, because the full run was the only
+place both the fix and the test were exercised together. A green filtered run is
+not evidence about the code; it is evidence about the code **as it was on disk at
+that moment**, which during a mutation check is the one thing not being held
+still.
+
+### The second harness failure, in the same hour
+
+I checked those isolated runs for a pass with a regex over vitest's output and
+reported "3 runs passed". The regex did not match the summary line, so every run
+scored as a pass, including runs that failed. **The check could not produce a
+failure**, which is the defect this PR exists to argue about, committed by me in
+the tool I was using to verify the fix for it.
+
+Check exit codes. A harness that reads output for a verdict has to be tested
+against a known failure before its greens mean anything.

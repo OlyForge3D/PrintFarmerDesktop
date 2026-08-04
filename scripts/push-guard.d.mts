@@ -101,8 +101,8 @@ export function readEquivalentCommits(
   localSha: string,
   liveSha: string,
 ): Set<string>;
-export function readReflogSessions(localRef?: string): Set<string>;
-export function authoredHere(localRef?: string): boolean;
+export function readReflogSessions(): Set<string>;
+export function authoredHere(): boolean;
 export function readReflogEntries(
   ref: string,
 ): { reflogSubject: string; sessions: string[] }[];

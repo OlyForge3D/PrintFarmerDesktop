@@ -861,6 +861,158 @@ describe('a solo rollback of ALL of its own work is not reported as a second wri
   });
 });
 
+describe('a sibling worktree of the same clone is not this session', () => {
+  // F4. Ownership is read from a reflog, and WHICH FILE that is decides the
+  // answer. Measured:
+  //
+  //     <git-dir>/logs/HEAD              PER-WORKTREE
+  //     <common-dir>/logs/refs/heads/…   SHARED by every worktree
+  //
+  // This squad runs eight-plus worktrees off one clone, so the branch reflog is
+  // a record of everybody. The guard used to read it alongside HEAD's, on the
+  // reasoning that it "covers commits made on that branch" — which it does,
+  // including commits made on it by somebody else.
+  //
+  // Two worktrees cannot hold one branch at once, so the way this is reached is
+  // that a worktree is RETIRED, which happens here constantly. The worktree goes;
+  // its branch reflog stays behind in the common dir. Measured at 94d25e2: the
+  // next session picked the branch up, destroyed two of the departed session's
+  // commits, and was told `unacknowledged-discard` — the LONE-WRITER verdict —
+  // with the two-writer claim and the foreign override both withheld.
+  // Authorisation dropped from two acknowledgements to one, silently, which is
+  // the same severity shape as the carry-forward defect and reached by an
+  // entirely different door.
+  let root: string;
+  let remote: string;
+  let mine: string;
+  let theirs: string;
+  let base: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-worktree-'));
+    remote = path.join(root, 'remote.git');
+    mine = path.join(root, 'mine');
+    theirs = path.join(root, 'theirs');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, mine], root);
+    configure(mine);
+    commit(mine, 'base', 'session-mine');
+    git(['push', '--no-verify', '-u', 'origin', 'development'], mine);
+    base = git(['rev-parse', 'HEAD'], mine);
+
+    // The other session works in its own worktree OF THE SAME CLONE, which is
+    // this squad's layout, not a separate clone.
+    git(['worktree', 'add', '-b', 'feature', theirs], mine);
+    configure(theirs);
+    commit(theirs, 'theirs one', 'session-theirs');
+    commit(theirs, 'theirs two', 'session-theirs');
+    git(['push', '--no-verify', '-u', 'origin', 'feature'], theirs);
+
+    // Their worktree is retired. Their branch reflog is not: it is in the
+    // common dir and it outlives them.
+    git(['worktree', 'remove', '--force', theirs], mine);
+    git(['checkout', 'feature'], mine);
+    git(['reset', '--hard', base], mine);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], mine);
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('leaves the departed session’s commit entries in the shared branch reflog', () => {
+    // The precondition, asserted rather than assumed: without it a later change
+    // to git or to this fixture could make the case below pass for having
+    // nothing to leak rather than for reading the right file.
+    const branchReflog = git(
+      ['log', '-g', '--format=%gs', 'refs/heads/feature'],
+      mine,
+    );
+    expect(branchReflog).toContain('commit: theirs two');
+    // And the thing that makes the fix work: their authorship is absent from
+    // THIS worktree's HEAD, so scoping to HEAD is what separates the two.
+    const headReflog = git(['log', '-g', '--format=%gs', 'HEAD'], mine);
+    expect(headReflog).not.toContain('commit: theirs two');
+  });
+
+  it('still names them as a second writer, not as work of my own', () => {
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force', 'origin', 'feature'], mine);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    expect(stderr).toContain('push-guard.foreign-session');
+    expect(stderr).toContain('Two sessions are writing');
+    expect(stderr).toContain('never authored here: session-theirs');
+    expect(stderr).toContain(ACK_FOREIGN_ENV);
+    // The verdict this defect produced. Pinned by name, because the harm was
+    // not that it allowed the push — it refused — but that it downgraded the
+    // claim and halved the acknowledgement.
+    expect(stderr).not.toContain('push-guard.unacknowledged-discard');
+  });
+});
+
+describe('my own work in my own worktree is still mine', () => {
+  // The control for the case above, differing in ONE variable: who authored the
+  // commits being discarded. Everything else — one clone, a `feature` branch
+  // built on top of `development`, a hard reset, a force-push — is identical.
+  //
+  // Without this, narrowing ownership to HEAD's reflog could be "passing" by
+  // having stopped recognising anybody's authorship at all, and the case above
+  // would read as a success while the guard had simply been broken toward
+  // refusing.
+  let root: string;
+  let remote: string;
+  let work: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-ownwork-'));
+    remote = path.join(root, 'remote.git');
+    work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, work], root);
+    configure(work);
+    commit(work, 'base', 'session-mine');
+    git(['push', '--no-verify', '-u', 'origin', 'development'], work);
+    const base = git(['rev-parse', 'HEAD'], work);
+
+    git(['checkout', '-b', 'feature'], work);
+    commit(work, 'mine one', 'session-mine');
+    commit(work, 'mine two', 'session-mine');
+    git(['push', '--no-verify', '-u', 'origin', 'feature'], work);
+    git(['reset', '--hard', base], work);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('refuses without inventing a second writer', () => {
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force', 'origin', 'feature'], work);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    expect(stderr).toContain('push-guard.unacknowledged-discard');
+    expect(stderr).not.toContain('push-guard.foreign-session');
+    expect(stderr).not.toContain('push-guard.unattributed-discard');
+    expect(stderr).not.toContain(ACK_FOREIGN_ENV);
+  });
+});
+
 describe('a clone with no reflog does not get a finding it has not made', () => {
   // The reflog is what rescues the total-rollback case above, and it is not
   // always there: `core.logAllRefUpdates=false` turns it off, entries expire,
@@ -875,6 +1027,27 @@ describe('a clone with no reflog does not get a finding it has not made', () => 
   //
   // So absence is split by whether it is informative. The refusal stays; the
   // unsupported claim goes.
+  //
+  // How this fixture reaches "no reflog" matters, and it used to reach it by
+  // accident. Setting `core.logAllRefUpdates false` was doing NOTHING here: the
+  // remote is empty when it is cloned, so no `logs/` files were ever created,
+  // and the absence came from the clone rather than from the config. Measured
+  // both arms:
+  //
+  //     config false, logs/ never created (empty remote)  ->  0 entries
+  //     config false, logs/ already exist  (seeded remote) ->  4 entries,
+  //                                                            2 of them `commit`
+  //
+  // Git keeps appending to a reflog file that already exists regardless of the
+  // setting. So the config alone cannot disable anything in a normal clone, and
+  // a test that sets it and looks is measuring its own fixture ordering. See the
+  // case below, which pins that git behaviour itself.
+  //
+  // The removal below is a no-op TODAY, since this fixture's remote is empty
+  // when cloned and no logs were ever written. It is there so that seeding this
+  // remote — an ordinary-looking edit, and what every other fixture in this file
+  // does — cannot silently turn this case into a test of the attributed path.
+  // The assertion that follows is what actually catches that, either way.
   let root: string;
   let remote: string;
   let work: string;
@@ -896,11 +1069,26 @@ describe('a clone with no reflog does not get a finding it has not made', () => 
     }
     git(['push', '--no-verify', 'origin', 'feature'], work);
     git(['reset', '--hard', 'HEAD~2'], work);
+    // The config is not enough on its own; remove anything that was written
+    // before it took effect, so the state under test is the stated one.
+    rmSync(path.join(work, '.git', 'logs'), { recursive: true, force: true });
     git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
   });
 
   afterAll(() => {
     rmSync(root, { recursive: true, force: true });
+  });
+
+  it('has no reflog to read, which is the whole premise', () => {
+    // Asserted, not assumed. If a future change to this fixture or to git
+    // restores the reflog, the case below would start exercising the ordinary
+    // attributed path while still passing under a name that promises otherwise.
+    //
+    // Emptiness rather than failure: `git log -g` on a ref with no reflog exits
+    // 0 and prints nothing. Measured, after this was first written as `toThrow`
+    // and failed. The guard's readers treat both the same, but a test asserting
+    // the wrong one of the two would be pinning a fiction.
+    expect(git(['log', '-g', '--format=%gs', 'HEAD'], work)).toBe('');
   });
 
   it('refuses without claiming the discarded work belongs to someone else', () => {
@@ -935,6 +1123,57 @@ describe('a clone with no reflog does not get a finding it has not made', () => 
       root,
     );
     expect(tip).not.toBe(git(['rev-parse', 'HEAD'], work));
+  });
+});
+
+describe('core.logAllRefUpdates=false does not disable an existing reflog', () => {
+  // Not a test of the guard. A test of the assumption the fixture above was
+  // resting on, kept because that assumption is wrong in the direction that
+  // makes tests pass for no reason.
+  //
+  // Anyone writing "reflogs are off" into a future case will reach for the
+  // config, and in any clone of a non-empty remote it will do nothing at all
+  // while the test goes green. That is the vacuous-assertion failure this whole
+  // PR is about, so it gets pinned to git's actual behaviour rather than left
+  // as a comment someone can disagree with.
+  let root: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-reflogcfg-'));
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('keeps appending commit entries to logs/HEAD once the file exists', () => {
+    const remote = path.join(root, 'remote.git');
+    const seed = path.join(root, 'seed');
+    const work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, seed], root);
+    configure(seed);
+    commit(seed, 'seed', 'session-seed');
+    git(['push', '--no-verify', '-u', 'origin', 'development'], seed);
+
+    // Cloning a NON-empty remote is what creates logs/HEAD. The config is set
+    // immediately afterwards and is the only variable against the fixture above.
+    git(['clone', remote, work], root);
+    configure(work);
+    git(['config', 'core.logAllRefUpdates', 'false'], work);
+    git(['checkout', '-b', 'feature'], work);
+    commit(work, 'mine', 'session-mine');
+
+    expect(git(['log', '-g', '--format=%gs', 'HEAD'], work)).toContain(
+      'commit: mine',
+    );
+    // The branch reflog is a new file, so the config does bite there. Both
+    // halves matter: the setting governs CREATION, not appending, which is
+    // precisely why "set it and look at one ref" decides nothing.
+    expect(git(['log', '-g', '--format=%gs', 'refs/heads/feature'], work)).toBe(
+      '',
+    );
   });
 });
 
