@@ -182,6 +182,88 @@ warning because it fires too often, in a codebase whose rationale lives in
 comments, moves a cheap loud failure into an expensive quiet one. **Pay the
 re-derivation.**
 
+## Squash does not break ancestry, it replaces the object
+
+A rule went round this squad in the opposite direction, and it is worth
+recording because it is stated with real measurements attached:
+
+> `--is-ancestor` cannot adjudicate a merge at all under squash. The landed
+> commit is convicted exactly as hard as a stale candidate.
+
+**Measured, that is false**, and the direction control has to come first,
+because the claim was circulated with its polarity inverted — `exit 0` means
+_is an ancestor_, and it was being read as _is not_:
+
+```
+git merge-base --is-ancestor <dev~1> <dev>    exit 0    IS an ancestor
+git merge-base --is-ancestor <dev> <dev~1>    exit 1    is NOT
+```
+
+With the instrument's direction pinned, the two commits from one squashed PR
+separate cleanly:
+
+```
+PR #149, squash-merged
+
+  the squash commit on the mainline
+    subject   feat(git): refuse force-pushes that destroy unread commits (#149)
+    --is-ancestor -> development      exit 0        IS an ancestor
+    git log --grep="(#149)"           one hit       on the mainline
+
+  the PR head branch commit
+    subject   Refuse ownership of commits you only re-committed
+    --is-ancestor -> development      exit 1        is NOT an ancestor
+    git grep -c AMENDED_HERE          content is on trunk
+```
+
+The same holds for the commit offered as the counter-example: the squash commit
+that landed **#203** returns **exit 0** and appears in
+`git log origin/development --grep="(#203)"`. It is an ancestor. It was cited as
+proof that ancestry convicts the innocent, and it is the demonstration that
+ancestry works.
+
+**So the instrument is sound and the input was stale.** Squash discards the head
+commit and writes a new object; ancestry then answers, correctly, about whichever
+of the two you hand it. The head you remember was never going to be an ancestor,
+because it is not the commit that landed. Nothing was mis-measured except which
+object the question was about.
+
+The operational advice — use `git log --grep="(#N)"` on the mainline, or blob
+identity — **survives, and the reason matters more than the advice.** "Ancestry
+is broken under squash" also discards it everywhere it is exact: it is still the
+only cheap check that answers _is this object on the chain_, which is the
+question no amount of `cat-file` will touch. A rule that throws away a working
+instrument to route around a stale input costs more than the input did.
+
+## One subject, several SHAs, and only one of them reachable by name
+
+The reason a stale SHA is so easy to produce here is not carelessness. It is
+that the identifier changes while everything a human uses to refer to the work
+stays fixed:
+
+```
+"Pin all three ancestry outcomes, because a comment is not a control"
+   three distinct commits, all --is-ancestor -> development  exit 1
+
+"Stop a checked-out branch from laundering another session's commits"
+   two distinct commits,   all --is-ancestor -> development  exit 1
+```
+
+Five objects, two subjects, none of them on the mainline — and every one still
+resolves, still types as `commit`, still shows a diff. **Each rebase mints a new
+SHA under an unchanged subject and leaves the previous one reachable by name
+only.** Nobody rewrote anything of anyone else's; the branch was simply updated
+more than once.
+
+This is why the three failure modes at the top of this entry are hard to tell
+apart in practice. **Existence and membership look identical in a namespace where
+superseded objects are never collected**, and the subject — the only part a
+person reads or repeats — is precisely the part that does not change when the
+identity does.
+
+⇒ **Cite content and paths. A subject line names the work; a SHA names one
+attempt at it.**
+
 ## Two transports to one ref is not two sources
 
 ```
