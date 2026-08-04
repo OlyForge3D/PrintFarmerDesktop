@@ -101,7 +101,9 @@ import {
   CalibrationQueueJobState,
   CalibrationQueueState,
   CalibrationStartPrintRequest,
+  CalibrationAssetManifestEntry,
   CalibrationUnavailableReason,
+  CalibrationWorkspaceStageId,
   CalibrationOutboxUnavailableReason,
 } from '@shared/ipc';
 import type { ZodTypeAny } from 'zod';
@@ -113,6 +115,7 @@ import {
   CALIBRATION_LOG_LEVELS,
   CALIBRATION_LOG_OUTCOMES,
 } from '../src/main/calibrationLog.js';
+import { RemoteCalibrationCapabilities } from '../src/main/calibrationWire.js';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const docsDir = path.join(repoRoot, 'docs');
@@ -135,7 +138,40 @@ const RUNBOOKS: readonly string[] = [
 /** Pinned so deleting a runbook is loud rather than merely smaller. */
 const EXPECTED_RUNBOOK_COUNT = 7;
 
+/**
+ * Documents that live in `docs/runbooks/` but are not incident recovery
+ * runbooks, and so do not carry the five mandated sections.
+ *
+ * `docs/runbooks/` now holds two genres. #160's seven are *incident* documents:
+ * something is broken, and Trigger/Diagnose/Recover/Verify/If this fails is the
+ * right shape for that. `calibration-rollout.md` is #161's deliverable and is a
+ * *planned procedure* — eight ordered stages, each with a precondition, a health
+ * signal and a rollback. It has no trigger because nothing has gone wrong, and
+ * its structure is fixed by #161's acceptance criteria and read by the parity
+ * test in `tests/calibrationRolloutRunbook.test.ts`.
+ *
+ * Named and pinned exactly like RUNBOOKS rather than globbed or pattern-matched,
+ * so this stays an explicit two-list partition and not an escape hatch. The
+ * property the on-disk check exists to protect is unchanged: **every `.md` in
+ * the directory must appear in exactly one list**, so a new document is still
+ * forced to declare itself and cannot become exempt from this file by being
+ * quietly dropped in. What genre buys is exemption from the *section shape*
+ * only — every document here is still scanned for reference integrity below.
+ */
+const PROCEDURES: readonly string[] = ['calibration-rollout.md'];
+
+/** Pinned for the same reason as EXPECTED_RUNBOOK_COUNT. */
+const EXPECTED_PROCEDURE_COUNT = 1;
+
 const ADMIN_GUIDE = 'printer-calibration-admin-guide.md';
+
+/**
+ * The operator-facing guide added by #207. It was outside DOCUMENTS entirely, so
+ * nothing checked that the channels, log fields and npm scripts it tells a user
+ * to type still exist. It is the document most likely to be read by somebody who
+ * cannot check, which makes it the worst one to leave unverified.
+ */
+const USER_GUIDE = 'printer-calibration-user-guide.md';
 
 /** The five sections every runbook must have, in this order and no others. */
 const REQUIRED_SECTIONS: readonly string[] = [
@@ -248,6 +284,17 @@ const CONTRACT_SCHEMAS: readonly ZodTypeAny[] = [
   CalibrationQueueJobState,
   CalibrationQueueState,
   CalibrationStartPrintRequest,
+  // The asset manifest an operator reads when a gated download is refused:
+  // disabledReason, sourceUrl, expectedSha256.
+  CalibrationAssetManifestEntry,
+  // The *server-advertised* capability flags. These are a different vocabulary
+  // from CalibrationCapabilityFlags above, and the gap was invisible until a
+  // document named one: calibrationWire.ts maps server calibrationSyncEnabled
+  // onto client calibrationChangeFeedEnabled *and* calibrationOfflineDraftEnabled,
+  // so the two sets share no names and neither is derivable from the other.
+  // Without this entry every correct reference to a server switch is reported as
+  // a name the repository does not contain.
+  RemoteCalibrationCapabilities,
 ];
 
 /** Every camelCase identifier an operator may legitimately be told to read. */
@@ -259,6 +306,9 @@ function knownFieldNames(): Set<string> {
     ...CALIBRATION_LOG_LEVELS,
     ...CALIBRATION_LOG_OUTCOMES,
     ...CalibrationUnavailableReason.options,
+    // Workspace stage IDs. An operator guide walks a user through the stages
+    // by name, so these are exactly the identifiers a document is expected to say.
+    ...CalibrationWorkspaceStageId.options,
     ...CalibrationOutboxUnavailableReason.options,
   ]);
   for (const schema of CONTRACT_SCHEMAS) collectSchemaKeys(schema, names);
@@ -397,7 +447,16 @@ function runbookPath(name: string): string {
 
 const DOCUMENTS: readonly { label: string; file: string }[] = [
   { label: `docs/${ADMIN_GUIDE}`, file: path.join(docsDir, ADMIN_GUIDE) },
+  { label: `docs/${USER_GUIDE}`, file: path.join(docsDir, USER_GUIDE) },
   ...RUNBOOKS.map((name) => ({
+    label: `docs/runbooks/${name}`,
+    file: runbookPath(name),
+  })),
+  // Deliberately included. Genre exempts a document from the section shape, not
+  // from reference integrity — a rollout procedure names channels, log fields
+  // and npm scripts an operator will type, and those are exactly what this file
+  // exists to keep true.
+  ...PROCEDURES.map((name) => ({
     label: `docs/runbooks/${name}`,
     file: runbookPath(name),
   })),
@@ -427,11 +486,20 @@ const PLANTED_DOC = [
 ].join('\n');
 
 describe('calibration documentation reference integrity', () => {
-  it('resolves the seven named runbooks and the administrator guide', () => {
+  it('resolves the seven named runbooks, the rollout procedure and both operator guides', () => {
     // Without this the scans below are vacuous: an empty document set passes
     // every "no unknown reference" assertion while proving nothing.
     expect(RUNBOOKS.length).toBe(EXPECTED_RUNBOOK_COUNT);
     expect(new Set(RUNBOOKS).size).toBe(EXPECTED_RUNBOOK_COUNT);
+    expect(PROCEDURES.length).toBe(EXPECTED_PROCEDURE_COUNT);
+    expect(new Set(PROCEDURES).size).toBe(EXPECTED_PROCEDURE_COUNT);
+    // The two lists partition the directory, so an entry in both would let a
+    // document claim recovery shape and procedure exemption at once.
+    const inBoth = PROCEDURES.filter((name) => RUNBOOKS.includes(name));
+    expect(
+      inBoth,
+      `documents claim both genres at once: ${inBoth.join(', ') || '(none)'}`,
+    ).toEqual([]);
     const missing = DOCUMENTS.filter(
       (document) => !existsSync(document.file),
     ).map((document) => document.label);
@@ -441,24 +509,30 @@ describe('calibration documentation reference integrity', () => {
     ).toEqual([]);
   });
 
-  it('names every runbook present on disk', () => {
-    // The other half of the symmetry. A runbook nobody adds to the list would
-    // otherwise be exempt from every check in this file forever.
+  it('names every document present on disk, in exactly one genre', () => {
+    // The other half of the symmetry. A document nobody adds to a list would
+    // otherwise be exempt from every check in this file forever — which is what
+    // happened when docs/runbooks/calibration-rollout.md landed and this
+    // assertion caught it on the merge, not on either branch alone.
     const onDisk = readdirSync(runbookDir).filter((name) =>
       name.endsWith('.md'),
     );
-    const unlisted = onDisk.filter((name) => !RUNBOOKS.includes(name));
+    const unlisted = onDisk.filter(
+      (name) => !RUNBOOKS.includes(name) && !PROCEDURES.includes(name),
+    );
     expect(
       unlisted,
-      `runbooks exist that the named list omits: ${unlisted.join(', ') || '(none)'}`,
+      `documents exist in docs/runbooks that neither named list claims: ${unlisted.join(', ') || '(none)'}. Add it to RUNBOOKS if it is an incident runbook with the five mandated sections, or to PROCEDURES if it is a planned procedure.`,
     ).toEqual([]);
     expect(
       onDisk.length,
-      `docs/runbooks holds ${String(onDisk.length)} markdown files; expected ${String(EXPECTED_RUNBOOK_COUNT)}`,
-    ).toBe(EXPECTED_RUNBOOK_COUNT);
+      `docs/runbooks holds ${String(onDisk.length)} markdown files; expected ${String(EXPECTED_RUNBOOK_COUNT + EXPECTED_PROCEDURE_COUNT)}`,
+    ).toBe(EXPECTED_RUNBOOK_COUNT + EXPECTED_PROCEDURE_COUNT);
   });
 
-  it('gives every runbook exactly the five mandated sections in order', () => {
+  it('gives every recovery runbook exactly the five mandated sections in order', () => {
+    // PROCEDURES are deliberately not in this loop; that exemption is the whole
+    // reason the second list exists, and it is why they stay in DOCUMENTS.
     for (const name of RUNBOOKS) {
       const headings = [...read(runbookPath(name)).matchAll(/^## (.+)$/gm)].map(
         (match) => match[1]!.trim(),
@@ -657,7 +731,7 @@ describe('calibration documentation reference integrity', () => {
     ).toEqual([]);
   });
 
-  it('gives every runbook a Diagnose step naming something that exists', () => {
+  it('gives every recovery runbook a Diagnose step naming something that exists', () => {
     const fields = knownFieldNames();
     const dotted = knownDottedNames();
     const channels = knownChannels();
