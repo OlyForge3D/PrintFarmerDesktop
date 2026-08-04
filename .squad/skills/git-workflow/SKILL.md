@@ -77,6 +77,15 @@ Green CI is necessary, not sufficient. If a PR's diff is much larger than its st
 
 Reviews are pinned to an exact commit SHA. If you push while a review is running, the verdict no longer describes the commit that would be merged, and the round has to restart. Push your fix, report the new SHA, then stop until told to continue.
 
+That is a convention, and a convention is not a control — it restrains only an actor who has already decided to comply. When a freeze needs to be enforced rather than agreed, one server-side control exists and it has been measured on this repository: set `allow_force_pushes: false` on the held branch. A rebase or any other history rewrite is then refused with `GH006`, **including for the branch's own author and without `enforce_admins`**. Ordinary commits still push, so work continues and only rewriting is blocked — the freeze is on history, not on progress.
+
+Two traps, both hit in practice:
+
+- The `PUT` body must include `required_status_checks`, `enforce_admins`, `required_pull_request_reviews` and `restrictions` or it returns `422` and applies nothing. **On a lift that failure leaves the hold in place.**
+- After lifting with `DELETE`, reading the field back returns `404 Branch not protected`, not `false`. **Confirm a lift by performing the rewrite, not by reading the setting.**
+
+Exact commands, the permission required, and what this control deliberately does _not_ do are in `.squad/decisions/inbox/ripley-held-branch-force-push-control.md`. Read the last point before relying on it: anyone who can apply the hold can lift it, so it guards against an unconsidered rewrite, not a determined one.
+
 ## `gh` authentication gotcha
 
 The `GH_TOKEN` environment variable in this environment lacks the `workflow` scope. Any `gh` operation touching `.github/workflows/*` fails with _"refusing to allow an OAuth App to create or update workflow ... without `workflow` scope"_.
