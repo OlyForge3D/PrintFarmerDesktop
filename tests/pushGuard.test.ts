@@ -160,9 +160,65 @@ describe('the guard separates another session\u2019s commits from your own', () 
       facts({
         discarded: [{ sha: THEIRS, subject: 'wip', sessions: ['8dd289e7'] }],
         ownSessions: ['8dd289e7'],
+        ownCommits: [THEIRS],
         ack: THEIRS,
       }),
     );
+
+    expect(result.verdict).toBe('allow');
+    expect(result.code).toBe('push-guard.acknowledged-discard');
+  });
+
+  it('refuses a commit whose id is yours but whose object this worktree never created', () => {
+    // #264, isolated to one fact. Identical to the case above except that the
+    // discarded sha is absent from `ownCommits` — which is what a second writer
+    // sharing your brief produces, and what the id check cannot see.
+    const result = evaluateRefUpdate(
+      update({}),
+      facts({
+        discarded: [{ sha: THEIRS, subject: 'wip', sessions: ['8dd289e7'] }],
+        ownSessions: ['8dd289e7'],
+        ownCommits: [],
+        ownershipEvidence: true,
+        ack: THEIRS,
+      }),
+    );
+
+    expect(result.verdict).toBe('refuse');
+    expect(result.code).toBe('push-guard.unowned-discard');
+    // It must ask for the sha, not the id: the id is one the pusher already
+    // holds, so requiring it would be a remedy satisfiable without reading.
+    expect(result.message).toContain(THEIRS);
+  });
+
+  it('does not fire when the worktree cannot attribute authorship at all', () => {
+    // A fresh clone has an empty `ownCommits` for work it did not do and for
+    // work it did — the same observation. Claiming the strong reading of it
+    // would refuse every push from a clone that has authored nothing, which is
+    // the false-refusal shape whose remedy is disabling the guard.
+    const result = evaluateRefUpdate(
+      update({}),
+      facts({
+        discarded: [{ sha: THEIRS, subject: 'wip', sessions: ['8dd289e7'] }],
+        ownSessions: ['8dd289e7'],
+        ownCommits: [],
+        ownershipEvidence: false,
+        ack: THEIRS,
+      }),
+    );
+
+    expect(result.code).not.toBe('push-guard.unowned-discard');
+  });
+
+  it('does not refuse twice for one commit when the foreign id has already been named', () => {
+    // The strong arm printed `032c3f16` and the operator supplied it. Asking
+    // for the sha as well would turn one refusal into two and teach that the
+    // way through is to keep adding tokens until it stops complaining.
+    const result = evaluateRefUpdate(update({}), {
+      ...foreign,
+      ack: THEIRS,
+      ackForeign: '032c3f16',
+    });
 
     expect(result.verdict).toBe('allow');
     expect(result.code).toBe('push-guard.acknowledged-discard');
@@ -2292,6 +2348,161 @@ describe('a second session on one branch cannot be force-pushed over', () => {
       '\t',
     )[0];
     expect(tip).toBe(theirs);
+  });
+});
+
+// --- the remedy the guard prints -------------------------------------------
+
+describe('two sessions sharing one brief share one session id', () => {
+  // #264. Every foreign-session test above gives the two writers DIFFERENT
+  // trailers, and that is the assumption under test rather than a fact about
+  // the system. The `Copilot-Session` value reaches a commit through its
+  // author's PROMPT, not from the runtime: measured in this repo,
+  // COPILOT_AGENT_SESSION_ID is e5a64133-… while the commits that process
+  // writes carry b459f162-…. So the id's uniqueness is a property of how many
+  // distinct briefs were written, not of how many sessions ran, and two agents
+  // handed the same brief emit the same literal with nothing reporting that
+  // they have. Measured on development at ce4a7515: one value carries 74
+  // commits spanning 37 hours, which no single session runs for.
+  //
+  // That lands in the fail-open direction, which is the opposite of every other
+  // defect this file covers. A shared id makes a genuine second writer classify
+  // as yourself: `foreign-session` never fires, and the strongest refusal the
+  // guard has is unreachable in the squad's NORMAL case rather than an unusual
+  // one. This is the whole scenario of #81 with one literal changed.
+  let root: string;
+  let remote: string;
+  let one: string;
+  let two: string;
+  const SHARED = 'session-shared';
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-shared-'));
+    remote = path.join(root, 'remote.git');
+    one = path.join(root, 'one');
+    two = path.join(root, 'two');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, one], root);
+    configure(one);
+    git(['checkout', '-b', 'feature'], one);
+    commit(one, 'base', SHARED);
+    git(['push', '--no-verify', '-u', 'origin', 'feature'], one);
+
+    // A genuinely separate writer, in a separate clone, that never talks to the
+    // first — and carrying the same id, because it was given the same brief.
+    git(['clone', remote, two], root);
+    configure(two);
+    git(['checkout', 'feature'], two);
+    commit(two, 'work from the other session', SHARED);
+    git(['push', '--no-verify', 'origin', 'feature'], two);
+
+    git(['fetch', 'origin'], one);
+    commit(one, 'divergent work', SHARED);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], one);
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('still refuses, because ownership is decided by the object and not by what it says about itself', () => {
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force-with-lease', 'origin', 'feature'], one);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    expect(stderr).toContain('push-guard.unowned-discard');
+    // The refusal must not claim a second writer by NAME here. It cannot see
+    // one: the id matches this worktree's own. Saying only what is known — this
+    // object was not created here — is the difference between a finding and a
+    // guess, and an expired reflog produces the same observation.
+    expect(stderr).not.toContain('push-guard.foreign-session');
+
+    const theirs = git(['rev-parse', 'HEAD'], two);
+    expect(stderr).toContain(theirs.slice(0, 12));
+    expect(stderr).toContain('work from the other session');
+
+    // Refused means refused.
+    const tip = git(['ls-remote', remote, 'refs/heads/feature'], one).split(
+      '\t',
+    )[0];
+    expect(tip).toBe(theirs);
+  });
+
+  it('cannot be cleared by the tip acknowledgement, which is the pre-fix behaviour', () => {
+    // The mutation. Before ownership was read per commit, this exact push was
+    // ALLOWED with code `acknowledged-discard` — the tip sha is printed by git
+    // itself on any failed push, so it is derivable without reading a line of
+    // the other session's work. If a later change reverts ownership to the id
+    // set, this assertion is what fails.
+    const theirs = git(['rev-parse', 'HEAD'], two);
+
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force-with-lease', 'origin', 'feature'], one, {
+          [ACK_ENV]: theirs,
+        });
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    expect(stderr).toContain('push-guard.unowned-discard');
+    expect(
+      git(['ls-remote', remote, 'refs/heads/feature'], one).split('\t')[0],
+    ).toBe(theirs);
+  });
+
+  it('cannot be cleared by naming the shared id, which the pusher holds already', () => {
+    // The id is on this session's OWN commits, so supplying it is evidence of
+    // nothing. Accepting it would rebuild the hole one layer up: the refusal
+    // would be clearable by a token the operator can read off their own log.
+    const theirs = git(['rev-parse', 'HEAD'], two);
+
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force-with-lease', 'origin', 'feature'], one, {
+          [ACK_ENV]: theirs,
+          [ACK_FOREIGN_ENV]: SHARED,
+        });
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    expect(stderr).toContain('push-guard.unowned-discard');
+    expect(
+      git(['ls-remote', remote, 'refs/heads/feature'], one).split('\t')[0],
+    ).toBe(theirs);
+  });
+
+  it('admits the push once the destroyed commit is named by sha', () => {
+    // The opposite horn, and the one that keeps this a control rather than a
+    // wall. A sha cannot be transcribed from a brief and is not printed by the
+    // failed push, so naming it requires having looked at the commit — which is
+    // the property the shared id destroyed and the only thing being asked for.
+    const theirs = git(['rev-parse', 'HEAD'], two);
+
+    git(['push', '--force-with-lease', 'origin', 'feature'], one, {
+      [ACK_ENV]: theirs,
+      [ACK_FOREIGN_ENV]: theirs,
+    });
+
+    const tip = git(['ls-remote', remote, 'refs/heads/feature'], one).split(
+      '\t',
+    )[0];
+    expect(tip).toBe(git(['rev-parse', 'HEAD'], one));
+    expect(tip).not.toBe(theirs);
   });
 });
 
