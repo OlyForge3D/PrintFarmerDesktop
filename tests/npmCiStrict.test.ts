@@ -2,12 +2,17 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CLEANUP_WARNING_MARKER,
+  MAX_INSTALL_ATTEMPTS,
   NPM_PRODUCTION_TREE_COMMAND,
+  REMOVAL_RETRY,
+  exhaustedFailureLines,
   extractCleanupPaths,
   findTreeProblems,
   findUnresolvedPackages,
   hasCleanupFailure,
   npmInvocation,
+  planInstallOutcome,
+  recoveryNotice,
 } from '../scripts/npm-ci-strict.mjs';
 
 /**
@@ -294,5 +299,85 @@ describe('npm is invoked the way the other scripts in this repo invoke it', () =
     // one the supply-chain gate later refuses, and the earlier check would be
     // answering a neighbouring question.
     expect(NPM_PRODUCTION_TREE_COMMAND).toBe('npm ls --omit=dev --all --json');
+  });
+});
+
+describe('the gate has a discharge path it can execute itself (#274)', () => {
+  it('accepts a clean install — the negative control', () => {
+    // Without this, every assertion below is satisfied by a function that
+    // returns 'retry' or 'fail' unconditionally.
+    expect(planInstallOutcome(CLEAN_INSTALL_OUTPUT, 1)).toEqual({
+      action: 'accept',
+      paths: [],
+    });
+  });
+
+  it('retries the recorded failure instead of failing on first sight', () => {
+    const outcome = planInstallOutcome(RECORDED_CLEANUP_FAILURE, 1);
+    expect(outcome.action).toBe('retry');
+    // The paths are carried through, so the recovery notice can name them.
+    expect(outcome.paths).toContain('parse-color');
+  });
+
+  it('fails once the budget is spent, on the same input that retried', () => {
+    // Same output, different attempt number: the attempt counter is what
+    // separates these, so a plan that ignored it would fail one of the two.
+    expect(planInstallOutcome(RECORDED_CLEANUP_FAILURE, 1).action).toBe(
+      'retry',
+    );
+    expect(
+      planInstallOutcome(RECORDED_CLEANUP_FAILURE, MAX_INSTALL_ATTEMPTS).action,
+    ).toBe('fail');
+  });
+
+  it('fails closed when the attempt counter is not a positive integer', () => {
+    // A NaN counter must not read as "attempt < max" and loop forever.
+    for (const attempt of [0, -1, 1.5, Number.NaN, undefined, '1']) {
+      expect(
+        planInstallOutcome(RECORDED_CLEANUP_FAILURE, attempt as number).action,
+      ).toBe('fail');
+    }
+  });
+
+  it('budgets at least one retry, or the discharge path does not exist', () => {
+    expect(MAX_INSTALL_ATTEMPTS).toBeGreaterThanOrEqual(2);
+    expect(REMOVAL_RETRY.maxRetries).toBeGreaterThan(0);
+    expect(REMOVAL_RETRY.retryDelay).toBeGreaterThan(0);
+  });
+
+  it('records the failure in the log even when the retry rescues the run', () => {
+    // #274 defect 2: a recovered run is green, so if the notice were silent the
+    // wipe failure would leave no trace anywhere.
+    const notice = recoveryNotice(['parse-color'], 1, 2).join('\n');
+    expect(notice).toContain('attempt 1 of 2');
+    expect(notice).toContain('parse-color');
+    // It must distinguish itself from the forbidden action, not resemble it.
+    expect(notice).toContain('same job');
+    expect(notice).toContain('#274');
+  });
+
+  it('states what was already tried when the budget is spent', () => {
+    const lines = exhaustedFailureLines(['parse-color'], 2);
+    const text = lines.join('\n');
+    // The original message forbade re-running and named no alternative. This one
+    // has to say the cheap remedy is spent, or it is the same deadlock.
+    expect(text).toContain('already removed node_modules and reinstalled');
+    expect(text).toContain('2 attempts');
+    expect(text).toContain('Escalate');
+    expect(text).toContain('parse-color');
+  });
+
+  it('cites the live issue and not only the closed one', () => {
+    // #274 defect 3: `See #195` sends a reader to a CLOSED issue for the
+    // explanation of a control that is still live.
+    const text = exhaustedFailureLines([], 2).join('\n');
+    expect(text).toContain('#274');
+    expect(text).toContain('#195');
+  });
+
+  it('omits the directory line when npm named nothing, without a blank gap', () => {
+    const text = exhaustedFailureLines([], 2).join('\n');
+    expect(text).not.toContain('Directories npm named');
+    expect(text).not.toContain('\n\n\n');
   });
 });

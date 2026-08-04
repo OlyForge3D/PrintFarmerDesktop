@@ -3324,8 +3324,47 @@ export const CalibrationResolveConflictRequest = z
 export type CalibrationResolveConflictRequest = z.infer<
   typeof CalibrationResolveConflictRequest
 >;
+/**
+ * An observation whose binding printer-snapshot revision is behind the revision
+ * a resolution accepted.
+ *
+ * Identifiers here are `z.string()`, not `z.string().uuid()`, on purpose. The
+ * sidecar does not mint these ids, so a UUID demand would reject real rows and
+ * — because parsing is all-or-nothing — discard the entire supersession report
+ * along with them. That is exactly the defect #194 found in the conflict list
+ * path, where `conflict-` prefixed ids failed a `uuid()` contract and took the
+ * whole response with them.
+ */
+export const CalibrationSupersededObservation = z
+  .object({
+    observationId: z.string().min(1).max(200),
+    attemptId: z.string().min(1).max(200),
+    stepId: z.string().min(1).max(200),
+    parameterKey: z.string().min(1).max(200),
+    boundSnapshotRevision: z.number().int().nonnegative(),
+  })
+  .strict();
+export type CalibrationSupersededObservation = z.infer<
+  typeof CalibrationSupersededObservation
+>;
+
 export const CalibrationResolveConflictResponse = z
-  .object({ conflict: CalibrationConflict })
+  .object({
+    conflict: CalibrationConflict,
+    /**
+     * Observations the accepted revision superseded. Accepting a server
+     * snapshot reports them; it does not invalidate them, because cascading
+     * would destroy measurement work whose blast radius is invisible at the
+     * moment of pressing. Invalidation is a separate, explicit action.
+     *
+     * Required, and deliberately without `.default([])`. A default would let a
+     * responder that reports nothing parse as one reporting an empty set, and
+     * those are different claims: "nothing was superseded" is a measurement,
+     * "this resolution does not report supersession" is not. A caller that
+     * cannot separate them renders an unexamined snapshot as clean.
+     */
+    supersededObservations: z.array(CalibrationSupersededObservation).max(1000),
+  })
   .strict();
 export type CalibrationResolveConflictResponse = z.infer<
   typeof CalibrationResolveConflictResponse
