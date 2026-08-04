@@ -246,10 +246,24 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
  * rather than the profile bundle, so the two faults are distinguishable and
  * `tests/retargetProfileFailureClassification.test.ts` asserts exactly that.
  *
- * That does **not** close the awaiter claim above. Distinguishing the reaper
- * failure from a sidecar failure is a different property from proving the
- * rejection was not swallowed: M-4b still survives, because a handler that
- * logs and then swallows produces the same workspace envelope as one that
- * propagates. The un-assertable claim stays un-asserted; only the reason it
- * was un-assertable has changed.
+ * That does **not** close the awaiter claim above in full, but it narrows it,
+ * and the narrowing was measured rather than argued. Mutating the creation site
+ * to swallow *for awaiters* — `initialize().catch(() => undefined)` — is now
+ * killed: four cases in `tests/retargetProfileFailureClassification.test.ts` go
+ * red, because a resolved `retargetReady` lets the handler run on an
+ * unprepared workspace and the import channel returns `canceled` where the
+ * workspace envelope is expected. So the property *"the rejection reaches its
+ * awaiters"* IS asserted now, as a side effect of asserting classification.
+ *
+ * What remains un-asserted is narrower than the paragraph above claims: the
+ * `void retargetReady.catch(...)` handler at the creation site could log and
+ * return, or return without logging, and no awaiter could tell — because that
+ * `.catch` produces a *new* discarded promise and cannot alter what
+ * `await retargetReady` observes. That residue is covered by this suite's own
+ * observability assertion, not by the classification suite.
+ *
+ * Recorded because the first version of this note said M-4b "still survives",
+ * which was false. It was corrected by running the mutation instead of
+ * re-reading the code — the reasoning that produced the false claim was
+ * confident and wrong about which promise the `.catch` attaches to.
  */
