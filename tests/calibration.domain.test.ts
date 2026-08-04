@@ -221,6 +221,7 @@ function runtime(
     },
     bedClearConfirmed: true,
     operatorPresent: true,
+    serverGenerationEnabled: true,
     ...overrides,
   };
 }
@@ -496,6 +497,26 @@ describe('printer eligibility and action gates', () => {
     expect(decideCalibrationAction(state, runtime(), 'generate').allowed).toBe(
       true,
     );
+  });
+
+  it('blocks generation and patch application when the server disables generation', () => {
+    const state = initial();
+    const offline = runtime({ serverGenerationEnabled: false });
+
+    for (const action of ['generate', 'applyPatch'] as const) {
+      const decision = decideCalibrationAction(state, offline, action);
+      expect(decision.allowed).toBe(false);
+      expect(decision.blockers.map((blocker) => blocker.code)).toContain(
+        'SERVER_GENERATION_DISABLED',
+      );
+    }
+
+    // Queuing an existing job must stay available.
+    expect(
+      decideCalibrationAction(state, offline, 'queue').blockers.map(
+        (blocker) => blocker.code,
+      ),
+    ).not.toContain('SERVER_GENERATION_DISABLED');
   });
 });
 

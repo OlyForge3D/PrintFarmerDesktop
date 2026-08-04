@@ -21,6 +21,7 @@ import {
 import type { RemoteCalibrationApplyRequest } from '../src/main/calibrationWire.js';
 import {
   missingCalibrationFlags,
+  disabledCalibrationFeatures,
   supportsKlipper,
   supportsOrcaSlicer,
 } from '../src/main/calibrationWire.js';
@@ -135,10 +136,30 @@ describe('CalibrationHttpClient capability contract', () => {
 
     expect(caps.flags.calibrationGenerationEnabled).toBe(false);
     expect(caps.flags.calibrationPhotoUploadEnabled).toBe(false);
-    expect(missingCalibrationFlags(caps)).toEqual([
+    // Omitted optional features fail closed to `false` but must not withhold
+    // calibration itself; only the core preconditions gate availability.
+    expect(missingCalibrationFlags(caps)).toEqual([]);
+    expect(disabledCalibrationFeatures(caps)).toEqual([
       'calibrationPhotoUploadEnabled',
       'calibrationGenerationEnabled',
     ]);
+  });
+
+  it('withholds calibration when a core precondition is disabled', async () => {
+    const body = printFarmerCapabilitiesResponse({
+      calibrationPersistenceEnabled: false,
+    });
+    const fetchMock = vi.fn().mockResolvedValue(json(body));
+    const client = makeClient(fetchMock);
+
+    const caps = await client.getCapabilities(
+      PROFILE_ID,
+      BASE_URL,
+      AbortSignal.timeout(5000),
+    );
+
+    expect(missingCalibrationFlags(caps)).toEqual(['calibrationApiEnabled']);
+    expect(disabledCalibrationFeatures(caps)).toEqual([]);
   });
 
   it('reports the failing field path when a capability response is malformed', async () => {
