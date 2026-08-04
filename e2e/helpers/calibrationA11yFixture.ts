@@ -80,7 +80,16 @@ export type AvailabilityScenario =
 
 export type OrchestrationScenario = 'succeeded' | 'failed';
 
-export type QueueScenario = 'none' | 'assigned' | 'unknownOutcome';
+/**
+ * `unknownOutcomeRefetchFailure` reproduces the only state in which the panel
+ * renders a retry affordance at all (issue #224/#225): the first
+ * `getQueueState` succeeds with an unresolved outcome, a poll then reports a
+ * gap, and the gap-triggered refetch fails. `CalibrationQueueDispatchPanel`
+ * sets `fetchError` solely from `refetchJobState`'s failure branches, and a
+ * *poll* failure is swallowed — so failing the poll reaches nothing.
+ */
+export type QueueScenario =
+  'none' | 'assigned' | 'unknownOutcome' | 'unknownOutcomeRefetchFailure';
 
 export interface CalibrationScenario {
   /** Availability request rejects, which is the store's offline signal. */
@@ -685,6 +694,18 @@ export async function applyCalibrationScenario(
     }));
 
     const queueKind = scenario.queue ?? 'none';
+    const unresolvedOutcome =
+      queueKind === 'unknownOutcome' ||
+      queueKind === 'unknownOutcomeRefetchFailure';
+    // The refetch-failure scenario must let the FIRST fetch through, or
+    // `queueState` is never populated and the panel renders nothing to
+    // co-render with. Gating on a call count races with any prefetch and with
+    // the mount-time poll, so gate on the mechanism itself: fail only once a
+    // gap has been served AND at least one fetch has succeeded. That is
+    // exactly the reachable path (gap -> refetch -> failure) and is
+    // order-independent.
+    let okServed = 0;
+    let gapServed = false;
     handle('calibration:getQueueState', () => {
       if (queueKind === 'none') {
         return {
@@ -697,6 +718,22 @@ export async function applyCalibrationScenario(
           },
         };
       }
+      if (
+        queueKind === 'unknownOutcomeRefetchFailure' &&
+        gapServed &&
+        okServed > 0
+      ) {
+        return {
+          status: 'error',
+          error: {
+            code: 'serverError',
+            message: 'Network timeout',
+            retryable: true,
+            retryAfterSeconds: null,
+          },
+        };
+      }
+      okServed += 1;
       return {
         status: 'ok',
         job: {
@@ -704,9 +741,8 @@ export async function applyCalibrationScenario(
           jobKind: 'FilamentCalibration',
           rowVersion: 'W/"a11y-etag"',
           dispatchStateRowVersion: 'W/"a11y-dispatch"',
-          status: queueKind === 'unknownOutcome' ? 'Starting' : 'Assigned',
-          dispatchAttemptOutcome:
-            queueKind === 'unknownOutcome' ? 'Unknown' : null,
+          status: unresolvedOutcome ? 'Starting' : 'Assigned',
+          dispatchAttemptOutcome: unresolvedOutcome ? 'Unknown' : null,
           bedClearState: 'None',
           gcodeFileId: ids.gcodeId,
           assignedPrinterId: ids.printerId,
@@ -736,14 +772,20 @@ export async function applyCalibrationScenario(
       replayed: false,
     }));
 
-    handle('calibration:pollQueueChanges', () => ({
-      status: 'ok',
-      afterSequence: 0,
-      nextSequence: 0,
-      hasMore: false,
-      gapDetected: false,
-      events: [],
-    }));
+    // A gap is the panel's only trigger for a refetch after the initial fetch
+    // (`:173 gapDetected -> onGapDetected() -> refetchJobState()`).
+    handle('calibration:pollQueueChanges', () => {
+      const gap = queueKind === 'unknownOutcomeRefetchFailure' && okServed > 0;
+      if (gap) gapServed = true;
+      return {
+        status: 'ok',
+        afterSequence: 0,
+        nextSequence: 0,
+        hasMore: false,
+        gapDetected: gap,
+        events: [],
+      };
+    });
 
     handle('calibration:getSubscriptionResources', () => ({
       status: 'ok',
