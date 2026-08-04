@@ -51,6 +51,8 @@ npx prettier --write <file>
 
 **`GH_TOKEN` lacks the `workflow` scope.** Run `Remove-Item Env:\GH_TOKEN -ErrorAction SilentlyContinue` in every call that uses `gh` or `git push`.
 
+**Do not clear an npm-tree or downstream SBOM completeness failure by re-running it.** On Windows, `npm ci` can report an `EPERM` cleanup failure as a warning and exit 0 while leaving a partial `node_modules` tree. That is an environment or install failure, not evidence that the supply-chain policy is flaky. Preserve the first-attempt log and investigate the install. Every workflow that installs dependencies runs `scripts/npm-ci-strict.mjs`, which must stop a damaged tree at `Install dependencies`; if the same symptom reaches an SBOM step again, the install guard itself has failed and the run must not be dismissed.
+
 **`git grep` uses basic regex.** `|` is a literal unless you pass `-E`. This produced false "no matches" results while verifying acceptance criteria.
 
 **PowerShell has no heredocs.** Use a single-quoted here-string piped to a command (`@'` … `'@ | python -`), or write the file with a file tool.
