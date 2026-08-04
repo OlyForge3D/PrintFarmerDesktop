@@ -120,6 +120,39 @@ describe('CalibrationCorrelationRegistry', () => {
     expect(registry.resolve('job', 'b')).toBeNull();
   });
 
+  it('does not refresh eviction position on a bare resolve', () => {
+    // Paired with the test below: the two arms differ in exactly one thing —
+    // which accessor touches 'a' — so the asymmetry the module docblock claims
+    // is the only thing that can explain a difference in outcome.
+    const registry = new CalibrationCorrelationRegistry({
+      maxEntries: 2,
+      mintId: () => 'corr-fixed',
+    });
+    registry.bind('job', 'a', 'corr-a');
+    registry.bind('job', 'b', 'corr-b');
+    // A lookup is not a touch, so 'a' is still the oldest and 'a' is what goes.
+    expect(registry.resolve('job', 'a')).toBe('corr-a');
+    registry.bind('job', 'c', 'corr-c');
+    expect(registry.resolve('job', 'a')).toBeNull();
+    expect(registry.resolve('job', 'b')).toBe('corr-b');
+  });
+
+  it('does refresh eviction position when resolved through resolveOrBegin', () => {
+    const registry = new CalibrationCorrelationRegistry({
+      maxEntries: 2,
+      mintId: () => 'corr-fixed',
+    });
+    registry.bind('job', 'a', 'corr-a');
+    registry.bind('job', 'b', 'corr-b');
+    // Re-binds every candidate on a hit, so 'a' becomes the most recent.
+    const hit = registry.resolveOrBeginWithOrigin([['job', 'a']]);
+    expect(hit.correlationId).toBe('corr-a');
+    expect(hit.origin).toBe('continued');
+    registry.bind('job', 'c', 'corr-c');
+    expect(registry.resolve('job', 'a')).toBe('corr-a');
+    expect(registry.resolve('job', 'b')).toBeNull();
+  });
+
   it('does not confuse identifiers that collide across kinds', () => {
     const registry = new CalibrationCorrelationRegistry({
       mintId: () => 'corr-x',
