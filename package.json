@@ -40,6 +40,7 @@
     "format:write": "prettier --write .",
     "check:provenance": "node scripts/check-calibration-provenance.mjs",
     "check:closure-scope": "node scripts/check-pr-closure-scope.mjs",
+    "check:sequencing-hold": "node scripts/check-sequencing-hold.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
