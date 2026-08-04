@@ -2109,9 +2109,9 @@ describe('CalibrationWorkspace', () => {
       /No generation worker is available\./,
     );
     expect(
-      alert,
-      'the reference is absent from the rendered failure, so the operator has nothing to quote for a detail that was withheld',
-    ).toHaveTextContent(REFERENCE);
+      (alert.textContent ?? '').includes(REFERENCE),
+      `the reference is absent from the rendered failure, so the operator has nothing to quote for a detail that was withheld. Rendered text: ${alert.textContent ?? ''}`,
+    ).toBe(true);
   });
 
   it('shows no reference when the failure withheld nothing to reference (issue #177)', async () => {

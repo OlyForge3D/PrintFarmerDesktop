@@ -917,7 +917,10 @@ describe('redaction on real calibration failure paths', () => {
     expect(reference).not.toContain(API_KEY);
     expect(reference).not.toContain(EXIF_GPS);
     expect(reference).not.toContain(ABSOLUTE_PATH);
-    expect(response.error.message).not.toContain(JWT);
+    expect(
+      response.error.message,
+      'the backend detail is back on CalibrationApiError.message, so the catalogued message is a fallback again and the reference is decorating a leak',
+    ).not.toContain(JWT);
   });
 
   it('keeps every secret class out of the records emitted by a failing sync', async () => {
