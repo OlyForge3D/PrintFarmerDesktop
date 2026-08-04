@@ -120,6 +120,32 @@ commit as foreign, including the pusher's own. It is also process-scoped, so a
 human pushing from an ordinary terminal has nothing at all. The direct answer is
 not merely unavailable; taking it would have been worse than the proxy.
 
+## A third time, on the tool rather than the data: `git ls-remote --get-url`
+
+`git ls-remote <remote>` resolves `remote.<n>.url`; `git push` resolves
+`remote.<n>.pushurl`. A repo configured with a broken fetch URL and a working
+push URL therefore pushes fine while the guard's probe dies — the guard refuses
+a push git itself would have accepted.
+
+Two of the obvious repairs are worse than the bug. **`git ls-remote --push`
+does not exist — exit 129**, so it raises on every invocation and refuses every
+push in every configuration. **`git ls-remote --get-url` returns the _fetch_
+URL**, which is precisely the wrong quantity; git's own usage text names only
+`url.<base>.insteadOf` and never `pushInsteadOf`. That one is the dangerous
+repair, because it reads as correct in a diff and passes a suite that samples
+only `remote.<n>.pushurl`.
+
+The correct spelling is `git remote get-url --push <remote>`, falling back to
+the literal argument when the remote is a bare URL.
+
+The over-generalisation was mine again, one layer out: the suite exercised
+`pushurl` and the comment claimed `pushInsteadOf`. They are different mechanisms
+— a per-remote override versus a global URL rewrite — and one sampled config
+does not establish the class. **The reason the correct spelling is correct was
+written in a comment, which is a commitment; the control is the `pushInsteadOf`
+case that fails when the trap is substituted.** Substituting it fails both
+push-URL tests now and failed neither before.
+
 ## The decision function's purity is now enforced, not promised
 
 `evaluateRefUpdate` must stay pure because `protected-ref` and the delete refusal
