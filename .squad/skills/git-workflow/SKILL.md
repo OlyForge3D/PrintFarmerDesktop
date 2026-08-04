@@ -36,10 +36,58 @@ If you genuinely must build on unmerged work, say so and get agreement first. Th
 ```powershell
 git rebase --onto origin/development <old-base> <branch>
 # verify the diff shrank to something sane before pushing
-git push --force-with-lease
+npm run push:force
 ```
 
-Always `--force-with-lease`, never bare `--force`.
+## Force-pushing: `--force-with-lease` is not the control you think it is
+
+`--force-with-lease` with no argument compares against your **remote-tracking ref**, not against anything you read. It answers _"has anything changed since I last fetched?"_ — and any command that fetches in the background answers that question for you, silently.
+
+On PR #78 that cost two commits (`254fd9e`, `b9f1dea`) written by a second session on the same branch. A fetch had advanced `origin/<branch>` to those commits, so the lease compared them against themselves, passed, and the push destroyed them unread. The explicit form is not automatically better: on `squad-name-audit` a lease was written from a full-length SHA invented out of a seven-character prefix, and only failed because the invented value happened not to match.
+
+**Push with the wrapper:**
+
+```powershell
+npm run push:force            # current branch to origin
+npm run push:force -- --yes   # after reading what it says will be destroyed
+```
+
+It resolves the tip with a live `git ls-remote`, prints every commit the push would destroy, and pushes with that value as the lease plus `--force-if-includes`.
+
+**A `pre-push` hook backs it up** (`.githooks/pre-push` → `scripts/push-guard.mjs`, installed by the `prepare` npm script, so `npm install` wires it). It refuses:
+
+| refusal                             | meaning                                                                   |
+| ----------------------------------- | ------------------------------------------------------------------------- |
+| `push-guard.protected-ref`          | direct push to `development` or `main`                                    |
+| `push-guard.foreign-session`        | the destroyed commits carry a `Copilot-Session` trailer that is not yours |
+| `push-guard.unacknowledged-discard` | the push destroys commits and you named no tip                            |
+| `push-guard.ack-mismatch`           | you named a tip that is not the one on the remote                         |
+| `push-guard.stale-lease`            | the remote moved during the push                                          |
+| `push-guard.unfetched-remote-tip`   | the remote tip is not in your object store — `git fetch` and look         |
+| `push-guard.unverifiable-remote`    | the live query failed and the push is not provably non-destructive        |
+
+One code is an **allow**, not a refusal: `push-guard.unverified-fast-forward`. The live query
+failed, but the tip git advertised is an ancestor of what you are pushing, so the update provably
+destroys nothing and it is let through with a warning. Nothing is asserted that was not measured —
+if the ancestry cannot be established, the refusal above fires instead.
+
+**Two properties of the installation to know before you rely on it.** `core.hooksPath` is written
+**clone-wide**, so it applies to every worktree of the clone, while `.githooks/` is **per-worktree**
+— a worktree on a branch without that directory is unguarded, silently, because git skips a
+missing hook without error (#164). And setting `core.hooksPath` **disables every pre-existing
+`.git/hooks/*`**, including your own personal hooks; move them into `.githooks/` if you need them.
+The guard also makes `node` on `PATH` a precondition of pushing.
+
+To proceed after actually reading the work you are overwriting, name it — the value has to be read, not remembered:
+
+```powershell
+$env:PF_PUSH_ACK = (git ls-remote origin refs/heads/<branch>).Split("`t")[0]
+$env:PF_PUSH_ACK_FOREIGN = '<the other session id>'   # only for foreign-session
+```
+
+`--no-verify` bypasses the hook. It exists, it is not forbidden, and using it to skip this check is the one thing here that has already destroyed work twice.
+
+**Read your push output either way.** The #78 clobber was noticed only because the output read `+ b9f1dea...5bf85dc` and `b9f1dea` was a SHA the pusher had never produced.
 
 ## Every PR must contain `Closes #<N>`
 
@@ -76,6 +124,15 @@ Green CI is necessary, not sufficient. If a PR's diff is much larger than its st
 ## Freeze a branch while it is under review
 
 Reviews are pinned to an exact commit SHA. If you push while a review is running, the verdict no longer describes the commit that would be merged, and the round has to restart. Push your fix, report the new SHA, then stop until told to continue.
+
+That is a convention, and a convention is not a control — it restrains only an actor who has already decided to comply. When a freeze needs to be enforced rather than agreed, one server-side control exists and it has been measured on this repository: set `allow_force_pushes: false` on the held branch. A rebase or any other history rewrite is then refused with `GH006`, **including for the branch's own author and without `enforce_admins`**. Ordinary commits still push, so work continues and only rewriting is blocked — the freeze is on history, not on progress.
+
+Two traps, both hit in practice:
+
+- The `PUT` body must include `required_status_checks`, `enforce_admins`, `required_pull_request_reviews` and `restrictions` or it returns `422` and applies nothing. **On a lift that failure leaves the hold in place.**
+- After lifting with `DELETE`, reading the field back returns `404 Branch not protected`, not `false`. **Confirm a lift by performing the rewrite, not by reading the setting.**
+
+Exact commands, the permission required, and what this control deliberately does _not_ do are in `.squad/decisions/inbox/ripley-held-branch-force-push-control.md`. Read the last point before relying on it: anyone who can apply the hold can lift it, so it guards against an unconsidered rewrite, not a determined one.
 
 ## `gh` authentication gotcha
 

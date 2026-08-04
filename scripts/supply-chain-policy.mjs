@@ -413,6 +413,32 @@ function evaluateSbomIdentityCoverage(
 }
 
 /**
+ * Raised when `npm ls` output cannot be read, as distinct from the SBOM failing
+ * to cover it.
+ *
+ * These are different findings with different owners and different repairs, and
+ * before #201 they were reported identically. An unreadable tree is an *input*
+ * failure — most often a partial install — and saying "completeness check" about
+ * it sends the reader to the SBOM and the named package, both of which are fine.
+ *
+ * Carried as a distinct type rather than a string so callers can classify it
+ * without matching on wording that is itself the thing being fixed.
+ */
+export class NpmProductionTreeUnreadableError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'NpmProductionTreeUnreadableError';
+    this.unreadableInput = true;
+  }
+}
+
+/** Shared tail: what to do about an unreadable tree, wherever it surfaces. */
+export const UNREADABLE_TREE_REMEDY =
+  'This is an unreadable dependency tree, not an SBOM policy violation: ' +
+  'the install did not leave node_modules in a state npm can describe. ' +
+  'Suspect the install step, not the SBOM and not the named package.';
+
+/**
  * Compare npm SBOM identities with two mechanisms independent of generation:
  * npm's installed production tree and the packages imported by shipped source.
  */
@@ -422,22 +448,23 @@ export function evaluateNpmSbomCoverage(
   importedComponents,
 ) {
   if (!isRecord(npmProductionTree)) {
-    throw new Error(
-      'npm SBOM completeness check requires an npm ls production tree',
+    throw new NpmProductionTreeUnreadableError(
+      `npm ls produced no production tree to read. ${UNREADABLE_TREE_REMEDY}`,
     );
   }
 
   const expected = new Set();
   const walk = (node) => {
     if (!isRecord(node)) {
-      throw new Error(
-        'npm SBOM completeness check found a malformed npm ls dependency node',
+      throw new NpmProductionTreeUnreadableError(
+        `npm ls returned a dependency node that is not an object. ${UNREADABLE_TREE_REMEDY}`,
       );
     }
     for (const [name, child] of Object.entries(node.dependencies ?? {})) {
       if (!isRecord(child) || !isNonEmptyString(child.version)) {
-        throw new Error(
-          `npm SBOM completeness check cannot identify npm ls package ${name}`,
+        throw new NpmProductionTreeUnreadableError(
+          `npm ls could not describe the installed package ${name}: it reported the ` +
+            `package with no version. ${UNREADABLE_TREE_REMEDY}`,
         );
       }
       expected.add(`${name}@${child.version}`);

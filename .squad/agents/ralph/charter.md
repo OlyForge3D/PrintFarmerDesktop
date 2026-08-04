@@ -39,11 +39,12 @@ Full behavior, triggers, and the check-cycle steps are documented in `.squad/tem
 
 **Owner:** Jeff Papiez
 
-**Active issues to watch:** #24, #25, #26, #27, #28 in `OlyForge3D/PrintFarmerDesktop`
+**Active issues to watch:** the entire open backlog of `OlyForge3D/PrintFarmerDesktop`. As of 2026-08-03 that is #2, #42, #44, #57, #65, #80, #81, #109, #119, #121, #122, #127, #136, #138 — all triaged and carrying a `squad:{member}` label.
 
-**Scope exclusions (2026-07-24, active until further notice):** Do NOT scan, triage, categorize, or act on epic **#42** (Printer Calibration — handled as a separate track, not part of this backlog) or epic **#44** (Snapmaker U1 — explicitly held out of sequencing per Jeff's direction) or any of their child issues/PRs. Filter these out at Step 1 (scan) before categorizing. Everything else in the repo — including epics #4, #5, #6, #7, #8 and any newly-triaged `squad`-labeled issue not under #42/#44 — is in scope.
+**Scope (2026-08-03, supersedes the 2026-07-24 exclusion):** No exclusions. The standing exclusion of epics **#42** (Printer Calibration) and **#44** (Snapmaker U1) and their children is **lifted** per Jeff's direction. Mandate: drive the entire open backlog to zero open issues. Epics are tracking issues — drive them through their children and close an epic only when every child is closed and its own checklist is satisfied.
 
 ## Learnings
 
 Initial setup complete (2026-07-23). Ready to scan #24-#28 for triage state on next activation.
 Activated 2026-07-24 by Jeff via Ripley: drive all epics except #42 and #44.
+2026-08-03: Exclusion lifted by Jeff via Ripley — drive everything, including #42, #44 and #57, until the board is at zero.

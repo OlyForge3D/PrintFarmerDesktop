@@ -101,7 +101,9 @@ import {
   CalibrationQueueJobState,
   CalibrationQueueState,
   CalibrationStartPrintRequest,
+  CalibrationAssetManifestEntry,
   CalibrationUnavailableReason,
+  CalibrationWorkspaceStageId,
   CalibrationOutboxUnavailableReason,
 } from '@shared/ipc';
 import type { ZodTypeAny } from 'zod';
@@ -110,8 +112,10 @@ import {
   CALIBRATION_LOG_COMPONENTS,
   CALIBRATION_LOG_ERROR_CODES,
   CALIBRATION_LOG_FIELDS,
+  CALIBRATION_LOG_LEVELS,
   CALIBRATION_LOG_OUTCOMES,
 } from '../src/main/calibrationLog.js';
+import { RemoteCalibrationCapabilities } from '../src/main/calibrationWire.js';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const docsDir = path.join(repoRoot, 'docs');
@@ -134,7 +138,40 @@ const RUNBOOKS: readonly string[] = [
 /** Pinned so deleting a runbook is loud rather than merely smaller. */
 const EXPECTED_RUNBOOK_COUNT = 7;
 
+/**
+ * Documents that live in `docs/runbooks/` but are not incident recovery
+ * runbooks, and so do not carry the five mandated sections.
+ *
+ * `docs/runbooks/` now holds two genres. #160's seven are *incident* documents:
+ * something is broken, and Trigger/Diagnose/Recover/Verify/If this fails is the
+ * right shape for that. `calibration-rollout.md` is #161's deliverable and is a
+ * *planned procedure* — eight ordered stages, each with a precondition, a health
+ * signal and a rollback. It has no trigger because nothing has gone wrong, and
+ * its structure is fixed by #161's acceptance criteria and read by the parity
+ * test in `tests/calibrationRolloutRunbook.test.ts`.
+ *
+ * Named and pinned exactly like RUNBOOKS rather than globbed or pattern-matched,
+ * so this stays an explicit two-list partition and not an escape hatch. The
+ * property the on-disk check exists to protect is unchanged: **every `.md` in
+ * the directory must appear in exactly one list**, so a new document is still
+ * forced to declare itself and cannot become exempt from this file by being
+ * quietly dropped in. What genre buys is exemption from the *section shape*
+ * only — every document here is still scanned for reference integrity below.
+ */
+const PROCEDURES: readonly string[] = ['calibration-rollout.md'];
+
+/** Pinned for the same reason as EXPECTED_RUNBOOK_COUNT. */
+const EXPECTED_PROCEDURE_COUNT = 1;
+
 const ADMIN_GUIDE = 'printer-calibration-admin-guide.md';
+
+/**
+ * The operator-facing guide added by #207. It was outside DOCUMENTS entirely, so
+ * nothing checked that the channels, log fields and npm scripts it tells a user
+ * to type still exist. It is the document most likely to be read by somebody who
+ * cannot check, which makes it the worst one to leave unverified.
+ */
+const USER_GUIDE = 'printer-calibration-user-guide.md';
 
 /** The five sections every runbook must have, in this order and no others. */
 const REQUIRED_SECTIONS: readonly string[] = [
@@ -247,6 +284,17 @@ const CONTRACT_SCHEMAS: readonly ZodTypeAny[] = [
   CalibrationQueueJobState,
   CalibrationQueueState,
   CalibrationStartPrintRequest,
+  // The asset manifest an operator reads when a gated download is refused:
+  // disabledReason, sourceUrl, expectedSha256.
+  CalibrationAssetManifestEntry,
+  // The *server-advertised* capability flags. These are a different vocabulary
+  // from CalibrationCapabilityFlags above, and the gap was invisible until a
+  // document named one: calibrationWire.ts maps server calibrationSyncEnabled
+  // onto client calibrationChangeFeedEnabled *and* calibrationOfflineDraftEnabled,
+  // so the two sets share no names and neither is derivable from the other.
+  // Without this entry every correct reference to a server switch is reported as
+  // a name the repository does not contain.
+  RemoteCalibrationCapabilities,
 ];
 
 /** Every camelCase identifier an operator may legitimately be told to read. */
@@ -255,8 +303,12 @@ function knownFieldNames(): Set<string> {
     ...CALIBRATION_LOG_FIELDS,
     ...CALIBRATION_LOG_ERROR_CODES,
     ...CALIBRATION_CORRELATION_ORIGINS,
+    ...CALIBRATION_LOG_LEVELS,
     ...CALIBRATION_LOG_OUTCOMES,
     ...CalibrationUnavailableReason.options,
+    // Workspace stage IDs. An operator guide walks a user through the stages
+    // by name, so these are exactly the identifiers a document is expected to say.
+    ...CalibrationWorkspaceStageId.options,
     ...CalibrationOutboxUnavailableReason.options,
   ]);
   for (const schema of CONTRACT_SCHEMAS) collectSchemaKeys(schema, names);
@@ -339,6 +391,50 @@ export function extractReferences(markdown: string): DocReferences {
   return references;
 }
 
+/**
+ * A definition bullet: `- \`token\` — meaning`, the shape the documentation uses
+ * to teach an operator what a value means. The em dash or hyphen is required so
+ * an ordinary bullet that merely opens with a code span is not treated as a
+ * definition.
+ *
+ * This exists because the three shape predicates above gate on **orthography**:
+ * `CAMEL_FIELD` requires a hump, so an enum member that is an ordinary English
+ * word — `resumed`, `continued`, `ok` — matches nothing, falls out of the
+ * `else if` chain in `extractReferences`, and is never checked against anything.
+ * The documentation can therefore define a value that does not exist and stay
+ * green. See issue #243.
+ *
+ * A definition bullet is the one position where a bare word is unambiguously a
+ * *value being taught* rather than incidental prose, which is what makes
+ * checking it safe without an exact-match allowlist. An allowlist would be
+ * useless here: a fictional word is absent from the allowlist exactly as a
+ * dropped word is, so filtering on membership cannot distinguish them.
+ */
+const VALUE_DEFINITION = /^[ \t]*[-*][ \t]+`([^`\n]+)`[ \t]+[\u2014-]/gm;
+
+/**
+ * Tokens the document defines in a bullet that none of the shape classes claim.
+ * These are the word-shaped values; the shaped ones are already covered by
+ * `extractReferences`.
+ */
+export function definedValues(markdown: string): string[] {
+  const prose = markdown.replace(FENCED_BLOCK, '');
+  const values: string[] = [];
+  for (const match of prose.matchAll(VALUE_DEFINITION)) {
+    const token = match[1]!.trim();
+    if (
+      CHANNEL.test(token) ||
+      DOTTED.test(token) ||
+      CAMEL_FIELD.test(token) ||
+      NPM_SCRIPT.test(token)
+    ) {
+      continue;
+    }
+    values.push(token);
+  }
+  return values;
+}
+
 // --- Fixtures ---------------------------------------------------------------
 
 function read(file: string): string {
@@ -351,7 +447,16 @@ function runbookPath(name: string): string {
 
 const DOCUMENTS: readonly { label: string; file: string }[] = [
   { label: `docs/${ADMIN_GUIDE}`, file: path.join(docsDir, ADMIN_GUIDE) },
+  { label: `docs/${USER_GUIDE}`, file: path.join(docsDir, USER_GUIDE) },
   ...RUNBOOKS.map((name) => ({
+    label: `docs/runbooks/${name}`,
+    file: runbookPath(name),
+  })),
+  // Deliberately included. Genre exempts a document from the section shape, not
+  // from reference integrity — a rollout procedure names channels, log fields
+  // and npm scripts an operator will type, and those are exactly what this file
+  // exists to keep true.
+  ...PROCEDURES.map((name) => ({
     label: `docs/runbooks/${name}`,
     file: runbookPath(name),
   })),
@@ -381,11 +486,20 @@ const PLANTED_DOC = [
 ].join('\n');
 
 describe('calibration documentation reference integrity', () => {
-  it('resolves the seven named runbooks and the administrator guide', () => {
+  it('resolves the seven named runbooks, the rollout procedure and both operator guides', () => {
     // Without this the scans below are vacuous: an empty document set passes
     // every "no unknown reference" assertion while proving nothing.
     expect(RUNBOOKS.length).toBe(EXPECTED_RUNBOOK_COUNT);
     expect(new Set(RUNBOOKS).size).toBe(EXPECTED_RUNBOOK_COUNT);
+    expect(PROCEDURES.length).toBe(EXPECTED_PROCEDURE_COUNT);
+    expect(new Set(PROCEDURES).size).toBe(EXPECTED_PROCEDURE_COUNT);
+    // The two lists partition the directory, so an entry in both would let a
+    // document claim recovery shape and procedure exemption at once.
+    const inBoth = PROCEDURES.filter((name) => RUNBOOKS.includes(name));
+    expect(
+      inBoth,
+      `documents claim both genres at once: ${inBoth.join(', ') || '(none)'}`,
+    ).toEqual([]);
     const missing = DOCUMENTS.filter(
       (document) => !existsSync(document.file),
     ).map((document) => document.label);
@@ -395,24 +509,30 @@ describe('calibration documentation reference integrity', () => {
     ).toEqual([]);
   });
 
-  it('names every runbook present on disk', () => {
-    // The other half of the symmetry. A runbook nobody adds to the list would
-    // otherwise be exempt from every check in this file forever.
+  it('names every document present on disk, in exactly one genre', () => {
+    // The other half of the symmetry. A document nobody adds to a list would
+    // otherwise be exempt from every check in this file forever — which is what
+    // happened when docs/runbooks/calibration-rollout.md landed and this
+    // assertion caught it on the merge, not on either branch alone.
     const onDisk = readdirSync(runbookDir).filter((name) =>
       name.endsWith('.md'),
     );
-    const unlisted = onDisk.filter((name) => !RUNBOOKS.includes(name));
+    const unlisted = onDisk.filter(
+      (name) => !RUNBOOKS.includes(name) && !PROCEDURES.includes(name),
+    );
     expect(
       unlisted,
-      `runbooks exist that the named list omits: ${unlisted.join(', ') || '(none)'}`,
+      `documents exist in docs/runbooks that neither named list claims: ${unlisted.join(', ') || '(none)'}. Add it to RUNBOOKS if it is an incident runbook with the five mandated sections, or to PROCEDURES if it is a planned procedure.`,
     ).toEqual([]);
     expect(
       onDisk.length,
-      `docs/runbooks holds ${String(onDisk.length)} markdown files; expected ${String(EXPECTED_RUNBOOK_COUNT)}`,
-    ).toBe(EXPECTED_RUNBOOK_COUNT);
+      `docs/runbooks holds ${String(onDisk.length)} markdown files; expected ${String(EXPECTED_RUNBOOK_COUNT + EXPECTED_PROCEDURE_COUNT)}`,
+    ).toBe(EXPECTED_RUNBOOK_COUNT + EXPECTED_PROCEDURE_COUNT);
   });
 
-  it('gives every runbook exactly the five mandated sections in order', () => {
+  it('gives every recovery runbook exactly the five mandated sections in order', () => {
+    // PROCEDURES are deliberately not in this loop; that exemption is the whole
+    // reason the second list exists, and it is why they stay in DOCUMENTS.
     for (const name of RUNBOOKS) {
       const headings = [...read(runbookPath(name)).matchAll(/^## (.+)$/gm)].map(
         (match) => match[1]!.trim(),
@@ -484,6 +604,52 @@ describe('calibration documentation reference integrity', () => {
     expect(events).toContain('sync.failed');
     expect(events).toContain('sync.completed');
     expect(events).toContain('sceneCache.recipeAdoptionFailed');
+  });
+
+  it('defines only values that exist, including word-shaped ones', () => {
+    // #243: the shape predicates gate on orthography, so `resumed` and
+    // `continued` were documented and unguarded while `notAttempted` was
+    // checked. A definition bullet is the position where a bare word is
+    // certainly a value, so it can be checked without guessing at shape.
+    const fields = knownFieldNames();
+    const defined = DOCUMENTS.flatMap((document) =>
+      definedValues(read(document.file)).map((token) => ({
+        label: document.label,
+        token,
+      })),
+    );
+    // Non-vacuity: if the bullet pattern stops matching, every assertion below
+    // passes over an empty list and the check silently stops constraining.
+    expect(
+      defined.length,
+      `only ${String(defined.length)} word-shaped value definitions were extracted; the definition-bullet pattern has stopped matching`,
+    ).toBeGreaterThanOrEqual(3);
+    const offenders = defined
+      .filter(({ token }) => !fields.has(token))
+      .map(({ label, token }) => `${label}: defines unknown value '${token}'`);
+    expect(
+      offenders,
+      `documentation defines a value the repository does not contain:\n  ${offenders.join('\n  ')}`,
+    ).toEqual([]);
+  });
+
+  it('documents every correlationOrigin an operator can see', () => {
+    // The other direction: the check above catches a value that does not exist,
+    // this one catches a value that exists and stopped being explained. Scoped
+    // to correlation origins because that is the vocabulary the guide teaches
+    // as a definition list; log levels and outcomes are ordinary English words
+    // the documentation does not enumerate, and requiring them would assert a
+    // convention the docs do not follow.
+    const guide = read(path.join(docsDir, ADMIN_GUIDE));
+    const defined = new Set(definedValues(guide));
+    const documented = new Set(extractReferences(guide).fields);
+    const missing = CALIBRATION_CORRELATION_ORIGINS.filter(
+      (origin) => !defined.has(origin) && !documented.has(origin),
+    );
+    expect(
+      missing,
+      `the admin guide no longer explains these correlationOrigin values: ${missing.join(', ')}`,
+    ).toEqual([]);
   });
 
   it('assembles a contract vocabulary that is neither empty nor truncated', () => {
@@ -565,7 +731,7 @@ describe('calibration documentation reference integrity', () => {
     ).toEqual([]);
   });
 
-  it('gives every runbook a Diagnose step naming something that exists', () => {
+  it('gives every recovery runbook a Diagnose step naming something that exists', () => {
     const fields = knownFieldNames();
     const dotted = knownDottedNames();
     const channels = knownChannels();

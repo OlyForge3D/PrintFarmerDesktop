@@ -767,6 +767,9 @@ export function CalibrationStepWorkflow({
     physicalMatch: currentPhysicalMatch,
     bedClearConfirmed: false,
     operatorPresent: false,
+    serverGenerationEnabled:
+      store.availability?.capabilityFlags?.calibrationGenerationEnabled ===
+      true,
   };
   const generationDecision = decideCalibrationAction(
     state,

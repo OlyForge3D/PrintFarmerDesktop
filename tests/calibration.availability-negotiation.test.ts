@@ -160,9 +160,28 @@ describe('CalibrationGetAvailability against the live PrintFarmer contract', () 
     ]);
   });
 
-  it('names the disabled capabilities instead of failing validation', async () => {
+  it('stays available when only optional features are disabled', async () => {
     respondWith(
-      printFarmerCapabilitiesResponse({ calibrationGenerationEnabled: false }),
+      printFarmerCapabilitiesResponse({
+        calibrationGenerationEnabled: false,
+        calibrationPhotosEnabled: false,
+      }),
+    );
+    const handler = availabilityHandler();
+
+    const result = (await handler({}, undefined)) as Availability;
+
+    // Generation and photos are features, not preconditions: an operator can
+    // still record measured results by hand, so the tab must open.
+    expect(result.available).toBe(true);
+    expect(result.unavailableDetail).toBeNull();
+    expect(result.capabilityFlags?.calibrationGenerationEnabled).toBe(false);
+    expect(result.capabilityFlags?.calibrationPhotoUploadEnabled).toBe(false);
+  });
+
+  it('names the disabled capability when a core requirement is off', async () => {
+    respondWith(
+      printFarmerCapabilitiesResponse({ calibrationSyncEnabled: false }),
     );
     const handler = availabilityHandler();
 
@@ -170,7 +189,7 @@ describe('CalibrationGetAvailability against the live PrintFarmer contract', () 
 
     expect(result.available).toBe(false);
     expect(result.unavailableReason).toBe('missingCapabilityFlags');
-    expect(result.unavailableDetail).toContain('calibrationGenerationEnabled');
+    expect(result.unavailableDetail).toContain('calibrationChangeFeedEnabled');
     expect(result.negotiatedApiVersion).toBe('1.0');
   });
 

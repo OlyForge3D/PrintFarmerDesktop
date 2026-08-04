@@ -81,6 +81,70 @@ export function extractCleanupPaths(output) {
 }
 
 /**
+ * Describe the shape of a value for a diagnostic message, distinguishing the
+ * three things `typeof x === 'object'` conflates.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function describeShape(value) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  return `a ${typeof value}`;
+}
+
+/**
+ * npm's own verdict on the tree it just printed.
+ *
+ * `npm ls` reports `problems` whenever anything is wrong with the tree, and
+ * `error` when it also exits non-zero. Measured against real npm output:
+ *
+ *     healthy tree          `problems` absent, `error` absent   exit 0
+ *     an extraneous package `problems` present, `error` absent  exit 0  <-
+ *     an invalid package    `problems` present, `error` present exit 1
+ *
+ * The marked line is the reason this exists: npm knows the tree is wrong and
+ * still exits 0, which is #195's whole shape one level up from the install.
+ *
+ * Reading it also closes the case where npm returns a tree with no
+ * `dependencies` key at all — an unparseable `package.json` yields valid JSON
+ * carrying only `error`/`problems`, on which a structural walk finds nothing to
+ * walk and reports success.
+ *
+ * @param {unknown} tree parsed `npm ls --json` output
+ * @returns {string[]} npm's problem strings, plus its error summary
+ */
+export function findTreeProblems(tree) {
+  if (typeof tree !== 'object' || tree === null || Array.isArray(tree)) {
+    return [
+      `\`${NPM_PRODUCTION_TREE_COMMAND}\` returned ${describeShape(tree)} where an object was expected`,
+    ];
+  }
+  const problems = [];
+  if (Array.isArray(tree.problems)) {
+    for (const problem of tree.problems) {
+      const text = typeof problem === 'string' ? problem.trim() : '';
+      if (text.length > 0) problems.push(text);
+    }
+  }
+  if (tree.error !== undefined && tree.error !== null) {
+    const code =
+      typeof tree.error.code === 'string' ? tree.error.code : 'unknown error';
+    const summary =
+      typeof tree.error.summary === 'string' ? tree.error.summary.trim() : '';
+    problems.push(`npm reported ${code}${summary ? `: ${summary}` : ''}`);
+  }
+  // npm marks the root project invalid as a string explaining the mismatch, not
+  // as a boolean — see `findUnresolvedPackages` below.
+  if (tree.invalid !== undefined && tree.invalid !== false) {
+    problems.push(
+      `npm marked the root project invalid: ${String(tree.invalid)}`,
+    );
+  }
+  return [...new Set(problems)];
+}
+
+/**
  * Walk an `npm ls --json` tree and return every dependency npm could not
  * resolve to a version.
  *
@@ -88,34 +152,62 @@ export function extractCleanupPaths(output) {
  * directory left behind by a failed wipe shows up here as a named node with no
  * `version`.
  *
+ * `extraneous` and `invalid` are read as truthy rather than compared to `true`.
+ * Real npm emits `extraneous` as a boolean but `invalid` as a *string* naming
+ * the unsatisfied range — `'"^1.3.0" from the root project'` — so `=== true`
+ * never matched a tree npm actually produced.
+ *
+ * A node whose shape npm should never emit is reported rather than skipped. The
+ * previous behaviour was to return early, which turned every malformed tree
+ * into an empty result and therefore into a pass.
+ *
  * @param {unknown} tree parsed `npm ls --json` output
  * @returns {string[]} package names, deduplicated, in encounter order
  */
 export function findUnresolvedPackages(tree) {
   const unresolved = new Set();
   const seen = new Set();
-  const walk = (node) => {
-    if (typeof node !== 'object' || node === null || seen.has(node)) return;
+  const walk = (node, label) => {
+    if (typeof node !== 'object' || node === null || Array.isArray(node)) {
+      unresolved.add(
+        `${label} (npm ls returned ${describeShape(node)} for it)`,
+      );
+      return;
+    }
+    if (seen.has(node)) return;
     seen.add(node);
     const dependencies = node.dependencies;
-    if (typeof dependencies !== 'object' || dependencies === null) return;
+    // A leaf legitimately has no `dependencies` key; any other non-object is a
+    // shape npm does not emit, and must not be read as "nothing to check".
+    if (dependencies === undefined) return;
+    if (
+      typeof dependencies !== 'object' ||
+      dependencies === null ||
+      Array.isArray(dependencies)
+    ) {
+      unresolved.add(
+        `${label} (npm ls returned ${describeShape(dependencies)} for its \`dependencies\`)`,
+      );
+      return;
+    }
     for (const [name, child] of Object.entries(dependencies)) {
       const resolvable =
         typeof child === 'object' &&
         child !== null &&
+        !Array.isArray(child) &&
         typeof child.version === 'string' &&
         child.version.length > 0;
       if (!resolvable) {
         unresolved.add(name);
         continue;
       }
-      if (child.extraneous === true || child.invalid === true) {
+      if (child.extraneous || child.invalid) {
         unresolved.add(name);
       }
-      walk(child);
+      walk(child, name);
     }
   };
-  walk(tree);
+  walk(tree, 'the root project');
   return [...unresolved];
 }
 
@@ -209,7 +301,24 @@ async function main() {
     ]);
   }
 
-  const unresolved = findUnresolvedPackages(readProductionTree());
+  const tree = readProductionTree();
+
+  const problems = findTreeProblems(tree);
+  if (problems.length > 0) {
+    fail([
+      '',
+      'npm-ci-strict: npm itself reported problems with the installed tree.',
+      '',
+      ...problems.map((problem) => `  - ${problem}`),
+      '',
+      `\`${NPM_PRODUCTION_TREE_COMMAND}\` reports these even when it exits 0, which`,
+      'is how a partially-wiped tree reaches the SBOM gate several steps later and',
+      'reads there as an unrelated failure. See #195.',
+      '',
+    ]);
+  }
+
+  const unresolved = findUnresolvedPackages(tree);
   if (unresolved.length > 0) {
     fail([
       '',
