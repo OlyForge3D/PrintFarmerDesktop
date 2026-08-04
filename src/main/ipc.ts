@@ -237,6 +237,26 @@ export function registerIpcHandlers(
     dialogs: retargetDialogService,
   });
   const retargetReady = retargetArtifacts.initialize();
+  // The three IPC handlers below await `retargetReady`, but the first of those
+  // awaits happens when the renderer first retargets — minutes after startup, or
+  // never in a session where nobody does. Until an awaiter attaches a handler,
+  // Node treats a rejection here as unhandled and can terminate the main
+  // process. `initialize()` reaps stale instance directories, so it rejects on
+  // ordinary filesystem contention: this is the call that threw `EPERM: rmdir`
+  // and exited the #159 suite non-zero with every test passing.
+  //
+  // Attaching the handler here closes that window without swallowing anything —
+  // `retargetReady` still rejects for its awaiters, so a retarget attempted
+  // after a failed initialize reports the failure to the renderer as before.
+  void retargetReady.catch((error: unknown) => {
+    emitCalibrationLog({
+      level: 'error',
+      component: 'calibration.sidecar',
+      event: 'retargetArtifacts.startupInitializationFailed',
+      ...describeCalibrationFailure(error),
+      outcome: 'failed',
+    });
+  });
   let targetProfilesInitialized = false;
   const refreshTargetProfiles = async () => {
     if (!targetProfilesInitialized) {
