@@ -28,7 +28,15 @@
 // value whose production form causes the defect.
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -232,7 +240,9 @@ describe('the installer CLI', () => {
 
 describe('the coverage property, driven through a real push', () => {
   function remoteFor(work: string) {
-    const bare = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'hookcov-remote-')));
+    const bare = realpathSync(
+      mkdtempSync(path.join(os.tmpdir(), 'hookcov-remote-')),
+    );
     temps.push(bare);
     git(['init', '--bare', '--quiet'], bare);
     git(['remote', 'add', 'origin', bare], work);

@@ -15,13 +15,13 @@ anyone is looking.
 
 Across the 27 worktrees sharing `D:/s/PrintFarmerDesktop/.git`:
 
-| measurement                            | value                                        |
-| -------------------------------------- | -------------------------------------------- |
-| `core.hooksPath`                       | `.githooks`, in the clone-wide `.git/config` |
-| `extensions.worktreeConfig`            | unset — no per-worktree override exists      |
-| worktrees with `.githooks/pre-push`    | **5**                                        |
-| worktrees without                      | **22**                                       |
-| control (`package.json` present)       | 27 / 27                                      |
+| measurement                         | value                                        |
+| ----------------------------------- | -------------------------------------------- |
+| `core.hooksPath`                    | `.githooks`, in the clone-wide `.git/config` |
+| `extensions.worktreeConfig`         | unset — no per-worktree override exists      |
+| worktrees with `.githooks/pre-push` | **5**                                        |
+| worktrees without                   | **22**                                       |
+| control (`package.json` present)    | 27 / 27                                      |
 
 `hookOnDisk` and `trackedAtHEAD` agreed in all 27, so branch content is the sole
 determinant — there are no stray untracked hooks propping anything up.
@@ -30,12 +30,12 @@ Four arms, same clone, same setting, pushing to a throwaway local bare repo. The
 detector is that the guard prints `[push-guard] ok (...)` on **allowed** pushes
 too, so absence of that string means git ran nothing:
 
-| arm | worktree  | operation               | guard output      | exit | outcome                |
-| --- | --------- | ----------------------- | ----------------- | ---- | ---------------------- |
-| A   | unarmed   | new branch              | none              | 0    | pushed                 |
-| B   | armed     | new branch              | `[push-guard] ok` | 0    | pushed                 |
-| C   | unarmed   | force-push discarding 45| **none**          | 0    | **45 commits destroyed** |
-| D   | armed     | identical force-push    | `REFUSED`         | 1    | ref unchanged          |
+| arm | worktree | operation                | guard output      | exit | outcome                  |
+| --- | -------- | ------------------------ | ----------------- | ---- | ------------------------ |
+| A   | unarmed  | new branch               | none              | 0    | pushed                   |
+| B   | armed    | new branch               | `[push-guard] ok` | 0    | pushed                   |
+| C   | unarmed  | force-push discarding 45 | **none**          | 0    | **45 commits destroyed** |
+| D   | armed    | identical force-push     | `REFUSED`         | 1    | ref unchanged            |
 
 C and D are the same command, same source and target SHAs, same remote, same
 `core.hooksPath`. The only variable is whether the checked-out tree contains
@@ -95,7 +95,7 @@ return opposite verdicts under an identical clone-wide setting.
 ## The general form worth keeping
 
 **A silent no-op is only detectable by an observation you were not making for that
-purpose.** #164 was found because an ordinary fast-forward push *also* produced no
+purpose.** #164 was found because an ordinary fast-forward push _also_ produced no
 guard output, which cannot be true if the hook is wired — noticed incidentally,
 not by a control. That is why the fix is a control at install time rather than a
 recommendation to be careful: carefulness has no falsifier, and this failure mode
