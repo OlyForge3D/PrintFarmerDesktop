@@ -483,6 +483,7 @@ function makeApi(savedRecord = record()) {
           message: 'Not implemented in test.',
           retryable: false,
           retryAfterSeconds: null,
+          reference: null,
         },
       }),
     getCalibrationOrchestrationStatus: vi
@@ -494,6 +495,7 @@ function makeApi(savedRecord = record()) {
           message: 'Not implemented in test.',
           retryable: false,
           retryAfterSeconds: null,
+          reference: null,
         },
       }),
     getCalibrationQueueState: vi
@@ -505,6 +507,7 @@ function makeApi(savedRecord = record()) {
           message: 'Not implemented in test.',
           retryable: false,
           retryAfterSeconds: null,
+          reference: null,
         },
       }),
     acknowledgeCalibrationBedClear: vi
@@ -516,6 +519,7 @@ function makeApi(savedRecord = record()) {
           message: 'Not implemented in test.',
           retryable: false,
           retryAfterSeconds: null,
+          reference: null,
         },
       }),
     startCalibrationPrint: vi
@@ -527,6 +531,7 @@ function makeApi(savedRecord = record()) {
           message: 'Not implemented in test.',
           retryable: false,
           retryAfterSeconds: null,
+          reference: null,
         },
       }),
     // --- Queue reconciliation (issue #54) ------------------------------------
@@ -539,6 +544,7 @@ function makeApi(savedRecord = record()) {
           message: 'Not implemented in test.',
           retryable: false,
           retryAfterSeconds: null,
+          reference: null,
         },
       }),
     getCalibrationSubscriptionResources: vi
@@ -550,6 +556,7 @@ function makeApi(savedRecord = record()) {
           message: 'Not implemented in test.',
           retryable: false,
           retryAfterSeconds: null,
+          reference: null,
         },
       }),
     // --- External calibration asset manifest (issue #54) -------------------

@@ -627,7 +627,7 @@ describe('CalibrationHttpClient HTTP status mapping', () => {
       '503 Service Unavailable',
       503,
     );
-    const apiError = err.toApiError();
+    const apiError = err.toApiError(null);
     expect(apiError.code).toBe('workerUnavailable');
     expect(apiError.retryable).toBe(true);
 
@@ -636,7 +636,7 @@ describe('CalibrationHttpClient HTTP status mapping', () => {
       '412 Conflict',
       412,
     );
-    const permApiError = permErr.toApiError();
+    const permApiError = permErr.toApiError(null);
     expect(permApiError.code).toBe('revisionConflict');
     expect(permApiError.retryable).toBe(false);
   });
@@ -883,3 +883,4 @@ describe('CalibrationHttpClient JWT security', () => {
     expect(typeof headers['authorization']).toBe('string');
   });
 });
+

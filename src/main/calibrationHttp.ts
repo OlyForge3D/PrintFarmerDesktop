@@ -146,8 +146,14 @@ export class CalibrationHttpError extends Error {
      *
      * It is *not* logged. `calibrationLog.ts` refuses server-controlled free
      * text by construction and `tests/calibrationLogPolicy.test.ts` enforces
-     * that; routing this into a record would breach that control. See the PR
-     * for #177 for the ruling that is pending on where operators read it.
+     * that; routing this into a record would breach that control.
+     *
+     * The disposition was ratified on #177 as **catalogued-plus-opaque-
+     * reference**: the renderer gets a catalogued message plus the flow's
+     * correlation id (`CalibrationApiError.reference`), and this text never
+     * leaves the main process. Recoverability is carried by the reference, not
+     * by the string — the operator quotes the reference and the raw detail is
+     * read here, in process, rather than rendered or logged.
      */
     readonly serverDetail: string | null = null,
   ) {
@@ -155,8 +161,16 @@ export class CalibrationHttpError extends Error {
     this.name = 'CalibrationHttpError';
   }
 
-  /** Map this transport-layer error to the IPC-level CalibrationApiError type. */
-  toApiError(): z.infer<typeof CalibrationApiError> {
+  /**
+   * Map this transport-layer error to the IPC-level CalibrationApiError type.
+   *
+   * `reference` is required rather than defaulted: this is the only place the
+   * renderer's error is minted, so a default here would silently produce a null
+   * reference on every caller that forgot one, and nothing would fail. Callers
+   * that genuinely have no correlated flow pass `null` explicitly, which is a
+   * decision in the diff instead of an omission.
+   */
+  toApiError(reference: string | null): z.infer<typeof CalibrationApiError> {
     const codeMap: Partial<
       Record<CalibrationHttpErrorCode, CalibrationApiErrorCode>
     > = {
@@ -190,6 +204,7 @@ export class CalibrationHttpError extends Error {
       retryAfterSeconds: this.retryAfterMs
         ? Math.ceil(this.retryAfterMs / 1000)
         : null,
+      reference,
     };
   }
 }

@@ -1039,7 +1039,7 @@ describe('CalibrationHttpClient identity fencing and error mapping', () => {
   it('withholds the ProblemDetails body from message and keeps it on serverDetail', async () => {
     // Issue #177. `statusError` used to build the message as `detail ?? catalogued`,
     // so a server-supplied string silently outranked every reviewed literal and
-    // reached the renderer through `toApiError()` and `CalibrationSyncStatus.error`.
+    // reached the renderer through `toApiError(null)` and `CalibrationSyncStatus.error`.
     //
     // The fix must be a *withholding*, not a deletion: the operator's only
     // actionable string still has to exist somewhere. This test pins both halves,
@@ -1089,7 +1089,7 @@ describe('CalibrationHttpClient identity fencing and error mapping', () => {
       );
       // `toApiError` is the actual IPC boundary, so assert there too rather than
       // trusting that it forwards `message` unchanged.
-      expect(httpError.toApiError().message).toBe(
+      expect(httpError.toApiError(null).message).toBe(
         'Calibration generation or telemetry service is unavailable.',
       );
 
@@ -1843,10 +1843,10 @@ describe('Cursor and SignalR gap handling', () => {
 });
 
 // ==========================================================================
-// CalibrationHttpError.toApiError() mapping
+// CalibrationHttpError.toApiError(null) mapping
 // ==========================================================================
 
-describe('CalibrationHttpError.toApiError()', () => {
+describe('CalibrationHttpError.toApiError(null)', () => {
   it.each([
     ['preconditionRequired', 'preconditionRequired', false],
     ['revisionConflict', 'revisionConflict', false],
@@ -1860,7 +1860,7 @@ describe('CalibrationHttpError.toApiError()', () => {
     'maps %s to apiError.code %s (retryable: %s)',
     (httpCode, apiCode, retryable) => {
       const err = new CalibrationHttpError(httpCode as any, 'test error');
-      const apiError = err.toApiError();
+      const apiError = err.toApiError(null);
       expect(apiError.code).toBe(apiCode);
       expect(apiError.retryable).toBe(retryable);
     },
@@ -1927,3 +1927,4 @@ describe('Calibration IPC schema additive compatibility', () => {
     ).not.toThrow();
   });
 });
+

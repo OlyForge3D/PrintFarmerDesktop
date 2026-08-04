@@ -1176,6 +1176,7 @@ export function mapImportError(
         message: error.message,
         retryable: false,
         retryAfterSeconds: null,
+        reference: null,
       };
     }
     if (code === 'IMPORT_BACKEND_ERROR') {
@@ -1184,6 +1185,7 @@ export function mapImportError(
         message: error.message,
         retryable: true,
         retryAfterSeconds: null,
+        reference: null,
       };
     }
     if (
@@ -1198,6 +1200,7 @@ export function mapImportError(
         message: error.message,
         retryable: false,
         retryAfterSeconds: null,
+        reference: null,
       };
     }
     if (
@@ -1210,6 +1213,7 @@ export function mapImportError(
         message: error.message,
         retryable: false,
         retryAfterSeconds: null,
+        reference: null,
       };
     }
   }
@@ -1219,6 +1223,7 @@ export function mapImportError(
       error instanceof Error ? error.message : 'Unexpected import error.',
     retryable: false,
     retryAfterSeconds: null,
+    reference: null,
   };
 }
 
