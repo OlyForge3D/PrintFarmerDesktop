@@ -43,6 +43,7 @@
     "check:closure-scope": "node scripts/check-pr-closure-scope.mjs",
     "check:merge-queue-contexts": "node scripts/check-merge-queue-contexts.mjs",
     "check:sequencing-hold": "node scripts/check-sequencing-hold.mjs",
+    "lift:sequencing-hold": "node scripts/lift-hold-on-close.mjs",
     "push:force": "node scripts/safe-force-push.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
