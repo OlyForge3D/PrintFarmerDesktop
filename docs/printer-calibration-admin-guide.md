@@ -429,6 +429,48 @@ you are reading a support report from an older build, treat a
 `sidecarUnavailable` on these channels as unclassified rather than as evidence
 about the bundle.
 
+## 9. Bed-clear conflict codes (HTTP 409)
+
+Starting a queued job sends a bed-clear acknowledgement. The server can refuse
+it with HTTP 409 and a machine-readable reason. Four reasons are diagnosed:
+
+- `wrongJob` — the acknowledgement referred to a different job than the one
+  being started. Re-read the queue; the job you confirmed is not the job that
+  is dispatching.
+- `printerBusy` — the printer already has an active job. Wait for it, or cancel
+  it deliberately.
+- `jobNotDispatchable` — the job is not in a state that can be dispatched.
+  Check its status in the queue before retrying.
+- `idempotencyPayloadChanged` — the same operation key was reused with a
+  different payload. **This is a genuine diagnosis**: the server recognised the
+  key and saw that the request body had changed. See
+  [`runbooks/interrupted-import.md`](./runbooks/interrupted-import.md).
+
+Any other 409 reason, including a response with no reason at all, reports
+`unclassifiedConflict`. **That code is not a diagnosis and must not be treated
+as one.** It means the server refused the operation as a conflict and gave a
+reason this build does not recognise — most often because the server is newer
+than the desktop application. The raw server reason is preserved in the error
+message and in the structured log record, so:
+
+1. Read the message, not just the code. It carries the server's own reason
+   text verbatim.
+2. Check whether the server has been upgraded past this desktop build.
+3. Do **not** apply the `idempotencyPayloadChanged` runbook. The operation key
+   may be entirely fine.
+
+At the renderer boundary `unclassifiedConflict` is displayed through the
+generic server-error presentation, because the IPC error contract has no
+unclassified member and widening it is a separate contract change. That is a
+rendering fallback, not a reclassification — the honest code remains in the
+logs, which is where the diagnosis is made.
+
+Before #326 an unrecognised 409 reported `idempotencyPayloadChanged`, exactly
+as a real payload mismatch did, and the two were indistinguishable to every
+consumer including this guide. **If you are reading a support report from an
+older build, an `idempotencyPayloadChanged` on the bed-clear start path is not
+by itself evidence that an operation key was reused.**
+
 ---
 
 ## Related documents
