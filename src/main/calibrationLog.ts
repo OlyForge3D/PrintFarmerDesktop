@@ -94,6 +94,10 @@ export const CALIBRATION_LOG_ERROR_CODES = [
   'dispatchRevisionConflict',
   'calibrationJobIncompatible',
   'filamentCheckFailed',
+  // A 409 whose server-supplied error code this build does not recognise. Kept
+  // distinct from every diagnosed 409 so an unclassified refusal is visible as
+  // one in the logs rather than borrowing a diagnosed code's meaning (#326).
+  'unclassifiedConflict',
   // CalibrationEngineErrorCode
   'NOT_FOUND',
   'UNAVAILABLE',
@@ -274,6 +278,8 @@ const ERROR_MESSAGES: Record<CalibrationLogErrorCode, string> = {
   calibrationJobIncompatible:
     'The queue job is not compatible with this calibration.',
   filamentCheckFailed: 'The printer filament check failed.',
+  unclassifiedConflict:
+    'The server refused the operation as a conflict but gave a reason this build does not recognise; the cause is not established.',
   NOT_FOUND: 'The requested calibration resource was not found locally.',
   UNAVAILABLE: 'Calibration is unavailable for the selected server profile.',
   CAPABILITIES_MISMATCH:

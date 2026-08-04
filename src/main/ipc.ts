@@ -29,6 +29,7 @@ import { ServerProfileService } from './serverProfiles.js';
 import {
   TargetProfileNativeError,
   TargetProfileService,
+  TargetProfileUnavailableError,
 } from './targetProfiles.js';
 import { RetargetArtifactService, type Dialogs } from './retargetArtifacts.js';
 import { SceneCacheService } from './sceneCache.js';
@@ -150,18 +151,66 @@ function retargetDialogs(): Dialogs {
   };
 }
 
+/**
+ * Maps a target-profile failure onto a renderer-visible envelope.
+ *
+ * Three arms, and the third one is the point. `sidecarUnavailable` used to be
+ * the `else`, so it was returned for the fault that genuinely is a sidecar
+ * problem *and* for every fault that is not — including a rejected
+ * `retargetReady`, which is the temp-root reaper failing on ordinary
+ * filesystem contention. The operator was told the profile bundle was missing
+ * and advised to reinstall, which cannot clear a stale temp directory.
+ *
+ * An `else` means "I do not know what this is". It must not render as "I know
+ * exactly what this is", so the unclassified arm reports `internalError` and
+ * says the cause is unidentified. That loses no information the old envelope
+ * carried — it never knew the cause either — and it misdirects nobody.
+ */
+/**
+ * The envelope for a `retargetReady` rejection, which is the temp-root reaper
+ * failing — a workspace fault, not a profile fault.
+ *
+ * `RetargetPreflight` already isolates this await and names the workspace in
+ * its message; the two profile channels shared one `catch` with the profile
+ * load and so inherited the profile diagnosis instead. The code is
+ * `internalError` rather than `sidecarUnavailable` because the sidecar is not
+ * implicated: the message carries the cause, and the code declines to claim a
+ * classification the enum does not have.
+ */
+function retargetWorkspaceFailure() {
+  return {
+    domain: 'electron' as const,
+    code: 'internalError' as const,
+    message: 'The retarget workspace could not be prepared.',
+    action:
+      'Restart the application and try again. Reinstalling does not help: the profile bundle is not implicated.',
+    part: null,
+    setting: null,
+  };
+}
+
 function targetProfileFailure(error: unknown) {
-  return error instanceof TargetProfileNativeError
-    ? error.failure
-    : {
-        domain: 'electron' as const,
-        code: 'sidecarUnavailable' as const,
-        message: 'Snapmaker U1 profiles could not be loaded.',
-        action:
-          'Restart the application; reinstall it if the profile bundle remains unavailable.',
-        part: null,
-        setting: null,
-      };
+  if (error instanceof TargetProfileNativeError) return error.failure;
+  if (error instanceof TargetProfileUnavailableError) {
+    return {
+      domain: 'electron' as const,
+      code: 'sidecarUnavailable' as const,
+      message: 'Snapmaker U1 profiles could not be loaded.',
+      action:
+        'Restart the application; reinstall it if the profile bundle remains unavailable.',
+      part: null,
+      setting: null,
+    };
+  }
+  return {
+    domain: 'electron' as const,
+    code: 'internalError' as const,
+    message: 'Snapmaker U1 profiles could not be loaded.',
+    action:
+      'Restart the application. The cause was not identified; collect the application logs before reinstalling, because a reinstall does not clear a stale retarget workspace.',
+    part: null,
+    setting: null,
+  };
 }
 import { createUploadJobService, type UploadJobService } from './uploadJobs.js';
 import { RootApprovalStore } from './rootApprovals.js';
@@ -467,6 +516,13 @@ export function registerIpcHandlers(
   ipcMain.handle(IpcChannel.RetargetListProfiles, async () => {
     try {
       await retargetReady;
+    } catch {
+      return ipcSchemas[IpcChannel.RetargetListProfiles].response.parse({
+        status: 'error',
+        error: retargetWorkspaceFailure(),
+      });
+    }
+    try {
       return ipcSchemas[IpcChannel.RetargetListProfiles].response.parse({
         status: 'ok',
         value: await refreshTargetProfiles(),
@@ -482,6 +538,13 @@ export function registerIpcHandlers(
   ipcMain.handle(IpcChannel.RetargetImportProfile, async (event) => {
     try {
       await retargetReady;
+    } catch {
+      return ipcSchemas[IpcChannel.RetargetImportProfile].response.parse({
+        status: 'error',
+        error: retargetWorkspaceFailure(),
+      });
+    }
+    try {
       if (!targetProfilesInitialized) {
         await refreshTargetProfiles();
       }

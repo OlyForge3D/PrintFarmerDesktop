@@ -89,6 +89,57 @@ gh api repos/OlyForge3D/PrintFarmerDesktop/branches/development/protection `
 
 If that output disagrees with the list above, the endpoint wins — fix this file.
 
+### "How many checks?" conflates three different numbers
+
+| number                       | on an open PR | after it closes | is it a gate?     |
+| ---------------------------- | ------------- | --------------- | ----------------- |
+| required contexts            | 7             | 7               | **yes, this one** |
+| distinct check-run names     | 9             | 10              | no                |
+| check-run objects on the SHA | 9 or more     | 10 or more      | no                |
+
+The two extra names on an open PR are `Sequencing hold` and `PR closure scope`, advisory by
+design and carrying a `# merge-queue: advisory` header saying so. The tenth name appears only
+after the PR closes: `Lift sequencing hold` runs on `closed` only, so it does not exist on an
+open PR at all.
+
+**Run objects are not names.** `pr-closure-scope.yml` also triggers on `edited`, so editing a
+title or body adds another run object under a name that is already there. Measured on this
+file's own pull request: 10 run objects, 9 distinct names, `PR closure scope` twice.
+
+That is why the count keeps moving, and it moved twice while this section was being written:
+
+| reading                              | got | why                                            |
+| ------------------------------------ | --- | ---------------------------------------------- |
+| a merged PR's head, called it "a PR" | 10  | `Lift sequencing hold` only exists after close |
+| an open PR, counted run objects      | 10  | `PR closure scope` ran twice, from `edited`    |
+| an open PR, counted distinct names   | 9   | the honest answer to the question asked        |
+
+**Watching a PR tells you what ran, not what binds**, and neither number is derivable from
+the other.
+
+**Promoting an advisory check would not tighten the gate; it would jam it.** These workflows
+subscribe to `pull_request` or `closed` only, because a `merge_group` event carries no pull
+request number and no `closingIssuesReferences` — there is nothing for them to read. A
+required context that no workflow emits for an event does not fail that entry, it leaves it
+**Pending forever** (issue 122). `Lift sequencing hold` is the sharpest case: requiring it
+would make every open PR wait for a check that cannot report until after the merge it is
+blocking.
+
+Ask both questions in one call, and read them as two answers rather than one:
+
+```powershell
+$req = gh api repos/OlyForge3D/PrintFarmerDesktop/branches/development/protection/required_status_checks --jq '.contexts[]'
+$sha = gh pr view <N> --repo OlyForge3D/PrintFarmerDesktop --json headRefOid --jq .headRefOid
+$run = @(gh api "repos/OlyForge3D/PrintFarmerDesktop/commits/$sha/check-runs?per_page=100" --jq '.check_runs[].name') | Sort-Object -Unique
+"required=$($req.Count)  distinct emitted=$($run.Count)"
+"required but never emitted (deadlock risk): $(($req | Where-Object { $_ -notin $run }) -join ', ')"
+```
+
+**Assert the required names, not a total.** A gate written as `emitted -ge 9` answers _at
+least this many succeeded_ — narrower than _which required contexts are green on this commit_
+— and passes identically on nine names, nine names plus a duplicate, or eight names plus two
+reruns. Check the seven by name. No total is a safety property.
+
 ```powershell
 gh pr checks <N> --repo OlyForge3D/PrintFarmerDesktop --watch --interval 20
 ```
