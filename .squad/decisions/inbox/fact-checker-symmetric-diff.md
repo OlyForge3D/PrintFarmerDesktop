@@ -40,14 +40,14 @@ What that section requires, for any agent running the check:
   the other), while **independence cannot be proved by provenance alone** — separate
   commits and authors are evidence, never proof, because a figure can be copied a week
   later. ⚠️ is therefore the default for any bare clean diff.
-- **✅ grades independence, and only an author's statement of method reaches it.** The grade
+- **✅ grades independence, and only an author's own first-person statement of method reaches it — nobody can give it on their behalf.** The grade
   asks one thing: is the agreement between these renderings evidence of anything? It is
   **not** a grade of the value. So a derivation from the object, or a measurement re-run at
   the source, does **not** earn ✅ however strong it is — those establish that the value is
   **right**, and a pair can be a copy of a copy and still be right. Grading ✅ on them fails
   open: they would license ✅ on a pair the same policy proves dependent, whenever the
   copied value happens to be true, and they are the cheapest routes to reach for. They
-  belong under **Discharge**. What is left for ✅ is direct testimony about
+  belong under **Discharge**. What is left for ✅ is direct first-person testimony about
   provenance-of-belief — an author saying how they arrived at the value — which history
   provably cannot supply, so **⚠️ is the overwhelmingly common honest grade**. Record the
   **grade** and the **resolution** as two separate lines, so a run that derived the value
