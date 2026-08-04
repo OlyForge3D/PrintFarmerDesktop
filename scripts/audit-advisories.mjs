@@ -183,7 +183,12 @@ function main() {
       readImportedNpmComponents(repoRoot),
     );
   } catch (error) {
-    console.error(`[audit-advisories] FAILED: ${error.message}`);
+    console.error(
+      error?.unreadableInput
+        ? `[audit-advisories] FAILED: the npm dependency tree could not be read, so the ` +
+            `advisory scope cannot be established. ${error.message}`
+        : `[audit-advisories] FAILED: ${error.message}`,
+    );
     process.exit(1);
   }
   console.log(
