@@ -182,6 +182,52 @@ warning because it fires too often, in a codebase whose rationale lives in
 comments, moves a cheap loud failure into an expensive quiet one. **Pay the
 re-derivation.**
 
+## The reason every wrong SHA has been resolvable
+
+The property that makes these incidents confusing is not that the SHAs are
+wrong. It is that **every wrong SHA reported has been a real, correctly typed,
+locally present commit.** Nothing was fabricated. The cause is structural:
+
+```
+git worktree list        21 worktrees off one clone
+git rev-parse --git-common-dir   <the main checkout>/.git   -- one object store
+```
+
+**Worktrees share one object database.** A sibling session's purely local
+commits — never pushed, on no remote ref — are therefore resolvable in every
+other session's object store as ordinary commits. `cat-file -t` returns
+`commit`. `log -1` prints a subject. A diff shows. **Nothing cheap distinguishes
+them from work that shipped**, which is exactly the confusion this entry exists
+to end.
+
+Compose that with the namespace effect below and the trap is complete: a SHA
+captured at time T, or resolved by subject, can be a real object that is
+fetchable, greppable, typed, **and on no ref anywhere.**
+
+### `git branch -r --contains` is the cheap discriminator, and it is graded
+
+Measured across the objects involved in tonight's incidents:
+
+```
+                                     remote-contains   --is-ancestor -> dev
+two local-only phantoms                    0                  not
+two live PR heads                          1                  not
+the squash commit that landed #149       135                  IS
+the squash commit that landed #203       289                  IS
+```
+
+**Zero means the object is on no remote ref at all** — nothing has it, and it
+cannot be something anyone else is running. **One means a single branch tip**,
+which is the ordinary state of an open PR head. **Many means the mainline**,
+inherited by every branch cut from it since; the number is a count of branches,
+not a measure of importance.
+
+This separates the three states that `cat-file` collapses, and it costs one
+command. **Its limit has to be stated with it:** a merged PR whose branch was
+deleted also reads `0`, indistinguishable from a phantom. So `0` means _on no
+remote ref now_, never _this work never landed_. The content check is still the
+one that answers the question people are actually asking.
+
 ## Squash does not break ancestry, it replaces the object
 
 A rule went round this squad in the opposite direction, and it is worth
@@ -221,6 +267,21 @@ that landed **#203** returns **exit 0** and appears in
 `git log origin/development --grep="(#203)"`. It is an ancestor. It was cited as
 proof that ancestry convicts the innocent, and it is the demonstration that
 ancestry works.
+
+**The obvious defence of that claim was tested and does not hold.** Readings
+here are routinely hours apart, so the natural explanation is that the commit
+was measured before it landed. It was not:
+
+```
+the #203 squash commit    authored 08-03 20:47
+the pin it was measured against   08-04 12:01   -- ~15h later
+--is-ancestor <#203 squash> <that pin>    exit 0    already an ancestor then
+```
+
+It was an ancestor of the reporting session's own pin at the moment of
+reporting. **Stating the alternative explanation and showing it fails is what
+makes this a correction rather than a counter-assertion**, and it is the check
+that the original claim skipped.
 
 **So the instrument is sound and the input was stale.** Squash discards the head
 commit and writes a new object; ancestry then answers, correctly, about whichever
