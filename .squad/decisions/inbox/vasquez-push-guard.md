@@ -577,3 +577,82 @@ predicate that accepted arrivals would have been permissive almost always, on th
 most common operation in the repo, silently. Now pinned: widen the predicate to
 accept `pull`, `merge`, `checkout`, `cherry-pick` or `rebase` and four tests fail,
 including the #81 two-session refusal itself.
+
+## The variable was the subject, not the operation — and `\b` is not a word
+
+Twice now the ownership predicate has been argued about by naming git
+_operations_: does a pull contaminate the reflog, does a checkout, does a rebase.
+Both times the argument was conducted against `CREATED_HERE = /^commit\b/`, and
+both times it missed, because **the operation is not the variable. The reflog
+subject is, and one operation can write more than one subject.**
+
+Measured on git 2.53.0, foreign work reaching the clone only by fetch:
+
+| operation                               | subject                   | leaked their id |
+| --------------------------------------- | ------------------------- | --------------- |
+| cherry-pick, **conflict**, `--continue` | `commit (cherry-pick): …` | **yes**         |
+| `commit --amend` on a fetched commit    | `commit (amend): …`       | **yes**         |
+| cherry-pick, **clean**                  | `cherry-pick: …`          | no              |
+| merge, conflict, resolved               | `commit (merge): …`       | no, by luck     |
+| rebase carrying their commit            | `rebase (pick): …`        | no              |
+| revert of a fetched commit              | `revert: …`               | no              |
+| fast-forward pull                       | `merge …: Fast-forward`   | no              |
+| my own commit                           | `commit: …`               | no              |
+
+**The same command is on both sides of that table.** `git cherry-pick` writes
+`cherry-pick:` when it applies cleanly and `commit (cherry-pick):` when you
+resolve a conflict, and only the second leaked. Any test suite that enumerated
+operations rather than subjects had to pick the conflicting variant by luck to
+find it. Both leaks are `git commit` invocations that re-apply a message
+somebody else wrote: the commit carries **their** trailer while the reflog says
+this worktree committed it.
+
+`\b` is the specific error. It reads as "the word commit" and actually matches
+every subject with a `commit` prefix, of which git spells four.
+
+### `commit (merge)` is the one to look at, because it passed
+
+It passed the old predicate and leaked nothing — not because the rule was right,
+but because **git generates the merge message itself, so there is no trailer to
+leak.** An accidental safety property with no owner: anything that ever teaches
+this squad's tooling to trailer merge commits converts it into a third leak,
+silently, with no change to the guard. It is now excluded by rule. **A green
+result whose cause is a property nobody chose is not a passing test, it is an
+unrecorded dependency.**
+
+### The obvious fix was wrong, and only a control showed it
+
+The clean repair is "narrow to plain creation subjects", i.e. drop amends. That
+has a measured cost: `git commit -m wip` followed by `git commit --amend` with
+the trailered message leaves your id in the **amend entry only**, because the
+`commit: wip` entry names the pre-amend commit and that one has no trailer.
+Dropping amends loses your own id there and prints it back at you as another
+session's — **the exact claim this squad has ratified the guard may never make.**
+
+So an amend is accepted when the commit it rewrote was created here, which the
+reflog answers directly: an amend moves HEAD off the pre-amend commit, so the
+pre-amend commit is the next-older entry.
+
+### The control was confounded and passed anyway
+
+The first version of that control committed its base with a trailer, so the
+session id was owned whether the amend rule worked or not. **"Never accept an
+amend" survived the mutation.** The fixture only became load-bearing when the
+base commit was made untrailered so the amend was the sole source of the id.
+The precondition is now asserted in the test rather than assumed.
+
+Same shape as the earlier harness error, one round later: the first version of
+the measurement script created the foreign commits **locally**, which writes a
+plain `commit:` entry naming them, and reported **six leaks — every arm, all
+artefacts.** A leak table where everything leaks is not a finding, it is a
+broken instrument, and the tell was the absence of a clean control.
+
+### Three mutations, all killed
+
+- restore `/^commit\b/` → the two leak cases fail, each swapping
+  `foreign-session` for `unacknowledged-discard`: the permissive direction, on
+  the highest-severity check.
+- never accept an amend → the cost control fails, `foreign-session` naming the
+  pusher's own id.
+- consult the newer neighbour instead of the older → same failure, which is what
+  pins the direction of the walk.

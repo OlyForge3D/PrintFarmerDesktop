@@ -595,7 +595,94 @@ const FIELD = '\u001f';
  * following this guard's own advice to rebase onto another session's work
  * rather than over it.
  */
-const CREATED_HERE = /^commit\b/;
+const CREATED_HERE = /^commit(?: \(initial\))?:/;
+
+/**
+ * `git commit --amend`. Not creation on its own: an amend rewrites whatever
+ * commit HEAD already pointed at, and that commit may be another session's.
+ * Accepted only when its predecessor was created here — see `creationEntries`.
+ */
+const AMENDED_HERE = /^commit \(amend\):/;
+
+/**
+ * The reflog entries that represent work THIS worktree created, as opposed to
+ * work it merely moved onto or re-applied.
+ *
+ * The predicate used to be `/^commit\b/`, which is wrong in a way no operation
+ * test could find, because the operations are not the variable — the reflog
+ * SUBJECT is, and `\b` matches four different subjects that git spells with a
+ * `commit` prefix. Measured on git 2.53.0, foreign work arriving ONLY by fetch
+ * so that no plain `commit:` entry can name it (a first attempt at this table
+ * created their commit locally and reported six leaks, all of them artefacts of
+ * the harness — the confounder is asserted against in the tests now):
+ *
+ *     operation                          subject                     old  new
+ *     ---------------------------------- --------------------------- ---- ----
+ *     cherry-pick, CONFLICT, --continue  commit (cherry-pick): …     LEAK ok
+ *     commit --amend on a fetched commit commit (amend): …           LEAK ok
+ *     cherry-pick, clean                 cherry-pick: …              ok   ok
+ *     merge, CONFLICT, resolved          commit (merge): …           ok*  ok
+ *     rebase carrying their commit       rebase (pick): …            ok   ok
+ *     revert of a fetched commit         revert: …                   ok   ok
+ *     fast-forward pull                  merge …: Fast-forward       ok   ok
+ *     my own commit                      commit: …                   ok   ok
+ *
+ * The two leaks are the point. Both are `git commit` invocations that re-apply
+ * a message somebody else wrote, so the resulting commit carries THEIR trailer
+ * while the reflog says this worktree committed it. Their id entered the owned
+ * set, the `foreign-session` check went quiet for the rest of their work in the
+ * same push, and authorisation dropped from two acknowledgements to one — the
+ * silent, permissive direction, on the highest-severity check there is.
+ *
+ * Neither is exotic. A cherry-pick that conflicts is the ordinary outcome of
+ * moving one commit across diverged branches, and `checkout <shared-branch>;
+ * commit --amend` on a tip you assume is yours but which arrived in the last
+ * pull is #81's own scenario reached from the other side.
+ *
+ * `commit (merge)` is marked `ok*` rather than `ok` deliberately. It PASSED the
+ * old predicate and leaked nothing only because git generates the merge message
+ * itself, so the merge commit carries no trailer to leak. That is an accidental
+ * property with no owner: anything that ever teaches this squad's tooling to
+ * trailer merge commits turns it into a third leak, silently, with no code
+ * change here. It is excluded on the rule rather than left to luck.
+ *
+ * The clean/conflicting cherry-pick split is why the subject, not the
+ * operation, is the variable. The SAME command yields `cherry-pick:` when it
+ * applies cleanly and `commit (cherry-pick):` when you resolve it, and only the
+ * second one leaked. A test suite enumerating operations would have had to pick
+ * the conflicting variant by luck.
+ *
+ * Amend is not simply dropped, because dropping it has a measured cost:
+ * `git commit -m wip` then `git commit --amend` with the full trailered message
+ * leaves your id in the AMEND entry only — the `commit: wip` entry names the
+ * pre-amend commit, which has no trailer. Losing it there would make your own
+ * work look foreign and print your own session id back at you as another
+ * session's, which is precisely the claim this guard is not allowed to make.
+ *
+ * So an amend is accepted when the commit it rewrote was created here, which
+ * the reflog answers directly: an amend moves HEAD from the pre-amend commit,
+ * so the pre-amend commit is exactly the next-older entry. Walking oldest-first
+ * makes chains of amends resolve too. The leaking arm's predecessor is
+ * `checkout: moving from main to origin/theirs` — an arrival, so the amend is
+ * refused; the costly arm's is `commit: wip` — creation, so it is kept.
+ *
+ * When there is no older entry the amend is not accepted. That is the strict
+ * direction for contamination and it is the only one available, since the
+ * evidence that would settle it is the entry that is missing.
+ */
+function creationEntries(ref) {
+  const entries = readReflogEntries(ref);
+  // `git log -g` is newest-first, so walking down the index walks backwards in
+  // time, which is what lets an amend consult the entry it rewrote.
+  const created = new Array(entries.length).fill(false);
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const subject = entries[i].reflogSubject;
+    if (CREATED_HERE.test(subject)) created[i] = true;
+    else if (AMENDED_HERE.test(subject))
+      created[i] = i + 1 < entries.length && created[i + 1];
+  }
+  return entries.filter((_, index) => created[index]);
+}
 
 /**
  * Whether this worktree authored anything, and so whether the absence of a session
@@ -626,9 +713,7 @@ const CREATED_HERE = /^commit\b/;
  */
 export function authoredHere() {
   try {
-    for (const entry of readReflogEntries('HEAD')) {
-      if (CREATED_HERE.test(entry.reflogSubject)) return true;
-    }
+    return creationEntries('HEAD').length > 0;
   } catch {
     // No reflog at all; absence is handled by the caller, not read as a finding.
   }
@@ -638,8 +723,7 @@ export function authoredHere() {
 export function readReflogSessions() {
   const sessions = new Set();
   try {
-    for (const entry of readReflogEntries('HEAD')) {
-      if (!CREATED_HERE.test(entry.reflogSubject)) continue;
+    for (const entry of creationEntries('HEAD')) {
       for (const session of entry.sessions) sessions.add(session);
     }
   } catch {

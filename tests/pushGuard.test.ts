@@ -958,6 +958,282 @@ describe('work that arrived by pull is not work this session wrote', () => {
   });
 });
 
+describe('a cherry-pick you had to resolve is still their commit', () => {
+  // The predicate that separates authorship from arrival was `/^commit\b/`, and
+  // `\b` matches four subjects git spells with a `commit` prefix, not one.
+  // Measured with foreign work arriving ONLY by fetch, `commit (cherry-pick):`
+  // and `commit (amend):` both put the other session's id into the owned set —
+  // both are `git commit` invocations that re-apply a message somebody else
+  // wrote, so the commit carries THEIR trailer while the reflog says this
+  // worktree committed it.
+  //
+  // The split that makes this hard to find by enumerating operations: the SAME
+  // cherry-pick writes `cherry-pick:` when it applies cleanly, which never
+  // leaked, and `commit (cherry-pick):` only when you resolve a conflict. The
+  // subject is the variable, not the command.
+  //
+  // Consequence, if unfixed: their id is owned, `foreign-session` goes quiet for
+  // the REST of their work in the same push, and authorisation drops from two
+  // acknowledgements to one — silently, in the permissive direction, on the
+  // highest-severity check the guard has.
+  let root: string;
+  let remote: string;
+  let mine: string;
+  let theirs: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-cherry-'));
+    remote = path.join(root, 'remote.git');
+    mine = path.join(root, 'mine');
+    theirs = path.join(root, 'theirs');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, mine], root);
+    configure(mine);
+    git(['checkout', '-b', 'feature'], mine);
+    commit(mine, 'base', 'session-mine');
+    git(['push', '--no-verify', '-u', 'origin', 'feature'], mine);
+
+    // Their work is authored in a separate clone and reaches me only by fetch,
+    // so no plain `commit:` entry of mine can name it. Without that the case
+    // proves nothing: a first version of this measurement created their commits
+    // locally and every arm "leaked" for that reason alone.
+    git(['clone', remote, theirs], root);
+    configure(theirs);
+    git(['checkout', 'feature'], theirs);
+    writeFileSync(path.join(theirs, 'shared.txt'), 'their version\n');
+    git(['add', '-A'], theirs);
+    git(
+      ['commit', '-m', 'their work A\n\nCopilot-Session: session-theirs'],
+      theirs,
+    );
+    commit(theirs, 'their work B', 'session-theirs');
+    git(['push', '--no-verify', 'origin', 'feature'], theirs);
+
+    // I write the same file, so carrying their commit across conflicts.
+    git(['fetch', 'origin'], mine);
+    writeFileSync(path.join(mine, 'shared.txt'), 'my version\n');
+    git(['add', '-A'], mine);
+    git(['commit', '-m', 'my work\n\nCopilot-Session: session-mine'], mine);
+
+    const theirFirst = git(['rev-parse', 'origin/feature~1'], mine);
+    try {
+      git(['cherry-pick', theirFirst], mine);
+    } catch {
+      // Expected: this is the conflicting path, which is the one under test.
+    }
+    writeFileSync(path.join(mine, 'shared.txt'), 'resolved\n');
+    git(['add', '-A'], mine);
+    git(['-c', 'core.editor=true', 'cherry-pick', '--continue'], mine);
+
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], mine);
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('writes their id under a commit-prefixed subject, which is the precondition', () => {
+    // Asserted, because if the resolution stopped producing this subject the
+    // case below would pass for having nothing to launder rather than for
+    // refusing to launder it.
+    const reflog = git(
+      [
+        'log',
+        '-g',
+        '--format=%gs :: %(trailers:key=Copilot-Session,valueonly)',
+        'HEAD',
+      ],
+      mine,
+    );
+    expect(reflog).toMatch(/^commit \(cherry-pick\):.*::.*session-theirs/m);
+  });
+
+  it('still refuses as a second writer, naming them', () => {
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force', 'origin', 'feature'], mine);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    expect(stderr).toContain('push-guard.foreign-session');
+    expect(stderr).toContain('session-theirs');
+    expect(stderr).toContain(ACK_FOREIGN_ENV);
+    // The verdict a laundered id produces instead.
+    expect(stderr).not.toContain('push-guard.unacknowledged-discard');
+  });
+});
+
+describe('amending a commit that arrived by pull does not make it yours', () => {
+  // The second measured leak, and it is #81's own scenario reached from the
+  // other side: check out the shared branch, amend what you take to be your own
+  // tip, and it is in fact the commit that arrived in the last pull. The amend
+  // keeps their message, so the rewritten commit carries THEIR trailer under a
+  // `commit (amend):` subject.
+  let root: string;
+  let remote: string;
+  let mine: string;
+  let theirs: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-amend-'));
+    remote = path.join(root, 'remote.git');
+    mine = path.join(root, 'mine');
+    theirs = path.join(root, 'theirs');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, mine], root);
+    configure(mine);
+    git(['checkout', '-b', 'feature'], mine);
+    commit(mine, 'base', 'session-mine');
+    git(['push', '--no-verify', '-u', 'origin', 'feature'], mine);
+
+    git(['clone', remote, theirs], root);
+    configure(theirs);
+    git(['checkout', 'feature'], theirs);
+    commit(theirs, 'their work A', 'session-theirs');
+    git(['push', '--no-verify', 'origin', 'feature'], theirs);
+
+    // I stay mergeable, and my tip is now their commit.
+    git(['pull', '--ff-only', 'origin', 'feature'], mine);
+    writeFileSync(path.join(mine, 'extra.txt'), 'my tweak\n');
+    git(['add', '-A'], mine);
+    git(['commit', '--amend', '--no-edit'], mine);
+
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], mine);
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('leaves their id on a commit-prefixed subject, which is the precondition', () => {
+    const reflog = git(
+      [
+        'log',
+        '-g',
+        '--format=%gs :: %(trailers:key=Copilot-Session,valueonly)',
+        'HEAD',
+      ],
+      mine,
+    );
+    expect(reflog).toMatch(/^commit \(amend\):.*::.*session-theirs/m);
+    // And the entry it rewrote is an arrival, which is what makes it refusable.
+    expect(reflog).toMatch(/^pull|^merge/m);
+  });
+
+  it('still refuses as a second writer, naming them', () => {
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force', 'origin', 'feature'], mine);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    expect(stderr).toContain('push-guard.foreign-session');
+    expect(stderr).toContain('session-theirs');
+    expect(stderr).toContain(ACK_FOREIGN_ENV);
+    expect(stderr).not.toContain('push-guard.unacknowledged-discard');
+  });
+});
+
+describe('amending your own commit to add your trailer keeps it yours', () => {
+  // The control for the case above, differing in ONE variable: whether the
+  // commit being amended was created here. It is also the reason the amend rule
+  // is "accept when the entry it rewrote was created here" rather than the much
+  // simpler "never accept an amend".
+  //
+  // Measured: `git commit -m wip` then `git commit --amend` with the trailered
+  // message leaves your id in the AMEND entry ONLY, because the `commit: wip`
+  // entry names the pre-amend commit and that one has no trailer. Dropping
+  // amends outright would lose your own id here and print it back at you as
+  // another session's — the one claim this guard is not allowed to make.
+  let root: string;
+  let remote: string;
+  let work: string;
+  let base: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-amendown-'));
+    remote = path.join(root, 'remote.git');
+    work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, work], root);
+    configure(work);
+    // Deliberately UNTRAILERED, so the amend below is the only thing that can
+    // put this session's id into the owned set. With a trailered base commit
+    // this case passes whether the amend rule works or not — measured: the
+    // "never accept an amend" mutation survived until this line was fixed.
+    writeFileSync(path.join(work, 'base.txt'), 'base\n');
+    git(['add', '-A'], work);
+    git(['commit', '-m', 'base'], work);
+    git(['push', '--no-verify', '-u', 'origin', 'development'], work);
+    base = git(['rev-parse', 'HEAD'], work);
+
+    git(['checkout', '-b', 'feature'], work);
+    // Untrailered first, trailer added by the amend. This is what puts the id
+    // nowhere but the amend entry.
+    writeFileSync(path.join(work, 'wip.txt'), 'wip\n');
+    git(['add', '-A'], work);
+    git(['commit', '-m', 'wip'], work);
+    writeFileSync(path.join(work, 'wip.txt'), 'done\n');
+    git(['add', '-A'], work);
+    git(
+      ['commit', '--amend', '-m', 'my work\n\nCopilot-Session: session-mine'],
+      work,
+    );
+    git(['push', '--no-verify', '-u', 'origin', 'feature'], work);
+    git(['reset', '--hard', base], work);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('carries the id on the amend entry and nowhere else, which is the precondition', () => {
+    const reflog = git(
+      [
+        'log',
+        '-g',
+        '--format=%gs :: %(trailers:key=Copilot-Session,valueonly)',
+        'HEAD',
+      ],
+      work,
+    );
+    expect(reflog).toMatch(/^commit \(amend\):.*::.*session-mine/m);
+    // If ANY plain `commit:` entry carried it, the case would pass without the
+    // amend rule doing any work. That is not hypothetical: it is how this
+    // fixture was first written, and the "never accept an amend" mutation
+    // survived it.
+    expect(reflog).not.toMatch(/^commit(?: \(initial\))?:.*session-mine/m);
+  });
+
+  it('refuses without inventing a second writer', () => {
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force', 'origin', 'feature'], work);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    expect(stderr).toContain('push-guard.unacknowledged-discard');
+    expect(stderr).not.toContain('push-guard.foreign-session');
+    expect(stderr).not.toContain(ACK_FOREIGN_ENV);
+  });
+});
+
 describe('a sibling worktree of the same clone is not this session', () => {
   // F4. Ownership is read from a reflog, and WHICH FILE that is decides the
   // answer. Measured:
