@@ -387,6 +387,11 @@ function git(args, options = {}) {
  * `git ls-remote --push` does not exist; this is the supported spelling. Falls
  * back to the argument itself, which is correct when a bare URL was passed to
  * `git push` rather than a remote name.
+ *
+ * Used only as a FALLBACK. `remote.<name>.pushurl` is multi-valued — the
+ * standard way to mirror one remote to several — and this returns only the
+ * first while `git push` writes to all of them. Preferring git's own per-push
+ * location (see `readLiveRemoteSha`) avoids resolving a URL at all.
  */
 export function readPushUrl(remote) {
   try {
@@ -396,9 +401,31 @@ export function readPushUrl(remote) {
   }
 }
 
-/** Live remote tip. `ls-remote` queries the remote; `refs/remotes/**` does not. */
-export function readLiveRemoteSha(remote, ref) {
-  const output = git(['ls-remote', readPushUrl(remote), ref]).trim();
+/**
+ * Live remote tip. `ls-remote` queries the remote; `refs/remotes/**` does not.
+ *
+ * `location` is the second argument git gives the pre-push hook: the URL this
+ * invocation is actually pushing to, already resolved. Preferring it is not a
+ * tidier spelling of `readPushUrl` — it is the only correct one when a remote
+ * has several push URLs.
+ *
+ * `remote.<name>.pushurl` is multi-valued and mirroring one remote to several
+ * is its main use. `git push` writes to every one and runs this hook once per
+ * URL, passing that URL here; `git remote get-url --push` returns only the
+ * first. Measured, with two mirrors whose tips had diverged: resolving the
+ * first meant the guard evaluated the second mirror's push against the FIRST
+ * mirror's tip. It happened to refuse — the tip on stdin is per-URL, so the
+ * stale-lease check caught the mismatch — but it refused with a message about
+ * a background fetch that had not happened, and the check that saved it was
+ * not the one aimed at the problem. A guard that is correct by accident is one
+ * refactor away from being wrong silently.
+ *
+ * Falls back to resolving the remote name when `location` is absent, which is
+ * how the function is called outside the hook.
+ */
+export function readLiveRemoteSha(remote, ref, location = '') {
+  const target = location.trim() || readPushUrl(remote);
+  const output = git(['ls-remote', target, ref]).trim();
   if (!output) return null;
   const first = output.split('\n')[0] ?? '';
   const sha = first.split('\t')[0]?.trim();
@@ -581,7 +608,7 @@ export function readCommits(range) {
     });
 }
 
-export function gatherFacts(update, remote, env = process.env) {
+export function gatherFacts(update, remote, env = process.env, location = '') {
   // The live query is the one fact that depends on the network, so its failure
   // is recorded as a FACT rather than thrown. Letting it throw put the whole
   // decision behind a catch, so no branch of `evaluateRefUpdate` — including
@@ -590,7 +617,7 @@ export function gatherFacts(update, remote, env = process.env) {
   let liveQueryFailed = false;
   let liveQueryError = '';
   try {
-    liveRemoteSha = readLiveRemoteSha(remote, update.remoteRef);
+    liveRemoteSha = readLiveRemoteSha(remote, update.remoteRef, location);
   } catch (error) {
     liveQueryFailed = true;
     liveQueryError = error instanceof Error ? error.message : String(error);
@@ -705,6 +732,11 @@ function readAllStdin() {
 
 function main(argv, stdinText) {
   const remote = argv[0] ?? 'origin';
+  // git's second argument is the URL THIS invocation is pushing to. With a
+  // multi-valued `remote.<name>.pushurl` the hook runs once per URL and this is
+  // the only thing that distinguishes them; re-resolving the remote name would
+  // evaluate every invocation against the first mirror.
+  const location = argv[1] ?? '';
   const updates = parseStdin(stdinText);
   if (updates.length === 0) return 0;
 
@@ -712,7 +744,10 @@ function main(argv, stdinText) {
   for (const update of updates) {
     let result;
     try {
-      result = evaluateRefUpdate(update, gatherFacts(update, remote));
+      result = evaluateRefUpdate(
+        update,
+        gatherFacts(update, remote, process.env, location),
+      );
     } catch (error) {
       // A guard that cannot check must not report success. This is the residual
       // path only — the two failures that are actually reachable have their own

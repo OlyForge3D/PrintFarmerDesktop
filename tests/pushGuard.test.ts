@@ -525,6 +525,81 @@ describe('the passing side goes through the real hook', () => {
     expect(tipOf('refs/heads/second')).toBe(git(['rev-parse', 'HEAD'], work));
   });
 
+  it('lets a fast-forward through to every URL of a mirrored remote', () => {
+    // `remote.<n>.pushurl` is multi-valued, and mirroring one remote to several
+    // is what it is for. `git push` writes to all of them and runs the hook once
+    // per URL; `git remote get-url --push` returns only the first.
+    //
+    // The passing side first, because the failing side is not licence to break
+    // this: a working mirror configuration must keep working. Both mirrors are
+    // in sync here, so both invocations must allow and both must land.
+    const second = path.join(root, 'mirror.git');
+    git(['init', '--bare', '--initial-branch=development', second], root);
+    git(['config', '--add', 'remote.origin.pushurl', remote], work);
+    git(['config', '--add', 'remote.origin.pushurl', second], work);
+    git(['push', '--no-verify', 'origin', 'feature'], work);
+    commit(work, 'work that must reach both mirrors', 'session-one');
+
+    const stderr = pushExpectingSuccess(['push', 'origin', 'feature'], work);
+
+    expect(stderr).toContain('push-guard.fast-forward');
+    const head = git(['rev-parse', 'HEAD'], work);
+    expect(tipOf()).toBe(head);
+    expect(
+      git(['--git-dir', second, 'rev-parse', 'refs/heads/feature'], root),
+    ).toBe(head);
+  });
+
+  it('evaluates each mirror against its own tip, not against the first one', () => {
+    // The failing side. A second writer lands on the SECOND mirror only, so the
+    // two tips diverge. Resolving `get-url --push` gives the first mirror for
+    // both invocations, which means the push to the second is judged against a
+    // tip that is not its own.
+    //
+    // Measured before the fix, that did refuse — but by accident: the tip on
+    // stdin is per-URL, so `stale-lease` caught the mismatch and reported a
+    // background fetch that had never happened. A guard that is correct for a
+    // reason unrelated to the problem is one refactor away from being silent.
+    // git already resolves the URL for each invocation and passes it as the
+    // hook's second argument, so the guard does not have to resolve one at all.
+    const second = path.join(root, 'mirror.git');
+    git(['init', '--bare', '--initial-branch=development', second], root);
+    git(['config', '--add', 'remote.origin.pushurl', remote], work);
+    git(['config', '--add', 'remote.origin.pushurl', second], work);
+    git(['push', '--no-verify', 'origin', 'feature'], work);
+
+    const theirs = path.join(root, 'theirs');
+    git(['clone', '-b', 'feature', second, theirs], root);
+    configure(theirs);
+    commit(theirs, 'a second writer, on the second mirror only', 'session-two');
+    git(['push', '--no-verify', 'origin', 'feature'], theirs);
+    const endangered = git(['rev-parse', 'HEAD'], theirs);
+
+    commit(work, 'mine, unaware of them', 'session-one');
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force', 'origin', 'feature'], work);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    // The property, not the wording: the second mirror still has the commit.
+    expect(
+      git(['--git-dir', second, 'rev-parse', 'refs/heads/feature'], root),
+    ).toBe(endangered);
+    // And the reason has to be about the mirror being pushed to. Without this,
+    // the test passes either way — measured: resolving the first mirror also
+    // refuses here, via `stale-lease`, reporting a background fetch that never
+    // happened. Same outcome, different cause, and only one of them is the
+    // guard doing its job. An assertion that cannot fail is not a control, so
+    // the two refusals are pinned apart.
+    expect(stderr).toContain('push-guard.unfetched-remote-tip');
+    expect(stderr).not.toContain('push-guard.stale-lease');
+  });
+
   it('lets a fast-forward through from a clone whose push URL differs from its fetch URL', () => {
     // The B1 lockout, end to end: `git push` resolves `remote.<n>.pushurl`,
     // the guard's `ls-remote` used to resolve `remote.<n>.url`. A clone that

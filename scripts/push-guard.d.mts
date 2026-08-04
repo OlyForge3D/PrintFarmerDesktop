@@ -78,7 +78,11 @@ export function evaluateRefUpdate(
   update: RefUpdate,
   facts: PushFacts,
 ): GuardResult;
-export function readLiveRemoteSha(remote: string, ref: string): string | null;
+export function readLiveRemoteSha(
+  remote: string,
+  ref: string,
+  location?: string,
+): string | null;
 export function readPushUrl(remote: string): string;
 export function isAncestor(
   ancestor: string,
@@ -95,5 +99,6 @@ export function gatherFacts(
   update: RefUpdate,
   remote: string,
   env?: NodeJS.ProcessEnv,
+  location?: string,
 ): PushFacts;
 export function parseStdin(text: string): RefUpdate[];

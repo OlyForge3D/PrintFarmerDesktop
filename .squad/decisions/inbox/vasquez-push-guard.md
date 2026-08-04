@@ -183,6 +183,44 @@ alone is enough to proceed. That is a real reduction in the two-session control,
 accepted because the alternative was teaching every solo developer that the
 foreign override is a routine step.
 
+## The push URL was the wrong question; git already answers it
+
+`remote.<name>.pushurl` is **multi-valued** — mirroring one remote to several is
+its main use. `git push` writes to every URL and runs `pre-push` **once per
+URL**; `git remote get-url --push` returns only the first. So a guard that
+resolves the remote name judges every invocation against the first mirror.
+
+Measured, two mirrors with diverged tips:
+
+- The guard **refused**, so nothing was destroyed — but by accident. The tip on
+  stdin is per-URL, so `stale-lease` caught the mismatch and reported _"a
+  background fetch picked up another session's commits"_, which had not
+  happened. Correct outcome, unrelated cause.
+- With the mirrors **in sync** — an ordinary healthy setup — it refused an
+  ordinary fast-forward, **after already writing to the first mirror.** Not a
+  clean refusal: a torn push. That is the B1 lockout again, in a configuration
+  B1's fix did not reach.
+
+**The fix is to stop resolving a URL at all.** git passes the URL this
+invocation is pushing to as the hook's **second argument**, already resolved —
+measured to honour `pushurl` and `pushInsteadOf` both, and to differ per
+invocation for a mirrored remote. `readPushUrl` survives only as a fallback for
+callers outside the hook.
+
+**The transferable part is about where the answer lives.** Three rounds went
+into resolving the push URL correctly — `ls-remote --push` (does not exist),
+`ls-remote --get-url` (returns the fetch URL), `remote get-url --push` (right,
+but only the first of N). All three were attempts to _recompute_ something the
+caller had already been handed. The hook's own arguments were never read. When a
+tool hands you a resolved value, deriving it again is not defensive; it is a
+second implementation that can disagree with the first.
+
+**And the accidental refusal is the part to be uneasy about.** The guard was
+saved by a check aimed at something else, which means the real coverage was
+never where the code said it was. Both mirror cases are now pinned, and the
+divergent one asserts _which_ refusal fires — without that, it passes with the
+defect in place.
+
 ## The decision function's purity is now enforced, not promised
 
 `evaluateRefUpdate` must stay pure because `protected-ref` and the delete refusal
