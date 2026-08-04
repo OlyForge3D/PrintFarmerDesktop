@@ -62,6 +62,12 @@
 //     EXITS 0 — measured. The remedy fails silently in the one case someone was
 //     told to trust it, so a caller must test the OUTPUT, never the status.
 //     This code never uses it; question 3 reads a pull ref by ancestry instead.
+//   * The exit codes in this family have no convention to intuit. Measured:
+//     `cat-file -e` misses with 1, the peeled form and `--is-ancestor` with
+//     128, and `for-each-ref --contains` with 129 — while `ls-remote`,
+//     `for-each-ref` and `log -g` all report ABSENCE BY SUCCEEDING with empty
+//     output. Where the answer is the output, test the output; where it is the
+//     status, branch by value and keep the third state.
 //
 // What this refuses to do: guess. Without `--pr`, `stale` and `twin` are not
 // distinguishable, and the verdict says so rather than picking the flattering

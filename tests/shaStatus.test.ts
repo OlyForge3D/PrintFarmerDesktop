@@ -148,6 +148,34 @@ describe('the instrument everyone reaches for does not answer the question', () 
       rmSync(bare, { recursive: true, force: true });
     }
   });
+
+  it('reports an orphan by succeeding with no output, and an absent object with 129', () => {
+    // `for-each-ref --contains` is the cheapest orphan test available and needs
+    // no network, which is why it belongs in the documented set. It has the
+    // same shape as `ls-remote` above: the ANSWER IS THE OUTPUT, and the status
+    // only says the query ran. Pinned together with the absent case because the
+    // family has no convention to intuit — this command uses 129 where
+    // `cat-file -e` uses 1 and `--is-ancestor` uses 128, and all three are
+    // routinely read through a single boolean.
+    git(['checkout', '-q', '-b', 'doomed'], root);
+    commit(root, 'work on a branch about to vanish');
+    const orphan = git(['rev-parse', 'HEAD'], root);
+    git(['checkout', '-q', 'development'], root);
+    git(['branch', '-q', '-D', 'doomed'], root);
+
+    // The object is fine. That is exactly why an orphan is hard to see.
+    expect(gitExit(['cat-file', '-e', `${orphan}^{commit}`], root)).toBe(0);
+
+    expect(gitExit(['for-each-ref', '--contains', orphan], root)).toBe(0);
+    expect(git(['for-each-ref', '--contains', orphan], root)).toBe('');
+
+    const live = git(['rev-parse', 'development'], root);
+    expect(git(['for-each-ref', '--contains', live], root)).not.toBe('');
+
+    expect(gitExit(['for-each-ref', '--contains', 'c'.repeat(40)], root)).toBe(
+      129,
+    );
+  });
 });
 
 describe('a SHA quoted in a handoff has three failure modes and one instrument each', () => {
