@@ -2373,16 +2373,28 @@ describe('the remedy the guard prints is itself exercised', () => {
   });
 
   it('resolves the branch from the repository it is invoked in, not the one it lives in', () => {
-    // D1. Under the old code this printed the ambient worktree's branch, so the
-    // precondition is that the two names differ — otherwise the assertion below
-    // would pass without discriminating anything.
-    const ambient = git(['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot);
-    expect(ambient).not.toBe('feature');
+    // D1. The discriminator is the fixture's own remote tip: only a script
+    // reading THIS repository can print that sha against that branch.
+    //
+    // The first version of this test asserted the ambient worktree's branch name
+    // was absent from the output, and it passed locally and failed on both CI
+    // platforms. CI checks out a detached HEAD, so `rev-parse --abbrev-ref HEAD`
+    // there is the literal string `HEAD`, which legitimately appears in the
+    // script's own `HEAD:refs/heads/feature` refspec. The precondition I had
+    // written guarded against the ambient branch being called `feature` and not
+    // against it failing to be a branch name at all — a degenerate value I did
+    // not think of, waved through by a check that looked like it covered this.
+    //
+    // Pinning the sha removes the dependency on the ambient checkout entirely
+    // rather than special-casing the detached state, and it is the stronger
+    // assertion: a wrong-repository read cannot produce this value by accident.
+    const tip = remoteTip();
+    expect(tip).toMatch(/^[0-9a-f]{40}$/);
 
     const result = runForce([], work);
 
-    expect(result.stdout).toContain('origin/feature is at');
-    expect(result.stdout).not.toContain(ambient);
+    expect(result.stdout).toContain(`origin/feature is at ${tip}`);
+    expect(result.status).toBe(0);
   });
 
   it('does not report a rebase that carried every line forward as destruction', () => {
