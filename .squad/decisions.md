@@ -452,3 +452,13 @@ The freeze protocol at `:323` is the working form of this: a freeze is a control
 **Note on #57.** It is a child of #42 and is not executable as a single unit: its acceptance criteria span licensing/provenance, capability rollout ordering, a cross-repository E2E matrix, security authorization, accessibility, reliability and documentation. It is held by Ripley to be decomposed into per-member child issues before any of it is delegated. Treating it as one deliverable would produce exactly the kind of scattered, unfinishable work item the 2026-07-24 sequencing policy exists to prevent.
 
 **Mechanism:** the existing hourly `Ralph - Backlog Driver` workflow was updated in place rather than duplicated. Its SCOPE EXCLUSION section was replaced with a no-exclusions mandate, and its embedded backlog snapshot — which still named epics #4, #5 and #6 as the in-scope chain weeks after all three closed — was replaced with the post-triage state. **The snapshot going stale unnoticed is itself the lesson**: a prompt-embedded board state is a claim about a mutable object, and this one was wrong for as long as it took anyone to look. The workflow already instructs Ralph to verify the board from `gh` each round; the snapshot is a hint, never an authority.
+
+## 2026-08-04 — Three-way adversarial approval is required before PR creation
+
+**By:** Ripley (on Jeff Papiez's direct instruction)
+
+**Decision:** A PR must not be created until the original author's local branch has unanimous approval from a **three-way adversarial review**. If reviewers require changes, the **original author** makes and commits those changes locally; every required-change commit resets the review gate, and the requested changes receive a new three-way review. Only after all reviewers approve the current local head may the PR be created.
+
+After PR creation, merge only when **all CI gates pass**. If completing a PR introduces merge conflicts, return the conflict to the original author immediately, resolve it, and rerun all CI gates before proceeding. Green CI never substitutes for the pre-PR review or its re-review after required changes.
+
+**Why:** PR creation is a publication boundary, not a substitute for review. A required-change commit invalidates conclusions about the previous head, and a conflict introduced during completion can invalidate the tested result. The lifecycle must therefore gate publication on unanimous adversarial review and gate completion on fresh green CI after any conflict repair.
