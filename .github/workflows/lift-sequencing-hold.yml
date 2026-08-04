@@ -1,0 +1,56 @@
+name: Lift sequencing hold
+
+# merge-queue: advisory
+#
+# Same constraint as sequencing-hold.yml and pr-closure-scope.yml: this workflow
+# does not report under `merge_group`, so its check run MUST NOT be a required
+# context. scripts/check-merge-queue-contexts.mjs enforces the classification.
+#
+# The hazard is sharper here than for the other two, and worth naming rather
+# than inheriting. This workflow runs ONLY on `closed`, so its check run does
+# not exist on an open pull request at all. Requiring it would not merely
+# deadlock a queued entry — it would leave every open pull request waiting for a
+# context that cannot appear until after the merge that the context is blocking.
+# A required check that can only report once the thing it gates has happened is
+# unsatisfiable by construction.
+#
+# Why a separate workflow rather than a `closed` entry on sequencing-hold.yml:
+# that workflow READS the label to report a hold, and this one WRITES to remove
+# it. Merging them would give the reporting check `pull-requests: write`, so the
+# check that exists to make a hold visible would also be the one able to erase
+# it. Keeping them apart keeps the reader read-only.
+#
+# `closed` fires for both a merge and a plain close; the two are the same event
+# and the same `state`. scripts/lift-hold-on-close.mjs distinguishes them on the
+# `merged` flag and acts only on a merge, because a merged pull request cannot
+# be reopened while a closed one can. Doing this in the script rather than in an
+# `if:` here is deliberate: tests/ciWorkflowTriggers.test.ts bans job-level
+# conditionals for a different reason, and a rule that decides whether to strip
+# a live hold belongs somewhere a unit test can push it from both sides.
+on:
+  pull_request:
+    types: [closed]
+
+# Write is required to remove a label and is the narrowest scope that permits
+# it. `contents` is deliberately absent: this job checks out no code and needs
+# none, so nothing here can execute anything from the merged branch.
+permissions:
+  pull-requests: write
+
+jobs:
+  lift-sequencing-hold:
+    name: Lift sequencing hold
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # No `npm ci`: the script imports nothing outside node: builtins and two
+      # sibling modules, so it runs against the checkout alone.
+      - name: Remove the hold label from a merged pull request
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run lift:sequencing-hold
