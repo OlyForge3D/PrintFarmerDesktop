@@ -1,5 +1,10 @@
 name: Release GPU qualification
 
+# merge-queue: publication
+#
+# Never runs on pull_request; dispatched by a human. Its check runs must never
+# appear in a branch ruleset.
+
 on:
   workflow_dispatch:
 
