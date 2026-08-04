@@ -103,6 +103,7 @@ import {
   CalibrationStartPrintRequest,
   CalibrationAssetManifestEntry,
   CalibrationUnavailableReason,
+  CalibrationWorkspaceStageId,
 } from '@shared/ipc';
 import type { ZodTypeAny } from 'zod';
 import {
@@ -161,6 +162,14 @@ const PROCEDURES: readonly string[] = ['calibration-rollout.md'];
 const EXPECTED_PROCEDURE_COUNT = 1;
 
 const ADMIN_GUIDE = 'printer-calibration-admin-guide.md';
+
+/**
+ * The operator-facing guide added by #207. It was outside DOCUMENTS entirely, so
+ * nothing checked that the channels, log fields and npm scripts it tells a user
+ * to type still exist. It is the document most likely to be read by somebody who
+ * cannot check, which makes it the worst one to leave unverified.
+ */
+const USER_GUIDE = 'printer-calibration-user-guide.md';
 
 /** The five sections every runbook must have, in this order and no others. */
 const REQUIRED_SECTIONS: readonly string[] = [
@@ -294,6 +303,9 @@ function knownFieldNames(): Set<string> {
     ...CALIBRATION_CORRELATION_ORIGINS,
     ...CALIBRATION_LOG_OUTCOMES,
     ...CalibrationUnavailableReason.options,
+    // Workspace stage IDs. An operator guide walks a user through the stages
+    // by name, so these are exactly the identifiers a document is expected to say.
+    ...CalibrationWorkspaceStageId.options,
   ]);
   for (const schema of CONTRACT_SCHEMAS) collectSchemaKeys(schema, names);
   return names;
@@ -387,6 +399,7 @@ function runbookPath(name: string): string {
 
 const DOCUMENTS: readonly { label: string; file: string }[] = [
   { label: `docs/${ADMIN_GUIDE}`, file: path.join(docsDir, ADMIN_GUIDE) },
+  { label: `docs/${USER_GUIDE}`, file: path.join(docsDir, USER_GUIDE) },
   ...RUNBOOKS.map((name) => ({
     label: `docs/runbooks/${name}`,
     file: runbookPath(name),
@@ -425,7 +438,7 @@ const PLANTED_DOC = [
 ].join('\n');
 
 describe('calibration documentation reference integrity', () => {
-  it('resolves the seven named runbooks, the rollout procedure and the administrator guide', () => {
+  it('resolves the seven named runbooks, the rollout procedure and both operator guides', () => {
     // Without this the scans below are vacuous: an empty document set passes
     // every "no unknown reference" assertion while proving nothing.
     expect(RUNBOOKS.length).toBe(EXPECTED_RUNBOOK_COUNT);
