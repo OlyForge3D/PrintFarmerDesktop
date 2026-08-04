@@ -86,6 +86,28 @@ Two checks, applied to the name rather than the code:
 
 Corollary for reviewers: read the assertion before the name. If they disagree, the name is the defect — and it is the half that propagates.
 
+## A surviving mutation is not a finding until the mutation is shown to bite
+
+Mutation testing is how coverage claims get earned here, and its report has a silent failure mode. A mutation that stays green has two causes and **they are indistinguishable from the outside**: the test is weak (a finding), or the mutation never changed behaviour at all — dead value, overwritten, unreached path (a fact about the _code_, not the test, and not a finding).
+
+**So do not report a mutation as _survived_ until you have shown it changes behaviour.** Either it goes red under _some_ test, or you demonstrate the mutated line is reached and its value observed (a temporary throw or log at the mutation site). If nothing anywhere goes red, the mutated code may be dead, and that is the finding to report instead. A mutation you cannot show to bite is reported as **ineffective**, in those words, and is not evidence about any test.
+
+This matters because **the ambiguity fails in the direction that reads as diligence.** An ineffective mutation reported as a surviving one becomes a finding — it lands in a PR body, gets quoted in review, and generates work hardening an assertion that was never weak. Nobody audits a finding.
+
+On PR #169, mutating the _initial_ correlation lookup in `src/main/ipc.ts` to mint a fresh ID stayed green, which looks exactly like a weak stability assertion. It was not: the success path reassigns `correlationId` from a second `resolveOrBeginWithOrigin` over the attempt binding after the response arrives, so the minted value was never observed. The mutation that bites replaces the post-response resolution.
+
+**The mitigation is not "look twice" — it is "cheap enough to look twice."** That one was caught only because the loop was a sub-second single-file vitest run. Mutation testing degrades silently as the feedback loop slows, and it degrades _toward producing findings_: a slow loop does not stop emitting mutation reports, it emits surviving-mutation reports, which are the ones that get acted on. Treat iteration cost as part of the practice, not a convenience. See #188.
+
+## When a fix removes a symptom, verify the mechanism, not the symptom
+
+Some failures produce a clean-looking result _as their symptom_. When the fault is in the mock, the query, or the identifier, and it renders as an ordinary empty or passing result, **there is no independent detector** — the bad input and the misread output are one event, so nothing disagrees with anything.
+
+A `vi.mock('node:os', …)` on PR #169 returned `{ ...patched, default: actual }`. The consumer, `src/main/retargetArtifacts.ts`, imports the **default** export, so the override was never in effect and **the mock did nothing**. It passed all seven required contexts, because the symptom it suppressed — a race that needs a stale instance directory present — did not fire that run. The symptom was verified absent; the mechanism was never verified present. `tests/calibrationRedaction.test.ts` now returns `{ ...patched, default: patched }`.
+
+So when a change works by making a symptom go away, **assert the mechanism is in place as a distinct assertion from the behaviour under test** — for a mock, that the consumer observes the patched value. The deliberate version of this is PR #169's mutation 11: bypassing `safeOpaqueRevision` at the emitter while leaving the helper intact, because testing the helper alone passes even if the builder never calls it.
+
+Same shape outside tests: an identifier reconstructed by hand instead of copied from the tool that emitted it returns an empty result, and empty reads as a fact about the world rather than a fault in the query. See `.squad/decisions/inbox/hicks-empty-query-results.md`, and #188 for both rules together.
+
 ## Mocks hide missing production code
 
 Downstream tests that mock the sidecar stayed green while the entire native retarget engine was missing from `development`. If a test mocks the thing it is nominally validating, it cannot detect that the thing is gone. At least one test per integration boundary must exercise the real implementation.
