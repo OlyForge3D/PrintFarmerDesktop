@@ -306,6 +306,46 @@ describe('the closure-scope workflow stays outside the merge queue', () => {
     expect(triggersOf(workflow)).not.toContain('merge_group');
   });
 
+  /**
+   * Activity types the `pull_request:` trigger subscribes to, sorted.
+   */
+  function typesOf(contents: string): string[] {
+    const match = /^ {4}types: \[(.+)\]$/m.exec(contents);
+    if (match?.[1] === undefined)
+      throw new Error('workflow declares no pull_request types');
+    return match[1]
+      .split(',')
+      .map((entry) => entry.trim())
+      .sort();
+  }
+
+  it('finds the activity types at all, so the assertions below are not vacuous', () => {
+    expect(typesOf(workflow).length).toBeGreaterThan(0);
+  });
+
+  it('re-runs when a pull request is edited, because the field it reads comes from the body', () => {
+    // Found on the pull request that introduced this workflow. The default type
+    // set is commit-shaped (opened, synchronize, reopened), but
+    // closingIssuesReferences is derived from the pull request BODY, which is
+    // editable with no commit and no push. Without `edited`, a pull request
+    // could pass this check and then have a closing keyword typed into its
+    // description, and nothing would run again before it merged.
+    expect(typesOf(workflow)).toContain('edited');
+  });
+
+  it('still covers the three default activity types, because listing any type replaces them', () => {
+    // `types:` overrides the default set rather than adding to it. A well-meaning
+    // `types: [edited]` would stop this workflow running on new pull requests
+    // entirely — the guard disabled by the same class of mistake it guards
+    // against. This assertion is what makes that unshippable.
+    expect(typesOf(workflow)).toEqual([
+      'edited',
+      'opened',
+      'reopened',
+      'synchronize',
+    ]);
+  });
+
   it('runs the npm script rather than a divergent inline command', () => {
     // Without this the workflow could drift to a different entry point than
     // the one every test above exercises.
