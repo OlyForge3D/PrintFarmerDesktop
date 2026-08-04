@@ -13,7 +13,12 @@
  */
 
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { IpcChannel } from '@shared/ipc';
+import { IpcChannel, CalibrationConflictKind } from '@shared/ipc';
+import {
+  conflictResolutionsFor,
+  SidecarCalibrationAdapter,
+  supportsConflictResolution,
+} from '../src/main/calibrationService.js';
 import { printFarmerCapabilitiesResponse } from './fixtures/printFarmerCapabilities.js';
 
 type Handler = (event: unknown, request: unknown) => unknown;
@@ -258,5 +263,101 @@ describe('Calibration conflict resolution is not implemented end to end', () => 
     expect(rejection?.code).not.toBe(
       'CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE',
     );
+  });
+
+  /*
+   * The counterfactual for the refusal above, and for the empty
+   * `availableResolutions` this adapter reports.
+   *
+   * "The handler refuses" and "the array is empty" are both satisfied by code
+   * that unconditionally refuses and unconditionally returns []. Asserting them
+   * proves the *values*, not that anything was derived. A hard-coded [] and a
+   * derived [] are indistinguishable until the capability is present.
+   *
+   * So the capability is granted here, on the prototype the predicate actually
+   * reads through, and both sites are required to change on their own. If they
+   * do not, "derived" was decoration.
+   */
+  describe('the refusal is derived from the absent capability, not asserted', () => {
+    afterEach(() => {
+      delete (
+        SidecarCalibrationAdapter.prototype as {
+          resolveCalibrationConflict?: unknown;
+        }
+      ).resolveCalibrationConflict;
+    });
+
+    it('offers nothing while the transport has no resolve capability', () => {
+      expect(supportsConflictResolution({})).toBe(false);
+      for (const kind of CalibrationConflictKind.options) {
+        expect(
+          conflictResolutionsFor({}, kind),
+          `${kind} advertised a resolution while no resolve capability exists`,
+        ).toEqual([]);
+      }
+    });
+
+    it('offers resolutions as soon as a transport can resolve', () => {
+      const capable = {
+        resolveCalibrationConflict: () => Promise.resolve(undefined),
+      };
+      expect(supportsConflictResolution(capable)).toBe(true);
+      for (const kind of CalibrationConflictKind.options) {
+        expect(
+          conflictResolutionsFor(capable, kind).length,
+          `${kind} still advertised nothing even though the transport can ` +
+            `resolve, so the empty result above proves nothing about derivation`,
+        ).toBeGreaterThan(0);
+      }
+    });
+
+    it('restricts manualFieldMerge to the kinds the schema restricts it to', () => {
+      const capable = {
+        resolveCalibrationConflict: () => Promise.resolve(undefined),
+      };
+      const withMerge = CalibrationConflictKind.options.filter((kind) =>
+        conflictResolutionsFor(capable, kind).includes('manualFieldMerge'),
+      );
+      // Transcribed from the CalibrationConflictResolution schema doc, which
+      // limits manualFieldMerge to metadata/draft conflicts. Not a new policy.
+      expect(withMerge).toEqual(['projectMetadata', 'stepDraft']);
+    });
+
+    it('stops refusing at the IPC boundary once the capability appears', async () => {
+      const resolved: unknown[] = [];
+      (
+        SidecarCalibrationAdapter.prototype as {
+          resolveCalibrationConflict?: unknown;
+        }
+      ).resolveCalibrationConflict = function (
+        request: unknown,
+      ): Promise<unknown> {
+        resolved.push(request);
+        return Promise.resolve({ ok: true });
+      };
+
+      const handler = registeredHandler(IpcChannel.CalibrationResolveConflict);
+      const outcome = await (
+        handler(
+          {},
+          {
+            profileId: PROFILE_ID,
+            conflictId: '66666666-6666-4666-8666-666666666666',
+            resolution: 'acceptServer',
+          },
+        ) as Promise<unknown>
+      ).then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error: error as { code?: string } }),
+      );
+
+      expect(
+        'error' in outcome ? outcome.error.code : null,
+        'the resolve handler still refused after the transport gained a ' +
+          'resolve capability, so its refusal is hard-coded rather than ' +
+          'derived from the same predicate that empties availableResolutions',
+      ).not.toBe('CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE');
+      expect(resolved).toHaveLength(1);
+    });
   });
 });
