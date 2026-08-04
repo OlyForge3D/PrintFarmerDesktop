@@ -656,3 +656,77 @@ broken instrument, and the tell was the absence of a clean control.
   pusher's own id.
 - consult the newer neighbour instead of the older → same failure, which is what
   pins the direction of the walk.
+
+## A fix applied to the guard and not to the remedy the guard prints
+
+`scripts/safe-force-push.mjs` is what every refusal in this guard tells the
+operator to run. Until now its only appearance in the suite was an assertion
+that `package.json` mentions its **name**. Nothing executed a line of it, so
+coverage was inversely correlated with stakes: the least-tested path was the
+one reached under time pressure by someone who had just been told the system
+refused them.
+
+Two defects were sitting in it, and the first hid the second.
+
+**D1 — two halves of one script, two repositories.** The script's own `git()`
+pinned `cwd` to the directory above the file, while the helpers it imports from
+`push-guard.mjs` set no `cwd` at all and inherit `process.cwd()`. Measured by
+running it with `cwd` set to a scratch repo:
+
+```
+[push:force] jpapiez-squad-81-force-push-guard does not exist on origin
+```
+
+The branch name came from **this** worktree and the remote lookup from the
+scratch one — an answer about a pair that exists nowhere. `npm run push:force`
+sets `cwd` to the package root, so the advertised path always looked fine, which
+is why this survived.
+
+**D2 — it punished the correct rebase.** The script counted `rev-list live
+^local` as destruction and subtracted no patch-equivalent commits:
+
+```
+ARM PRESERVED   rebase their work forward   git cherry -> "- <sha>"
+                script says: DESTROYS 1 commit(s)   exit 1   REFUSED
+                guard says:  rewrite-preserves-all  ALLOW
+```
+
+The guard learned this at `822c5ed` and its docblock states the property
+outright — _"a false refusal on the did-the-right-thing path is the worst place
+in the system to put one, and it is the path the guard advertises."_ **The fix
+went into the guard and not into the remedy the guard prints.** So the operator
+who does exactly what the refusal asks is refused a second time, and the only
+exit the script offered them was `--yes`.
+
+That is the failure mode this squad already has a rule about, one layer out:
+**an override presented as the way through teaches that the override is a
+routine step**, and that lesson outlives the incident. Here it was worse than a
+wording problem, because the operator reaching it had done the right thing.
+
+**D1 hid D2.** Pointed at a fixture, the script answered about the wrong
+repository and returned before it ever reached the counting. The coverage gap
+and the two bugs are therefore one finding, not three: _nothing could aim the
+script at a fixture, so nothing could observe either defect._ Untestable and
+wrong were the same property.
+
+**Mutation checks, three, each killed by the test that should kill it:**
+
+| mutation                               | dies on                                |
+| -------------------------------------- | -------------------------------------- |
+| re-pin `cwd` to the script's own repo  | the invoked-in-repo test, first        |
+| `discarded = removed` (no subtraction) | **only** the preserved-rebase test     |
+| `discarded = []` (subtract everything) | **only** the two genuine-discard tests |
+
+The last two are complementary on purpose. One-sided subtraction satisfies
+either test alone; **only the correct boundary satisfies both**, so the pair
+pins the boundary rather than one side of it. A suite that had contained just
+the preserved case would have been passed by a script that never refuses
+anything.
+
+**Method note, and it is the reusable part.** The reviewer had flagged this file
+twice as non-blocking, correctly describing the gap as _missing coverage_. It
+was not only missing coverage; it was missing coverage **concealing two defects,
+one of which contradicted the guard's own ratified doctrine.** "Untested" and
+"works" are different claims, and only one of them had been checked. The way to
+tell them apart was to write the test, and the first thing the test did was
+fail for a reason nobody had predicted.

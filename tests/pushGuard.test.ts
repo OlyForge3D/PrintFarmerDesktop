@@ -2294,3 +2294,173 @@ describe('a second session on one branch cannot be force-pushed over', () => {
     expect(tip).toBe(theirs);
   });
 });
+
+// --- the remedy the guard prints -------------------------------------------
+//
+// `npm run push:force` is the command every refusal above tells the operator to
+// run. It was the most-followed path in the system and had exactly one
+// assertion against it: that package.json mentions its NAME. Nothing executed a
+// line of it. Coverage was inversely correlated with stakes.
+//
+// Two defects were sitting in it, and the first hid the second.
+//
+//   D1  Its own `git()` pinned cwd to the directory above the script, while the
+//       helpers it imports from push-guard.mjs set no cwd and so inherit
+//       process.cwd(). Two halves of one script reading two different
+//       repositories. Measured by running it with cwd set to a scratch repo: it
+//       printed `jpapiez-squad-81-force-push-guard does not exist on origin` —
+//       the branch name from THIS worktree, the remote lookup from the scratch
+//       one. An answer about a pair that exists nowhere.
+//
+//   D2  It counted `rev-list live ^local` as destruction and subtracted no
+//       patch-equivalent commits. So a rebase that carried every line forward
+//       was announced as `DESTROYS 1 commit(s)` and refused, while the guard
+//       behind it returned `rewrite-preserves-all` and allowed. The guard was
+//       fixed for precisely this at 822c5ed; the remedy it prints was not.
+//
+// D2 is the serious one. The operator arrives here BECAUSE the guard refused,
+// under time pressure, having been told this is the way through — and for doing
+// exactly the right thing the script offered them only `--yes`. A remedy that
+// refuses the correct action and teaches the override as routine is worse than
+// no remedy, and it trains away the habit the guard is trying to build.
+//
+// D1 hid D2: pointed at a fixture the script answered about the wrong repo and
+// never reached the counting. That ordering is why the coverage gap and the
+// bugs are one finding rather than two.
+
+describe('the remedy the guard prints is itself exercised', () => {
+  const script = path.join(repoRoot, 'scripts', 'safe-force-push.mjs');
+  let root: string;
+  let remote: string;
+  let work: string;
+  let base: string;
+
+  const runForce = (args: string[], cwd: string) =>
+    spawnSync(process.execPath, [script, ...args], {
+      cwd,
+      encoding: 'utf8',
+      env: { ...process.env },
+    });
+
+  const remoteTip = () =>
+    git(['ls-remote', remote, 'refs/heads/feature'], work).split('\t')[0];
+
+  /** Their work, published, then thrown away locally. Returns their sha. */
+  function publishTheirWork() {
+    commit(work, 'their feature', 'session-two');
+    const theirs = git(['rev-parse', 'HEAD'], work);
+    git(['push', '--no-verify', 'origin', 'feature'], work);
+    git(['reset', '--hard', base], work);
+    return theirs;
+  }
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-force-'));
+    remote = path.join(root, 'remote.git');
+    work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, work], root);
+    configure(work);
+    git(['checkout', '-b', 'feature'], work);
+    commit(work, 'base', 'session-one');
+    base = git(['rev-parse', 'HEAD'], work);
+    git(['push', '--no-verify', '-u', 'origin', 'feature'], work);
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('resolves the branch from the repository it is invoked in, not the one it lives in', () => {
+    // D1. Under the old code this printed the ambient worktree's branch, so the
+    // precondition is that the two names differ — otherwise the assertion below
+    // would pass without discriminating anything.
+    const ambient = git(['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot);
+    expect(ambient).not.toBe('feature');
+
+    const result = runForce([], work);
+
+    expect(result.stdout).toContain('origin/feature is at');
+    expect(result.stdout).not.toContain(ambient);
+  });
+
+  it('does not report a rebase that carried every line forward as destruction', () => {
+    // D2, and the case the guard's own refusal asks the operator to produce.
+    const theirs = publishTheirWork();
+    commit(work, 'my feature', 'session-one');
+    git(['cherry-pick', theirs], work);
+    const local = git(['rev-parse', 'HEAD'], work);
+
+    // Precondition: the arm has to differ from the discard arm below. If the
+    // cherry-pick stopped producing an equivalent this test would pass for
+    // having nothing to preserve rather than for preserving it.
+    expect(git(['cherry', local, theirs], work)).toMatch(/^- /);
+
+    const result = runForce([], work);
+
+    expect(result.stdout).toContain('carried forward, not destroyed');
+    expect(result.stdout).toContain('nothing would be destroyed');
+    // The discriminator: not merely "it proceeded", but that it did not reach
+    // the destruction wording at all. A script that printed both would still be
+    // teaching the operator that their correct rebase destroyed something.
+    expect(result.stdout).not.toContain('DESTROYS');
+    expect(result.stderr).not.toContain('refusing');
+    expect(result.status).toBe(0);
+    expect(remoteTip()).toBe(local);
+  });
+
+  it('still refuses a genuine discard, and leaves the remote where it was', () => {
+    // The other horn. If the subtraction above were applied too widely this is
+    // the test that fails, so the pair pins the boundary rather than one side.
+    const theirs = publishTheirWork();
+    commit(work, 'my replacement', 'session-one');
+    const local = git(['rev-parse', 'HEAD'], work);
+
+    // Precondition and discriminator against the arm above: no patch-equivalent
+    // exists here, so this work is genuinely destroyed.
+    expect(git(['cherry', local, theirs], work)).toMatch(/^\+ /);
+
+    const result = runForce([], work);
+
+    expect(result.stdout).toContain('DESTROYS 1 commit(s)');
+    expect(result.stdout).toContain('session-two');
+    expect(result.stdout).not.toContain('carried forward');
+    expect(result.stderr).toContain('refusing');
+    expect(result.status).toBe(1);
+    expect(remoteTip()).toBe(theirs);
+  });
+
+  it('proceeds with --yes, which is the only way past a genuine discard', () => {
+    const theirs = publishTheirWork();
+    commit(work, 'my replacement', 'session-one');
+    const local = git(['rev-parse', 'HEAD'], work);
+
+    const result = runForce(['--yes'], work);
+
+    expect(result.stdout).toContain('DESTROYS 1 commit(s)');
+    expect(result.status).toBe(0);
+    expect(remoteTip()).toBe(local);
+    expect(remoteTip()).not.toBe(theirs);
+  });
+
+  it('refuses a protected branch before it touches the remote at all', () => {
+    git(['checkout', '-B', 'development'], work);
+
+    const result = runForce([], work);
+
+    expect(`${result.stdout}${result.stderr}`).toContain(
+      'does not take direct pushes',
+    );
+    expect(result.status).toBe(1);
+  });
+
+  it('rejects an unknown flag rather than silently ignoring it', () => {
+    // `--force` is the flag muscle memory reaches for, and silently ignoring it
+    // would mean the operator believes they passed something they did not.
+    const result = runForce(['--force'], work);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('unknown argument: --force');
+  });
+});

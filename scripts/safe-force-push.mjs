@@ -17,20 +17,37 @@
 //   npm run push:force -- --branch b    -- a branch other than the current one
 
 import { execFileSync } from 'node:child_process';
-import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import {
   ACK_ENV,
   ACK_FOREIGN_ENV,
   PROTECTED_REFS,
   readCommits,
+  readEquivalentCommits,
   readLiveRemoteSha,
 } from './push-guard.mjs';
 
-const repoRoot = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '..',
-);
+// Every git call here runs in the CURRENT directory, and that is load-bearing
+// rather than incidental.
+//
+// This used to pin `cwd` to the directory above this file while the helpers it
+// imports from push-guard.mjs set no cwd at all and therefore inherit
+// process.cwd(). Two halves of one script, reading two different repositories.
+// Measured, running it with cwd set to a scratch repo: it printed
+// `jpapiez-squad-81-force-push-guard does not exist on origin` — the branch name
+// came from THIS worktree and the remote lookup from the scratch one, so the
+// answer was about a pair that exists nowhere.
+//
+// `npm run push:force` sets cwd to the package root, so the advertised path is
+// unchanged. What changes is that the two halves now always agree, and that the
+// script can be pointed at a fixture, which is why it had no behavioural
+// coverage before: nothing could aim it anywhere.
+function git(args) {
+  return execFileSync('git', args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+}
 
 export function parseArgs(argv) {
   const options = {
@@ -48,14 +65,6 @@ export function parseArgs(argv) {
     else throw new Error(`unknown argument: ${flag}`);
   }
   return options;
-}
-
-function git(args) {
-  return execFileSync('git', args, {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  }).trim();
 }
 
 function main(argv) {
@@ -78,7 +87,39 @@ function main(argv) {
   console.log(`[push:force] ${options.remote}/${branch} is at ${live}`);
 
   const local = git(['rev-parse', 'HEAD']);
-  const discarded = readCommits([live, `^${local}`]);
+  // `rev-list live ^local` answers "what does this push remove from the ref",
+  // which is NOT "what does this push destroy". The guard learned that at
+  // 822c5ed and subtracts patch-equivalent commits before it refuses; this
+  // script did not, so it disagreed with the guard on the one case the guard
+  // exists to produce.
+  //
+  // Follow the guard's own advice — rebase their work forward instead of over
+  // it — and every line survives under a new sha. Measured in a fixture where
+  // `git cherry` marked the removed commit `-`: this script still announced
+  // "this push DESTROYS 1 commit" and refused, while the guard behind it
+  // returned `rewrite-preserves-all` and allowed. The operator is told to run
+  // this script BY that guard, under time pressure, and the only way out it
+  // offered was `--yes`. A remedy that refuses the correct action and then
+  // teaches that the override is how you proceed is worse than no remedy.
+  //
+  // Same source of truth as the guard, so the two cannot drift: subtract, then
+  // refuse on what is left.
+  const removed = readCommits([live, `^${local}`]);
+  const equivalent = readEquivalentCommits(local, live);
+  const preserved = removed.filter((commit) => equivalent.has(commit.sha));
+  const discarded = removed.filter((commit) => !equivalent.has(commit.sha));
+
+  if (preserved.length > 0) {
+    console.log(
+      `[push:force] ${preserved.length} commit(s) are rewritten but carried forward, not destroyed:`,
+    );
+    for (const commit of preserved) {
+      console.log(
+        `             ${commit.sha.slice(0, 12)}  ${commit.subject}   [preserved]`,
+      );
+    }
+  }
+
   if (discarded.length === 0) {
     console.log('[push:force] nothing would be destroyed');
   } else {
@@ -115,7 +156,7 @@ function main(argv) {
   ];
   console.log(`[push:force] git ${args.join(' ')}`);
   try {
-    execFileSync('git', args, { cwd: repoRoot, env, stdio: 'inherit' });
+    execFileSync('git', args, { env, stdio: 'inherit' });
   } catch {
     return 1;
   }
