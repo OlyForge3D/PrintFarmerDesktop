@@ -255,11 +255,14 @@ function fakeSidecar(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function handlers(sidecar = fakeSidecar()): Map<string, Handler> {
+function handlers(
+  sidecar = fakeSidecar(),
+  profiles: unknown = fakeProfiles(),
+): Map<string, Handler> {
   electronState.handlers.clear();
   registerIpcHandlers(
     undefined,
-    fakeProfiles() as never,
+    profiles as never,
     sidecar as never,
     sidecar as never,
     { initialize: () => Promise.resolve(), dispose: () => undefined } as never,
@@ -781,6 +784,54 @@ describe('diagnostics command', () => {
     await expect(
       fakeProfiles().getAuthenticatedContext(),
     ).resolves.toMatchObject({ token: JWT });
+  });
+
+  // The runbooks tell an operator which `outboxUnavailableReason` values they
+  // can actually meet. That is a claim about this call site: the handler passes
+  // the sidecar adapter unconditionally, so `notAttempted` is unreachable here
+  // and the runbook is entitled to say so. If that ever stops being true these
+  // two tests fail, rather than the documentation quietly going false.
+  it('reports noProfileSelected, never notAttempted, when no profile is selected', async () => {
+    const registered = handlers(fakeSidecar(), {
+      ...fakeProfiles(),
+      list: () => Promise.resolve({ profiles: [], selectedProfileId: null }),
+    });
+    const diagnostics = (await invoke(
+      registered,
+      IpcChannel.CalibrationGetDiagnostics,
+      {},
+    )) as {
+      outbox: unknown;
+      outboxUnavailableReason: string | null;
+      report: string;
+    };
+
+    expect(diagnostics.outbox).toBeNull();
+    // The value, not merely the key: `notAttempted` is what a handler that had
+    // stopped supplying an outbox source would produce, and it wins on
+    // precedence, so this assertion is what pins the call site.
+    expect(diagnostics.outboxUnavailableReason).toBe('noProfileSelected');
+    expect(diagnostics.report).toContain('unavailable (noProfileSelected)');
+  });
+
+  it('reports an available outbox when a profile is selected', async () => {
+    // Positive control for the test above: without it, `noProfileSelected`
+    // is indistinguishable from a handler that can never reach the outbox at
+    // all, and the pin would hold for the wrong reason.
+    const registered = handlers(
+      fakeSidecar({ countCalibrationPendingOps: () => Promise.resolve(2) }),
+    );
+    const diagnostics = (await invoke(
+      registered,
+      IpcChannel.CalibrationGetDiagnostics,
+      { profileId: PROFILE_ID },
+    )) as {
+      outbox: { pendingOperationCount: number } | null;
+      outboxUnavailableReason: string | null;
+    };
+
+    expect(diagnostics.outbox?.pendingOperationCount).toBe(2);
+    expect(diagnostics.outboxUnavailableReason).toBeNull();
   });
 
   it('records the negotiated capability snapshot when availability is checked', async () => {
