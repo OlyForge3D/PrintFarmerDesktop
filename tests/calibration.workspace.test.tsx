@@ -1894,6 +1894,259 @@ describe('CalibrationWorkspace', () => {
     ).not.toBeInTheDocument();
   });
 
+  // ---------------------------------------------------------------------------
+  // Accessible name, live-region mount order, and the retry/do-not-retry
+  // co-render (issues #226, #242, #225 — all in CalibrationQueueDispatchPanel)
+  // ---------------------------------------------------------------------------
+
+  it('dispatch panel exposes an accessible name via a role that supports one (issue #226)', async () => {
+    // The twelve findByLabelText('Queue and dispatch status') calls in this file
+    // matched the aria-label ATTRIBUTE, which testing-library reads directly.
+    // They passed for as long as the attribute sat on a role-less <div>, where
+    // the implicit `generic` role means assistive technology never exposes it.
+    // Only a role query computes the accessible name, so this is the only
+    // assertion in the file that can fail when role="region" is removed.
+    //
+    // Mutation: delete role="region" from CalibrationQueueDispatchPanel.tsx →
+    // this test fails naming the role and name it could not find, while every
+    // findByLabelText assertion in this file stays green. That asymmetry is
+    // the defect, demonstrated.
+    const api = makeApi(record(domainState()));
+    api.getCalibrationQueueState.mockResolvedValue(queueJobFixture());
+    await openStepView(api);
+
+    expect(
+      await screen.findByRole('region', {
+        name: 'Queue and dispatch status',
+      }),
+      'the panel has an aria-label but no role that supports an accessible name',
+    ).toBeInTheDocument();
+  });
+
+  /** Envelope that flips only the dispatch outcome to Unknown (issues #242/#225). */
+  function unknownOutcomeEvent(): CalibrationQueueEventEnvelope {
+    return {
+      schemaVersion: '1',
+      eventId: 'aaaabbbb-0000-4000-8000-000000000042',
+      sequence: 1,
+      eventType: 'CalibrationJobDispatchStateChanged',
+      occurredAtUtc: now,
+      jobId: HANDOFF_QUEUE_JOB_ID,
+      printerId: HANDOFF_PRINTER_ID,
+      projectId: null,
+      calibrationAttemptId: null,
+      jobStatus: null,
+      jobKind: null,
+      jobRevision: null,
+      dispatchStateRevision: null,
+      attemptId: null,
+      attemptNumber: null,
+      attemptOutcome: 'Unknown',
+      bedClearState: null,
+      bedClearCommandId: null,
+      bedClearExpiresAtUtc: null,
+      failureCode: null,
+      failureRetryable: null,
+      failureRequiresReconciliation: null,
+      jobLogicalRevision: null,
+      dispatchStateLogicalRevision: null,
+    };
+  }
+
+  /**
+   * Holds the first poll open so a test can observe the pre-transition DOM,
+   * then release it with the supplied events. Without this the poll resolves
+   * during `openStepView` and any "before" assertion races the transition it
+   * is supposed to be the control for.
+   */
+  function deferFirstPoll(api: ReturnType<typeof makeApi>): {
+    fire: (events: CalibrationQueueEventEnvelope[]) => void;
+  } {
+    const handle = { fire: undefined as unknown as (e: never[]) => void };
+    api.pollCalibrationQueueChanges.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          handle.fire = (events: CalibrationQueueEventEnvelope[]) =>
+            resolve({
+              status: 'ok',
+              afterSequence: 0,
+              nextSequence: 5,
+              hasMore: false,
+              gapDetected: false,
+              events,
+            });
+        }),
+    );
+    api.pollCalibrationQueueChanges.mockResolvedValue({
+      status: 'ok',
+      afterSequence: 5,
+      nextSequence: 5,
+      hasMore: false,
+      gapDetected: false,
+      events: [],
+    });
+    return handle as {
+      fire: (events: CalibrationQueueEventEnvelope[]) => void;
+    };
+  }
+
+  it('reconciliation live region exists before there is any guidance to put in it (issue #242)', async () => {
+    // A live region announces CHANGES to content it already held. A region
+    // inserted already carrying its text is a new subtree and is broadly not
+    // announced. The dangerous path is opening this view on a job whose outcome
+    // is ALREADY Unknown — which is exactly what the pre-existing criterion-9
+    // test above drives, and it asserts only presence, so it passes under the
+    // defect it reproduces.
+    //
+    // Falsifier: re-wrap the guidance container in
+    // `queueState?.dispatchAttemptOutcome === 'Unknown' && (...)`, or move it
+    // back inside the <dl>, and the findByRole below fails naming the region it
+    // could not find — because under either arrangement no region exists while
+    // there is nothing to say.
+    //
+    // The panel's own first render always precedes its fetch resolving, so the
+    // region proven here is in place for the already-Unknown path too.
+    const api = makeApi(record(domainState()));
+    api.getCalibrationQueueState.mockResolvedValue(
+      queueJobFixture({ dispatchAttemptOutcome: null }),
+    );
+    const poll = deferFirstPoll(api);
+
+    await openStepView(api);
+
+    const liveRegion = await screen.findByRole('status', {
+      name: 'Dispatch reconciliation guidance',
+    });
+    // Emptiness is the requirement, not an accident.
+    expect(
+      liveRegion,
+      'the live region already held content before any outcome existed',
+    ).toBeEmptyDOMElement();
+
+    act(() => {
+      poll.fire([unknownOutcomeEvent()]);
+    });
+
+    // Same node, now populated: an announced change, not an insertion.
+    await waitFor(() => {
+      expect(liveRegion).toHaveTextContent(/Do not retry/);
+    });
+    expect(liveRegion).toHaveTextContent(/check the printer/);
+  });
+
+  it('guidance arrives into the already-mounted region on the transition path (issue #242)', async () => {
+    // Second entry path: an outcome that is already non-null and non-Unknown
+    // later becomes Unknown. This is the path that announces correctly even
+    // under the old arrangement, so it exists to make a regression on either
+    // path attributable rather than to prove the fix on its own.
+    const api = makeApi(record(domainState()));
+    api.getCalibrationQueueState.mockResolvedValue(
+      queueJobFixture({ dispatchAttemptOutcome: 'InProgress' }),
+    );
+    const poll = deferFirstPoll(api);
+
+    await openStepView(api);
+
+    const liveRegion = await screen.findByRole('status', {
+      name: 'Dispatch reconciliation guidance',
+    });
+    // Positive control for the fixture: prove the panel really reached a
+    // non-Unknown outcome first, so "the region was empty" is a live
+    // observation and not the fixture silently producing no outcome at all.
+    expect(await screen.findByText(/Dispatch in progress/)).toBeInTheDocument();
+    expect(liveRegion).toBeEmptyDOMElement();
+
+    act(() => {
+      poll.fire([unknownOutcomeEvent()]);
+    });
+
+    await waitFor(() => {
+      expect(liveRegion).toHaveTextContent(/Do not retry/);
+    });
+  });
+
+  it('a failed refetch beside an Unknown outcome does not offer a bare "Retry" (issue #225)', async () => {
+    // #225 was filed without a test because constructing the co-render by hand
+    // would have proven nothing about whether it is reachable. This drives it
+    // through production transitions instead: the success path clears
+    // `fetchError`, the failure path does NOT clear `queueState`, so a refetch
+    // that fails while an outcome is unresolved renders both blocks. Reaching
+    // it via gap detection is what makes this a reachability proof.
+    //
+    // Mutation: restore the button's label to "Retry" → the first assertion
+    // fails naming the accessible name it could not find, and the second fails
+    // having found a control named exactly "Retry".
+    const api = makeApi(record(domainState()));
+    let failFetch = false;
+    api.getCalibrationQueueState.mockImplementation(() => {
+      // An eager mockRejectedValue creates a rejected promise at setup time and
+      // reports as an unhandled rejection if the panel has not called it yet.
+      // Rejecting from inside the implementation keeps the rejection attached
+      // to the call that caused it.
+      if (failFetch) return Promise.reject(new Error('Network timeout'));
+      return Promise.resolve(
+        queueJobFixture({ dispatchAttemptOutcome: 'Unknown' }),
+      );
+    });
+
+    let fireGap!: () => void;
+    api.pollCalibrationQueueChanges.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          fireGap = () =>
+            resolve({
+              status: 'ok',
+              afterSequence: 0,
+              nextSequence: 5,
+              hasMore: false,
+              gapDetected: true,
+              events: [],
+            });
+        }),
+    );
+    api.pollCalibrationQueueChanges.mockResolvedValue({
+      status: 'ok',
+      afterSequence: 5,
+      nextSequence: 5,
+      hasMore: false,
+      gapDetected: false,
+      events: [],
+    });
+
+    await openStepView(api);
+    const panel = await screen.findByRole('region', {
+      name: 'Queue and dispatch status',
+    });
+    expect(await screen.findByText(/Do not retry/)).toBeInTheDocument();
+
+    // Gap → refetch → rejection → fetchError set, queueState retained.
+    failFetch = true;
+    act(() => {
+      fireGap();
+    });
+
+    // Precondition: the co-render actually happened. Without this the
+    // assertions below would pass on a panel that never showed an error.
+    // Targeted by text because the panel legitimately carries more than one
+    // role="alert" (the blocked-reason banner is the other).
+    await waitFor(() => {
+      expect(within(panel).getByText('Network timeout')).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText(/Do not retry/),
+      'the guidance was dropped, so this is no longer a co-render test',
+    ).toBeInTheDocument();
+
+    expect(
+      within(panel).getByRole('button', { name: 'Retry loading status' }),
+      'the refresh control does not name what it retries',
+    ).toBeInTheDocument();
+    expect(
+      within(panel).queryByRole('button', { name: 'Retry' }),
+      'a bare "Retry" renders beside "Do not retry — a duplicate print may result"',
+    ).not.toBeInTheDocument();
+  });
+
   it('staleTelemetry blocked reason renders in dispatch panel (criterion 10)', async () => {
     // Mutation test: remove `staleTelemetry` branch from computedBlockedReason →
     // no alert → this test fails.
