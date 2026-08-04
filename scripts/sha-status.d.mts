@@ -2,6 +2,8 @@ export const SHA_PATTERN: RegExp;
 
 export interface ShaFacts {
   exists: boolean;
+  /** False when the base is a remote-tracking ref that could not be refreshed. */
+  baseFresh?: boolean;
   /** `null` means git could not answer, which is not the same as `false`. */
   onBase: boolean | null;
   onPr: boolean | null;
@@ -18,6 +20,7 @@ export type ShaVerdict =
   | 'stale'
   | 'twin'
   | 'unresolved'
+  | 'base-stale'
   | 'indeterminate';
 
 export interface ShaStatus extends ShaFacts {
@@ -42,9 +45,17 @@ export function classify(facts: ShaFacts): {
   summary: string;
 };
 export function fetchPrHead(pr: string, remote?: string): string | null;
+export function remoteTrackingParts(
+  base: string,
+  remote?: string,
+): { remote: string; branch: string } | null;
+export function fetchBase(
+  base: string,
+  remote?: string,
+): { ref: string; fresh: boolean; refreshable: boolean };
 export function inspect(
   sha: string,
-  options?: { base?: string; prRef?: string | null },
+  options?: { base?: string; prRef?: string | null; baseFresh?: boolean },
 ): ShaStatus;
 export function parseArgs(argv: string[]): ShaStatusOptions;
 export function main(

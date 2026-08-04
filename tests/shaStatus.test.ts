@@ -5,7 +5,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { classify, parseArgs } from '../scripts/sha-status.mjs';
+import {
+  classify,
+  parseArgs,
+  remoteTrackingParts,
+} from '../scripts/sha-status.mjs';
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -516,5 +520,158 @@ describe('the arguments cannot be misread into a check that did not run', () => 
     // `development` and `origin/development` differ by exactly the window this
     // tool exists to measure.
     expect(parseArgs(['a'.repeat(40)]).base).toBe('origin/development');
+  });
+});
+
+describe('the base is a cache, and this tool shipped trusting it', () => {
+  // Question 2 is "is it live on the trunk", and it was asked against
+  // `refs/remotes/origin/development` — a local ref that only `fetch` writes.
+  // Measured in a clone thirty commits behind: a commit that IS on the trunk
+  // came back `INDETERMINATE - exists, is not on the base`. That is the defect
+  // of `--force-with-lease` reproduced inside the tool written to catch stale
+  // claims, so these tests exist to keep it caught.
+  let root: string;
+
+  const staleClone = (name: string) => {
+    const remote = path.join(root, `${name}.git`);
+    const work = path.join(root, name);
+    git(['init', '-q', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', '-q', remote, work], root);
+    configure(work);
+    commit(work, 'first');
+    git(['push', '-q', '--no-verify', '-u', 'origin', 'development'], work);
+    const landed = commit(work, 'landed after this clone last fetched');
+    git(['push', '-q', '--no-verify', 'origin', 'development'], work);
+    // Rewind only the remote-tracking ref: the object is on the branch, and
+    // this clone's cached view predates it. No fetch has happened since.
+    git(
+      [
+        'update-ref',
+        'refs/remotes/origin/development',
+        'refs/heads/development~1',
+      ],
+      work,
+    );
+    return { remote, work, landed };
+  };
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'sha-status-base-'));
+  });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it('reports a commit that landed since the last fetch as live, not as missing', () => {
+    const { work, landed } = staleClone('fresh');
+
+    // Without this the test passes for the wrong reason: if the cached ref
+    // already contained the commit, every implementation looks correct.
+    expect(
+      gitExit(
+        [
+          'merge-base',
+          '--is-ancestor',
+          landed,
+          'refs/remotes/origin/development',
+        ],
+        work,
+      ),
+    ).toBe(1);
+
+    const result = run([landed, '--base', 'origin/development'], work);
+
+    expect(result.stdout).toContain('LIVE');
+    expect(result.stdout).not.toContain('INDETERMINATE');
+    expect(result.status).toBe(0);
+  });
+
+  it('refuses to convict when the base is stale and cannot be refreshed', () => {
+    const { work, landed } = staleClone('offline');
+    // A path that does not exist fails immediately and without prompting,
+    // which a bad URL does not reliably do on every runner.
+    git(['remote', 'set-url', 'origin', path.join(root, 'gone.git')], work);
+
+    expect(
+      gitExit(
+        [
+          'merge-base',
+          '--is-ancestor',
+          landed,
+          'refs/remotes/origin/development',
+        ],
+        work,
+      ),
+    ).toBe(1);
+
+    const result = run([landed, '--base', 'origin/development'], work);
+
+    expect(result.stdout).toContain('BASE-STALE');
+    expect(result.stderr).toContain('could not refresh');
+    // The failure that matters is not the refusal, it is the alternative: the
+    // tool must not go on to hunt for the subject and report the work lost.
+    expect(result.stdout).not.toContain('never landed');
+    expect(result.status).toBe(1);
+  });
+
+  it('leaves a base that is not a remote-tracking ref alone', () => {
+    const { work, landed } = staleClone('localbase');
+
+    // `development` here is the local branch, which is not a cache of anything
+    // and is already correct. Refreshing is not this tool's business.
+    const result = run([landed, '--base', 'development'], work);
+
+    expect(result.stdout).toContain('LIVE');
+    expect(result.stderr).not.toContain('could not refresh');
+    expect(result.status).toBe(0);
+  });
+
+  it('names the remote-tracking refs and only those', () => {
+    expect(remoteTrackingParts('origin/development')).toEqual({
+      remote: 'origin',
+      branch: 'development',
+    });
+    expect(remoteTrackingParts('refs/remotes/origin/development')).toEqual({
+      remote: 'origin',
+      branch: 'development',
+    });
+    expect(remoteTrackingParts('upstream/main', 'upstream')).toEqual({
+      remote: 'upstream',
+      branch: 'main',
+    });
+    // A local branch and a raw SHA are not caches.
+    expect(remoteTrackingParts('development')).toBeNull();
+    expect(remoteTrackingParts('a'.repeat(40))).toBeNull();
+    // Right shape, wrong remote.
+    expect(remoteTrackingParts('origin/development', 'upstream')).toBeNull();
+  });
+
+  it('guards only the direction that can be wrong', () => {
+    // What this pins is the observable behaviour, and specifically that the
+    // refusal never swallows a sound answer. It would catch someone moving the
+    // stale-base block above the `onBase === true` arm. It does NOT pin the
+    // `onBase === false` clause itself: widening that condition is equivalent
+    // today, and a mutation doing so survives this suite. Said out loud because
+    // a surviving mutation reported is worth more than a green not examined.
+    expect(
+      classify({
+        exists: true,
+        baseFresh: false,
+        onBase: false,
+        onPr: null,
+        shipped: null,
+      }).verdict,
+    ).toBe('base-stale');
+
+    // An ancestor of a stale base is still an ancestor of the live one, because
+    // the live tip descends from the cached tip. Guarding this direction too
+    // would refuse to answer a question it can answer.
+    expect(
+      classify({
+        exists: true,
+        baseFresh: false,
+        onBase: true,
+        onPr: null,
+        shipped: null,
+      }).verdict,
+    ).toBe('live');
   });
 });

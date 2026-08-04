@@ -20,6 +20,12 @@
 //
 //   1. Does the object exist?          `git cat-file -e <sha>^{commit}`
 //   2. Is it live on the trunk?        `git merge-base --is-ancestor <sha> <base>`
+//                                      — after refreshing <base>, which is a
+//                                      cache. See `fetchBase`: this script
+//                                      shipped answering question 2 against
+//                                      whatever the clone last fetched, which is
+//                                      the same mistake `--force-with-lease`
+//                                      makes and the one it exists to catch.
 //   3. Was it ever this PR's head?     `--is-ancestor <sha> refs/pull/N/head`
 //   4. Did its work ship anyway?       `git log --grep=<subject> <base>`
 //
@@ -168,10 +174,10 @@ export function contentShipped(sha, base) {
  * Classify from facts already gathered. Pure, so every verdict is testable
  * without a repository — including the ones that need a git failure to reach.
  *
- * @param {{exists: boolean, onBase: boolean|null, onPr: boolean|null, shipped: string|null}} facts
+ * @param {{exists: boolean, baseFresh?: boolean, onBase: boolean|null, onPr: boolean|null, shipped: string|null}} facts
  */
 export function classify(facts) {
-  const { exists, onBase, onPr, isPrHead, shipped } = facts;
+  const { exists, baseFresh = true, onBase, onPr, isPrHead, shipped } = facts;
 
   // Whether the WORK landed is decisive regardless of which not-on-the-base
   // case this is, so it is reported by every arm that has it rather than only
@@ -200,6 +206,39 @@ export function classify(facts) {
       verdict: 'unresolved',
       summary:
         'the object is here but the base could not be resolved, so its ancestry is unknown. This is not the same as "not an ancestor".',
+    };
+  }
+
+  // Reached only when the base is a remote-tracking ref that could not be
+  // refreshed. The guard is deliberately one-sided, and the asymmetry is the
+  // whole reason it is cheap:
+  //
+  //   onBase === true  against a stale base is still true against the live one,
+  //                    because the live tip descends from the cached one. Safe,
+  //                    and answered above without a fetch.
+  //   onBase === false against a stale base says nothing about the live one.
+  //                    The commit may have landed in exactly the commits this
+  //                    clone has not downloaded.
+  //
+  // Every arm below this point is predicated on "not on the base", so if that
+  // input is a cache read, all of them are unsound — including the ones that go
+  // looking for the subject on the base, which would search the same stale ref
+  // and report the work missing twice.
+  //
+  // `onBase === false` here is redundant with the `onBase === true` arm above,
+  // which has already returned. It is kept because it states the precondition
+  // this arm actually depends on rather than relying on the order of the ones
+  // before it, and because moving this block up — the obvious refactor — would
+  // otherwise silently start refusing sound answers. Reported honestly: a
+  // mutation widening this to `baseFresh === false` alone SURVIVES the suite,
+  // because it is behaviourally identical today. The test below pins the
+  // observable behaviour, which a reordering would break; it cannot pin a
+  // clause that currently changes nothing.
+  if (onBase === false && baseFresh === false) {
+    return {
+      verdict: 'base-stale',
+      summary:
+        'not an ancestor of the base as this clone has it, but the base is a remote-tracking ref that could not be refreshed — so that answer is about when this clone last fetched, not about the branch. A commit that landed since would read exactly like this. Refusing to convict on a cache.',
     };
   }
 
@@ -268,9 +307,60 @@ export function fetchPrHead(pr, remote = 'origin') {
   return status === 0 ? local : null;
 }
 
+/**
+ * Split a base like `origin/development` into the remote and branch that would
+ * refresh it, or return null when the base is not a remote-tracking ref.
+ *
+ * Only remote-tracking refs are caches. A local branch or a raw SHA names an
+ * object this repository is authoritative for, and there is nothing to refresh.
+ */
+export function remoteTrackingParts(base, remote = 'origin') {
+  const bare = base.startsWith('refs/remotes/')
+    ? base.slice('refs/remotes/'.length)
+    : base;
+  const prefix = `${remote}/`;
+  if (!bare.startsWith(prefix)) return null;
+  const branch = bare.slice(prefix.length);
+  return branch.length > 0 ? { remote, branch } : null;
+}
+
+/**
+ * Refresh the base before its ancestry is trusted.
+ *
+ * This exists because the tool shipped with the defect it was written to catch.
+ * `refs/remotes/<remote>/<branch>` is a local cache that only `fetch` writes,
+ * so question 2 — "is it live on the trunk" — was being answered against
+ * whatever this clone last downloaded. Measured in a clone thirty commits
+ * behind: a commit that IS on the trunk was reported `INDETERMINATE — exists,
+ * is not on the base`. That is the same mistake `--force-with-lease` makes, and
+ * it is the mistake this whole script exists to stop someone acting on.
+ *
+ * Fetched into a private ref so that the value this tool reasons about is one it
+ * placed there itself, rather than whatever a concurrent sibling fetch leaves in
+ * `refs/remotes/*`. Note what this does NOT buy: git still opportunistically
+ * updates the remote-tracking ref for a configured remote, measured here — the
+ * cache moved forward on its own during a run. That is benign, because a fetch
+ * only advances it, but the private ref is for determinism and not for leaving
+ * ref state untouched, and an earlier draft of this comment claimed otherwise.
+ */
+export function fetchBase(base, remote = 'origin') {
+  const parts = remoteTrackingParts(base, remote);
+  if (!parts) return { ref: base, fresh: true, refreshable: false };
+  const local = `refs/tmp/sha-status/base`;
+  const status = gitStatus([
+    'fetch',
+    '--quiet',
+    parts.remote,
+    `refs/heads/${parts.branch}:${local}`,
+  ]);
+  return status === 0
+    ? { ref: local, fresh: true, refreshable: true }
+    : { ref: base, fresh: false, refreshable: true };
+}
+
 export function inspect(
   sha,
-  { base = 'origin/development', prRef = null } = {},
+  { base = 'origin/development', prRef = null, baseFresh = true } = {},
 ) {
   const exists = objectExists(sha);
   let prHeadSha = null;
@@ -284,12 +374,13 @@ export function inspect(
   const facts = {
     sha,
     exists,
+    baseFresh,
     onBase: exists ? isAncestor(sha, base) : null,
     onPr: exists && prRef ? isAncestor(sha, prRef) : null,
     isPrHead: prHeadSha ? sha === prHeadSha : null,
     shipped: null,
   };
-  if (exists && facts.onBase === false) {
+  if (exists && facts.onBase === false && baseFresh) {
     facts.shipped = contentShipped(sha, base);
   }
   return { ...facts, ...classify(facts) };
@@ -354,9 +445,20 @@ export function main(argv = process.argv.slice(2), out = console) {
     }
   }
 
+  const baseState = fetchBase(options.base, options.remote);
+  if (baseState.refreshable && !baseState.fresh) {
+    out.error(
+      `[sha-status] could not refresh ${options.base} from ${options.remote}; it is a cache and every "not on the base" answer below would be about this clone rather than about the branch`,
+    );
+  }
+
   let allLive = true;
   for (const sha of options.shas) {
-    const result = inspect(sha, { base: options.base, prRef });
+    const result = inspect(sha, {
+      base: baseState.ref,
+      prRef,
+      baseFresh: baseState.fresh,
+    });
     // `pr-head` is the ref's own answer and not a failure of the check, but it
     // is also not a clean bill: the ref survives a merge. The exit code answers
     // "is every SHA here still worth quoting", not "is everything merged".
