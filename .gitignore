@@ -9,6 +9,9 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# npm-ci-strict in-job repair record (#274) — a CI artifact, never committed
+npm-ci-strict-repair.json
+
 # Electron Forge / packaging
 .webpack/
 release/

@@ -1,9 +1,9 @@
 // Runs `npm ci` and refuses to report success when the install did not actually
 // produce a clean tree.
 //
-// Why this exists (#195): on `windows-latest`, `npm ci` failed to delete part of
-// `node_modules`, printed `npm warn cleanup Failed to remove some directories`,
-// and **exited 0**. The job continued against a tree that was neither the
+// Why this exists (#195, and its live follow-up #274): on `windows-latest`,
+// `npm ci` failed to delete part of `node_modules`, printed
+// `npm warn cleanup Failed to remove some directories`, and **exited 0**. The job continued against a tree that was neither the
 // lockfile's nor a clean one. Three steps later the supply-chain SBOM gate
 // refused to certify it and failed the job with
 // `cannot identify npm ls package parse-color`.
@@ -25,8 +25,31 @@
 //
 // Neither subsumes the other. A wipe can fail without leaving an unresolvable
 // production node, and a tree can be unresolvable without a cleanup warning.
+//
+// Discharge path (#274): the cleanup warning alone used to hard-fail the job at
+// its FIRST check, before the structural walk ever ran. On `windows-latest` that
+// warning is an `EPERM: operation not permitted, rmdir` inside a hosted runner's
+// node_modules — a file-locking behaviour a PR author cannot fix. The message
+// forbade the only action available (re-running the job) and named no
+// alternative, so the practical outcome was a deadlock: the PR sat.
+//
+// This script now executes the discharge path itself, in-job, and records that
+// it did. When npm warns it could not finish the wipe, we remove node_modules
+// explicitly (EPERM-tolerant), re-run `npm ci` ONCE, and then decide on the
+// STRUCTURAL checks — the direct measurement of harm — instead of on the proxy
+// (npm printed a warning). A leftover directory that reinstalls to a clean,
+// resolvable tree is residue; a tree that is still unresolvable is the #195
+// defect and still hard-fails.
+//
+// This is NOT a regression of #195. #195's rule is "don't clear it by re-running
+// the job on a fresh runner, which wipes cleanly and HIDES the defect." An
+// explicit in-place wipe-and-reverify that RECORDS that it happened (step
+// summary, workflow annotation, uploaded artifact) is the opposite of that
+// amnesia: the repair is measured, not disappeared. That record is the
+// load-bearing judgement in this change.
 
 import { spawn, spawnSync } from 'node:child_process';
+import { appendFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -230,6 +253,163 @@ export function npmInvocation(commandLine) {
   return { command: 'npm', args: rest };
 }
 
+/**
+ * How many times {@link removeNodeModules} asks the runtime to retry a failed
+ * unlink/rmdir, and the base backoff between tries.
+ *
+ * `fs.rmSync(dir, { recursive: true, force: true, maxRetries, retryDelay })`
+ * retries on `EBUSY`, `EMFILE`, `ENFILE`, `ENOTEMPTY` and — the one that fires
+ * here — `EPERM`, waiting `retryDelay` ms longer on each attempt (linear
+ * backoff). That behaviour is documented and measured, not assumed: the EPERM
+ * in #195's log is exactly one of the retried classes, which is why an explicit
+ * rm succeeds where npm's own in-place cleanup lost the race with the file lock.
+ */
+export const NODE_MODULES_REMOVAL = { maxRetries: 6, retryDelay: 200 };
+
+/**
+ * Remove `node_modules` explicitly, tolerating the transient Windows file locks
+ * that made npm's own cleanup give up. `rm` is injected so a test can assert the
+ * retry options are passed without needing a real locked directory.
+ *
+ * @param {string} dir absolute path to the `node_modules` to remove
+ * @param {{ rm?: typeof rmSync }} [options]
+ * @returns {{ removed: true }}
+ */
+export function removeNodeModules(dir, options = {}) {
+  const rm = options.rm ?? rmSync;
+  rm(dir, {
+    recursive: true,
+    force: true,
+    maxRetries: NODE_MODULES_REMOVAL.maxRetries,
+    retryDelay: NODE_MODULES_REMOVAL.retryDelay,
+  });
+  return { removed: true };
+}
+
+/**
+ * Decide the repair's outcome from the SECOND attempt's evidence — the direct
+ * measurement of harm, not the proxy. Pure so the pass/fail rule is tested
+ * without shelling out to npm.
+ *
+ * The repair succeeds only when the reinstalled tree is clean on every direct
+ * check: npm exited 0, did not warn again, `npm ls` found no problems, and the
+ * production walk found nothing unresolvable. Any one of those is a genuine
+ * defect of the #195 shape and hard-fails — this is where residue is separated
+ * from a broken tree.
+ *
+ * @param {{ secondExitCode: number, secondWarned: boolean, problems: string[], unresolved: string[] }} evidence
+ * @returns {{ succeeded: boolean, reasons: string[] }}
+ */
+export function repairOutcome(evidence) {
+  const reasons = [];
+  if (evidence.secondExitCode !== 0) {
+    reasons.push(
+      `the second \`npm ci\` exited ${evidence.secondExitCode} rather than 0`,
+    );
+  }
+  if (evidence.secondWarned) {
+    reasons.push(
+      'npm again reported it could not finish removing node_modules after the explicit wipe',
+    );
+  }
+  for (const problem of evidence.problems ?? []) reasons.push(problem);
+  for (const name of evidence.unresolved ?? []) {
+    reasons.push(`npm cannot resolve \`${name}\` in the reinstalled tree`);
+  }
+  return { succeeded: reasons.length === 0, reasons };
+}
+
+/**
+ * Human-readable `$GITHUB_STEP_SUMMARY` section recording that a repair ran.
+ *
+ * This is durable evidence in the job-log sense only. State plainly (in the PR
+ * body, and here) what it does NOT achieve: it does not survive commit
+ * supersession on the branch view — a superseded commit's summary is not what a
+ * reader of the branch sees next. A record that survives the next push needs an
+ * issue comment or a label, which needs a token and a workflow permission, and
+ * is out of scope for this script. See #274, defect 2.
+ *
+ * @param {{ firstPaths: string[], secondExitCode: number, secondWarned: boolean, problems: string[], unresolved: string[], succeeded: boolean }} record
+ * @returns {string}
+ */
+export function formatStepSummary(record) {
+  const namedList =
+    record.firstPaths.length > 0 ? record.firstPaths.join(', ') : 'none named';
+  const list = (items) => (items.length > 0 ? items.join(', ') : 'none');
+  const lines = [
+    '## npm-ci-strict: node_modules was repaired in-job',
+    '',
+    '`npm ci` exited 0 but reported it could not finish removing node_modules.',
+    'Rather than fail with no discharge path, this job removed node_modules',
+    'explicitly and re-ran `npm ci` once, then judged the RESULT — not the',
+    'warning. See #274.',
+    '',
+    `- Directories npm first named: ${namedList}`,
+    `- node_modules removed explicitly: yes`,
+    `- Second \`npm ci\` exit code: ${record.secondExitCode}`,
+    `- Second cleanup warning: ${record.secondWarned ? 'yes' : 'no'}`,
+    `- Structural problems (\`npm ls\`): ${list(record.problems)}`,
+    `- Unresolvable production packages: ${list(record.unresolved)}`,
+    '',
+    record.succeeded
+      ? 'Outcome: **PASS** — the reinstalled tree is clean and resolvable. The repair'
+      : 'Outcome: **FAIL** — the reinstalled tree is still broken. Re-running the job',
+    record.succeeded
+      ? 'was recorded rather than hidden.'
+      : 'will not help; the repair was already attempted here.',
+    '',
+  ];
+  return lines.join('\n');
+}
+
+/**
+ * Single-line `::warning::` workflow annotation. Surfaces on the run summary and
+ * on the PR's Checks tab. Same durability caveat as {@link formatStepSummary}.
+ *
+ * @param {{ firstPaths: string[], succeeded: boolean }} record
+ * @returns {string}
+ */
+export function formatWarningAnnotation(record) {
+  const named =
+    record.firstPaths.length > 0
+      ? record.firstPaths.join(', ')
+      : 'unnamed directories';
+  const outcome = record.succeeded ? 'PASS' : 'FAIL';
+  return `::warning title=npm-ci-strict::node_modules was repaired in-job (removed + reinstalled once) after npm could not finish removing ${named}. Outcome: ${outcome}. See #274.`;
+}
+
+/**
+ * Append a section to `$GITHUB_STEP_SUMMARY` when that file is set (it always is
+ * on a GitHub runner, and never is locally). Injectable for tests.
+ *
+ * @param {string} markdown
+ * @param {{ env?: Record<string, string | undefined>, append?: typeof appendFileSync }} [options]
+ * @returns {boolean} whether anything was written
+ */
+export function appendStepSummary(markdown, options = {}) {
+  const env = options.env ?? process.env;
+  const append = options.append ?? appendFileSync;
+  const target = env.GITHUB_STEP_SUMMARY;
+  if (typeof target !== 'string' || target.length === 0) return false;
+  append(target, `${markdown}\n`);
+  return true;
+}
+
+/**
+ * Write the repair record as JSON so the workflow can upload it as an artifact —
+ * evidence that outlives the job's log-retention window better than the summary.
+ * Same supersession caveat applies (see #274, defect 2).
+ *
+ * @param {object} record
+ * @param {string} target absolute path to write
+ * @param {{ write?: typeof writeFileSync }} [options]
+ * @returns {void}
+ */
+export function writeRepairArtifact(record, target, options = {}) {
+  const write = options.write ?? writeFileSync;
+  write(target, `${JSON.stringify(record, null, 2)}\n`);
+}
+
 function runNpmCi() {
   return new Promise((resolve, reject) => {
     const { command, args } = npmInvocation('npm ci');
@@ -277,6 +457,123 @@ function fail(lines) {
   process.exit(1);
 }
 
+function note(lines) {
+  for (const line of lines) process.stdout.write(`${line}\n`);
+}
+
+/**
+ * Run the two direct, structural checks over the production tree and return
+ * every failure they found, flattened. This is the "direct measurement of harm"
+ * the repair path decides on. Kept as one call so the repair arm and the
+ * ordinary arm cannot drift apart.
+ *
+ * @returns {{ problems: string[], unresolved: string[] }}
+ */
+function inspectProductionTree() {
+  const tree = readProductionTree();
+  return {
+    problems: findTreeProblems(tree),
+    unresolved: findUnresolvedPackages(tree),
+  };
+}
+
+/**
+ * The cleanup-warning discharge path (#274). Runs only after a zero-exit
+ * `npm ci` whose output tripped {@link hasCleanupFailure}.
+ *
+ * Removes node_modules explicitly, re-runs `npm ci` once, then decides on the
+ * structural checks and records what happened either way.
+ *
+ * @param {string} firstOutput combined output of the first `npm ci`
+ */
+async function dischargeCleanupFailure(firstOutput) {
+  const firstPaths = extractCleanupPaths(firstOutput);
+  note([
+    '',
+    'npm-ci-strict: `npm ci` exited 0 but reported it could not finish removing node_modules.',
+    firstPaths.length > 0
+      ? `Directories npm named: ${firstPaths.join(', ')}`
+      : '',
+    '',
+    'Executing the discharge path: removing node_modules explicitly and',
+    're-running `npm ci` once, then judging the reinstalled tree directly. See #274.',
+    '',
+  ]);
+
+  removeNodeModules(path.join(repoRoot, 'node_modules'));
+
+  const { code: secondExitCode, output: secondOutput } = await runNpmCi();
+  const secondWarned = hasCleanupFailure(secondOutput);
+
+  // Only read the tree when the second install exited 0. A non-zero exit means
+  // `npm ls` would describe a half-written tree, and its problems would be noise
+  // next to the real signal (the exit code itself).
+  const { problems, unresolved } =
+    secondExitCode === 0
+      ? inspectProductionTree()
+      : { problems: [], unresolved: [] };
+
+  const outcome = repairOutcome({
+    secondExitCode,
+    secondWarned,
+    problems,
+    unresolved,
+  });
+
+  const record = {
+    issue: 274,
+    firstPaths,
+    removedNodeModules: true,
+    secondExitCode,
+    secondWarned,
+    problems,
+    unresolved,
+    succeeded: outcome.succeeded,
+  };
+
+  // Durable evidence, always — a repair that passed is exactly the case #195
+  // warned would be hidden, so recording it is the point.
+  appendStepSummary(formatStepSummary(record));
+  note([formatWarningAnnotation(record)]);
+  try {
+    writeRepairArtifact(
+      record,
+      path.join(repoRoot, 'npm-ci-strict-repair.json'),
+    );
+  } catch (error) {
+    // The artifact is secondary evidence; never let writing it mask the outcome.
+    process.stderr.write(
+      `npm-ci-strict: could not write repair artifact: ${error.message}\n`,
+    );
+  }
+
+  if (outcome.succeeded) {
+    note([
+      '',
+      'npm-ci-strict: repair succeeded. node_modules was wiped and reinstalled to a',
+      'clean, resolvable tree, and that repair was recorded (step summary,',
+      'annotation, artifact). This is the opposite of #195: the wipe happened',
+      'in-place and on the record, not silently on a fresh runner.',
+      '',
+    ]);
+    return;
+  }
+
+  fail([
+    '',
+    'npm-ci-strict: the in-job repair did not produce a clean tree.',
+    '',
+    ...outcome.reasons.map((reason) => `  - ${reason}`),
+    '',
+    'node_modules was ALREADY removed and `npm ci` re-run once in this job, so',
+    're-running the job is not the remedy — it would repeat exactly this and, on a',
+    'fresh runner, hide the defect (#195). The reinstalled tree is still not the',
+    'lockfile tree, which is the condition the SBOM gate fails on several steps',
+    'later. Fix the dependency graph, not the runner. See #195 and #274.',
+    '',
+  ]);
+}
+
 async function main() {
   const { code, output } = await runNpmCi();
 
@@ -285,25 +582,12 @@ async function main() {
   }
 
   if (hasCleanupFailure(output)) {
-    const paths = extractCleanupPaths(output);
-    fail([
-      '',
-      'npm-ci-strict: `npm ci` exited 0 but reported it could not finish removing node_modules.',
-      '',
-      'The installed tree is therefore neither the lockfile tree nor a clean one,',
-      'and every later step in this job would run against it.',
-      paths.length > 0 ? `Directories npm named: ${paths.join(', ')}` : '',
-      '',
-      'This is an environment failure, not a test failure. Do NOT clear it by',
-      're-running the job: a fresh runner wipes cleanly and hides the defect,',
-      'which teaches the squad to treat the supply-chain gate as noise. See #195.',
-      '',
-    ]);
+    await dischargeCleanupFailure(output);
+    return;
   }
 
-  const tree = readProductionTree();
+  const { problems, unresolved } = inspectProductionTree();
 
-  const problems = findTreeProblems(tree);
   if (problems.length > 0) {
     fail([
       '',
@@ -313,12 +597,11 @@ async function main() {
       '',
       `\`${NPM_PRODUCTION_TREE_COMMAND}\` reports these even when it exits 0, which`,
       'is how a partially-wiped tree reaches the SBOM gate several steps later and',
-      'reads there as an unrelated failure. See #195.',
+      'reads there as an unrelated failure. See #195 and #274.',
       '',
     ]);
   }
 
-  const unresolved = findUnresolvedPackages(tree);
   if (unresolved.length > 0) {
     fail([
       '',
@@ -329,7 +612,7 @@ async function main() {
       `\`${NPM_PRODUCTION_TREE_COMMAND}\` returned nodes with no version, or marked`,
       'extraneous/invalid. That is the same condition the npm SBOM completeness',
       'gate fails on, detected here at the install step instead of several steps',
-      'later where it reads as an unrelated test failure. See #195.',
+      'later where it reads as an unrelated test failure. See #195 and #274.',
       '',
     ]);
   }

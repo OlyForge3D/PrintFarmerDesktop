@@ -2,12 +2,19 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CLEANUP_WARNING_MARKER,
+  NODE_MODULES_REMOVAL,
   NPM_PRODUCTION_TREE_COMMAND,
+  appendStepSummary,
   extractCleanupPaths,
   findTreeProblems,
   findUnresolvedPackages,
+  formatStepSummary,
+  formatWarningAnnotation,
   hasCleanupFailure,
   npmInvocation,
+  removeNodeModules,
+  repairOutcome,
+  writeRepairArtifact,
 } from '../scripts/npm-ci-strict.mjs';
 
 /**
@@ -294,5 +301,171 @@ describe('npm is invoked the way the other scripts in this repo invoke it', () =
     // one the supply-chain gate later refuses, and the earlier check would be
     // answering a neighbouring question.
     expect(NPM_PRODUCTION_TREE_COMMAND).toBe('npm ls --omit=dev --all --json');
+  });
+});
+
+describe('the discharge path removes node_modules with an EPERM-tolerant wipe (#274)', () => {
+  it('passes recursive/force and the retry options fs.rmSync honours on EPERM', () => {
+    // The whole point of the wipe is that npm lost a race with a Windows file
+    // lock. fs.rmSync retries EPERM only when `recursive` is set and only up to
+    // `maxRetries`, so a wipe missing those would give up exactly where npm did.
+    const calls: Array<{ dir: string; options: Record<string, unknown> }> = [];
+    const fakeRm = ((dir: string, options: Record<string, unknown>) => {
+      calls.push({ dir, options });
+    }) as unknown as typeof import('node:fs').rmSync;
+
+    removeNodeModules('/repo/node_modules', { rm: fakeRm });
+
+    expect(calls).toHaveLength(1);
+    const [call] = calls;
+    expect(call?.dir).toBe('/repo/node_modules');
+    expect(call?.options).toMatchObject({
+      recursive: true,
+      force: true,
+      maxRetries: NODE_MODULES_REMOVAL.maxRetries,
+      retryDelay: NODE_MODULES_REMOVAL.retryDelay,
+    });
+  });
+
+  it('retries more than once — a single attempt is what npm already did', () => {
+    // A maxRetries of 0 or 1 would not distinguish this wipe from npm's own
+    // failed in-place cleanup. Measured lower bound, not a style preference.
+    expect(NODE_MODULES_REMOVAL.maxRetries).toBeGreaterThan(1);
+  });
+});
+
+describe('the repair decides on the reinstalled tree, not on the warning (#274)', () => {
+  const clean = {
+    secondExitCode: 0,
+    secondWarned: false,
+    problems: [],
+    unresolved: [],
+  };
+
+  it('succeeds when every direct check on the reinstalled tree is clean', () => {
+    // This is the residue case: npm could not delete a directory, but a clean
+    // reinstall resolves it. The proxy said "broken"; the direct measurement
+    // says "fine". The repair must trust the direct measurement.
+    expect(repairOutcome(clean)).toEqual({ succeeded: true, reasons: [] });
+  });
+
+  it('fails when the second npm ci did not exit 0', () => {
+    const outcome = repairOutcome({ ...clean, secondExitCode: 1 });
+    expect(outcome.succeeded).toBe(false);
+    expect(outcome.reasons).toContain(
+      'the second `npm ci` exited 1 rather than 0',
+    );
+  });
+
+  it('fails when npm warned again after the explicit wipe', () => {
+    const outcome = repairOutcome({ ...clean, secondWarned: true });
+    expect(outcome.succeeded).toBe(false);
+    expect(outcome.reasons).toContain(
+      'npm again reported it could not finish removing node_modules after the explicit wipe',
+    );
+  });
+
+  it('fails and surfaces every structural problem npm ls reported', () => {
+    const outcome = repairOutcome({
+      ...clean,
+      problems: ['extraneous: ghost@9.9.9 /repo/node_modules/ghost'],
+    });
+    expect(outcome.succeeded).toBe(false);
+    expect(outcome.reasons).toContain(
+      'extraneous: ghost@9.9.9 /repo/node_modules/ghost',
+    );
+  });
+
+  it('fails and names each unresolvable package — the #195 shape', () => {
+    // parse-color is the exact package the SBOM gate died on in #195. A repair
+    // that left it unresolvable must not report success.
+    const outcome = repairOutcome({ ...clean, unresolved: ['parse-color'] });
+    expect(outcome.succeeded).toBe(false);
+    expect(outcome.reasons).toContain(
+      'npm cannot resolve `parse-color` in the reinstalled tree',
+    );
+  });
+});
+
+describe('the repair records that it happened, durably enough for the job log (#274)', () => {
+  const passRecord = {
+    firstPaths: ['parse-color', 'color-convert'],
+    secondExitCode: 0,
+    secondWarned: false,
+    problems: [],
+    unresolved: [],
+    succeeded: true,
+  };
+
+  it('writes a PASS summary that names the repaired directories and cites #274', () => {
+    // The load-bearing judgement of this change is that a repair which PASSES is
+    // recorded rather than hidden. If the summary did not mark PASS, the record
+    // would not distinguish the repaired-clean case from the ordinary one.
+    const summary = formatStepSummary(passRecord);
+    expect(summary).toContain('**PASS**');
+    expect(summary).toContain('parse-color');
+    expect(summary).toContain('#274');
+  });
+
+  it('writes a FAIL summary that says re-running will not help', () => {
+    const summary = formatStepSummary({
+      ...passRecord,
+      unresolved: ['parse-color'],
+      succeeded: false,
+    });
+    expect(summary).toContain('**FAIL**');
+    expect(summary).toContain('will not help');
+  });
+
+  it('emits a ::warning:: annotation carrying the outcome and #274', () => {
+    const annotation = formatWarningAnnotation(passRecord);
+    expect(annotation.startsWith('::warning ')).toBe(true);
+    expect(annotation).toContain('PASS');
+    expect(annotation).toContain('#274');
+  });
+
+  it('appends to $GITHUB_STEP_SUMMARY when the runner set it', () => {
+    const writes: Array<{ target: string; body: string }> = [];
+    const append = ((target: string, body: string) => {
+      writes.push({ target, body });
+    }) as unknown as typeof import('node:fs').appendFileSync;
+
+    const wrote = appendStepSummary('hello', {
+      env: { GITHUB_STEP_SUMMARY: '/tmp/summary.md' },
+      append,
+    });
+
+    expect(wrote).toBe(true);
+    expect(writes).toEqual([{ target: '/tmp/summary.md', body: 'hello\n' }]);
+  });
+
+  it('does nothing when $GITHUB_STEP_SUMMARY is unset — as it is off CI', () => {
+    // The other half: locally there is no summary file, and the script must not
+    // throw trying to append to undefined.
+    let called = false;
+    const append = (() => {
+      called = true;
+    }) as unknown as typeof import('node:fs').appendFileSync;
+
+    const wrote = appendStepSummary('hello', { env: {}, append });
+
+    expect(wrote).toBe(false);
+    expect(called).toBe(false);
+  });
+
+  it('serialises the repair record as JSON for the uploaded artifact', () => {
+    let written = '';
+    const write = ((_target: string, body: string) => {
+      written = body;
+    }) as unknown as typeof import('node:fs').writeFileSync;
+
+    writeRepairArtifact(passRecord, '/repo/npm-ci-strict-repair.json', {
+      write,
+    });
+
+    expect(JSON.parse(written)).toMatchObject({
+      firstPaths: ['parse-color', 'color-convert'],
+      succeeded: true,
+    });
   });
 });
