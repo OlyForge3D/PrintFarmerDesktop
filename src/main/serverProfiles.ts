@@ -12,6 +12,7 @@ import {
   type ServerProfileDraft,
   type TestServerProfileRequest,
 } from '@shared/ipc';
+import { emitCalibrationLog } from './calibrationLog.js';
 
 const STORE_VERSION = 1;
 const MAX_STORE_BYTES = 1024 * 1024;
@@ -675,7 +676,14 @@ export class ServerProfileService {
     }
     if (transition) {
       await this.emitInvalidation(transition).catch(() => {
-        console.error('[profiles] binding transition deferred');
+        emitCalibrationLog({
+          level: 'warn',
+          component: 'calibration.profile',
+          event: 'profile.bindingTransitionDeferred',
+          profileId: id,
+          outcome: 'failed',
+          errorCode: 'unexpected',
+        });
       });
     }
     return tested;
@@ -725,7 +733,14 @@ export class ServerProfileService {
     });
     await this.notifyProfileBindingChanged(id, previousBinding);
     await this.emitInvalidation(result.transition).catch(() => {
-      console.error('[profiles] binding transition deferred');
+      emitCalibrationLog({
+        level: 'warn',
+        component: 'calibration.profile',
+        event: 'profile.bindingTransitionDeferred',
+        profileId: id,
+        outcome: 'failed',
+        errorCode: 'unexpected',
+      });
     });
     return result.response;
   }
@@ -842,7 +857,14 @@ export class ServerProfileService {
     });
     if (result.transition) {
       await this.emitInvalidation(result.transition).catch(() => {
-        console.error('[profiles] binding transition deferred');
+        emitCalibrationLog({
+          level: 'warn',
+          component: 'calibration.profile',
+          event: 'profile.bindingTransitionDeferred',
+          profileId: id,
+          outcome: 'failed',
+          errorCode: 'unexpected',
+        });
       });
     }
     return result.token;
