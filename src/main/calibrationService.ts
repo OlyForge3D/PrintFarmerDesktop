@@ -31,6 +31,8 @@ import type {
   CalibrationConflict,
   CalibrationConflictKind,
   CalibrationConflictResolution,
+  CalibrationResolveConflictRequest,
+  CalibrationResolveConflictResponse,
 } from '@shared/ipc';
 import { z } from 'zod';
 
@@ -126,6 +128,50 @@ const CalibrationConflictWire = z
   .passthrough();
 
 /**
+ * The store's resolution result.
+ *
+ * `supersededObservations` has no `.default([])`. The store always emits the
+ * field, so a default here would only ever fire when the response did *not*
+ * report supersession — silently converting "unexamined" into "nothing was
+ * superseded", which is precisely the conflation the field exists to prevent.
+ * Making it required means that failure arrives as a parse error naming the
+ * missing field instead of as a clean-looking empty list.
+ */
+const CalibrationConflictResolutionWire = z
+  .object({
+    conflictId: z.string(),
+    profileId: z.string(),
+    projectId: z.string(),
+    kind: z.enum([
+      'projectMetadata',
+      'stepOrdering',
+      'stepDraft',
+      'outcomeSelection',
+      'staleprinterSnapshot',
+      'deletionVsLocalEdit',
+    ]),
+    resolution: z.enum([
+      'acceptServer',
+      'keepLocalAsNewRevision',
+      'manualFieldMerge',
+    ]),
+    resolvedAt: z.string(),
+    revisionId: z.string().nullable().default(null),
+    supersedesRevisionId: z.string().nullable().default(null),
+    supersededObservations: z.array(
+      z.object({
+        observationId: z.string(),
+        attemptId: z.string(),
+        stepId: z.string(),
+        parameterKey: z.string(),
+        boundSnapshotRevision: z.number().int(),
+      }),
+    ),
+    replayed: z.boolean().default(false),
+  })
+  .passthrough();
+
+/**
  * Renders a conflict payload as the bounded string the IPC contract expects
  * (`CalibrationConflict.localPayloadSummary`, max 4096 chars).
  *
@@ -154,8 +200,10 @@ function summarizeConflictPayload(payload: unknown): string | null {
  * Derived from two facts. Neither is a literal written into this function:
  *
  * 1. Whether the conflict transport exposes a resolve capability at all.
- *    Today it does not, so this returns `[]` for every kind -- but it returns
- *    `[]` *because the capability is absent*, not because somebody typed `[]`.
+ *    `SidecarCalibrationAdapter` now has one (#296), so for that transport this
+ *    returns the table below rather than `[]` -- and it does so *because the
+ *    capability is present*, not because somebody edited this function. A
+ *    transport without the method still gets `[]`.
  * 2. The per-kind policy already ratified in the `CalibrationConflictResolution`
  *    schema doc: `manualFieldMerge` is "only available for metadata/draft
  *    conflicts where a textual merge is well-defined. Not available for
@@ -164,12 +212,25 @@ function summarizeConflictPayload(payload: unknown): string | null {
  *    what is semantically safe to resolve; that decision belongs in an issue
  *    where the model-core owner can see it, not in a diff.
  *
- * When the authoritative resolve RPC lands, giving the transport a
- * `resolveCalibrationConflict` method makes this non-empty and makes the IPC
- * handler stop refusing -- without either site being edited. A field that
- * starts telling the truth on its own cannot go stale; a literal has to be
- * remembered, and the previous hard-coded
- * `['acceptServer', 'keepLocalAsNewRevision']` is what forgetting looks like.
+ * The capability half worked exactly as designed: #296 gave the adapter a
+ * `resolveCalibrationConflict` method, and this function started returning
+ * resolutions with neither call site edited. **What went stale was the comment
+ * that used to stand here**, which described the pre-#296 state in the present
+ * tense -- "today it does not, so this returns `[]` for every kind". The
+ * self-activating value could not go stale; the prose asserting that it could
+ * not, did. A correct design documented in a tense that expires reads as
+ * current, because the design it describes really is still working.
+ *
+ * The transcription half of point 2 is the part with no such protection, and it
+ * is why `tests/calibrationResolutionPolicyParity.test.ts` exists. The same
+ * policy is enforced by `CalibrationConflictKind::available_resolutions` in
+ * `native/model-core/src/sync.rs`, which is what
+ * `sqlite_catalog.rs` rejects against. Two transcriptions of one ratified
+ * policy across a language boundary agreed only because two authors were
+ * careful (#304). **Editing the branch below without editing the Rust table
+ * now fails that test**, in both directions: over-advertising offers the user a
+ * button the store rejects, and under-advertising hides a permitted resolution
+ * with no error at all.
  */
 export function conflictResolutionsFor(
   transport: ConflictResolutionCapable,
@@ -206,18 +267,46 @@ export function supportsConflictResolution(
 // ---------------------------------------------------------------------------
 
 /**
- * Maps the raw entity type string from the sidecar to a CalibrationConflictKind.
- * Entity types from the schema map to the closest semantic conflict kind.
+ * Displayed kind for a conflict this adapter could not classify.
+ *
+ * This is a *rendering* fallback and deliberately not a classification: it
+ * exists only because `CalibrationConflictKind` has no `unclassified` member,
+ * and widening a shared IPC enum decides renderer behaviour for every consumer.
+ * That belongs in an issue where the contract owner can see it (#219), not in
+ * this diff. Nothing may derive a permission from it -- see
+ * `classifyCalibrationConflictKind`.
+ */
+const UNCLASSIFIED_CONFLICT_DISPLAY_KIND = 'projectMetadata' as const;
+
+/**
+ * Maps the raw entity type string from the sidecar to a CalibrationConflictKind,
+ * or `null` when this adapter has no mapping for it.
+ *
+ * **`null` is the point of this function.** It previously returned
+ * `projectMetadata` for anything unrecognised, and `projectMetadata` is one of
+ * exactly two kinds that grant `manualFieldMerge`. Four of the eight entity
+ * types the sync engine handles -- `CalibrationEvent`, `CalibrationObservation`,
+ * `CalibrationPhoto` and `CalibrationProfileRevision` -- reached that arm, so
+ * **the unclassified case advertised the widest permission to the types the
+ * ratified policy most clearly excludes.** A conflicted `CalibrationProfileRevision`
+ * is exact profile JSON, named in the schema doc's exclusion list, and arrived
+ * at the renderer advertised as textually mergeable.
+ *
+ * The store already refuses these: `resolve_calibration_conflict` fails with
+ * `CALIBRATION_CONFLICT_KIND_UNCLASSIFIED`. Returning a fabricated kind here
+ * made the advertisement and the enforcement disagree, which is strictly worse
+ * than either being wrong alone -- the UI offers a button the store rejects and
+ * nobody can tell whether the policy or the button is the defect.
+ *
+ * `stepOrdering` and `deletionVsLocalEdit` are unreachable from any entity type
+ * and are not added here. `deletionVsLocalEdit` in particular cannot be derived
+ * from an entity type at all -- it is a property of the sync *operation*, not of
+ * the entity. That is a defect in this function's input, not a missing arm, and
+ * it is recorded on #219 rather than papered over with a guess.
  */
 function mapCalibrationConflictKind(
   entityType: string,
-):
-  | 'projectMetadata'
-  | 'stepOrdering'
-  | 'stepDraft'
-  | 'outcomeSelection'
-  | 'staleprinterSnapshot'
-  | 'deletionVsLocalEdit' {
+): CalibrationConflictKind | null {
   switch (entityType) {
     case 'CalibrationProject':
       return 'projectMetadata';
@@ -228,8 +317,28 @@ function mapCalibrationConflictKind(
     case 'CalibrationPrinterSnapshot':
       return 'staleprinterSnapshot';
     default:
-      return 'projectMetadata';
+      return null;
   }
+}
+
+/**
+ * The conflict's displayed kind and the resolutions it may advertise.
+ *
+ * These are two different questions and conflating them is what #219 is about.
+ * The display needs *a* member of the shared enum; the permission needs the
+ * truth about whether we classified the conflict at all. Deriving both from one
+ * fabricated kind meant an unclassifiable conflict was indistinguishable from a
+ * project-metadata one at exactly the point where the difference decides which
+ * destructive actions the user is offered.
+ */
+export function classifyCalibrationConflictKind(entityType: string): {
+  readonly kind: CalibrationConflictKind;
+  readonly classified: boolean;
+} {
+  const kind = mapCalibrationConflictKind(entityType);
+  return kind === null
+    ? { kind: UNCLASSIFIED_CONFLICT_DISPLAY_KIND, classified: false }
+    : { kind, classified: true };
 }
 
 /**
@@ -242,24 +351,58 @@ export class SidecarCalibrationAdapter implements CalibrationSidecar {
   constructor(private readonly sidecar: SidecarClient) {}
 
   /**
-   * Absent. There is no `resolveCalibrationConflict` arm in the sidecar's RPC
-   * dispatch (`native/model-core/src/serve.rs` has `recordCalibrationConflict`
-   * and `listCalibrationConflicts` only; the `resolveSyncConflict` that does
-   * exist is a different table). Declared optional rather than omitted so that
-   * assigning an implementation is the *whole* change: `conflictResolutionsFor`
-   * starts returning resolutions and the resolve IPC handler stops refusing,
-   * with no second edit to remember. Tracked as the write-path half of #179.
+   * Resolve a calibration conflict through the authoritative store.
    *
-   * `declare` is load-bearing. This project targets ES2022, so
-   * `useDefineForClassFields` is on and a plain optional field declaration
-   * emits an own property initialised to `undefined` on every instance --
-   * which shadows the prototype and makes the seam inert. `declare` is
-   * type-only and emits nothing. The test that grants the capability on the
-   * prototype is what caught this; it failed with the handler still refusing.
+   * Present, so `conflictResolutionsFor` now returns resolutions and the
+   * resolve IPC handler stops refusing. Neither of those sites was edited to
+   * make that happen: both read `supportsConflictResolution`, and assigning
+   * this method is the whole change. That was the point of the seam.
+   *
+   * The per-kind policy is **not** re-checked here. It is enforced in the store
+   * (`resolve_calibration_conflict` in `native/model-core/src/sqlite_catalog.rs`)
+   * against the ratified table in `sync.rs`, reading the kind back from the
+   * stored row rather than from this request. A second copy here would be a
+   * second place to be wrong, and an adapter-side check is a convention the
+   * next writer of a store method can bypass without noticing.
+   *
+   * Historical note kept because the mechanism is easy to reintroduce: this was
+   * previously `declare readonly resolveCalibrationConflict?: ...`, and the
+   * `declare` was load-bearing. This project targets ES2022, so
+   * `useDefineForClassFields` is on, and a plain optional *field* declaration
+   * emits an own property initialised to `undefined` on every instance, which
+   * shadows the prototype and makes the capability probe report absent. A
+   * method like this one lives on the prototype and is not affected — but
+   * turning it back into a field would silently re-break the seam with
+   * typecheck, lint and every existing test still green.
    */
-  declare readonly resolveCalibrationConflict?: (
-    request: unknown,
-  ) => Promise<unknown>;
+  async resolveCalibrationConflict(
+    request: CalibrationResolveConflictRequest,
+  ): Promise<CalibrationResolveConflictResponse> {
+    const raw = await this.sidecar.resolveCalibrationConflict({
+      profileId: request.profileId,
+      conflictId: request.conflictId,
+      resolution: request.resolution,
+      mergedFields: request.mergedFields,
+    });
+    const parsed = CalibrationConflictResolutionWire.parse(raw);
+    return {
+      conflict: {
+        conflictId: parsed.conflictId,
+        profileId: parsed.profileId,
+        projectId: parsed.projectId,
+        kind: parsed.kind,
+        entityId: request.conflictId,
+        localPayloadSummary: null,
+        serverPayloadSummary: null,
+        serverRevision: 0,
+        availableResolutions: conflictResolutionsFor(this, parsed.kind),
+        resolvedAt: parsed.resolvedAt,
+        resolution: parsed.resolution,
+        createdAt: parsed.resolvedAt,
+      },
+      supersededObservations: parsed.supersededObservations,
+    };
+  }
 
   async listCalibrationPendingOperations(
     profileId: string,
@@ -389,10 +532,11 @@ export class SidecarCalibrationAdapter implements CalibrationSidecar {
     );
     return raw.map((item) => {
       const parsed = CalibrationConflictWire.parse(item);
-      // Map to the shared IPC CalibrationConflict type.
-      // entityType → kind mapping: use 'projectMetadata' as the default kind
-      // since we store the entity_type column in the `kind` field in our schema.
-      const kind = mapCalibrationConflictKind(parsed.kind);
+      // The sidecar's `kind` column carries the *entity type*, not a conflict
+      // kind (#219). `classified` records whether we could map it; it is not
+      // recoverable from `kind` afterwards, because the display fallback is
+      // itself a valid enum member.
+      const { kind, classified } = classifyCalibrationConflictKind(parsed.kind);
       return {
         conflictId: parsed.conflictId,
         profileId: parsed.profileId,
@@ -402,10 +546,14 @@ export class SidecarCalibrationAdapter implements CalibrationSidecar {
         localPayloadSummary: summarizeConflictPayload(parsed.localPayload),
         serverPayloadSummary: summarizeConflictPayload(parsed.serverPayload),
         serverRevision: parsed.serverRevision,
-        // Derived, not declared. Empty today because this adapter has no
-        // resolveCalibrationConflict method -- and it becomes non-empty by
-        // itself on the day one is added. See conflictResolutionsFor.
-        availableResolutions: conflictResolutionsFor(this, kind),
+        // Derived from the transport's capability (see conflictResolutionsFor),
+        // and gated on having actually classified the conflict. An unclassified
+        // conflict advertises nothing, because the store refuses it with
+        // CALIBRATION_CONFLICT_KIND_UNCLASSIFIED -- the offer and the refusal
+        // have to agree or neither can be debugged.
+        availableResolutions: classified
+          ? conflictResolutionsFor(this, kind)
+          : [],
         createdAt: parsed.createdAt,
         resolution: null,
         resolvedAt: null,

@@ -1,0 +1,61 @@
+name: Publish npm cleanup evidence
+
+# merge-queue: publication
+#
+# This completion-triggered publisher never reports on pull requests or queued
+# entries, so its job must not become a required branch context.
+
+on:
+  workflow_run:
+    workflows: [CI, Release (signed), Release GPU qualification]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+jobs:
+  publish:
+    name: Publish durable npm cleanup evidence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: development
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Discover cleanup evidence artifacts
+        id: discover
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: node scripts/publish-npm-cleanup-evidence.mjs --discover
+
+      - name: Download cleanup evidence artifacts
+        if: steps.discover.outputs.has_cleanup_evidence == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+          artifact-ids: ${{ steps.discover.outputs.cleanup_evidence_artifact_ids }}
+          path: npm-cleanup-evidence
+
+      - name: Publish cleanup evidence
+        if: steps.discover.outputs.has_cleanup_evidence == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_CLEANUP_EVIDENCE_DIR: npm-cleanup-evidence
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          SOURCE_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
+          SOURCE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: node scripts/publish-npm-cleanup-evidence.mjs

@@ -1,0 +1,53 @@
+name: NPM cleanup recovery
+run-name: Discharge npm cleanup run ${{ inputs.run_id }} by @${{ github.actor }}
+
+# merge-queue: publication
+#
+# This manual workflow never reports on pull requests or queued entries, so its
+# job must not become a required branch context.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Failed Actions run id'
+        required: true
+        type: string
+      head_sha:
+        description: 'Exact 40-character head SHA of the failed run'
+        required: true
+        type: string
+      justification:
+        description: 'Why rerunning is appropriate after diagnosis (minimum 20 characters)'
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+  issues: write
+
+concurrency:
+  group: npm-cleanup-recovery-${{ inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  discharge:
+    name: Record and discharge npm cleanup failure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Record justification and rerun verified cleanup failures
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+          INPUT_HEAD_SHA: ${{ inputs.head_sha }}
+          INPUT_JUSTIFICATION: ${{ inputs.justification }}
+        run: node scripts/discharge-npm-cleanup-failure.mjs

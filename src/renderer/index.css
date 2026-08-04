@@ -1063,6 +1063,12 @@ select:disabled {
   z-index: 24;
   inset: 40px 0 24px;
   background: rgb(3 5 7 / 78%);
+  /* The backdrop is aria-hidden and purely decorative. The focus trap is
+     implemented in LibraryOnboarding.tsx via document focusin/keydown
+     listeners, so this layer must never intercept pointer events — doing so
+     would block sidebar buttons (e.g. 'Manage sources') when the onboarding
+     appears after a slow initial catalog load (#222). */
+  pointer-events: none;
 }
 
 .library-onboarding {
