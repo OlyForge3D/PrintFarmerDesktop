@@ -42,6 +42,10 @@ The same lesson, one level down, and it also had no artifact until now.
 
 **One trap inside the same command.** `git ls-remote origin refs/heads/<branch> refs/pull/<n>/head` returns both refs, and their agreeing is **not** a second confirmation — it is **one response, one rendering, read twice.** If the advertisement were stale, both would be stale together. It is still worth reading, for a different fact: GitHub populates the PR head ref from the branch ref and the two can lag, so agreement tells you that propagation has completed. **Informative about propagation, uninformative about staleness** — and counting it as corroboration is this note's own error, one level in.
 
+**Amended — the lag has a direction, and the direction is the whole warning.** The paragraph above said only that the two "can lag," which reads as symmetric and leaves `refs/pull/<n>/head` looking like a merely-redundant read. It is worse than redundant. Measured after a push, `refs/pull/<n>/head` trailed `refs/heads/<branch>` by **roughly five seconds** — making it **the stalest of the three propagation paths, behind both `refs/heads` and the `gh` client's view.** So the ref most likely to be offered as a free extra confirmation is the one most likely to be wrong, and it is wrong in the direction that matters: it reports an **older** head, which is the failure this note exists to prevent. **`git ls-remote <url> refs/heads/<branch>` is the source; `refs/pull/<n>/head` is a propagation probe and nothing else.**
+
+Note what a symmetric phrasing costs. _"The two can lag"_ is true, was written from reasoning about how GitHub populates the ref rather than from a measurement, and is **unfalsifiable as stated** — no observation contradicts it, so it survived review and would have survived indefinitely. **A directionless claim about a directional mechanism is the shape that reads as caution while withholding the only part a reader can act on.**
+
 **Never valid — no reading was ever taken.** A pointer that was reconstructed, transcribed, re-typed, or expanded by hand was never a measurement of anything. An abbreviated SHA **is a rendering of a commit**; expanding it by hand produces a second rendering with no artifact behind it. `git rev-parse` is the measurement. Remedy: **never reconstruct an identifier — copy it from the tool that emitted it.**
 
 **Valid, resolving, and serving a superseded document.** A commit-pinned URL cannot decay — that is the reason for pinning it. The _document_ moves on instead, and the pin then returns something authentic, reachable, and wrong. First-hand: this file was broadcast at `af03801`, verified before sending, and the verification performed was _does it resolve_. It resolved, returned 6933 bytes, and **did not contain the clause above naming why a second source qualifies** — that landed in `6538bed`. The pointer was checked, and it was checked against the failure mode that announces itself anyway.
@@ -57,6 +61,78 @@ So the check does not belong everywhere. **It belongs on the operations that suc
 The asymmetry is the whole content: **the loud half is self-policing and the quiet half is not**, so a rule that treats them alike spends its budget on the half that did not need it. A same-class defect that fails noisily needs no rule — it was found because it shouted.
 
 **A count I did not verify, flagged rather than laundered.** The lead reports six such stale-head assertions across five sessions in one day, one of them their own: recommending a narrative be moved into a directory that already contained it, twice, while pressing the author to answer the recommendation, without ever running `ls-tree` on the destination. **I have not re-derived that tally and cannot from this session** — five of the six are other sessions' work. It is recorded because the pattern is worth carrying, and marked because a note about checking must not pass along a number its own author took on report. **If you need the count to be load-bearing, re-derive it.**
+
+## Convergence is a control for staleness, not a control for relevance
+
+**This is the limit of everything above, and it belongs in this note because this note is what would otherwise mislead you.** Every rule so far makes a reading _current_. None of them makes it _responsive_.
+
+Three sources agreeing establishes that a value is current. **It cannot establish that the value answers the question you asked** — and where it does not, the agreement makes the reading _more_ persuasive, not less.
+
+**The incident.** A reader checking whether PR #163 was still open read `headRefOid` three ways and got one answer:
+
+```
+gh pr view 163 --json headRefOid    bb36969
+ls-remote refs/heads/<branch>       bb3696981ecb125eeb6f12f5b525710a6f22d8bd
+ls-remote refs/pull/163/head        bb3696981ecb125eeb6f12f5b525710a6f22d8bd
+
+gh pr view 163 --json state         MERGED, forty minutes earlier
+```
+
+**The read was correct, current, and convergent. It was silent about the only thing being asked.** `headRefOid` does not change on merge, and `delete_branch_on_merge` is `false`, so both refs outlive the merge and keep reporting the same value forever. **The field cannot express the answer, so no amount of agreement about it approaches one.**
+
+Two refinements, both of which make it worse rather than better:
+
+- **It was two sources, not three.** `refs/heads/<branch>` and `refs/pull/<n>/head` come back in **one `ls-remote` response** — one rendering read twice, per the trap recorded above.
+- **Both report a field invariant under the event in question.** That is not two weak sources; it is the same blind spot sampled twice.
+
+**So the check to add is not another source.** It is one question, asked before reading anything:
+
+> **What would this field say if the thing I am asking about had happened?**
+
+If the answer is _"the same thing"_, the field is not an instrument for that question and a third source is wasted effort that will feel like diligence. `headRefOid` is invariant under merge. A **diffstat** is invariant under a clean merge that changes no delta. A **merge-base** moves only when the branch takes new base history — the right field for _"did the base move under me"_ and **equally silent on merge, on force-push, and on content.**
+
+**Naming the event an instrument covers is therefore part of proposing it.** An instrument handed over without that is a staleness control that will be used as a correctness control, which is exactly what happened here.
+
+### Why going to the artifact _looks_ like it catches this, and does not
+
+A counterexample was offered against the rule above: a session reading
+`cargo test` output saw green while feature-gated tests never ran, and caught it
+by asking a **provenance** question — _which step emitted this line?_ — rather
+than by changing fields. If that holds, provenance controls do catch relevance
+errors and the rule needs a boundary.
+
+**Reproduced here rather than judged from the description**, at
+`cargo 1.97.1`:
+
+```
+cargo test --manifest-path native/Cargo.toml -p model-core sqlite
+
+exit code: 0
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 264 filtered out
+```
+
+**The candidate dies, and the measurement is why.** Two fields are present in
+that single command's output and they differ in what they can express:
+
+- the **exit code** is `0`. It is `0` when 264 tests pass and `0` when none
+  compile. Against _"did the gated tests run"_ it carries **zero bits**.
+- the **summary line** says `0 passed` and `264 filtered out`. It answers the
+  question **completely, in the same stream, one line away.**
+
+So the session did change fields — from exit status to stdout — and this is the
+rule working, not an exception to it. **The informative field was not in another
+job or another artifact. It was adjacent to the misleading one.**
+
+**Which explains the illusion, and the explanation is the part worth keeping.**
+Going to the artifact does not answer relevance questions. It **incidentally
+widens the field set**, because a raw log necessarily exposes fields that a
+verdict discards — and the catch then comes from the field change, which the
+reader never notices making. **Provenance controls will keep appearing to catch
+relevance errors for exactly as long as nobody separates the two steps.**
+
+So the rule stands unqualified, with one practical corollary: **when a summary
+and its underlying output disagree in expressive power, the summary is the field
+that cannot answer you.** `ok` is a verdict; `0 passed` is a measurement.
 
 ---
 

@@ -1,0 +1,48 @@
+## 2026-08-03: A field read correctly can still be silent on the question — name a state in which it would differ
+
+**By:** Ripley
+
+**What:** Before reading a field to settle a question, name a state of the world in which that field would hold a different value. If you cannot name one, the field cannot answer your question, and reading it carefully will produce a confident wrong answer rather than an uncertain one.
+
+This is not the rule about going to the artifact, and it is not the rule about reading two sources. **Both of those govern how a value was obtained. This one governs whether the value can express the answer.** A value can be current, corroborated, read directly from the object, and still be structurally incapable of distinguishing the case you care about from the case you do not.
+
+**Why it needs its own entry:** every verification control this squad adopted in one afternoon is a provenance control. Two-source reads control for staleness. Going to the artifact controls for reconstruction. Pinning a SHA controls for decay. Content assertions control for supersession. **All four ask where the value came from. None asks what the value can be false about.** Satisfying every one of them is compatible with reading the wrong field, and the satisfaction makes the reading more persuasive, not less.
+
+**Five instances, all from a single afternoon, all read correctly at the object.**
+
+**1. A diffstat that is invariant under the event it was watched for.** I reported `5 files, +153` across several hours as evidence my branch was unchanged. It was accurate every time. I had synced `origin/development` into the branch in the middle of that window, and a conflict-free merge of disjoint paths changes no line in the delta. **The number I was checking was the one number guaranteed to survive the event I was missing.** The field that moved was the merge-base, `fc9799f` to `ccf61d1`, and it was in my own standing report, carried rather than re-derived.
+
+**2. Three convergent renderings of a field that cannot express the answer.** A reviewer polled `gh pr view --json headRefOid`, `ls-remote refs/heads/<branch>`, and `ls-remote refs/pull/<n>/head`, got one answer from all three, and concluded the PR was awaiting a merge decision. **The PR had merged seventeen seconds earlier.** `headRefOid` does not change on merge, and with `delete_branch_on_merge` disabled both refs outlive it. The read was current, convergent, and correct. The field that moved was `state`, and it was not in the set. Worse, two of the three sources are one `ls-remote` rendering read twice, so the apparent triple corroboration was a double reading of a field that is invariant under merging.
+
+**3. An author identity shared by every session on the machine.** A commit was attributed to me on the strength of `Inspector Agent <inspectoragent@example.com>` in `%an`/`%ae`. That identity resolves from the **main checkout's** `.git/config`, which twenty-one live worktrees inherit; every agent session on the host commits under it. The attribution happened to be right. **The field it rested on cannot distinguish one agent from twenty others**, so the conclusion was reachable only by luck. The field that does discriminate is the branch name, which maps to one worktree and one session.
+
+**4. The same defect one level worse, producing a false conclusion.** Reading `mergedBy: jpapiez`, the same reviewer concluded a human had merged the pull request, that my refusal to self-merge was therefore never tested, and that I never had to make the decision. **The `gh` CLI in an agent session is authenticated as that account.** I ran the merge. `mergedBy` cannot distinguish an agent from the human whose token it holds — and unlike instance 3, it was used to reach a conclusion that is false.
+
+Note the escalation across 3 and 4: one identity field cannot separate agent from agent, the other cannot separate agent from human. **In this setup no field in GitHub's record identifies an agent action.** The only agent-identifying artifacts on the trunk are `Co-authored-by` and `Copilot-Session` trailers, typed by convention, produced by nothing mechanical, and absent without complaint if omitted.
+
+**5. A command that answers a neighbouring question, found by someone else on my own work.** `git merge-base --is-ancestor` was adopted this afternoon as the remedy for stale pins — a correct and cheap check. Asked whether my merged work had reached mainline, it says no:
+
+```
+git merge-base --is-ancestor bb36969 origin/development   ->  exit 1
+```
+
+At that same moment all five files that commit introduced are present in `origin/development`. **The pull request was merged and shipped; the commit is not an ancestor of anything, because the merge was a squash.** The command answered _is this commit reachable_, which is true and is not the question. **Squash-merging decouples content from ancestry, so "did this work land" is two questions and ancestry answers one of them.**
+
+Two further modes of the same command, which belong with it:
+
+- **`exit 128` means the object is absent and is also non-zero.** A script written as `if ! git merge-base --is-ancestor ...` treats _cannot determine_ identically to _was rewritten_ — an absence reported as a negative result, which is its own recurring failure and is here fused to this one.
+- **It detects rewrites, not changes.** A fast-forward keeps `exit 0` while every blob beneath it moves, so a passing ancestry check is compatible with the file you care about having changed completely.
+
+This instance is the strongest of the five for two reasons. **It is a tool rather than a field**, so the class is not an artifact of one API's schema. And **it was found by the person who had been broadcasting the check all afternoon, on someone else's pull request, while the check was passing its own provenance test perfectly.**
+
+The remedy pairs with the content assertion in `ripley-go-and-look.md`: **ancestry establishes that a commit is reachable; only a content assertion establishes that the work arrived.** Neither substitutes for the other, and under squash-merge the first will routinely say no while the second says yes.
+
+**The check, stated so it can be applied in the moment.** Before reading the field, name the state in which it would differ. Concretely: _"if the thing I am worried about had happened, what would this value be?"_ If the answer is _"the same"_, stop — the reading cannot help, however carefully it is taken. In instance 1 the answer was _the same_. In instance 2 the answer was _the same_. In instances 3 and 4 the answer was _the same_, because the field is constant across every actor in the population. In instance 5 the answer was _the same_: a squash-merged commit and a commit that never landed both return `exit 1`.
+
+**The cost of skipping it is the reverse of the usual.** A provenance failure produces an uncertain answer that invites checking. **A relevance failure produces a confident answer that forecloses it** — and if the value was obtained through a good control, the control's own rigour is what makes it convincing. Instance 2 is the sharpest form: three-source agreement is the strongest provenance signal available, and it was applied to a field that could not have disagreed.
+
+**Falsifier, and I want it looked for.** This note claims provenance controls and relevance are independent. **It is wrong if someone produces a case where a provenance control alone caught a relevance error** — where reading a second source, or going to the artifact, surfaced that the field was silent rather than merely stale. I have not found one; all five instances above passed their provenance controls and failed anyway. A single counterexample would collapse this back into a corollary of the existing rules rather than a separate class.
+
+**The limit, which is real.** This check does not tell you which field _is_ right; it only rejects fields that cannot be wrong in the relevant direction. In instances 1, 2 and 5 the correct field existed and was cheap — merge-base, `state`, and a content assertion respectively. In instances 3 and 4 **no correct field exists**, and the honest output of applying the check is _"the record cannot answer this, ask the actor"_, which is what happened and is why instance 4 was caught in one message rather than propagating.
+
+**Why:** five times in one afternoon, careful readers took accurate measurements that were structurally incapable of detecting what they were looking for, and in four of the five the measurement's own quality is what stopped anyone looking further. The failures were not caused by insufficient rigour about provenance. **They were caused by rigour about provenance being mistaken for rigour about the question.**
