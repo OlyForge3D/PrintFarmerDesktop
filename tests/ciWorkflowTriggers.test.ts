@@ -19,6 +19,18 @@ const ciWorkflow = readWorkflow('ci.yml');
 const releaseWorkflow = readWorkflow('release.yml');
 const gpuQualificationWorkflow = readWorkflow('release-gpu-qualification.yml');
 
+const skillDoc = readFileSync(
+  path.resolve(
+    import.meta.dirname,
+    '..',
+    '.squad',
+    'skills',
+    'testing',
+    'SKILL.md',
+  ),
+  'utf8',
+);
+
 /**
  * Lines of a column-0 mapping (`on:`, `jobs:`) up to the next column-0 key.
  * Deliberately textual: the repository ships no YAML parser and this PR does
@@ -276,6 +288,64 @@ describe('CI is safe to run under a merge queue', () => {
       'Sidecar (macos-latest)',
       'Sidecar (windows-latest)',
     ]);
+  });
+});
+
+/**
+ * The CI context list as `.squad/skills/testing/SKILL.md` states it.
+ *
+ * Anchored on the `## CI gate` heading and the first contiguous bullet run
+ * beneath it — never on line offsets. A positional extractor drifts silently
+ * the moment anything above the list changes length, and its failure mode is
+ * the worst one available: it reports contexts as omitted or fictional while
+ * the list is correct and only the reader moved. That is #152's own symptom
+ * ("named a job that never existed, omitted `Dependency advisories`") raised
+ * against a file that is right, which sends the next maintainer to edit the
+ * correct artifact.
+ *
+ * Throws rather than returning `[]` when the anchor is gone, so a renamed
+ * heading fails by name instead of by an empty set that reads as agreement.
+ */
+function documentedCiContexts(doc: string): string[] {
+  const lines = doc.split(/\r?\n/);
+  const heading = lines.findIndex((line) => /^##\s+CI gate\s*$/.test(line));
+  if (heading < 0) {
+    throw new Error(
+      'SKILL.md has no "## CI gate" heading, which this extractor is anchored on',
+    );
+  }
+  const bullets: string[] = [];
+  for (const line of lines.slice(heading + 1)) {
+    const match = /^-\s+(.+?)\s*$/.exec(line);
+    if (match?.[1] !== undefined) {
+      bullets.push(match[1]);
+      continue;
+    }
+    // Blank lines inside the run are tolerated; the first prose line after a
+    // bullet has been seen ends it.
+    if (bullets.length > 0 && line.trim() !== '') break;
+  }
+  return bullets.sort();
+}
+
+describe('the testing skill transcribes the contexts ci.yml emits', () => {
+  // #152: this list named `Package smoke`, which has never existed, and omitted
+  // `Dependency advisories`. Nothing read the file, so the correction could
+  // regress without any test going red — three references to SKILL.md exist in
+  // `tests/`, all of them prose inside docblocks, none of them a read.
+  //
+  // This pins the doc against what ci.yml *emits*, which is in turn pinned
+  // byte-identically above. Whether those are the *required* contexts lives in
+  // branch protection and is not read here, for the same reason as the test
+  // above — the doc says so itself and tells the reader to re-verify.
+  it('extracts a non-empty list, so the comparison below cannot pass vacuously', () => {
+    expect(documentedCiContexts(skillDoc).length).toBeGreaterThan(0);
+  });
+
+  it('names exactly those contexts, with no fictional and no omitted entry', () => {
+    expect(documentedCiContexts(skillDoc)).toEqual(
+      renderedContexts(ciWorkflow),
+    );
   });
 });
 
