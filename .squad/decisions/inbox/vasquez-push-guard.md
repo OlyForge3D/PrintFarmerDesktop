@@ -530,3 +530,50 @@ the tool I was using to verify the fix for it.
 
 Check exit codes. A harness that reads output for a verdict has to be tested
 against a known failure before its greens mean anything.
+
+## A reflog is a record of where the ref went, not of what you wrote
+
+The strongest challenge to the reflog approach was this: a foreign session's
+commit **does** land in your reflog, and it takes only a `git pull` to put it
+there. That is correct, and the mechanism matters — `git log -g <ref>` yields one
+commit per entry, namely the commit the ref moved to. So every commit this clone
+has ever fast-forwarded onto is named by an entry, with its author's session id
+on it.
+
+The claim it falsifies — "a fetched commit does not enter the reflog" — is true
+of `git fetch` **in isolation**, which moves only `refs/remotes/*`. As a safety
+property it is worthless, because the local branch moves constantly. Most PRs
+here sit BEHIND under strict required checks, so pulling to stay mergeable is the
+most frequent git operation anyone performs. "Arrived by pull" is the **normal**
+state of a reflog here, not an edge of it.
+
+What makes the approach hold is not the reflog, it is the **predicate**.
+Measured, one arm per operation, foreign commit upstream, this clone doing
+nothing but the named operation:
+
+    pull, fast-forward   `pull …: Fast-forward`            THEIRS
+    pull, true merge     `pull …: Merge made by 'ort'`     (merge commit)
+    cherry-pick          `cherry-pick: their work`         THEIRS
+    rebase onto theirs   `rebase (start): checkout <sha>`  THEIRS
+    my own commit        `commit: my work`                 MINE
+
+**Every arrival names the foreign id; only creation names mine.** Git records how
+the ref moved in the entry subject, and that field is doing all the work. The
+filter is on the subject, not on the trailer, and it is `commit` rather than "any
+entry".
+
+### The part that generalises
+
+The signal was never "the reflog". It was "the subject of a reflog entry", and
+those are different things with different failure modes. When a control rests on
+a **field** of a record rather than on the record's existence, saying which field
+is not a detail — it is the whole claim. A review of "does it use the reflog"
+cannot distinguish a correct implementation from a catastrophic one.
+
+And the direction of the untested failure was the dangerous one. The degradation
+argument that had been checked was _absence_ — reflogs off, entries expired — all
+of which make the guard stricter. **Contamination is the other direction**, and a
+predicate that accepted arrivals would have been permissive almost always, on the
+most common operation in the repo, silently. Now pinned: widen the predicate to
+accept `pull`, `merge`, `checkout`, `cherry-pick` or `rebase` and four tests fail,
+including the #81 two-session refusal itself.

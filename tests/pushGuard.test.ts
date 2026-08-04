@@ -861,6 +861,103 @@ describe('a solo rollback of ALL of its own work is not reported as a second wri
   });
 });
 
+describe('work that arrived by pull is not work this session wrote', () => {
+  // Most PRs here sit BEHIND under strict required checks, so pulling
+  // `development` to stay mergeable is the most frequent git operation anyone
+  // performs. That makes "the reflog contains commits that arrived by pull" the
+  // NORMAL state of a clone, not an edge of it.
+  //
+  // A reflog is a record of where the ref WENT. `git log -g` yields one commit
+  // per entry — the commit the ref moved to — so every foreign commit this clone
+  // has ever fast-forwarded onto is named by an entry. "A fetched commit does not
+  // enter the reflog" is true of `git fetch` alone, which moves only
+  // `refs/remotes/*`, and is worthless as a safety property because the local
+  // branch moves constantly.
+  //
+  // The subject (`%gs`) is what separates arrival from authorship, and this is
+  // the case that pins it. Nothing else in this file does: widen the predicate to
+  // accept `pull` entries and the #81 refusal — the entire point of the guard —
+  // silently stops firing, because the pusher would "own" the very session whose
+  // work they are destroying. The counterfactual at the end of this file would
+  // not catch it either, since it tests that the hook does something rather than
+  // that it does the right thing.
+  let root: string;
+  let remote: string;
+  let mine: string;
+  let theirs: string;
+  let base: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-pulled-'));
+    remote = path.join(root, 'remote.git');
+    mine = path.join(root, 'mine');
+    theirs = path.join(root, 'theirs');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, mine], root);
+    configure(mine);
+    git(['checkout', '-b', 'feature'], mine);
+    commit(mine, 'base', 'session-mine');
+    git(['push', '--no-verify', '-u', 'origin', 'feature'], mine);
+    base = git(['rev-parse', 'HEAD'], mine);
+
+    // A genuinely separate clone, so their commits are authored somewhere this
+    // worktree's reflog can never have recorded as creation.
+    git(['clone', remote, theirs], root);
+    configure(theirs);
+    git(['checkout', 'feature'], theirs);
+    commit(theirs, 'theirs one', 'session-theirs');
+    commit(theirs, 'theirs two', 'session-theirs');
+    git(['push', '--no-verify', 'origin', 'feature'], theirs);
+
+    // I stay mergeable. This is the step that puts their session id into my
+    // reflog, under a `pull` subject.
+    git(['pull', '--no-rebase', 'origin', 'feature'], mine);
+    git(['reset', '--hard', base], mine);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], mine);
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('puts their session id in my reflog, which is the precondition', () => {
+    // Asserted, because if the pull stopped landing their id here the case below
+    // would pass for having nothing to launder rather than for filtering it.
+    const reflog = git(
+      [
+        'log',
+        '-g',
+        '--format=%gs :: %(trailers:key=Copilot-Session,valueonly)',
+        'HEAD',
+      ],
+      mine,
+    );
+    expect(reflog).toContain('session-theirs');
+    // And the discriminator: their id arrives on an entry that is not a creation.
+    expect(reflog).not.toMatch(/^commit.*session-theirs/m);
+  });
+
+  it('still refuses as a second writer, naming them', () => {
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force', 'origin', 'feature'], mine);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    expect(stderr).toContain('push-guard.foreign-session');
+    expect(stderr).toContain('never authored here: session-theirs');
+    expect(stderr).toContain(ACK_FOREIGN_ENV);
+    // The verdict a laundered id produces: I would "own" their session, so the
+    // two-writer claim and the second acknowledgement would both disappear.
+    expect(stderr).not.toContain('push-guard.unacknowledged-discard');
+  });
+});
+
 describe('a sibling worktree of the same clone is not this session', () => {
   // F4. Ownership is read from a reflog, and WHICH FILE that is decides the
   // answer. Measured:

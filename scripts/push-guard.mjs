@@ -513,18 +513,41 @@ const FIELD = '\u001f';
  * another session's.
  *
  * The reflog answers the real question, but only if the right entries are read.
- * "A fetched commit does not enter the reflog" is true and was measured — and it
- * is the wrong class. `git checkout` of another session's fetched branch DOES
- * write a reflog entry naming their tip, which laundered their commits into
- * "mine" and silenced the foreign alarm on the exact scenario #81 is about. That
- * was measured too, after the first measurement had already been believed.
+ * A reflog is a record of WHERE THE REF WENT, not of what this worktree wrote,
+ * and `git log -g <ref>` yields one commit per entry — the commit the ref moved
+ * to. So every foreign commit this clone ever fast-forwarded onto is in there,
+ * named by an entry. "A fetched commit does not enter the reflog" is true of
+ * `git fetch` in isolation, which moves only `refs/remotes/*`, and it is
+ * worthless as a safety property: the local branch moves constantly.
  *
- * So entries are filtered to the ones that CREATED a commit here. Only a `commit`
- * reflog entry is evidence of local authorship; `checkout`, `reset`, `merge`,
- * `pull`, `rebase` and `cherry-pick` all record a commit merely arriving or
- * being copied. Restricting to creation fails toward MORE refusals, never fewer,
- * and it survives a rebase of your own work: the rewritten copies carry the same
- * session id as the originals, whose `commit` entries are still in the reflog.
+ * Measured, one arm per operation, with a foreign session's commit upstream and
+ * this clone doing nothing but the named operation. The subject (`%gs`) is what
+ * separates them; the trailer on the entry's commit is the foreign id:
+ *
+ *     pull, fast-forward   `pull …: Fast-forward`            THEIRS
+ *     pull, true merge     `pull …: Merge made by 'ort'`     (merge commit)
+ *     cherry-pick          `cherry-pick: their work`         THEIRS
+ *     rebase onto theirs   `rebase (start): checkout <sha>`  THEIRS
+ *     my own commit        `commit: my work`                 MINE
+ *
+ * Every arrival names the foreign id; only creation names mine. That is why the
+ * filter is on the subject and not on the trailer, and why it is `commit` and
+ * not "any entry". Restricting to creation fails toward MORE refusals, never
+ * fewer, and it survives a rebase of your own work: the rewritten copies carry
+ * the same session id as the originals, whose `commit` entries are still there.
+ *
+ * This matters more here than the arithmetic suggests. Most PRs in this repo sit
+ * BEHIND under a strict required-checks policy, so pulling `development` to stay
+ * mergeable is the most frequent operation anyone performs — which makes
+ * "arrived by pull" the normal state of the reflog rather than an edge of it. A
+ * predicate that accepted arrivals would be carrying foreign ids almost always,
+ * and the failure would be silent and in the permissive direction.
+ *
+ * `git checkout` of another session's fetched branch is the same class and was
+ * the case that first falsified a looser predicate here: it writes an entry
+ * naming their tip, which laundered their commits into "mine" and silenced the
+ * foreign alarm on the exact scenario #81 is about. That was measured too, after
+ * the first measurement had already been believed.
  *
  * Only HEAD's reflog is read, and which file that is decides the answer.
  * Measured, in the layout this squad actually runs — eight-plus worktrees off
