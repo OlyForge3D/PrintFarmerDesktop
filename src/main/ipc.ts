@@ -1706,7 +1706,6 @@ export function registerIpcHandlers(
       // If this handler refused on its own hard-coded assumption, the two could
       // disagree -- the UI offering actions this channel rejects, or the
       // reverse. One fact, two readers.
-      const resolve = calibrationSidecarAdapter.resolveCalibrationConflict;
       if (!supportsConflictResolution(calibrationSidecarAdapter)) {
         throw Object.assign(
           new Error(
@@ -1715,10 +1714,7 @@ export function registerIpcHandlers(
           { code: 'CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE' },
         );
       }
-      return (resolve as (input: typeof request) => Promise<unknown>).call(
-        calibrationSidecarAdapter,
-        request,
-      );
+      return calibrationSidecarAdapter.resolveCalibrationConflict(request);
     },
   );
 

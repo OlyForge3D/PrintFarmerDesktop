@@ -1,18 +1,20 @@
-import { describe, expect, it } from 'vitest';
+import path from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
+  CLEANUP_FAILURE_ANCHOR,
   CLEANUP_WARNING_MARKER,
-  MAX_INSTALL_ATTEMPTS,
   NPM_PRODUCTION_TREE_COMMAND,
-  REMOVAL_RETRY,
-  exhaustedFailureLines,
+  createCleanupEvidence,
+  extractCleanupDirectories,
   extractCleanupPaths,
   findTreeProblems,
   findUnresolvedPackages,
   hasCleanupFailure,
+  markCleanupEvidenceOutput,
   npmInvocation,
-  planInstallOutcome,
-  recoveryNotice,
+  retryCleanupRemovals,
+  writeCleanupEvidence,
 } from '../scripts/npm-ci-strict.mjs';
 
 /**
@@ -97,6 +99,15 @@ describe('the cleanup-failure marker is pinned to npm’s recorded wording', () 
     expect(RECORDED_CLEANUP_FAILURE).toContain(CLEANUP_WARNING_MARKER);
   });
 
+  it('keeps the diagnostic anchor distinct from the constant-positive script header', () => {
+    expect(CLEANUP_FAILURE_ANCHOR).toBe(
+      'could not finish removing node_modules',
+    );
+    expect('Run node scripts/npm-ci-strict.mjs').not.toContain(
+      CLEANUP_FAILURE_ANCHOR,
+    );
+  });
+
   it('is specific enough that a plausible reworded message does not match', () => {
     // Demonstrates the marker discriminates on the sentence rather than on the
     // words `npm warn`, which appear in ordinary deprecation notices.
@@ -120,6 +131,192 @@ describe('the directories npm named are reported as context', () => {
 
   it('returns nothing for output that names no node_modules path', () => {
     expect(extractCleanupPaths(CLEAN_INSTALL_OUTPUT)).toEqual([]);
+  });
+
+  it('bounds the retry to the shallowest npm-named directory', () => {
+    expect(extractCleanupDirectories(RECORDED_CLEANUP_FAILURE)).toEqual([
+      'parse-color',
+    ]);
+  });
+
+  it('rejects a quoted path that escapes node_modules', () => {
+    const hostile = String.raw`npm warn cleanup 'D:\repo\node_modules\..\package.json'`;
+    expect(extractCleanupDirectories(hostile)).toEqual([]);
+  });
+
+  it('ignores quoted paths outside the retryable EPERM cleanup block', () => {
+    const output = `${RECORDED_CLEANUP_FAILURE}
+postinstall: diagnostic 'D:\\repo\\node_modules\\unrelated-tool'`;
+    expect(extractCleanupDirectories(output)).toEqual(['parse-color']);
+  });
+
+  it('does not retry a neighbouring non-EPERM entry in the same cleanup block', () => {
+    const mixed = String.raw`
+npm warn cleanup Failed to remove some directories [
+npm warn cleanup   [
+npm warn cleanup     'D:\repo\node_modules\unrelated-tool',
+npm warn cleanup     [Error: EACCES: permission denied, unlink
+                     'D:\repo\node_modules\unrelated-tool\locked.file'] {
+npm warn cleanup       code: 'EACCES', syscall: 'unlink',
+npm warn cleanup     }
+npm warn cleanup   ]
+npm warn cleanup   [
+npm warn cleanup     'D:\repo\node_modules\parse-color',
+npm warn cleanup     [Error: EPERM: operation not permitted, rmdir
+                     'D:\repo\node_modules\parse-color\node_modules\color-convert'] {
+npm warn cleanup       code: 'EPERM', syscall: 'rmdir',
+npm warn cleanup     }
+npm warn cleanup   ]
+npm warn cleanup ]`;
+    expect(extractCleanupDirectories(mixed)).toEqual(['parse-color']);
+  });
+});
+
+describe('Windows cleanup recovery retries removal without weakening validation', () => {
+  it('retries only the bounded directory with Windows EPERM retry options', async () => {
+    const rmImpl = vi.fn().mockResolvedValue(undefined);
+    const result = await retryCleanupRemovals(RECORDED_CLEANUP_FAILURE, {
+      platform: 'win32',
+      root: path.resolve('C:\\repo'),
+      rmImpl,
+    });
+
+    expect(result).toEqual({
+      attempted: true,
+      recovered: true,
+      directories: ['parse-color'],
+      reason: null,
+    });
+    expect(rmImpl).toHaveBeenCalledOnce();
+    expect(rmImpl).toHaveBeenCalledWith(
+      expect.stringMatching(/[\\/]node_modules[\\/]parse-color$/),
+      {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 250,
+      },
+    );
+  });
+
+  it('does not apply the Windows remedy on another platform', async () => {
+    const rmImpl = vi.fn();
+    const result = await retryCleanupRemovals(RECORDED_CLEANUP_FAILURE, {
+      platform: 'darwin',
+      rmImpl,
+    });
+
+    expect(result.recovered).toBe(false);
+    expect(result.reason).toContain('restricted to Windows');
+    expect(rmImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not retry a non-EPERM cleanup warning', async () => {
+    const eacces = RECORDED_CLEANUP_FAILURE.replaceAll('EPERM', 'EACCES');
+    const rmImpl = vi.fn();
+    const result = await retryCleanupRemovals(eacces, {
+      platform: 'win32',
+      rmImpl,
+    });
+
+    expect(result.recovered).toBe(false);
+    expect(result.reason).toContain('EPERM/rmdir');
+    expect(rmImpl).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a removal failure instead of treating the warning as recovered', async () => {
+    const rmImpl = vi.fn().mockRejectedValue(new Error('EPERM still locked'));
+    await expect(
+      retryCleanupRemovals(RECORDED_CLEANUP_FAILURE, {
+        platform: 'win32',
+        rmImpl,
+      }),
+    ).rejects.toThrow('EPERM still locked');
+  });
+});
+
+describe('cleanup failure evidence is staged for durable publication', () => {
+  const environment = {
+    GITHUB_REPOSITORY: 'OlyForge3D/PrintFarmerDesktop',
+    GITHUB_RUN_ID: '30917030009',
+    GITHUB_RUN_ATTEMPT: '1',
+    GITHUB_SHA: 'b'.repeat(40),
+    GITHUB_JOB: 'package',
+    GITHUB_WORKFLOW: 'CI',
+    GITHUB_SERVER_URL: 'https://github.com',
+    RUNNER_OS: 'Windows',
+    RUNNER_NAME: 'GitHub Actions 7',
+    NPM_CLEANUP_EVIDENCE_PATH: 'C:\\temp\\npm-cleanup-evidence.json',
+    GITHUB_OUTPUT: 'C:\\temp\\github-output.txt',
+  };
+  const recovery = {
+    attempted: true,
+    recovered: false,
+    directories: ['parse-color'],
+    reason: 'retry failed: EPERM still locked',
+  };
+
+  it('records the exact anchor and run attempt reference', () => {
+    const evidence = createCleanupEvidence({
+      output: RECORDED_CLEANUP_FAILURE,
+      recovery,
+      environment,
+      recordedAt: '2026-08-04T14:00:00.000Z',
+    });
+
+    expect(evidence.anchor).toBe(CLEANUP_FAILURE_ANCHOR);
+    expect(evidence.diagnostic).toContain(CLEANUP_FAILURE_ANCHOR);
+    expect(evidence.runUrl).toBe(
+      'https://github.com/OlyForge3D/PrintFarmerDesktop/actions/runs/30917030009/attempts/1',
+    );
+    expect(evidence.cleanupPaths).toEqual(['parse-color', 'color-convert']);
+    expect(evidence.warningExcerpt.join('\n')).toContain('EPERM');
+  });
+
+  it('writes the evidence before marking the failing step for publication', async () => {
+    const operations: string[] = [];
+    const evidence = createCleanupEvidence({
+      output: RECORDED_CLEANUP_FAILURE,
+      recovery,
+      environment,
+    });
+    await writeCleanupEvidence(evidence, {
+      environment,
+      mkdirImpl: vi.fn(() => {
+        operations.push('mkdir');
+        return Promise.resolve();
+      }),
+      writeFileImpl: vi.fn((_file, contents) => {
+        operations.push('write');
+        expect(contents).toContain(CLEANUP_FAILURE_ANCHOR);
+        return Promise.resolve();
+      }),
+    });
+    await markCleanupEvidenceOutput(
+      environment,
+      vi.fn((_file, contents) => {
+        operations.push('output');
+        expect(contents).toContain('cleanup_evidence=true');
+        return Promise.resolve();
+      }),
+    );
+
+    expect(operations).toEqual(['mkdir', 'write', 'output']);
+  });
+
+  it('fails recording loudly when the evidence file cannot be written', async () => {
+    const evidence = createCleanupEvidence({
+      output: RECORDED_CLEANUP_FAILURE,
+      recovery,
+      environment,
+    });
+    await expect(
+      writeCleanupEvidence(evidence, {
+        environment,
+        mkdirImpl: vi.fn().mockResolvedValue(undefined),
+        writeFileImpl: vi.fn().mockRejectedValue(new Error('disk full')),
+      }),
+    ).rejects.toThrow('disk full');
   });
 });
 
@@ -299,85 +496,5 @@ describe('npm is invoked the way the other scripts in this repo invoke it', () =
     // one the supply-chain gate later refuses, and the earlier check would be
     // answering a neighbouring question.
     expect(NPM_PRODUCTION_TREE_COMMAND).toBe('npm ls --omit=dev --all --json');
-  });
-});
-
-describe('the gate has a discharge path it can execute itself (#274)', () => {
-  it('accepts a clean install — the negative control', () => {
-    // Without this, every assertion below is satisfied by a function that
-    // returns 'retry' or 'fail' unconditionally.
-    expect(planInstallOutcome(CLEAN_INSTALL_OUTPUT, 1)).toEqual({
-      action: 'accept',
-      paths: [],
-    });
-  });
-
-  it('retries the recorded failure instead of failing on first sight', () => {
-    const outcome = planInstallOutcome(RECORDED_CLEANUP_FAILURE, 1);
-    expect(outcome.action).toBe('retry');
-    // The paths are carried through, so the recovery notice can name them.
-    expect(outcome.paths).toContain('parse-color');
-  });
-
-  it('fails once the budget is spent, on the same input that retried', () => {
-    // Same output, different attempt number: the attempt counter is what
-    // separates these, so a plan that ignored it would fail one of the two.
-    expect(planInstallOutcome(RECORDED_CLEANUP_FAILURE, 1).action).toBe(
-      'retry',
-    );
-    expect(
-      planInstallOutcome(RECORDED_CLEANUP_FAILURE, MAX_INSTALL_ATTEMPTS).action,
-    ).toBe('fail');
-  });
-
-  it('fails closed when the attempt counter is not a positive integer', () => {
-    // A NaN counter must not read as "attempt < max" and loop forever.
-    for (const attempt of [0, -1, 1.5, Number.NaN, undefined, '1']) {
-      expect(
-        planInstallOutcome(RECORDED_CLEANUP_FAILURE, attempt as number).action,
-      ).toBe('fail');
-    }
-  });
-
-  it('budgets at least one retry, or the discharge path does not exist', () => {
-    expect(MAX_INSTALL_ATTEMPTS).toBeGreaterThanOrEqual(2);
-    expect(REMOVAL_RETRY.maxRetries).toBeGreaterThan(0);
-    expect(REMOVAL_RETRY.retryDelay).toBeGreaterThan(0);
-  });
-
-  it('records the failure in the log even when the retry rescues the run', () => {
-    // #274 defect 2: a recovered run is green, so if the notice were silent the
-    // wipe failure would leave no trace anywhere.
-    const notice = recoveryNotice(['parse-color'], 1, 2).join('\n');
-    expect(notice).toContain('attempt 1 of 2');
-    expect(notice).toContain('parse-color');
-    // It must distinguish itself from the forbidden action, not resemble it.
-    expect(notice).toContain('same job');
-    expect(notice).toContain('#274');
-  });
-
-  it('states what was already tried when the budget is spent', () => {
-    const lines = exhaustedFailureLines(['parse-color'], 2);
-    const text = lines.join('\n');
-    // The original message forbade re-running and named no alternative. This one
-    // has to say the cheap remedy is spent, or it is the same deadlock.
-    expect(text).toContain('already removed node_modules and reinstalled');
-    expect(text).toContain('2 attempts');
-    expect(text).toContain('Escalate');
-    expect(text).toContain('parse-color');
-  });
-
-  it('cites the live issue and not only the closed one', () => {
-    // #274 defect 3: `See #195` sends a reader to a CLOSED issue for the
-    // explanation of a control that is still live.
-    const text = exhaustedFailureLines([], 2).join('\n');
-    expect(text).toContain('#274');
-    expect(text).toContain('#195');
-  });
-
-  it('omits the directory line when npm named nothing, without a blank gap', () => {
-    const text = exhaustedFailureLines([], 2).join('\n');
-    expect(text).not.toContain('Directories npm named');
-    expect(text).not.toContain('\n\n\n');
   });
 });
