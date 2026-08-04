@@ -85,6 +85,59 @@ present locally precisely because the update is a fast-forward. `--is-ancestor`
 is a **tri-state**: `0` ancestor, `1` not an ancestor, `128` object absent. Only
 `0` is evidence; `1` and `128` are collapsed into one refusal deliberately.
 
+## The same over-generalisation again, in the fix for it
+
+Worth recording because it is the **third** instance in one session and the first
+two did not prevent it.
+
+"Is this commit mine?" was first answered by reachability from the local tip,
+which is a **proxy**: it actually answers "do I still hold some other commit of
+the same session?" That comes apart in both directions — too permissive when you
+keep one commit of another session, too strict on a **full rollback**, where every
+commit carrying your id is exactly what you are removing, so your own retreat is
+announced as another session's work with an override naming yourself.
+
+The replacement was the reflog, justified by a measurement: **a commit that
+arrives by `git fetch` does not enter `HEAD`'s or the branch's reflog.** That is
+true. It is also the wrong class. **`git checkout` of a fetched branch DOES write
+a reflog entry naming the other session's tip** — so merely _looking at_ another
+session's branch laundered their commits into "mine" and silenced the foreign
+alarm on precisely the scenario #81 exists for: two sessions on one branch.
+
+The config that was never varied was whether the branch had also been checked
+out. Same shape as the `pushurl` gap: one point sampled, a class named.
+
+So reflog entries are filtered to those that **created** a commit here — only a
+`commit` entry is evidence of local authorship; `checkout`, `reset`, `merge`,
+`pull`, `rebase` and `cherry-pick` all record a commit arriving or being copied.
+This fails toward more refusals, never fewer.
+
+**Why not read the session id directly, which would not be a proxy at all?**
+Measured, and it does not work. `COPILOT_AGENT_SESSION_ID` exists in the agent's
+environment, but it holds a **different id from the one written into the
+`Copilot-Session` trailers** — so comparing against it would classify every
+commit as foreign, including the pusher's own. It is also process-scoped, so a
+human pushing from an ordinary terminal has nothing at all. The direct answer is
+not merely unavailable; taking it would have been worse than the proxy.
+
+## The decision function's purity is now enforced, not promised
+
+`evaluateRefUpdate` must stay pure because `protected-ref` and the delete refusal
+are decided **inside** it: anything deciding upstream — a fallback allow in
+`main()`, or a fact the function fetches for itself — bypasses the highest
+-severity checks. That rule was protected by nothing but the author noticing, and
+it had already been broken once with nothing to catch it, because the unit tests
+supply `facts` directly.
+
+The control runs the decision function in a process with **`PATH` emptied**, so
+`git` cannot be resolved at all, and drives every branch. The first attempt at
+this control patched `execFileSync` on the `child_process` namespace before
+importing the guard — and **did not work**: a named ESM import is a snapshot, so
+the guard kept the original binding. It passed against a decision function
+deliberately made to shell out. Caught only by mutating the code and watching the
+test stay green, which is the reason to mutate every new assertion: a control
+that cannot fail is indistinguishable from one that works.
+
 ## What installing the hook does to the clone
 
 Stated because it is invisible and it fails in the unguarded direction.

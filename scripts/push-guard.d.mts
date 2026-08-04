@@ -79,6 +79,9 @@ export function isAncestor(
 export function hasCommit(sha: string): boolean;
 export function readCommits(range: string[]): Required<GuardedCommit>[];
 export function readReflogSessions(localRef?: string): Set<string>;
+export function readReflogEntries(
+  ref: string,
+): { reflogSubject: string; sessions: string[] }[];
 export function gatherFacts(
   update: RefUpdate,
   remote: string,

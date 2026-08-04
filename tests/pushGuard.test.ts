@@ -22,6 +22,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   afterAll,
   afterEach,
@@ -736,6 +737,218 @@ describe('a solo rollback of ALL of its own work is not reported as a second wri
     expect(stderr).toContain('push-guard.unacknowledged-discard');
     expect(stderr).not.toContain('push-guard.foreign-session');
     expect(stderr).not.toContain('another session');
+    expect(stderr).not.toContain(ACK_FOREIGN_ENV);
+  });
+});
+
+describe('the decision function is pure, and that is enforced rather than promised', () => {
+  // Check order is load-bearing: `protected-ref` and the delete refusal are
+  // decided inside `evaluateRefUpdate`, so anything that decides upstream of it
+  // — a fallback allow in `main()`, or a fact the function fetches for itself —
+  // can bypass the highest-severity checks. All git I/O therefore belongs in
+  // `gatherFacts`.
+  //
+  // That rule was previously protected by nothing but the author noticing. It
+  // had already been broken once, and nothing would have caught it: the unit
+  // tests supply `facts` directly, so a decision function that had quietly
+  // started shelling out would have stayed green against the fixtures. A
+  // commitment is not a control, including when the thing it constrains is us.
+  //
+  // So: run it in a process where `git` cannot be resolved at all — PATH is
+  // emptied, which is an environment fact rather than a module patch. The first
+  // attempt at this control patched `execFileSync` on the child_process
+  // namespace before importing the guard, and it did not work: a named ESM
+  // import is a snapshot, so the guard kept the original binding and the test
+  // passed against a decision function that had been deliberately made to shell
+  // out. An assertion that cannot fail is not a control either, which is why
+  // this one is mutation-checked below in the same way everything else is.
+  it('reaches every verdict in a process where git cannot be resolved', () => {
+    const guard = pathToFileURL(
+      path.join(repoRoot, 'scripts', 'push-guard.mjs'),
+    ).href;
+    const probe = `
+      const { evaluateRefUpdate } = await import(${JSON.stringify(guard)});
+      const base = {
+        localRef: 'refs/heads/feature',
+        localSha: ${JSON.stringify(LOCAL)},
+        remoteRef: 'refs/heads/feature',
+        remoteSha: ${JSON.stringify(THEIRS)},
+      };
+      const facts = (over) => ({
+        liveRemoteSha: ${JSON.stringify(THEIRS)},
+        liveQueryFailed: false,
+        liveQueryError: '',
+        liveTipPresent: true,
+        provablyFastForward: null,
+        discarded: [],
+        ownSessions: [],
+        ack: '',
+        ackForeign: '',
+        ...over,
+      });
+      const codes = [
+        evaluateRefUpdate({ ...base, remoteRef: 'refs/heads/development' }, facts()),
+        evaluateRefUpdate(base, facts({ liveQueryFailed: true, provablyFastForward: true })),
+        evaluateRefUpdate(base, facts({ liveQueryFailed: true, provablyFastForward: false })),
+        evaluateRefUpdate(base, facts({ liveQueryFailed: true, provablyFastForward: null })),
+        evaluateRefUpdate(base, facts({ liveRemoteSha: ${JSON.stringify(OURS)} })),
+        evaluateRefUpdate({ ...base, localSha: '0'.repeat(40) }, facts()),
+        evaluateRefUpdate(base, facts({ liveTipPresent: false })),
+        evaluateRefUpdate(base, facts()),
+        evaluateRefUpdate(
+          base,
+          facts({ discarded: [{ sha: ${JSON.stringify(THEIRS)}, subject: 'x', sessions: ['other'] }] }),
+        ),
+      ].map((result) => result.code);
+      console.log(JSON.stringify(codes));
+    `;
+
+    const blinded = { ...process.env };
+    for (const key of Object.keys(blinded)) {
+      if (key.toUpperCase() === 'PATH') blinded[key] = '';
+    }
+
+    const result = spawnSync(
+      process.execPath,
+      ['--input-type=module', '-e', probe],
+      {
+        encoding: 'utf8',
+        env: blinded,
+      },
+    );
+
+    expect(result.stderr).not.toContain('ENOENT');
+    expect(result.status).toBe(0);
+
+    const codes = JSON.parse(result.stdout.trim()) as string[];
+    // Not merely "it did not crash": the branches actually ran, and the ones
+    // that must be decided here rather than upstream are among them.
+    expect(codes).toContain('push-guard.protected-ref');
+    expect(codes).toContain('push-guard.unverified-fast-forward');
+    expect(codes).toContain('push-guard.unverifiable-remote');
+    expect(new Set(codes).size).toBeGreaterThan(4);
+  });
+});
+
+describe('checking out another session\u2019s branch does not launder it into your own', () => {
+  // N7, and the reason the reflog needed a filter rather than just a reflog.
+  // "A fetched commit does not enter the reflog" was measured and is true — and
+  // it was the wrong class. `git checkout` of a fetched branch DOES write an
+  // entry naming the other session's tip, which put their id into the owned set
+  // and silenced the foreign alarm on the exact scenario #81 is about: two
+  // sessions on one branch. The first measurement sampled `fetch` and named the
+  // class "arrives from another session"; the config that was never varied was
+  // whether the branch had also been checked out.
+  let root: string;
+  let remote: string;
+  let sessionA: string;
+  let sessionB: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-launder-'));
+    remote = path.join(root, 'remote.git');
+    sessionA = path.join(root, 'session-a');
+    sessionB = path.join(root, 'session-b');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, sessionA], root);
+    configure(sessionA);
+    git(['checkout', '-b', 'feature'], sessionA);
+    commit(sessionA, 'base', 'session-base');
+    git(['push', '--no-verify', '-u', 'origin', 'feature'], sessionA);
+    commit(sessionA, 'theirs one', 'session-theirs');
+    commit(sessionA, 'theirs two', 'session-theirs');
+    git(['push', '--no-verify', 'origin', 'feature'], sessionA);
+
+    git(['clone', remote, sessionB], root);
+    configure(sessionB);
+    // The laundering step: B never wrote any of this, it only looked at it.
+    git(['checkout', '-B', 'feature', 'origin/feature'], sessionB);
+    git(['reset', '--hard', 'HEAD~2'], sessionB);
+    git(
+      ['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)],
+      sessionB,
+    );
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('still names the other session after their branch has been checked out here', () => {
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force-with-lease', 'origin', 'feature'], sessionB);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    expect(stderr).toContain('push-guard.foreign-session');
+    expect(stderr).toContain('another session');
+    expect(stderr).toContain('session-theirs');
+    expect(stderr).toContain(ACK_FOREIGN_ENV);
+  });
+});
+
+describe('rebasing your own work does not cost you ownership of it', () => {
+  // The passing side of the creation filter, and the case that filter could
+  // plausibly break: a rebase rewrites every commit through `rebase (pick)`
+  // entries, not `commit` ones. Ownership survives because the rewritten copies
+  // carry the same session id as the originals, whose `commit` entries are still
+  // in the reflog. That is a prediction with a falsifiable output, so it is
+  // tested rather than reasoned — a stricter filter that dropped it would refuse
+  // a solo session's rollback of its own rebased branch.
+  let root: string;
+  let remote: string;
+  let work: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-rebase-'));
+    remote = path.join(root, 'remote.git');
+    work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, work], root);
+    configure(work);
+    commit(work, 'base', 'session-base');
+    git(['push', '--no-verify', '-u', 'origin', 'development'], work);
+
+    git(['checkout', '-b', 'feature'], work);
+    commit(work, 'mine one', 'session-mine');
+    commit(work, 'mine two', 'session-mine');
+
+    git(['checkout', 'development'], work);
+    commit(work, 'upstream moved', 'session-base');
+    git(['push', '--no-verify', 'origin', 'development'], work);
+
+    git(['checkout', 'feature'], work);
+    git(['rebase', 'development'], work);
+    git(['push', '--no-verify', '-u', 'origin', 'feature'], work);
+
+    git(['reset', '--hard', 'HEAD~2'], work);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('refuses the full rollback as an unacknowledged discard, not as another session', () => {
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force-with-lease', 'origin', 'feature'], work);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    expect(stderr).toContain('push-guard.unacknowledged-discard');
+    expect(stderr).not.toContain('push-guard.foreign-session');
     expect(stderr).not.toContain(ACK_FOREIGN_ENV);
   });
 });

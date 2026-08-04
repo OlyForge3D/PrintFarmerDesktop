@@ -419,22 +419,34 @@ const FIELD = '\u001f';
  * exactly what is being removed, so the guard called the pusher's own work
  * another session's.
  *
- * The reflog answers the real question. A commit that arrived by `git fetch`
- * does NOT enter `HEAD`'s or the branch's reflog — measured, not assumed — so
- * the commits another session pushed and this one merely fetched are still
- * correctly foreign. Both reflogs are read: the branch's covers commits made on
- * it, HEAD's covers work that passed through this worktree on any branch.
+ * The reflog answers the real question, but only if the right entries are read.
+ * "A fetched commit does not enter the reflog" is true and was measured — and it
+ * is the wrong class. `git checkout` of another session's fetched branch DOES
+ * write a reflog entry naming their tip, which laundered their commits into
+ * "mine" and silenced the foreign alarm on the exact scenario #81 is about. That
+ * was measured too, after the first measurement had already been believed.
  *
- * If reflogs are disabled the set is empty, which fails toward MORE refusals,
- * not fewer.
+ * So entries are filtered to the ones that CREATED a commit here. Only a `commit`
+ * reflog entry is evidence of local authorship; `checkout`, `reset`, `merge`,
+ * `pull`, `rebase` and `cherry-pick` all record a commit merely arriving or
+ * being copied. Restricting to creation fails toward MORE refusals, never fewer,
+ * and it survives a rebase of your own work: the rewritten copies carry the same
+ * session id as the originals, whose `commit` entries are still in the reflog.
+ *
+ * Both reflogs are read: the branch's covers commits made on it, HEAD's covers
+ * work that passed through this worktree on any branch. If reflogs are disabled
+ * the set is empty, which again fails toward MORE refusals.
  */
+const CREATED_HERE = /^commit\b/;
+
 export function readReflogSessions(localRef) {
   const refs = ['HEAD', ...(localRef ? [localRef] : [])];
   const sessions = new Set();
   for (const ref of refs) {
     try {
-      for (const commit of readCommits(['-g', '--max-count=1000', ref])) {
-        for (const session of commit.sessions) sessions.add(session);
+      for (const entry of readReflogEntries(ref)) {
+        if (!CREATED_HERE.test(entry.reflogSubject)) continue;
+        for (const session of entry.sessions) sessions.add(session);
       }
     } catch {
       // A ref with no reflog is not evidence of anything; the other one still
@@ -442,6 +454,35 @@ export function readReflogSessions(localRef) {
     }
   }
   return sessions;
+}
+
+/**
+ * Reflog entries with the reflog's own subject (`%gs`) alongside the commit's
+ * session trailers. The reflog subject is what distinguishes authorship from
+ * arrival, and it is not available from `readCommits`.
+ */
+export function readReflogEntries(ref) {
+  const output = git([
+    'log',
+    '-g',
+    '--max-count=1000',
+    `--format=%gs${FIELD}%(trailers:key=Copilot-Session,valueonly,separator=%x2c)${RECORD}`,
+    ref,
+  ]);
+  return output
+    .split(RECORD)
+    .map((record) => record.trim())
+    .filter((record) => record.length > 0)
+    .map((record) => {
+      const [reflogSubject, trailers] = record.split(FIELD);
+      return {
+        reflogSubject: reflogSubject ?? '',
+        sessions: (trailers ?? '')
+          .split(',')
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0),
+      };
+    });
 }
 
 export function readCommits(range) {
