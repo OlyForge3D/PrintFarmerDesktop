@@ -110,6 +110,7 @@ import {
   CALIBRATION_LOG_COMPONENTS,
   CALIBRATION_LOG_ERROR_CODES,
   CALIBRATION_LOG_FIELDS,
+  CALIBRATION_LOG_LEVELS,
   CALIBRATION_LOG_OUTCOMES,
 } from '../src/main/calibrationLog.js';
 
@@ -255,6 +256,7 @@ function knownFieldNames(): Set<string> {
     ...CALIBRATION_LOG_FIELDS,
     ...CALIBRATION_LOG_ERROR_CODES,
     ...CALIBRATION_CORRELATION_ORIGINS,
+    ...CALIBRATION_LOG_LEVELS,
     ...CALIBRATION_LOG_OUTCOMES,
     ...CalibrationUnavailableReason.options,
     ...CalibrationOutboxUnavailableReason.options,
@@ -337,6 +339,50 @@ export function extractReferences(markdown: string): DocReferences {
     }
   }
   return references;
+}
+
+/**
+ * A definition bullet: `- \`token\` — meaning`, the shape the documentation uses
+ * to teach an operator what a value means. The em dash or hyphen is required so
+ * an ordinary bullet that merely opens with a code span is not treated as a
+ * definition.
+ *
+ * This exists because the three shape predicates above gate on **orthography**:
+ * `CAMEL_FIELD` requires a hump, so an enum member that is an ordinary English
+ * word — `resumed`, `continued`, `ok` — matches nothing, falls out of the
+ * `else if` chain in `extractReferences`, and is never checked against anything.
+ * The documentation can therefore define a value that does not exist and stay
+ * green. See issue #243.
+ *
+ * A definition bullet is the one position where a bare word is unambiguously a
+ * *value being taught* rather than incidental prose, which is what makes
+ * checking it safe without an exact-match allowlist. An allowlist would be
+ * useless here: a fictional word is absent from the allowlist exactly as a
+ * dropped word is, so filtering on membership cannot distinguish them.
+ */
+const VALUE_DEFINITION = /^[ \t]*[-*][ \t]+`([^`\n]+)`[ \t]+[\u2014-]/gm;
+
+/**
+ * Tokens the document defines in a bullet that none of the shape classes claim.
+ * These are the word-shaped values; the shaped ones are already covered by
+ * `extractReferences`.
+ */
+export function definedValues(markdown: string): string[] {
+  const prose = markdown.replace(FENCED_BLOCK, '');
+  const values: string[] = [];
+  for (const match of prose.matchAll(VALUE_DEFINITION)) {
+    const token = match[1]!.trim();
+    if (
+      CHANNEL.test(token) ||
+      DOTTED.test(token) ||
+      CAMEL_FIELD.test(token) ||
+      NPM_SCRIPT.test(token)
+    ) {
+      continue;
+    }
+    values.push(token);
+  }
+  return values;
 }
 
 // --- Fixtures ---------------------------------------------------------------
@@ -484,6 +530,52 @@ describe('calibration documentation reference integrity', () => {
     expect(events).toContain('sync.failed');
     expect(events).toContain('sync.completed');
     expect(events).toContain('sceneCache.recipeAdoptionFailed');
+  });
+
+  it('defines only values that exist, including word-shaped ones', () => {
+    // #243: the shape predicates gate on orthography, so `resumed` and
+    // `continued` were documented and unguarded while `notAttempted` was
+    // checked. A definition bullet is the position where a bare word is
+    // certainly a value, so it can be checked without guessing at shape.
+    const fields = knownFieldNames();
+    const defined = DOCUMENTS.flatMap((document) =>
+      definedValues(read(document.file)).map((token) => ({
+        label: document.label,
+        token,
+      })),
+    );
+    // Non-vacuity: if the bullet pattern stops matching, every assertion below
+    // passes over an empty list and the check silently stops constraining.
+    expect(
+      defined.length,
+      `only ${String(defined.length)} word-shaped value definitions were extracted; the definition-bullet pattern has stopped matching`,
+    ).toBeGreaterThanOrEqual(3);
+    const offenders = defined
+      .filter(({ token }) => !fields.has(token))
+      .map(({ label, token }) => `${label}: defines unknown value '${token}'`);
+    expect(
+      offenders,
+      `documentation defines a value the repository does not contain:\n  ${offenders.join('\n  ')}`,
+    ).toEqual([]);
+  });
+
+  it('documents every correlationOrigin an operator can see', () => {
+    // The other direction: the check above catches a value that does not exist,
+    // this one catches a value that exists and stopped being explained. Scoped
+    // to correlation origins because that is the vocabulary the guide teaches
+    // as a definition list; log levels and outcomes are ordinary English words
+    // the documentation does not enumerate, and requiring them would assert a
+    // convention the docs do not follow.
+    const guide = read(path.join(docsDir, ADMIN_GUIDE));
+    const defined = new Set(definedValues(guide));
+    const documented = new Set(extractReferences(guide).fields);
+    const missing = CALIBRATION_CORRELATION_ORIGINS.filter(
+      (origin) => !defined.has(origin) && !documented.has(origin),
+    );
+    expect(
+      missing,
+      `the admin guide no longer explains these correlationOrigin values: ${missing.join(', ')}`,
+    ).toEqual([]);
   });
 
   it('assembles a contract vocabulary that is neither empty nor truncated', () => {
