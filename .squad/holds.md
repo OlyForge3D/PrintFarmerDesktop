@@ -80,6 +80,44 @@ housekeeping.** If it looks stale, see the escalation path below rather than
 removing it because nothing seems to be happening — nothing seeming to happen is
 what a hold looks like.
 
+### When the PR merges or closes, the hold is over — remove the label
+
+**This is the one lift that is housekeeping, and it is the one nobody does.**
+Every other rule above exists to stop a stranger clearing a live assertion. This
+rule is the opposite: once the PR is merged or closed, the assertion _"do not
+merge this yet"_ is not contested, not delicate, and not lift-by-decision. It is
+simply **false**, and it is false permanently, because nothing downstream will
+ever revisit it.
+
+**Measured on this repository at the time of writing — the label was already
+80% false:**
+
+| PR   | state      | label still applied |
+| ---- | ---------- | ------------------- |
+| #154 | **MERGED** | yes                 |
+| #174 | **MERGED** | yes                 |
+| #172 | **MERGED** | yes                 |
+| #169 | **MERGED** | yes                 |
+| #175 | OPEN       | yes                 |
+
+**Four of five.** A reader who filters on this label to find what is being held
+gets four merged PRs and one live one, and cannot tell from the label which is
+which. **That is not a hold system with some stale entries; at 4:1 the label's
+majority meaning is "this was once held", which is not what it says.**
+
+**Why this specific failure is the likely one.** A hold is applied at a moment
+of attention and lifted at a moment of attention — but merging is the moment the
+author's attention _leaves_. The PR disappears from every open-PR view at the
+same instant the label becomes wrong, so the state that needs correcting becomes
+invisible in the same event that creates it. **No one is negligent; the workflow
+routes attention away from the defect at the exact moment it appears.**
+
+**So: lift on merge, as part of merging.** If you are the one pressing merge on a
+held PR, the hold has been resolved by definition — remove the label in the same
+action. If you find a merged PR still carrying it, **remove it without asking**;
+the escalation path above does not apply, because there is no live assertion to
+overwrite and no decision to take away from its owner.
+
 ### What a session encountering it must do
 
 1. **Stop.** Do not sync, rebase, force-push or merge the branch. Do not offer to
