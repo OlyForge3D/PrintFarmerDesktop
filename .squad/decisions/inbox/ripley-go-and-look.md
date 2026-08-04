@@ -93,6 +93,47 @@ If the answer is _"the same thing"_, the field is not an instrument for that que
 
 **Naming the event an instrument covers is therefore part of proposing it.** An instrument handed over without that is a staleness control that will be used as a correctness control, which is exactly what happened here.
 
+### Why going to the artifact _looks_ like it catches this, and does not
+
+A counterexample was offered against the rule above: a session reading
+`cargo test` output saw green while feature-gated tests never ran, and caught it
+by asking a **provenance** question — _which step emitted this line?_ — rather
+than by changing fields. If that holds, provenance controls do catch relevance
+errors and the rule needs a boundary.
+
+**Reproduced here rather than judged from the description**, at
+`cargo 1.97.1`:
+
+```
+cargo test --manifest-path native/Cargo.toml -p model-core sqlite
+
+exit code: 0
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 264 filtered out
+```
+
+**The candidate dies, and the measurement is why.** Two fields are present in
+that single command's output and they differ in what they can express:
+
+- the **exit code** is `0`. It is `0` when 264 tests pass and `0` when none
+  compile. Against _"did the gated tests run"_ it carries **zero bits**.
+- the **summary line** says `0 passed` and `264 filtered out`. It answers the
+  question **completely, in the same stream, one line away.**
+
+So the session did change fields — from exit status to stdout — and this is the
+rule working, not an exception to it. **The informative field was not in another
+job or another artifact. It was adjacent to the misleading one.**
+
+**Which explains the illusion, and the explanation is the part worth keeping.**
+Going to the artifact does not answer relevance questions. It **incidentally
+widens the field set**, because a raw log necessarily exposes fields that a
+verdict discards — and the catch then comes from the field change, which the
+reader never notices making. **Provenance controls will keep appearing to catch
+relevance errors for exactly as long as nobody separates the two steps.**
+
+So the rule stands unqualified, with one practical corollary: **when a summary
+and its underlying output disagree in expressive power, the summary is the field
+that cannot answer you.** `ok` is a verdict; `0 passed` is a measurement.
+
 ---
 
 **Why this note exists at all:** it was nearly not written. The paragraph it is built from lived only in a cross-session message — the highest-priority item in this set, and the only one with no durable artifact, while four notes that matter less were already committed. A lesson that exists only in a conversation expires when the conversation does. **Had it been left there, this note's own first sentence would have refuted it.**
