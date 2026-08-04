@@ -158,9 +158,14 @@ The live finding is the same diamond-DAG row count the log already records. Its 
 fixed `.squad/skills/test-discipline/SKILL.md` and left a third rendering in
 `docs/security/THREAT_MODEL.md` § _T2.2 — Structurally valid input that reaches an
 untested code path (A1)_ still reading `32,767 rows`. **It was resolved by measurement,
-not by majority** — the two agreeing `49,150`s are dependent, the log itself recording
-that the figure enters the shared token set by being written into the skills file to
-repair it, so by this policy's own rule their agreement grades ⚠️ and could not decide
+not by majority** — the two agreeing `49,150`s are dependent: per `.squad/decisions.md` →
+_2026-07-26 — Diffing two renderings of one incident finds what neither rendering's own
+review found_, the figure is shared between the two documents because the repair wrote it
+into the skills file. **That wording is a paraphrase, and _"shared token set"_ was this
+file's phrase, not the log's** — an earlier version of this sentence attributed it to the
+log without an anchor, so a reader grepping the log for it found nothing and had no way to
+tell an invented citation from a real one. Cited by heading here for that reason. So by
+this policy's own rule their agreement grades ⚠️ and could not decide
 it. Rebuilding `diamondDag(14)` from `tests/viewer.partTree.test.tsx` and walking it with
 a path-local `seen` set, measuring each population separately, is what settled it: 49,150
 rows total, 32,767 emitted for `m`-chain nodes and 16,383 for `s` nodes, against 16,384
@@ -236,7 +241,9 @@ revision, so rows are visits and uncapped. That commit is on no ref; it was reco
 **A convergence was claimed here and is withdrawn with the finding it supported.** This
 note previously reported that a second session had reached the same conclusion about the
 log's phrasing by a different route — reading `a32ecf9`'s wording, with no harness and no
-walk — and offered it as the kind of independent convergence the log asks for. Both halves
+walk — and offered it as the kind of independent convergence `.squad/decisions.md` →
+_2026-07-26 — Diffing two renderings of one incident finds what neither rendering's own
+review found_ asks for. Both halves
 fail. The conclusion was false, as the retraction above records; and that route had
 consumed this run's figures **by direct reading**, which its own author disclosed. It was a
 dependent rendering with the dependency living in prose rather than in a commit — harder to
