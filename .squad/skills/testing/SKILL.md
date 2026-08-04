@@ -78,9 +78,12 @@ Seven required checks must pass:
 - Dependency advisories
 
 **This list is a transcription, and the authoritative source is the branch-protection
-endpoint — not this file.** It has been wrong before (see #152: it named a packaging job that
-has never existed, and omitted `Dependency advisories`), and every agent reads this file on
-activation, so a stale copy here misleads everyone at once. Re-verify rather than trust it:
+endpoint — not this file.** It has been wrong before (see #152: it named the packaging job by a
+name `ci.yml` had already renamed, and omitted `Dependency advisories`), and every agent reads
+this file on activation, so a stale copy here misleads everyone at once. That transcription was
+accurate the day it was written — the job was renamed afterwards, in an unrelated commit, and
+nothing updated this file — so re-verify even when the list looks settled. A citation does not
+have to be wrong when written to be wrong now:
 
 ```powershell
 gh api repos/OlyForge3D/PrintFarmerDesktop/branches/development/protection `

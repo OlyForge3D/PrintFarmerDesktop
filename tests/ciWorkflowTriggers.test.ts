@@ -299,9 +299,9 @@ describe('CI is safe to run under a merge queue', () => {
  * the moment anything above the list changes length, and its failure mode is
  * the worst one available: it reports contexts as omitted or fictional while
  * the list is correct and only the reader moved. That is #152's own symptom
- * ("named a job that never existed, omitted `Dependency advisories`") raised
- * against a file that is right, which sends the next maintainer to edit the
- * correct artifact.
+ * ("named a job `ci.yml` no longer emits, omitted `Dependency advisories`")
+ * raised against a file that is right, which sends the next maintainer to edit
+ * the correct artifact.
  *
  * Throws rather than returning `[]` when the anchor is gone, so a renamed
  * heading fails by name instead of by an empty set that reads as agreement.
@@ -329,10 +329,12 @@ function documentedCiContexts(doc: string): string[] {
 }
 
 describe('the testing skill transcribes the contexts ci.yml emits', () => {
-  // #152: this list named a packaging job that has never existed, and omitted
-  // `Dependency advisories`. Nothing read the file, so the correction could
-  // regress without any test going red — three references to SKILL.md exist in
-  // `tests/`, all of them prose inside docblocks, none of them a read.
+  // #152: this list named a packaging job that `ci.yml` had renamed days
+  // earlier, and omitted `Dependency advisories`. The transcription was correct
+  // when written — a rename in an unrelated commit orphaned it, and nothing
+  // read the file, so the correction could regress without any test going red.
+  // Three references to SKILL.md exist in `tests/`, all of them prose inside
+  // docblocks, none of them a read. A rename is the mechanism this guards.
   //
   // This pins the doc against what ci.yml *emits*, which is in turn pinned
   // byte-identically above. Whether those are the *required* contexts lives in
