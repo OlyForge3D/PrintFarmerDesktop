@@ -14,7 +14,9 @@
  *   1. the process survives — no `unhandledRejection` is reported;
  *   2. the failure is observable — a record naming it is emitted;
  *   3. that record is caused by the rejection — it is absent when initialize
- *      resolves, so claim 2 cannot be satisfied by an unconditional log.
+ *      resolves, so claim 2 cannot be satisfied by an unconditional log;
+ *   4. the rejection is still delivered — an IPC handler that awaits
+ *      `retargetReady` reports the failure rather than proceeding.
  *
  * Claim 1 is an absence, so it is worthless without the control below: an
  * `unhandledRejection` listener that never fires satisfies `toEqual([])` for
@@ -22,21 +24,21 @@
  * Node does not report at all. The control rejects a promise with no handler in
  * the same harness and requires the listener to see it.
  *
- * Scope boundary, because a green here means less than it looks. All three
- * claims are about the startup path and none of them invokes an awaiter, so
- * this file cannot distinguish "the rejection is handled and still delivered
- * to its awaiters" from "the rejection is swallowed and every awaiting handler
- * resolves as though initialize succeeded" — which is a worse defect than the
- * one guarded here. Reassigning `retargetReady` to the caught promise leaves
- * all three specs below green. Measured, not assumed.
+ * Claim 4 exists because the first three do not imply it. All three are about
+ * the startup path, and a suite that only registers handlers cannot distinguish
+ * "the rejection is handled and still delivered to its awaiters" from "the
+ * rejection is swallowed and every awaiting handler resolves as though
+ * initialize succeeded" — which is the worse defect. Reassigning
+ * `retargetReady` to the caught promise left the first three green. Measured,
+ * not assumed, which is why claim 4 invokes an awaiter rather than asserting
+ * about one.
  *
- * That property is pinned in `retargetProfileFailureClassification.test.ts`,
- * which invokes `retarget:listProfiles`; the same reassignment fails three of
- * its specs — "reports the workspace, not the profile bundle, when the reaper
- * fails", "makes the two fault sources distinguishable to the operator", and
- * "reports the workspace on the import channel too". If that file ever stops
- * invoking a handler, the property loses its only guard and nothing here will
- * notice.
+ * `retargetProfileFailureClassification.test.ts` also kills that mutation, as a
+ * side effect of asserting which envelope a reaper failure produces. That is a
+ * different question, and depending on it made this file's coverage contingent
+ * on another file continuing to invoke a handler for reasons of its own. Claim
+ * 4 states the property here, where it is the subject rather than a by-product:
+ * an awaiter of a rejected `retargetReady` must observe the failure.
  *
  * @module retargetInitUnhandledRejection.test
  */
@@ -45,6 +47,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { captureCalibrationLogs } from '../src/main/calibrationLog.js';
 
 const INIT_FAILURE = 'EPERM: operation not permitted, rmdir';
+
+const LIST_CHANNEL = 'retarget:listProfiles';
+
+/**
+ * Pinned verbatim from `retargetWorkspaceFailure()` in `ipc.ts`. Asserting the
+ * message rather than the code because `internalError` is also what an
+ * unclassified profile fault returns, so the code alone cannot tell the two
+ * apart — and telling them apart is the whole point of claim 4.
+ */
+const WORKSPACE_FAILURE_MESSAGE =
+  'The retarget workspace could not be prepared.';
 
 const electronState = {
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -277,6 +290,61 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
           record.event === 'retargetArtifacts.startupInitializationFailed',
       ),
     ).toEqual([]);
+  });
+
+  /**
+   * Claim 4. Reaches `retargetReady` through an actual awaiter rather than
+   * asserting about one.
+   *
+   * `retarget:listProfiles` returns before touching the profile bundle when
+   * `retargetReady` rejects, so this needs no `targetProfiles` stub. That is
+   * deliberate: a `vi.mock` factory is a hard-coded claim about another
+   * module's export surface, and this file would then go red whenever that
+   * surface grew — the same failure mode as a count assertion, one level up.
+   */
+  async function invokeListProfiles(): Promise<{
+    status: string;
+    error?: { code?: string; message?: string };
+  }> {
+    const { registerIpcHandlers } = await loadIpcWithCapture();
+    registerIpcHandlers();
+
+    // Non-empty before asserting about contents: an empty handler map would
+    // make every claim below vacuous by satisfying it with nothing.
+    expect(electronState.handlers.size).toBeGreaterThan(0);
+    const handler = electronState.handlers.get(LIST_CHANNEL);
+    expect(handler).toBeDefined();
+
+    return (await handler?.({ sender: {} })) as {
+      status: string;
+      error?: { code?: string; message?: string };
+    };
+  }
+
+  it('delivers the rejection to a handler that awaits it', async () => {
+    const response = await invokeListProfiles();
+
+    // The property: an awaiter must see the failure. Swallowing the rejection
+    // at the creation site would let this resolve as though the workspace had
+    // been prepared, which is the defect claims 1-3 cannot see.
+    expect(response.status).toBe('error');
+    expect(response.error?.message).toBe(WORKSPACE_FAILURE_MESSAGE);
+  });
+
+  it('reports something other than the workspace when initialize succeeds', async () => {
+    // CONTROL for the spec above. Without it, "the handler reports the
+    // workspace failure" is satisfied by a handler that reports it
+    // unconditionally, and would survive deleting the await entirely.
+    retargetState.failInit = false;
+
+    const response = await invokeListProfiles();
+
+    // Deliberately not asserting `status === 'ok'`. Past the await, the handler
+    // calls the real `refreshTargetProfiles()`, whose outcome depends on what
+    // is on disk — and a control whose result depends on the environment is
+    // exactly the defect #267 filed against this suite. This assertion holds in
+    // both environments because it names the one envelope that must not appear.
+    expect(response.error?.message).not.toBe(WORKSPACE_FAILURE_MESSAGE);
   });
 });
 
