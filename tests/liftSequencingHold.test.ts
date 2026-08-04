@@ -10,6 +10,7 @@ import {
   evaluateHoldsToLift,
   fetchPullRequest,
   findMergedPullRequestsCarryingHolds,
+  formatBackfillSummary,
   formatLift,
   removeLabel,
 } from '../scripts/lift-hold-on-close.mjs';
@@ -170,6 +171,79 @@ describe('formatLift', () => {
       repository,
     );
     expect(text).toContain('Still carrying: hold:sequenced');
+  });
+});
+
+describe('formatBackfillSummary', () => {
+  // A sweep that lifts nothing has two causes that mean opposite things, and
+  // the interesting one is indistinguishable from a broken sweep unless the
+  // output says which it was. Measured on this repository: label removals on
+  // merged pull requests are not reconciled by the search index for hours, so
+  // rows this script has already cleared are offered back on every run. That
+  // is the steady state, not a fault.
+  it('separates "the index offered nothing" from "the objects were already clear"', () => {
+    const empty = formatBackfillSummary({
+      candidates: 0,
+      lifted: 0,
+      repository,
+    });
+    const phantom = formatBackfillSummary({
+      candidates: 5,
+      lifted: 0,
+      repository,
+    });
+
+    expect(empty).not.toEqual(phantom);
+    expect(empty).toContain('per the search index');
+    expect(phantom).toContain('5 candidate(s)');
+    expect(phantom).toContain('phantom rows, not missed work');
+  });
+
+  it('refuses to let an empty sweep read as proof, in either direction', () => {
+    // The earlier wording cautioned only about under-reporting — "not proof
+    // that none exists". The measured failure is over-reporting, so the
+    // opposite caveat is the one that was missing.
+    const empty = formatBackfillSummary({
+      candidates: 0,
+      lifted: 0,
+      repository,
+    });
+    expect(empty).toContain('neither proof that');
+    expect(empty).toContain('nor, when it returns rows, proof that any does');
+  });
+
+  it('points at the object, which is the authoritative reading', () => {
+    const phantom = formatBackfillSummary({
+      candidates: 2,
+      lifted: 0,
+      repository,
+    });
+    expect(phantom).toContain(
+      `gh api repos/${repository.owner}/${repository.repo}/issues/<N>/labels`,
+    );
+  });
+
+  it('reports a sweep that did lift something as ordinary work', () => {
+    const lifted = formatBackfillSummary({
+      candidates: 3,
+      lifted: 2,
+      repository,
+    });
+    expect(lifted).toContain('2 hold label(s) removed');
+    expect(lifted).not.toContain('phantom');
+  });
+
+  it('refuses a missing count rather than summarising it as zero', () => {
+    // `lifted: undefined` reaching the zero branch would print the phantom-row
+    // explanation for a sweep whose result is unknown — a missing value read as
+    // clearance, which is the failure this whole file exists to avoid.
+    expect(() =>
+      formatBackfillSummary({
+        candidates: 4,
+        lifted: undefined as unknown as number,
+        repository,
+      }),
+    ).toThrow(/must not be summarised as zero/);
   });
 });
 

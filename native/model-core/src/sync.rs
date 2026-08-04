@@ -1210,6 +1210,17 @@ impl CalibrationConflictKind {
     /// Append-only data (attempts, events, observations, photos, profile
     /// revisions) and exact measurements cannot be silently merged; no
     /// last-write-wins path exists.
+    ///
+    /// **This table is transcribed a second time in TypeScript**, by
+    /// `conflictResolutionsFor` in `src/main/calibrationService.ts`, which
+    /// tells the renderer which resolutions to offer. This side enforces; that
+    /// side advertises. They agreed for a while only because two authors were
+    /// careful (issue #304), so `tests/calibrationResolutionPolicyParity.test.ts`
+    /// now parses this function and compares it against the TypeScript answer
+    /// per kind. **Editing an arm here without editing that branch fails that
+    /// test**, which is the intended way to find out. The test asserts no
+    /// policy of its own: change both sides and it goes green without being
+    /// touched.
     pub fn available_resolutions(self) -> &'static [CalibrationConflictResolutionKind] {
         match self {
             Self::ProjectMetadata | Self::StepDraft => &[

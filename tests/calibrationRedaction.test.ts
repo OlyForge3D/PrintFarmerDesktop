@@ -51,8 +51,12 @@ import {
   it,
   vi,
 } from 'vitest';
-import { readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import osDefault from 'node:os';
+import * as osNamespace from 'node:os';
 import { IpcChannel } from '@shared/ipc';
 import {
   captureCalibrationLogs,
@@ -381,6 +385,92 @@ afterAll(() => {
   // roots are left in the OS temp directory and reaped by the *next* run, when
   // nothing is holding them. See the known non-fixes in the PR body.
   reapStaleTempRoots();
+});
+
+// ==========================================================================
+// The two mechanisms this file depends on, pinned (#228)
+// ==========================================================================
+
+/**
+ * Both were shipped correct and unprotected. Removing the ownership guard left
+ * all of this file's tests green despite being the exact edit that fails two
+ * runs in three concurrently, and the `node:os` mock had already been reverted
+ * once to a shape that did nothing and passed CI by luck.
+ *
+ * A fix with no failing-before is a fix that can be reverted with nothing
+ * noticing, so each assertion below is the *discriminating* one. "No error was
+ * thrown" is satisfied by a mechanism that never fired, which is exactly how
+ * the broken mock passed: an unfired mechanism and a working one look identical
+ * from the outside.
+ */
+describe('temp-root ownership and the node:os override', () => {
+  it('spares a live foreign root and reaps a dead one', async () => {
+    // A root is foreign-but-live only if some *other* process really is alive,
+    // so borrow real pids rather than assert against invented numbers.
+    const live = spawn(
+      process.execPath,
+      ['-e', 'setTimeout(() => {}, 60000)'],
+      {
+        stdio: 'ignore',
+      },
+    );
+    const doomed = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+    await once(doomed, 'exit');
+
+    expect(tempRootRef.path).not.toBe('');
+    expect(live.pid).toBeTypeOf('number');
+    expect(doomed.pid).toBeTypeOf('number');
+
+    const parent = path.dirname(tempRootRef.path);
+    const liveRoot = path.join(
+      parent,
+      `${TEMP_ROOT_PREFIX}${String(live.pid)}-probe`,
+    );
+    const deadRoot = path.join(
+      parent,
+      `${TEMP_ROOT_PREFIX}${String(doomed.pid)}-probe`,
+    );
+    mkdirSync(liveRoot, { recursive: true });
+    mkdirSync(deadRoot, { recursive: true });
+
+    try {
+      // Both exist going in, so a later `false` cannot be a directory that was
+      // never created.
+      expect(existsSync(liveRoot)).toBe(true);
+      expect(existsSync(deadRoot)).toBe(true);
+
+      reapStaleTempRoots();
+
+      // Fails if the ownership guard is dropped: the sweep would take a root
+      // belonging to a process still using it, which is the cross-checkout
+      // ENOENT this scheme replaced.
+      expect(existsSync(liveRoot)).toBe(true);
+      // Fails if reaping is disabled altogether, so the test above cannot be
+      // satisfied by a sweep that simply does nothing.
+      expect(existsSync(deadRoot)).toBe(false);
+    } finally {
+      live.kill();
+      rmSync(liveRoot, { recursive: true, force: true });
+      rmSync(deadRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('routes tmpdir into the private root through the default export', async () => {
+    const actual = await vi.importActual<typeof import('node:os')>('node:os');
+
+    expect(tempRootRef.path).not.toBe('');
+    // Control: the override only means something if it differs from the real
+    // temp dir. Without this, both assertions below would pass on a mock that
+    // returned the unmodified module.
+    expect(path.dirname(tempRootRef.path)).toBe(actual.tmpdir());
+
+    // `retargetArtifacts.ts` imports the *default* export, so this is the
+    // assertion that goes red on `return { ...patched, default: actual }` —
+    // the shape that shipped once and did nothing.
+    expect(path.dirname(osDefault.tmpdir())).toBe(tempRootRef.path);
+    // The named export is a separate binding and can regress independently.
+    expect(path.dirname(osNamespace.tmpdir())).toBe(tempRootRef.path);
+  });
 });
 
 // ==========================================================================
