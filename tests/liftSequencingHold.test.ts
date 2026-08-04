@@ -9,6 +9,7 @@ import {
   HOLD_LABEL_PREFIX,
   evaluateHoldsToLift,
   fetchPullRequest,
+  findMergedPullRequestsCarryingHolds,
   formatLift,
   removeLabel,
 } from '../scripts/lift-hold-on-close.mjs';
@@ -270,6 +271,78 @@ describe('removeLabel', () => {
       }) as unknown as typeof fetch,
     });
     expect(seen).toContain('hold%3Asequenced');
+  });
+});
+
+describe('findMergedPullRequestsCarryingHolds', () => {
+  // The cohort that predates the workflow. An event-triggered check evaluates
+  // transitions, not states, so a pull request that merged before the check
+  // was deployed emits no further event and is never evaluated. A missing
+  // check run is not a failing check, so nothing surfaces it.
+  it('returns the merged pull requests the trigger can never reach', async () => {
+    const numbers = await findMergedPullRequestsCarryingHolds({
+      ...repository,
+      token: 't',
+      fetchImpl: respondWith({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: () => Promise.resolve({ items: [{ number: 175 }] }),
+      }),
+    });
+    expect(numbers).toEqual([175]);
+  });
+
+  it('refuses an unreadable search payload rather than reporting nothing to backfill', async () => {
+    // "Nothing to backfill" and "could not tell" must not be the same result.
+    await expect(
+      findMergedPullRequestsCarryingHolds({
+        ...repository,
+        token: 't',
+        fetchImpl: respondWith({
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          json: () => Promise.resolve({ message: 'rate limited' }),
+        }),
+      }),
+    ).rejects.toThrow(/nothing to backfill/);
+  });
+
+  it('fails on a non-ok search response', async () => {
+    await expect(
+      findMergedPullRequestsCarryingHolds({
+        ...repository,
+        token: 't',
+        fetchImpl: respondWith({
+          ok: false,
+          status: 403,
+          statusText: 'Forbidden',
+        }),
+      }),
+    ).rejects.toThrow(/403/);
+  });
+
+  it('searches for merged pull requests, not open ones', async () => {
+    // The defect being counted is holds surviving INTO merged, so a filter of
+    // is:open excludes the entire population by construction. That is not a
+    // hypothetical: the same count is 0 with --state open and 5 with all.
+    let seen = '';
+    await findMergedPullRequestsCarryingHolds({
+      ...repository,
+      token: 't',
+      fetchImpl: ((url: string) => {
+        seen = url;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          json: () => Promise.resolve({ items: [] }),
+        } as unknown as Response);
+      }) as unknown as typeof fetch,
+    });
+    expect(decodeURIComponent(seen)).toContain('is:merged');
+    expect(decodeURIComponent(seen)).not.toContain('is:open');
   });
 });
 

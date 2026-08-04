@@ -130,14 +130,34 @@ falsified five and a half hours later by an event nobody was watching for. The
 defect regenerates on every merge, so the correct action has a shorter shelf
 life than the interval between sweeps. That is not something diligence fixes.
 
-**One consequence to know about.** Removing a label erases it from the label
-list _and from label search_ — a label is a current-state field, not a record.
-The removal survives only in the events timeline:
+**One consequence to know about, and it matters more now that the lift is
+automatic.**
+
+> **Any audit of holds must read the timeline, not the current labels.**
+> Current labels are a mutable summary of an immutable log.
+
+Removing a label erases it from the label list _and from label search_ — a
+label is a current-state field, not a record. The `labeled` and `unlabeled`
+events in the timeline are permanent and survive removal, so the timeline is the
+only durable evidence that a hold ever existed:
 
 ```powershell
 gh api repos/OlyForge3D/PrintFarmerDesktop/issues/<N>/events `
   --jq '.[]|select(.label.name|startswith("hold:"))|"\(.created_at) \(.event) \(.label.name)"'
 ```
+
+**The automation above will erase this evidence class from the label field by
+design**, which is correct — the label's job is to say what is true now — but it
+means an auditor who queries labels will increasingly find nothing and conclude
+no hold was ever applied. **That conclusion will be wrong, and it will get more
+wrong over time.** Query the events.
+
+**A worked example of why the distinction is not academic.** A count of held PRs
+taken with `--state open` returns zero, while the same query with `--state all`
+returns five. The defect being counted is _holds surviving into merged_, so the
+filter that felt natural — look at open PRs — excludes the entire population by
+construction. **The defect and the failure to measure it have the same cause:
+merging is the moment attention leaves.**
 
 If you find a **closed but unmerged** PR still carrying the label, that is the
 case the workflow deliberately does not touch. Decide whether it will be

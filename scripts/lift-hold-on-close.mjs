@@ -203,6 +203,64 @@ export async function removeLabel({
   return response.status !== 404;
 }
 
+/**
+ * Every merged pull request still carrying a hold label.
+ *
+ * This exists because of a property of event-triggered checks that is easy to
+ * miss and fails in the unsafe direction:
+ *
+ *   An event-triggered check evaluates TRANSITIONS, not STATES. Any pull
+ *   request whose transition predates the check's deployment is permanently
+ *   unevaluated -- and a missing check run is not a failing check.
+ *
+ * The workflow beside this script fires on `pull_request: closed`. A pull
+ * request that merged before it was deployed will never emit another `closed`
+ * event, so its hold label survives forever with nothing to remove it. That
+ * cohort is largest on the day the check lands, which is exactly when
+ * confidence in a new gate is highest.
+ *
+ * Measured instance: #175 was labelled at 2026-08-03T23:27:43Z, never
+ * unlabelled, and merged at 2026-08-04T13:21:27Z -- hours before this workflow
+ * existed. It is in the invisible cohort by construction, and no amount of
+ * correct behaviour from the trigger will ever reach it.
+ *
+ * Uses the search API, whose index is eventually consistent and has been
+ * measured lagging the object by over an hour on this repository. That is
+ * acceptable *here* and nowhere else in this file: a sweep that misses a pull
+ * request leaves a stale label for the next sweep, whereas the per-event path
+ * must never mistake a stale read for a decision. Each hit is confirmed
+ * against the object before anything is removed.
+ */
+export async function findMergedPullRequestsCarryingHolds({
+  owner,
+  repo,
+  token,
+  fetchImpl = fetch,
+}) {
+  const query = `repo:${owner}/${repo} is:pr is:merged label:${HOLD_LABEL_PREFIX}sequenced`;
+  const response = await fetchImpl(
+    `https://api.github.com/search/issues?q=${encodeURIComponent(query)}&per_page=100`,
+    {
+      headers: {
+        authorization: `bearer ${token}`,
+        accept: 'application/vnd.github+json',
+      },
+    },
+  );
+  if (!response.ok) {
+    throw new Error(
+      `search returned ${response.status} ${response.statusText}`,
+    );
+  }
+  const payload = await response.json();
+  if (!Array.isArray(payload?.items)) {
+    throw new Error(
+      'search payload has no items array; refusing to report "nothing to backfill" from an unreadable response',
+    );
+  }
+  return payload.items.map((item) => item.number);
+}
+
 async function main() {
   const token = process.env.GITHUB_TOKEN;
   if (!token) {
@@ -211,6 +269,41 @@ async function main() {
 
   const repository = resolveRepository(process.env);
   const { owner, repo } = repository;
+
+  // The backfill is a separate, explicit invocation rather than something the
+  // per-event path does opportunistically. A sweep decides about pull requests
+  // nobody asked it to look at, so it must be a thing someone chose to run.
+  if (process.argv.includes('--backfill')) {
+    const candidates = await findMergedPullRequestsCarryingHolds({
+      owner,
+      repo,
+      token,
+    });
+    if (candidates.length === 0) {
+      console.log(
+        'Backfill: no merged pull request carries a hold label, per the search index.\n' +
+          'The index lags the objects, so this is not proof that none exists.',
+      );
+      return;
+    }
+    for (const prNumber of candidates) {
+      // Re-read at the object. The search index is the thing that told us to
+      // look; it is not allowed to be the thing that justifies the write.
+      const { labels, merged } = await fetchPullRequest({
+        owner,
+        repo,
+        prNumber,
+        token,
+      });
+      const decision = evaluateHoldsToLift({ labels, merged });
+      for (const label of decision.lift) {
+        await removeLabel({ owner, repo, prNumber, label, token });
+      }
+      console.log(formatLift(decision, prNumber, repository));
+    }
+    return;
+  }
+
   const prNumber = resolvePullRequestNumber(process.env);
   const { labels, merged } = await fetchPullRequest({
     owner,

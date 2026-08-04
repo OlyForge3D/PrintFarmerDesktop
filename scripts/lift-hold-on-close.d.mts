@@ -43,6 +43,18 @@ export function fetchPullRequest(options: {
   fetchImpl?: typeof fetch;
 }): Promise<{ labels: string[]; merged: boolean }>;
 
+/**
+ * Merged pull requests still carrying a hold label — the cohort that landed
+ * before the event-triggered workflow existed and is therefore permanently
+ * unevaluated by it.
+ */
+export function findMergedPullRequestsCarryingHolds(options: {
+  owner: string;
+  repo: string;
+  token: string;
+  fetchImpl?: typeof fetch;
+}): Promise<number[]>;
+
 /** Resolves true when the label was removed, false when it was already gone. */
 export function removeLabel(options: {
   owner: string;
