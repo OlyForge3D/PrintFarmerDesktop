@@ -26,6 +26,13 @@ What that section requires, for any agent running the check:
   branch sat behind, three new renderings of the same quantity landed on the mainline, and
   an enumeration at the branch head would have returned the earlier set and reported it
   closed. A branch that is behind is a stale enumeration by construction.
+- **Read the hits; do not count them.** A search cannot tell a **rendering** from a **mention**,
+  and a retraction is the worst case because it necessarily contains the sentence it
+  withdraws — **a search for a refuted claim scores a hit on the document that refuted it.**
+  Mechanical filters are worth running and `scripts/measure-mention-filter.mjs` measures two,
+  but a filter is **triage that narrows the reading, never a discriminator that licenses a
+  count**: its precision can be checked by printing what it removed, while its recall cannot
+  be established without reading what it kept.
 - **Establish precedence by ancestry, not by timestamps.** Two commits minutes apart can
   sit on branches that never met, and a squash merge lands content without the commit — so
   a claim that something was written _after_ a correction was available needs
