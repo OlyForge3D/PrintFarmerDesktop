@@ -18,9 +18,15 @@ What that section requires, for any agent running the check:
   which ones disagree. **Corrections do not propagate to renderings that do not yet
   exist**: a repair fixes the copies visible at the time, and the next author reaches for
   whichever copy is nearest, which may be a superseded one. The live finding in this
-  batch is exactly that shape — a figure re-rendered into a new document 45 minutes after
-  its correction was published. No diff between the copies known at repair time could
-  have seen it; enumeration at the current head is what does.
+  batch is that shape: when `32,767 rows` was written into the threat model, the correct
+  total for the same fixture had been in the tree that commit was written against for
+  **4h46m27s**. No diff between the copies known at repair time could have seen it;
+  enumeration at the current head is what does.
+- **Establish precedence by ancestry, not by timestamps.** Two commits minutes apart can
+  sit on branches that never met, and a squash merge lands content without the commit — so
+  a claim that something was written _after_ a correction was available needs
+  `--is-ancestor`, or the correction present in the rendering's own parent tree. This rule
+  is here because this batch published the inference without it and had to retract it.
 - Publish the extraction rule and the head with the result, and run a control that can
   report non-empty.
 - Report a disagreement against the **pair or the set**, never against whichever member
@@ -45,7 +51,13 @@ What that section requires, for any agent running the check:
   corroboration — routes count by **class of mechanism**, not by author, so three people who
   each rebuild the fixture and walk it have replicated one method rather than corroborated
   it. **Copying from the object is verification; copying from another rendering
-  is contagion.**
+  is contagion.** Two cautions that cost this batch a round: a derivation or a
+  re-measurement is **not** evidence of independence — it shows the value is right, and a
+  pair can be a copy of a copy and still be right — and once the value is derived from the
+  object the independence question **has no work left**, because you stop reasoning from
+  agreement and check each rendering against ground truth individually. The diff is
+  superseded, not validated. ✅ therefore asserts conformance to a named non-rendering
+  artifact and nothing about authorship.
 - **A symmetric diff establishes divergence, not truth.** It cannot say which rendering
   is right, so never resolve by counting renderings: two that agree are **one** if they
   are dependent. Derive the value from the thing that is not a rendering — the code, the
