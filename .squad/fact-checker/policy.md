@@ -86,6 +86,26 @@ So **⚠️ Unverified is the default for a clean result**, and a clean diff on 
 
 **Two axes, recorded separately.** Because ✅ is this narrow, the grade alone under-describes a run. Record the **grade** (what the agreement is worth) and the **resolution** (whether the value was settled, and against what) as separate lines. Otherwise ⚠️ collapses two very different states — _nothing was established_ and _the value was derived from the object and every rendering conforms_ — and the second will eventually be reported as the first, or the grade will be inflated to avoid saying it. **A run that derives the value from the object and finds every rendering conforming is a good run that grades ⚠️.** Say both.
 
+**A citation must be reachable by the reader, not by the author.** An author's object store is
+not the repository. Where several worktrees share one object database, every superseded head
+resolves for whoever created it forever and in a fresh clone never, and the difference has **no
+local symptom**: the lookup does not error, hesitate or warn, so the one party responsible for a
+pin is the one party who cannot detect that it has died. Rebases, squash merges and a
+coordinator's `update-branch` all orphan pins **after** they were correctly written, so this is
+not a discipline failure and cannot be fixed by pinning more carefully. Three consequences.
+**First, whether a pin is reachable depends on the reader model, and the model must be stated:**
+reachability from `refs/heads`, from the whole ref advertisement, and from the revisions a
+reader of one pull request actually holds give different counts of the same artifact, and every
+one of them is a correct answer to a different question. **Second, a dead pin is repairable by
+substitution rather than lost** — a rewritten commit usually has a surviving twin under
+`git patch-id --stable`, and where the citation is about a file's contents the repair is only
+complete once the twin is shown to carry **the same blob**, because a twin shares its patch and
+need not share its tree. **Third, an unreachable citation is acceptable when it is declared and
+routed, and never when it is merely correct**: state the ref the object is reachable from, or
+state that the object's absence is itself the finding. Enforced by
+`scripts/check-citation-reachability.mjs`, which fails on any cited revision that is neither
+reachable, twinned, nor declared — because a rule of this kind that is checked by hand is
+checked from exactly the position that cannot see the defect.
 **A SHA identifies an object, not the party who cited it — so a set of SHAs carries no attribution.** Two sessions examining one pull request cite the **same** identifiers, because the identifiers belong to the objects and not to the readers. It follows that **an enumeration cannot be attributed to an author by its contents**, and that a table of review commit ids looks identical whoever assembled it. Measured on this batch: a coordinator attributed an eight-row enumeration to this session on the strength of the SHAs it contained; **six of the eight are the `commit_id` fields of another party's reviews**, and the enumeration was that party's. **The tokens matched because they were always going to match.** This is the common-mode rule a third time — two parties reading one ref at one moment produce one reading; two parties citing one object produce one token set — and the general form is that **agreement between artifacts is only evidence when the artifacts could have disagreed.** Attribution needs a separate lookup against something that does distinguish: who pushed, who authored, which review id, which session.
 
 **Two measurements of the same mutable ref, taken at the same moment by two parties, are not two readings. They are one reading, reported twice.** This is the same rule one level up, and it was found the way the section above was: two sessions, no contact, each pinning a head from **two sources** at read time, converging on the same value and both being wrong when it was used. **Neither had made an error.** Two sources protect against a wrong answer at the instant of reading; they do nothing about the interval between reading and use, which both parties shared. **Lateness is common-mode, and the agreement of two late readings is worth exactly one late reading.** The practical consequence is that a ref's current value cannot be carried between parties at all — it must be re-read by name at the point of use, because **the token that reaches the reader has no timestamp on it and resolves perfectly while being stale.** An event report is unaffected: _"I pushed X from Y"_ names something that happened and cannot go out of date. Credited to the coordinator session that measured the convergence. **And two sources are not automatically two sources**: check that the readings could have differed before treating their agreement as corroboration — a local `HEAD` and a local checkout are one source rendered twice, and a clean worktree measures the index against that local `HEAD` while saying nothing whatever about the remote. **A branch fifty commits behind is exactly as clean as one at the tip.**

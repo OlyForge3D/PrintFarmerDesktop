@@ -82,6 +82,28 @@ principle anyone is asked to remember.
 
 ### Attribution does not travel with a SHA
 
+### A citable revision must be reachable by the reader, not by the author
+
+**A citation must be reachable by the reader, not by the author.** An author's object store is
+not the repository. Where several worktrees share one object database, every superseded head
+resolves for whoever created it forever and in a fresh clone never, and the difference has **no
+local symptom**: the lookup does not error, hesitate or warn, so the one party responsible for a
+pin is the one party who cannot detect that it has died. Rebases, squash merges and a
+coordinator's `update-branch` all orphan pins **after** they were correctly written, so this is
+not a discipline failure and cannot be fixed by pinning more carefully. Three consequences.
+**First, whether a pin is reachable depends on the reader model, and the model must be stated:**
+reachability from `refs/heads`, from the whole ref advertisement, and from the revisions a
+reader of one pull request actually holds give different counts of the same artifact, and every
+one of them is a correct answer to a different question. **Second, a dead pin is repairable by
+substitution rather than lost** — a rewritten commit usually has a surviving twin under
+`git patch-id --stable`, and where the citation is about a file's contents the repair is only
+complete once the twin is shown to carry **the same blob**, because a twin shares its patch and
+need not share its tree. **Third, an unreachable citation is acceptable when it is declared and
+routed, and never when it is merely correct**: state the ref the object is reachable from, or
+state that the object's absence is itself the finding. Enforced by
+`scripts/check-citation-reachability.mjs`, which fails on any cited revision that is neither
+reachable, twinned, nor declared — because a rule of this kind that is checked by hand is
+checked from exactly the position that cannot see the defect.
 **A SHA identifies an object, not the party who cited it.** Two sessions examining one pull request
 cite the **same** identifiers, so **a table of SHAs looks identical whoever assembled it** and
 cannot be attributed by its contents. Measured here: an eight-row enumeration was attributed to the
