@@ -407,9 +407,13 @@ describe('temp-root ownership and the node:os override', () => {
   it('spares a live foreign root and reaps a dead one', async () => {
     // A root is foreign-but-live only if some *other* process really is alive,
     // so borrow real pids rather than assert against invented numbers.
-    const live = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], {
-      stdio: 'ignore',
-    });
+    const live = spawn(
+      process.execPath,
+      ['-e', 'setTimeout(() => {}, 60000)'],
+      {
+        stdio: 'ignore',
+      },
+    );
     const doomed = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
     await once(doomed, 'exit');
 
@@ -418,8 +422,14 @@ describe('temp-root ownership and the node:os override', () => {
     expect(doomed.pid).toBeTypeOf('number');
 
     const parent = path.dirname(tempRootRef.path);
-    const liveRoot = path.join(parent, `${TEMP_ROOT_PREFIX}${String(live.pid)}-probe`);
-    const deadRoot = path.join(parent, `${TEMP_ROOT_PREFIX}${String(doomed.pid)}-probe`);
+    const liveRoot = path.join(
+      parent,
+      `${TEMP_ROOT_PREFIX}${String(live.pid)}-probe`,
+    );
+    const deadRoot = path.join(
+      parent,
+      `${TEMP_ROOT_PREFIX}${String(doomed.pid)}-probe`,
+    );
     mkdirSync(liveRoot, { recursive: true });
     mkdirSync(deadRoot, { recursive: true });
 
