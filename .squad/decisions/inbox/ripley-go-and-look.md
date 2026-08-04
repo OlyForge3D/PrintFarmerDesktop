@@ -62,6 +62,37 @@ The asymmetry is the whole content: **the loud half is self-policing and the qui
 
 **A count I did not verify, flagged rather than laundered.** The lead reports six such stale-head assertions across five sessions in one day, one of them their own: recommending a narrative be moved into a directory that already contained it, twice, while pressing the author to answer the recommendation, without ever running `ls-tree` on the destination. **I have not re-derived that tally and cannot from this session** — five of the six are other sessions' work. It is recorded because the pattern is worth carrying, and marked because a note about checking must not pass along a number its own author took on report. **If you need the count to be load-bearing, re-derive it.**
 
+## Convergence is a control for staleness, not a control for relevance
+
+**This is the limit of everything above, and it belongs in this note because this note is what would otherwise mislead you.** Every rule so far makes a reading _current_. None of them makes it _responsive_.
+
+Three sources agreeing establishes that a value is current. **It cannot establish that the value answers the question you asked** — and where it does not, the agreement makes the reading _more_ persuasive, not less.
+
+**The incident.** A reader checking whether PR #163 was still open read `headRefOid` three ways and got one answer:
+
+```
+gh pr view 163 --json headRefOid    bb36969
+ls-remote refs/heads/<branch>       bb3696981ecb125eeb6f12f5b525710a6f22d8bd
+ls-remote refs/pull/163/head        bb3696981ecb125eeb6f12f5b525710a6f22d8bd
+
+gh pr view 163 --json state         MERGED, forty minutes earlier
+```
+
+**The read was correct, current, and convergent. It was silent about the only thing being asked.** `headRefOid` does not change on merge, and `delete_branch_on_merge` is `false`, so both refs outlive the merge and keep reporting the same value forever. **The field cannot express the answer, so no amount of agreement about it approaches one.**
+
+Two refinements, both of which make it worse rather than better:
+
+- **It was two sources, not three.** `refs/heads/<branch>` and `refs/pull/<n>/head` come back in **one `ls-remote` response** — one rendering read twice, per the trap recorded above.
+- **Both report a field invariant under the event in question.** That is not two weak sources; it is the same blind spot sampled twice.
+
+**So the check to add is not another source.** It is one question, asked before reading anything:
+
+> **What would this field say if the thing I am asking about had happened?**
+
+If the answer is _"the same thing"_, the field is not an instrument for that question and a third source is wasted effort that will feel like diligence. `headRefOid` is invariant under merge. A **diffstat** is invariant under a clean merge that changes no delta. A **merge-base** moves only when the branch takes new base history — the right field for _"did the base move under me"_ and **equally silent on merge, on force-push, and on content.**
+
+**Naming the event an instrument covers is therefore part of proposing it.** An instrument handed over without that is a staleness control that will be used as a correctness control, which is exactly what happened here.
+
 ---
 
 **Why this note exists at all:** it was nearly not written. The paragraph it is built from lived only in a cross-session message — the highest-priority item in this set, and the only one with no durable artifact, while four notes that matter less were already committed. A lesson that exists only in a conversation expires when the conversation does. **Had it been left there, this note's own first sentence would have refuted it.**
