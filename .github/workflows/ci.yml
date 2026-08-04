@@ -39,6 +39,12 @@ jobs:
       - name: Calibration provenance
         run: npm run check:provenance
 
+      - name: Target profile bundle
+        run: npm run verify:target-profiles
+
+      - name: Script reachability
+        run: npm run check:script-reachability
+
       - name: Type-check
         run: npm run typecheck
 
