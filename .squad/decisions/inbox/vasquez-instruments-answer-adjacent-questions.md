@@ -223,10 +223,47 @@ inherited by every branch cut from it since; the number is a count of branches,
 not a measure of importance.
 
 This separates the three states that `cat-file` collapses, and it costs one
-command. **Its limit has to be stated with it:** a merged PR whose branch was
-deleted also reads `0`, indistinguishable from a phantom. So `0` means _on no
-remote ref now_, never _this work never landed_. The content check is still the
-one that answers the question people are actually asking.
+command. **Two limits have to travel with it, and the second one is severe.**
+
+First, a merged PR whose branch was deleted also reads `0`, indistinguishable
+from a phantom. So `0` means _on no remote ref now_, never _this work never
+landed_.
+
+Second — and this is the one that nearly made this entry harmful — **`git branch
+-r --contains` does not ask the server anything.** It reads `refs/remotes/*`,
+which is a local cache that only `fetch` writes and only `--prune` corrects.
+Measured in this clone:
+
+```
+remote-tracking refs held locally        135
+branch refs actually on origin           125      10 stale
+--contains <the #149 squash>  before     136
+                              after fetch --prune  128
+```
+
+**The answer moved by eight while nothing changed on the server.** Two clones
+will therefore disagree about the same SHA, and they will each be internally
+consistent — which is exactly the cross-clone disagreement that prompted this
+paragraph.
+
+**That is the defect of #81 reappearing inside the instrument written to
+diagnose it.** `--force-with-lease` compares against the local remote-tracking
+ref and is satisfied against a value the pushing session never read; this check
+counts the same cached refs and reports a number about when this clone last
+fetched. **A control and its diagnostic tool inherited the same wrong
+assumption, which is the strongest argument in this entry for testing the
+instrument rather than trusting it.**
+
+The failure direction is the dangerous one. A phantom stays `0` in every clone,
+so the strict reading is safe. But **a real commit reads `0` in a clone that has
+never fetched its branch**, and `0` is the reading that gets reported as _this
+work does not exist anywhere_ — the precise claim that precedes someone
+discarding it. **The loud error is impossible and the silent error is easy.**
+
+⇒ **`git fetch --prune` immediately before, in the same invocation, or the
+number is not evidence.** The ordinal reading — none / one / many — survives a
+prune; the counts are not comparable across clones or across time, and should
+never be quoted as though they were.
 
 ## Squash does not break ancestry, it replaces the object
 
@@ -370,6 +407,40 @@ evidence about a writer**, and nothing local can tell them apart — which is
 precisely why a report that carries no timestamp cannot be acted on (#202), and
 why the two-writer question is answered by a guard that reads authorship out of
 the reflog rather than by a human comparing two hashes.
+
+### A stale claim is not a false claim, and the reviewer's error is to conflate them
+
+The discipline this entry argues for — re-derive every claim before acting on it
+— has a failure mode of its own, and it is the one the author of this entry
+committed. A claim was measured, found not to hold, and reported as **wrong**
+four separate times:
+
+```
+the report      "#57 was CLOSED COMPLETED at 09:21:31Z"
+measured        state=OPEN  stateReason=REOPENED
+timeline        closed    2026-08-04T09:21:31Z
+                reopened  2026-08-04T20:41:26Z
+```
+
+**The closure is real and the timestamp is exact to the second.** The issue was
+closed as described, and reopened eleven hours later — after the first
+re-derivation. Every "this claim is wrong" should have been "this claim was true
+and has since been remedied", and the difference is not politeness: the reported
+exposure — a parent epic closed over unfinished children — **actually happened**,
+and calling the report false erased a real event from the record.
+
+`stateReason=REOPENED` was in the very first measurement and is the fingerprint
+of exactly the closure being described. **The evidence that would have corrected
+this was in the output already and was read as a refutation.**
+
+⇒ **Re-deriving tells you what is true now. It does not tell you what was true
+when the claim was made**, and a claim is only false if it was wrong at its own
+timestamp. Checking that costs one query against the event history — the same
+query in either direction. Elsewhere in this entry another disputed claim was
+put through exactly that test and **did not** survive it: the object involved
+predated the reporting session's own pin by fifteen hours and was already an
+ancestor of it. **Both outcomes come from running the check; only one of them
+came from remembering to.**
 
 ## What survived all of it
 
