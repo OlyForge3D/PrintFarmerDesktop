@@ -58,6 +58,7 @@ import { CalibrationSyncEngine } from './calibrationEngine.js';
 import {
   ServerProfileCalibrationTokenProvider,
   SidecarCalibrationAdapter,
+  supportsConflictResolution,
 } from './calibrationService.js';
 import {
   discoverLocalOrcaFilamentProfiles,
@@ -1678,11 +1679,22 @@ export function registerIpcHandlers(
           rawRequest,
         );
       await requireSelectedCalibrationProfile(request.profileId);
-      throw Object.assign(
-        new Error(
-          'Conflict resolution is unavailable until the authoritative resolution RPC is present.',
-        ),
-        { code: 'CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE' },
+      // Same predicate that decides CalibrationConflict.availableResolutions.
+      // If this handler refused on its own hard-coded assumption, the two could
+      // disagree -- the UI offering actions this channel rejects, or the
+      // reverse. One fact, two readers.
+      const resolve = calibrationSidecarAdapter.resolveCalibrationConflict;
+      if (!supportsConflictResolution(calibrationSidecarAdapter)) {
+        throw Object.assign(
+          new Error(
+            'Conflict resolution is unavailable until the authoritative resolution RPC is present.',
+          ),
+          { code: 'CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE' },
+        );
+      }
+      return (resolve as (input: typeof request) => Promise<unknown>).call(
+        calibrationSidecarAdapter,
+        request,
       );
     },
   );
