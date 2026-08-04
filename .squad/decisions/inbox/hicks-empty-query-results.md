@@ -48,7 +48,7 @@ each squad member authenticates as it. So:
 
 The filter matches every row. It does not fail, and it does not look like it
 failed — it returns a complete, correct list of open pull requests. The reader
-asked *which of these are mine* and received an answer to *which are open*, in
+asked _which of these are mine_ and received an answer to _which are open_, in
 a shape that answers the first question plausibly.
 
 The counts are written as `N` deliberately. When this was first measured the
