@@ -55,6 +55,24 @@ export const UNENFORCED_CHECKS = {
     'that the default GITHUB_TOKEN does not carry, so running it in CI would ' +
     'degrade to the half the tests already cover. Invoked by hand with a ' +
     'privileged token when the queue configuration changes.',
+  'check:citation-reachability':
+    'Cannot be armed under the current checkout, and the reason is the defect it ' +
+    'was written to find. Its verdict is a function of how much history the ' +
+    'runner has: on this branch with `origin/development` present (247 commits) ' +
+    'it reports 36 ORPHAN / 22 REACHABLE, and on a depth-1 clone — which is what ' +
+    '`actions/checkout@v4` produces, no job here sets fetch-depth — it reports ' +
+    '58 ORPHAN / 0 REACHABLE. Twenty-two citations change class from checkout ' +
+    'configuration alone. All six of its self-controls pass in BOTH runs, ' +
+    'because a one-commit clone still satisfies "a known-present SHA classifies ' +
+    'REACHABLE" and "a known-absent SHA classifies ORPHAN" — so the controls ' +
+    'cannot separate "these citations are orphaned" from "this runner cannot ' +
+    'see". Arming it here would ship a confident wrong verdict, which is the ' +
+    'precise failure its own header describes. It also exits 1 today against ' +
+    'the ledger on trunk, so arming it reddens every PR for citation debt that ' +
+    'predates any given branch. Discharge path: repair or declare the 36 ' +
+    'orphans, then wire it in with `fetch-depth: 0` and an explicit ' +
+    '`origin/development` fetch, and assert the reachable-commit count so a ' +
+    'silently shallow runner fails loudly instead of reporting ORPHAN.',
 };
 
 const IGNORED_SUFFIXES = ['.d.mts'];
