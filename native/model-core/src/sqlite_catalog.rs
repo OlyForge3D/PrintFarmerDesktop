@@ -18,9 +18,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::calibration::{
-    CalibrationConflictDto, CalibrationCursorStateDto, CalibrationPendingOpDto,
-    CalibrationUnhydratedProjectDto, CalibrationWorkspaceStageId, CalibrationWorkspaceStateDto,
+    calibration_resolution_error, CalibrationConflictDto, CalibrationConflictResolutionDto,
+    CalibrationCursorStateDto, CalibrationPendingOpDto, CalibrationUnhydratedProjectDto,
+    CalibrationWorkspaceStageId, CalibrationWorkspaceStateDto, ResolveCalibrationConflictParams,
     SaveCalibrationWorkspaceStateParams, StageCalibrationPhotoParams, StagedCalibrationPhotoDto,
+    SupersededObservationDto,
 };
 use crate::catalog::{new_collection_id, normalize_tag, CatalogResetSummary};
 use crate::catalog::{
@@ -28,16 +30,17 @@ use crate::catalog::{
 };
 use crate::model::{FileFingerprint, ModelFormat};
 use crate::schema::{
-    SCHEMA_V1, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V2, SCHEMA_V3,
-    SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_VERSION,
+    SCHEMA_V1, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V2,
+    SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_VERSION,
 };
 use crate::sync::{
-    self, ApplyPullBatchDto, CalibrationEntityType, CalibrationOutboxState,
-    ClaimedOutboundBatchDto, ConflictInputDto, ConflictResolution, DisposeFailedBatchDto,
-    EnqueueOutboundOperationDto, EntityRevisionDto, FailOutboundBatchDto, OutboundFailureOutcome,
-    OutboundOperationDto, OutboundState, ReconcileUncertainBatchDto, RemoteModelLinkDto,
-    RemoteUploadStatus, SettleOutboundBatchDto, SettledOutboundBatchDto, SyncConflictDto,
-    SyncEntityType, SyncStatusDto, SyncVisibility, UnknownOutcomeResolution,
+    self, ApplyPullBatchDto, CalibrationConflictKind, CalibrationConflictResolutionKind,
+    CalibrationEntityType, CalibrationOutboxState, ClaimedOutboundBatchDto, ConflictInputDto,
+    ConflictResolution, DisposeFailedBatchDto, EnqueueOutboundOperationDto, EntityRevisionDto,
+    FailOutboundBatchDto, OutboundFailureOutcome, OutboundOperationDto, OutboundState,
+    ReconcileUncertainBatchDto, RemoteModelLinkDto, RemoteUploadStatus, SettleOutboundBatchDto,
+    SettledOutboundBatchDto, SyncConflictDto, SyncEntityType, SyncStatusDto, SyncVisibility,
+    UnknownOutcomeResolution,
 };
 
 /// A SQLite-backed catalog. Wraps one connection; use single-threaded per the
@@ -117,6 +120,9 @@ impl SqliteCatalog {
                 }
                 if version < 14 {
                     conn.execute_batch(SCHEMA_V14)?;
+                }
+                if version < 15 {
+                    conn.execute_batch(SCHEMA_V15)?;
                 }
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 conn.execute_batch("COMMIT")
@@ -772,6 +778,51 @@ impl SqliteCatalog {
             )
             .map_err(sql_error)?;
         Ok(incoming)
+    }
+
+    /// Observations whose binding printer-snapshot revision is behind
+    /// `accepted_revision`.
+    ///
+    /// A pure read. Q2 rules that accepting a server snapshot reports the
+    /// affected measurements rather than invalidating them, so this function
+    /// must not write: if it ever does, the cascade the ruling forbids has been
+    /// reintroduced somewhere no reviewer is looking.
+    ///
+    /// Observations with a NULL `bound_snapshot_revision` are not reported. They
+    /// were recorded before the binding existed, so "is it superseded?" has no
+    /// answer for them, and reporting them would claim knowledge we do not have.
+    fn observations_superseded_by(
+        &self,
+        profile_id: &str,
+        project_id: &str,
+        accepted_revision: i64,
+    ) -> Result<Vec<SupersededObservationDto>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT observation_id, attempt_id, step_id, parameter_key,
+                        bound_snapshot_revision
+                 FROM calibration_observations
+                 WHERE profile_id = ?1 AND project_id = ?2
+                   AND bound_snapshot_revision IS NOT NULL
+                   AND bound_snapshot_revision < ?3
+                 ORDER BY observed_at ASC, observation_id ASC",
+            )
+            .map_err(sql_error)?;
+        let rows = stmt
+            .query_map(params![profile_id, project_id, accepted_revision], |row| {
+                Ok(SupersededObservationDto {
+                    observation_id: row.get(0)?,
+                    attempt_id: row.get(1)?,
+                    step_id: row.get(2)?,
+                    parameter_key: row.get(3)?,
+                    bound_snapshot_revision: row.get(4)?,
+                })
+            })
+            .map_err(sql_error)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(sql_error)?;
+        Ok(rows)
     }
 }
 
@@ -3379,6 +3430,7 @@ impl CatalogStore for SqliteCatalog {
             .map_err(sql_error)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn record_calibration_conflict(
         &mut self,
         profile_id: &str,
@@ -3387,6 +3439,7 @@ impl CatalogStore for SqliteCatalog {
         entity_id: &str,
         reason: &str,
         server_revision: i64,
+        conflict_kind: Option<CalibrationConflictKind>,
     ) -> Result<(), String> {
         // Look up the project_id from the outbox operation.
         let project_id: Option<String> = self
@@ -3422,8 +3475,8 @@ impl CatalogStore for SqliteCatalog {
                 // foreign key failure above -- SQLite raises those regardless.)
                 "INSERT INTO calibration_conflicts
                      (profile_id, conflict_id, project_id, kind, entity_id,
-                      operation_id, server_revision, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                      operation_id, server_revision, created_at, conflict_kind)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     profile_id,
                     conflict_id,
@@ -3432,7 +3485,8 @@ impl CatalogStore for SqliteCatalog {
                     entity_id,
                     operation_id,
                     server_revision,
-                    now
+                    now,
+                    conflict_kind.map(conflict_kind_as_db)
                 ],
             )
             .map(|_| ())
@@ -3447,6 +3501,265 @@ impl CatalogStore for SqliteCatalog {
             )
             .map(|_| ())
             .map_err(sql_error)
+    }
+
+    /// Resolve a calibration conflict under the ratified policy (issue #216).
+    ///
+    /// Enforced here rather than in the adapter because three of the four
+    /// rulings are invariants over stored rows. A renderer-side or adapter-side
+    /// check is a convention that the next writer of a store method is free to
+    /// bypass without noticing; a store-side check is a control.
+    #[allow(clippy::type_complexity)]
+    fn resolve_calibration_conflict(
+        &mut self,
+        params: &ResolveCalibrationConflictParams,
+    ) -> Result<CalibrationConflictResolutionDto, String> {
+        let row: Option<(
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            i64,
+            String,
+        )> = self
+            .conn
+            .query_row(
+                "SELECT project_id, conflict_kind, entity_id, resolved_at, resolution,
+                        resolution_revision_id, server_revision, kind
+                 FROM calibration_conflicts
+                 WHERE profile_id = ?1 AND conflict_id = ?2",
+                params![params.profile_id, params.conflict_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sql_error)?;
+        let (
+            project_id,
+            stored_kind,
+            entity_id,
+            resolved_at,
+            stored_resolution,
+            stored_revision_id,
+            server_revision,
+            entity_type,
+        ) = row.ok_or_else(|| {
+            format!(
+                "{}: no calibration conflict {} exists for profile {}",
+                calibration_resolution_error::NOT_FOUND,
+                params.conflict_id,
+                params.profile_id
+            )
+        })?;
+
+        // The kind is read back from the store, never taken from the request.
+        // A caller that supplied its own kind could choose the one whose policy
+        // permits what it wanted to do, which would make the policy advisory.
+        let kind: CalibrationConflictKind = stored_kind
+            .as_deref()
+            .and_then(|value| {
+                serde_json::from_value(serde_json::Value::String(value.to_string())).ok()
+            })
+            .ok_or_else(|| {
+                format!(
+                    "{}: conflict {} stores entity type {:?} and no ratified conflict \
+                     kind, so no per-kind resolution policy applies to it. Inferring a \
+                     kind from the entity type would grant permissions nobody ratified \
+                     (issue #219)",
+                    calibration_resolution_error::UNCLASSIFIED,
+                    params.conflict_id,
+                    entity_type
+                )
+            })?;
+
+        // Q4 (immutability) combined with Q3 (replay). A resolved conflict is
+        // never rewritten. Replaying the *same* resolution is normal outbox
+        // operation and returns the first attempt's result unchanged; asking for
+        // a *different* one is the mutation the ruling forbids.
+        if let Some(resolved_at) = resolved_at {
+            let recorded = stored_resolution.as_deref().unwrap_or("");
+            let requested = resolution_as_db(params.resolution);
+            if recorded != requested {
+                return Err(format!(
+                    "{}: conflict {} was resolved as {} at {}; correcting a \
+                     mis-resolution requires a new conflict record, because \
+                     rewriting this one changes what an earlier unresolved-list \
+                     query would have returned",
+                    calibration_resolution_error::ALREADY_RESOLVED,
+                    params.conflict_id,
+                    recorded,
+                    resolved_at
+                ));
+            }
+            let supersedes_revision_id = match stored_revision_id.as_deref() {
+                Some(revision_id) => self
+                    .conn
+                    .query_row(
+                        "SELECT supersedes_revision_id FROM calibration_profile_revisions
+                         WHERE profile_id = ?1 AND revision_id = ?2",
+                        params![params.profile_id, revision_id],
+                        |row| row.get::<_, Option<String>>(0),
+                    )
+                    .optional()
+                    .map_err(sql_error)?
+                    .flatten(),
+                None => None,
+            };
+            let superseded_observations =
+                if params.resolution == CalibrationConflictResolutionKind::AcceptServer {
+                    self.observations_superseded_by(
+                        &params.profile_id,
+                        &project_id,
+                        server_revision,
+                    )?
+                } else {
+                    Vec::new()
+                };
+            return Ok(CalibrationConflictResolutionDto {
+                conflict_id: params.conflict_id.clone(),
+                profile_id: params.profile_id.clone(),
+                project_id,
+                kind,
+                resolution: params.resolution,
+                resolved_at,
+                revision_id: stored_revision_id,
+                supersedes_revision_id,
+                superseded_observations,
+                replayed: true,
+            });
+        }
+
+        // Per-kind permission, read from the ratified table in sync.rs. That
+        // table existed with no caller until now (issue #219): a policy with no
+        // reader cannot reject anything.
+        if !kind.available_resolutions().contains(&params.resolution) {
+            let permitted = kind
+                .available_resolutions()
+                .iter()
+                .map(|value| resolution_as_db(*value))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "{}: {} is not a permitted resolution for a {} conflict; permitted: {}",
+                calibration_resolution_error::NOT_PERMITTED,
+                resolution_as_db(params.resolution),
+                conflict_kind_as_db(kind),
+                permitted
+            ));
+        }
+
+        if params.resolution == CalibrationConflictResolutionKind::ManualFieldMerge
+            && params.merged_fields.is_none()
+        {
+            return Err(format!(
+                "{}: a manualFieldMerge of conflict {} carries no merged fields, so \
+                 it would record a merge that merged nothing",
+                calibration_resolution_error::MERGED_FIELDS_REQUIRED,
+                params.conflict_id
+            ));
+        }
+
+        let now = now_ts();
+        let mut revision_id: Option<String> = None;
+        let mut supersedes_revision_id: Option<String> = None;
+
+        // Q1. keepLocalAsNewRevision is not a resurrection. It mints a new
+        // identity that *names* the deleted predecessor, and leaves the
+        // predecessor deleted. Without the provenance link the row is
+        // indistinguishable from an ordinary create, and the server's deletion
+        // becomes unobservable: nobody could later separate "never deleted" from
+        // "deleted, and a client put it back".
+        if params.resolution == CalibrationConflictResolutionKind::KeepLocalAsNewRevision {
+            let new_revision_id = uuid_v4_placeholder();
+            self.conn
+                .execute(
+                    "INSERT INTO calibration_profile_revisions
+                         (profile_id, revision_id, project_id, revision_label,
+                          is_promoted, generated_at, supersedes_revision_id)
+                     VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)",
+                    params![
+                        params.profile_id,
+                        new_revision_id,
+                        project_id,
+                        format!("Local edit kept over server deletion of {entity_id}"),
+                        now,
+                        entity_id
+                    ],
+                )
+                .map_err(sql_error)?;
+            supersedes_revision_id = Some(entity_id.clone());
+            revision_id = Some(new_revision_id);
+        }
+
+        // Q2. acceptServer reports; it does not cascade. Invalidating the
+        // dependent observations here would destroy measurement work whose blast
+        // radius is invisible at the moment of pressing. Staying silent is the
+        // other failure: a snapshot accepted while superseded observations still
+        // display as valid is one UI state consistent with two realities.
+        let superseded_observations =
+            if params.resolution == CalibrationConflictResolutionKind::AcceptServer {
+                self.observations_superseded_by(&params.profile_id, &project_id, server_revision)?
+            } else {
+                Vec::new()
+            };
+
+        // Q3/Q4 guard, expressed in SQL as well as in the branch above. The
+        // `resolved_at IS NULL` predicate is the control: if a concurrent writer
+        // resolved this conflict between the SELECT and here, this UPDATE
+        // matches no row and we refuse rather than overwrite.
+        let updated = self
+            .conn
+            .execute(
+                "UPDATE calibration_conflicts
+                    SET resolved_at = ?3, resolution = ?4, resolution_revision_id = ?5,
+                        resolution_payload = ?6
+                  WHERE profile_id = ?1 AND conflict_id = ?2 AND resolved_at IS NULL",
+                params![
+                    params.profile_id,
+                    params.conflict_id,
+                    now,
+                    resolution_as_db(params.resolution),
+                    revision_id,
+                    params
+                        .merged_fields
+                        .as_ref()
+                        .map(|fields| fields.to_string())
+                ],
+            )
+            .map_err(sql_error)?;
+        if updated != 1 {
+            return Err(format!(
+                "{}: conflict {} was resolved concurrently, so this resolution was \
+                 not applied",
+                calibration_resolution_error::ALREADY_RESOLVED,
+                params.conflict_id
+            ));
+        }
+
+        Ok(CalibrationConflictResolutionDto {
+            conflict_id: params.conflict_id.clone(),
+            profile_id: params.profile_id.clone(),
+            project_id,
+            kind,
+            resolution: params.resolution,
+            resolved_at: now,
+            revision_id,
+            supersedes_revision_id,
+            superseded_observations,
+            replayed: false,
+        })
     }
 
     fn get_calibration_cursor_state(
@@ -4135,6 +4448,26 @@ fn calibration_conflict_from_row(row: &Row<'_>) -> rusqlite::Result<CalibrationC
         server_revision: row.get(8)?,
         created_at: row.get(9)?,
     })
+}
+
+/// Serialize a conflict kind to its stored form.
+///
+/// Goes through serde rather than a hand-written `match` so the stored string
+/// can never drift from the wire form the renderer parses. A second mapping
+/// would be a second place to be wrong.
+fn conflict_kind_as_db(kind: CalibrationConflictKind) -> String {
+    match serde_json::to_value(kind) {
+        Ok(serde_json::Value::String(value)) => value,
+        _ => String::new(),
+    }
+}
+
+/// Serialize a resolution kind to its stored form. See [`conflict_kind_as_db`].
+fn resolution_as_db(resolution: CalibrationConflictResolutionKind) -> String {
+    match serde_json::to_value(resolution) {
+        Ok(serde_json::Value::String(value)) => value,
+        _ => String::new(),
+    }
 }
 
 /// Simple UUID v4 placeholder for conflict IDs.
@@ -5742,7 +6075,7 @@ mod tests {
     }
 
     #[test]
-    fn upgrades_v12_through_canonical_v14_additively() {
+    fn upgrades_v12_through_the_current_schema_additively() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("v12-calibration.sqlite3");
         {
@@ -5780,7 +6113,12 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 14);
+        assert_eq!(
+            version, SCHEMA_VERSION,
+            "the test must track the current schema; a version pinned in a \
+             literal (and in this test's own name) goes stale silently on the \
+             next migration"
+        );
         assert!(state_table_exists);
         assert_eq!(existing_projects, 1);
         let photo_columns: Vec<String> = store
@@ -5796,6 +6134,46 @@ mod tests {
         assert!(photo_columns.contains(&"local_path".to_string()));
         assert!(photo_columns.contains(&"caption".to_string()));
         assert!(photo_columns.contains(&"photo_order".to_string()));
+
+        // v15 columns: without these the resolution policy compiles and
+        // enforces nothing, so a migration that skipped them would leave every
+        // policy test below passing against an unenforceable schema.
+        let conflict_columns: Vec<String> = store
+            .conn
+            .prepare("PRAGMA table_info(calibration_conflicts)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        for column in [
+            "conflict_kind",
+            "resolution_revision_id",
+            "resolution_payload",
+        ] {
+            assert!(
+                conflict_columns.contains(&column.to_string()),
+                "calibration_conflicts is missing {column} after migration"
+            );
+        }
+        let revision_columns: Vec<String> = store
+            .conn
+            .prepare("PRAGMA table_info(calibration_profile_revisions)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(revision_columns.contains(&"supersedes_revision_id".to_string()));
+        let observation_columns: Vec<String> = store
+            .conn
+            .prepare("PRAGMA table_info(calibration_observations)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(observation_columns.contains(&"bound_snapshot_revision".to_string()));
     }
 
     #[test]
@@ -6213,6 +6591,7 @@ mod tests {
                 "project-1",
                 "server revision moved ahead",
                 9,
+                Some(CalibrationConflictKind::ProjectMetadata),
             )
             .unwrap();
 
@@ -6270,6 +6649,7 @@ mod tests {
                 "project-1",
                 "server revision moved ahead",
                 9,
+                Some(CalibrationConflictKind::ProjectMetadata),
             )
             .expect_err("a conflict that cannot be stored must surface an error");
         assert!(
@@ -6280,6 +6660,517 @@ mod tests {
             .list_calibration_conflicts("profile-1", None)
             .unwrap()
             .is_empty());
+    }
+
+    // ---- issue #216: the calibration conflict resolution write path ----------
+    //
+    // Every rejection below is paired with an injected counterfactual through
+    // the same path. A rejection test whose harness never reaches the policy
+    // passes by failing to arrive, and is indistinguishable from a policy that
+    // works, so the negative must be shown capable of returning a positive in
+    // the same spec before its negative result means anything.
+
+    /// Seeds a project and one conflict, returning its store-generated id.
+    fn seed_conflict(
+        store: &mut SqliteCatalog,
+        kind: Option<CalibrationConflictKind>,
+        server_revision: i64,
+    ) -> String {
+        seed_conflict_for(store, "project-1", "operation-1", kind, server_revision)
+    }
+
+    fn seed_conflict_for(
+        store: &mut SqliteCatalog,
+        project_id: &str,
+        operation_id: &str,
+        kind: Option<CalibrationConflictKind>,
+        server_revision: i64,
+    ) -> String {
+        let input = workspace_input(
+            "profile-1",
+            project_id,
+            operation_id,
+            &"f".repeat(64),
+            "2026-07-26T15:01:00.000Z",
+        );
+        store.save_calibration_workspace_state(&input).unwrap();
+        store
+            .record_calibration_conflict(
+                "profile-1",
+                operation_id,
+                "CalibrationProject",
+                project_id,
+                "server revision moved ahead",
+                server_revision,
+                kind,
+            )
+            .unwrap();
+        let conflicts = store
+            .list_calibration_conflicts("profile-1", Some(project_id))
+            .unwrap();
+        assert_eq!(
+            conflicts.len(),
+            1,
+            "the fixture must actually produce exactly one conflict; a silent \
+             no-op here would give every test below a vacuous pass"
+        );
+        conflicts[0].conflict_id.clone()
+    }
+
+    fn resolve_params(
+        conflict_id: &str,
+        resolution: CalibrationConflictResolutionKind,
+    ) -> ResolveCalibrationConflictParams {
+        ResolveCalibrationConflictParams {
+            profile_id: "profile-1".to_string(),
+            conflict_id: conflict_id.to_string(),
+            resolution,
+            merged_fields: None,
+        }
+    }
+
+    #[test]
+    fn keeping_a_local_edit_names_its_deleted_predecessor_without_restoring_it() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let conflict_id = seed_conflict(
+            &mut store,
+            Some(CalibrationConflictKind::DeletionVsLocalEdit),
+            9,
+        );
+
+        let resolved = store
+            .resolve_calibration_conflict(&resolve_params(
+                &conflict_id,
+                CalibrationConflictResolutionKind::KeepLocalAsNewRevision,
+            ))
+            .expect("keepLocalAsNewRevision is permitted for a deletionVsLocalEdit conflict");
+
+        let revision_id = resolved
+            .revision_id
+            .clone()
+            .expect("keeping a local edit must mint a new revision");
+        assert_eq!(
+            resolved.supersedes_revision_id.as_deref(),
+            Some("project-1"),
+            "the new revision must name the predecessor the server deleted; \
+             without the link it is indistinguishable from an ordinary create \
+             and the server's deletion becomes unobservable"
+        );
+
+        let stored: Option<String> = store
+            .conn
+            .query_row(
+                "SELECT supersedes_revision_id FROM calibration_profile_revisions
+                 WHERE profile_id = ?1 AND revision_id = ?2",
+                params!["profile-1", revision_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some("project-1"),
+            "the provenance link must be persisted, not merely returned; a DTO \
+             field computed at the boundary is lost on the next read"
+        );
+
+        let resurrected: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM calibration_profile_revisions
+                 WHERE profile_id = ?1 AND revision_id = ?2",
+                params!["profile-1", "project-1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            resurrected, 0,
+            "the deleted predecessor must stay deleted; a new revision is a new \
+             identity, not a resurrection"
+        );
+    }
+
+    #[test]
+    fn accepting_the_server_reports_superseded_observations_and_invalidates_nothing() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let conflict_id = seed_conflict(
+            &mut store,
+            Some(CalibrationConflictKind::StalePrinterSnapshot),
+            9,
+        );
+        for (id, bound) in [
+            ("obs-stale", Some(4_i64)),
+            ("obs-current", Some(9_i64)),
+            ("obs-unbound", None),
+        ] {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO calibration_observations
+                         (profile_id, observation_id, attempt_id, step_id, project_id,
+                          parameter_key, observed_at, bound_snapshot_revision)
+                     VALUES ('profile-1', ?1, 'attempt-1', 'step-1', 'project-1',
+                             'flow_ratio', '2026-07-26T15:02:00.000Z', ?2)",
+                    params![id, bound],
+                )
+                .unwrap();
+        }
+
+        let resolved = store
+            .resolve_calibration_conflict(&resolve_params(
+                &conflict_id,
+                CalibrationConflictResolutionKind::AcceptServer,
+            ))
+            .expect("acceptServer is permitted for a stalePrinterSnapshot conflict");
+
+        let reported: Vec<&str> = resolved
+            .superseded_observations
+            .iter()
+            .map(|observation| observation.observation_id.as_str())
+            .collect();
+        assert_eq!(
+            reported,
+            vec!["obs-stale"],
+            "only observations bound to a revision behind the accepted one are \
+             superseded; an unbound observation has no answer and reporting it \
+             would claim knowledge we do not have"
+        );
+
+        let survivors: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM calibration_observations WHERE profile_id = 'profile-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            survivors, 3,
+            "acceptServer reports; it does not cascade. Deleting or rewriting \
+             observations here destroys measurement work whose blast radius is \
+             invisible at the moment of pressing"
+        );
+    }
+
+    #[test]
+    fn an_empty_supersession_report_is_not_the_same_response_as_no_report() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let conflict_id = seed_conflict(
+            &mut store,
+            Some(CalibrationConflictKind::StalePrinterSnapshot),
+            9,
+        );
+
+        let resolved = store
+            .resolve_calibration_conflict(&resolve_params(
+                &conflict_id,
+                CalibrationConflictResolutionKind::AcceptServer,
+            ))
+            .unwrap();
+        assert!(resolved.superseded_observations.is_empty());
+
+        let wire = serde_json::to_value(&resolved).unwrap();
+        assert_eq!(
+            wire.get("supersededObservations"),
+            Some(&serde_json::Value::Array(vec![])),
+            "an examined-and-empty report must be on the wire as []; omitting \
+             the field makes 'nothing was superseded' and 'nothing was examined' \
+             the same response"
+        );
+    }
+
+    #[test]
+    fn replaying_the_same_resolution_is_a_no_op_that_does_not_move_resolved_at() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let conflict_id = seed_conflict(
+            &mut store,
+            Some(CalibrationConflictKind::DeletionVsLocalEdit),
+            9,
+        );
+
+        let first = store
+            .resolve_calibration_conflict(&resolve_params(
+                &conflict_id,
+                CalibrationConflictResolutionKind::KeepLocalAsNewRevision,
+            ))
+            .unwrap();
+        assert!(!first.replayed, "the first attempt is not a replay");
+
+        let replay = store
+            .resolve_calibration_conflict(&resolve_params(
+                &conflict_id,
+                CalibrationConflictResolutionKind::KeepLocalAsNewRevision,
+            ))
+            .expect(
+                "replay is normal outbox operation; erroring on it turns a \
+                 transient failure into a permanent one",
+            );
+        assert!(replay.replayed, "the second attempt must report as a replay");
+        assert_eq!(
+            replay.resolved_at, first.resolved_at,
+            "resolved_at must not move on replay"
+        );
+        assert_eq!(replay.revision_id, first.revision_id);
+
+        let revisions: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM calibration_profile_revisions
+                 WHERE profile_id = 'profile-1' AND supersedes_revision_id IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            revisions, 1,
+            "a replay must not mint a second revision; keying on \
+             (conflict_id, resolution_kind) is what makes the outbox safe to retry"
+        );
+    }
+
+    #[test]
+    fn a_resolved_conflict_cannot_be_re_resolved_differently() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let conflict_id = seed_conflict(
+            &mut store,
+            Some(CalibrationConflictKind::DeletionVsLocalEdit),
+            9,
+        );
+
+        // Counterfactual first: the same path must be able to succeed, or the
+        // rejection below could be a harness that never arrives.
+        let first = store
+            .resolve_calibration_conflict(&resolve_params(
+                &conflict_id,
+                CalibrationConflictResolutionKind::AcceptServer,
+            ))
+            .expect("the permitted first resolution must succeed through this path");
+
+        let error = store
+            .resolve_calibration_conflict(&resolve_params(
+                &conflict_id,
+                CalibrationConflictResolutionKind::KeepLocalAsNewRevision,
+            ))
+            .expect_err("a resolved conflict must not be re-resolved differently");
+        assert!(
+            error.starts_with(calibration_resolution_error::ALREADY_RESOLVED),
+            "error {error:?} must carry the named code; matching on prose passes \
+             when a different rejection fires"
+        );
+
+        let (resolved_at, resolution): (String, String) = store
+            .conn
+            .query_row(
+                "SELECT resolved_at, resolution FROM calibration_conflicts
+                 WHERE profile_id = 'profile-1' AND conflict_id = ?1",
+                params![conflict_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            resolved_at, first.resolved_at,
+            "the stored resolution must be untouched: resolved_at IS NULL is the \
+             list filter, so mutating it changes what a past query would have returned"
+        );
+        assert_eq!(resolution, "acceptServer");
+    }
+
+    #[test]
+    fn the_update_refuses_a_conflict_resolved_between_the_read_and_the_write() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let conflict_id = seed_conflict(
+            &mut store,
+            Some(CalibrationConflictKind::DeletionVsLocalEdit),
+            9,
+        );
+        // Simulate the concurrent writer the pre-SELECT branch cannot see: the
+        // row is resolved, but with the resolution this call is about to
+        // request, so the equality branch lets it through and only the
+        // `resolved_at IS NULL` predicate on the UPDATE can catch it.
+        store
+            .conn
+            .execute(
+                "UPDATE calibration_conflicts SET resolved_at = '2026-07-26T16:00:00.000Z',
+                        resolution = 'acceptServer'
+                 WHERE profile_id = 'profile-1' AND conflict_id = ?1",
+                params![conflict_id],
+            )
+            .unwrap();
+
+        let replay = store
+            .resolve_calibration_conflict(&resolve_params(
+                &conflict_id,
+                CalibrationConflictResolutionKind::AcceptServer,
+            ))
+            .expect("an identical resolution is a replay, not an error");
+        assert!(replay.replayed);
+        assert_eq!(replay.resolved_at, "2026-07-26T16:00:00.000Z");
+    }
+
+    #[test]
+    fn a_resolution_the_kind_does_not_permit_is_rejected_by_name() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let conflict_id = seed_conflict(
+            &mut store,
+            Some(CalibrationConflictKind::DeletionVsLocalEdit),
+            9,
+        );
+
+        let error = store
+            .resolve_calibration_conflict(&resolve_params(
+                &conflict_id,
+                CalibrationConflictResolutionKind::ManualFieldMerge,
+            ))
+            .expect_err("manualFieldMerge is not permitted for a deletionVsLocalEdit conflict");
+        assert!(
+            error.starts_with(calibration_resolution_error::NOT_PERMITTED),
+            "error {error:?} must carry the named code"
+        );
+        assert!(
+            error.contains("deletionVsLocalEdit"),
+            "error {error:?} must name the kind whose policy rejected the request"
+        );
+
+        // Counterfactual through the same path: the harness does reach the
+        // policy, so the rejection above is the policy speaking and not an
+        // arrival failure.
+        store
+            .resolve_calibration_conflict(&resolve_params(
+                &conflict_id,
+                CalibrationConflictResolutionKind::AcceptServer,
+            ))
+            .expect("a permitted resolution must succeed through the same path");
+    }
+
+    #[test]
+    fn an_unclassified_conflict_is_unresolvable_rather_than_permissively_resolvable() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let conflict_id = seed_conflict(&mut store, None, 9);
+
+        let error = store
+            .resolve_calibration_conflict(&resolve_params(
+                &conflict_id,
+                CalibrationConflictResolutionKind::ManualFieldMerge,
+            ))
+            .expect_err("a conflict with no ratified kind has no per-kind policy");
+        assert!(
+            error.starts_with(calibration_resolution_error::UNCLASSIFIED),
+            "error {error:?} must carry the named code"
+        );
+
+        // Counterfactual: the identical conflict, classified, resolves. So the
+        // refusal is about the missing classification and not about the fixture.
+        let classified = seed_conflict_for(
+            &mut store,
+            "project-2",
+            "operation-2",
+            Some(CalibrationConflictKind::ProjectMetadata),
+            9,
+        );
+        store
+            .resolve_calibration_conflict(&ResolveCalibrationConflictParams {
+                merged_fields: Some(serde_json::json!({ "flow_ratio": 0.98 })),
+                ..resolve_params(
+                    &classified,
+                    CalibrationConflictResolutionKind::ManualFieldMerge,
+                )
+            })
+            .expect("the same resolution on a classified conflict must succeed");
+    }
+
+    #[test]
+    fn a_manual_field_merge_that_merges_nothing_is_rejected() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let conflict_id = seed_conflict(&mut store, Some(CalibrationConflictKind::StepDraft), 9);
+
+        let error = store
+            .resolve_calibration_conflict(&resolve_params(
+                &conflict_id,
+                CalibrationConflictResolutionKind::ManualFieldMerge,
+            ))
+            .expect_err("a manual merge carrying no fields records a merge that merged nothing");
+        assert!(
+            error.starts_with(calibration_resolution_error::MERGED_FIELDS_REQUIRED),
+            "error {error:?} must carry the named code"
+        );
+
+        store
+            .resolve_calibration_conflict(&ResolveCalibrationConflictParams {
+                merged_fields: Some(serde_json::json!({ "flow_ratio": 0.98 })),
+                ..resolve_params(
+                    &conflict_id,
+                    CalibrationConflictResolutionKind::ManualFieldMerge,
+                )
+            })
+            .expect("the same call with merged fields must succeed through the same path");
+
+        let payload: Option<String> = store
+            .conn
+            .query_row(
+                "SELECT resolution_payload FROM calibration_conflicts
+                 WHERE profile_id = 'profile-1' AND conflict_id = ?1",
+                params![conflict_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(&payload.expect("the merged fields must be persisted")).unwrap();
+        assert_eq!(
+            payload,
+            serde_json::json!({ "flow_ratio": 0.98 }),
+            "accepting merged fields and then discarding them records a merge \
+             that merged nothing, which is what the required-fields check would \
+             otherwise only appear to prevent"
+        );
+    }
+
+    #[test]
+    fn resolving_a_conflict_that_does_not_exist_names_the_conflict_it_could_not_find() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        // A real conflict exists, so the store is not merely empty: the refusal
+        // is about this id and not about an unopened database.
+        seed_conflict(
+            &mut store,
+            Some(CalibrationConflictKind::ProjectMetadata),
+            9,
+        );
+
+        let error = store
+            .resolve_calibration_conflict(&resolve_params(
+                "conflict-that-was-never-recorded",
+                CalibrationConflictResolutionKind::AcceptServer,
+            ))
+            .expect_err("resolving an absent conflict must not silently succeed");
+        assert!(
+            error.starts_with(calibration_resolution_error::NOT_FOUND),
+            "error {error:?} must carry the named code"
+        );
+        assert!(
+            error.contains("conflict-that-was-never-recorded"),
+            "error {error:?} must name the conflict it could not find"
+        );
+    }
+
+    #[test]
+    fn the_conflict_kind_is_read_from_the_store_and_not_taken_from_the_request() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let conflict_id = seed_conflict(
+            &mut store,
+            Some(CalibrationConflictKind::DeletionVsLocalEdit),
+            9,
+        );
+
+        let resolved = store
+            .resolve_calibration_conflict(&resolve_params(
+                &conflict_id,
+                CalibrationConflictResolutionKind::AcceptServer,
+            ))
+            .unwrap();
+        assert!(
+            resolved.kind == CalibrationConflictKind::DeletionVsLocalEdit,
+            "the returned kind must be the stored classification, not an echo of \
+             the request; a caller that supplied its own could pick the kind \
+             whose policy permits what it wanted, making the policy advisory"
+        );
     }
 
     #[test]

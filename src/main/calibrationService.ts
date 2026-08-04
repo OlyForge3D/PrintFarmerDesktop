@@ -31,6 +31,8 @@ import type {
   CalibrationConflict,
   CalibrationConflictKind,
   CalibrationConflictResolution,
+  CalibrationResolveConflictRequest,
+  CalibrationResolveConflictResponse,
 } from '@shared/ipc';
 import { z } from 'zod';
 
@@ -122,6 +124,50 @@ const CalibrationConflictWire = z
     serverPayload: z.unknown().nullable().default(null),
     serverRevision: z.number().int(),
     createdAt: z.string(),
+  })
+  .passthrough();
+
+/**
+ * The store's resolution result.
+ *
+ * `supersededObservations` has no `.default([])`. The store always emits the
+ * field, so a default here would only ever fire when the response did *not*
+ * report supersession — silently converting "unexamined" into "nothing was
+ * superseded", which is precisely the conflation the field exists to prevent.
+ * Making it required means that failure arrives as a parse error naming the
+ * missing field instead of as a clean-looking empty list.
+ */
+const CalibrationConflictResolutionWire = z
+  .object({
+    conflictId: z.string(),
+    profileId: z.string(),
+    projectId: z.string(),
+    kind: z.enum([
+      'projectMetadata',
+      'stepOrdering',
+      'stepDraft',
+      'outcomeSelection',
+      'staleprinterSnapshot',
+      'deletionVsLocalEdit',
+    ]),
+    resolution: z.enum([
+      'acceptServer',
+      'keepLocalAsNewRevision',
+      'manualFieldMerge',
+    ]),
+    resolvedAt: z.string(),
+    revisionId: z.string().nullable().default(null),
+    supersedesRevisionId: z.string().nullable().default(null),
+    supersededObservations: z.array(
+      z.object({
+        observationId: z.string(),
+        attemptId: z.string(),
+        stepId: z.string(),
+        parameterKey: z.string(),
+        boundSnapshotRevision: z.number().int(),
+      }),
+    ),
+    replayed: z.boolean().default(false),
   })
   .passthrough();
 
@@ -242,24 +288,58 @@ export class SidecarCalibrationAdapter implements CalibrationSidecar {
   constructor(private readonly sidecar: SidecarClient) {}
 
   /**
-   * Absent. There is no `resolveCalibrationConflict` arm in the sidecar's RPC
-   * dispatch (`native/model-core/src/serve.rs` has `recordCalibrationConflict`
-   * and `listCalibrationConflicts` only; the `resolveSyncConflict` that does
-   * exist is a different table). Declared optional rather than omitted so that
-   * assigning an implementation is the *whole* change: `conflictResolutionsFor`
-   * starts returning resolutions and the resolve IPC handler stops refusing,
-   * with no second edit to remember. Tracked as the write-path half of #179.
+   * Resolve a calibration conflict through the authoritative store.
    *
-   * `declare` is load-bearing. This project targets ES2022, so
-   * `useDefineForClassFields` is on and a plain optional field declaration
-   * emits an own property initialised to `undefined` on every instance --
-   * which shadows the prototype and makes the seam inert. `declare` is
-   * type-only and emits nothing. The test that grants the capability on the
-   * prototype is what caught this; it failed with the handler still refusing.
+   * Present, so `conflictResolutionsFor` now returns resolutions and the
+   * resolve IPC handler stops refusing. Neither of those sites was edited to
+   * make that happen: both read `supportsConflictResolution`, and assigning
+   * this method is the whole change. That was the point of the seam.
+   *
+   * The per-kind policy is **not** re-checked here. It is enforced in the store
+   * (`resolve_calibration_conflict` in `native/model-core/src/sqlite_catalog.rs`)
+   * against the ratified table in `sync.rs`, reading the kind back from the
+   * stored row rather than from this request. A second copy here would be a
+   * second place to be wrong, and an adapter-side check is a convention the
+   * next writer of a store method can bypass without noticing.
+   *
+   * Historical note kept because the mechanism is easy to reintroduce: this was
+   * previously `declare readonly resolveCalibrationConflict?: ...`, and the
+   * `declare` was load-bearing. This project targets ES2022, so
+   * `useDefineForClassFields` is on, and a plain optional *field* declaration
+   * emits an own property initialised to `undefined` on every instance, which
+   * shadows the prototype and makes the capability probe report absent. A
+   * method like this one lives on the prototype and is not affected — but
+   * turning it back into a field would silently re-break the seam with
+   * typecheck, lint and every existing test still green.
    */
-  declare readonly resolveCalibrationConflict?: (
-    request: unknown,
-  ) => Promise<unknown>;
+  async resolveCalibrationConflict(
+    request: CalibrationResolveConflictRequest,
+  ): Promise<CalibrationResolveConflictResponse> {
+    const raw = await this.sidecar.resolveCalibrationConflict({
+      profileId: request.profileId,
+      conflictId: request.conflictId,
+      resolution: request.resolution,
+      mergedFields: request.mergedFields,
+    });
+    const parsed = CalibrationConflictResolutionWire.parse(raw);
+    return {
+      conflict: {
+        conflictId: parsed.conflictId,
+        profileId: parsed.profileId,
+        projectId: parsed.projectId,
+        kind: parsed.kind,
+        entityId: request.conflictId,
+        localPayloadSummary: null,
+        serverPayloadSummary: null,
+        serverRevision: 0,
+        availableResolutions: conflictResolutionsFor(this, parsed.kind),
+        resolvedAt: parsed.resolvedAt,
+        resolution: parsed.resolution,
+        createdAt: parsed.resolvedAt,
+      },
+      supersededObservations: parsed.supersededObservations,
+    };
+  }
 
   async listCalibrationPendingOperations(
     profileId: string,

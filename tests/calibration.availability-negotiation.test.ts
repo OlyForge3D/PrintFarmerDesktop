@@ -227,19 +227,53 @@ describe('CalibrationGetAvailability against the live PrintFarmer contract', () 
 /**
  * Executable annotation for the calibration conflict resolution surface.
  *
- * `window.printFarmer.resolveCalibrationConflict` is exposed by the preload
- * bridge and typed as though it works. It does not: model-core has no
- * calibration resolve RPC, so the registered handler rejects every call. This
- * test exists so the gap is visible from the test suite rather than only from a
- * comment, and so that whoever implements the resolve path is forced to delete
- * it rather than leaving a stale annotation behind.
+ * The resolve path now exists end to end (issue #216), so this block no longer
+ * documents a gap. It documents the *negotiation*: the IPC handler refuses when
+ * the transport cannot resolve, and stops refusing when it can, from one
+ * predicate.
+ *
+ * The refusal arm is still live code — any `CalibrationSidecar` implementation
+ * without the method reaches it — so it is exercised by removing the capability
+ * rather than by deleting the test. A refusal test that can no longer be
+ * triggered would have to be deleted or would pass vacuously; this one is
+ * driven, and the test below proves the removal removes something.
  *
  * It asserts the *code*, not merely that a rejection happened -- the handler
  * would also reject on a bad profile or a malformed request, and "it threw" is
  * not evidence that it threw for the documented reason.
  */
-describe('Calibration conflict resolution is not implemented end to end', () => {
-  it('rejects a well-formed resolve request with the documented code', async () => {
+describe('Calibration conflict resolution negotiates on one capability', () => {
+  type ResolveCapable = { resolveCalibrationConflict?: unknown };
+  const prototype = SidecarCalibrationAdapter.prototype as ResolveCapable;
+  let original: unknown;
+
+  beforeEach(() => {
+    original = prototype.resolveCalibrationConflict;
+  });
+
+  afterEach(() => {
+    // Restore, never delete. Deleting was correct while the seam was empty;
+    // against a real implementation it would silently strip the capability for
+    // every later test in this file, and they would pass by measuring an
+    // adapter that no longer exists in production.
+    if (original === undefined) {
+      delete prototype.resolveCalibrationConflict;
+    } else {
+      prototype.resolveCalibrationConflict = original;
+    }
+  });
+
+  it('ships an adapter that can resolve, so removing the capability removes something', () => {
+    expect(
+      supportsConflictResolution(new SidecarCalibrationAdapter({} as never)),
+      'the shipped adapter has no resolve capability, so every "capability ' +
+        'absent" test below is testing the state it already ships in and ' +
+        'proves nothing about negotiation',
+    ).toBe(true);
+  });
+
+  it('rejects a well-formed resolve request with the documented code when the transport cannot resolve', async () => {
+    delete prototype.resolveCalibrationConflict;
     const handler = registeredHandler(IpcChannel.CalibrationResolveConflict);
 
     const rejection = await (
@@ -262,6 +296,7 @@ describe('Calibration conflict resolution is not implemented end to end', () => 
   });
 
   it('rejects a malformed resolve request differently, so the check above is reached', async () => {
+    delete prototype.resolveCalibrationConflict;
     const handler = registeredHandler(IpcChannel.CalibrationResolveConflict);
 
     const rejection = await (
@@ -286,26 +321,18 @@ describe('Calibration conflict resolution is not implemented end to end', () => 
 
   /*
    * The counterfactual for the refusal above, and for the empty
-   * `availableResolutions` this adapter reports.
+   * `availableResolutions` an incapable transport reports.
    *
    * "The handler refuses" and "the array is empty" are both satisfied by code
    * that unconditionally refuses and unconditionally returns []. Asserting them
    * proves the *values*, not that anything was derived. A hard-coded [] and a
    * derived [] are indistinguishable until the capability is present.
    *
-   * So the capability is granted here, on the prototype the predicate actually
+   * So the capability is varied here, on the prototype the predicate actually
    * reads through, and both sites are required to change on their own. If they
    * do not, "derived" was decoration.
    */
   describe('the refusal is derived from the absent capability, not asserted', () => {
-    afterEach(() => {
-      delete (
-        SidecarCalibrationAdapter.prototype as {
-          resolveCalibrationConflict?: unknown;
-        }
-      ).resolveCalibrationConflict;
-    });
-
     it('offers nothing while the transport has no resolve capability', () => {
       expect(supportsConflictResolution({})).toBe(false);
       for (const kind of CalibrationConflictKind.options) {
@@ -339,16 +366,14 @@ describe('Calibration conflict resolution is not implemented end to end', () => 
       );
       // Transcribed from the CalibrationConflictResolution schema doc, which
       // limits manualFieldMerge to metadata/draft conflicts. Not a new policy.
+      // The *store* enforces this against the ratified table in sync.rs; this
+      // only checks what the UI is told it may offer.
       expect(withMerge).toEqual(['projectMetadata', 'stepDraft']);
     });
 
     it('stops refusing at the IPC boundary once the capability appears', async () => {
       const resolved: unknown[] = [];
-      (
-        SidecarCalibrationAdapter.prototype as {
-          resolveCalibrationConflict?: unknown;
-        }
-      ).resolveCalibrationConflict = function (
+      prototype.resolveCalibrationConflict = function (
         request: unknown,
       ): Promise<unknown> {
         resolved.push(request);
