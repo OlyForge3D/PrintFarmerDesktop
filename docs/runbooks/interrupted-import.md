@@ -19,7 +19,11 @@ whether anything was imported.
 2. Read diagnostics on `calibration:getDiagnostics`. `outbox`
    `pendingOperationCount` and `unresolvedConflictCount` tell you whether local
    work is queued, and `lastSync` reports the `outcome` and the `correlationId`
-   of the last synchronisation.
+   of the last synchronisation. If the `outbox` block reads
+   `unavailable (<reason>)`, you have no queue depth yet — and the reason says
+   whether that matters: `noProfileSelected` and `notAttempted` are benign, so
+   select a profile and read again; `readFailed` means the sidecar read threw
+   and you should follow `failed-migration.md` before re-running the import.
 3. Check the destination for the imported projects before re-running. Because
    target IDs are **derived deterministically** from the legacy IDs (see below),
    the same backup always lands on the same `projectId` values — so their

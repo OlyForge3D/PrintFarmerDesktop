@@ -63,12 +63,36 @@ export interface CalibrationOutboxSnapshot {
   unresolvedConflictCount: number;
 }
 
+/**
+ * Why `outbox` is null. A null outbox arises from three structurally different
+ * situations and only one of them is a fault, so a runbook cannot key a
+ * diagnosis on the absence alone (issue #236).
+ *
+ * - `notAttempted` — no outbox source is wired, so nothing was asked.
+ * - `noProfileSelected` — no server profile is selected, so there is nothing to
+ *   count against. Benign, and itself the diagnosis.
+ * - `readFailed` — the sidecar read was attempted and threw. **This is the only
+ *   member that indicates a fault.**
+ *
+ * Precedence when more than one applies: `notAttempted` before
+ * `noProfileSelected`, because a missing source makes the profile irrelevant.
+ * Pinned by test rather than left to the order of the conditions.
+ */
+export type CalibrationOutboxUnavailableReason =
+  'notAttempted' | 'noProfileSelected' | 'readFailed';
+
 export interface CalibrationDiagnostics {
   /** ISO 8601 UTC of this collection. */
   generatedAt: string;
   profileId: string | null;
   capability: CalibrationCapabilitySnapshot | null;
   outbox: CalibrationOutboxSnapshot | null;
+  /**
+   * Why `outbox` is null; null when `outbox` is present. Lets a runbook name
+   * the fault case (`readFailed`) instead of keying on absence, which three
+   * different causes produce.
+   */
+  outboxUnavailableReason: CalibrationOutboxUnavailableReason | null;
   lastSync: CalibrationLastSyncSnapshot | null;
   /**
    * True when `capability` and `lastSync` are only as old as the current app
@@ -140,6 +164,8 @@ export class CalibrationDiagnosticsStore {
    * Collect a full diagnostics report. Reads the outbox counts from the
    * sidecar; if that read fails, `outbox` is null rather than throwing, because
    * a diagnostics command that cannot run when something is broken is useless.
+   * `outboxUnavailableReason` says which of the three null causes applied, so
+   * the absence is diagnosable rather than merely visible.
    */
   async collect(options: {
     profileId: string | null;
@@ -149,7 +175,13 @@ export class CalibrationDiagnosticsStore {
     const { profileId, outbox } = options;
     const projectId = options.projectId ?? null;
     let outboxSnapshot: CalibrationOutboxSnapshot | null = null;
-    if (outbox !== undefined && profileId !== null) {
+    let outboxUnavailableReason: CalibrationOutboxUnavailableReason | null =
+      null;
+    if (outbox === undefined) {
+      outboxUnavailableReason = 'notAttempted';
+    } else if (profileId === null) {
+      outboxUnavailableReason = 'noProfileSelected';
+    } else {
       try {
         const [pendingOperationCount, conflicts] = await Promise.all([
           outbox.countCalibrationPendingOperations(profileId, projectId),
@@ -161,6 +193,7 @@ export class CalibrationDiagnosticsStore {
         };
       } catch {
         outboxSnapshot = null;
+        outboxUnavailableReason = 'readFailed';
       }
     }
     const diagnostics: Omit<CalibrationDiagnostics, 'report'> = {
@@ -168,6 +201,7 @@ export class CalibrationDiagnosticsStore {
       profileId,
       capability: this.capability,
       outbox: outboxSnapshot,
+      outboxUnavailableReason,
       lastSync: this.lastSync,
       observedSinceAppStart: true,
     };
@@ -218,7 +252,12 @@ export function formatCalibrationDiagnostics(
   }
   lines.push('', 'outbox');
   if (diagnostics.outbox === null) {
-    lines.push('  unavailable');
+    // The reason is always rendered, so grepping `unavailable` never conflates
+    // the one fault case with the two benign ones (#236). `unknown` is only
+    // reachable from a hand-built snapshot that omitted the reason.
+    lines.push(
+      `  unavailable (${diagnostics.outboxUnavailableReason ?? 'unknown'})`,
+    );
   } else {
     lines.push(
       `  pendingOperationCount: ${String(diagnostics.outbox.pendingOperationCount)}`,

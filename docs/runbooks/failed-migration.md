@@ -79,8 +79,16 @@ silent loss. Do one of:
 
 3. Open the calibration dashboard and confirm previously saved projects list.
 4. Read diagnostics on `calibration:getDiagnostics` and confirm `outbox` is
-   non-null — a null outbox means the counts could not be read from the sidecar,
-   which is the same underlying fault presenting differently.
+   non-null. If it is null, read `outboxUnavailableReason`, which the report
+   renders as `unavailable (<reason>)`:
+
+   - `readFailed` — the counts could not be read from the sidecar. **This is
+     the only value that indicates the migration fault is still present**; treat
+     it as the same underlying fault presenting differently.
+   - `noProfileSelected` — no server profile is selected. Benign. Select a
+     profile and read diagnostics again before concluding anything.
+   - `notAttempted` — no outbox source was wired for this call. Benign, and not
+     a statement about the database.
 
 ## If this fails
 

@@ -3165,6 +3165,20 @@ export type CalibrationOutboxSnapshot = z.infer<
   typeof CalibrationOutboxSnapshot
 >;
 
+/**
+ * Why `outbox` is null. Only `readFailed` indicates a fault; the other two are
+ * benign "nothing was asked" states. Keeping them distinct is what lets a
+ * runbook name a cause instead of keying on absence (issue #236).
+ */
+export const CalibrationOutboxUnavailableReason = z.enum([
+  'notAttempted',
+  'noProfileSelected',
+  'readFailed',
+]);
+export type CalibrationOutboxUnavailableReason = z.infer<
+  typeof CalibrationOutboxUnavailableReason
+>;
+
 export const CalibrationLastSyncSnapshot = z
   .object({
     outcome: z.enum(['ok', 'failed']),
@@ -3193,6 +3207,7 @@ export const CalibrationGetDiagnosticsResponse = z
     profileId: z.string().uuid().nullable(),
     capability: CalibrationCapabilitySnapshot.nullable(),
     outbox: CalibrationOutboxSnapshot.nullable(),
+    outboxUnavailableReason: CalibrationOutboxUnavailableReason.nullable(),
     lastSync: CalibrationLastSyncSnapshot.nullable(),
     observedSinceAppStart: z.boolean(),
     /** Pre-formatted plain text for pasting into a bug report. */
