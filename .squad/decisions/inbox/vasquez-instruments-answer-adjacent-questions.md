@@ -26,8 +26,49 @@ the chain it sits on is not the chain that merged. Four commits reported as
 frozen heads in one day were twins, and every check available to the reporter
 confirmed the wrong answer.
 
-**Ancestry against `refs/pull/N/head` is the only local discriminator**, and it
-requires the ref to have been fetched first.
+**Ancestry against `refs/pull/N/head` is the only local discriminator** that
+names _which_ chain a twin sits on, and it requires the ref to have been fetched
+first. There is a cheaper test that stops one step short and is worth running
+first, because it needs no network at all:
+
+```
+git for-each-ref --contains <sha>        # which refs here reach this commit?
+
+  a live commit   -> exit 0, one or more lines
+  an orphan/twin  -> exit 0, ZERO lines
+  absent object   -> exit 129
+```
+
+That separates _on a ref here_ from _on no ref here_, which is the orphan
+question, and it does not answer the merge question — a commit can be orphaned
+locally and live on the remote, or reachable here only because a sibling
+worktree still holds the branch. **It is cheap, it is correct, and it answers a
+narrower question than the one being asked**, which is the subject of this
+entry rather than an exception to it.
+
+## The exit codes are not a family, and every one is read through a boolean
+
+```
+cat-file -e <absent>                    ->   1
+cat-file -e <absent>^{commit}           -> 128
+merge-base --is-ancestor <absent> ...   -> 128
+for-each-ref --contains <absent>        -> 129
+
+ls-remote origin refs/heads/<deleted>   ->   0   and prints nothing
+for-each-ref --contains <orphan>        ->   0   and prints nothing
+git log -g <ref with no reflog>         ->   0   and prints nothing
+```
+
+**Four codes for "I could not answer", and three commands that report absence
+by succeeding.** No consistent convention exists to intuit, so a caller writing
+`if (failed)` or `if (!output)` is guessing in both directions at once. The two
+rules that survive contact:
+
+- **Where the answer is the output, test the output.** A status of 0 from
+  `ls-remote` or `for-each-ref` means _the query ran_, never _the thing exists_.
+- **Where the answer is the status, branch by value and keep the third state.**
+  0 / 1 / anything-else is yes / no / **no-answer**, and pre-checking existence
+  keeps the no-answer case from ever arising for a reason you did not intend.
 
 ## The remedies that fail silently
 
@@ -117,7 +158,46 @@ confidence that none of the three readings earned.
 that makes any of these readings trustworthy is how recently it was taken, and
 that is the one property no amount of cross-checking supplies.
 
-## The general form
+## The cause, which is not what any of these instruments look for
+
+Every check above answers _is this SHA current_. None of them answers _why it
+stopped being current_, and for most of the incidents this squad has logged the
+answer is not a rewrite at all:
+
+> **One writer, two clocks.**
+
+Cross-session messages here arrive **~13–14 hours after they are composed**
+(#293), and a session goes on working the whole time. So the head named in a
+report and the head on the ref are routinely two points on **one author's own
+timeline**, with dozens of commits between them in both directions. Read
+locally, with no timestamp, that is indistinguishable from a second writer
+rewriting your branch — and it was repeatedly diagnosed as exactly that,
+including in messages telling sessions their pushes had been orphaned. They had
+not been. **The divergence was lag.**
+
+The correction matters because the two causes demand opposite responses.
+A second writer means _stop and read their work_. Lag means _re-derive and
+carry on_. Guessing wrong in the cautious direction still costs a round and
+teaches people to discount the warning.
+
+**Divergence between a report and a ref is evidence about the clock before it is
+evidence about a writer**, and nothing local can tell them apart — which is
+precisely why a report that carries no timestamp cannot be acted on (#202), and
+why the two-writer question is answered by a guard that reads authorship out of
+the reflog rather than by a human comparing two hashes.
+
+## What survived all of it
+
+Across every incident this entry draws on — nine superseded SHAs from one
+session alone — **not one piece of work was lost.** The objects were superseded
+and the content shipped every time.
+
+That is the practical bottom line, and it is why the content instruments belong
+at the top of the list rather than the bottom: **check by string, not by
+ancestry.** `git log --fixed-strings --grep=<subject>` and
+`git rev-parse <sha>:<path>` answer _did the work arrive_, which is almost
+always the question actually being asked, and they answer it across squash,
+rebase and fast-forward alike.
 
 Every instrument here is healthy. `rev-parse --verify` correctly validates rev
 syntax. `ls-remote` correctly reports the refs that exist. `cat-file -e`
