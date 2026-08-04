@@ -82,6 +82,34 @@ and cannot be satisfied by a local cache, plus **content** at a named revision, 
 what any ref says. Neither `cat-file -e` nor `--is-ancestor` nor `for-each-ref` separates a live
 branch from a deleted one.
 
+### Two readings inside one window are one snapshot, not a corroboration
+
+The two-source rule above buys **source diversity**. It has **no purchase on temporal decay**, and
+_sampling twice_ is the intuition that conceals the gap.
+
+> **Agreement between two readings taken inside one window is evidence of a consistent snapshot, not
+> evidence that either reading is current. A stopped clock read twice is not corroborated;
+> repetition is precisely what it has to offer.**
+
+This matters most when the second reading is used to promote the first from _observation_ to
+_stable_. A single stale read is a wrong value. **Two agreeing stale reads are a wrong value plus a
+false warrant**, and the warrant is what licenses the promotion. **Repetition strengthens the wrong
+answer**, which is the same shape as a query that returns the same phantom rows on every re-run.
+
+The remedy is not a third source. It is a **timestamp beside every value**, and re-derivation at the
+moment of use rather than at the moment of composition.
+
+### A finding's addressee is metadata
+
+This repository has already established that a commit's identity fields are populated with values
+that look like answers and do not identify the session that produced it. **The consequence is not
+confined to git.** When several sessions share a role, a message addressed to that role is not
+thereby a message about that role's work, and a finding relayed with an addressee attached carries
+no more warrant for the attachment than a copied figure carries for its value.
+
+> **A finding is a claim about an artifact. Open the artifact.** A remediation aimed at a defect that
+> is not present does not no-op — **it writes the defect in.**
+
 ### Unreachability is not evidence of value
 
 A commit that has fallen off a branch looks like a loss and invites recovery. **Check its content

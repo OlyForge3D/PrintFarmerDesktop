@@ -173,9 +173,48 @@ for-each-ref --contains c4a3321       <- the commit called an orphan
 - **The preamble count was re-derived from the rows rather than incremented**, per run Z, and the derivation immediately disagreed with the obvious number: **42 rows naming 41 distinct commits**, because two rows are one revision written at two lengths. **A row count and an object count are different quantities, and the sentence had been asserting both at once.**
 - **This is the parked-draft finding of run AA with the arrow reversed, and the pair should be read together.** There, a draft held still in a session file while the correction went into the artifacts. **Here, a commit held still off the branch while the correction went into the branch.** In both cases the durable object got the truth and the detached copy kept the error, **and in both cases the detached copy was the one that looked like the authoritative original**. **Recovering an orphan on the strength of its being unreachable would have restored a retracted claim.** Unreachability is not evidence of value; it is not evidence of anything.
 
+### Run AC — findings arrived attributed to this session that are not about its artifacts, and acting on one of them would have manufactured the defect it described
+
+- **Three claims were put to this session as its own and none corresponds to anything it published.** The check is the branch, which is not a matter of recollection. Every commit this session has added:
+
+```
+d25cc80  run AB          99311d6  routes-by-mechanism   b6ae51c  run AA
+44684e1  run Z           666e0e0  run Y amendment       43cd4c8  run Y
+c1185d0  post-squash citations              2219b5e  run F warrant
+
+c4a3321  --is-ancestor HEAD -> 1        d64704d7  --is-ancestor HEAD -> 1
+```
+
+- **Neither `c4a3321` nor `d64704d7` is on this branch**, and neither was ever published here as a head. The heads this session declared, in order, are the eight above.
+
+- **The third claim was checkable directly, and it is false at the objects.** It reported that a pull-request body describes a traversal counting **after** the cycle guard while the file counts **before**, so that a reader checking the file against the body would re-derive a fixed bug and conclude the file was wrong. Measured in `#162`'s body and in `scripts/measure-diamond-dag.mjs` at `origin/development`:
+
+```
+file  :111  total += 1;
+      :112  perId.set(id, (perId.get(id) ?? 0) + 1);
+      :113  if (path.has(id)) continue;
+
+body        total += 1;
+            perId.set(id, (perId.get(id) ?? 0) + 1);
+            if (path.has(id)) continue;
+```
+
+- **They agree, in that order, increment before guard.** The divergence does not exist in this pair.
+- **And that is the finding worth the entry: the prescribed repair was to bring the body into line with the file, and performing it would have introduced the divergence it was meant to remove.** A remediation aimed at a defect that is not present does not no-op — **it writes the defect in.**
+- **Second consecutive round in which the instructed remedy was the hazard.** In run AB, recovering an orphan "before it is collected" would have restored a retracted claim, because the only part of it that had not landed was the false part. Here, synchronising a document with its object would have desynchronised them. **In both cases the instruction was reasonable, urgent, and derived from a real rule — and in both cases the object had already settled the question in the opposite direction.** The common precondition is that neither instruction was issued from the object.
+
+- **The general form, which this repository has already recorded about commits and is here about agents.** `.squad/decisions/inbox/ripley-attribution-carries-no-bits.md` establishes that a commit's identity fields are populated with values that look like answers and do not identify the session that produced it. **The consequence is not confined to git.** When several sessions share a role glyph, a message addressed to the role is not thereby a message about that role's work, and a finding relayed with an addressee attached carries no more warrant for that attachment than a figure copied from another rendering carries for its value.
+- **A finding is a claim about an artifact. The addressee is metadata, and metadata that is occasionally right is the failure mode that decision entry is named for.** The defence is not to distrust the relay; it is that **the artifact named in a finding is the thing to open**, and opening it costs less than the round-trip.
+
+- **This entry's own citations produced the third instance of a defect run AB recorded, which is the argument for keeping it.** Quoting the reported head verbatim as `d64704d7` did not resolve against the declaration for `d64704d`: **one character apart, same object, two citations.** Declarations are keyed on the exact string, so **every abbreviation of a revision must be declared separately, and quoting someone else's abbreviation creates a new one.** The counts were re-derived from the rows rather than incremented, per run Z, and the preamble sentence was rewritten to stop asserting that the surplus is exactly two.
+- **The harness caught all three**, in an artifact whose author had just written the entry describing the defect. **That is the case for a check that runs on the text rather than on the author's recollection of the text.**
+- **Separately, and adopted on its merits: a rule was offered with a misattributed instance and the rule is sound.** _Two readings taken inside one window agree because the window is one snapshot, not because the value is current._ **A stopped clock read twice is not corroborated; repetition is exactly what it has to offer.** This session's two-source discipline buys **source diversity** and has **no purchase on temporal decay**, and _sampling twice_ is the intuition that conceals the gap. Recorded in the decision entry. **The instance it came with is not this session's; the rule is kept anyway, because a rule is not graded by who its example belonged to.**
+
+- **Measured while checking the above, and offered rather than argued:** `#162` is **merged** — `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`, `2026-08-04T19:29:29Z` — and `development` is `3bd7782814d0df22cab76dbfc6741aac68b51736`. **The value published as a correction to a stale reading of `development` was itself already superseded**, in the message establishing that stale readings are the hazard. **That is not an error to grade. It is the measurement of the channel**, and it is why this session's standing lives in the pull-request body and not in a message.
+
 ## Superseded citations and their live twins
 
-**Post-squash declaration (#162).** The 42 entries below name 41 distinct commits on the pull-request branch — two rows are the same revision written at two lengths, because a citation is matched as a string and an abbreviated declaration does not cover the full form. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
+**Post-squash declaration (#162).** The 43 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
 
 - `762cd70` — squashed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` when #162 merged; live twin `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`
 - `b8ae4d7f` — squashed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` when #162 merged; live twin `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`
@@ -219,6 +258,7 @@ for-each-ref --contains c4a3321       <- the commit called an orphan
 - `facab3ce` — squashed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` when #162 merged; live twin `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`
 - `fb06eb0a` — squashed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` when #162 merged; live twin `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`
 - `e5a90df74722f586670e18472da5ffe3fd424ba3` — squashed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` when #162 merged; live twin `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`. The same revision as `e5a90df7` above, written in full; a citation is matched as a string, so the abbreviated declaration does not cover the full form.
+- `d64704d7` — squashed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` when #162 merged; live twin `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`. The same revision as `d64704d` above at one more character; declarations are keyed on the exact string.
 
 Each revision on the left was the branch head, or an ancestor of it, when it was cited; a rebase or a sync merge rewrote it afterwards. The revision on the right is the surviving copy of the same change on this branch, identified with `git patch-id --stable` **at authoring time** and written down here because a reader cannot run that comparison — it requires the rewritten-away commit, which is precisely what the reader does not have. `scripts/check-citation-reachability.mjs` reads this block and accepts the citation only if the twin named here is **itself reachable**; it does not look for twins in the local object store, so it returns the same verdict in a fresh clone as it does for the author.
 
