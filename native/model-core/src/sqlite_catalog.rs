@@ -3617,16 +3617,13 @@ impl CatalogStore for SqliteCatalog {
                     .flatten(),
                 None => None,
             };
-            let superseded_observations =
-                if params.resolution == CalibrationConflictResolutionKind::AcceptServer {
-                    self.observations_superseded_by(
-                        &params.profile_id,
-                        &project_id,
-                        server_revision,
-                    )?
-                } else {
-                    Vec::new()
-                };
+            let superseded_observations = if params.resolution
+                == CalibrationConflictResolutionKind::AcceptServer
+            {
+                self.observations_superseded_by(&params.profile_id, &project_id, server_revision)?
+            } else {
+                Vec::new()
+            };
             return Ok(CalibrationConflictResolutionDto {
                 conflict_id: params.conflict_id.clone(),
                 profile_id: params.profile_id.clone(),
@@ -6904,7 +6901,10 @@ mod tests {
                 "replay is normal outbox operation; erroring on it turns a \
                  transient failure into a permanent one",
             );
-        assert!(replay.replayed, "the second attempt must report as a replay");
+        assert!(
+            replay.replayed,
+            "the second attempt must report as a replay"
+        );
         assert_eq!(
             replay.resolved_at, first.resolved_at,
             "resolved_at must not move on replay"

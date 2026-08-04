@@ -905,21 +905,8 @@ mod tests {
         // `assert_eq!(SCHEMA_VERSION, 14)` passes when a migration constant is
         // added and never applied, which is the failure it is supposed to catch.
         let migrations = [
-            SCHEMA_V1,
-            SCHEMA_V2,
-            SCHEMA_V3,
-            SCHEMA_V4,
-            SCHEMA_V5,
-            SCHEMA_V6,
-            SCHEMA_V7,
-            SCHEMA_V8,
-            SCHEMA_V9,
-            SCHEMA_V10,
-            SCHEMA_V11,
-            SCHEMA_V12,
-            SCHEMA_V13,
-            SCHEMA_V14,
-            SCHEMA_V15,
+            SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
+            SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15,
         ];
         assert_eq!(
             SCHEMA_VERSION as usize,
