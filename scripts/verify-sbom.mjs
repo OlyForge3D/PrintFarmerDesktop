@@ -2,7 +2,7 @@
 // staged copy matches it, that it covers both dependency trees, and that no
 // component category has silently emptied.
 //
-// This runs in the Package smoke job because that is the only job with BOTH
+// This runs in the Release package job because that is the only job with BOTH
 // toolchains installed and the only one that resolves cargo at the feature set
 // a release actually builds. It is therefore the one place the derivation runs
 // against real `cargo metadata` rather than a fixture — `tests/supplyChain.test.ts`
