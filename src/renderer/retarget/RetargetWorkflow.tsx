@@ -20,16 +20,28 @@ export function RetargetWorkflow({
   const [scene, setScene] = useState<'source' | 'output'>('output');
   const [mesh, setMesh] = useState<SceneMesh | null>(null);
   const [sceneError, setSceneError] = useState<string | null>(null);
+  const [sceneLoading, setSceneLoading] = useState(false);
   const [sceneRetry, setSceneRetry] = useState(0);
   const sceneEpoch = useRef(0);
+  const sceneRequests = useRef(new Set<number>());
   useEffect(() => {
     const request = ++sceneEpoch.current;
     setMesh(null);
     setSceneError(null);
-    if (flow.phase !== 'review' || !flow.token) return;
+    if (flow.phase !== 'review' || !flow.token) {
+      setSceneLoading(sceneRequests.current.size > 0);
+      return;
+    }
+    sceneRequests.current.add(request);
+    setSceneLoading(true);
+    const settle = (): void => {
+      sceneRequests.current.delete(request);
+      if (sceneRequests.current.size === 0) setSceneLoading(false);
+    };
     void window.printFarmer
       .loadRetargetScene({ token: flow.token, source: scene })
       .then((result) => {
+        settle();
         if (request !== sceneEpoch.current) return;
         if (result.status === 'ok') {
           setMesh(toViewerSceneMesh(result.value));
@@ -42,8 +54,9 @@ export function RetargetWorkflow({
         }
       })
       .catch(() => {
-        if (request === sceneEpoch.current)
-          setSceneError('The comparison scene could not be loaded.');
+        settle();
+        if (request !== sceneEpoch.current) return;
+        setSceneError('The comparison scene could not be loaded.');
       });
     return () => {
       if (request === sceneEpoch.current) sceneEpoch.current += 1;
@@ -334,7 +347,11 @@ export function RetargetWorkflow({
               <button type="button" onClick={flow.close}>
                 Cancel
               </button>
-              <button type="button" onClick={() => void flow.save()}>
+              <button
+                type="button"
+                disabled={sceneLoading}
+                onClick={() => void flow.save()}
+              >
                 Save As…
               </button>
             </footer>
