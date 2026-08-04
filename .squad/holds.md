@@ -44,12 +44,24 @@ told this document exists — it appears in `gh pr checks`, which every session
 already runs.
 
 **What still does not exist:** it is **not a required context** and is wired to
-no branch protection rule. It cannot be, yet: a `merge_group` entry carries no
-pull request and therefore no labels, so the check does not report there, and a
-required context that never reports blocks a queue entry forever instead of
-failing it. So any session with push access can still rebase, sync, force-push
-or merge a PR carrying the label, and **the check will not be what stops them.**
-It makes the hold _legible_, not _binding_.
+no branch protection rule. A `merge_group` entry carries no pull request and
+therefore no labels, so the check does not report there, and a required context
+that never reports blocks a queue entry forever instead of failing it. So any
+session with push access can still rebase, sync, force-push or merge a PR
+carrying the label, and **the check will not be what stops them.** It makes the
+hold _legible_, not _binding_.
+
+**Correction: an earlier version of this paragraph said "it cannot be, _yet_",
+and the "yet" was wrong.** That word describes a constraint waiting on
+implementation. This one is not waiting on anything. Required, the check
+deadlocks any merge queue; advisory, a merge queue ignores it. There is no third
+option through required contexts, so **a label-based hold cannot be made binding
+under a merge queue at all** — the two mechanisms are mutually exclusive as
+designed. Everything above about restraint holds **only while a human performs
+each merge**, and the entire purpose of a merge queue is to remove that human.
+Whoever enables one is converting this documented-advisory signal into a silent
+one, and should read that as a consequence of the decision rather than a defect
+to be fixed afterwards.
 
 **"The label enforces nothing" is not the same as "nothing is enforced."**
 Ordinary branch protection on `development` applies to a held PR exactly as it
@@ -275,11 +287,31 @@ so no honest mechanism can be built there.** Saying so is a better answer than a
 procedure that asks people to be diligent, because a rule you have to remember
 is not a control and dressing one up as a control is worse than having none.
 
-**One hypothesis worth recording as falsified, so nobody re-derives it:** held
-PRs are not stacked PRs, so `base.ref` cannot serve as an arming signal. All six
-PRs that have ever carried this label (#154, #169, #172, #174, #175, #212)
-targeted `development`, and at the time of measurement **zero** open PRs
-repository-wide had any other base.
+**Three candidate arming signals, measured rather than assumed**, against all
+six PRs that have ever carried this label (#154, #169, #172, #174, #175, #212):
+
+| candidate signal                       | instances across the six |
+| -------------------------------------- | ------------------------ |
+| draft / ready-for-review transitions   | 0                        |
+| `CHANGES_REQUESTED` reviews            | 0                        |
+| a base branch other than `development` | 0                        |
+
+**These are not signals that are hard to read. They are absent.** Record the
+third as falsified so nobody re-derives it: held PRs are **not** stacked PRs, so
+`base.ref` cannot serve as an arming signal — every held PR targeted
+`development`, as did every open PR repository-wide at the time of measurement.
+
+**The application record measures what that costs, and it is the strongest
+evidence here.** Five of the six labels were applied inside a **three-second
+window** — `23:27:40Z` to `23:27:43Z` on 3 Aug — between 0.3 and 1.6 hours after
+each PR was opened. That is not five decisions recorded as they were taken; it is
+one sweep remembering five earlier decisions afterwards. During every one of
+those lags the pull request was held in fact and green-and-unlabelled in the
+repository. The sixth, applied 10 seconds after its PR opened, is the author
+labelling their own PR — self-reminding, not a control firing.
+
+**So do not read the absence of this label as evidence that a PR is free to
+merge.** Its presence is informative; its absence is not.
 
 ## Escalation when the owner is unreachable
 
