@@ -4758,7 +4758,7 @@ const IssueCode = z.enum([
   'outputValidationFailed',
   'io',
 ]);
-const RetargetErrorCode = z.enum([
+export const RetargetErrorCode = z.enum([
   'invalidRequest',
   'sidecarUnavailable',
   'profileStoreCorrupt',

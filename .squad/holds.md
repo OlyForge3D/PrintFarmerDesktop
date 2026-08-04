@@ -44,12 +44,24 @@ told this document exists — it appears in `gh pr checks`, which every session
 already runs.
 
 **What still does not exist:** it is **not a required context** and is wired to
-no branch protection rule. It cannot be, yet: a `merge_group` entry carries no
-pull request and therefore no labels, so the check does not report there, and a
-required context that never reports blocks a queue entry forever instead of
-failing it. So any session with push access can still rebase, sync, force-push
-or merge a PR carrying the label, and **the check will not be what stops them.**
-It makes the hold _legible_, not _binding_.
+no branch protection rule. A `merge_group` entry carries no pull request and
+therefore no labels, so the check does not report there, and a required context
+that never reports blocks a queue entry forever instead of failing it. So any
+session with push access can still rebase, sync, force-push or merge a PR
+carrying the label, and **the check will not be what stops them.** It makes the
+hold _legible_, not _binding_.
+
+**Correction: an earlier version of this paragraph said "it cannot be, _yet_",
+and the "yet" was wrong.** That word describes a constraint waiting on
+implementation. This one is not waiting on anything. Required, the check
+deadlocks any merge queue; advisory, a merge queue ignores it. There is no third
+option through required contexts, so **a label-based hold cannot be made binding
+under a merge queue at all** — the two mechanisms are mutually exclusive as
+designed. Everything above about restraint holds **only while a human performs
+each merge**, and the entire purpose of a merge queue is to remove that human.
+Whoever enables one is converting this documented-advisory signal into a silent
+one, and should read that as a consequence of the decision rather than a defect
+to be fixed afterwards.
 
 **"The label enforces nothing" is not the same as "nothing is enforced."**
 Ordinary branch protection on `development` applies to a held PR exactly as it
@@ -159,6 +171,58 @@ filter that felt natural — look at open PRs — excludes the entire population
 construction. **The defect and the failure to measure it have the same cause:
 merging is the moment attention leaves.**
 
+### The instrument, which is a second lagged copy — and the worked example above uses it
+
+Read the two paragraphs above carefully and they disagree with each other. The
+rule says _query the events, not the labels_, and the code block it offers does
+exactly that, at the object. Then the worked example demonstrates the point with
+`gh pr list --label` — **which is neither the events nor the labels. It is a
+search index built over the labels.** The section teaching the good instrument
+illustrates itself with the worst one available. That was mine, and it is left
+here rather than quietly swapped, because the substitution is so natural that
+the author of the rule made it three paragraphs after stating it.
+
+There are three renderings of a hold, not two:
+
+| rendering                          | what it is                               |
+| ---------------------------------- | ---------------------------------------- |
+| `issues/{n}/timeline` label events | the immutable log — authoritative        |
+| `issues/{n}/labels`                | a mutable summary of the log             |
+| `gh pr list --label` / search API  | a **lagged copy of the mutable summary** |
+
+**The third one has a cell that does not reconcile.** Measured on this
+repository, all four combinations of operation and pull-request state:
+
+|               | label **add** | label **remove**           |
+| ------------- | ------------- | -------------------------- |
+| **open** PR   | < 20 s        | ~12 min                    |
+| **merged** PR | < 20 s        | **> 11 h, not reconciled** |
+
+Three cells are healthy, which is what makes the fourth worth stating precisely.
+It is **not** that closed pull requests are stale — an add on a merged PR
+appeared in twenty seconds. It is **not** that removals are broken — a removal
+on an open PR reconciled in twelve minutes. It is **not** general lag — twelve
+minutes and eleven hours are not the same process. **Only the intersection
+fails**, and a hypothesis that survives one observation looks identical, from
+inside that observation, to one that survives four.
+
+**Removing a hold label from a merged pull request is that intersection**, and
+it is precisely and exclusively what the automation above does.
+
+Two consequences worth knowing before you audit anything:
+
+- **The error direction is over-reporting.** The index lists holds that have
+  already been lifted, so it errs toward _don't touch that_ — and inaction on a
+  merged PR produces no symptom, no complaint and no bug report. Nobody escalates
+  because a merged pull request looked held.
+- **The wrong answer is stable across re-runs.** The obvious response to a
+  surprising result — run it again — returns the same populated, well-formed,
+  plausible list, and reads as confirmation.
+
+So a backfill that reports **_selected five candidates, lifted zero_** is a
+healthy backfill seeing phantom rows, not a broken one. `gh api
+repos/OWNER/REPO/issues/{n}/labels` settles it in one call and is authoritative.
+
 If you find a **closed but unmerged** PR still carrying the label, that is the
 case the workflow deliberately does not touch. Decide whether it will be
 reopened before removing it by hand.
@@ -223,11 +287,31 @@ so no honest mechanism can be built there.** Saying so is a better answer than a
 procedure that asks people to be diligent, because a rule you have to remember
 is not a control and dressing one up as a control is worse than having none.
 
-**One hypothesis worth recording as falsified, so nobody re-derives it:** held
-PRs are not stacked PRs, so `base.ref` cannot serve as an arming signal. All six
-PRs that have ever carried this label (#154, #169, #172, #174, #175, #212)
-targeted `development`, and at the time of measurement **zero** open PRs
-repository-wide had any other base.
+**Three candidate arming signals, measured rather than assumed**, against all
+six PRs that have ever carried this label (#154, #169, #172, #174, #175, #212):
+
+| candidate signal                       | instances across the six |
+| -------------------------------------- | ------------------------ |
+| draft / ready-for-review transitions   | 0                        |
+| `CHANGES_REQUESTED` reviews            | 0                        |
+| a base branch other than `development` | 0                        |
+
+**These are not signals that are hard to read. They are absent.** Record the
+third as falsified so nobody re-derives it: held PRs are **not** stacked PRs, so
+`base.ref` cannot serve as an arming signal — every held PR targeted
+`development`, as did every open PR repository-wide at the time of measurement.
+
+**The application record measures what that costs, and it is the strongest
+evidence here.** Five of the six labels were applied inside a **three-second
+window** — `23:27:40Z` to `23:27:43Z` on 3 Aug — between 0.3 and 1.6 hours after
+each PR was opened. That is not five decisions recorded as they were taken; it is
+one sweep remembering five earlier decisions afterwards. During every one of
+those lags the pull request was held in fact and green-and-unlabelled in the
+repository. The sixth, applied 10 seconds after its PR opened, is the author
+labelling their own PR — self-reminding, not a control firing.
+
+**So do not read the absence of this label as evidence that a PR is free to
+merge.** Its presence is informative; its absence is not.
 
 ## Escalation when the owner is unreachable
 

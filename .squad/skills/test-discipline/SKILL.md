@@ -62,7 +62,7 @@ For anything walking attacker-supplied structure (scene graphs, archives, XML), 
 - hostile identifiers — `__proto__`, `constructor`, `prototype` as object IDs,
 - structures whose _output_ size is superlinear in input size.
 
-A 29-node diamond DAG expanded to 49,150 rows in `partTreeModel.ts` precisely because tests only covered an ancestor cycle. (The fixture's doc comment reports `2^15-1 = 32,767`; that is paths through the `m` chain alone, not the row total.)
+A 29-node diamond DAG expanded to 49,150 rows in `partTreeModel.ts` precisely because tests only covered an ancestor cycle. (The fixture's doc comment reports `2^15-1 = 32,767` paths through the `m` chain — summed over the chain, not the 16,384 distinct paths to its tail, and not the row total. Measured by rebuilding the fixture and walking it: 32,767 `m`-chain rows and 16,383 `s`-node rows.)
 
 ## Do not let a test pin a bug
 

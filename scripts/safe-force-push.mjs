@@ -146,6 +146,30 @@ function main(argv) {
 
   const env = { ...process.env, [ACK_ENV]: live };
   if (options.foreign) env[ACK_FOREIGN_ENV] = options.foreign;
+  // The guard's `unowned-discard` arm wants each destroyed commit named by sha,
+  // because a sha is the one token in that refusal that cannot be transcribed
+  // from an instruction — which is precisely what went wrong with the session
+  // trailer it replaced.
+  //
+  // In THIS path that evidence has already been produced: `--yes` is only
+  // reachable after the block above has printed every destroyed commit, so
+  // forwarding the shas here does not weaken the gate, it moves it to where the
+  // reading actually happens. The naming requirement exists for the bare
+  // `git push` path, where nothing prints and the operator has been given no
+  // list at all.
+  //
+  // Stated without overclaiming: `--yes` is still a fixed literal and can be
+  // pre-written into a runbook. What it buys is that the output was emitted, not
+  // that it was read. That is weaker than naming the shas by hand and it is the
+  // reason this forwarding is scoped to commits this script itself displayed.
+  if (options.yes && discarded.length > 0) {
+    env[ACK_FOREIGN_ENV] = [
+      env[ACK_FOREIGN_ENV] ?? '',
+      ...discarded.map((commit) => commit.sha),
+    ]
+      .join(' ')
+      .trim();
+  }
 
   const args = [
     'push',

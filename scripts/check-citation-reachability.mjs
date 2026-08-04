@@ -1,0 +1,323 @@
+// Checks that every commit-SHA cited in the fact-checker's artifacts can be resolved by a
+// *reader*, not merely by the author who wrote the citation.
+//
+// Why this exists. On a machine where several worktrees share one object database, every
+// superseded head resolves forever for whoever created it. `git show <sha>` succeeds for the
+// author and fails in a fresh clone, and there is no local symptom of the difference: the
+// lookup does not error, hesitate, or warn. A pin orphaned by a rebase is therefore invisible
+// from the position of the person responsible for it, which is the one position from which it
+// is never checked. Two rebases and a sync merge on this branch orphaned sixteen pins that
+// were the branch head, or an ancestor of it, at the moment each was written. The citations
+// were correct when made and the history operation invalidated them afterwards.
+//
+// The reader model is deliberately conservative: a reader has the mainline and the branch under
+// review, and nothing else. Anything not reachable from those two is treated as unreachable
+// even if it happens to sit in some other namespace, because reaching it then requires a route
+// the reader has to be told about. That is exactly what the declaration block supplies.
+//
+// A cited SHA passes if any of:
+//   REACHABLE  reachable from the branch head or from the mainline - the reader just has it.
+//   TWIN       the ledger *declares* a live twin for the pin, and that twin is itself reachable
+//              from the reader's revisions. The pin names a revision that was rewritten, and the
+//              rewritten copy carries the same change, so the citation is repairable by
+//              substitution rather than lost.
+//
+//              This class is deliberately read from the repository rather than computed. An
+//              earlier version discovered twins with `git patch-id --stable` over the cited
+//              commit, which requires *having* that commit - so it returned TWIN 16 / exit 0 for
+//              the author and TWIN 0 / ORPHAN 16 / exit 1 in a virgin clone, with both controls
+//              passing in both runs. That is this file's own subject reproduced inside the tool
+//              written to close it: the repair was computable only from the position that cannot
+//              see the defect. Found by a reviewer who ran it in a fresh clone rather than
+//              reading it. A twin is therefore evidence only when it is written down, because
+//              only then can the reader check the same thing the author checked.
+//   DECLARED   listed in the ledger's declaration block with a reason. Two reasons are valid:
+//              the object's *absence* is the finding being recorded (run F is entirely about
+//              commits that are not in this PR - demanding they be reachable would delete the
+//              entry's subject), or a fetch route is documented at the citation site.
+//
+// Anything else is an ORPHAN and fails the run.
+//
+// The control arm matters more than the pass. An instrument that reports every SHA reachable
+// is indistinguishable from one that cannot report anything else, and this file's whole subject
+// is checks that return clean because they cannot see. So the run asserts both outcomes are
+// producible: a SHA known present must classify REACHABLE, and a synthetic SHA known absent
+// must classify ORPHAN. If either control fails the run aborts without reporting a verdict.
+//
+// Run:  node scripts/check-citation-reachability.mjs
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+
+const FILES = [
+  '.squad/fact-checker/audit-trail.md',
+  '.squad/fact-checker/policy.md',
+];
+
+const DECLARATION_HEADING =
+  '## Citations whose object is not reachable from this repository';
+
+const TWIN_HEADING = '## Superseded citations and their live twins';
+
+const git = (args) => {
+  try {
+    return execFileSync('git', args, {
+      encoding: 'utf8',
+      maxBuffer: 1 << 28,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null;
+  }
+};
+
+// Revisions a reader is assumed to hold. `origin/development` may be absent in a shallow or
+// branch-only checkout; the branch head alone still gives a usable, if stricter, answer.
+const readerRevs = ['HEAD', 'origin/development'].filter((r) =>
+  git(['rev-parse', '--verify', `${r}^{commit}`]),
+);
+
+const reachable = new Set(
+  (git(['rev-list', ...readerRevs]) ?? '').split('\n').filter(Boolean),
+);
+
+// Not every citation is a revision. Blob identity is this ledger's own instrument for a claim
+// about the contents of a file, and it is a *stronger* anchor than a commit: a rebase rewrites
+// commits and leaves blobs untouched. An earlier version of this check resolved every backticked
+// hex as `sha^{commit}` and so reported a blob citation as an orphan, which pushed authors away
+// from the best anchor available to them. The object walk is deferred because it is only needed
+// when a citation is not a commit, and it is memoised because it is the expensive call here.
+let objectSet = null;
+const reachableObjects = () => {
+  if (objectSet) return objectSet;
+  objectSet = new Set(
+    (git(['rev-list', '--objects', ...readerRevs]) ?? '')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => l.split(' ')[0]),
+  );
+  return objectSet;
+};
+
+// `git patch-id --stable` of a revision. Used only to *suggest* a twin for an undeclared orphan
+// when the author happens to hold the object; it takes no part in the verdict, because it cannot
+// be computed by a reader who does not have the orphaned commit. That asymmetry is the defect
+// this class of citation is about, and it is not permitted to decide the result.
+const patchIdOf = (rev) => {
+  try {
+    const show = execFileSync('git', ['show', rev], {
+      encoding: 'utf8',
+      maxBuffer: 1 << 28,
+    });
+    const out = execFileSync('git', ['patch-id', '--stable'], {
+      input: show,
+      encoding: 'utf8',
+      maxBuffer: 1 << 28,
+    });
+    return out.split(' ')[0] || null;
+  } catch {
+    return null;
+  }
+};
+
+// Reads a `- `sha` — text` list under a heading, from any of the artifacts.
+const readBlock = (heading) => {
+  const found = new Map();
+  for (const f of FILES) {
+    let text;
+    try {
+      text = readFileSync(f, 'utf8');
+    } catch {
+      continue;
+    }
+    const at = text.indexOf(heading);
+    if (at < 0) continue;
+    const rest = text.slice(at + heading.length);
+    const end = rest.indexOf('\n## ');
+    const block = end < 0 ? rest : rest.slice(0, end);
+    for (const m of block.matchAll(
+      /`([0-9a-f]{7,40})`\s*[-\u2014:]\s*([^\n]+)/g,
+    )) {
+      found.set(m[1], m[2].trim());
+    }
+  }
+  return found;
+};
+
+const declared = readBlock(DECLARATION_HEADING);
+
+// Declared twins. The value carries prose; the twin is the first backticked revision in it.
+const twins = new Map();
+for (const [sha, note] of readBlock(TWIN_HEADING)) {
+  const m = /`([0-9a-f]{7,40})`/.exec(note);
+  if (m) twins.set(sha, m[1]);
+}
+
+// Cited SHAs. Only backticked tokens count: prose that happens to contain a hex-looking word is
+// not a citation, and treating it as one manufactures findings.
+const cited = new Map();
+for (const f of FILES) {
+  let text;
+  try {
+    text = readFileSync(f, 'utf8');
+  } catch {
+    continue;
+  }
+  for (const m of text.matchAll(/`([0-9a-f]{7,40})`/g)) {
+    if (!cited.has(m[1])) cited.set(m[1], []);
+    cited.get(m[1]).push(f);
+  }
+}
+
+// The verdict is computed from exactly two things a reader also has: what is reachable from the
+// reader's revisions, and what the artifacts say. Local object presence is never consulted for a
+// pass, so the author and the reader get the same answer.
+const classify = (sha, { twinMap = twins } = {}) => {
+  const full = git(['rev-parse', '--verify', `${sha}^{commit}`]);
+  if (full && reachable.has(full)) return { k: 'REACHABLE', d: '' };
+
+  // A non-commit object -- typically a blob pinning the contents of a file -- counts as reachable
+  // when the reader's own revisions carry it. Same rule as for commits: presence in the author's
+  // object store is never consulted, only what the declared reader revisions reach.
+  if (!full) {
+    const obj = git(['rev-parse', '--verify', sha]);
+    if (obj && reachableObjects().has(obj)) {
+      const type = git(['cat-file', '-t', obj]) ?? 'object';
+      return {
+        k: 'REACHABLE',
+        d: `${type}, carried by the reader's revisions`,
+      };
+    }
+  }
+
+  const twin = twinMap.get(sha);
+  if (twin) {
+    const twinFull = git(['rev-parse', '--verify', `${twin}^{commit}`]);
+    if (twinFull && reachable.has(twinFull)) {
+      return { k: 'TWIN', d: `${twin.slice(0, 8)} (declared, reachable)` };
+    }
+    return {
+      k: 'ORPHAN',
+      d: `declared twin ${twin.slice(0, 8)} is not itself reachable`,
+    };
+  }
+
+  if (declared.has(sha)) return { k: 'DECLARED', d: declared.get(sha) };
+
+  // Authoring aid only, and clearly labelled as such: if the author happens to hold the object,
+  // suggest a twin to declare. This never turns an ORPHAN into a pass.
+  let hint = 'unreachable, no declared twin, undeclared';
+  if (full) {
+    const q = patchIdOf(full);
+    if (q) {
+      for (const c of (git(['rev-list', 'HEAD', '--no-merges']) ?? '')
+        .split('\n')
+        .filter(Boolean)) {
+        if (patchIdOf(c) === q) {
+          hint = `unreachable; candidate twin ${c.slice(0, 8)} - declare it under "${TWIN_HEADING}"`;
+          break;
+        }
+      }
+    }
+  }
+  return { k: 'ORPHAN', d: hint };
+};
+
+// --- control arm -------------------------------------------------------------------------
+// Two outcome controls, and two mutation controls. The outcome controls show the instrument can
+// produce both answers. The mutation controls show *where the answer comes from* - which is the
+// thing the previous version got wrong while both of its outcome controls passed. A positive
+// control proves the data is live; it does not prove the predicate asks what you think it asks.
+const controlPresent = git(['rev-parse', 'HEAD']);
+const controlAbsent = '0123456789abcdef0123456789abcdef01234567';
+const cp = classify(controlPresent);
+const ca = classify(controlAbsent);
+console.log('control: known-present SHA classifies', cp.k);
+console.log('control: known-absent  SHA classifies', ca.k);
+
+const failures = [];
+if (cp.k !== 'REACHABLE')
+  failures.push('known-present SHA did not classify REACHABLE');
+if (ca.k !== 'ORPHAN')
+  failures.push('known-absent SHA did not classify ORPHAN');
+
+// The non-commit arm gets its own pair, because a branch nothing exercises is a branch nothing
+// checks. The positive case uses a blob the reader demonstrably holds - this file's own tree
+// entry - and the negative case a syntactically valid hash that no object walk will contain.
+const controlBlob = git(['rev-parse', '--verify', 'HEAD:package.json']);
+if (controlBlob) {
+  const cb = classify(controlBlob);
+  console.log('control: a blob carried by the reader classifies', cb.k);
+  if (cb.k !== 'REACHABLE')
+    failures.push('a reader-reachable blob did not classify REACHABLE');
+}
+const cbAbsent = classify('89abcdef0123456789abcdef0123456789abcdef');
+console.log('control: an absent non-commit object classifies', cbAbsent.k);
+if (cbAbsent.k !== 'ORPHAN')
+  failures.push('an unreachable object did not classify ORPHAN');
+
+const [someTwinned] = [...twins.keys()];
+if (someTwinned) {
+  // Withdrawing the declaration must withdraw the pass: TWIN has to come from the text.
+  const withoutDeclaration = classify(someTwinned, { twinMap: new Map() });
+  console.log(
+    'control: a twinned SHA with its declaration removed classifies',
+    withoutDeclaration.k,
+  );
+  if (withoutDeclaration.k === 'TWIN') {
+    failures.push(
+      'a twinned SHA still classified TWIN with no declaration - the pass is coming from the local object store',
+    );
+  }
+  // A declared twin that a reader cannot reach must not pass either.
+  const unreachableTwin = classify(someTwinned, {
+    twinMap: new Map([[someTwinned, controlAbsent]]),
+  });
+  console.log(
+    'control: a declared twin that is unreachable classifies',
+    unreachableTwin.k,
+  );
+  if (unreachableTwin.k !== 'ORPHAN') {
+    failures.push('an unreachable declared twin was accepted');
+  }
+}
+
+if (failures.length) {
+  for (const f of failures) console.error('CONTROL FAILED - ' + f);
+  console.error('verdict withheld.');
+  process.exit(2);
+}
+
+// --- the run -----------------------------------------------------------------------------
+console.log(
+  `\nreader revisions: ${readerRevs.join(' ')}  (${reachable.size} commits reachable)`,
+);
+console.log(`cited SHAs: ${cited.size}   declared: ${declared.size}\n`);
+
+const tally = { REACHABLE: 0, TWIN: 0, DECLARED: 0, ORPHAN: 0 };
+const orphans = [];
+for (const sha of [...cited.keys()].sort()) {
+  const r = classify(sha);
+  tally[r.k] += 1;
+  if (r.k !== 'REACHABLE') {
+    console.log(`  ${sha.padEnd(10)} ${r.k.padEnd(10)} ${r.d}`);
+  }
+  if (r.k === 'ORPHAN') orphans.push(`${sha} (${cited.get(sha).join(', ')})`);
+}
+
+console.log(
+  `\nREACHABLE ${tally.REACHABLE}   TWIN ${tally.TWIN}   DECLARED ${tally.DECLARED}   ORPHAN ${tally.ORPHAN}`,
+);
+
+if (orphans.length) {
+  console.error(
+    '\nORPHANED CITATIONS - unreachable to a reader, and not accounted for:',
+  );
+  for (const o of orphans) console.error(`  ${o}`);
+  console.error(
+    '\nRepair by naming the live twin, documenting a fetch route, or declaring the absence under:',
+  );
+  console.error(`  ${DECLARATION_HEADING}`);
+  process.exit(1);
+}
+
+console.log('\nOK - every cited revision is reachable, twinned, or declared.');
