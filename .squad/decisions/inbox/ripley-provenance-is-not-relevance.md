@@ -8,7 +8,7 @@ This is not the rule about going to the artifact, and it is not the rule about r
 
 **Why it needs its own entry:** every verification control this squad adopted in one afternoon is a provenance control. Two-source reads control for staleness. Going to the artifact controls for reconstruction. Pinning a SHA controls for decay. Content assertions control for supersession. **All four ask where the value came from. None asks what the value can be false about.** Satisfying every one of them is compatible with reading the wrong field, and the satisfaction makes the reading more persuasive, not less.
 
-**Four instances, all from a single afternoon, all read correctly at the object.**
+**Five instances, all from a single afternoon, all read correctly at the object.**
 
 **1. A diffstat that is invariant under the event it was watched for.** I reported `5 files, +153` across several hours as evidence my branch was unchanged. It was accurate every time. I had synced `origin/development` into the branch in the middle of that window, and a conflict-free merge of disjoint paths changes no line in the delta. **The number I was checking was the one number guaranteed to survive the event I was missing.** The field that moved was the merge-base, `fc9799f` to `ccf61d1`, and it was in my own standing report, carried rather than re-derived.
 
@@ -20,12 +20,29 @@ This is not the rule about going to the artifact, and it is not the rule about r
 
 Note the escalation across 3 and 4: one identity field cannot separate agent from agent, the other cannot separate agent from human. **In this setup no field in GitHub's record identifies an agent action.** The only agent-identifying artifacts on the trunk are `Co-authored-by` and `Copilot-Session` trailers, typed by convention, produced by nothing mechanical, and absent without complaint if omitted.
 
-**The check, stated so it can be applied in the moment.** Before reading the field, name the state in which it would differ. Concretely: _"if the thing I am worried about had happened, what would this value be?"_ If the answer is _"the same"_, stop — the reading cannot help, however carefully it is taken. In instance 1 the answer was _the same_. In instance 2 the answer was _the same_. In instances 3 and 4 the answer was _the same_, because the field is constant across every actor in the population.
+**5. A command that answers a neighbouring question, found by someone else on my own work.** `git merge-base --is-ancestor` was adopted this afternoon as the remedy for stale pins — a correct and cheap check. Asked whether my merged work had reached mainline, it says no:
+
+```
+git merge-base --is-ancestor bb36969 origin/development   ->  exit 1
+```
+
+At that same moment all five files that commit introduced are present in `origin/development`. **The pull request was merged and shipped; the commit is not an ancestor of anything, because the merge was a squash.** The command answered _is this commit reachable_, which is true and is not the question. **Squash-merging decouples content from ancestry, so "did this work land" is two questions and ancestry answers one of them.**
+
+Two further modes of the same command, which belong with it:
+
+- **`exit 128` means the object is absent and is also non-zero.** A script written as `if ! git merge-base --is-ancestor ...` treats _cannot determine_ identically to _was rewritten_ — an absence reported as a negative result, which is its own recurring failure and is here fused to this one.
+- **It detects rewrites, not changes.** A fast-forward keeps `exit 0` while every blob beneath it moves, so a passing ancestry check is compatible with the file you care about having changed completely.
+
+This instance is the strongest of the five for two reasons. **It is a tool rather than a field**, so the class is not an artifact of one API's schema. And **it was found by the person who had been broadcasting the check all afternoon, on someone else's pull request, while the check was passing its own provenance test perfectly.**
+
+The remedy pairs with the content assertion in `ripley-go-and-look.md`: **ancestry establishes that a commit is reachable; only a content assertion establishes that the work arrived.** Neither substitutes for the other, and under squash-merge the first will routinely say no while the second says yes.
+
+**The check, stated so it can be applied in the moment.** Before reading the field, name the state in which it would differ. Concretely: _"if the thing I am worried about had happened, what would this value be?"_ If the answer is _"the same"_, stop — the reading cannot help, however carefully it is taken. In instance 1 the answer was _the same_. In instance 2 the answer was _the same_. In instances 3 and 4 the answer was _the same_, because the field is constant across every actor in the population. In instance 5 the answer was _the same_: a squash-merged commit and a commit that never landed both return `exit 1`.
 
 **The cost of skipping it is the reverse of the usual.** A provenance failure produces an uncertain answer that invites checking. **A relevance failure produces a confident answer that forecloses it** — and if the value was obtained through a good control, the control's own rigour is what makes it convincing. Instance 2 is the sharpest form: three-source agreement is the strongest provenance signal available, and it was applied to a field that could not have disagreed.
 
-**Falsifier, and I want it looked for.** This note claims provenance controls and relevance are independent. **It is wrong if someone produces a case where a provenance control alone caught a relevance error** — where reading a second source, or going to the artifact, surfaced that the field was silent rather than merely stale. I have not found one; all four instances above passed their provenance controls and failed anyway. A single counterexample would collapse this back into a corollary of the existing rules rather than a separate class.
+**Falsifier, and I want it looked for.** This note claims provenance controls and relevance are independent. **It is wrong if someone produces a case where a provenance control alone caught a relevance error** — where reading a second source, or going to the artifact, surfaced that the field was silent rather than merely stale. I have not found one; all five instances above passed their provenance controls and failed anyway. A single counterexample would collapse this back into a corollary of the existing rules rather than a separate class.
 
-**The limit, which is real.** This check does not tell you which field _is_ right; it only rejects fields that cannot be wrong in the relevant direction. In instances 1 and 2 the correct field existed and was cheap — merge-base, `state`. In instances 3 and 4 **no correct field exists**, and the honest output of applying the check is _"the record cannot answer this, ask the actor"_, which is what happened and is why instance 4 was caught in one message rather than propagating.
+**The limit, which is real.** This check does not tell you which field _is_ right; it only rejects fields that cannot be wrong in the relevant direction. In instances 1, 2 and 5 the correct field existed and was cheap — merge-base, `state`, and a content assertion respectively. In instances 3 and 4 **no correct field exists**, and the honest output of applying the check is _"the record cannot answer this, ask the actor"_, which is what happened and is why instance 4 was caught in one message rather than propagating.
 
-**Why:** four times in one afternoon, careful readers took accurate measurements that were structurally incapable of detecting what they were looking for, and in three of the four the measurement's own quality is what stopped anyone looking further. The failures were not caused by insufficient rigour about provenance. **They were caused by rigour about provenance being mistaken for rigour about the question.**
+**Why:** five times in one afternoon, careful readers took accurate measurements that were structurally incapable of detecting what they were looking for, and in four of the five the measurement's own quality is what stopped anyone looking further. The failures were not caused by insufficient rigour about provenance. **They were caused by rigour about provenance being mistaken for rigour about the question.**
