@@ -490,9 +490,10 @@ describe('RetargetWorkflow', () => {
       'newest-output-scene',
     );
     sourceScene.resolve(scene('stale-source-scene'));
-    await Promise.resolve();
-    expect(screen.getByTestId('retarget-scene')).toHaveTextContent(
-      'newest-output-scene',
+    await waitFor(() =>
+      expect(screen.getByTestId('retarget-scene')).toHaveTextContent(
+        'newest-output-scene',
+      ),
     );
     fireEvent.click(screen.getByRole('button', { name: 'Source' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -567,5 +568,75 @@ describe('RetargetWorkflow', () => {
     ).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Save As…' }));
     expect(await screen.findAllByText(/Saved saved\.3mf/)).toHaveLength(2);
+  });
+
+  it('keeps Save As disabled until comparison scene requests settle', async () => {
+    const outputScene = deferred<ReturnType<typeof scene>>();
+    let sceneRequests = 0;
+    const api = {
+      listRetargetProfiles: vi.fn().mockResolvedValue({
+        status: 'ok',
+        value: { profiles: [bundledProfile], warnings: [] },
+      }),
+      preflightRetarget: vi.fn().mockResolvedValue(preflight('t'.repeat(43))),
+      buildRetarget: vi.fn().mockResolvedValue(built()),
+      loadRetargetScene: vi.fn(
+        ({ source }: { source: 'source' | 'output' }) => {
+          sceneRequests += 1;
+          if (sceneRequests === 1) return outputScene.promise;
+          void source;
+          return Promise.resolve({
+            status: 'error' as const,
+            error: {
+              domain: 'electron' as const,
+              code: 'artifactBusy' as const,
+              message: 'The comparison scene is busy.',
+              action: 'Try again.',
+              part: null,
+              setting: null,
+            },
+          });
+        },
+      ),
+      saveRetargetAs: vi.fn().mockResolvedValue({ status: 'canceled' }),
+      disposeRetarget: vi.fn().mockResolvedValue({ disposed: true }),
+    };
+    Object.defineProperty(window, 'printFarmer', {
+      configurable: true,
+      value: api,
+    });
+    render(
+      <RetargetWorkflow
+        target={{ modelHash: 'a'.repeat(64), rootId: 'root', name: 'Project' }}
+        onClose={vi.fn()}
+      />,
+    );
+    fireEvent.click(await screen.findByRole('radio', { name: /Bundled U1/ }));
+    const buildButton = await screen.findByRole('button', {
+      name: 'Build review copy',
+    });
+    await waitFor(() => expect(buildButton).toBeEnabled());
+    fireEvent.click(buildButton);
+    await screen.findByRole('heading', { name: 'Review changes' });
+    await screen.findByText('Loading comparison scene…');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Source' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Snapmaker U1 output' }),
+    );
+    const save = screen.getByRole('button', { name: 'Save As…' });
+    await waitFor(() => expect(api.loadRetargetScene).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(save).toBeDisabled());
+    fireEvent.click(save);
+    expect(api.saveRetargetAs).not.toHaveBeenCalled();
+
+    outputScene.resolve(scene('output-scene'));
+    await waitFor(() => expect(save).toBeEnabled());
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(api.saveRetargetAs).toHaveBeenCalledWith({
+        token: 't'.repeat(43),
+      }),
+    );
   });
 });

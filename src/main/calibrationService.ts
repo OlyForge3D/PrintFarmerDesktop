@@ -200,8 +200,10 @@ function summarizeConflictPayload(payload: unknown): string | null {
  * Derived from two facts. Neither is a literal written into this function:
  *
  * 1. Whether the conflict transport exposes a resolve capability at all.
- *    Today it does not, so this returns `[]` for every kind -- but it returns
- *    `[]` *because the capability is absent*, not because somebody typed `[]`.
+ *    `SidecarCalibrationAdapter` now has one (#296), so for that transport this
+ *    returns the table below rather than `[]` -- and it does so *because the
+ *    capability is present*, not because somebody edited this function. A
+ *    transport without the method still gets `[]`.
  * 2. The per-kind policy already ratified in the `CalibrationConflictResolution`
  *    schema doc: `manualFieldMerge` is "only available for metadata/draft
  *    conflicts where a textual merge is well-defined. Not available for
@@ -210,12 +212,25 @@ function summarizeConflictPayload(payload: unknown): string | null {
  *    what is semantically safe to resolve; that decision belongs in an issue
  *    where the model-core owner can see it, not in a diff.
  *
- * When the authoritative resolve RPC lands, giving the transport a
- * `resolveCalibrationConflict` method makes this non-empty and makes the IPC
- * handler stop refusing -- without either site being edited. A field that
- * starts telling the truth on its own cannot go stale; a literal has to be
- * remembered, and the previous hard-coded
- * `['acceptServer', 'keepLocalAsNewRevision']` is what forgetting looks like.
+ * The capability half worked exactly as designed: #296 gave the adapter a
+ * `resolveCalibrationConflict` method, and this function started returning
+ * resolutions with neither call site edited. **What went stale was the comment
+ * that used to stand here**, which described the pre-#296 state in the present
+ * tense -- "today it does not, so this returns `[]` for every kind". The
+ * self-activating value could not go stale; the prose asserting that it could
+ * not, did. A correct design documented in a tense that expires reads as
+ * current, because the design it describes really is still working.
+ *
+ * The transcription half of point 2 is the part with no such protection, and it
+ * is why `tests/calibrationResolutionPolicyParity.test.ts` exists. The same
+ * policy is enforced by `CalibrationConflictKind::available_resolutions` in
+ * `native/model-core/src/sync.rs`, which is what
+ * `sqlite_catalog.rs` rejects against. Two transcriptions of one ratified
+ * policy across a language boundary agreed only because two authors were
+ * careful (#304). **Editing the branch below without editing the Rust table
+ * now fails that test**, in both directions: over-advertising offers the user a
+ * button the store rejects, and under-advertising hides a permitted resolution
+ * with no error at all.
  */
 export function conflictResolutionsFor(
   transport: ConflictResolutionCapable,

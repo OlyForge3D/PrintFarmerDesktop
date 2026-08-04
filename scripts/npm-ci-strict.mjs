@@ -8,10 +8,10 @@
 // refused to certify it and failed the job with
 // `cannot identify npm ls package parse-color`.
 //
-// The gate was right and is deliberately untouched by this script. The defect is
-// that a broken install reported itself as a successful one, so the failure
-// surfaced four steps away from its cause and looked like a flaky test on a
-// docs-only branch.
+// The gate remains fail closed. On Windows only, the script first retries the
+// exact removals npm requested, then subjects the resulting tree to the same
+// structural validation. An unrecoverable warning still fails here, before any
+// test or supply-chain step can run.
 //
 // Two independent checks, because they fail in different situations:
 //
@@ -27,7 +27,8 @@
 // production node, and a tree can be unresolvable without a cleanup warning.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { rm } from 'node:fs/promises';
+import { appendFile, mkdir, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -49,117 +50,11 @@ const repoRoot = path.resolve(
  * does not. `tests/npmCiStrict.test.ts` pins this against the recorded output.
  */
 export const CLEANUP_WARNING_MARKER = 'cleanup Failed to remove';
+export const CLEANUP_FAILURE_ANCHOR = 'could not finish removing node_modules';
+export const CLEANUP_EVIDENCE_OUTPUT = 'cleanup_evidence';
+export const CLEANUP_EVIDENCE_FILENAME = 'npm-cleanup-evidence.json';
 
 export const NPM_PRODUCTION_TREE_COMMAND = 'npm ls --omit=dev --all --json';
-
-/**
- * How many times `npm ci` is run before the gate gives up (#274).
- *
- * The first attempt is the ordinary install. If it reports a failed wipe, the
- * gate removes `node_modules` itself and installs once more. Two is deliberate:
- * one retry is enough to clear a transient Windows file lock, and more would
- * turn a reproducible environment fault into a slow one.
- */
-export const MAX_INSTALL_ATTEMPTS = 2;
-
-/**
- * Retry budget handed to `fs.rm`, which exists for exactly this failure.
- *
- * The observed fault is `EPERM: operation not permitted, rmdir` on
- * `windows-latest`, caused by another process holding a handle open for a few
- * hundred milliseconds. `fs.rm` retries `EPERM`/`EBUSY`/`ENOTEMPTY` internally,
- * so the recovery does not need a hand-rolled loop.
- */
-export const REMOVAL_RETRY = Object.freeze({ maxRetries: 10, retryDelay: 250 });
-
-/**
- * What to do after an `npm ci` that exited 0.
- *
- * Separated from {@link main} so the decision is testable without spawning npm.
- * Fails closed: an attempt counter that is not a positive integer yields
- * `'fail'` rather than an unbounded retry loop.
- *
- * @param {string} output combined stdout+stderr of `npm ci`
- * @param {number} attempt 1-based index of the attempt that produced `output`
- * @param {number} [maxAttempts]
- * @returns {{ action: 'accept' | 'retry' | 'fail', paths: string[] }}
- */
-export function planInstallOutcome(
-  output,
-  attempt,
-  maxAttempts = MAX_INSTALL_ATTEMPTS,
-) {
-  if (!hasCleanupFailure(output)) return { action: 'accept', paths: [] };
-  const paths = extractCleanupPaths(output);
-  const counted =
-    Number.isInteger(attempt) &&
-    attempt > 0 &&
-    Number.isInteger(maxAttempts) &&
-    maxAttempts > 0;
-  if (!counted) return { action: 'fail', paths };
-  return { action: attempt < maxAttempts ? 'retry' : 'fail', paths };
-}
-
-/**
- * What the gate prints when it is about to clear the tree and install again.
- *
- * Printed rather than silent because #274's second defect is that the evidence
- * disappears: a recovered run is green, and without this line nothing in the
- * log says the wipe ever failed.
- *
- * @param {string[]} paths directories npm named
- * @param {number} attempt
- * @param {number} maxAttempts
- * @returns {string[]}
- */
-export function recoveryNotice(paths, attempt, maxAttempts) {
-  const named = Array.isArray(paths) ? paths.filter(Boolean) : [];
-  return [
-    '',
-    `npm-ci-strict: attempt ${attempt} of ${maxAttempts} left node_modules partially removed.`,
-    named.length > 0 ? `Directories npm named: ${named.join(', ')}` : '',
-    'Removing node_modules and installing again in this same job. This is the',
-    'gate discharging itself (#274); it is NOT the same as re-running the job on',
-    'a fresh runner, which would start from a clean disk and erase the evidence.',
-    'If the line below says the install succeeded, the tree is now the lockfile',
-    'tree and the earlier failure is recorded here rather than hidden.',
-    '',
-  ].filter((line, index, all) => line !== '' || all[index - 1] !== '');
-}
-
-/**
- * What the gate prints when the discharge path is exhausted.
- *
- * The original message forbade the only action a PR author could take and named
- * no alternative, which #274 classifies as a deadlock with a rationale attached.
- * This one states what the gate already attempted, so the reader knows the cheap
- * remedy is spent rather than untried.
- *
- * @param {string[]} paths directories npm named
- * @param {number} maxAttempts
- * @returns {string[]}
- */
-export function exhaustedFailureLines(paths, maxAttempts) {
-  const named = Array.isArray(paths) ? paths.filter(Boolean) : [];
-  return [
-    '',
-    'npm-ci-strict: `npm ci` exited 0 but reported it could not finish removing node_modules.',
-    '',
-    'The installed tree is therefore neither the lockfile tree nor a clean one,',
-    'and every later step in this job would run against it.',
-    named.length > 0 ? `Directories npm named: ${named.join(', ')}` : '',
-    '',
-    `The gate already removed node_modules and reinstalled: ${maxAttempts} attempts,`,
-    'all of which reported the same failed wipe. The automatic discharge path is',
-    'spent, so this is a reproducible environment fault and not a transient lock.',
-    '',
-    'Do NOT clear it by re-running the job: a fresh runner wipes cleanly and hides',
-    'the defect, which teaches the squad to treat the supply-chain gate as noise.',
-    'Escalate instead — the runner image or a lingering process is holding a',
-    'handle open. Origin: #195. Discharge path and its limits: #274.',
-    '',
-  ].filter((line, index, all) => line !== '' || all[index - 1] !== '');
-}
 
 /**
  * True when npm's own output says it could not finish removing `node_modules`.
@@ -188,6 +83,251 @@ export function extractCleanupPaths(output) {
     found.add(match[1]);
   }
   return [...found];
+}
+
+function cleanupEntries(output) {
+  if (typeof output !== 'string') return [];
+  const entries = [];
+  let current = null;
+  let depth = 0;
+  for (const line of output.split(/\r?\n/)) {
+    const content = line
+      .replace(/^\s*npm (?:warn|error) cleanup\s*/i, '')
+      .trim();
+    if (content === '[') {
+      if (depth === 0) current = [];
+      depth += 1;
+      continue;
+    }
+    if (content === ']' && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && current !== null) {
+        entries.push(current.join('\n'));
+        current = null;
+      }
+      continue;
+    }
+    if (current !== null) current.push(line);
+  }
+  return entries;
+}
+
+function isRetryableCleanupEntry(entry) {
+  const errorCodes = [...entry.matchAll(/\[Error:\s*([A-Z][A-Z0-9_]*)\b/g)].map(
+    (match) => match[1],
+  );
+  const propertyCodes = [...entry.matchAll(/\bcode:\s*['"]([^'"]+)['"]/gi)].map(
+    (match) => match[1]?.toUpperCase(),
+  );
+  const syscalls = [...entry.matchAll(/\bsyscall:\s*['"]([^'"]+)['"]/gi)].map(
+    (match) => match[1]?.toLowerCase(),
+  );
+  return (
+    errorCodes.length === 1 &&
+    errorCodes[0] === 'EPERM' &&
+    propertyCodes.length > 0 &&
+    propertyCodes.every((code) => code === 'EPERM') &&
+    syscalls.length > 0 &&
+    syscalls.every((syscall) => syscall === 'rmdir')
+  );
+}
+
+/**
+ * Directories npm said should have been removed, relative to `node_modules`.
+ *
+ * Only quoted paths inside `node_modules` are accepted. Parent directories
+ * subsume nested entries so the recorded `parse-color` and nested
+ * `color-convert` failure becomes one bounded removal.
+ *
+ * @param {unknown} output
+ * @returns {string[]}
+ */
+export function extractCleanupDirectories(output) {
+  const found = new Set();
+  for (const entry of cleanupEntries(output).filter(isRetryableCleanupEntry)) {
+    for (const match of entry.matchAll(
+      /['"]([^'"\r\n]*node_modules[\\/][^'"\r\n]+)['"]/g,
+    )) {
+      const normalized = (match[1] ?? '').replaceAll('\\', '/');
+      const marker = '/node_modules/';
+      const markerIndex = normalized.toLowerCase().indexOf(marker);
+      if (markerIndex < 0) continue;
+      const relative = normalized.slice(markerIndex + marker.length);
+      const segments = relative.split('/').filter(Boolean);
+      if (
+        segments.length === 0 ||
+        segments.some(
+          (segment) =>
+            segment === '.' || segment === '..' || segment.includes(':'),
+        )
+      ) {
+        continue;
+      }
+      found.add(segments.join('/'));
+    }
+  }
+
+  const selected = [];
+  for (const candidate of [...found].sort(
+    (left, right) => left.split('/').length - right.split('/').length,
+  )) {
+    if (
+      selected.some(
+        (parent) => candidate === parent || candidate.startsWith(`${parent}/`),
+      )
+    ) {
+      continue;
+    }
+    selected.push(candidate);
+  }
+  return selected;
+}
+
+/**
+ * Retry only the removals npm itself requested, and only on Windows where the
+ * recorded EPERM/rmdir mechanism occurs.
+ *
+ * @param {string} output
+ * @param {{
+ *   platform?: NodeJS.Platform,
+ *   root?: string,
+ *   rmImpl?: typeof rm
+ * }} [options]
+ */
+export async function retryCleanupRemovals(output, options = {}) {
+  const platform = options.platform ?? process.platform;
+  if (platform !== 'win32') {
+    return {
+      attempted: false,
+      recovered: false,
+      directories: [],
+      reason: 'automatic cleanup removal retry is restricted to Windows',
+    };
+  }
+
+  const directories = extractCleanupDirectories(output);
+  if (directories.length === 0) {
+    return {
+      attempted: false,
+      recovered: false,
+      directories,
+      reason:
+        'npm named no safely bounded directory in an EPERM/rmdir cleanup block',
+    };
+  }
+
+  const root = options.root ?? repoRoot;
+  const rmImpl = options.rmImpl ?? rm;
+  for (const directory of directories) {
+    const target = path.join(root, 'node_modules', ...directory.split('/'));
+    await rmImpl(target, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 250,
+    });
+  }
+
+  return {
+    attempted: true,
+    recovered: true,
+    directories,
+    reason: null,
+  };
+}
+
+export function resolveCleanupEvidencePath(environment = process.env) {
+  return (
+    environment.NPM_CLEANUP_EVIDENCE_PATH ??
+    path.join(environment.RUNNER_TEMP ?? os.tmpdir(), CLEANUP_EVIDENCE_FILENAME)
+  );
+}
+
+/**
+ * @param {{
+ *   output: string,
+ *   recovery: {
+ *     attempted: boolean,
+ *     recovered: boolean,
+ *     directories: string[],
+ *     reason: string | null
+ *   },
+ *   environment?: NodeJS.ProcessEnv,
+ *   recordedAt?: string
+ * }} input
+ */
+export function createCleanupEvidence(input) {
+  const environment = input.environment ?? process.env;
+  const runId = environment.GITHUB_RUN_ID ?? null;
+  const runAttempt = environment.GITHUB_RUN_ATTEMPT ?? null;
+  const repository = environment.GITHUB_REPOSITORY ?? null;
+  const serverUrl = environment.GITHUB_SERVER_URL ?? 'https://github.com';
+  const runUrl =
+    repository && runId
+      ? `${serverUrl}/${repository}/actions/runs/${runId}${
+          runAttempt ? `/attempts/${runAttempt}` : ''
+        }`
+      : null;
+  const warningExcerpt = input.output
+    .split(/\r?\n/)
+    .filter((line) =>
+      /npm warn cleanup|EPERM|rmdir|node_modules[\\/]/i.test(line),
+    )
+    .slice(0, 80);
+
+  return {
+    schemaVersion: 1,
+    anchor: CLEANUP_FAILURE_ANCHOR,
+    diagnostic: `npm-ci-strict: \`npm ci\` exited 0 but reported it ${CLEANUP_FAILURE_ANCHOR}.`,
+    recordedAt: input.recordedAt ?? new Date().toISOString(),
+    repository,
+    runId,
+    runAttempt,
+    runUrl,
+    headSha: environment.GITHUB_SHA ?? null,
+    job: environment.GITHUB_JOB ?? null,
+    workflow: environment.GITHUB_WORKFLOW ?? null,
+    runnerOs: environment.RUNNER_OS ?? process.platform,
+    runnerName: environment.RUNNER_NAME ?? null,
+    cleanupPaths: extractCleanupPaths(input.output),
+    cleanupDirectories: input.recovery.directories,
+    recovery: {
+      attempted: input.recovery.attempted,
+      recovered: input.recovery.recovered,
+      reason: input.recovery.reason,
+    },
+    warningExcerpt,
+  };
+}
+
+export async function writeCleanupEvidence(
+  evidence,
+  {
+    environment = process.env,
+    mkdirImpl = mkdir,
+    writeFileImpl = writeFile,
+  } = {},
+) {
+  const evidencePath = resolveCleanupEvidencePath(environment);
+  await mkdirImpl(path.dirname(evidencePath), { recursive: true });
+  await writeFileImpl(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, {
+    encoding: 'utf8',
+    flag: 'wx',
+  });
+  return evidencePath;
+}
+
+export async function markCleanupEvidenceOutput(
+  environment = process.env,
+  appendFileImpl = appendFile,
+) {
+  if (!environment.GITHUB_OUTPUT) return false;
+  await appendFileImpl(
+    environment.GITHUB_OUTPUT,
+    `${CLEANUP_EVIDENCE_OUTPUT}=true${os.EOL}`,
+    'utf8',
+  );
+  return true;
 }
 
 /**
@@ -387,44 +527,60 @@ function fail(lines) {
   process.exit(1);
 }
 
-/**
- * Remove `node_modules`, tolerating the Windows lock that caused #195.
- *
- * @returns {Promise<void>}
- */
-async function removeNodeModules() {
-  await rm(path.join(repoRoot, 'node_modules'), {
-    recursive: true,
-    force: true,
-    ...REMOVAL_RETRY,
-  });
-}
-
 async function main() {
-  for (let attempt = 1; ; attempt += 1) {
-    const { code, output } = await runNpmCi();
+  const { code, output } = await runNpmCi();
 
-    if (code !== 0) {
-      process.exit(code);
+  if (code !== 0) {
+    process.exit(code);
+  }
+
+  if (hasCleanupFailure(output)) {
+    let recovery;
+    try {
+      recovery = await retryCleanupRemovals(output);
+    } catch (error) {
+      recovery = {
+        attempted: true,
+        recovered: false,
+        directories: extractCleanupDirectories(output),
+        reason: `retry failed: ${error.message}`,
+      };
     }
 
-    const outcome = planInstallOutcome(output, attempt);
+    if (recovery.recovered) {
+      process.stderr.write(
+        `npm-ci-strict: retried npm's requested Windows removal for ${recovery.directories.join(
+          ', ',
+        )}; validating the resulting tree before continuing.\n`,
+      );
+    } else {
+      const evidence = createCleanupEvidence({ output, recovery });
+      let evidenceResult;
+      try {
+        const evidencePath = await writeCleanupEvidence(evidence);
+        await markCleanupEvidenceOutput();
+        evidenceResult = `Durable evidence staged at ${evidencePath}.`;
+      } catch (error) {
+        evidenceResult = `Durable evidence could not be staged: ${error.message}`;
+      }
 
-    if (outcome.action === 'accept') break;
-
-    if (outcome.action === 'fail') {
-      fail(exhaustedFailureLines(outcome.paths, MAX_INSTALL_ATTEMPTS));
+      const paths = extractCleanupPaths(output);
+      fail([
+        '',
+        `npm-ci-strict: \`npm ci\` exited 0 but reported it ${CLEANUP_FAILURE_ANCHOR}.`,
+        '',
+        'The installed tree is therefore neither the lockfile tree nor a clean one,',
+        'and every later step in this job would run against it.',
+        paths.length > 0 ? `Directories npm named: ${paths.join(', ')}` : '',
+        `Automatic recovery: ${recovery.reason}.`,
+        evidenceResult,
+        '',
+        'Do not rerun this job directly. Follow docs/npm-cleanup-recovery.md;',
+        'the discharge workflow requires a justification, preserves the failed job',
+        'reference on #274, and refuses to rerun mixed or policy failures.',
+        '',
+      ]);
     }
-
-    for (const line of recoveryNotice(
-      outcome.paths,
-      attempt,
-      MAX_INSTALL_ATTEMPTS,
-    )) {
-      process.stderr.write(`${line}\n`);
-    }
-
-    await removeNodeModules();
   }
 
   const tree = readProductionTree();
