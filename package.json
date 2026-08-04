@@ -39,6 +39,7 @@
     "format": "prettier --check .",
     "format:write": "prettier --write .",
     "check:provenance": "node scripts/check-calibration-provenance.mjs",
+    "check:closure-scope": "node scripts/check-pr-closure-scope.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
