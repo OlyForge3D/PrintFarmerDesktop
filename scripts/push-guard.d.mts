@@ -36,6 +36,14 @@ export interface PushFacts {
   provablyFastForward: boolean | null;
   discarded: GuardedCommit[];
   ownSessions?: Iterable<string>;
+  /**
+   * Whether this clone records authorship at all, i.e. whether the reflog
+   * exists. Required, because absence of a session id from `ownSessions` is
+   * only evidence when the instrument that records it was running. Deliberately
+   * not optional: a caller that omits it would silently get the over-claiming
+   * behaviour this field was added to remove.
+   */
+  ownershipEvidence: boolean;
   ack?: string | undefined;
   ackForeign?: string | undefined;
 }
@@ -79,6 +87,7 @@ export function isAncestor(
 export function hasCommit(sha: string): boolean;
 export function readCommits(range: string[]): Required<GuardedCommit>[];
 export function readReflogSessions(localRef?: string): Set<string>;
+export function reflogIsUsable(localRef?: string): boolean;
 export function readReflogEntries(
   ref: string,
 ): { reflogSubject: string; sessions: string[] }[];

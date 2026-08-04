@@ -146,6 +146,43 @@ written in a comment, which is a commitment; the control is the `pushInsteadOf`
 case that fails when the trap is substituted.** Substituting it fails both
 push-URL tests now and failed neither before.
 
+## The rescue itself had a config I had not varied
+
+The reflog is what stops a total rollback of your own work being called another
+session's. It is not always there: `core.logAllRefUpdates=false` disables it,
+entries expire, and a fresh clone has none for work it did not do.
+
+With that config as the only variable, the fixed guard reproduced the original
+defect exactly — `foreign-session`, _"written by another session"_, naming the
+pusher's own id, printing the override for it. One writer, instructed to
+acknowledge themselves as a second.
+
+**The reason it went unnoticed is a comment I wrote asserting it was safe:** an
+empty reflog "fails toward MORE refusals". That is true and it is not a defence.
+**More refusals is only conservative when the extra refusals are correct.** Here
+the extra refusals are false, they land on the most ordinary destructive push a
+solo session makes, and the remedy they print is `PF_PUSH_ACK_FOREIGN` — the
+flag that turns this check off. A false alarm whose remedy is disabling the alarm
+does not fail safe; it trains the bypass. The habit is global, while the check it
+buys is local.
+
+**The general rule, which is the transferable part:** an absence is only evidence
+when the instrument that would have recorded the presence was running. The guard
+now measures that separately (`ownershipEvidence`, from whether the reflog
+produced any entry at all, independent of what the entries say) and splits the
+two cases:
+
+- reflog present, id absent → a finding. `foreign-session`, override offered.
+- reflog absent, id absent → not a finding. `unattributed-discard`: still
+  refuses, states that it _cannot_ attribute the commits, and offers the tip
+  acknowledgement instead of the foreign override.
+
+The cost is stated rather than hidden: on a clone with no reflog, a genuine
+second writer is now refused with the weaker message, so the tip acknowledgement
+alone is enough to proceed. That is a real reduction in the two-session control,
+accepted because the alternative was teaching every solo developer that the
+foreign override is a routine step.
+
 ## The decision function's purity is now enforced, not promised
 
 `evaluateRefUpdate` must stay pure because `protected-ref` and the delete refusal

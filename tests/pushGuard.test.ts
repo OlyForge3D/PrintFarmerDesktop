@@ -72,6 +72,10 @@ function facts(
     liveQueryFailed: false,
     liveQueryError: '',
     provablyFastForward: null,
+    // Defaults to `false` deliberately, matching `gatherFacts`: a fixture that
+    // does not state the clone can attribute authorship gets the weaker claim.
+    // The stronger one has to be asked for.
+    ownershipEvidence: false,
     discarded: [],
     ...overrides,
   };
@@ -129,6 +133,11 @@ describe('the guard separates another session\u2019s commits from your own', () 
       },
     ],
     ownSessions: ['8dd289e7'],
+    // The clone can answer the ownership question, so the absence of `032c3f16`
+    // from what is being pushed is a finding rather than a blind spot. Stating
+    // it here is the point of the field being required: a fixture that omits it
+    // gets the weaker claim, not the stronger one.
+    ownershipEvidence: true,
   });
 
   it('refuses a force-push over commits carrying a session id absent from what is being pushed', () => {
@@ -774,6 +783,79 @@ describe('a solo rollback of ALL of its own work is not reported as a second wri
     expect(stderr).not.toContain('push-guard.foreign-session');
     expect(stderr).not.toContain('another session');
     expect(stderr).not.toContain(ACK_FOREIGN_ENV);
+  });
+});
+
+describe('a clone with no reflog does not get a finding it has not made', () => {
+  // The reflog is what rescues the total-rollback case above, and it is not
+  // always there: `core.logAllRefUpdates=false` turns it off, entries expire,
+  // and a fresh clone has none for work it did not do.
+  //
+  // Measured with that config as the only variable, the total-rollback case
+  // regressed exactly to the original defect: `foreign-session`, "written by
+  // another session", naming the pusher's own id and printing the override for
+  // it. The guard's own comment had claimed an empty reflog "fails toward MORE
+  // refusals" and was therefore safe. More refusals is not safe when the extra
+  // refusals are false and their remedy is the flag that disables the check.
+  //
+  // So absence is split by whether it is informative. The refusal stays; the
+  // unsupported claim goes.
+  let root: string;
+  let remote: string;
+  let work: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'push-guard-noreflog-'));
+    remote = path.join(root, 'remote.git');
+    work = path.join(root, 'work');
+
+    git(['init', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', remote, work], root);
+    configure(work);
+    git(['config', 'core.logAllRefUpdates', 'false'], work);
+    git(['checkout', '-b', 'feature'], work);
+    commit(work, 'base', 'session-base');
+    git(['push', '--no-verify', '-u', 'origin', 'feature'], work);
+    for (const name of ['mine one', 'mine two']) {
+      commit(work, name, 'session-mine');
+    }
+    git(['push', '--no-verify', 'origin', 'feature'], work);
+    git(['reset', '--hard', 'HEAD~2'], work);
+    git(['config', 'core.hooksPath', path.join(repoRoot, HOOKS_PATH)], work);
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('refuses without claiming the discarded work belongs to someone else', () => {
+    let stderr = '';
+    expect(() => {
+      try {
+        git(['push', '--force-with-lease', 'origin', 'feature'], work);
+      } catch (error) {
+        stderr = String((error as { stderr?: string }).stderr ?? '');
+        throw error;
+      }
+    }).toThrow();
+
+    // Still refuses: the destructive push does not get through on a technicality
+    // about evidence. What changes is the claim and the remedy.
+    expect(stderr).toContain('push-guard.unattributed-discard');
+    expect(stderr).toContain('cannot');
+    expect(stderr).not.toContain('written by another session');
+    expect(stderr).not.toContain(ACK_FOREIGN_ENV);
+    // Not asserted: that the session id is absent from the message. Naming
+    // `session-mine` as the id it could not attribute is true and useful; the
+    // defect was asserting whose it was, not mentioning it.
+  });
+
+  it('still destroys nothing, which is the property the refusal exists for', () => {
+    const tip = git(
+      ['--git-dir', remote, 'rev-parse', 'refs/heads/feature'],
+      root,
+    );
+    expect(tip).not.toBe(git(['rev-parse', 'HEAD'], work));
   });
 });
 

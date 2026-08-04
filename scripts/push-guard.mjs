@@ -89,12 +89,18 @@ function describe(commits) {
  *   liveRemoteSha: string | null,
  *   discarded: Array<{sha: string, subject?: string, sessions?: string[]}>,
  *   ownSessions?: Iterable<string>,
+ *   ownershipEvidence: boolean,
  *   ack?: string,
  *   ackForeign?: string,
  * }} facts
  *   `liveRemoteSha` MUST come from `git ls-remote` (a live query), never from a
  *   `refs/remotes/**` read. `discarded` is `rev-list <live> ^<local>` — the
  *   commits this push would remove from the remote.
+ *
+ *   `ownershipEvidence` is required and says whether this clone can answer the
+ *   ownership question at all. It is NOT "are these commits mine"; it is "is the
+ *   instrument working". Absence of a session id from `ownSessions` means
+ *   something only when the instrument that would have recorded it was running.
  * @returns {{verdict: 'allow' | 'refuse', code: string, message: string}}
  */
 export function evaluateRefUpdate(update, facts) {
@@ -254,7 +260,23 @@ export function evaluateRefUpdate(update, facts) {
   const foreign = [...sessionsOf(discarded)].filter(
     (session) => !ownSessions.has(session),
   );
-  if (foreign.length > 0) {
+  // A session id missing from `ownSessions` is only evidence of a second writer
+  // if the thing that records authorship was running. It is the reflog, and it
+  // is not always there: `core.logAllRefUpdates=false` turns it off, entries
+  // expire, and a fresh clone has none for work it did not do.
+  //
+  // Measured, with that config as the only variable: a solo total rollback is
+  // reported as `foreign-session`, "written by another session", naming the
+  // pusher's own id and printing PF_PUSH_ACK_FOREIGN for it. One writer, told to
+  // acknowledge themselves as a second. The comment on readReflogSessions used
+  // to claim an empty set "fails toward MORE refusals" and is therefore safe;
+  // more refusals is not safe when the extra refusals are false and their remedy
+  // is the override that disables this very check. Teaching a solo developer
+  // that PF_PUSH_ACK_FOREIGN is a routine step costs more than the check earns.
+  //
+  // So absence is split by whether it is informative, and the two cases get
+  // different codes and different remedies.
+  if (foreign.length > 0 && facts.ownershipEvidence) {
     // Exact membership, not substring. `includes` on the raw string would let
     // an acknowledgement of `abc` satisfy a refusal naming `abc-def`, which is
     // the same defect the trailer matching had to avoid: a session id is a
@@ -284,6 +306,30 @@ export function evaluateRefUpdate(update, facts) {
         ].join('\n'),
       };
     }
+  }
+
+  if (foreign.length > 0 && !facts.ownershipEvidence && ack.length === 0) {
+    return {
+      verdict: 'refuse',
+      code: 'push-guard.unattributed-discard',
+      message: [
+        `This push destroys ${discarded.length} commit(s), and this clone cannot`,
+        'establish whether they are yours.',
+        `Session id(s) not present in what you are pushing: ${foreign.join(', ')}`,
+        '',
+        describe(discarded),
+        '',
+        'That is an absence, not a finding: this clone has no reflog recording',
+        'what was authored here, so the same absence is produced by another',
+        "session's work and by a rollback of all of your own. Read the commits.",
+        '',
+        'Acknowledge the tip you are overwriting:',
+        `  npm run push:force`,
+        '',
+        'To let the guard tell those two cases apart on this clone:',
+        '  git config core.logAllRefUpdates true',
+      ].join('\n'),
+    };
   }
 
   if (ack.length === 0) {
@@ -435,9 +481,36 @@ const FIELD = '\u001f';
  *
  * Both reflogs are read: the branch's covers commits made on it, HEAD's covers
  * work that passed through this worktree on any branch. If reflogs are disabled
- * the set is empty, which again fails toward MORE refusals.
+ * the set is empty — which is NOT safely "stricter". An empty set makes every
+ * discarded commit look foreign, including the pusher's own, and the remedy the
+ * guard then prints is the override that turns this check off. See
+ * `reflogIsUsable`, which is what keeps that absence from being read as a
+ * finding.
  */
 const CREATED_HERE = /^commit\b/;
+
+/**
+ * Whether this clone records authorship at all.
+ *
+ * This is deliberately NOT "did the reflog yield any session ids". A working
+ * reflog that shows you authored nothing here is a real finding — it supports
+ * calling the discarded work foreign. A reflog that does not exist is no
+ * finding at all, and the two are indistinguishable from the session set alone,
+ * because both produce the empty set.
+ *
+ * So the question asked here is whether the mechanism produced ANY entry,
+ * regardless of what the entries say.
+ */
+export function reflogIsUsable(localRef) {
+  for (const ref of ['HEAD', ...(localRef ? [localRef] : [])]) {
+    try {
+      for (const _entry of readReflogEntries(ref)) return true;
+    } catch {
+      // This ref has no reflog; the other may still have one.
+    }
+  }
+  return false;
+}
 
 export function readReflogSessions(localRef) {
   const refs = ['HEAD', ...(localRef ? [localRef] : [])];
@@ -542,6 +615,10 @@ export function gatherFacts(update, remote, env = process.env) {
     liveTipPresent: isAbsent(liveRemoteSha) ? true : hasCommit(liveRemoteSha),
     discarded: [],
     ownSessions: [],
+    // Conservative default, and the conservative direction here is `false`: with
+    // no evidence the guard declines to CLAIM foreignness rather than declining
+    // to allow. It still refuses; it just refuses for the reason it can support.
+    ownershipEvidence: false,
     ack: env[ACK_ENV],
     ackForeign: env[ACK_FOREIGN_ENV],
   };
@@ -564,8 +641,10 @@ export function gatherFacts(update, remote, env = process.env) {
       // on the most likely destructive push a lone session ever makes.
       //
       // The reflog answers the question directly rather than by correlation.
-      // Union, not replacement: reachability still covers a clone whose reflogs
-      // are disabled or expired.
+      // Union, not replacement: reachability covers a partial rollback, the
+      // reflog covers a total one. Neither covers a clone with no reflog at
+      // all — measured, `core.logAllRefUpdates=false` reproduces the original
+      // defect exactly — which is what `ownershipEvidence` is for.
       //
       // Cost was measured, not feared: the full walk is 32-56 ms over this
       // repo's 176 commits — roughly 0.2-0.3 ms per commit — and each reflog
@@ -590,6 +669,9 @@ export function gatherFacts(update, remote, env = process.env) {
           ...readReflogSessions(update.localRef),
         ]),
       ];
+      // Measured alongside the sessions, because the set alone cannot say
+      // whether an absent id was never recorded or never existed.
+      facts.ownershipEvidence = reflogIsUsable(update.localRef);
     } else {
       facts.discarded = readCommits([liveRemoteSha, '--max-count=20']);
     }
