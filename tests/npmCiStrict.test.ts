@@ -5,12 +5,14 @@ import {
   NODE_MODULES_REMOVAL,
   NPM_PRODUCTION_TREE_COMMAND,
   appendStepSummary,
+  dischargeCleanupFailure,
   extractCleanupPaths,
   findTreeProblems,
   findUnresolvedPackages,
   formatStepSummary,
   formatWarningAnnotation,
   hasCleanupFailure,
+  main,
   npmInvocation,
   removeNodeModules,
   repairOutcome,
@@ -467,5 +469,213 @@ describe('the repair records that it happened, durably enough for the job log (#
       firstPaths: ['parse-color', 'color-convert'],
       succeeded: true,
     });
+  });
+});
+
+/**
+ * Wiring tests. Everything above exercises the PURE side of the seam —
+ * `repairOutcome`, the formatters, `removeNodeModules`. That is necessary but
+ * NOT sufficient: those functions can all be correct while `dischargeCleanupFailure`
+ * and `main` fail to CALL them. Three concrete disconnects prove it — none of
+ * which the pure tests catch:
+ *
+ *   A. `if (outcome.succeeded)` -> `if (true)`  (never hard-fail on a broken tree)
+ *   B. delete `remove(nodeModulesPath)`         (never wipe)
+ *   C. `if (hasCleanupFailure(output))` -> `if (false)` (main never routes to discharge)
+ *
+ * These tests drive the REAL `dischargeCleanupFailure`/`main` through injected
+ * fakes so those disconnects go red. No real `npm ci` is spawned.
+ */
+type DischargeCall = { kind: string; args: unknown[] };
+
+function recordingDischargeDeps(overrides: {
+  second: { code: number; output: string };
+  tree?: { problems: string[]; unresolved: string[] };
+}) {
+  const calls: DischargeCall[] = [];
+  const record = (kind: string, ...args: unknown[]) =>
+    calls.push({ kind, args });
+  const tree = overrides.tree ?? { problems: [], unresolved: [] };
+  const deps = {
+    removeNodeModules: (dir: string) => {
+      record('remove', dir);
+      return { removed: true as const };
+    },
+    runNpmCi: () => {
+      record('runNpmCi');
+      return Promise.resolve(overrides.second);
+    },
+    inspectProductionTree: () => {
+      record('inspect');
+      return tree;
+    },
+    appendStepSummary: (markdown: string) => {
+      record('appendSummary', markdown);
+      return true;
+    },
+    writeRepairArtifact: (rec: object, target: string) => {
+      record('writeArtifact', rec, target);
+    },
+    note: (lines: string[]) => record('note', lines.join('\n')),
+    fail: (lines: string[]) => record('fail', lines.join('\n')),
+    nodeModulesPath: '/repo/node_modules',
+    artifactPath: '/repo/npm-ci-strict-repair.json',
+  };
+  const kinds = () => calls.map((c) => c.kind);
+  const first = (kind: string) => calls.find((c) => c.kind === kind);
+  return { deps, calls, kinds, first };
+}
+
+describe('dischargeCleanupFailure wires the pieces together, not just defines them (#274)', () => {
+  it('wipes node_modules, re-runs, and on a clean tree succeeds without failing', async () => {
+    const rig = recordingDischargeDeps({
+      second: { code: 0, output: 'added 1174 packages in 40s' },
+      tree: { problems: [], unresolved: [] },
+    });
+
+    await dischargeCleanupFailure(RECORDED_CLEANUP_FAILURE, rig.deps);
+
+    // The wipe actually happened (mutation B: deleting it must go red here)...
+    expect(rig.first('remove')?.args[0]).toBe('/repo/node_modules');
+    // ...and it happened BEFORE the second install, not after or never.
+    expect(rig.kinds().indexOf('remove')).toBeLessThan(
+      rig.kinds().indexOf('runNpmCi'),
+    );
+    // The record is written on the success path too — the #195-hidden case.
+    expect(rig.first('appendSummary')).toBeDefined();
+    expect(rig.first('writeArtifact')).toBeDefined();
+    // A clean reinstall must NOT hard-fail (mutation A leaves this green only
+    // because it makes fail unreachable; here we assert the true branch).
+    expect(rig.first('fail')).toBeUndefined();
+  });
+
+  it('hard-fails when the reinstalled tree has unresolvable packages', async () => {
+    const rig = recordingDischargeDeps({
+      second: { code: 0, output: 'added 1174 packages in 40s' },
+      tree: { problems: [], unresolved: ['parse-color'] },
+    });
+
+    await dischargeCleanupFailure(RECORDED_CLEANUP_FAILURE, rig.deps);
+
+    // Mutation A (`if (outcome.succeeded)` -> `if (true)`) makes this fail
+    // never fire; without this assertion that mutation is silent.
+    const failed = rig.first('fail');
+    expect(failed).toBeDefined();
+    expect(String(failed?.args[0])).toContain(
+      're-running the job is not the remedy',
+    );
+    expect(String(failed?.args[0])).toContain('parse-color');
+  });
+
+  it('hard-fails when npm warned again after the explicit wipe', async () => {
+    const rig = recordingDischargeDeps({
+      second: { code: 0, output: RECORDED_CLEANUP_FAILURE },
+      tree: { problems: [], unresolved: [] },
+    });
+
+    await dischargeCleanupFailure(RECORDED_CLEANUP_FAILURE, rig.deps);
+
+    const failed = rig.first('fail');
+    expect(failed).toBeDefined();
+    expect(String(failed?.args[0])).toContain(
+      'npm again reported it could not finish removing node_modules',
+    );
+  });
+
+  it('does not inspect the tree when the second install exits non-zero', async () => {
+    // Documented ordering: a non-zero exit is the signal; `npm ls` over a
+    // half-written tree would only add noise. Asserted so the ordering cannot
+    // silently invert.
+    const rig = recordingDischargeDeps({
+      second: { code: 1, output: 'npm error code E404' },
+    });
+
+    await dischargeCleanupFailure(RECORDED_CLEANUP_FAILURE, rig.deps);
+
+    expect(rig.first('inspect')).toBeUndefined();
+    expect(rig.first('fail')).toBeDefined();
+  });
+});
+
+type MainRig = {
+  deps: Parameters<typeof main>[0];
+  dischargeCalls: string[];
+  inspected: () => boolean;
+  failed: () => boolean;
+  exitCodes: number[];
+};
+
+function recordingMainDeps(overrides: {
+  first: { code: number; output: string };
+  tree?: { problems: string[]; unresolved: string[] };
+}): MainRig {
+  const dischargeCalls: string[] = [];
+  let inspectedFlag = false;
+  let failedFlag = false;
+  const exitCodes: number[] = [];
+  const tree = overrides.tree ?? { problems: [], unresolved: [] };
+  const deps = {
+    runNpmCi: () => Promise.resolve(overrides.first),
+    dischargeCleanupFailure: (firstOutput: string) => {
+      dischargeCalls.push(firstOutput);
+      return Promise.resolve();
+    },
+    inspectProductionTree: () => {
+      inspectedFlag = true;
+      return tree;
+    },
+    fail: () => {
+      failedFlag = true;
+    },
+    exit: (code: number) => {
+      exitCodes.push(code);
+    },
+  };
+  return {
+    deps,
+    dischargeCalls,
+    inspected: () => inspectedFlag,
+    failed: () => failedFlag,
+    exitCodes,
+  };
+}
+
+describe('main routes to the discharge path exactly when npm printed the cleanup warning (#274)', () => {
+  it('enters the discharge path on a zero-exit install that warned', async () => {
+    // Mutation C (`if (hasCleanupFailure(output))` -> `if (false)`) makes the
+    // whole feature dead code; this is the assertion that catches it.
+    const rig = recordingMainDeps({
+      first: { code: 0, output: RECORDED_CLEANUP_FAILURE },
+    });
+
+    await main(rig.deps);
+
+    expect(rig.dischargeCalls).toEqual([RECORDED_CLEANUP_FAILURE]);
+    // Routing to discharge is terminal — the ordinary tree walk must not also run.
+    expect(rig.inspected()).toBe(false);
+  });
+
+  it('does NOT enter the discharge path on a clean zero-exit install', async () => {
+    const rig = recordingMainDeps({
+      first: { code: 0, output: 'added 1174 packages in 40s' },
+      tree: { problems: [], unresolved: [] },
+    });
+
+    await main(rig.deps);
+
+    expect(rig.dischargeCalls).toEqual([]);
+    // The ordinary path still measures the tree directly.
+    expect(rig.inspected()).toBe(true);
+    expect(rig.failed()).toBe(false);
+  });
+
+  it('exits early on a non-zero first install without discharging or inspecting', async () => {
+    const rig = recordingMainDeps({ first: { code: 7, output: '' } });
+
+    await main(rig.deps);
+
+    expect(rig.exitCodes).toEqual([7]);
+    expect(rig.dischargeCalls).toEqual([]);
+    expect(rig.inspected()).toBe(false);
   });
 });

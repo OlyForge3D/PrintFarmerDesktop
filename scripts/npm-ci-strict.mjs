@@ -496,11 +496,43 @@ function inspectProductionTree() {
  * Removes node_modules explicitly, re-runs `npm ci` once, then decides on the
  * structural checks and records what happened either way.
  *
+ * Its collaborators are injected (with the real ones as defaults, matching the
+ * `options.append ?? appendFileSync` style used elsewhere in this file) for one
+ * reason that is load-bearing to this change's evidence: the pure functions this
+ * orchestrates all have direct unit tests, but nothing tested that the script
+ * actually WIRES them together — that it wipes, that it re-runs, that a broken
+ * reinstall hard-fails. Without this seam those wiring assertions cannot exist
+ * without shelling out to a real `npm ci`, and a green table over the pure side
+ * of the seam is exactly the hollow coverage this change is meant not to have.
+ *
  * @param {string} firstOutput combined output of the first `npm ci`
+ * @param {{
+ *   removeNodeModules?: typeof removeNodeModules,
+ *   runNpmCi?: typeof runNpmCi,
+ *   inspectProductionTree?: typeof inspectProductionTree,
+ *   appendStepSummary?: typeof appendStepSummary,
+ *   writeRepairArtifact?: typeof writeRepairArtifact,
+ *   note?: typeof note,
+ *   fail?: typeof fail,
+ *   nodeModulesPath?: string,
+ *   artifactPath?: string,
+ * }} [deps]
  */
-async function dischargeCleanupFailure(firstOutput) {
+export async function dischargeCleanupFailure(firstOutput, deps = {}) {
+  const {
+    removeNodeModules: remove = removeNodeModules,
+    runNpmCi: runCi = runNpmCi,
+    inspectProductionTree: inspect = inspectProductionTree,
+    appendStepSummary: appendSummary = appendStepSummary,
+    writeRepairArtifact: writeArtifact = writeRepairArtifact,
+    note: emit = note,
+    fail: onFail = fail,
+    nodeModulesPath = path.join(repoRoot, 'node_modules'),
+    artifactPath = path.join(repoRoot, 'npm-ci-strict-repair.json'),
+  } = deps;
+
   const firstPaths = extractCleanupPaths(firstOutput);
-  note([
+  emit([
     '',
     'npm-ci-strict: `npm ci` exited 0 but reported it could not finish removing node_modules.',
     firstPaths.length > 0
@@ -512,18 +544,16 @@ async function dischargeCleanupFailure(firstOutput) {
     '',
   ]);
 
-  removeNodeModules(path.join(repoRoot, 'node_modules'));
+  remove(nodeModulesPath);
 
-  const { code: secondExitCode, output: secondOutput } = await runNpmCi();
+  const { code: secondExitCode, output: secondOutput } = await runCi();
   const secondWarned = hasCleanupFailure(secondOutput);
 
   // Only read the tree when the second install exited 0. A non-zero exit means
   // `npm ls` would describe a half-written tree, and its problems would be noise
   // next to the real signal (the exit code itself).
   const { problems, unresolved } =
-    secondExitCode === 0
-      ? inspectProductionTree()
-      : { problems: [], unresolved: [] };
+    secondExitCode === 0 ? inspect() : { problems: [], unresolved: [] };
 
   const outcome = repairOutcome({
     secondExitCode,
@@ -545,13 +575,10 @@ async function dischargeCleanupFailure(firstOutput) {
 
   // Durable evidence, always — a repair that passed is exactly the case #195
   // warned would be hidden, so recording it is the point.
-  appendStepSummary(formatStepSummary(record));
-  note([formatWarningAnnotation(record)]);
+  appendSummary(formatStepSummary(record));
+  emit([formatWarningAnnotation(record)]);
   try {
-    writeRepairArtifact(
-      record,
-      path.join(repoRoot, 'npm-ci-strict-repair.json'),
-    );
+    writeArtifact(record, artifactPath);
   } catch (error) {
     // The artifact is secondary evidence; never let writing it mask the outcome.
     process.stderr.write(
@@ -560,7 +587,7 @@ async function dischargeCleanupFailure(firstOutput) {
   }
 
   if (outcome.succeeded) {
-    note([
+    emit([
       '',
       'npm-ci-strict: repair succeeded. node_modules was wiped and reinstalled to a',
       'clean, resolvable tree, and that repair was recorded (step summary,',
@@ -571,7 +598,7 @@ async function dischargeCleanupFailure(firstOutput) {
     return;
   }
 
-  fail([
+  onFail([
     '',
     'npm-ci-strict: the in-job repair did not produce a clean tree.',
     '',
@@ -586,22 +613,49 @@ async function dischargeCleanupFailure(firstOutput) {
   ]);
 }
 
-async function main() {
-  const { code, output } = await runNpmCi();
+/**
+ * Orchestrates the whole gate. Collaborators are injected (real ones as
+ * defaults) so the ROUTING itself is testable without a real `npm ci`: that a
+ * cleanup-warning first output reaches {@link dischargeCleanupFailure}, that a
+ * clean one does not, and that a non-zero first install exits early without
+ * inspecting the tree. `exit`/`fail` default to the process-terminating real
+ * ones; the `return` after each is dead code in production (the real ones never
+ * return) but lets a recording fake preserve the same halt-after-exit control
+ * flow a test needs to observe.
+ *
+ * @param {{
+ *   runNpmCi?: typeof runNpmCi,
+ *   dischargeCleanupFailure?: typeof dischargeCleanupFailure,
+ *   inspectProductionTree?: typeof inspectProductionTree,
+ *   fail?: typeof fail,
+ *   exit?: (code: number) => void,
+ * }} [deps]
+ */
+export async function main(deps = {}) {
+  const {
+    runNpmCi: runCi = runNpmCi,
+    dischargeCleanupFailure: discharge = dischargeCleanupFailure,
+    inspectProductionTree: inspect = inspectProductionTree,
+    fail: onFail = fail,
+    exit = (code) => process.exit(code),
+  } = deps;
+
+  const { code, output } = await runCi();
 
   if (code !== 0) {
-    process.exit(code);
-  }
-
-  if (hasCleanupFailure(output)) {
-    await dischargeCleanupFailure(output);
+    exit(code);
     return;
   }
 
-  const { problems, unresolved } = inspectProductionTree();
+  if (hasCleanupFailure(output)) {
+    await discharge(output);
+    return;
+  }
+
+  const { problems, unresolved } = inspect();
 
   if (problems.length > 0) {
-    fail([
+    onFail([
       '',
       'npm-ci-strict: npm itself reported problems with the installed tree.',
       '',
@@ -612,10 +666,11 @@ async function main() {
       'reads there as an unrelated failure. See #195 and #274.',
       '',
     ]);
+    return;
   }
 
   if (unresolved.length > 0) {
-    fail([
+    onFail([
       '',
       'npm-ci-strict: the installed production tree contains packages npm cannot resolve.',
       '',
@@ -627,6 +682,7 @@ async function main() {
       'later where it reads as an unrelated test failure. See #195 and #274.',
       '',
     ]);
+    return;
   }
 }
 

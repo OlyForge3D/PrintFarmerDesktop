@@ -48,3 +48,29 @@ export function writeRepairArtifact(
   target: string,
   options?: { write?: typeof import('node:fs').writeFileSync },
 ): void;
+
+export type NpmCiResult = { code: number; output: string };
+export type TreeInspection = { problems: string[]; unresolved: string[] };
+
+export function dischargeCleanupFailure(
+  firstOutput: string,
+  deps?: {
+    removeNodeModules?: (dir: string) => { removed: true };
+    runNpmCi?: () => Promise<NpmCiResult>;
+    inspectProductionTree?: () => TreeInspection;
+    appendStepSummary?: (markdown: string) => boolean;
+    writeRepairArtifact?: (record: object, target: string) => void;
+    note?: (lines: string[]) => void;
+    fail?: (lines: string[]) => void;
+    nodeModulesPath?: string;
+    artifactPath?: string;
+  },
+): Promise<void>;
+
+export function main(deps?: {
+  runNpmCi?: () => Promise<NpmCiResult>;
+  dischargeCleanupFailure?: (firstOutput: string) => Promise<void>;
+  inspectProductionTree?: () => TreeInspection;
+  fail?: (lines: string[]) => void;
+  exit?: (code: number) => void;
+}): Promise<void>;
