@@ -121,12 +121,24 @@ of a brief, not its recipient**: a prohibition stated in a dispatch carries a
 citation — a file, a line, an issue — or it is stated as a preference. The case
 was his instruction _"do NOT touch `.github/workflows/` — `tests/supplyChainPolicy.test.ts`
 hard-asserts counts over `ci.yml`."_ The prohibition was reasonable; **the causal
-claim welded to it was false.** Editing that workflow merely requires updating
-that test, which is friction, not prohibition — see
-`hicks-count-assertions-over-external-sets.md`, which documents exactly that.
+claim welded to it was false** — and the first correction of it inherited the
+error. `tests/supplyChainPolicy.test.ts` does not pin `ci.yml` at all: it
+mentions the file once in 1508 lines, and its nearest bound is a
+`toBeGreaterThan(0)` over cargo commands. Mutating the workflow leaves that
+suite green and reddens `tests/ciWorkflowTriggers.test.ts` instead, which
+asserts the seven emitted check-run names as an exact array — a stronger guard
+than any count, because a count tolerates a rename. Updating that assertion
+deliberately is friction, not prohibition — see
+`hicks-count-assertions-over-external-sets.md`, which documents the general case.
 Worse, the claim was not checkable by anyone who was not in that conversation.
 It was copied into a plan without verification, which is the correct default and
 is exactly the problem.
+
+The transferable form is not that the prohibition was wrong. A rule stated as
+_X because Y_, where `Y` names a file and `X` names nothing, invites a reader to
+test `Y` — and because the two are joined by _because_, refuting `Y` reads as
+refuting the rule. **A half-cited rule is worse than an uncited one: it supplies
+a refutation target that is not the rule.**
 
 It is recorded in full as **#186**, which is authoritative for it; it is named
 here only because all three rules concern controls that **bind the party least
@@ -138,3 +150,18 @@ cannot see the mock, the recipient who cannot see the source of a constraint.
 Protocol and documentation only. No production code, no test changes, no
 harness. Automating the effectiveness check — instrumenting the mutation site —
 is a larger question and is deliberately not settled here.
+
+These instances are selected for being instrument failures. The same
+clean-looking result is also produced by a hand-copied constant, and that cause
+is under-represented here by construction. A reader who internalises the two
+worked examples above will reach for _the instrument misled me_ before _a human
+typed a constant_, which is the wrong order for at least one incident already on
+record: a `Copilot-Session` trailer transcribed out of a dispatch brief was
+diagnosed as the field failing to discriminate, when the field discriminates
+fine — 24 occurrences over 11 distinct values across the last 40 commits at
+`3f507c3`, with a `ZZQQ-Trailer` control returning none. The window is part of
+the measurement: an earlier reading of the same query over a different 40
+commits gave 90 over 18, so the figure is quoted with the rev it was taken at
+rather than as a standing fact. **The trailer is hand-copyable, so it is an
+attestation rather than a measurement**, and no property of the field can detect
+that.
