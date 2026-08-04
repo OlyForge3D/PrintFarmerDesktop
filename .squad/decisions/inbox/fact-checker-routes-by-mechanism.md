@@ -117,3 +117,29 @@ against the branch before restoring it.** In the case that produced this note, a
 changes had all landed except a single sentence — **and that sentence was one that had since been
 measured false and retracted.** Restoring the orphan on the strength of its being unreachable would
 have reinstated a retracted claim.
+
+### A content check and a structural check are blind to each other's defects
+
+**Text can be present to every instrument that reads it and absent to the reader it was written
+for.** An entry in this squad's audit trail was spliced into the interior of the previous entry's
+last line, with no line break before it. `git grep` finds every word; a Markdown reader never sees
+a list item, because a bullet marker in the middle of a line is not a bullet. Two other entries
+cite that entry by name, so the reader who follows a citation lands inside a different entry's
+paragraph.
+
+**It survived every gate.** The formatter accepts the line, the citation harness resolves the
+revisions inside it, and no test reads the document as a sequence of entries. **The artifact had
+only ever been checked for the presence of content** — figures, phrases, citations — **and never
+for whether its entries are entries.**
+
+**The generalisation is a scoping rule, not a new check.** A check evaluates a predicate over a
+rendering it chooses: content checks range over the text, structural checks over the shape, and
+**neither can see a defect that lives in the other's rendering.** So a claim of the form _"the
+artifact is correct"_ is only ever a claim about the rendering that was examined, and the honest
+form names it.
+
+**And the two disagreeing is the check working.** Here a line-anchored search reported the entry
+**missing** and a content search reported it **present** — a false negative and a false positive
+on one object, with the truth at neither. The failure available at that moment was to trust
+whichever instrument ran first; **the recovery was to read the hits in full**, which is the rule
+this squad already holds for enumeration and which located the missing newline directly.
