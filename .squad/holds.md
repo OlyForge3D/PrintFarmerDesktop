@@ -31,19 +31,33 @@ and green. Held is not the same as unfinished, and the label does not mean
 
 ### What it does **not** do
 
-**It prevents nothing.** It is a convention with no mechanical enforcement.
-Nothing in GitHub is wired to this label: no required status check, no branch
-protection rule, no automation. Any session with push access can rebase, sync,
-force-push or merge a PR carrying it, and **the label will not be what stops
-them.**
+**It prevents nothing.** Read that precisely, because one half of it changed and
+the other half did not.
 
-Read that precisely. **"The label enforces nothing" is not the same as "nothing
-is enforced."** Ordinary branch protection on `development` applies to a held PR
-exactly as it does to any other — `strict: true` means a PR that is `BEHIND`
-cannot be merged until it is brought up to date, and the required contexts must
-pass. Those are real and they will refuse the merge. **They have nothing to do
-with the hold**, they would apply identically if the label were removed, and
-they do not make the hold safe.
+**What now exists:** a check run named **`Sequencing hold`**
+(`.github/workflows/sequencing-hold.yml`, `scripts/check-sequencing-hold.mjs`).
+It runs on every pull request and re-runs on `labeled` and `unlabeled`, so it
+tracks the hold with no push. A held PR shows a **red check whose name says
+`Sequencing hold`**, and whose output says the red is deliberate and lists the
+actions not to take. That is the part that reaches a session which was never
+told this document exists — it appears in `gh pr checks`, which every session
+already runs.
+
+**What still does not exist:** it is **not a required context** and is wired to
+no branch protection rule. It cannot be, yet: a `merge_group` entry carries no
+pull request and therefore no labels, so the check does not report there, and a
+required context that never reports blocks a queue entry forever instead of
+failing it. So any session with push access can still rebase, sync, force-push
+or merge a PR carrying the label, and **the check will not be what stops them.**
+It makes the hold _legible_, not _binding_.
+
+**"The label enforces nothing" is not the same as "nothing is enforced."**
+Ordinary branch protection on `development` applies to a held PR exactly as it
+does to any other — `strict: true` means a PR that is `BEHIND` cannot be merged
+until it is brought up to date, and the required contexts must pass. Those are
+real and they will refuse the merge. **They have nothing to do with the hold**,
+they would apply identically if the label were removed, and they do not make the
+hold safe.
 
 The trap is the inverse reading: seeing a held PR blocked by strict-mode
 behind-ness and concluding the hold is being enforced. It is not. Bring the
@@ -80,43 +94,74 @@ housekeeping.** If it looks stale, see the escalation path below rather than
 removing it because nothing seems to be happening — nothing seeming to happen is
 what a hold looks like.
 
-### When the PR merges or closes, the hold is over — remove the label
+### When the PR **merges**, the hold is over — and this is now automatic
 
-**This is the one lift that is housekeeping, and it is the one nobody does.**
+**This was the one lift that is housekeeping, and it was the one nobody did.**
 Every other rule above exists to stop a stranger clearing a live assertion. This
-rule is the opposite: once the PR is merged or closed, the assertion _"do not
-merge this yet"_ is not contested, not delicate, and not lift-by-decision. It is
-simply **false**, and it is false permanently, because nothing downstream will
-ever revisit it.
+rule is the opposite: once the PR is merged, the assertion _"do not merge this
+yet"_ is not contested, not delicate, and not lift-by-decision. It is simply
+**false**, and it is false permanently, because a merged pull request cannot be
+reopened and nothing downstream will ever revisit it.
 
-**Measured on this repository at the time of writing — the label was already
-80% false:**
+**`.github/workflows/lift-sequencing-hold.yml` now removes it for you**, on
+`pull_request: closed` with `merged: true`. You do not need to remember this
+rule, which is the point — a rule you have to remember is not a control.
 
-| PR   | state      | label still applied |
-| ---- | ---------- | ------------------- |
-| #154 | **MERGED** | yes                 |
-| #174 | **MERGED** | yes                 |
-| #172 | **MERGED** | yes                 |
-| #169 | **MERGED** | yes                 |
-| #175 | OPEN       | yes                 |
+**Correction: "merged" and "closed" are not interchangeable, and the earlier
+version of this section said "merges or closes".** Both produce
+`state: "closed"`, so it is an easy conflation, but only one of them is
+terminal. A **closed** pull request can be reopened, so its hold may still be
+live and stripping it would produce exactly the state this document exists to
+prevent — a held PR with nothing saying so — introduced by the automation meant
+to fix it. **A merged one cannot be reopened.** The workflow therefore acts only
+on a merge, and reports what it left alone when it declines.
 
-**Four of five.** A reader who filters on this label to find what is being held
-gets four merged PRs and one live one, and cannot tell from the label which is
-which. **That is not a hold system with some stale entries; at 4:1 the label's
-majority meaning is "this was once held", which is not what it says.**
+**Why this had to be automated rather than remembered.** Measured on this
+repository:
 
-**Why this specific failure is the likely one.** A hold is applied at a moment
-of attention and lifted at a moment of attention — but merging is the moment the
-author's attention _leaves_. The PR disappears from every open-PR view at the
-same instant the label becomes wrong, so the state that needs correcting becomes
-invisible in the same event that creates it. **No one is negligent; the workflow
-routes attention away from the defect at the exact moment it appears.**
+| event              | what happened                                                                                  |
+| ------------------ | ---------------------------------------------------------------------------------------------- |
+| 07:47:07–07:47:15Z | `hold:sequenced` removed from #154, #169, #172, #174 — a manual sweep, four PRs, eight seconds |
+| —                  | #175 was still **open**, so the sweep correctly left it                                        |
+| 13:21:27Z          | #175 merged, and carried the label afterwards                                                  |
 
-**So: lift on merge, as part of merging.** If you are the one pressing merge on a
-held PR, the hold has been resolved by definition — remove the label in the same
-action. If you find a merged PR still carrying it, **remove it without asking**;
-the escalation path above does not apply, because there is no live assertion to
-overwrite and no decision to take away from its owner.
+**The sweep did not fail. It expired.** It was correct when it ran and was
+falsified five and a half hours later by an event nobody was watching for. The
+defect regenerates on every merge, so the correct action has a shorter shelf
+life than the interval between sweeps. That is not something diligence fixes.
+
+**One consequence to know about, and it matters more now that the lift is
+automatic.**
+
+> **Any audit of holds must read the timeline, not the current labels.**
+> Current labels are a mutable summary of an immutable log.
+
+Removing a label erases it from the label list _and from label search_ — a
+label is a current-state field, not a record. The `labeled` and `unlabeled`
+events in the timeline are permanent and survive removal, so the timeline is the
+only durable evidence that a hold ever existed:
+
+```powershell
+gh api repos/OlyForge3D/PrintFarmerDesktop/issues/<N>/events `
+  --jq '.[]|select(.label.name|startswith("hold:"))|"\(.created_at) \(.event) \(.label.name)"'
+```
+
+**The automation above will erase this evidence class from the label field by
+design**, which is correct — the label's job is to say what is true now — but it
+means an auditor who queries labels will increasingly find nothing and conclude
+no hold was ever applied. **That conclusion will be wrong, and it will get more
+wrong over time.** Query the events.
+
+**A worked example of why the distinction is not academic.** A count of held PRs
+taken with `--state open` returns zero, while the same query with `--state all`
+returns five. The defect being counted is _holds surviving into merged_, so the
+filter that felt natural — look at open PRs — excludes the entire population by
+construction. **The defect and the failure to measure it have the same cause:
+merging is the moment attention leaves.**
+
+If you find a **closed but unmerged** PR still carrying the label, that is the
+case the workflow deliberately does not touch. Decide whether it will be
+reopened before removing it by hand.
 
 ### What a session encountering it must do
 
@@ -142,6 +187,47 @@ Whoever applies it should also comment on the PR with:
 
 A hold whose lift condition is unwritten cannot be evaluated by anyone except
 its owner, which is the failure the escalation path below exists to handle.
+
+### Why applying it cannot be automated, and lifting can
+
+**Asked directly: find the moment a hold becomes real and put the label there,
+so the label is a consequence of holding rather than a second thing to remember.
+There is no such moment, and the reason is structural rather than a gap in the
+tooling.**
+
+**A hold is an abstention, and an abstention emits no event.** Merging produces
+`pull_request: closed`. Reviewing produces a review. Pushing produces a push.
+_Deciding not to merge_ produces nothing at all — it is indistinguishable, in
+every API this repository can read, from not having looked at the PR. There is
+no webhook for a decision that was taken and then not acted on.
+
+**The nearest thing that exists is the merge driver's skip list** — a variable
+in the operator's shell naming the PRs it will not merge this cycle. That is a
+real record of a real hold, and it has precisely the defect this document was
+written about: it lives in an ephemeral session, so it cannot be read by anyone
+else and does not survive the session that holds it.
+
+**What it would cost to fix, stated plainly.** Make the driver read its skip
+list _from the label_ instead of from a variable, so skipping and labelling are
+one act. That is worth doing: it reduces two records to one, and moves the
+surviving one into the repository where a stranger can read it. **But it does
+not remove the remembering.** Someone still decides, by hand, that a PR goes on
+the list. It relocates the discretionary act; it does not eliminate it. Anyone
+describing that change as making the hold automatic is overstating it, and this
+paragraph exists so that nobody has to take the claim on trust.
+
+**Lifting is different, and that asymmetry is the whole reason the automation
+sits on the lift side.** A hold ends at a real event — the merge — which GitHub
+emits, which is unambiguous, and which is terminal. **Arming has no such event,
+so no honest mechanism can be built there.** Saying so is a better answer than a
+procedure that asks people to be diligent, because a rule you have to remember
+is not a control and dressing one up as a control is worse than having none.
+
+**One hypothesis worth recording as falsified, so nobody re-derives it:** held
+PRs are not stacked PRs, so `base.ref` cannot serve as an arming signal. All six
+PRs that have ever carried this label (#154, #169, #172, #174, #175, #212)
+targeted `development`, and at the time of measurement **zero** open PRs
+repository-wide had any other base.
 
 ## Escalation when the owner is unreachable
 

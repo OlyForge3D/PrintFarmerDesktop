@@ -1,0 +1,66 @@
+name: Sequencing hold
+
+# merge-queue: advisory
+#
+# Same constraint as pr-closure-scope.yml, and for the same reason: this
+# workflow does not report under merge_group, so its check run MUST NOT be a
+# required context. .squad/holds.md says so in prose; this line is the form a
+# check can read. scripts/check-merge-queue-contexts.mjs enforces it.
+
+# Deliberately a separate workflow rather than a job in ci.yml, for the same
+# reason pr-closure-scope.yml is: the check needs a pull request number and a
+# pull request's labels, and neither `push` nor `merge_group` carries either.
+# Adding it to ci.yml would have required a job-level `if:` or a
+# `github.event_name` branch, both of which tests/ciWorkflowTriggers.test.ts
+# bans outright — a job skipped by a conditional reports `skipped`, which counts
+# as success, so the required context would be satisfied by a job that never ran.
+#
+# `labeled` and `unlabeled` are the load-bearing entries in the type list.
+#
+# A hold is applied and released by adding or removing a label. That is not a
+# commit: there is no push, no new head, and no `synchronize` event. With only
+# the commit-shaped defaults this workflow would run once when the pull request
+# opened, report "not held", and never run again — so a hold applied afterwards
+# would be invisible, and a hold RELEASED afterwards would leave the check red
+# forever with no way to clear it but an empty commit.
+#
+# This is the same hazard pr-closure-scope.yml found for `edited`, arriving
+# through a different door: the state being checked can change with no commit,
+# so a commit-shaped trigger set cannot see it. Recorded here rather than
+# re-derived.
+#
+# Note that `types:` REPLACES the default set rather than extending it, so the
+# three defaults are listed explicitly alongside the two that matter.
+#
+# Consequence, stated plainly: like pr-closure-scope.yml this workflow does not
+# report under `merge_group`. It MUST NOT be added to a branch ruleset's
+# required contexts while that remains true — a required context that no
+# workflow emits stays Pending forever and blocks the entry instead of failing
+# it. tests/sequencingHold.test.ts pins this subscription so the constraint is
+# checked rather than remembered.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  sequencing-hold:
+    name: Sequencing hold
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # No `npm ci`: the check imports nothing outside node: builtins, so it
+      # runs against the checkout alone. That keeps it off the scarce
+      # macos-latest pool and finishes in seconds rather than minutes.
+      - name: Verify the pull request is not deliberately held
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run check:sequencing-hold
