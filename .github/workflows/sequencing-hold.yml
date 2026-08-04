@@ -1,5 +1,12 @@
 name: Sequencing hold
 
+# merge-queue: advisory
+#
+# Same constraint as pr-closure-scope.yml, and for the same reason: this
+# workflow does not report under merge_group, so its check run MUST NOT be a
+# required context. .squad/holds.md says so in prose; this line is the form a
+# check can read. scripts/check-merge-queue-contexts.mjs enforces it.
+
 # Deliberately a separate workflow rather than a job in ci.yml, for the same
 # reason pr-closure-scope.yml is: the check needs a pull request number and a
 # pull request's labels, and neither `push` nor `merge_group` carries either.
