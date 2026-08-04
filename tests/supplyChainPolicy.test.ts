@@ -351,8 +351,6 @@ describe('the release workflow enforces compliance before publication', () => {
     const steps = parseWorkflowSteps(releaseWorkflow, 'make');
     const indexOfRun = (run: string): number =>
       steps.findIndex((step) => step.run === run);
-    const indexOfUse = (uses: string): number =>
-      steps.findIndex((step) => step.uses === uses);
     const indexOfName = (name: string): number =>
       steps.findIndex((step) => step.name === name);
 
@@ -367,7 +365,7 @@ describe('the release workflow enforces compliance before publication', () => {
     const packaged = indexOfRun('node scripts/verify-packaged-sidecar.mjs');
     const immutableLocks = indexOfRun(lockGuard);
     const collect = indexOfName('Collect artifacts');
-    const upload = indexOfUse('actions/upload-artifact@v4');
+    const upload = indexOfName('Upload build artifacts');
     const ordered = [
       make,
       ...compliance,
@@ -379,6 +377,7 @@ describe('the release workflow enforces compliance before publication', () => {
 
     expect(ordered.every((index) => index >= 0)).toBe(true);
     expect(ordered).toEqual([...ordered].sort((left, right) => left - right));
+    expect(steps[upload]?.uses).toBe('actions/upload-artifact@v4');
     for (const index of [...compliance, packaged, immutableLocks]) {
       expect(steps[index]?.continueOnError).not.toBe('true');
     }
