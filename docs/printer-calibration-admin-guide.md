@@ -401,6 +401,36 @@ capability until the next negotiation.
 
 ---
 
+## 8. Snapmaker U1 profile error codes
+
+The retarget profile channels report failures with a machine-readable `code` and
+a human-readable message. **Read both.** The code says which class of fault
+occurred; only the message names the specific one, because two of the faults
+below share a code.
+
+- `sidecarUnavailable` — the profile sidecar answered and said it cannot serve
+  profiles. The profile bundle really is the thing at fault. Restart the
+  application; if it persists, reinstall.
+- `internalError` — no classification was established. This is deliberately not
+  a diagnosis, and the recovery step depends entirely on the message:
+  - _"The retarget workspace could not be prepared."_ — startup could not reap
+    its stale temporary instance directories, usually because a previous run's
+    directory is still locked by a file scanner, a backup agent, or a surviving
+    process. **Do not reinstall**; it cannot remove a temporary directory.
+    Restart the application, and if it repeats, find and release the holder of
+    the retarget temp directory.
+  - _"Snapmaker U1 profiles could not be loaded."_ — the load failed for a
+    reason the main process could not classify. Collect the application logs
+    before doing anything destructive.
+
+Before #316 every one of these reported `sidecarUnavailable` and advised a
+reinstall, including the workspace fault, where a reinstall cannot succeed. If
+you are reading a support report from an older build, treat a
+`sidecarUnavailable` on these channels as unclassified rather than as evidence
+about the bundle.
+
+---
+
 ## Related documents
 
 - [`docs/runbooks/`](./runbooks/) — the seven recovery procedures.

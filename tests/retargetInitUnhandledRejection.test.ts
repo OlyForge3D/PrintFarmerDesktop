@@ -219,19 +219,15 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
  * obvious third claim — that handling the rejection at the creation site does
  * not swallow it — looks testable through its response. It is not. Measured at
  * `c7bd1f6` with `initialize()` rejecting and resolving, and again with a stub
- * retarget sidecar injected, the handler returns a byte-identical envelope in
+ * retarget sidecar injected, the handler returned a byte-identical envelope in
  * both conditions:
  *
  *   { status: 'error', error: { code: 'sidecarUnavailable', … } }
  *
- * because its `catch` maps every error — the startup reap failure, a profile
+ * because its `catch` mapped every error — the startup reap failure, a profile
  * refresh failure, an absent sidecar — onto one outcome. Any assertion written
- * against that envelope passes whether or not the rejection was swallowed, so
- * it would be an assertion that cannot fail.
- *
- * The lossy envelope is itself worth reporting: an operator who sees
- * `sidecarUnavailable` cannot tell a failed temp-root reap from a sidecar that
- * genuinely is not there, and those have different recovery steps.
+ * against that envelope passed whether or not the rejection was swallowed, so
+ * it would have been an assertion that cannot fail.
  *
  * The gap is measured, not asserted. Two mutations, both swallowing:
  *
@@ -242,4 +238,32 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
  * emitted and the observability assertion fires. It changes two things and
  * would read as coverage of the awaiter claim. M-4b changes only the one, and
  * it survives: nothing here can distinguish preserved from swallowed.
+ *
+ * UPDATE (#316). The lossy envelope described above was reported and fixed;
+ * the paragraph is kept because the mutation result about *this* suite still
+ * holds, but its premise no longer describes the handler. `retargetReady` is
+ * now awaited in its own `try` and a reaper failure reports the workspace
+ * rather than the profile bundle, so the two faults are distinguishable and
+ * `tests/retargetProfileFailureClassification.test.ts` asserts exactly that.
+ *
+ * That does **not** close the awaiter claim above in full, but it narrows it,
+ * and the narrowing was measured rather than argued. Mutating the creation site
+ * to swallow *for awaiters* — `initialize().catch(() => undefined)` — is now
+ * killed: four cases in `tests/retargetProfileFailureClassification.test.ts` go
+ * red, because a resolved `retargetReady` lets the handler run on an
+ * unprepared workspace and the import channel returns `canceled` where the
+ * workspace envelope is expected. So the property *"the rejection reaches its
+ * awaiters"* IS asserted now, as a side effect of asserting classification.
+ *
+ * What remains un-asserted is narrower than the paragraph above claims: the
+ * `void retargetReady.catch(...)` handler at the creation site could log and
+ * return, or return without logging, and no awaiter could tell — because that
+ * `.catch` produces a *new* discarded promise and cannot alter what
+ * `await retargetReady` observes. That residue is covered by this suite's own
+ * observability assertion, not by the classification suite.
+ *
+ * Recorded because the first version of this note said M-4b "still survives",
+ * which was false. It was corrected by running the mutation instead of
+ * re-reading the code — the reasoning that produced the false claim was
+ * confident and wrong about which promise the `.catch` attaches to.
  */
