@@ -8,7 +8,7 @@
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 14;
+pub const SCHEMA_VERSION: u32 = 15;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -683,6 +683,47 @@ ALTER TABLE staged_calibration_photos ADD COLUMN caption TEXT NOT NULL DEFAULT '
 ALTER TABLE staged_calibration_photos ADD COLUMN photo_order INTEGER NOT NULL DEFAULT 1;
 "#;
 
+/// Additive v15 columns required to make the ratified calibration conflict
+/// resolution policy enforceable rather than merely stated.
+///
+/// Each column exists because a ruling on issue #216 is unimplementable without
+/// it. None of the three could be derived from existing data, so a resolution
+/// path built on v14 would have compiled, passed, and enforced nothing.
+///
+/// `supersedes_revision_id` records the deleted predecessor a
+/// `keepLocalAsNewRevision` resolution descends from. It is deliberately **not**
+/// a foreign key: the predecessor is the entity the server deleted, so a
+/// referential constraint would reject exactly the rows the policy exists to
+/// create. Provenance here is a claim about history, not about a live row.
+///
+/// `bound_snapshot_revision` records the printer-snapshot revision an
+/// observation was measured against. Without it, "which observations does
+/// accepting this snapshot supersede?" has no answer in the database, and a
+/// resolution could only report the empty set — which is indistinguishable from
+/// reporting nothing.
+///
+/// `resolution_revision_id` makes the revision produced by a resolution
+/// observable from the conflict record, so that a replayed resolution can return
+/// the identity the first attempt created instead of minting a second one.
+///
+/// `conflict_kind` exists because the `kind` column does not hold a conflict
+/// kind. `record_calibration_conflict` writes the *entity type* there
+/// (`CalibrationProject`, ...), and the six ratified conflict kinds are derived
+/// far downstream in the main process. Two of the four resolution rulings are
+/// kind-specific, so the store cannot enforce them from `kind` without
+/// re-deriving that mapping — and issue #219 records that its default arm sends
+/// four of eight entity types to `projectMetadata`, the kind granting the
+/// widest permission. Guessing here would enforce a policy nobody ratified, so
+/// the classification is stored explicitly and an unclassified conflict is
+/// refused rather than resolved permissively.
+pub const SCHEMA_V15: &str = r#"
+ALTER TABLE calibration_profile_revisions ADD COLUMN supersedes_revision_id TEXT;
+ALTER TABLE calibration_observations ADD COLUMN bound_snapshot_revision INTEGER;
+ALTER TABLE calibration_conflicts ADD COLUMN resolution_revision_id TEXT;
+ALTER TABLE calibration_conflicts ADD COLUMN conflict_kind TEXT;
+ALTER TABLE calibration_conflicts ADD COLUMN resolution_payload TEXT;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -859,7 +900,63 @@ mod tests {
 
     #[test]
     fn schema_version_matches_number_of_migrations() {
-        // Each migration from V1..=V14 must be represented.
-        assert_eq!(SCHEMA_VERSION, 14);
+        // The name claims a relationship between the version and the migrations,
+        // so assert that relationship rather than a literal. A hard-coded
+        // `assert_eq!(SCHEMA_VERSION, 14)` passes when a migration constant is
+        // added and never applied, which is the failure it is supposed to catch.
+        let migrations = [
+            SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
+            SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15,
+        ];
+        assert_eq!(
+            SCHEMA_VERSION as usize,
+            migrations.len(),
+            "SCHEMA_VERSION must equal the number of migration constants; a \
+             constant that exists without a version bump is never applied"
+        );
+        for (index, migration) in migrations.iter().enumerate() {
+            assert!(
+                !migration.trim().is_empty(),
+                "migration v{} is empty, so counting it overstates the schema",
+                index + 1
+            );
+        }
+    }
+
+    #[test]
+    fn calibration_schema_v15_adds_the_columns_the_resolution_policy_needs() {
+        // Each assertion names the ruling it makes enforceable. Without the
+        // column the corresponding policy compiles and enforces nothing.
+        assert!(
+            SCHEMA_V15.contains("supersedes_revision_id"),
+            "keepLocalAsNewRevision must be able to name its deleted predecessor"
+        );
+        assert!(
+            SCHEMA_V15.contains("bound_snapshot_revision"),
+            "acceptServer must be able to report which observations it superseded"
+        );
+        assert!(
+            SCHEMA_V15.contains("resolution_revision_id"),
+            "a replayed resolution must return the identity the first attempt created"
+        );
+        assert!(
+            SCHEMA_V15.contains("conflict_kind"),
+            "the store cannot enforce a kind-specific policy from a column that \
+             holds entity types (issue #219)"
+        );
+        assert!(
+            SCHEMA_V15.contains("resolution_payload"),
+            "a manualFieldMerge that is accepted and then discarded records a \
+             merge that merged nothing, which is the defect the required-fields \
+             check only appears to prevent"
+        );
+        // The provenance column must not be a foreign key: the predecessor is
+        // the entity the server deleted, so a reference would reject exactly the
+        // rows the ruling requires.
+        assert!(
+            !SCHEMA_V15.to_uppercase().contains("REFERENCES"),
+            "a foreign key on provenance would make the deleted predecessor \
+             unnameable, which is the case the ruling is about"
+        );
     }
 }

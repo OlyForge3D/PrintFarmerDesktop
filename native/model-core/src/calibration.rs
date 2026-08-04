@@ -15,6 +15,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::sync::{CalibrationConflictKind, CalibrationConflictResolutionKind};
+
 /// Exact local calibration workspace state returned by save/list/get RPCs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -284,6 +286,83 @@ pub struct RecordCalibrationConflictParams {
     pub entity_id: String,
     pub reason: String,
     pub server_revision: i64,
+    /// The ratified conflict kind, when the recorder knows it.
+    ///
+    /// Optional so existing recorders keep working, but a conflict recorded
+    /// without it cannot be resolved: the resolution policy is kind-specific and
+    /// the store will not infer a kind from `entity_type` (issue #219).
+    #[serde(default)]
+    pub conflict_kind: Option<CalibrationConflictKind>,
+}
+
+/// Named failure codes for `resolveCalibrationConflict`.
+///
+/// The store returns `"<CODE>: <explanation>"`. A code is not decoration: a
+/// rejection test that matches on prose passes when a *different* rejection
+/// fires, so the assertion has to name the policy it is checking.
+pub mod calibration_resolution_error {
+    /// No conflict with that id exists for the profile.
+    pub const NOT_FOUND: &str = "CALIBRATION_CONFLICT_NOT_FOUND";
+    /// The conflict record does not name a ratified conflict kind.
+    pub const UNCLASSIFIED: &str = "CALIBRATION_CONFLICT_KIND_UNCLASSIFIED";
+    /// The requested resolution is not permitted for this conflict kind.
+    pub const NOT_PERMITTED: &str = "CALIBRATION_RESOLUTION_NOT_PERMITTED_FOR_KIND";
+    /// The conflict is already resolved with a different resolution.
+    pub const ALREADY_RESOLVED: &str = "CALIBRATION_CONFLICT_ALREADY_RESOLVED";
+    /// `manualFieldMerge` was requested without the fields to merge.
+    pub const MERGED_FIELDS_REQUIRED: &str = "CALIBRATION_MERGED_FIELDS_REQUIRED";
+}
+
+/// Parameters for `resolveCalibrationConflict`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveCalibrationConflictParams {
+    pub profile_id: String,
+    pub conflict_id: String,
+    pub resolution: CalibrationConflictResolutionKind,
+    #[serde(default)]
+    pub merged_fields: Option<Value>,
+}
+
+/// An observation whose binding printer-snapshot revision is behind the
+/// revision that a resolution accepted.
+///
+/// Reported, never invalidated: cascading would destroy measurement work whose
+/// blast radius is invisible at the moment of pressing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupersededObservationDto {
+    pub observation_id: String,
+    pub attempt_id: String,
+    pub step_id: String,
+    pub parameter_key: String,
+    pub bound_snapshot_revision: i64,
+}
+
+/// The outcome of `resolveCalibrationConflict`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalibrationConflictResolutionDto {
+    pub conflict_id: String,
+    pub profile_id: String,
+    pub project_id: String,
+    pub kind: CalibrationConflictKind,
+    pub resolution: CalibrationConflictResolutionKind,
+    pub resolved_at: String,
+    /// The revision a `keepLocalAsNewRevision` resolution created.
+    pub revision_id: Option<String>,
+    /// The deleted predecessor that revision descends from.
+    pub supersedes_revision_id: Option<String>,
+    /// Observations whose binding revision no longer matches.
+    ///
+    /// Deliberately **not** `skip_serializing_if`: an empty set and an absent
+    /// field are different answers. "Nothing was superseded" is a measurement;
+    /// "this resolution does not report supersession" is not, and a caller that
+    /// cannot tell them apart will render a snapshot as clean when it is only
+    /// unexamined.
+    pub superseded_observations: Vec<SupersededObservationDto>,
+    /// True when this call replayed an already-recorded resolution.
+    pub replayed: bool,
 }
 
 /// Parameters for `getCalibrationCursorState`.

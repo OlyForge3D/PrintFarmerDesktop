@@ -43,13 +43,15 @@
     "check:closure-scope": "node scripts/check-pr-closure-scope.mjs",
     "check:merge-queue-contexts": "node scripts/check-merge-queue-contexts.mjs",
     "check:sequencing-hold": "node scripts/check-sequencing-hold.mjs",
+    "lift:sequencing-hold": "node scripts/lift-hold-on-close.mjs",
     "push:force": "node scripts/safe-force-push.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "verify:gpu-qualification": "node scripts/release-gpu-qualification.mjs verify",
     "test:e2e": "playwright test",
-    "pretest:e2e": "node scripts/build-e2e.mjs"
+    "pretest:e2e": "node scripts/build-e2e.mjs",
+    "lift:sequencing-hold:backfill": "node scripts/lift-hold-on-close.mjs --backfill"
   },
   "dependencies": {
     "react": "^18.3.1",
