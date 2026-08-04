@@ -557,9 +557,9 @@ export function CalibrationProfileEntry(): React.JSX.Element {
           </section>
         </div>
 
-        <aside className="cal-profile-aside">
+        <aside className="cal-profile-aside" aria-label="Profile actions">
           <section className="cal-pane cal-detail-pane">
-            <h2>Profile actions</h2>
+            <h2 id="profile-actions-title">Profile actions</h2>
             {store.generatedProfile ? (
               <>
                 <p>

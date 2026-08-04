@@ -21,14 +21,9 @@
  *   The dialog handles these by showing a clear, human-readable explanation.
  */
 
-import React, {
-  useRef,
-  useEffect,
-  useCallback,
-  useState,
-  type ReactNode,
-} from 'react';
+import React, { useRef, useEffect, useState, type ReactNode } from 'react';
 import type { CalibrationBlockedReason } from '@shared/ipc';
+import { useDialogFocusLifecycle, useFocusTrap } from './useDialogFocus';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -77,68 +72,6 @@ interface CalibrationBedClearDialogProps {
 // ---------------------------------------------------------------------------
 // Focus trap hook
 // ---------------------------------------------------------------------------
-
-const FOCUSABLE_SELECTOR = [
-  'a[href]',
-  'area[href]',
-  'input:not([disabled])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
-  'button:not([disabled])',
-  '[tabindex]:not([tabindex="-1"])',
-].join(', ');
-
-/**
- * Real focus trap: constrains Tab/Shift+Tab within the given container,
- * and calls `onEscape` when Escape is pressed.
- */
-function useFocusTrap(
-  containerRef: React.RefObject<HTMLElement | null>,
-  active: boolean,
-  onEscape: () => void,
-): void {
-  const handleKeyDown = useCallback(
-    (event: KeyboardEvent) => {
-      if (!active || !containerRef.current) return;
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onEscape();
-        return;
-      }
-      if (event.key !== 'Tab') return;
-      const focusable = Array.from(
-        containerRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
-      ).filter((el) => !el.closest('[aria-hidden="true"]'));
-      if (focusable.length === 0) {
-        event.preventDefault();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (!first || !last) {
-        event.preventDefault();
-        return;
-      }
-      if (event.shiftKey) {
-        if (document.activeElement === first) {
-          event.preventDefault();
-          last.focus();
-        }
-      } else {
-        if (document.activeElement === last) {
-          event.preventDefault();
-          first.focus();
-        }
-      }
-    },
-    [active, containerRef, onEscape],
-  );
-
-  useEffect(() => {
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [handleKeyDown]);
-}
 
 // ---------------------------------------------------------------------------
 // Countdown hook
@@ -273,35 +206,9 @@ export const CalibrationBedClearDialog: React.FC<
   submissionError,
 }) => {
   const dialogRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLElement | null>(null);
   const secondsLeft = useCountdown(job.acknowledgementExpiresAt);
 
-  // Capture trigger so we can restore focus on close.
-  useEffect(() => {
-    if (open) {
-      triggerRef.current = document.activeElement as HTMLElement;
-    }
-  }, [open]);
-
-  // Restore focus to trigger on close.
-  useEffect(() => {
-    if (!open && triggerRef.current) {
-      // Defer to avoid React batching issues.
-      setTimeout(() => {
-        triggerRef.current?.focus();
-        triggerRef.current = null;
-      }, 0);
-    }
-  }, [open]);
-
-  // Move initial focus into dialog when it opens.
-  useEffect(() => {
-    if (!open || !dialogRef.current) return;
-    const focusable =
-      dialogRef.current.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
-    focusable?.focus();
-  }, [open]);
-
+  useDialogFocusLifecycle(dialogRef, open);
   useFocusTrap(dialogRef, open, onCancel);
 
   const isExpired = secondsLeft !== null && secondsLeft <= 0;
@@ -355,7 +262,7 @@ export const CalibrationBedClearDialog: React.FC<
           </h2>
           <button
             type="button"
-            className="calibration-bed-clear-dialog__close"
+            className="cal-button calibration-bed-clear-dialog__close"
             aria-label="Close dialog"
             onClick={onCancel}
           >
@@ -483,7 +390,7 @@ export const CalibrationBedClearDialog: React.FC<
         <footer className="calibration-bed-clear-dialog__footer">
           <button
             type="button"
-            className="calibration-bed-clear-dialog__button calibration-bed-clear-dialog__button--cancel"
+            className="cal-button calibration-bed-clear-dialog__button calibration-bed-clear-dialog__button--cancel"
             onClick={onCancel}
             disabled={isSubmitting}
           >
@@ -491,7 +398,7 @@ export const CalibrationBedClearDialog: React.FC<
           </button>
           <button
             type="button"
-            className="calibration-bed-clear-dialog__button calibration-bed-clear-dialog__button--confirm"
+            className="cal-button cal-button--primary calibration-bed-clear-dialog__button calibration-bed-clear-dialog__button--confirm"
             onClick={onConfirm}
             disabled={!canConfirm}
             aria-disabled={!canConfirm}
