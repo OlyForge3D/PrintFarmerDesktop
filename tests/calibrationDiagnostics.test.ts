@@ -120,14 +120,94 @@ describe('CalibrationDiagnosticsStore', () => {
       },
     });
     expect(diagnostics.outbox).toBeNull();
-    expect(diagnostics.report).toContain('unavailable');
+    expect(diagnostics.outboxUnavailableReason).toBe('readFailed');
+    expect(diagnostics.report).toContain('unavailable (readFailed)');
   });
 
   it('answers with a null profile rather than throwing when none is selected', async () => {
     const diagnostics = await store().collect({ profileId: null, outbox });
     expect(diagnostics.profileId).toBeNull();
     expect(diagnostics.outbox).toBeNull();
+    expect(diagnostics.outboxUnavailableReason).toBe('noProfileSelected');
     expect(diagnostics.report).toContain('none selected');
+  });
+
+  it('reports notAttempted when no outbox source is wired', async () => {
+    const diagnostics = await store().collect({ profileId: PROFILE_ID });
+    expect(diagnostics.outbox).toBeNull();
+    expect(diagnostics.outboxUnavailableReason).toBe('notAttempted');
+    expect(diagnostics.report).toContain('unavailable (notAttempted)');
+  });
+
+  it('prefers notAttempted over noProfileSelected when both apply', async () => {
+    // Pinned rather than left to the order of the conditions: a missing source
+    // makes the profile irrelevant, so the more fundamental cause wins.
+    const diagnostics = await store().collect({ profileId: null });
+    expect(diagnostics.outboxUnavailableReason).toBe('notAttempted');
+  });
+});
+
+describe('outbox unavailability is diagnosable, not merely visible', () => {
+  /**
+   * Issue #236. `expect(report).toContain('unavailable')` passed for all three
+   * causes, so it could not fail on the defect it was meant to guard. This
+   * asserts the three renderings are **mutually distinct**, which is the claim
+   * a runbook keys on, and carries a positive control so a collapse of the
+   * whole rendering to one string cannot pass as success.
+   */
+  it('renders three distinct strings for the three null causes', async () => {
+    const notAttempted = await store().collect({ profileId: PROFILE_ID });
+    const noProfileSelected = await store().collect({
+      profileId: null,
+      outbox,
+    });
+    const readFailed = await store().collect({
+      profileId: PROFILE_ID,
+      outbox: {
+        countCalibrationPendingOperations: () =>
+          Promise.reject(new Error('sidecar down')),
+        listCalibrationConflicts: () => Promise.resolve([]),
+      },
+    });
+    const available = await store().collect({ profileId: PROFILE_ID, outbox });
+
+    const outboxBlock = (report: string): string =>
+      report.split('\n\n').find((block) => block.startsWith('outbox')) ?? '';
+
+    const rendered = [notAttempted, noProfileSelected, readFailed].map((d) =>
+      outboxBlock(d.report),
+    );
+    expect(new Set(rendered).size).toBe(3);
+
+    // Positive control: the available case must differ from all three, so a
+    // renderer that emitted one constant string could not satisfy this test.
+    expect(rendered).not.toContain(outboxBlock(available.report));
+    expect(outboxBlock(available.report)).toContain('pendingOperationCount: 4');
+
+    // Every null case is still greppable as `unavailable`, so the existing
+    // vocabulary in the runbooks keeps working.
+    for (const block of rendered) {
+      expect(block).toContain('unavailable');
+    }
+  });
+
+  it('names only readFailed as a fault, which is what the runbooks key on', async () => {
+    const benign = await Promise.all([
+      store().collect({ profileId: PROFILE_ID }),
+      store().collect({ profileId: null, outbox }),
+    ]);
+    for (const diagnostics of benign) {
+      expect(diagnostics.outboxUnavailableReason).not.toBe('readFailed');
+    }
+  });
+
+  it('leaves the reason null whenever the outbox is present', async () => {
+    const diagnostics = await store().collect({
+      profileId: PROFILE_ID,
+      outbox,
+    });
+    expect(diagnostics.outbox).not.toBeNull();
+    expect(diagnostics.outboxUnavailableReason).toBeNull();
   });
 });
 
@@ -167,10 +247,14 @@ describe('diagnostics report text', () => {
       profileId: null,
       capability: null,
       outbox: null,
+      outboxUnavailableReason: null,
       lastSync: null,
       observedSinceAppStart: true,
     });
     expect(report.length).toBeGreaterThan(0);
     expect(report).toContain('PrintFarmer calibration diagnostics');
+    // A hand-built snapshot that omits the reason is the only way to reach
+    // `unknown`; pinned so the branch is not untested.
+    expect(report).toContain('unavailable (unknown)');
   });
 });
