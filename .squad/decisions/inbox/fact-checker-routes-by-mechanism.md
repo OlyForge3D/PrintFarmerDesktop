@@ -61,3 +61,31 @@ And the exit code must be branched on **by value**, never by truthiness. Almost 
 > **The defect is not in the exit code. It is that a three-valued answer — ancestor / not-ancestor / cannot-tell — is being read through a two-valued test. Treat 128 as _no answer_, never as _no_.**
 
 Pre-check with `git cat-file -e <sha>^{commit}` to separate _absent_ from _no_.
+
+### `for-each-ref --contains` does not answer the question it is read as answering
+
+It is tempting to reach for `git for-each-ref --contains <sha>` to decide whether a commit is still
+on a branch. **It reads the local ref store**, and a branch deleted upstream leaves
+`refs/remotes/origin/…` behind until something prunes it. Measured on a merged pull request whose
+branch had been deleted, the **merged head** reported four branch-shaped refs — including
+`refs/heads/…` and `refs/remotes/origin/…` — while `git ls-remote` for that same branch returned
+nothing at all.
+
+> **`for-each-ref --contains` answers _did this repository ever cache a branch containing this
+> commit_. It is read as _does a branch contain this commit_. It fails toward the reassuring answer,
+> and it fails there selectively for commits whose branch has been deleted — which is exactly the
+> population anyone runs it on.**
+
+**A stale remote-tracking ref is not a weaker witness than a live one; it is textually
+indistinguishable from one.** The discriminating pair is `git ls-remote`, which goes to the remote
+and cannot be satisfied by a local cache, plus **content** at a named revision, which does not care
+what any ref says. Neither `cat-file -e` nor `--is-ancestor` nor `for-each-ref` separates a live
+branch from a deleted one.
+
+### Unreachability is not evidence of value
+
+A commit that has fallen off a branch looks like a loss and invites recovery. **Check its content
+against the branch before restoring it.** In the case that produced this note, an orphaned commit's
+changes had all landed except a single sentence — **and that sentence was one that had since been
+measured false and retracted.** Restoring the orphan on the strength of its being unreachable would
+have reinstated a retracted claim.
