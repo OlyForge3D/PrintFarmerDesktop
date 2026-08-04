@@ -535,6 +535,42 @@ describe('the passing side goes through the real hook', () => {
     expect(tipOf()).toBe(git(['rev-parse', 'HEAD'], work));
   });
 
+  it('lets a fast-forward through from a clone that rewrites the push URL with pushInsteadOf', () => {
+    // The other half of B1, and the reason it is a separate case rather than
+    // the same one. `pushurl` is a per-remote override; `pushInsteadOf` is a
+    // global URL rewrite. They are different mechanisms, and the previous test
+    // varies only the first — naming the class from one sampled config is the
+    // error this PR has now made three times.
+    //
+    // It also pins the trap. `git ls-remote --get-url <remote>` looks like the
+    // obvious way to resolve a push destination and would pass a diff review;
+    // git's own usage text gives it away — "take url.<base>.insteadOf into
+    // account", never `pushInsteadOf` — and measured, it returns the FETCH url
+    // under both configs. Substituting it here silently restores the bug.
+    git(['remote', 'set-url', 'origin', path.join(root, 'nowhere.git')], work);
+    try {
+      // May or may not be set depending on whether the previous case ran; the
+      // test must not depend on that.
+      git(['config', '--unset', 'remote.origin.pushurl'], work);
+    } catch {
+      /* not set, which is the state we want */
+    }
+    git(
+      [
+        'config',
+        `url.${remote.replace(/\\/g, '/')}.pushInsteadOf`,
+        path.join(root, 'nowhere.git'),
+      ],
+      work,
+    );
+    commit(work, 'ordinary work behind a rewritten push URL', 'session-one');
+
+    const stderr = pushExpectingSuccess(['push', 'origin', 'feature'], work);
+
+    expect(stderr).toContain('push-guard.fast-forward');
+    expect(tipOf()).toBe(git(['rev-parse', 'HEAD'], work));
+  });
+
   it('lets a tag through', () => {
     git(['tag', 'v9.9.9'], work);
 
