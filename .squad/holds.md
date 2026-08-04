@@ -31,19 +31,33 @@ and green. Held is not the same as unfinished, and the label does not mean
 
 ### What it does **not** do
 
-**It prevents nothing.** It is a convention with no mechanical enforcement.
-Nothing in GitHub is wired to this label: no required status check, no branch
-protection rule, no automation. Any session with push access can rebase, sync,
-force-push or merge a PR carrying it, and **the label will not be what stops
-them.**
+**It prevents nothing.** Read that precisely, because one half of it changed and
+the other half did not.
 
-Read that precisely. **"The label enforces nothing" is not the same as "nothing
-is enforced."** Ordinary branch protection on `development` applies to a held PR
-exactly as it does to any other — `strict: true` means a PR that is `BEHIND`
-cannot be merged until it is brought up to date, and the required contexts must
-pass. Those are real and they will refuse the merge. **They have nothing to do
-with the hold**, they would apply identically if the label were removed, and
-they do not make the hold safe.
+**What now exists:** a check run named **`Sequencing hold`**
+(`.github/workflows/sequencing-hold.yml`, `scripts/check-sequencing-hold.mjs`).
+It runs on every pull request and re-runs on `labeled` and `unlabeled`, so it
+tracks the hold with no push. A held PR shows a **red check whose name says
+`Sequencing hold`**, and whose output says the red is deliberate and lists the
+actions not to take. That is the part that reaches a session which was never
+told this document exists — it appears in `gh pr checks`, which every session
+already runs.
+
+**What still does not exist:** it is **not a required context** and is wired to
+no branch protection rule. It cannot be, yet: a `merge_group` entry carries no
+pull request and therefore no labels, so the check does not report there, and a
+required context that never reports blocks a queue entry forever instead of
+failing it. So any session with push access can still rebase, sync, force-push
+or merge a PR carrying the label, and **the check will not be what stops them.**
+It makes the hold _legible_, not _binding_.
+
+**"The label enforces nothing" is not the same as "nothing is enforced."**
+Ordinary branch protection on `development` applies to a held PR exactly as it
+does to any other — `strict: true` means a PR that is `BEHIND` cannot be merged
+until it is brought up to date, and the required contexts must pass. Those are
+real and they will refuse the merge. **They have nothing to do with the hold**,
+they would apply identically if the label were removed, and they do not make the
+hold safe.
 
 The trap is the inverse reading: seeing a held PR blocked by strict-mode
 behind-ness and concluding the hold is being enforced. It is not. Bring the

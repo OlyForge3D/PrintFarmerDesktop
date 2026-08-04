@@ -41,6 +41,14 @@ export default tseslint.config(
     },
   },
   {
+    // Draws the installer GIF frames inside an offscreen Electron renderer, so
+    // part of this file is browser code even though it is a Node entry point.
+    files: ['scripts/generate-installer-gif.mjs'],
+    languageOptions: {
+      globals: { ...globals.node, ...globals.browser },
+    },
+  },
+  {
     // Flat-config files and standalone Node scripts are plain JS/ESM and pull
     // in untyped modules; turn off type-aware rules for them.
     files: ['**/*.js', '**/*.mjs'],

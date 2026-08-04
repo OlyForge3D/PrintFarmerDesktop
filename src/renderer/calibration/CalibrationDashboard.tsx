@@ -322,6 +322,15 @@ export function CalibrationDashboard(): React.JSX.Element {
                 </dd>
               </div>
               <div>
+                <dt>Profile generation</dt>
+                <dd>
+                  {store.availability?.capabilityFlags
+                    ?.calibrationGenerationEnabled
+                    ? 'Available'
+                    : 'Disabled on server'}
+                </dd>
+              </div>
+              <div>
                 <dt>Stale projects</dt>
                 <dd>{stale.length}</dd>
               </div>
