@@ -14,8 +14,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::calibration::{
-    CalibrationConflictDto, CalibrationCursorStateDto, CalibrationPendingOpDto,
-    CalibrationUnhydratedProjectDto, CalibrationWorkspaceStateDto,
+    calibration_resolution_error, CalibrationConflictDto, CalibrationConflictResolutionDto,
+    CalibrationCursorStateDto, CalibrationPendingOpDto, CalibrationUnhydratedProjectDto,
+    CalibrationWorkspaceStateDto, ResolveCalibrationConflictParams,
     SaveCalibrationWorkspaceStateParams,
 };
 use crate::hash::{hash_file, ContentHash};
@@ -856,6 +857,12 @@ pub trait CatalogStore {
     }
 
     /// Record a calibration conflict for an outbox operation.
+    ///
+    /// `conflict_kind` is the ratified classification. It is optional because
+    /// not every recorder knows it, but a conflict recorded without it cannot be
+    /// resolved: the resolution policy is per-kind, and the `entity_type` stored
+    /// in the `kind` column is not one (issue #219).
+    #[allow(clippy::too_many_arguments)]
     fn record_calibration_conflict(
         &mut self,
         profile_id: &str,
@@ -864,6 +871,7 @@ pub trait CatalogStore {
         entity_id: &str,
         reason: &str,
         server_revision: i64,
+        conflict_kind: Option<sync::CalibrationConflictKind>,
     ) -> Result<(), String> {
         let _ = (
             profile_id,
@@ -872,6 +880,7 @@ pub trait CatalogStore {
             entity_id,
             reason,
             server_revision,
+            conflict_kind,
         );
         Ok(())
     }
@@ -938,6 +947,27 @@ pub trait CatalogStore {
     ) -> Result<Vec<CalibrationConflictDto>, String> {
         let _ = (profile_id, project_id);
         Ok(vec![])
+    }
+
+    /// Resolve a calibration conflict under the ratified policy (issue #216).
+    ///
+    /// The default **errors**. Every other calibration default here returns a
+    /// benign empty value, which is right for a reader: a store that cannot list
+    /// conflicts truthfully has none to show. It is wrong for a writer that
+    /// enforces policy. An `Ok(())` default would mean a backend with no
+    /// implementation reports every resolution as accepted, including the
+    /// forbidden ones — the policy would be unfailable, and the rejection tests
+    /// would pass against a store that rejects nothing.
+    fn resolve_calibration_conflict(
+        &mut self,
+        params: &ResolveCalibrationConflictParams,
+    ) -> Result<CalibrationConflictResolutionDto, String> {
+        let _ = params;
+        Err(format!(
+            "{}: this catalog backend does not implement calibration conflict \
+             resolution, so no resolution policy is enforced here",
+            calibration_resolution_error::NOT_FOUND
+        ))
     }
 
     /// Count pending outbox operations that are not yet settled.
