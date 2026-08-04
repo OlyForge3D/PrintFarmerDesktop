@@ -38,6 +38,16 @@ import type {
   RemoteCalibrationChange,
   RemoteCalibrationApplyRequest,
 } from './calibrationWire.js';
+import {
+  emitCalibrationLog,
+  describeCalibrationFailure,
+  type CalibrationLogErrorCode,
+} from './calibrationLog.js';
+import { calibrationCorrelation } from './calibrationCorrelation.js';
+import {
+  calibrationDiagnostics,
+  type CalibrationDiagnosticsStore,
+} from './calibrationDiagnostics.js';
 
 export type CalibrationEngineErrorCode =
   | 'NOT_FOUND'
@@ -188,12 +198,16 @@ const PUSH_BATCH_SIZE = 20;
 
 export class CalibrationSyncEngine {
   private disposed = false;
+  private readonly diagnostics: CalibrationDiagnosticsStore;
 
   constructor(
     private readonly http: CalibrationHttpClient,
     private readonly sidecar: CalibrationSidecar,
     private readonly profileService: CalibrationProfileService,
-  ) {}
+    options: { diagnostics?: CalibrationDiagnosticsStore } = {},
+  ) {
+    this.diagnostics = options.diagnostics ?? calibrationDiagnostics;
+  }
 
   dispose(): void {
     this.disposed = true;
@@ -217,6 +231,10 @@ export class CalibrationSyncEngine {
   ): Promise<CalibrationSyncStatus> {
     this.requireNotDisposed();
 
+    // One sync is one user-initiated operation, so it gets its own flow.
+    const correlationId = calibrationCorrelation.beginFlow();
+    const startedAt = Date.now();
+
     const status: CalibrationSyncStatus = {
       phase: CalibrationSyncPhase.parse('validatingCapabilities'),
       profileId,
@@ -226,6 +244,28 @@ export class CalibrationSyncEngine {
       conflictCount: 0,
       cursor: null,
       error: null,
+    };
+
+    // `syncNow` reports failure through `status.error`, which is free text and
+    // on a CalibrationHttpError carries the backend's ProblemDetails `detail`.
+    // The record is therefore built here, where the *typed* code is still in
+    // hand, rather than in the IPC handler where only the string survives.
+    const finish = (
+      outcome: 'ok' | 'failed',
+      errorCode: CalibrationLogErrorCode | null,
+    ): void => {
+      this.diagnostics.recordSyncOutcome({ outcome, errorCode, correlationId });
+      emitCalibrationLog({
+        level: outcome === 'failed' ? 'error' : 'info',
+        component: 'calibration.sync',
+        event: outcome === 'failed' ? 'sync.failed' : 'sync.completed',
+        correlationId,
+        profileId,
+        projectId,
+        outcome,
+        ...(errorCode === null ? {} : { errorCode }),
+        durationMs: Date.now() - startedAt,
+      });
     };
 
     try {
@@ -244,6 +284,7 @@ export class CalibrationSyncEngine {
       status.conflictCount += pushResult.conflicts;
 
       if (signal.aborted) {
+        finish('failed', 'cancelled');
         return {
           ...status,
           phase: CalibrationSyncPhase.parse('failed'),
@@ -272,12 +313,14 @@ export class CalibrationSyncEngine {
         conflictCount.length > 0
           ? CalibrationSyncPhase.parse('partialConflict')
           : CalibrationSyncPhase.parse('succeeded');
+      finish('ok', null);
       return status;
     } catch (error) {
       if (
         signal.aborted ||
         (error instanceof CalibrationHttpError && error.code === 'cancelled')
       ) {
+        finish('failed', 'cancelled');
         return {
           ...status,
           phase: CalibrationSyncPhase.parse('failed'),
@@ -285,12 +328,14 @@ export class CalibrationSyncEngine {
         };
       }
       if (error instanceof CalibrationEngineError) {
+        finish('failed', error.code);
         return {
           ...status,
           phase: CalibrationSyncPhase.parse('failed'),
           error: error.message,
         };
       }
+      finish('failed', describeCalibrationFailure(error).errorCode);
       const message =
         error instanceof Error ? error.message : 'Unknown sync error.';
       return {

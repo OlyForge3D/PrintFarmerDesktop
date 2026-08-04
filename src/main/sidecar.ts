@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import type { CalibrationWorkspaceStageId } from '@shared/ipc';
+import { emitCalibrationLog } from './calibrationLog.js';
 
 /**
  * Supervised client for the Rust `model-core` sidecar.
@@ -1469,8 +1470,16 @@ export function spawnSidecarChannel(binaryPath?: string): SidecarChannel {
   });
 
   child.stderr.setEncoding('utf8');
+  // Forwarded verbatim to the parent's stderr rather than turned into a
+  // structured record. This is the Rust crate's own log stream, not a
+  // calibration record: it carries no correlation, operation or dispatch ID to
+  // put in one, and its text is arbitrary, so it cannot pass the structural
+  // allowlist in `calibrationLog`. Piping it preserves sidecar debuggability
+  // without pretending it is a redacted record. The policy test in
+  // `tests/calibrationLogPolicy.test.ts` pins this as one of exactly two
+  // permitted direct stream writes, so it cannot become a general escape hatch.
   child.stderr.on('data', (chunk: string) => {
-    console.error(`[model-core] ${chunk.trimEnd()}`);
+    process.stderr.write(`${chunk.trimEnd()}\n`);
   });
 
   const emitClose = (code: number | null): void => {
@@ -1479,8 +1488,14 @@ export function spawnSidecarChannel(binaryPath?: string): SidecarChannel {
     }
   };
   child.on('close', (code) => emitClose(code));
-  child.on('error', (error) => {
-    console.error(`[model-core] process error: ${error.message}`);
+  child.on('error', () => {
+    emitCalibrationLog({
+      level: 'error',
+      component: 'calibration.sidecar',
+      event: 'sidecar.processFailed',
+      outcome: 'failed',
+      errorCode: 'unexpected',
+    });
   });
 
   return {
