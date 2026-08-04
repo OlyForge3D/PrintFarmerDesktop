@@ -16,7 +16,7 @@ directory already cover ground next to this. `dallas-ancestry-is-not-content.md`
 owns `--is-ancestor` under squash, its exit-code polarity, and tree identity as
 the remedy — **that treatment is better than the one this entry originally
 carried, and this entry now defers to it.** `sha-reporting-rule.md` owns the
-citation rule that a cited object must be reachable by the *reader*, and notes
+citation rule that a cited object must be reachable by the _reader_, and notes
 the shared object database as the reason it often is not. What is left here and
 found nowhere else: the **grading** of `git branch -r --contains`, the
 demonstration that it **reads a local cache and inherits the defect of #81**,
