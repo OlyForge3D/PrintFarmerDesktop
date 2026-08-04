@@ -4,6 +4,7 @@ import {
   CLEANUP_WARNING_MARKER,
   NPM_PRODUCTION_TREE_COMMAND,
   extractCleanupPaths,
+  findTreeProblems,
   findUnresolvedPackages,
   hasCleanupFailure,
   npmInvocation,
@@ -160,11 +161,53 @@ describe('the structural walk detects a tree npm cannot resolve', () => {
     expect(findUnresolvedPackages(stale)).toEqual(['parse-color']);
   });
 
-  it('names a package npm marked invalid', () => {
+  it('names a package npm marked invalid, in the shape npm actually emits', () => {
+    // Measured, not invented. npm emits `invalid` as a STRING naming the range
+    // that is not satisfied, and it emits it alongside a perfectly good
+    // `version` — so neither `=== true` nor the version check catches this.
+    //
+    //   package.json says ^7.0.0, node_modules holds 6.3.1:
+    //     "semver": { "version": "6.3.1",
+    //                 "invalid": "\"^7.0.0\" from the root project" }
+    //
+    // That is what a partial wipe leaves: a real, parseable, wrong version.
     const stale = {
-      dependencies: { three: { version: '0.1.0', invalid: true } },
+      dependencies: {
+        semver: {
+          version: '6.3.1',
+          invalid: '"^7.0.0" from the root project',
+        },
+      },
     };
-    expect(findUnresolvedPackages(stale)).toEqual(['three']);
+    expect(findUnresolvedPackages(stale)).toEqual(['semver']);
+  });
+
+  it('does not flag a node whose `invalid` npm left as false', () => {
+    // The other half: reading `invalid` as truthy must not turn an explicitly
+    // negative flag into a failure, or the guard fails every clean install.
+    const fine = {
+      dependencies: {
+        semver: { version: '7.6.0', invalid: false, extraneous: false },
+      },
+    };
+    expect(findUnresolvedPackages(fine)).toEqual([]);
+  });
+
+  it('fails closed when `dependencies` is a shape npm does not emit', () => {
+    // `typeof [] === 'object'`, so an array used to walk to zero entries and
+    // report success. Every malformed tree was a pass.
+    expect(findUnresolvedPackages({ dependencies: [] })).not.toEqual([]);
+    expect(findUnresolvedPackages({ dependencies: 'broken' })).not.toEqual([]);
+    expect(findUnresolvedPackages({ dependencies: null })).not.toEqual([]);
+  });
+
+  it('names the parent when a nested `dependencies` is malformed', () => {
+    const stale = {
+      dependencies: { react: { version: '18.3.1', dependencies: 7 } },
+    };
+    expect(findUnresolvedPackages(stale)).toEqual([
+      'react (npm ls returned a number for its `dependencies`)',
+    ]);
   });
 
   it('reports nothing for a tree with no dependencies at all', () => {
@@ -177,6 +220,56 @@ describe('the structural walk detects a tree npm cannot resolve', () => {
     expect(findUnresolvedPackages({ dependencies: { root: cyclic } })).toEqual(
       [],
     );
+  });
+});
+
+describe('npm’s own verdict on the tree is read, not just the tree', () => {
+  it('passes the real clean production tree — the negative control', () => {
+    // Measured against real npm on this repository: a healthy tree carries no
+    // `problems` and no `error` key at all. Without this, a check that fired on
+    // every install would be indistinguishable from one that worked.
+    expect(findTreeProblems(CLEAN_PRODUCTION_TREE)).toEqual([]);
+  });
+
+  it('reports an extraneous package that npm flagged while exiting 0', () => {
+    // Measured: an undeclared package in node_modules makes `npm ls` print
+    // `problems` and still exit 0. The exit code alone would clear this.
+    const tree = {
+      ...CLEAN_PRODUCTION_TREE,
+      problems: ['extraneous: ghost@9.9.9 /repo/node_modules/ghost'],
+    };
+    expect(findTreeProblems(tree)).toEqual([
+      'extraneous: ghost@9.9.9 /repo/node_modules/ghost',
+    ]);
+  });
+
+  it('reports npm’s error code and summary when npm set one', () => {
+    const tree = {
+      ...CLEAN_PRODUCTION_TREE,
+      error: { code: 'ELSPROBLEMS', summary: 'invalid: left-pad@' },
+    };
+    expect(findTreeProblems(tree)).toContain(
+      'npm reported ELSPROBLEMS: invalid: left-pad@',
+    );
+  });
+
+  it('reports a tree that carries an error and no dependencies at all', () => {
+    // An unparseable `package.json` yields valid JSON with no `dependencies`
+    // key. A structural walk finds nothing to walk and reports success, so this
+    // is the case the walk structurally cannot see.
+    const tree = {
+      invalid: true,
+      problems: ['error in /repo/package.json'],
+      error: { code: 'EJSONPARSE', summary: 'Unexpected token' },
+    };
+    expect(findTreeProblems(tree).length).toBeGreaterThan(0);
+    expect(findUnresolvedPackages(tree)).toEqual([]);
+  });
+
+  it('reports a root that is not an object, rather than passing it', () => {
+    for (const root of [null, [], 'broken', 42]) {
+      expect(findTreeProblems(root).length).toBeGreaterThan(0);
+    }
   });
 });
 
