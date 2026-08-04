@@ -38,6 +38,17 @@ What that section requires, for any agent running the check:
   a claim that something was written _after_ a correction was available needs
   `--is-ancestor`, or the correction present in the rendering's own parent tree. This rule
   is here because this batch published the inference without it and had to retract it.
+- **A reachability claim must name the space it searched, and a positive control does not
+  fix an unsearched region.** `git branch --contains` searches branches; `refs/pull/N/head`
+  and tags are not branches, so a zero means _not present among branches_, never _absent_.
+  A control that fires shows the instrument is sensitive **within** the space searched and
+  says nothing about that space's boundary — so when both arms of the control are the same
+  kind of ref, it cannot reveal that the question ranges wider. Reachability is provable by
+  one containing ref and not disprovable by an incomplete enumeration of refs, which makes
+  _unreachable_ the claim that has to state its scope. Where a cited revision is
+  branch-unreachable by construction — a pre-squash commit, which by definition never
+  landed — give the reader the fetch command; an instruction to verify somewhere
+  unreachable is not a citation.
 - Publish the extraction rule and the head with the result — naming the **mainline** commit
   the enumeration was current with, since a set closed on a branch is closed only as of that
   branch's base — and run a control that can report non-empty.

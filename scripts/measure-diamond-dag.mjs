@@ -40,6 +40,21 @@
  * have measured the wrong thing. Each item above is now cited to a line at
  * 741459de and is checkable with `git grep`. Verify there, not here.
  *
+ * HOW TO REACH 741459de. It is a pre-squash commit of PR #68: the squash merge
+ * 5eef0d7 landed the *final* state, so the pre-fix revision this model is a
+ * model of reached the mainline in no commit at all, by construction. It is
+ * therefore reachable from zero branches, and `git branch --contains` reports
+ * that correctly. It is *not* unreachable — GitHub serves the pull request ref:
+ *
+ *     git fetch origin refs/pull/68/head        # -> 1c80bdb381, the fix commit
+ *     git merge-base --is-ancestor 741459de FETCH_HEAD   # exit 0
+ *     git show 741459de:src/renderer/library/partTreeModel.ts
+ *
+ * That command is given because an instruction to "verify there" is not usable
+ * without it, and because a reader who checks reachability with a branch-scoped
+ * command will conclude the object is gone. `--contains` searches branches; the
+ * ref that reaches this object is not a branch, so the command cannot see it.
+ *
  * That this header is specific is what made the model falsifiable, and it was
  * falsified: item 1 says the cycle-hit branch emits a row, and until this
  * revision the walk below skipped the revisit entirely, emitting none. Every

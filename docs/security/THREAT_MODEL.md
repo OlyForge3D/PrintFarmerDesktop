@@ -547,7 +547,9 @@ chain — summed over the chain, not the 16,384 distinct paths to its tail, and 
 rebuilds the fixture and measures the two populations separately: 32,767 from the `m` chain and
 16,383 from `s` nodes. The behaviour being measured is the shipped pre-fix `flattenPartTree` at
 commit `741459dee50af3a0dd387253cfbf8b9ddc71315f` — one row per visit, path-local cycle guard,
-no `MAX_PART_TREE_ROWS` — which is what these figures are figures of; the script models it.)
+no `MAX_PART_TREE_ROWS` — which is what these figures are figures of; the script models it.
+That commit is pre-squash, so no branch reaches it; fetch it with
+`git fetch origin refs/pull/68/head`.)
 
 **Controls.** The limits bound the obvious cases. Beyond them, correctness rests entirely on
 hand-written parsing in `threemf.rs`, `stl.rs`, `obj.rs`, and `vendor.rs`.
