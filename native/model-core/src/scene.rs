@@ -283,6 +283,11 @@ impl SceneMesh {
     }
 
     /// Build a scene from a tessellated STEP mesh.
+    ///
+    /// The current STEP parser exposes raw tessellated shells only, so it
+    /// cannot provide product metadata such as part numbers or materials.
+    /// Successful geometry is therefore complete, while unsupported metadata
+    /// remains explicitly absent rather than degrading the load status.
     #[cfg(feature = "step")]
     pub fn from_step(mesh: &StepMesh) -> Self {
         let mut indices = Vec::with_capacity(mesh.triangles.len() * 3);
@@ -296,6 +301,10 @@ impl SceneMesh {
                 name: p.name.clone(),
                 triangle_start: p.triangle_start,
                 triangle_count: p.triangle_count,
+                status: SceneLoadStatus::Complete,
+                status_detail: None,
+                part_number: None,
+                material_label: None,
             })
             .collect();
         Self {
@@ -305,6 +314,8 @@ impl SceneMesh {
             bounds: mesh.bounds,
             source_format: ModelFormat::Step,
             face_colors: None,
+            status: SceneLoadStatus::Complete,
+            status_messages: Vec::new(),
             parts,
             objects: vec![single_object(
                 "object-0",
