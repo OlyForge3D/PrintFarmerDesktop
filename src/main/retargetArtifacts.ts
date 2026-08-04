@@ -155,7 +155,24 @@ export class RetargetArtifactService {
       const candidate = path.join(this.parentRoot, entry.name);
       const marker = await readOwnerMarker(candidate);
       if (!marker || isProcessRunning(marker.pid)) continue;
-      await removeOwnedInstance(candidate, marker.instanceId);
+      // Reaping another instance's leftovers is opportunistic, so a failure to
+      // remove one must not stop this instance from starting. On Windows a
+      // concurrent process holding a handle under `candidate` makes `rm` throw
+      // `EPERM: rmdir`, and `force: true` suppresses only `ENOENT` -- issue
+      // #229. That rejection propagated out of `initialize()` and failed whole
+      // test files in setup with every test inside them passing.
+      //
+      // Every error is tolerated here rather than a list of permission-ish
+      // codes. The set of codes Windows can raise for a contended delete is
+      // open, and a list is wrong in the direction that reintroduces the crash
+      // for the first code nobody thought of. The scope is deliberately one
+      // call, on a directory this process does not own, where the worst
+      // outcome of giving up is that a later sweep collects it.
+      try {
+        await removeOwnedInstance(candidate, marker.instanceId);
+      } catch {
+        // Left for a later sweep, by this process or another one.
+      }
     }
     await mkdir(this.root, { mode: 0o700 });
     await writeFile(
