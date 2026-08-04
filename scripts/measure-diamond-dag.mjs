@@ -40,6 +40,15 @@
  * have measured the wrong thing. Each item above is now cited to a line at
  * 741459de and is checkable with `git grep`. Verify there, not here.
  *
+ * That this header is specific is what made the model falsifiable, and it was
+ * falsified: item 1 says the cycle-hit branch emits a row, and until this
+ * revision the walk below skipped the revisit entirely, emitting none. Every
+ * figure was still correct, because `diamondDag` is acyclic and the branch
+ * never fires — so agreement between this model and 741459de was evidence
+ * about the path-local guard and no evidence whatever about the cycle guard.
+ * Found by a reviewer reading the blob rather than this header. The control at
+ * the foot of this file is the discriminator that was missing.
+ *
  * A derivation is only discharged when it terminates in an artifact that is not
  * itself a rendering. That artifact is 741459de, not this file. Agreement between
  * this model and the prose is therefore evidence about the model; disagreement
@@ -78,9 +87,15 @@ function pathLocalWalk({ objects, rootObjectIds }) {
 
   while (stack.length > 0) {
     const { id, path } = stack.pop();
-    if (path.has(id)) continue;
+    // A cycle hit is still a visit and still emits a row: at 741459de the
+    // `seen.has(objectId)` branch pushes an `invalid: true` row (:107) and only
+    // then returns (:126). Modelling the revisit as `continue` — emitting
+    // nothing — under-counts by one row per cycle hit. That is invisible on
+    // this fixture, which is acyclic, and wrong in general; see the control
+    // below, which is the only thing here that exercises the guard at all.
     total += 1;
     perId.set(id, (perId.get(id) ?? 0) + 1);
+    if (path.has(id)) continue;
     const next = new Set(path).add(id);
     for (const child of byId.get(id)?.children ?? []) {
       stack.push({ id: child, path: next });
@@ -131,6 +146,26 @@ const toTailViaS = toTail.filter((p) =>
   p.some((n) => n.startsWith('s')),
 ).length;
 
+/**
+ * Control: the one input on which the cycle guard actually fires.
+ *
+ * `diamondDag` is acyclic, so every figure above is evidence about the
+ * path-local `seen` set and no evidence at all about what happens on a
+ * revisit. A three-cycle discriminates: at 741459de the walk visits a, b, c,
+ * reaches a again, pushes an `invalid: true` row and returns — four rows. A
+ * model that skips the revisit returns three. This case is here because the
+ * model did return three, and agreement on the acyclic fixture could never
+ * have shown it.
+ */
+const threeCycle = {
+  objects: [
+    { id: 'a', children: ['b'] },
+    { id: 'b', children: ['c'] },
+    { id: 'c', children: ['a'] },
+  ],
+  rootObjectIds: ['a'],
+};
+
 const results = [
   ['objects in fixture', fixture.objects.length, 29],
   ['TOTAL rows emitted', total, 49150],
@@ -139,6 +174,7 @@ const results = [
   ['distinct paths to tail', tailPaths, 16384],
   ['paths ending at an m node', pathsEndingAtM, 32767],
   ['...of paths to tail, via s', toTailViaS, 16383],
+  ['control: 3-cycle emits row', pathLocalWalk(threeCycle).total, 4],
 ];
 
 let ok = true;
