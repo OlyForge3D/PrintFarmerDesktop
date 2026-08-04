@@ -200,3 +200,54 @@ the shell, and the shell is where the fourth value comes from.
 **The correction propagated faster than its verification.** The three-valued form now appears in six
 notes under five authors, which is the same mechanism this note already records for figures: a
 result is copied because it is right about the thing it names, and the recipient does not re-derive.
+
+## A test whose stimulus is too weak returns the reassuring answer
+
+Issue #291 reports that a PowerShell exit code is stale after an early-terminating pipeline stage.
+The obvious reproduction — a command that exits immediately, piped to that stage — returns the
+**correct** exit code on every arm, because the process has already finished by the time the
+pipeline stops. Six arms, six passes, and the idiom looks clear. Substitute a producer that emits
+slowly and the same arm reports success for a command that failed.
+
+**The discriminating variable was the stimulus, not the instrument**, and the natural stimulus is the
+one that cannot elicit the defect. This is the same shape as a model that agrees with its object on
+every published figure because the fixture never reaches the branch where they differ, and as a
+mutation control that cannot distinguish an ineffective mutation from an inert test. In all three
+cases the run completes, reports cleanly, and licenses a conclusion it never tested.
+
+**Consequence.** A reproduction attempt that fails to reproduce establishes nothing until it is shown
+capable of reproducing — which requires a positive arm in the same run, not a separate
+demonstration recalled from elsewhere. An exoneration needs a control exactly as much as an
+accusation does, and is far less likely to be given one.
+
+## A size assertion is a control that content and structure checks do not subsume
+
+An entry for the audit trail was inserted by a script whose replacement text happened to contain a
+dollar sign immediately followed by a backtick. In a JavaScript replacement string that sequence
+means _the entire portion of the subject before the match_. The insertion silently duplicated about
+150KB of the file.
+
+**Every check available locally passed on the corrupted result:** the new heading was present, the
+section anchor was present, and the structural detector written for a previous defect reported zero
+problems. The formatter would have accepted it. What caught it was `git diff --numstat` reporting
+**307 insertions for a fifteen-line entry**.
+
+**A content check asks whether the expected material is there. A structural check asks whether it is
+positioned correctly. Neither can see material that nobody wrote** — and duplication satisfies both
+by construction, because every duplicated element is genuine. Size and count assertions are the
+cheapest instrument that has any purchase on this class, and they are the ones normally skipped as
+trivial.
+
+## An escape hazard is a property of any interpreted replacement, not of a shell
+
+Three instances arrived within one hour, in three languages: a backslash-dollar written for bash and
+passed through PowerShell, where the backslash is not an escape and the variable still expands; an
+unquoted commit-peel suffix, where the shell consumes the braces and the command never runs; and the
+dollar-backtick above, consumed by a JavaScript replacement.
+
+**Stating the first as a bash-versus-PowerShell difference was already too narrow when it was
+written.** The general condition is that a string is interpreted by something between the author and
+its destination, and the author is reasoning about the destination. The repairs are all the same
+move — remove the interpretation rather than escape it correctly: single quotes, quoted
+arguments, a replacement **function** instead of a replacement string. Escaping requires knowing
+every special sequence of every layer; disabling interpretation requires knowing none of them.
