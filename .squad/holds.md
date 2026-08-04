@@ -31,11 +31,33 @@ and green. Held is not the same as unfinished, and the label does not mean
 
 ### What it does **not** do
 
-**It prevents nothing.** It is a convention with no mechanical enforcement. Any
-session with push access can rebase, sync, force-push or merge a PR carrying
-this label, and nothing in GitHub will stop it. There is no required status
-check behind it, no branch protection tied to it, and no automation watching for
-it.
+**It prevents nothing.** It is a convention with no mechanical enforcement.
+Nothing in GitHub is wired to this label: no required status check, no branch
+protection rule, no automation. Any session with push access can rebase, sync,
+force-push or merge a PR carrying it, and **the label will not be what stops
+them.**
+
+Read that precisely. **"The label enforces nothing" is not the same as "nothing
+is enforced."** Ordinary branch protection on `development` applies to a held PR
+exactly as it does to any other — `strict: true` means a PR that is `BEHIND`
+cannot be merged until it is brought up to date, and the required contexts must
+pass. Those are real and they will refuse the merge. **They have nothing to do
+with the hold**, they would apply identically if the label were removed, and
+they do not make the hold safe.
+
+The trap is the inverse reading: seeing a held PR blocked by strict-mode
+behind-ness and concluding the hold is being enforced. It is not. Bring the
+branch up to date — which the hold asks you not to do — and the only thing left
+between that PR and `development` is somebody's restraint.
+
+**One measured warning, because these settings do not behave the way they read.**
+Do not conclude from `enforce_admins: false` that an admin account can therefore
+force-push a protected branch. Measured on a scratch branch:
+`allow_force_pushes: false` **rejects a rewrite by a repo-admin and org-admin
+account even with `enforce_admins: false`**, while an _empty_ push allowlist —
+nobody permitted at all — does not stop that same account from pushing at all.
+The two behave opposite to the way the surrounding configuration suggests.
+Reason about them from measurement, not from the shape of the settings page.
 
 This is stated plainly because the alternative is worse: a label that reads like
 a lock, but isn't, invites exactly the confident action it appears to forbid.
