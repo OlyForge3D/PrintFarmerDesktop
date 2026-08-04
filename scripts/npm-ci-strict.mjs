@@ -27,6 +27,7 @@
 // production node, and a tree can be unresolvable without a cleanup warning.
 
 import { spawn, spawnSync } from 'node:child_process';
+import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -50,6 +51,115 @@ const repoRoot = path.resolve(
 export const CLEANUP_WARNING_MARKER = 'cleanup Failed to remove';
 
 export const NPM_PRODUCTION_TREE_COMMAND = 'npm ls --omit=dev --all --json';
+
+/**
+ * How many times `npm ci` is run before the gate gives up (#274).
+ *
+ * The first attempt is the ordinary install. If it reports a failed wipe, the
+ * gate removes `node_modules` itself and installs once more. Two is deliberate:
+ * one retry is enough to clear a transient Windows file lock, and more would
+ * turn a reproducible environment fault into a slow one.
+ */
+export const MAX_INSTALL_ATTEMPTS = 2;
+
+/**
+ * Retry budget handed to `fs.rm`, which exists for exactly this failure.
+ *
+ * The observed fault is `EPERM: operation not permitted, rmdir` on
+ * `windows-latest`, caused by another process holding a handle open for a few
+ * hundred milliseconds. `fs.rm` retries `EPERM`/`EBUSY`/`ENOTEMPTY` internally,
+ * so the recovery does not need a hand-rolled loop.
+ */
+export const REMOVAL_RETRY = Object.freeze({ maxRetries: 10, retryDelay: 250 });
+
+/**
+ * What to do after an `npm ci` that exited 0.
+ *
+ * Separated from {@link main} so the decision is testable without spawning npm.
+ * Fails closed: an attempt counter that is not a positive integer yields
+ * `'fail'` rather than an unbounded retry loop.
+ *
+ * @param {string} output combined stdout+stderr of `npm ci`
+ * @param {number} attempt 1-based index of the attempt that produced `output`
+ * @param {number} [maxAttempts]
+ * @returns {{ action: 'accept' | 'retry' | 'fail', paths: string[] }}
+ */
+export function planInstallOutcome(
+  output,
+  attempt,
+  maxAttempts = MAX_INSTALL_ATTEMPTS,
+) {
+  if (!hasCleanupFailure(output)) return { action: 'accept', paths: [] };
+  const paths = extractCleanupPaths(output);
+  const counted =
+    Number.isInteger(attempt) &&
+    attempt > 0 &&
+    Number.isInteger(maxAttempts) &&
+    maxAttempts > 0;
+  if (!counted) return { action: 'fail', paths };
+  return { action: attempt < maxAttempts ? 'retry' : 'fail', paths };
+}
+
+/**
+ * What the gate prints when it is about to clear the tree and install again.
+ *
+ * Printed rather than silent because #274's second defect is that the evidence
+ * disappears: a recovered run is green, and without this line nothing in the
+ * log says the wipe ever failed.
+ *
+ * @param {string[]} paths directories npm named
+ * @param {number} attempt
+ * @param {number} maxAttempts
+ * @returns {string[]}
+ */
+export function recoveryNotice(paths, attempt, maxAttempts) {
+  const named = Array.isArray(paths) ? paths.filter(Boolean) : [];
+  return [
+    '',
+    `npm-ci-strict: attempt ${attempt} of ${maxAttempts} left node_modules partially removed.`,
+    named.length > 0 ? `Directories npm named: ${named.join(', ')}` : '',
+    'Removing node_modules and installing again in this same job. This is the',
+    'gate discharging itself (#274); it is NOT the same as re-running the job on',
+    'a fresh runner, which would start from a clean disk and erase the evidence.',
+    'If the line below says the install succeeded, the tree is now the lockfile',
+    'tree and the earlier failure is recorded here rather than hidden.',
+    '',
+  ].filter((line, index, all) => line !== '' || all[index - 1] !== '');
+}
+
+/**
+ * What the gate prints when the discharge path is exhausted.
+ *
+ * The original message forbade the only action a PR author could take and named
+ * no alternative, which #274 classifies as a deadlock with a rationale attached.
+ * This one states what the gate already attempted, so the reader knows the cheap
+ * remedy is spent rather than untried.
+ *
+ * @param {string[]} paths directories npm named
+ * @param {number} maxAttempts
+ * @returns {string[]}
+ */
+export function exhaustedFailureLines(paths, maxAttempts) {
+  const named = Array.isArray(paths) ? paths.filter(Boolean) : [];
+  return [
+    '',
+    'npm-ci-strict: `npm ci` exited 0 but reported it could not finish removing node_modules.',
+    '',
+    'The installed tree is therefore neither the lockfile tree nor a clean one,',
+    'and every later step in this job would run against it.',
+    named.length > 0 ? `Directories npm named: ${named.join(', ')}` : '',
+    '',
+    `The gate already removed node_modules and reinstalled: ${maxAttempts} attempts,`,
+    'all of which reported the same failed wipe. The automatic discharge path is',
+    'spent, so this is a reproducible environment fault and not a transient lock.',
+    '',
+    'Do NOT clear it by re-running the job: a fresh runner wipes cleanly and hides',
+    'the defect, which teaches the squad to treat the supply-chain gate as noise.',
+    'Escalate instead — the runner image or a lingering process is holding a',
+    'handle open. Origin: #195. Discharge path and its limits: #274.',
+    '',
+  ].filter((line, index, all) => line !== '' || all[index - 1] !== '');
+}
 
 /**
  * True when npm's own output says it could not finish removing `node_modules`.
@@ -277,28 +387,44 @@ function fail(lines) {
   process.exit(1);
 }
 
+/**
+ * Remove `node_modules`, tolerating the Windows lock that caused #195.
+ *
+ * @returns {Promise<void>}
+ */
+async function removeNodeModules() {
+  await rm(path.join(repoRoot, 'node_modules'), {
+    recursive: true,
+    force: true,
+    ...REMOVAL_RETRY,
+  });
+}
+
 async function main() {
-  const { code, output } = await runNpmCi();
+  for (let attempt = 1; ; attempt += 1) {
+    const { code, output } = await runNpmCi();
 
-  if (code !== 0) {
-    process.exit(code);
-  }
+    if (code !== 0) {
+      process.exit(code);
+    }
 
-  if (hasCleanupFailure(output)) {
-    const paths = extractCleanupPaths(output);
-    fail([
-      '',
-      'npm-ci-strict: `npm ci` exited 0 but reported it could not finish removing node_modules.',
-      '',
-      'The installed tree is therefore neither the lockfile tree nor a clean one,',
-      'and every later step in this job would run against it.',
-      paths.length > 0 ? `Directories npm named: ${paths.join(', ')}` : '',
-      '',
-      'This is an environment failure, not a test failure. Do NOT clear it by',
-      're-running the job: a fresh runner wipes cleanly and hides the defect,',
-      'which teaches the squad to treat the supply-chain gate as noise. See #195.',
-      '',
-    ]);
+    const outcome = planInstallOutcome(output, attempt);
+
+    if (outcome.action === 'accept') break;
+
+    if (outcome.action === 'fail') {
+      fail(exhaustedFailureLines(outcome.paths, MAX_INSTALL_ATTEMPTS));
+    }
+
+    for (const line of recoveryNotice(
+      outcome.paths,
+      attempt,
+      MAX_INSTALL_ATTEMPTS,
+    )) {
+      process.stderr.write(`${line}\n`);
+    }
+
+    await removeNodeModules();
   }
 
   const tree = readProductionTree();
@@ -313,7 +439,7 @@ async function main() {
       '',
       `\`${NPM_PRODUCTION_TREE_COMMAND}\` reports these even when it exits 0, which`,
       'is how a partially-wiped tree reaches the SBOM gate several steps later and',
-      'reads there as an unrelated failure. See #195.',
+      'reads there as an unrelated failure. Origin: #195. This control: #274.',
       '',
     ]);
   }
@@ -329,7 +455,8 @@ async function main() {
       `\`${NPM_PRODUCTION_TREE_COMMAND}\` returned nodes with no version, or marked`,
       'extraneous/invalid. That is the same condition the npm SBOM completeness',
       'gate fails on, detected here at the install step instead of several steps',
-      'later where it reads as an unrelated test failure. See #195.',
+      'later where it reads as an unrelated test failure. Origin: #195. This',
+      'control: #274.',
       '',
     ]);
   }
