@@ -206,6 +206,8 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
   );
   expect(importResult.report.added).toBe(1);
   expect(importResult.modelsOrganized).toBe(1);
+  // Direct IPC import bypasses renderer state and can re-open empty onboarding.
+  await dismissOnboardingIfVisible(page);
   await refreshCatalog(page);
 
   const filename =
@@ -213,12 +215,23 @@ test('selects a model without mounting 3D, then previews explicitly', async () =
   const select = page.getByRole('button', { name: `Select ${filename}` });
   await expect(select).toBeVisible();
 
+  const preview = select.locator('..').getByRole('button', {
+    name: `Preview ${filename} in 3D`,
+  });
+
+  // Exercise recovery from the hover loss seen on packaged Windows runners.
   await select.hover();
-  await expect(
-    select.locator('..').getByRole('button', {
-      name: `Preview ${filename} in 3D`,
-    }),
-  ).toHaveCSS('opacity', '1');
+  await page.mouse.move(0, 0);
+  await expect(preview).toHaveCSS('opacity', '0');
+  await expect
+    .poll(async () => {
+      await select.hover();
+      return preview.evaluate((button) => ({
+        cardHovered: button.closest('.model-card')?.matches(':hover') ?? false,
+        opacity: getComputedStyle(button).opacity,
+      }));
+    })
+    .toEqual({ cardHovered: true, opacity: '1' });
   const cardActions = await select.locator('..').evaluate((card) => {
     const favorite = card.querySelector('.model-fav-button');
     const preview = card.querySelector('.model-preview-button');

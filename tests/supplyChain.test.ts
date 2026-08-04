@@ -50,7 +50,7 @@ function shippedNpmNames(): Set<string> {
  * be driven through cases this repository does not currently contain (a
  * build-only edge, an unlisted `links` crate) without needing a Rust toolchain
  * in the Desktop CI job. `scripts/verify-sbom.mjs` exercises the same code
- * against real `cargo metadata` output in the Package smoke job, so the
+ * against real `cargo metadata` output in the Release package job, so the
  * derivation is never validated only against a fixture.
  */
 function cargoMetadataFixture(

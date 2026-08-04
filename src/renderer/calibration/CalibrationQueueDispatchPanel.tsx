@@ -456,11 +456,14 @@ export const CalibrationQueueDispatchPanel: React.FC<
                 {queueState.dispatchAttemptOutcome === 'Unknown' && (
                   <p
                     className="calibration-queue-dispatch__unknown-guidance"
-                    role="note"
+                    role="status"
+                    aria-live="polite"
                   >
                     The server has not yet confirmed whether the print started.
                     The status will update automatically when the result is
-                    known. Do not retry — a duplicate print may result.
+                    known. Do not retry — a duplicate print may result. Wait for
+                    this status to change, and check the printer before taking
+                    any manual action.
                   </p>
                 )}
               </dd>

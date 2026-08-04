@@ -20,6 +20,7 @@ import type {
   AppliedOperation,
   ApplyConflict,
 } from './syncWire.js';
+import { emitCalibrationLog } from './calibrationLog.js';
 
 const PULL_LIMIT = 500;
 const OUTBOX_LEASE_SECONDS = 120;
@@ -322,7 +323,13 @@ export class PrintFarmerSyncEngine {
       if (this.disposed || this.timer) return;
       this.timer = this.setIntervalImpl(() => {
         void this.runSchedulerTick(false).catch(() => {
-          console.error('[sync] scheduled synchronization failed');
+          emitCalibrationLog({
+            level: 'error',
+            component: 'calibration.sync',
+            event: 'sync.scheduledTickFailed',
+            outcome: 'failed',
+            errorCode: 'unexpected',
+          });
         });
       }, this.intervalMs);
     })().finally(() => {
@@ -469,7 +476,13 @@ export class PrintFarmerSyncEngine {
           transitionRecovery.some((result) => result.status === 'rejected') ||
           recovery.some((result) => result.status === 'rejected')
         ) {
-          console.error('[sync] one or more profile recoveries failed');
+          emitCalibrationLog({
+            level: 'error',
+            component: 'calibration.sync',
+            event: 'sync.profileRecoveryFailed',
+            outcome: 'failed',
+            errorCode: 'unexpected',
+          });
         }
       }
       await Promise.allSettled(
