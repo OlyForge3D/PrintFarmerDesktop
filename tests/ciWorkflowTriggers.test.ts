@@ -263,9 +263,33 @@ describe('CI is safe to run under a merge queue', () => {
         .map((line) => `${key}:${line}`),
     );
     expect(jobLevelConditions).toEqual([]);
-    // Belt and braces on the specific deadlock: even outside a job-level
-    // `if:`, branching on the event name reintroduces it.
-    expect(ciWorkflow).not.toContain('github.event_name');
+    // Belt and braces on the specific deadlock: branching on the event name at
+    // job level reintroduces it even without a job-level `if:`.
+    //
+    // Narrowed from a whole-file substring ban on 2026-08-04 (#231). The ban
+    // was over-broad relative to the mechanism it names. The deadlock is
+    // JOB SKIPPING: a skipped job reports its required context as `skipped`,
+    // which branch protection does not accept, and the queue entry hangs. A
+    // STEP-level `if:` cannot skip a job -- the job still runs, still reports,
+    // and still passes or fails -- so it cannot produce that state.
+    //
+    // The residual hazard of a step-level guard is the opposite one: a step
+    // that is skipped under `merge_group` is not enforcing anything there, so
+    // the job can go green without it. That is a false green, not a deadlock,
+    // and it is acceptable only for a check whose subject does not exist under
+    // `merge_group` at all. `github.event.pull_request` is that case: there is
+    // no pull request in a queue entry, so there is nothing to check.
+    //
+    // Enumerating the permitted guards by name would be a count-based
+    // assertion of the kind that has already produced one false red on a
+    // correct change in this repository. The property is asserted instead.
+    const eventNameLines = ciWorkflow
+      .split('\n')
+      .filter((line: string) => line.includes('github.event_name'));
+    const notOnAStepCondition = eventNameLines.filter(
+      (line: string) => !/^ {8}if:/.test(line),
+    );
+    expect(notOnAStepCondition).toEqual([]);
   });
 
   it('emits exactly the seven check-run names ci.yml produces, byte-identical', () => {
