@@ -9,8 +9,13 @@ import {
   EXPECTED_PROTECTED_GATE_ISSUE_COUNT,
   PROTECTED_GATE_ISSUES,
   PROTECTED_LABELS,
+  collectArmedCommitReferences,
   evaluateClosureScope,
+  extractArmedIssueNumbers,
   fetchClosingIssues,
+  fetchIssuesByNumber,
+  fetchPullRequestCommits,
+  formatCommitViolations,
   formatViolations,
   resolvePullRequestNumber,
   resolveRepository,
@@ -372,5 +377,258 @@ describe('the closure-scope workflow stays outside the merge queue', () => {
       return match?.[1] === undefined ? [] : [match[1].trim()];
     });
     expect(runsOn).toEqual(['ubuntu-latest']);
+  });
+});
+
+// The second closure channel.
+//
+// #241 is the regression this whole block exists for: its body-derived
+// `closingIssuesReferences` was empty, this suite passed, and #57 closed anyway
+// because a commit message on the branch carried a closing keyword in front of
+// the gate number. The sentence that did it was written to warn about the
+// hazard. Quotation arms exactly like assertion.
+const GATE_ISSUE_57: ClosingIssue = {
+  number: 57,
+  title: 'Calibration release gate',
+  labels: ['squad', 'squad:ripley'],
+};
+
+describe('extractArmedIssueNumbers', () => {
+  it('finds a plain closing keyword', () => {
+    expect(extractArmedIssueNumbers('closes #57')).toEqual([
+      { number: 57, keyword: 'closes', text: 'closes #57' },
+    ]);
+  });
+
+  it('is case-insensitive and tolerates a colon', () => {
+    expect(extractArmedIssueNumbers('Fixed: #42').map((r) => r.number)).toEqual(
+      [42],
+    );
+  });
+
+  it('honours the GH- reference form GitHub also accepts', () => {
+    expect(
+      extractArmedIssueNumbers('resolve GH-42').map((r) => r.number),
+    ).toEqual([42]);
+  });
+
+  it('reproduces the exact sentence that closed the gate, and counts both refs', () => {
+    const message =
+      '"this does not close #57" still contains a closing keyword in front of #57';
+    expect(extractArmedIssueNumbers(message).map((r) => r.number)).toEqual([
+      57,
+    ]);
+  });
+
+  it('does not fire on a bare reference with no keyword', () => {
+    expect(extractArmedIssueNumbers('Parent: #57')).toEqual([]);
+    expect(extractArmedIssueNumbers('see #57 for context')).toEqual([]);
+  });
+
+  it('does not fire on a noun that merely starts like a keyword', () => {
+    expect(extractArmedIssueNumbers('this is not a closure of #57')).toEqual(
+      [],
+    );
+    expect(extractArmedIssueNumbers('a fixture for #57')).toEqual([]);
+  });
+
+  it('refuses to scan a value that cannot hold a reference', () => {
+    expect(() => extractArmedIssueNumbers(undefined as never)).toThrow(
+      /refusing to report/i,
+    );
+  });
+});
+
+describe('collectArmedCommitReferences', () => {
+  it('attributes each armed issue to the commit that armed it', () => {
+    const armed = collectArmedCommitReferences([
+      { sha: 'b136caa6aaaa', message: 'ci: add the guard\n\ncloses #57' },
+      { sha: 'ffffffffffff', message: 'docs: unrelated' },
+    ]);
+    expect([...armed.keys()]).toEqual([57]);
+    expect(armed.get(57)?.[0]?.sha).toBe('b136caa6aaaa');
+  });
+
+  it('reports nothing for commits that arm nothing', () => {
+    const armed = collectArmedCommitReferences([
+      { sha: 'aaaa', message: 'Parent: #57' },
+    ]);
+    expect([...armed.keys()]).toEqual([]);
+  });
+
+  it('refuses to treat an unreadable commit as "nothing armed"', () => {
+    expect(() =>
+      collectArmedCommitReferences([{ sha: 'aaaa' } as never]),
+    ).toThrow(/refusing to treat an unreadable commit/i);
+    expect(() => collectArmedCommitReferences(undefined as never)).toThrow(
+      /must be an array/i,
+    );
+  });
+});
+
+describe('the two channels are independent', () => {
+  it('fails a pull request whose body is clean but whose commits arm the gate', () => {
+    // This is #241 exactly: the body channel passes honestly.
+    expect(evaluateClosureScope([]).ok).toBe(true);
+
+    const armed = collectArmedCommitReferences([
+      {
+        sha: 'b136caa6',
+        message:
+          '"this does not close #57" still contains a closing keyword in front of #57',
+      },
+    ]);
+    expect([...armed.keys()]).toEqual([57]);
+    expect(evaluateClosureScope([GATE_ISSUE_57]).ok).toBe(false);
+  });
+
+  it('permits a commit that names a number which is not a gate', () => {
+    const armed = collectArmedCommitReferences([
+      { sha: 'aaaa', message: 'closes #4200' },
+    ]);
+    expect([...armed.keys()]).toEqual([4200]);
+    expect(
+      evaluateClosureScope([{ number: 4200, title: 'ordinary child' }]).ok,
+    ).toBe(true);
+  });
+
+  it('applies the derived label rule to the commit channel too', () => {
+    // No entry in PROTECTED_GATE_ISSUES; protected purely by carrying `epic`.
+    expect(
+      evaluateClosureScope([
+        { number: 9001, title: 'a future epic', labels: ['epic'] },
+      ]).ok,
+    ).toBe(false);
+  });
+});
+
+describe('formatCommitViolations', () => {
+  it('names the commit, and says that editing the body will not clear it', () => {
+    const { violations } = evaluateClosureScope([GATE_ISSUE_57]);
+    const armed = collectArmedCommitReferences([
+      { sha: 'b136caa6aaaa', message: 'closes #57' },
+    ]);
+    const report = formatCommitViolations(violations, armed);
+    expect(report).toContain('#57');
+    expect(report).toContain('b136caa6');
+    expect(report).toContain('COMMIT_MESSAGES');
+    expect(report).toMatch(
+      /editing the pull request body does not clear this/i,
+    );
+  });
+});
+
+describe('fetchPullRequestCommits', () => {
+  const respondJson = (payload: unknown, ok = true, status = 200) =>
+    (() =>
+      Promise.resolve({
+        ok,
+        status,
+        statusText: 'Test',
+        json: () => Promise.resolve(payload),
+      } as unknown as Response)) as unknown as typeof fetch;
+
+  const respondInSequence = (payloads: readonly unknown[]) => {
+    let call = 0;
+    return (() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        statusText: 'Test',
+        json: () => Promise.resolve(payloads[call++]),
+      } as unknown as Response)) as unknown as typeof fetch;
+  };
+
+  it('paginates rather than under-reporting, because short reads look clean', async () => {
+    const commits = await fetchPullRequestCommits({
+      owner: 'o',
+      repo: 'r',
+      prNumber: 1,
+      token: 't',
+      fetchImpl: respondInSequence([
+        Array.from({ length: 100 }, (_, index) => ({
+          sha: `a${index}`,
+          commit: { message: 'noop' },
+        })),
+        [{ sha: 'last', commit: { message: 'closes #57' } }],
+      ]),
+    });
+    expect(commits).toHaveLength(101);
+    expect(collectArmedCommitReferences(commits).has(57)).toBe(true);
+  });
+
+  it('refuses to read a malformed response as "nothing is armed"', async () => {
+    await expect(
+      fetchPullRequestCommits({
+        owner: 'o',
+        repo: 'r',
+        prNumber: 1,
+        token: 't',
+        fetchImpl: respondJson({ message: 'Not Found' }),
+      }),
+    ).rejects.toThrow(/refusing to treat an unreadable response/i);
+  });
+
+  it('fails on a non-OK response', async () => {
+    await expect(
+      fetchPullRequestCommits({
+        owner: 'o',
+        repo: 'r',
+        prNumber: 1,
+        token: 't',
+        fetchImpl: respondJson(null, false, 500),
+      }),
+    ).rejects.toThrow(/500/);
+  });
+});
+
+describe('fetchIssuesByNumber', () => {
+  const respondJson = (payload: unknown, ok = true, status = 200) =>
+    (() =>
+      Promise.resolve({
+        ok,
+        status,
+        statusText: 'Test',
+        json: () => Promise.resolve(payload),
+      } as unknown as Response)) as unknown as typeof fetch;
+
+  it('flattens labels so the derived rule can run on the commit channel', async () => {
+    const issues = await fetchIssuesByNumber({
+      owner: 'o',
+      repo: 'r',
+      numbers: [42],
+      token: 't',
+      fetchImpl: respondJson({
+        number: 42,
+        title: 'Epic',
+        labels: [{ name: 'epic' }, 'squad'],
+      }),
+    });
+    expect(issues).toEqual([
+      { number: 42, title: 'Epic', labels: ['epic', 'squad'] },
+    ]);
+  });
+
+  it('treats 404 as a real answer, not as a failure to read', async () => {
+    const issues = await fetchIssuesByNumber({
+      owner: 'o',
+      repo: 'r',
+      numbers: [4200],
+      token: 't',
+      fetchImpl: respondJson(null, false, 404),
+    });
+    expect(issues).toEqual([]);
+  });
+
+  it('refuses to read a malformed issue as "not a gate"', async () => {
+    await expect(
+      fetchIssuesByNumber({
+        owner: 'o',
+        repo: 'r',
+        numbers: [57],
+        token: 't',
+        fetchImpl: respondJson({}),
+      }),
+    ).rejects.toThrow(/refusing to treat an unreadable response/i);
   });
 });
