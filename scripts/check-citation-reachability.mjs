@@ -80,6 +80,24 @@ const reachable = new Set(
   (git(['rev-list', ...readerRevs]) ?? '').split('\n').filter(Boolean),
 );
 
+// Not every citation is a revision. Blob identity is this ledger's own instrument for a claim
+// about the contents of a file, and it is a *stronger* anchor than a commit: a rebase rewrites
+// commits and leaves blobs untouched. An earlier version of this check resolved every backticked
+// hex as `sha^{commit}` and so reported a blob citation as an orphan, which pushed authors away
+// from the best anchor available to them. The object walk is deferred because it is only needed
+// when a citation is not a commit, and it is memoised because it is the expensive call here.
+let objectSet = null;
+const reachableObjects = () => {
+  if (objectSet) return objectSet;
+  objectSet = new Set(
+    (git(['rev-list', '--objects', ...readerRevs]) ?? '')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => l.split(' ')[0]),
+  );
+  return objectSet;
+};
+
 // `git patch-id --stable` of a revision. Used only to *suggest* a twin for an undeclared orphan
 // when the author happens to hold the object; it takes no part in the verdict, because it cannot
 // be computed by a reader who does not have the orphaned commit. That asymmetry is the defect
@@ -157,6 +175,20 @@ const classify = (sha, { twinMap = twins } = {}) => {
   const full = git(['rev-parse', '--verify', `${sha}^{commit}`]);
   if (full && reachable.has(full)) return { k: 'REACHABLE', d: '' };
 
+  // A non-commit object -- typically a blob pinning the contents of a file -- counts as reachable
+  // when the reader's own revisions carry it. Same rule as for commits: presence in the author's
+  // object store is never consulted, only what the declared reader revisions reach.
+  if (!full) {
+    const obj = git(['rev-parse', '--verify', sha]);
+    if (obj && reachableObjects().has(obj)) {
+      const type = git(['cat-file', '-t', obj]) ?? 'object';
+      return {
+        k: 'REACHABLE',
+        d: `${type}, carried by the reader's revisions`,
+      };
+    }
+  }
+
   const twin = twinMap.get(sha);
   if (twin) {
     const twinFull = git(['rev-parse', '--verify', `${twin}^{commit}`]);
@@ -207,6 +239,21 @@ if (cp.k !== 'REACHABLE')
   failures.push('known-present SHA did not classify REACHABLE');
 if (ca.k !== 'ORPHAN')
   failures.push('known-absent SHA did not classify ORPHAN');
+
+// The non-commit arm gets its own pair, because a branch nothing exercises is a branch nothing
+// checks. The positive case uses a blob the reader demonstrably holds - this file's own tree
+// entry - and the negative case a syntactically valid hash that no object walk will contain.
+const controlBlob = git(['rev-parse', '--verify', 'HEAD:package.json']);
+if (controlBlob) {
+  const cb = classify(controlBlob);
+  console.log('control: a blob carried by the reader classifies', cb.k);
+  if (cb.k !== 'REACHABLE')
+    failures.push('a reader-reachable blob did not classify REACHABLE');
+}
+const cbAbsent = classify('89abcdef0123456789abcdef0123456789abcdef');
+console.log('control: an absent non-commit object classifies', cbAbsent.k);
+if (cbAbsent.k !== 'ORPHAN')
+  failures.push('an unreachable object did not classify ORPHAN');
 
 const [someTwinned] = [...twins.keys()];
 if (someTwinned) {
