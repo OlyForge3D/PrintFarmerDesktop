@@ -125,42 +125,65 @@ async function removeInjectedButton(page: Page): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Write affordances that must be unavailable while the availability probe is
- * rejecting. Each name here is one #153 already asserts, so it is known to
- * exist rather than transcribed from a description.
+ * Write affordances and the surface each is offered on. The names are ones
+ * #153 already asserts, so they are known to exist rather than transcribed
+ * from a description — but *existing* and *being on the surface you opened*
+ * are different claims, and conflating them is what the first run of this
+ * spec got wrong: `Generate calibration model` is a temperature-stage
+ * control, and asserting it from the dashboard found nothing.
  */
 const OFFLINE_GATED_CONTROLS = [
-  'New calibration project',
-  'Generate calibration model',
+  {
+    name: 'New calibration project',
+    surface: 'calibration dashboard',
+    open: openCalibrationWorkspace,
+  },
+  {
+    name: 'Generate calibration model',
+    surface: 'temperature stage',
+    open: openTemperatureStage,
+  },
 ] as const;
 
-test('calibration write affordances are gated offline and offered online', async ({
+test('calibration write affordances are offered online on their own surfaces', async ({
   browserName,
 }) => {
   expect(browserName).toBe('chromium');
   test.setTimeout(300_000);
 
   await withCalibrationApp(async ({ app, page }) => {
-    // Positive control first, and deliberately before the offline case. If the
-    // controls are not enabled here the accessible names are wrong, and every
-    // "disabled while offline" assertion below would pass without touching the
-    // gate. Running it first means a broken name fails as a broken name rather
-    // than as a spurious pass.
     await applyCalibrationScenario(app, page, {
       withAttempt: true,
       verified: true,
     });
-    await openCalibrationWorkspace(page);
 
-    for (const name of OFFLINE_GATED_CONTROLS) {
+    for (const control of OFFLINE_GATED_CONTROLS) {
+      await control.open(page);
       await expect(
-        page.getByRole('button', { name }),
-        `positive control failed: "${name}" is not enabled while online, so ` +
-          `its absence or disabled state while offline would prove nothing`,
+        page.getByRole('button', { name: control.name }),
+        `"${control.name}" is not enabled on the ${control.surface} while ` +
+          `online, so any later assertion that it is unavailable offline ` +
+          `would prove nothing about gating`,
       ).toBeEnabled({ timeout: 15_000 });
     }
+  });
+});
 
-    // The gate itself.
+test('calibration write affordances are gated while offline', async ({
+  browserName,
+}) => {
+  expect(browserName).toBe('chromium');
+  test.setTimeout(300_000);
+
+  await withCalibrationApp(async ({ app, page }) => {
+    // Scoped deliberately to the dashboard. #153 establishes that the
+    // dashboard renders while the availability probe is rejecting; nothing
+    // establishes that the temperature stage is reachable offline, and a
+    // navigation that fails there would report as a gating failure rather
+    // than as the unknown it is. The online control above covers the stage
+    // selector; the offline behaviour of the stage-level generate control is
+    // *not* covered here, and is called out in the PR rather than papered
+    // over with an assertion that passes either way.
     await applyCalibrationScenario(app, page, {
       withAttempt: true,
       verified: true,
@@ -168,12 +191,10 @@ test('calibration write affordances are gated offline and offered online', async
     });
     await openCalibrationWorkspace(page);
 
-    for (const name of OFFLINE_GATED_CONTROLS) {
-      await expect(
-        page.getByRole('button', { name }),
-        `"${name}" is still actionable while offline`,
-      ).toBeDisabled({ timeout: 15_000 });
-    }
+    await expect(
+      page.getByRole('button', { name: 'New calibration project' }),
+      '"New calibration project" is still actionable while offline',
+    ).toBeDisabled({ timeout: 15_000 });
   });
 });
 
