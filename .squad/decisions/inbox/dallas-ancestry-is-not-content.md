@@ -59,6 +59,68 @@ is then a prompt to ask what differs, not a finding that the code was untested.
 The asymmetry matters because the tempting misreading of a failed tree comparison
 is exactly the false alarm that ancestry produces unconditionally.
 
+There is a second way to get this wrong, and it produced a false finding in this
+repository within a day of the rule above being written. `--is-ancestor` does not
+print an answer; it communicates through the exit status, and it exits **0 when
+the answer is yes**. That is inverted relative to every truthiness intuition, and
+a session reading `exit 0` as "not an ancestor" concluded that the squash commit
+which landed a pull request is not reachable from the branch it landed on, and
+circulated that to three others.
+
+```
+git merge-base --is-ancestor d70d38f origin/development   ->  exit 0
+```
+
+`d70d38f` is the commit that landed #203. It is an ancestor of `development`,
+necessarily and unremarkably, and `exit 0` is the test saying so. The inverted
+reading turns a correct instrument into a dramatic result, which is the direction
+that gets repeated.
+
+The rule above already contains its own antidote, and it costs one command. Ask
+what the field would read if the thing you care about were different:
+
+```
+git merge-base --is-ancestor origin/development origin/development   ->  exit 0
+git merge-base --is-ancestor origin/development <any earlier commit> ->  exit 1
+```
+
+A branch is trivially its own ancestor, so the first must read yes. If your
+reading of the exit status makes that line say no, the reading is wrong and not
+the repository. **Run the control in the same call as the measurement**, because
+the failure here is silent, self-consistent, and survives being checked again by
+the person who made it.
+
+None of this rescues ancestry as a merge test — the section above stands, and the
+remedy is still the tree. It is worth recording only because the wrong reading
+argues _harder_ for the right conclusion, and a mistake that flatters the
+argument it appears in is the one least likely to be examined.
+
+## The operand is the whole distinction, and one live rule depends on it
+
+The section above and `.squad/decisions.md:57` look like they contradict each
+other, and they do not. They pass different commits to the same command:
+
+| operand                                          | meaningful? |
+| ------------------------------------------------ | ----------- |
+| verified **branch head** vs the squash           | no          |
+| the **squash merge commit** vs `origin/<branch>` | yes         |
+
+The first is the question this note opens with, and ancestry cannot answer it —
+the branch's commits are not in the squash's history and never will be. The
+second is a different question entirely: _did the ref update actually land._ It
+is answerable, ancestry answers it correctly, and the answer is `exit 0`.
+
+That second form is load-bearing. It is the control recorded on 2026-07-25 after
+two `gh pr merge` calls fired about three seconds apart both reported `MERGED`
+while one merge commit was silently orphaned, taking roughly six thousand lines
+of `native/model-core` off `development` for several hours with CI green
+throughout, because the tests mocked the sidecar rather than exercising it.
+
+**So the inverted reading does more than mislabel a commit.** Believed, it says
+the check that catches that race returns a conviction for a healthy merge, and
+the natural response is to stop trusting it — retiring a working control that
+exists because the failure it detects already happened here once.
+
 The general shape is worth stating separately, because this is the second form of
 it seen in two days. A `head_sha`-pinned CI run stays green forever, so re-reading
 it confirms a claim that has since gone stale — a durable fact answering a

@@ -78,6 +78,18 @@ missing hook without error (#164). And setting `core.hooksPath` **disables every
 `.git/hooks/*`**, including your own personal hooks; move them into `.githooks/` if you need them.
 The guard also makes `node` on `PATH` a precondition of pushing.
 
+**Do not infer coverage from the setting — ask.** `npm run hooks:verify` reads the hook back off
+disk in the worktree you are standing in and exits non-zero if it is not there:
+
+```
+npm run hooks:verify     # exit 0 = armed, exit 1 = this worktree is unguarded
+```
+
+`npm install` and `npm ci` run the same check and print the same warning, but exit 0 either way so
+they cannot block work on a branch that predates the hook. When #164 was measured, **22 of 27
+worktrees on this clone were unarmed** while the clone-wide setting asserted otherwise, and a
+force-push discarding 45 commits went through one of them with no refusal and no message.
+
 To proceed after actually reading the work you are overwriting, name it — the value has to be read, not remembered:
 
 ```powershell
