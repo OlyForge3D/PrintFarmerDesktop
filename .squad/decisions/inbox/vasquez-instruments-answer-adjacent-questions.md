@@ -70,6 +70,20 @@ rules that survive contact:
   0 / 1 / anything-else is yes / no / **no-answer**, and pre-checking existence
   keeps the no-answer case from ever arising for a reason you did not intend.
 
+And a third rule that only shows up once you try to obey the second one: **the
+status has to survive the pipeline you read it through.** In PowerShell,
+`| Select-Object -First N` terminates the upstream command early, so
+`$LASTEXITCODE` keeps whatever the _previous_ command left there (#291) —
+measured here in both directions, a failing command reporting 0 and a
+succeeding one reporting 7. `-Last N` is safe, because consuming the last N
+requires reading all of it.
+
+This entry's author read `$LASTEXITCODE` through exactly that pipeline while
+confirming CI was green, and re-checked afterwards without the truncation: the
+conclusion held, **the evidence cited for it did not.** A correct answer reached
+through a broken instrument is not a near miss — it is the case that teaches you
+to keep using the instrument.
+
 ## The remedies that fail silently
 
 **`git ls-remote origin refs/heads/<branch>` on a deleted branch prints nothing
@@ -220,3 +234,24 @@ separate stale from twin when no PR is named rather than guessing. The traps
 above are pinned there as tests against git itself, so a future reader who finds
 a comment implausible can delete it and watch a test fail — the entry states the
 finding, the test enforces it.
+
+## Where the individual instances are filed
+
+This entry is the general form; each of these is a live issue with its own
+measurement, and none of them is superseded by being listed here.
+
+| issue | the instance                                                                                   |
+| ----- | ---------------------------------------------------------------------------------------------- |
+| #202  | claims arrive undated, so a message true when sent reads as a false claim about now            |
+| #210  | a full SHA quoted from memory is fabricated in the digits nobody displays                      |
+| #271  | squash orphans every review's `commit_id` — 21/21 fail `--is-ancestor`                         |
+| #288  | head-ancestry reports every merged PR as unmerged                                              |
+| #291  | `$LASTEXITCODE` is destroyed by `Select-Object -First N`, in both directions                   |
+| #293  | cross-session messages arrive ~13h late, so every pin is exact when taken and stale on arrival |
+
+**#271 and #288 are the squash case with a hard number attached** — a merged
+PR's head is not an ancestor of the branch it merged into, and 21 of 21 review
+anchors failed on it. **#210 is the fabricated mode**, and it is the one this
+author committed personally: three invented 40-hex tails while building the tool
+that detects them, which is why `sha:status` rejects abbreviations instead of
+expanding them.
