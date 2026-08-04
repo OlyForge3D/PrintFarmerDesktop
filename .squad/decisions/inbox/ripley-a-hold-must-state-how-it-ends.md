@@ -35,6 +35,33 @@ why an expiry is an acceptable substitute for an authority: a deadline is a stat
 too. Where a hold must be released by an act, name a party that outlives the
 session, or convert the condition into a state that a reader can check.
 
+The medium matters, and one of the two obvious candidates cannot work. A label
+cannot carry a release condition, for a structural reason rather than a stylistic
+one: the label is a single repository-scoped object with one description shared
+by every item carrying it. Five pull requests carried `hold:sequenced`
+concurrently against one description string, so any expiry or condition written
+there would apply to all five at once or to none. Per-hold data would require
+minting a label per hold, which grows the namespace without bound and still
+cannot express a condition that is not a date.
+
+A label is also a current-state field rather than a record. A hold applied to
+#212 at 01:43:20Z and lifted at 02:09:30Z leaves no trace afterwards: the label
+list shows nothing, and a label search does not return the item. The hold
+survives only in the events timeline, which is not where anyone looks. So the
+label can say that a hold exists, but neither how it ends nor that it ever
+existed — which disqualifies it as the medium for the release condition and as
+an audit record at the same time. The body is the only per-item medium available,
+and the condition must be written there.
+
+One limitation on that conclusion should be recorded rather than glossed. The
+property wanted is that a party other than the issuer can lift the hold, and on
+this repository that can never be demonstrated by attribution, because there is
+one account and every actor reads the same. So it cannot be established by
+observing who lifted a hold; it has to be established as a property of the text —
+whether the release condition can be evaluated from the artifact alone, without
+contacting anyone. That is checkable by reading, which is weaker evidence than a
+measurement and is the strongest available here.
+
 What makes this expensive is that refusing looks like rigour. An actor that
 declines to proceed because it cannot verify an authorization is behaving well,
 and its refusal is indistinguishable from correct caution. So the failure
