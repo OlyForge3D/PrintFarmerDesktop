@@ -131,6 +131,7 @@ What that section requires, for any agent running the check:
   two parties citing one object produce one token set — and the general form is that **agreement
   is evidence only when disagreement was available.** Attribution needs a lookup against
   something that discriminates: who pushed, who authored, which review id.
+- **An identifier decides nothing until its namespace and its cardinality are stated.** Two differing identifiers show two entities only if both come from the **same** namespace; one shared identifier shows one party only if it is **unique** to a party. Measured in both directions on one pull request: thirteen reviews sharing a single `user.id`, where one identifier covers parties that must be distinguished; and a session-state directory name compared against a `Copilot-Session` commit trailer, where two identifiers from **different** namespaces were read as two sessions and named one — the drafts of the disputed commits sit in the directory said to belong to the other session. **Equality and inequality both look like results**, so neither failure announces itself. Name the namespace before comparing; establish cardinality before concluding; and where no identifier has the cardinality the question needs, report that **the record cannot answer it**.
 - **Two measurements of the same mutable ref, taken at the same moment by two parties, are
   not two readings — they are one reading, reported twice.** Measured: two sessions with no
   contact, each pinning a head from **two sources** at read time, converged on the same value

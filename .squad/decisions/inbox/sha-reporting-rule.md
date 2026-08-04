@@ -103,6 +103,7 @@ routed, and never when it is merely correct**: state the ref the object is reach
 state that the object's absence is itself the finding. Checked by `scripts/check-citation-reachability.mjs` — run it with `npm run check:citation-reachability`. **Not yet enforced, and this document does not claim it is:** the workflow that would run it on every pull request is staged at `.squad/fact-checker/citation-reachability.workflow.yml` and cannot be pushed from the authoring branch, whose token lacks the `workflow` OAuth scope — both that push and the Contents API were attempted and both were refused. The gap is held open by a test rather than by a promise: `tests/citationReachability.test.ts` fails if any of these artifacts uses the word _enforced_ while no workflow invokes the harness, so the claim becomes true and permitted in the same commit that moves the file into `.github/workflows/` — a harness which fails on any cited revision that is neither
 reachable, twinned, nor declared — because a rule of this kind that is checked by hand is
 checked from exactly the position that cannot see the defect.
+
 **A SHA identifies an object, not the party who cited it.** Two sessions examining one pull request
 cite the **same** identifiers, so **a table of SHAs looks identical whoever assembled it** and
 cannot be attributed by its contents. Measured here: an eight-row enumeration was attributed to the
@@ -110,6 +111,8 @@ wrong session on the strength of matching revisions, when **six of the eight wer
 fields of a different party's reviews.** Attribution requires a lookup against something that
 discriminates — who pushed, who authored, which review id — because **agreement between two
 citations is evidence only when disagreement was available**, and here it never was.
+
+**An identifier decides nothing until its namespace and its cardinality are stated.** Two identifiers that differ are evidence of two entities only if both are drawn from the **same** namespace, and two artifacts sharing one identifier are evidence of one party only if that identifier is **unique** to a party. Both failures were measured on this batch, in opposite directions: thirteen reviews of one pull request share a single `user.id`, where one identifier covers parties that must be told apart; and a session-state directory name compared against a `Copilot-Session` commit trailer, where **two identifiers drawn from different namespaces were read as two sessions and in fact named one** — nine commit-message drafts in the directory said to belong to the other session are byte-identical to nine commits on the branch. Neither failure is visible from the identifier itself, because **equality and inequality both look like results**. So name the namespace before comparing, and establish cardinality against the thing identified before concluding. Where no identifier in the record has the cardinality the question needs, the honest output is that **the record cannot answer it** — not the answer the available identifier happens to support.
 
 ## Why the sender and not the dispatcher
 
