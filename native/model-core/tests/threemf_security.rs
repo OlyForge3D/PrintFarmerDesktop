@@ -14,10 +14,11 @@ use std::time::Duration;
 
 use model_core::limits::{
     CancellationToken, ParseGuard, ParseLimits, COMPRESSION_RATIO_FLOOR_BYTES, MAX_XML_DEPTH,
+    MAX_XML_EVENTS,
 };
 use model_core::scene;
 use model_core::scene_status::SceneLoadStatus;
-use model_core::threemf::{self, ThreeMfError};
+use model_core::threemf::{self, ThreeMfError, MAX_MODEL_XML_BYTES};
 use model_core::vendor;
 
 use threemf_support::{
@@ -280,6 +281,272 @@ fn self_closing_elements_do_not_accumulate_depth() {
         threemf::parse_bytes(&package(&model, Vec::new())).expect("wide documents must parse");
     assert_eq!(mesh.vertex_count(), 2000);
     assert_eq!(mesh.triangle_count(), 1998);
+}
+
+// --- XML event budget ------------------------------------------------------
+//
+// `MAX_XML_EVENTS` had no coverage through any public entry point (#127): the
+// only thing holding it was a unit test driving `XmlGuard::observe` with
+// hand-made events, so disabling the cap in `limits.rs` left every integration
+// suite green. It has none for a structural reason — reaching 200,000,000
+// events needs a document averaging under ~2.7 bytes per event, which against
+// the 512 MB `MAX_MODEL_XML_BYTES` ceiling means a ~500 MB model part. That is
+// not a fixture anyone will author.
+//
+// So these tests reduce `ParseLimits::max_xml_events` and drive real packages
+// through `parse_bytes_with_limits`. **They do not test the shipped value.**
+// What they test is that the budget is wired to the public path for each
+// document the reader parses, which is the regression that would otherwise be
+// invisible: every `xml_guard()` call site builds its own `XmlGuard`, so a new
+// reader that forgets to `observe` is uncapped and nothing would notice.
+
+/// Default limits with only the event budget moved, and the deadline removed so
+/// a slow machine cannot masquerade as a budget rejection.
+fn events_limits(max_xml_events: u64) -> ParseLimits {
+    ParseLimits {
+        max_xml_events,
+        ..ParseLimits::default().without_timeout()
+    }
+}
+
+/// The smallest `max_xml_events` under which `data` parses.
+///
+/// Searching for the threshold rather than hard-coding one keeps the boundary
+/// *adjacent* — `n` and `n - 1` differ by a single event — without pinning the
+/// exact event count of a fixture, which would break on any unrelated edit to
+/// the shared package helpers.
+///
+/// The search assumes the predicate is monotone in the budget, which holds
+/// because `XmlGuard::observe` rejects on `events > max_events` and no other
+/// guard reads this field. Callers assert the rejection code at `n - 1`, so a
+/// failure arriving from somewhere else does not silently pass as a threshold.
+fn smallest_event_budget_that_parses(data: &[u8]) -> u64 {
+    const CEILING: u64 = 1 << 22;
+    let parses =
+        |budget: u64| threemf::parse_bytes_with_limits(data, events_limits(budget)).is_ok();
+
+    let mut high = 1u64;
+    while !parses(high) {
+        high *= 2;
+        assert!(
+            high <= CEILING,
+            "fixture must parse within {CEILING} XML events"
+        );
+    }
+    // Invariant: `parses(high)`, and `!parses(low)` unless `low` is zero.
+    let mut low = high / 2;
+    while high - low > 1 {
+        let mid = low + (high - low) / 2;
+        if parses(mid) {
+            high = mid;
+        } else {
+            low = mid;
+        }
+    }
+    high
+}
+
+/// A one-triangle model carrying `filler` ignorable empty elements.
+///
+/// Concatenated with no separator on purpose: the model reader does not trim
+/// text, so whitespace between the fillers would emit `Text` events too and
+/// each filler would no longer cost exactly one.
+fn model_with_filler_elements(filler: usize) -> String {
+    model_document(
+        "millimeter",
+        &format!(
+            "{}{}",
+            triangle_object("1", "Padded"),
+            "<pad/>".repeat(filler)
+        ),
+        r#"    <item objectid="1"/>"#,
+    )
+}
+
+/// A well-formed two-plate vendor layout carrying `filler` ignorable empty
+/// elements, so the part's event count can be moved without changing what it
+/// means. Mirrors the instance layout of [`two_object_four_item_model`], whose
+/// four build items are what these plates resolve against.
+fn settings_with_filler_elements(filler: usize) -> String {
+    format!(
+        r#"<?xml version="1.0"?>
+<config>{}
+  <plate>
+    <metadata key="plater_id" value="1"/>
+    <metadata key="plater_name" value="Left"/>
+    <model_instance><metadata key="object_id" value="1"/><metadata key="instance_id" value="0"/></model_instance>
+    <model_instance><metadata key="object_id" value="2"/><metadata key="instance_id" value="0"/></model_instance>
+  </plate>
+  <plate>
+    <metadata key="plater_id" value="2"/>
+    <metadata key="plater_name" value="Right"/>
+    <model_instance><metadata key="object_id" value="1"/><metadata key="instance_id" value="1"/></model_instance>
+    <model_instance><metadata key="object_id" value="2"/><metadata key="instance_id" value="1"/></model_instance>
+  </plate>
+</config>"#,
+        "<pad/>".repeat(filler)
+    )
+}
+
+fn package_with_padded_settings(filler: usize) -> Vec<u8> {
+    package(
+        &two_object_four_item_model(),
+        vec![Part::text(
+            MODEL_SETTINGS_PART,
+            &settings_with_filler_elements(filler),
+        )],
+    )
+}
+
+/// One builder per XML document the 3MF reader walks with its own `XmlGuard`,
+/// each padding *that* document with `filler` ignorable empty elements and
+/// leaving the rest of the package alone.
+///
+/// Keeping this a list rather than four hand-written tests is the point: a
+/// reader added later is covered by adding one line here, and the omission is
+/// visible as a missing entry rather than as an absent test nobody looks for.
+type PaddedPackageBuilder = (&'static str, Box<dyn Fn(usize) -> Vec<u8>>);
+
+fn padded_package_builders() -> Vec<PaddedPackageBuilder> {
+    fn pad_before(xml: &str, closing_tag: &str, filler: usize) -> String {
+        xml.replace(
+            closing_tag,
+            &format!("{}{closing_tag}", "<pad/>".repeat(filler)),
+        )
+    }
+
+    vec![
+        (
+            CONTENT_TYPES_PART,
+            // A Production Extension package, because `[Content_Types].xml` is
+            // only consulted when the root model references an external part —
+            // an ordinary package never reads it, and padding it there moves
+            // the threshold by zero for a reason that has nothing to do with
+            // the event budget.
+            Box::new(|filler| {
+                production_package(
+                    PRODUCTION_ROOT_MODEL,
+                    &[("3D/Objects/body.model", PRODUCTION_BODY_MODEL)],
+                    &pad_before(CONTENT_TYPES_XML, "</Types>", filler),
+                )
+            }),
+        ),
+        (
+            RELATIONSHIPS_PART,
+            Box::new(|filler| {
+                zip_parts(&[
+                    Part::text(CONTENT_TYPES_PART, CONTENT_TYPES_XML),
+                    Part::text(
+                        RELATIONSHIPS_PART,
+                        &pad_before(RELS_XML, "</Relationships>", filler),
+                    ),
+                    Part::text(DEFAULT_MODEL_PART, &benign_model()),
+                ])
+            }),
+        ),
+        (
+            DEFAULT_MODEL_PART,
+            Box::new(|filler| package(&model_with_filler_elements(filler), Vec::new())),
+        ),
+        (MODEL_SETTINGS_PART, Box::new(package_with_padded_settings)),
+    ]
+}
+
+#[test]
+fn rejects_a_model_part_one_event_past_the_budget_and_admits_it_at_the_budget() {
+    let data = package(&model_with_filler_elements(0), Vec::new());
+    let budget = smallest_event_budget_that_parses(&data);
+
+    let error = threemf::parse_bytes_with_limits(&data, events_limits(budget - 1))
+        .expect_err("one event less than the document needs must be refused");
+    assert_eq!(error.code(), "limit.xml_events", "{error}");
+
+    // The passing side, at the limit rather than at a comfortable value, and
+    // asserting real geometry: a budget that "passes" by producing an empty
+    // scene would prove nothing about the cap leaving headroom for legitimate
+    // input. Every input is held fixed except the single budget field.
+    let mesh = threemf::parse_bytes_with_limits(&data, events_limits(budget))
+        .expect("exactly the budget the document needs must parse");
+    assert_eq!(mesh.triangle_count(), 1);
+}
+
+#[test]
+fn charges_every_xml_document_the_reader_walks_against_the_event_budget() {
+    // Attribution, over all four documents that build their own `XmlGuard`.
+    //
+    // The package-wide threshold is the *maximum* over its parts, so both
+    // measurements pad the part under test far past every other one; the
+    // threshold is then set by that part on both sides of the subtraction. An
+    // unpadded baseline would be dominated by whichever part is naturally
+    // largest, and the delta would understate the charge by exactly that part's
+    // cost — a difference indistinguishable from a missing `observe` call.
+    //
+    // A part whose events are not charged at all moves the threshold by zero.
+    const FILLER: usize = 512;
+    for (part, build) in padded_package_builders() {
+        let smaller = smallest_event_budget_that_parses(&build(FILLER));
+        let larger = smallest_event_budget_that_parses(&build(FILLER * 2));
+        assert_eq!(
+            larger - smaller,
+            FILLER as u64,
+            "{part}: each ignorable element must cost exactly one event"
+        );
+    }
+}
+
+#[test]
+fn charges_the_vendor_plate_layout_part_without_swallowing_the_violation() {
+    // `read_plate_layout` degrades on an allowlist of missing / oversized /
+    // unreadable / malformed and propagates everything else, so a budget
+    // exhausted while walking the layout must surface rather than quietly
+    // producing a plateless scene — the one part where a charged event could
+    // still be lost on its way out.
+    //
+    // This is also where the shipped value is unreachable outright:
+    // `MAX_METADATA_XML_BYTES` caps the part around 3.2M events, roughly sixty
+    // times below the budget. Wiring is all a test can hold here.
+    const FILLER: usize = 512;
+    let data = package_with_padded_settings(FILLER);
+    let budget = smallest_event_budget_that_parses(&data);
+
+    let error = threemf::parse_bytes_with_limits(&data, events_limits(budget - 1))
+        .expect_err("a layout part one event over the budget must be refused");
+    assert_eq!(error.code(), "limit.xml_events", "{error}");
+
+    // Vacuity check: a fixture that never yielded plates could not show the
+    // layout part being walked at all, and the rejection above would say
+    // nothing about this reader.
+    let scene = threemf::parse_bytes_with_limits(&data, events_limits(budget))
+        .expect("exactly the budget the package needs must parse");
+    assert_eq!(scene.plates.len(), 2);
+}
+
+#[test]
+fn the_shipped_event_budget_stays_reachable_within_the_model_byte_ceiling() {
+    // A tripwire on the relationship between two constants that live in
+    // different modules and are edited for unrelated reasons.
+    //
+    // The densest event source quick-xml will emit is `<a/>x` — five bytes for
+    // an `Empty` and a `Text` — so 200,000,000 events need at least ~500 MB,
+    // just inside the 512 MB model-part ceiling. Lower that ceiling or raise
+    // the event budget and the cap becomes decorative: unreachable by any
+    // document the reader will accept, and therefore untestable end-to-end at
+    // its shipped value by anyone who tries after us.
+    //
+    // The opposite drift — *raising* `MAX_MODEL_XML_BYTES`, which makes the
+    // event budget the only guard against a document that is cheap to store and
+    // expensive to walk — keeps this passing. That direction is covered by the
+    // wiring tests above rather than here.
+    const DENSEST_BYTES: u64 = 5;
+    const DENSEST_EVENTS: u64 = 2;
+    let smallest_reaching_document = MAX_XML_EVENTS * DENSEST_BYTES / DENSEST_EVENTS;
+    assert!(
+        smallest_reaching_document <= MAX_MODEL_XML_BYTES,
+        "MAX_XML_EVENTS ({MAX_XML_EVENTS}) needs a model part of at least \
+         {smallest_reaching_document} bytes to reach, above the \
+         {MAX_MODEL_XML_BYTES}-byte MAX_MODEL_XML_BYTES ceiling: the event \
+         budget can no longer be reached by any accepted document"
+    );
 }
 
 // --- attacker-controlled numerics ------------------------------------------
