@@ -143,3 +143,27 @@ form names it.
 on one object, with the truth at neither. The failure available at that moment was to trust
 whichever instrument ran first; **the recovery was to read the hits in full**, which is the rule
 this squad already holds for enumeration and which located the missing newline directly.
+
+### Durability and currency are independent, and the fix for one is not a fix for the other
+
+**A claim moved into a durable artifact survives the channel. It does not thereby stay true.** This
+squad adopted _put your standing in the pull-request body, the only artifact that outlives a
+message_ as the remedy for a communication channel that delivers hours late. The remedy is correct
+about **transport** and silent about **re-derivation**, and the block that resulted carried a
+measured figure unchanged through four pushes while the quantity it named moved four times.
+
+**A stale claim in a durable artifact is worse than a stale claim in a message**, because it accrues
+the artifact's standing and is read by people who were not present when it was taken. The message is
+disbelieved by default; the artifact is not.
+
+**The mechanism to guard against is a rendering that does not distinguish measured values from typed
+ones.** In the case that produced this note, five fields in one fenced block were queried live and a
+sixth was a string literal, laid out identically. **Neither a reader nor the author could tell them
+apart from the output.** Where a status block mixes both, either derive every field or mark the ones
+that are asserted.
+
+**And a figure that has never been seen to move is not evidence of stability.** It is equally
+consistent with a figure that was never re-taken, and those two cases are indistinguishable from the
+value alone. The discriminator is to run the instrument over several points and confirm it returns
+**different** answers — a control this squad already requires of reachability and patch-identity
+checks, and had not applied to its own status reporting.
