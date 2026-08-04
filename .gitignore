@@ -24,6 +24,20 @@ Cargo.lock.orig
 resources/sidecar/
 resources/compliance/
 
+# Both rules above are keyed to a PATH, not to the artifact, so relocating the
+# directory un-ignores its contents. The #267 reproduction does exactly that --
+# it renames resources/sidecar aside to prove a test no longer depends on the
+# binary -- and the result is a 3.4 MB native executable sitting untracked,
+# which `git add -A` and `git add .` will stage without comment. (`git commit
+# -am` will not: -a stages only tracked modifications, so it lists the binary
+# under untracked and stops. The safe-looking command is the dangerous one.)
+#
+# So key the sidecar executable by name as well. Scoped to resources/ because
+# an unscoped `model-core` pattern would shadow native/model-core/, which holds
+# 66 tracked source files -- a fix considerably worse than the defect.
+resources/**/model-core
+resources/**/model-core.exe
+
 # Generated SBOM. Derived from the lockfiles at build time and staged into
 # resources/compliance/; committing it would let it drift from the tree it
 # claims to describe.
