@@ -28,6 +28,7 @@ import { existsSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { CalibrationApiError } from '@shared/ipc';
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -715,7 +716,13 @@ export async function applyCalibrationScenario(
             message: 'No queued job for this project.',
             retryable: false,
             retryAfterSeconds: null,
-          },
+            // Required, not optional, by deliberate design (#177): every
+            // producer must decide. This fixture has no correlated flow, so
+            // the decision is `null` — and it has to be stated, because
+            // `CalibrationApiError` is `.strict()` and a payload missing this
+            // key fails to parse and is dropped before it can render.
+            reference: null,
+          } satisfies CalibrationApiError,
         };
       }
       if (
@@ -730,7 +737,8 @@ export async function applyCalibrationScenario(
             message: 'Network timeout',
             retryable: true,
             retryAfterSeconds: null,
-          },
+            reference: null,
+          } satisfies CalibrationApiError,
         };
       }
       okServed += 1;
