@@ -70,7 +70,8 @@ export function parseDeclaredClosures(body) {
 }
 
 /** GitHub's closing keywords, as documented and as measured on this repo. */
-const CLOSING_KEYWORD = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
+const CLOSING_KEYWORD =
+  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
 
 /** Regions GitHub does not read closing references out of. Measured on PR #352. */
 const HTML_COMMENT = /<!--[\s\S]*?-->/g;
@@ -216,7 +217,13 @@ export async function readSettled(read, options = {}) {
     const elapsedMs = now() - start;
     const stableMs = now() - agreementStart;
     if (agreements >= requiredAgreements && stableMs >= minElapsedMs) {
-      return { value: JSON.parse(previous), reads, settled: true, elapsedMs, stableMs };
+      return {
+        value: JSON.parse(previous),
+        reads,
+        settled: true,
+        elapsedMs,
+        stableMs,
+      };
     }
   }
 
@@ -352,7 +359,9 @@ export async function main(argv, deps = {}) {
   // is not a pass: `compareClosures` is being handed a value that may still
   // change, so its `ok` says nothing about the merged state.
   if (!settled) {
-    console.error(formatUnsettled({ prNumber, reads, elapsedMs, value: actual }));
+    console.error(
+      formatUnsettled({ prNumber, reads, elapsedMs, value: actual }),
+    );
     console.error(`\n  ${summary}`);
     process.exitCode = 1;
     return { ok: false, settled: false };

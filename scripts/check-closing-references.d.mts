@@ -20,8 +20,14 @@ export interface SettledRead {
   reads: number;
   settled: boolean;
   elapsedMs: number;
-  /** Time the returned value has held still. The floor is measured on this. */
-  stableMs: number;
+  /**
+   * Time the returned value has held still. The floor is measured on this.
+   *
+   * Optional because `readClosures` is an injection point and `main` supplies
+   * a default: requiring it would force every stub to model an internal of a
+   * function it is standing in for. `readSettled` itself always populates it.
+   */
+  stableMs?: number;
 }
 
 export interface SettleOptions {

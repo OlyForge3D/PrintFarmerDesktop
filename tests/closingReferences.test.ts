@@ -145,7 +145,7 @@ describe('readSettled', () => {
       // function, which reads as a code fault rather than as "this scenario
       // needs more time than the budget allows" -- and that distinction is
       // the whole subject here.
-      () => (readings[Math.min(index++, readings.length - 1)] as number[]),
+      () => readings[Math.min(index++, readings.length - 1)] as number[],
       {
         ...fakeClock(),
         delayMs: 20_000,
@@ -455,7 +455,9 @@ describe('readSettled wall-clock floor', () => {
 
 describe('parseBoundClosures', () => {
   it('finds a reference GitHub would bind', () => {
-    expect(parseBoundClosures(`This ${KEYWORD} #231 and nothing else.`)).toEqual([231]);
+    expect(
+      parseBoundClosures(`This ${KEYWORD} #231 and nothing else.`),
+    ).toEqual([231]);
   });
 
   it('ignores the regions measured to be inert', () => {
@@ -499,7 +501,9 @@ describe('witnessContradiction', () => {
   });
 
   it('says nothing when the body genuinely closes nothing', () => {
-    expect(witnessContradiction('a body that mentions #231 only', [])).toEqual([]);
+    expect(witnessContradiction('a body that mentions #231 only', [])).toEqual(
+      [],
+    );
   });
 });
 
@@ -541,7 +545,13 @@ describe('main staleness witness', () => {
       run: ghStub('no declaration here', PROSE, []),
       readClosures: async (read) => {
         await read();
-        return { value: [], reads: 13, settled: true, elapsedMs: 60000, stableMs: 60000 };
+        return {
+          value: [],
+          reads: 13,
+          settled: true,
+          elapsedMs: 60000,
+          stableMs: 60000,
+        };
       },
     });
 
@@ -559,10 +569,20 @@ describe('main staleness witness', () => {
     // one the witness reads, so a pass here is attributable to the witness
     // and not to the scenario being easy.
     const result = await main(['231'], {
-      run: ghStub('no declaration here', 'a body that merely mentions #231', []),
+      run: ghStub(
+        'no declaration here',
+        'a body that merely mentions #231',
+        [],
+      ),
       readClosures: async (read) => {
         await read();
-        return { value: [], reads: 13, settled: true, elapsedMs: 60000, stableMs: 60000 };
+        return {
+          value: [],
+          reads: 13,
+          settled: true,
+          elapsedMs: 60000,
+          stableMs: 60000,
+        };
       },
     });
 
@@ -578,7 +598,13 @@ describe('main staleness witness', () => {
       run: ghStub(declared, 'body closing nothing in prose', []),
       readClosures: async (read) => {
         await read();
-        return { value: [], reads: 13, settled: true, elapsedMs: 60000, stableMs: 60000 };
+        return {
+          value: [],
+          reads: 13,
+          settled: true,
+          elapsedMs: 60000,
+          stableMs: 60000,
+        };
       },
     });
 
