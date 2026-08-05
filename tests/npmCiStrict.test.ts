@@ -9,6 +9,7 @@ import {
   createCleanupEvidence,
   extractCleanupDirectories,
   extractCleanupPaths,
+  findTreeExitProblems,
   findTreeProblems,
   findUnresolvedPackages,
   hasCleanupFailure,
@@ -89,6 +90,8 @@ interface OrchestrationHarnessOptions {
   install?: { code: number; output: string };
   recovery?: CleanupRecovery;
   tree?: unknown;
+  treeStatus?: unknown;
+  treeStderr?: string;
 }
 
 function createOrchestrationHarness({
@@ -100,6 +103,8 @@ function createOrchestrationHarness({
     reason: null,
   },
   tree = CLEAN_PRODUCTION_TREE,
+  treeStatus = 0,
+  treeStderr = '',
 }: OrchestrationHarnessOptions = {}) {
   const calls: string[] = [];
   const runNpmCi = vi.fn(() => {
@@ -120,7 +125,7 @@ function createOrchestrationHarness({
   });
   const readProductionTree = vi.fn(() => {
     calls.push('production-tree');
-    return tree;
+    return { tree, status: treeStatus, stderr: treeStderr };
   });
   const fail = vi.fn((lines: string[]) => {
     calls.push('fail');
@@ -297,6 +302,55 @@ describe('npm-ci-strict main orchestration', () => {
         'npm-ci-strict: npm itself reported problems with the installed tree.',
         `  - ${problem}`,
       ]),
+    );
+  });
+  it('hard-fails on a non-zero `npm ls` exit even when npm set no problems', async () => {
+    // The load-bearing test for #255. The tree is the real clean one, so
+    // `findTreeProblems` returns nothing and the exit-status check is the only
+    // thing in the guard that can fire. The control below is what makes that
+    // claim readable rather than asserted: same tree, status 0, guard passes.
+    expect(findTreeProblems(CLEAN_PRODUCTION_TREE)).toEqual([]);
+
+    const harness = createOrchestrationHarness({
+      tree: CLEAN_PRODUCTION_TREE,
+      treeStatus: 1,
+      treeStderr: 'npm error code ELSPROBLEMS\n',
+    });
+
+    await main(harness.dependencies);
+
+    expect(harness.calls).toEqual(['npm-ci', 'production-tree', 'fail']);
+    const lines: string[] = harness.fail.mock.calls[0]?.[0] ?? [];
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.some((line) => line.includes('exited 1'))).toBe(true);
+    expect(lines.some((line) => line.includes('ELSPROBLEMS'))).toBe(true);
+  });
+
+  it('passes the same tree when npm exits 0 — the control for the test above', async () => {
+    const harness = createOrchestrationHarness({
+      tree: CLEAN_PRODUCTION_TREE,
+      treeStatus: 0,
+    });
+
+    await main(harness.dependencies);
+
+    expect(harness.calls).toEqual(['npm-ci', 'production-tree']);
+    expect(harness.fail).not.toHaveBeenCalled();
+  });
+
+  it('keeps npm’s problem strings in the message when both channels fire', async () => {
+    // The exit status says the tree was refused; `problems` says which package.
+    // Reporting only the first would trade an actionable message for a status.
+    const problem = 'invalid: semver@6.3.1 D:\\repo\\node_modules\\semver';
+    const harness = createOrchestrationHarness({
+      tree: { ...CLEAN_PRODUCTION_TREE, problems: [problem] },
+      treeStatus: 1,
+    });
+
+    await main(harness.dependencies);
+
+    expect(harness.fail).toHaveBeenCalledWith(
+      expect.arrayContaining([`  - ${problem}`]),
     );
   });
 });
@@ -679,19 +733,96 @@ describe('npm’s own verdict on the tree is read, not just the tree', () => {
     // An unparseable `package.json` yields valid JSON with no `dependencies`
     // key. A structural walk finds nothing to walk and reports success, so this
     // is the case the walk structurally cannot see.
+    //
+    // This fixture used to carry `invalid: true` as well. It was removed for two
+    // reasons: npm emits root `invalid` as a *string* or as boolean `false`, never
+    // as `true`, so the field was a shape npm cannot produce; and because the
+    // assertion below is satisfied by `problems` and by `error` independently, the
+    // field was never the reason this test passed. Its only effect was to make the
+    // root-`invalid` branch look covered. See the isolated spec below.
     const tree = {
-      invalid: true,
       problems: ['error in /repo/package.json'],
       error: { code: 'EJSONPARSE', summary: 'Unexpected token' },
     };
-    expect(findTreeProblems(tree).length).toBeGreaterThan(0);
+    // Pinned exactly rather than by length: `length > 0` here is satisfied three
+    // ways over, which is what let a whole branch of `findTreeProblems` be deleted
+    // without this file noticing.
+    expect(findTreeProblems(tree)).toEqual([
+      'error in /repo/package.json',
+      'npm reported EJSONPARSE: Unexpected token',
+    ]);
     expect(findUnresolvedPackages(tree)).toEqual([]);
+  });
+
+  it('reports a root npm marked invalid, with nothing else set', () => {
+    // ISOLATED DELIBERATELY. Every other fixture that carries root `invalid` also
+    // carries `problems` or `error`, either of which satisfies the assertion on its
+    // own. Measured: deleting the root-`invalid` branch from `findTreeProblems`
+    // left this entire file green, while deleting the adjacent `error` push in the
+    // same function turned it red -- so the survival was a coverage gap and not a
+    // harness that cannot detect deletions.
+    //
+    // The value is the real shape: npm names the mismatch in a string rather than
+    // setting a boolean.
+    const tree = {
+      ...CLEAN_PRODUCTION_TREE,
+      invalid: '"^7.0.0" from the root project',
+    };
+    expect(findTreeProblems(tree)).toEqual([
+      'npm marked the root project invalid: "^7.0.0" from the root project',
+    ]);
+  });
+
+  it('stays silent on the root `invalid: false` that npm emits for a sound tree', () => {
+    // The negative control for the spec above, and the only thing pinning the
+    // `!== false` clause: npm writes `invalid: false` on nodes it checked and found
+    // sound, so a truthiness-only test would report every healthy install.
+    const tree = { ...CLEAN_PRODUCTION_TREE, invalid: false };
+    expect(findTreeProblems(tree)).toEqual([]);
   });
 
   it('reports a root that is not an object, rather than passing it', () => {
     for (const root of [null, [], 'broken', 42]) {
       expect(findTreeProblems(root).length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('npm’s exit status is read, not only the JSON it printed', () => {
+  it('passes a status of 0 — the negative control', () => {
+    // Without this the check would be indistinguishable from one that fires on
+    // every read, and every assertion below would pass for the wrong reason.
+    expect(findTreeExitProblems(0, '')).toEqual([]);
+  });
+
+  it('reports a non-zero status, naming the code', () => {
+    const problems = findTreeExitProblems(1, '');
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('exited 1');
+  });
+
+  it('carries npm’s first non-empty stderr line into the message', () => {
+    // A bare exit code sends the reader back to the terminal. npm's own first
+    // line usually names the package, which is the actionable half.
+    const problems = findTreeExitProblems(
+      1,
+      '\n\nnpm error code ELSPROBLEMS\nnpm error invalid: semver@6.3.1\n',
+    );
+    expect(problems[0]).toContain('npm error code ELSPROBLEMS');
+    expect(problems[0]).not.toContain('\n');
+  });
+
+  it('fails closed on null, which spawnSync reports for a killed child', () => {
+    // `status` is null when the child died on a signal and when the spawn never
+    // happened. Neither produced a tree anyone should walk, and a predicate
+    // written as `status > 0` or `status === 1` clears both.
+    expect(findTreeExitProblems(null, '').length).toBeGreaterThan(0);
+    expect(findTreeExitProblems(undefined, '').length).toBeGreaterThan(0);
+  });
+
+  it('does not depend on stderr being a string', () => {
+    expect(findTreeExitProblems(1, undefined)).toHaveLength(1);
+    expect(findTreeExitProblems(1, null)).toHaveLength(1);
   });
 });
 
