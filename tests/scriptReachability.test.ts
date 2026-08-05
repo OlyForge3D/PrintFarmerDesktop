@@ -4,6 +4,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   SCRIPT_DIRECTORY,
+  evaluateImportResolution,
+  readAllTrackedPaths,
+  relativeImportSpecifiers,
   UNENFORCED_CHECKS,
   UNINVOKED_SCRIPTS,
   evaluateCheckEnforcement,
@@ -396,5 +399,206 @@ describe('the allowlists cannot rot quietly', () => {
           )} now runs it — remove the entry, its reason is no longer true`,
       ).toBe(false);
     }
+  });
+});
+
+describe('relativeImportSpecifiers', () => {
+  it('collects a whole-line relative import', () => {
+    expect(relativeImportSpecifiers("import { a } from './b.mjs';")).toEqual([
+      './b.mjs',
+    ]);
+  });
+
+  it('collects a parent-directory specifier too', () => {
+    expect(relativeImportSpecifiers("import x from '../lib/c.mjs';")).toEqual([
+      '../lib/c.mjs',
+    ]);
+  });
+
+  it('ignores a bare package specifier, which is not this check\u2019s question', () => {
+    expect(relativeImportSpecifiers("import path from 'node:path';")).toEqual(
+      [],
+    );
+  });
+
+  it('WHY IT IS LINE-ANCHORED: a string that reads like an import is not one', () => {
+    // Measured, not supposed. Run over every tracked source file, the
+    // unanchored form of this pattern reported 2 unresolved specifiers out of
+    // 557, and both were ordinary strings inside a corpus of hostile paths.
+    // Text matching cannot tell an import from text shaped like one; the
+    // corpus is narrowed to where the distinction cannot arise.
+    const line = 'const evil = "import x from \'./not-real.mjs\';";';
+    expect(relativeImportSpecifiers(line)).toEqual([]);
+  });
+
+  it('finds nothing in an empty file rather than throwing', () => {
+    expect(relativeImportSpecifiers('')).toEqual([]);
+  });
+});
+
+describe('evaluateImportResolution', () => {
+  const tracked = new Set(['scripts/a.mjs', 'scripts/b.mjs']);
+
+  it('resolves a sibling that is tracked', () => {
+    const result = evaluateImportResolution({
+      sources: [
+        { path: 'scripts/a.mjs', contents: "import { x } from './b.mjs';" },
+      ],
+      trackedPaths: tracked,
+    });
+
+    expect(result.unresolved).toEqual([]);
+    expect(result.resolved).toHaveLength(1);
+    expect(result.resolved[0]?.target).toBe('scripts/b.mjs');
+  });
+
+  it('reports a sibling that is not tracked', () => {
+    const result = evaluateImportResolution({
+      sources: [
+        { path: 'scripts/a.mjs', contents: "import { x } from './gone.mjs';" },
+      ],
+      trackedPaths: tracked,
+    });
+
+    expect(result.resolved).toEqual([]);
+    expect(result.unresolved).toEqual([
+      {
+        from: 'scripts/a.mjs',
+        specifier: './gone.mjs',
+        target: 'scripts/gone.mjs',
+      },
+    ]);
+  });
+
+  it('TRACKED, NOT MERELY PRESENT: an untracked sibling is a finding', () => {
+    // This is the form that reaches CI. A file created and never added loads
+    // on the machine that made it and is absent from every fresh checkout, so
+    // "it works here" is exactly the evidence that does not transfer.
+    const result = evaluateImportResolution({
+      sources: [
+        { path: 'scripts/a.mjs', contents: "import { x } from './local.mjs';" },
+      ],
+      trackedPaths: tracked,
+    });
+
+    expect(result.unresolved).toHaveLength(1);
+  });
+
+  it('normalises a parent-directory hop rather than comparing raw text', () => {
+    const result = evaluateImportResolution({
+      sources: [
+        {
+          path: 'scripts/nested/a.mjs',
+          contents: "import { x } from '../b.mjs';",
+        },
+      ],
+      trackedPaths: tracked,
+    });
+
+    expect(result.unresolved).toEqual([]);
+    expect(result.resolved[0]?.target).toBe('scripts/b.mjs');
+  });
+
+  it('is pure over the facts it is handed, so both verdicts are drivable', () => {
+    // No fs and no injected reader. A collaborator every caller supplies is a
+    // collaborator nothing ever executes; handing this function data instead
+    // is what makes the failing arm reachable from a plain object.
+    const sources = [
+      { path: 'scripts/a.mjs', contents: "import { x } from './b.mjs';" },
+    ];
+
+    expect(
+      evaluateImportResolution({
+        sources,
+        trackedPaths: new Set(['scripts/b.mjs']),
+      }).unresolved,
+    ).toEqual([]);
+    expect(
+      evaluateImportResolution({ sources, trackedPaths: new Set() }).unresolved,
+    ).toHaveLength(1);
+  });
+});
+
+describe('the repository under this check', () => {
+  it('has scripts that import each other, so the scan is not vacuous', () => {
+    // Without this the whole check passes by examining nothing, which is the
+    // failure mode the rest of this file exists to prevent.
+    const sources = files.filter(({ path: filePath }) =>
+      scripts.includes(filePath),
+    );
+    const result = evaluateImportResolution({
+      sources,
+      trackedPaths: new Set(readAllTrackedPaths(repoRoot)),
+    });
+
+    expect(result.resolved.length + result.unresolved.length).toBeGreaterThan(
+      0,
+    );
+    expect(result.unresolved).toEqual([]);
+  });
+
+  it('NEGATIVE CONTROL: the same corpus reports the finding once one exists', () => {
+    // "0 unresolved" above is only evidence if a real unresolved import in
+    // this same corpus would have been reported. One fabricated source proves
+    // the predicate can convict.
+    const sources = [
+      ...files.filter(({ path: filePath }) => scripts.includes(filePath)),
+      {
+        path: `${SCRIPT_DIRECTORY}/fabricated.mjs`,
+        contents: "import { x } from './zzqq-not-a-real-sibling.mjs';",
+      },
+    ];
+    const result = evaluateImportResolution({
+      sources,
+      trackedPaths: new Set(readAllTrackedPaths(repoRoot)),
+    });
+
+    expect(result.unresolved).toHaveLength(1);
+    expect(result.unresolved[0]?.specifier).toBe(
+      './zzqq-not-a-real-sibling.mjs',
+    );
+  });
+});
+describe('formatFindings renders the import finding', () => {
+  const empty = {
+    reachability: { orphans: [], declared: [], invoked: [] },
+    enforcement: { unenforced: [], declared: [], enforced: [] },
+  };
+
+  it('says nothing when nothing is unresolved', () => {
+    expect(
+      formatFindings({ ...empty, imports: { resolved: [], unresolved: [] } }),
+    ).toEqual([]);
+  });
+
+  it('names the file, the specifier and the target it looked for', () => {
+    // A finding that does not say what it looked for cannot be acted on
+    // without re-deriving the search, which is most of the cost of the search.
+    const lines = formatFindings({
+      ...empty,
+      imports: {
+        resolved: [],
+        unresolved: [
+          {
+            from: 'scripts/a.mjs',
+            specifier: './gone.mjs',
+            target: 'scripts/gone.mjs',
+          },
+        ],
+      },
+    });
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('scripts/a.mjs');
+    expect(lines[0]).toContain('./gone.mjs');
+    expect(lines[0]).toContain('scripts/gone.mjs');
+    expect(lines[0]).toContain('exit 1');
+  });
+
+  it('tolerates a caller that passes no imports at all', () => {
+    // The two existing call sites in this file predate the third evaluator.
+    // A required argument would have made this an exception rather than a
+    // finding, which is the confusion the whole change is about.
+    expect(formatFindings(empty)).toEqual([]);
   });
 });
