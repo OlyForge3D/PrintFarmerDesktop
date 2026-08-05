@@ -37,6 +37,10 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { OrcaProfileEntry, type OrcaProfileSource } from '@shared/ipc';
 import type { RemoteCalibrationPrinterContext } from './calibrationWire.js';
+import {
+  findDuplicateJsonObjectKey,
+  findUnsafeJsonNumber,
+} from './untrustedJson.js';
 
 // ---------------------------------------------------------------------------
 // Traversal / security limits
@@ -45,7 +49,7 @@ import type { RemoteCalibrationPrinterContext } from './calibrationWire.js';
 /** Maximum files inspected per root (both user and system combined). */
 const MAX_FILES_PER_ROOT = 500;
 /** Maximum bytes read per profile JSON file. */
-const MAX_FILE_BYTES = 1_048_576; // 1 MiB
+export const MAX_FILE_BYTES = 1_048_576; // 1 MiB
 /** Maximum directory traversal depth from any canonical root. */
 const MAX_TRAVERSAL_DEPTH = 8;
 /** Maximum depth of parsed JSON objects (guards against deeply nested JSON). */
@@ -306,6 +310,17 @@ async function parseProfileFile(
 
   // Reject excessively deep JSON structures.
   if (jsonDepth(parsed) > MAX_JSON_DEPTH) {
+    return null;
+  }
+
+  // Discovery never throws — a bad profile is dropped, not reported. Both of
+  // these are dropped for the same reason: the file has no single unambiguous
+  // reading. An unsafe number cannot survive a round trip intact, and colliding
+  // object keys leave the intended value undecidable.
+  if (findUnsafeJsonNumber(parsed) !== null) {
+    return null;
+  }
+  if (findDuplicateJsonObjectKey(buf.toString('utf8')) !== null) {
     return null;
   }
 
