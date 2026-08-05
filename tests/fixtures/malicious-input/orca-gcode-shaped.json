@@ -3,3 +3,13 @@ G1 Z5 F5000
 M104 S200
 SET_PRESSURE_ADVANCE ADVANCE=0.05
 M84
+#!/bin/sh
+echo PFD_CORPUS_SYNTHETIC_NEVER_EXECUTED
+: > /tmp/pfd-corpus-should-not-exist
+
+REM cmd.exe form of the same claim
+@echo off
+echo PFD_CORPUS_SYNTHETIC_NEVER_EXECUTED > %TEMP%\pfd-corpus-should-not-exist
+
+# powershell form, because this app installs on Windows
+Write-Output 'PFD_CORPUS_SYNTHETIC_NEVER_EXECUTED'

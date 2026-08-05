@@ -50,8 +50,8 @@
     },
     {
       "name": "asset-gcode-shaped.stl",
-      "bytes": 42,
-      "sha256": "c6aa614cabf6e6a651f822bfde360768589fd3517d290414c3f7506535b17de2",
+      "bytes": 362,
+      "sha256": "68e792a2000ed501fafcc15d595b3a639f85c027c4184cdae9e77825dfe461b8",
       "synthetic": true,
       "vector": "gcodeOrScriptShaped",
       "entryPoint": "calibrationAssetManifest",
@@ -94,8 +94,8 @@
     },
     {
       "name": "install-gcode-payload.txt",
-      "bytes": 46,
-      "sha256": "fd7b75cccde4c179a951cf3a47fd4ad64ebded47bcafacadef67f082394ae16d",
+      "bytes": 366,
+      "sha256": "9502fcd6dae048c1fd305322f653d2e9ef5d8258bebe00bf27f00bd654c13780",
       "synthetic": true,
       "vector": "gcodeOrScriptShaped",
       "entryPoint": "orcaProfileInstall",
@@ -171,8 +171,8 @@
     },
     {
       "name": "orca-gcode-shaped.json",
-      "bytes": 80,
-      "sha256": "e48d666332702750f326d569e09a53779b0e9f21f81a369c985f5750c572632a",
+      "bytes": 400,
+      "sha256": "27a644564b3827e46a848a032fb1d3b8ab4f65318e732ae3c453ffdc5195135f",
       "synthetic": true,
       "vector": "gcodeOrScriptShaped",
       "entryPoint": "orcaProfileDiscovery",
@@ -292,8 +292,8 @@
     },
     {
       "name": "v4-gcode-shaped.json",
-      "bytes": 63,
-      "sha256": "127375e5331f983b1df286a81ad93d9c5ea1ca20e9333eccdd0facec71cf06f8",
+      "bytes": 383,
+      "sha256": "db8b8f86f428c47fc24e782222f69c4d3e13b7297a34de85bbfa4976ca895162",
       "synthetic": true,
       "vector": "gcodeOrScriptShaped",
       "entryPoint": "calibrationImportV4",

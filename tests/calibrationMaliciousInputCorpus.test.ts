@@ -2705,4 +2705,32 @@ describe('nothing in the corpus is executed', () => {
       );
     }
   });
+
+  it('leaves no trace of the side effects the executable-shaped fixtures ask for', () => {
+    // The checks above are structural — they read source. This one is
+    // observational, and the two fail differently: source analysis cannot see
+    // an effect that arrives through a dependency, and an effect check cannot
+    // see a primitive that simply was not reached this run. Both are cheap.
+    //
+    // The `gcodeOrScriptShaped` fixtures name concrete artefacts (see
+    // SHELL_SHAPED in the generator). If any interpreter ever got hold of
+    // them, these paths are what would appear.
+    const wouldExist = [
+      path.join(os.tmpdir(), 'pfd-corpus-should-not-exist'),
+      '/tmp/pfd-corpus-should-not-exist',
+    ];
+    for (const candidate of wouldExist) {
+      expect(existsSync(candidate), `${candidate} exists`).toBe(false);
+    }
+
+    // And the fixtures really do request them, so a silent rewrite of the
+    // fixture bytes cannot turn this into a test of nothing.
+    const fixture = readFileSync(
+      path.join(fixturesDir, 'install-gcode-payload.txt'),
+      'utf8',
+    );
+    expect(fixture).toContain('pfd-corpus-should-not-exist');
+    expect(fixture).toMatch(/G28/);
+    expect(fixture).toMatch(/#!\/bin\/sh/);
+  });
 });

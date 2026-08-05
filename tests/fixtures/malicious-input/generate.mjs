@@ -455,9 +455,32 @@ w(
     Buffer.from(j(backup(project())), 'utf8'),
   ]),
 );
+// "Executable-shaped" is two shapes, not one, and they are refused for
+// different reasons: G-code is what a slicer would run, shell is what the host
+// would. A fixture holding only G-code proves nothing about the second. Both
+// go in every fixture for this vector so the name stops overstating the bytes.
+// Nothing here is ever run — the corpus asserts that separately — and the
+// commands are inert `echo`s so that remains true even if something did.
+const SHELL_SHAPED = [
+  '#!/bin/sh',
+  'echo PFD_CORPUS_SYNTHETIC_NEVER_EXECUTED',
+  ': > /tmp/pfd-corpus-should-not-exist',
+  '',
+  'REM cmd.exe form of the same claim',
+  '@echo off',
+  'echo PFD_CORPUS_SYNTHETIC_NEVER_EXECUTED > %TEMP%\\pfd-corpus-should-not-exist',
+  '',
+  '# powershell form, because this app installs on Windows',
+  "Write-Output 'PFD_CORPUS_SYNTHETIC_NEVER_EXECUTED'",
+].join('\n');
+
+const executableShaped = (gcode) => `${gcode}\n${SHELL_SHAPED}\n`;
+
 w(
   'v4-gcode-shaped.json',
-  'G28 ; home all axes\nG1 Z5 F5000\nM104 S200\nG1 X10 Y10 F3000\nM84\n',
+  executableShaped(
+    'G28 ; home all axes\nG1 Z5 F5000\nM104 S200\nG1 X10 Y10 F3000\nM84',
+  ),
 );
 
 // --- OrcaSlicer profile fixtures -----------------------------------------
@@ -511,7 +534,9 @@ w(
 );
 w(
   'orca-gcode-shaped.json',
-  'G28 ; home all axes\nG1 Z5 F5000\nM104 S200\nSET_PRESSURE_ADVANCE ADVANCE=0.05\nM84\n',
+  executableShaped(
+    'G28 ; home all axes\nG1 Z5 F5000\nM104 S200\nSET_PRESSURE_ADVANCE ADVANCE=0.05\nM84',
+  ),
 );
 // The profile a symlink/junction escape would reach if traversal followed it.
 w(
@@ -539,7 +564,10 @@ w('asset-wrong-magic.stl', Buffer.alloc(20, 0x41));
 // Header claims 0xFFFFFFFF triangles; the file is one triangle long.
 w('asset-triangle-count-overflow.stl', binaryStl(0xffffffff, 1));
 // G-code shaped, deliberately under 84 bytes.
-w('asset-gcode-shaped.stl', 'G28 ; home\nG1 X10 Y10 F3000\nM104 S200\nM84\n');
+w(
+  'asset-gcode-shaped.stl',
+  executableShaped('G28 ; home\nG1 X10 Y10 F3000\nM104 S200\nM84'),
+);
 // A duplicate-key JSON document offered as an .stl, under 84 bytes.
 w('asset-duplicate-keys.stl', '{"a":1,"a":2}\n');
 
@@ -563,7 +591,7 @@ w('asset-duplicate-keys.stl', '{"a":1,"a":2}\n');
 // --- install payloads -----------------------------------------------------
 w(
   'install-gcode-payload.txt',
-  'G28 ; home all axes\nG1 Z5 F5000\nM104 S200\nM84\n',
+  executableShaped('G28 ; home all axes\nG1 Z5 F5000\nM104 S200\nM84'),
 );
 w(
   'install-zip-magic.bin',
