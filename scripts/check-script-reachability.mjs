@@ -48,6 +48,21 @@ export const UNINVOKED_SCRIPTS = {
 // reason is the deliverable. "It is in package.json" is not enforcement —
 // package.json is a menu, not a schedule.
 export const UNENFORCED_CHECKS = {
+  'check:protection-assumptions':
+    'Its evaluator IS enforced in CI: tests/protectionAssumptions.test.ts pins ' +
+    'every premise as data and fails if one is widened. Its main() reads ' +
+    'branch protection, rulesets, protected branches and the collaborator set, ' +
+    'and every one of those endpoints needs admin scope that the default ' +
+    'GITHUB_TOKEN does not carry — the same constraint recorded for ' +
+    'check:merge-queue-contexts above. Running it in CI would degrade to the ' +
+    'half the tests already cover, and would do it silently. ' +
+    'STATE THE WEAKNESS PLAINLY: this makes it a tripwire that only fires when ' +
+    'a human runs it, so #151 revisit trigger is faster to check but still not ' +
+    'automatic. That is weaker than intended and better than the paragraph it ' +
+    'replaces, which nothing re-read at all. Discharge path: wire it into a ' +
+    'scheduled workflow the moment a privileged token exists as a repository ' +
+    'secret — at which point it should run on a schedule rather than per-PR, ' +
+    'because it guards repository configuration and not any given change.',
   'check:merge-queue-contexts':
     'Its classification half IS enforced in CI: tests/mergeQueueReadiness.test.ts ' +
     'exercises every exported rule under `npm run test`. Its main() additionally ' +
