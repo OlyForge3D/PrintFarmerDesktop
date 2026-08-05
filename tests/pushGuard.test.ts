@@ -41,6 +41,7 @@ import {
   isAncestor,
   parseStdin,
 } from '../scripts/push-guard.mjs';
+import { originLabel } from '../scripts/safe-force-push.mjs';
 import { HOOKS_PATH } from '../scripts/install-git-hooks.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
@@ -2539,6 +2540,40 @@ describe('two sessions sharing one brief share one session id', () => {
 // never reached the counting. That ordering is why the coverage gap and the
 // bugs are one finding rather than two.
 
+describe('the label beside a destroyed commit answers who made it', () => {
+  const sha = 'a'.repeat(40);
+  const other = 'b'.repeat(40);
+
+  it('claims a commit only when this worktree’s reflog shows it being created', () => {
+    expect(originLabel(sha, new Set([sha]), true)).toBe('[created here]');
+  });
+
+  it('names a commit the reflog does not account for as another writer’s', () => {
+    expect(originLabel(sha, new Set([other]), true)).toBe('[NOT created here]');
+  });
+
+  it('separates “not yours” from “I could not tell”', () => {
+    // The whole reason the third state exists. Both calls below have an empty
+    // owned set; only the evidence flag differs, and it must change the answer.
+    expect(originLabel(sha, new Set(), true)).toBe('[NOT created here]');
+    expect(originLabel(sha, new Set(), false)).toBe('[origin unverifiable]');
+  });
+
+  it('still claims the operator’s own work when the reflog was readable', () => {
+    // Guards the direction that would make the degraded path noisy: absence of
+    // evidence must not override present evidence.
+    expect(originLabel(sha, new Set([sha]), false)).toBe('[created here]');
+  });
+
+  it('never prints a session trailer, which is a brief and not a writer', () => {
+    for (const attributable of [true, false]) {
+      for (const owned of [new Set([sha]), new Set<string>()]) {
+        expect(originLabel(sha, owned, attributable)).not.toContain('session');
+      }
+    }
+  });
+});
+
 describe('the remedy the guard prints is itself exercised', () => {
   const script = path.join(repoRoot, 'scripts', 'safe-force-push.mjs');
   let root: string;
@@ -2647,9 +2682,81 @@ describe('the remedy the guard prints is itself exercised', () => {
     const result = runForce([], work);
 
     expect(result.stdout).toContain('DESTROYS 1 commit(s)');
-    expect(result.stdout).toContain('session-two');
+    // This used to assert `session-two` — the destroyed commit's
+    // `Copilot-Session` trailer, printed as `[session …]`. That label is gone:
+    // the trailer names a brief, not a writer, so it can print the pusher's own
+    // id against another writer's work. See `originLabel`.
+    expect(result.stdout).not.toContain('[session ');
+    // `publishTheirWork` commits in THIS worktree before resetting, so the
+    // reflog correctly records it as created here. That is a property of the
+    // harness, not of the scenario, and it is exactly the confounder
+    // `push-guard.mjs` documents against its reflog table — which is why the
+    // foreign case below authors in a separate clone instead of reusing this.
+    expect(result.stdout).toContain('[created here]');
     expect(result.stdout).not.toContain('carried forward');
     expect(result.stderr).toContain('refusing');
+    expect(result.status).toBe(1);
+    expect(remoteTip()).toBe(theirs);
+  });
+
+  it('names another writer’s commit as NOT created here when it arrived only by fetch', () => {
+    // The scenario the label exists for, and the one the trailer cannot serve.
+    // Their work is authored in a SEPARATE clone and reaches this worktree only
+    // by fetch, so no entry in this reflog can have produced that sha.
+    const theirClone = path.join(root, 'theirs');
+    git(['clone', '--branch', 'feature', remote, theirClone], root);
+    configure(theirClone);
+    // Deliberately the SAME trailer value this worktree commits under. That is
+    // what a shared brief looks like, and it is the case the old `[session …]`
+    // label got backwards: it would have printed the pusher's own id here.
+    commit(theirClone, 'their feature', 'session-one');
+    const theirs = git(['rev-parse', 'HEAD'], theirClone);
+    git(['push', '--no-verify', 'origin', 'feature'], theirClone);
+
+    git(['fetch', 'origin'], work);
+    commit(work, 'my replacement', 'session-one');
+    const local = git(['rev-parse', 'HEAD'], work);
+
+    // Precondition, and the reason this test is not vacuous: the trailer is
+    // identical on both sides, so any label derived from it must call their
+    // commit ours. Only the reflog can separate them.
+    expect(git(['log', '-1', '--format=%B', theirs], work)).toContain(
+      'Copilot-Session: session-one',
+    );
+    expect(git(['log', '-1', '--format=%B', local], work)).toContain(
+      'Copilot-Session: session-one',
+    );
+
+    const result = runForce([], work);
+
+    expect(result.stdout).toContain('DESTROYS 1 commit(s)');
+    expect(result.stdout).toContain('[NOT created here]');
+    // `[created here]` is not a substring of `[NOT created here]`, so this is a
+    // real discriminator and not a tautology.
+    expect(result.stdout).not.toContain('[created here]');
+    expect(result.status).toBe(1);
+    expect(remoteTip()).toBe(theirs);
+  });
+
+  it('reports the origin as unverifiable, not as foreign, when there is no reflog', () => {
+    const theirs = publishTheirWork();
+    commit(work, 'my replacement', 'session-one');
+
+    // Remove the evidence the label is drawn from. The tempting repair is to
+    // let absence read as "NOT created here", and it is the original defect
+    // with the sign flipped: an unreadable reflog would then accuse every
+    // commit including the operator's own, and a warning that fires on
+    // everything is how an override becomes routine.
+    git(['config', 'core.logAllRefUpdates', 'false'], work);
+    rmSync(path.join(work, '.git', 'logs'), { recursive: true, force: true });
+
+    const result = runForce([], work);
+
+    expect(result.stdout).toContain('DESTROYS 1 commit(s)');
+    expect(result.stdout).toContain('[origin unverifiable]');
+    expect(result.stdout).not.toContain('[NOT created here]');
+    expect(result.stdout).not.toContain('[created here]');
+    // Losing the evidence must not lose the refusal.
     expect(result.status).toBe(1);
     expect(remoteTip()).toBe(theirs);
   });
