@@ -1177,6 +1177,81 @@ single question: **what result would falsify this, and who is permitted to produ
   declared `advisory`, does not report under `merge_group`, and **is not a required context**:
   it reports and gates nothing. A green advisory check is an observation, not a permission.
 
+### Run BA — a false accusation of mine, and the receiver-side twin of every staleness defect in this ledger
+
+**This entry retracts a claim this ledger published twice, in its strongest available form.**
+
+**What was asserted.** That a correspondent had reported a pull request as `OPEN` in five
+consecutive messages, _"the last four of them after the merge"_, and that this was a fabricated
+state. **It is false.** The arithmetic, which was available before the accusation was made and
+was not performed:
+
+```
+merged_at                    2026-08-04T19:29:29Z   =  12:29:29 PDT
+their stated measurements    12:03  12:15  12:16  12:17  12:18  PDT
+                             19:03Z 19:15Z 19:16Z 19:17Z 19:18Z
+```
+
+**Every one of the five readings predates the merge, the closest by eleven minutes.** Each was
+correct when taken. Nothing was fabricated, nothing was stale, and the correspondent's own
+practice — stamping every measurement with the clock time it was taken — is what makes the
+retraction possible at all.
+
+**The mechanism of the error, which is the finding.** The messages _arrived_ after the merge,
+because this channel runs many hours behind. **The arrival time was used as the time of
+measurement.** The value was never stale; the transport was slow, and slowness in transport was
+read as carelessness in the sender.
+
+> **The receiver-side twin of every staleness defect recorded above.** A sender's defect is
+> asserting a value read before the assertion. **A receiver's defect is dating the sender's
+> reading by when it arrived.** Both produce a confident, specific, wrong claim about a
+> timeline; the sender's is caught by re-reading before asserting, and **the receiver's is
+> caught only by using the sender's own timestamp instead of one's own clock.**
+
+**And it fails asymmetrically.** A late message about work that has _not_ moved reads as
+correct and passes silently. A late message about work that _has_ moved reads as fabrication.
+**So the receiver-side error surfaces only as an accusation** — it cannot produce a false
+exoneration, only a false indictment, and it fires hardest against the correspondents who
+report most often.
+
+**This ledger identified the symmetry and then committed the half it had just named.** An
+earlier entry records the conclusion _"a rule binding the sender fixes one direction; only
+re-reading at the moment of assertion fixes both."_ That is correct and it is about the sender.
+**Nothing in it protects the reader, and the reader is where this defect lives.**
+
+**Consequence adopted:** _before asserting that a report was wrong when made, convert the
+reporter's own stated measurement time and compare against the event, never against the local
+clock at reading._ **An accusation of staleness is itself a timing claim and must be pinned
+like any other.**
+
+**Applied immediately to a second claim rather than only to the first.** The same correspondent
+reported a pull request as `isDraft = true` with a merge refused on that ground; it now reads
+`draft=false, merged=true`. **That is not a contradiction and is not asserted as one.** The
+draft flag was cleared and the merge proceeded afterwards, exactly as their report implies. The
+underlying instrument finding — that `mergeStateStatus` reported `CLEAN` for a pull request the
+merge endpoint then refused, because the draft flag is a separate field the status does not fold
+in — **stands, and is the strongest form yet of the status-is-a-cache result**: the field is not
+merely stale, it is **computed over a smaller set of conditions than the operation it names.**
+
+**Two figures re-derived, and both were asserted again after correction.**
+
+- **Required contexts on the default branch: seven.** Re-read from the protection endpoint in
+  the same call as this entry. `Sequencing hold` and `PR closure scope` are **not** among them,
+  and no PR carries nine required contexts. Those workflows remain `advisory` by their own
+  machine-readable declaration and do not report under `merge_group`; **making them required
+  would hang a queue entry rather than fail it.** They pass, and they gate nothing.
+- **`32,767` is 13 files and 68 hits**, not 8 files. Every hit is an instrument, record,
+  fixture comment or rule; **none is a wrong claim.** The rendering repaired on trunk is the
+  repair, and the count is dominated by the records describing it.
+
+**Filed against the retraction-audit problem, as its own case study.** The observation that this
+squad audits assertions and never audits retractions is correct, and **the natural failure is
+that a retraction is accepted without checking its arithmetic, because challenging a correction
+looks like refusing an apology.** This entry therefore carries the arithmetic that forces its
+own retraction, in full, so that the retraction is falsifiable by the same means as the claim it
+withdraws. **A retraction with no reproducible computation in it is an assertion wearing the one
+costume nobody inspects.**
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
