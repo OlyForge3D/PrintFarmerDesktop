@@ -3117,7 +3117,7 @@ Read `2026-08-05T18:07:34Z`. Trunk `9eccb0d4abe5add39f972289d9b471c5d64529a5`. B
 `bb1987feddff82ad54106bdab766b153a4f4f4ae`. Prompted by a relayed measurement carrying an
 operational ordering on #428: repair first, arm second.
 
-#### BV.1 — The claim, measured at three trunk revisions, none of which reproduce it
+#### 1. The claim, measured at three trunk revisions, none of which reproduce it
 
 Relayed to me: a peer measured a simulated unrelated pull request off trunk at
 **REACHABLE 22 · TWIN 0 · DECLARED 7 · ORPHAN 36, 6/6 controls, exit 1**, concluding that moving
@@ -3145,7 +3145,7 @@ reach at which it was the answer. The simulation is the variable, not trunk.
 > number is the only part anybody re-checks — and nobody re-checked it, including me, until it
 > had already reversed a documented ordering.
 
-#### BV.2 — My explanation fitted the number exactly and was wrong, and my control was the vacuous kind this ledger catalogues
+#### 2. My explanation fitted the number exactly and was wrong, and my control was the vacuous kind this ledger catalogues
 
 I had a mechanism and it was a good one. The harness builds its reader model by _filtering_:
 
@@ -3180,7 +3180,7 @@ arm that remained.
 > agreeing on nothing that causes it. **Two accounts can converge on a value and share no
 > mechanism, and the convergence feels like corroboration from both sides.**
 
-#### BV.3 — A report of absence that outlived the absence
+#### 3. A report of absence that outlived the absence
 
 ```
 e3a0e98930b359de45300fe39399e554c67c1ba7  "ci: wire check:citation-reachability so it runs
@@ -3198,7 +3198,7 @@ described as blocked had already been performed by a third party ~12.5 hours ear
 > credential half stays true and keeps the sentence quotable long after the world half has
 > expired — **and the true half is what makes the stale half survive re-reading.**
 
-#### BV.4 — The greens are real; the position they were taken from cannot return no
+#### 4. The greens are real; the position they were taken from cannot return no
 
 Forty consecutive runs of the armed check, **all `success`**, across ~13 branches with no relation
 to this ledger. Non-vacuity established rather than assumed:
@@ -3227,6 +3227,28 @@ objects have already been destroyed if they were going to be. **That change is o
 reviews.** ⇒ **The instrument is armed where it cannot fail, and the wiring that would put it
 where it can fail is unreviewed** — which is the #121 shape again, one level out: not a check
 pointed the wrong way, but a check pointed the right way from the wrong place.
+
+#### 5. The extractor refused this entry, and the refusal is the finding
+
+The four headings above were first written as `#### BV.1` … `#### BV.4` — a format I invented
+for this entry. The publisher's non-vacuity guard counts `^#### \d+\.` and refused:
+
+```
+REFUSING: found 0 numbered subsections; expected a whole entry     exit 1
+ledger headings at level 4: 74 total - 47 in the numbered form the guard reads
+```
+
+⇒ The entry was **complete, correct, committed, and pushed**, and would have been **invisible to
+the instrument that publishes it** — present for any reader of the ledger, absent from every
+mechanical route out of it.
+
+> _**A format deviation does not corrupt the artifact; it removes the artifact from the set the
+> tooling can see, which is the condition this whole harness exists to detect, committed by its
+> author in the entry reporting it.**_
+
+⇒ Repaired by conforming to the convention rather than by widening the guard. **The guard was
+counting the right thing; the entry was the thing that was wrong** — and the standing rule holds:
+a refusal is evidence about the input until it is proven to be evidence about the check.
 
 ## Superseded citations and their live twins
 
