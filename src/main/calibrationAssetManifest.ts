@@ -28,7 +28,13 @@
 
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
+import {
+  constants as fsConstants,
+  lstat,
+  open,
+  readFile,
+  stat,
+} from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { dialog, app } from 'electron';
 import { z } from 'zod';
@@ -70,7 +76,7 @@ type ManifestFile = z.infer<typeof ManifestFile>;
 // ---------------------------------------------------------------------------
 
 /**
- * Detect content type from magic bytes in the first 512 bytes of file content.
+ * Detect content type from magic bytes and format-defining structure.
  * Returns the detected type string or null if unknown.
  */
 function detectContentType(
@@ -98,11 +104,11 @@ function detectContentType(
     ) {
       return 'model/stl';
     }
-    // Binary STL: 80-byte header + 4-byte count — valid if size matches
-    // 80 + 4 + triangles * 50 bytes. We accept any STL with correct size
-    // heuristic (checked separately in bounds validation).
+    // Binary STL has no fixed magic marker. Its type discriminator is the
+    // exact 80-byte header + uint32 count + count*50-byte record structure.
     if (buffer.length >= 84) {
-      return 'model/stl';
+      const triangleCount = buffer.readUInt32LE(80);
+      if (buffer.length === 84 + triangleCount * 50) return 'model/stl';
     }
     return null;
   }
@@ -121,6 +127,98 @@ interface StagedFile {
   extension: string;
   byteSize: number;
   stagedAt: number;
+}
+
+type AssetReadFailure = {
+  readonly status: 'invalid';
+  readonly reason: 'pathRestricted' | 'tooLarge';
+  readonly detail: string;
+};
+
+async function readBoundedRegularAsset(
+  filePath: string,
+  maximumBytes: number,
+): Promise<
+  { readonly status: 'ok'; readonly content: Buffer } | AssetReadFailure
+> {
+  let selectedInfo;
+  try {
+    selectedInfo = await lstat(filePath);
+  } catch {
+    return {
+      status: 'invalid',
+      reason: 'pathRestricted',
+      detail: 'Selected asset is inaccessible.',
+    };
+  }
+  if (selectedInfo.isSymbolicLink() || !selectedInfo.isFile()) {
+    return {
+      status: 'invalid',
+      reason: 'pathRestricted',
+      detail: 'Selected asset must be a regular, non-symlink file.',
+    };
+  }
+  if (selectedInfo.size > maximumBytes) {
+    return {
+      status: 'invalid',
+      reason: 'tooLarge',
+      detail: `File is ${selectedInfo.size} bytes, maximum is ${maximumBytes} bytes.`,
+    };
+  }
+
+  let file;
+  try {
+    file = await open(
+      filePath,
+      fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+    );
+  } catch {
+    return {
+      status: 'invalid',
+      reason: 'pathRestricted',
+      detail: 'Selected asset could not be opened without following links.',
+    };
+  }
+  try {
+    const before = await file.stat();
+    if (!before.isFile()) {
+      return {
+        status: 'invalid',
+        reason: 'pathRestricted',
+        detail: 'Selected asset is not a regular file.',
+      };
+    }
+    if (before.size > maximumBytes) {
+      return {
+        status: 'invalid',
+        reason: 'tooLarge',
+        detail: `File is ${before.size} bytes, maximum is ${maximumBytes} bytes.`,
+      };
+    }
+    const content = await file.readFile();
+    const after = await file.stat();
+    if (
+      before.size !== after.size ||
+      before.mtimeMs !== after.mtimeMs ||
+      (before.ino !== 0 && before.ino !== after.ino)
+    ) {
+      return {
+        status: 'invalid',
+        reason: 'pathRestricted',
+        detail: 'Selected asset changed while it was read.',
+      };
+    }
+    if (content.byteLength > maximumBytes) {
+      return {
+        status: 'invalid',
+        reason: 'tooLarge',
+        detail: `File is ${content.byteLength} bytes, maximum is ${maximumBytes} bytes.`,
+      };
+    }
+    return { status: 'ok', content };
+  } finally {
+    await file.close();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +240,7 @@ export class CalibrationAssetManifestService {
 
   /** Cached parsed manifest (lazy). */
   private _manifest: ManifestFile | null = null;
+  private _lastValidationBytesRead = 0;
 
   constructor(manifestPath?: string) {
     this._manifestPath =
@@ -153,6 +252,11 @@ export class CalibrationAssetManifestService {
           : path.join(process.cwd(), 'assets'),
         'calibration-asset-manifest.json',
       );
+  }
+
+  /** Main-process diagnostic seam used to verify bounded validation reads. */
+  getLastValidationMetrics(): { readonly bytesRead: number } {
+    return { bytesRead: this._lastValidationBytesRead };
   }
 
   /** Load (and cache) the manifest. */
@@ -198,6 +302,7 @@ export class CalibrationAssetManifestService {
     | { status: 'cancelled' }
     | { status: 'error'; message: string }
   > {
+    this._lastValidationBytesRead = 0;
     const filters = [
       {
         name: 'Calibration Asset',
@@ -261,12 +366,14 @@ export class CalibrationAssetManifestService {
         reason:
           | 'badExtension'
           | 'badMagicBytes'
+          | 'contentTypeMismatch'
           | 'tooSmall'
           | 'tooLarge'
           | 'geometryOutOfBounds'
           | 'checksumMismatch'
           | 'methodDisabled'
-          | 'approvalExpired';
+          | 'approvalExpired'
+          | 'pathRestricted';
         detail: string;
       }
     | { status: 'error'; message: string }
@@ -323,30 +430,29 @@ export class CalibrationAssetManifestService {
       };
     }
 
-    // Read the file for content checks
-    let content: Buffer;
-    try {
-      content = await readFile(staged.filePath);
-    } catch (error) {
-      return {
-        status: 'error',
-        message:
-          error instanceof Error
-            ? error.message
-            : 'Could not read selected file.',
-      };
-    }
+    // Bound and verify the selected file before allocating its contents.
+    const readResult = await readBoundedRegularAsset(
+      staged.filePath,
+      entry.maxSizeBytes,
+    );
+    if (readResult.status === 'invalid') return readResult;
+    const content = readResult.content;
+    this._lastValidationBytesRead = content.byteLength;
 
     // 2. Magic bytes check
-    const detectedType = detectContentType(
-      content.slice(0, 512),
-      entry.expectedExtension,
-    );
+    const detectedType = detectContentType(content, entry.expectedExtension);
     if (detectedType === null) {
       return {
         status: 'invalid',
         reason: 'badMagicBytes',
         detail: `File does not have the expected signature for ".${expectedExt}" content.`,
+      };
+    }
+    if (detectedType !== entry.contentType) {
+      return {
+        status: 'invalid',
+        reason: 'contentTypeMismatch',
+        detail: `Detected ${detectedType}, but the manifest declares ${entry.contentType}.`,
       };
     }
 

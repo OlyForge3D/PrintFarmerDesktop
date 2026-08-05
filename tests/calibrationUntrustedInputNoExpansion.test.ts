@@ -113,10 +113,12 @@ function resolveLocalImport(
   return null;
 }
 
-/** Transitive closure of local imports reachable from the entry points. */
-function reachableFromEntryPoints(): Map<string, string> {
+/** Transitive closure of local imports reachable from the named entry points. */
+function reachableFromEntryPoints(
+  entryPoints: readonly string[] = ENTRY_POINTS,
+): Map<string, string> {
   const seen = new Map<string, string>();
-  const queue = ENTRY_POINTS.map((name) => path.join(mainDir, name));
+  const queue = entryPoints.map((name) => path.join(mainDir, name));
   while (queue.length > 0) {
     const file = queue.pop()!;
     if (seen.has(file)) continue;
@@ -212,5 +214,83 @@ describe('the two excused vectors, and what makes them excusable', () => {
     // turns those bytes into pixels, which is what the closure ban protects.
     expect(source).toContain('MAX_PHOTO_DECODED_BYTES');
     expect(source).toMatch(/JPEG_MAGIC|PNG_MAGIC/);
+  });
+});
+
+describe('entry-point-specific absence excuses in the #158 corpus', () => {
+  const orcaEntryPoints = [
+    'orcaProfileDiscovery.ts',
+    'orcaProfileInstall.ts',
+  ] as const;
+  const orcaClosure = reachableFromEntryPoints(['orcaProfileValidation.ts']);
+  const assetClosure = reachableFromEntryPoints([
+    'calibrationAssetManifest.ts',
+  ]);
+
+  it('routes both Orca entry points through the guarded content validator', () => {
+    for (const file of orcaEntryPoints) {
+      const source = readFileSync(path.join(mainDir, file), 'utf8');
+      expect(source, file).toContain('validateOrcaProfileJson');
+    }
+  });
+
+  it.each([
+    {
+      pattern:
+        /\b(?:atob|fromBase64)\b|Buffer\.from\([^)]*,\s*['"]base64['"]\)|;base64,|\bdata:(?:image|application)/i,
+      reason: 'a base64 or data-URL decoder',
+    },
+    {
+      pattern: /\b(?:mime|contentType)\b/i,
+      reason: 'a caller-supplied MIME value',
+    },
+  ])('keeps $reason out of the Orca closure', ({ pattern, reason }) => {
+    const offenders = [...orcaClosure]
+      .filter(([, source]) => pattern.test(source))
+      .map(([file]) => relative(file));
+    expect(
+      offenders,
+      `${reason} is now reachable from the Orca profile entry points, so the ` +
+        'corresponding #158 corpus cell is no longer inapplicable.',
+    ).toEqual([]);
+  });
+
+  it.each([
+    {
+      pattern:
+        /\b(?:atob|fromBase64)\b|Buffer\.from\([^)]*,\s*['"]base64['"]\)|;base64,|\bdata:(?:image|application)/i,
+      reason: 'a base64 or data-URL decoder',
+    },
+    {
+      pattern: /\binherits\b/,
+      reason: 'a profile inheritance field',
+    },
+    {
+      pattern: /\bread(?:Int|Float|Double)/,
+      reason: 'a signed or floating-point asset-number reader',
+    },
+  ])('keeps $reason out of the asset closure', ({ pattern, reason }) => {
+    const offenders = [...assetClosure]
+      .filter(([, source]) => pattern.test(source))
+      .map(([file]) => relative(file));
+    expect(
+      offenders,
+      `${reason} is now reachable from selected asset bytes, so the ` +
+        'corresponding #158 corpus cell is no longer inapplicable.',
+    ).toEqual([]);
+  });
+
+  it('JSON-parses only the curated asset manifest, never selected asset bytes', () => {
+    const parseSites = [...assetClosure].flatMap(([file, source]) =>
+      [...source.matchAll(/\bJSON\.parse\(\s*([A-Za-z_$][\w$]*)\s*\)/g)].map(
+        (match) => ({ file: relative(file), argument: match[1] }),
+      ),
+    );
+    expect(parseSites).toEqual([
+      {
+        file: 'src/main/calibrationAssetManifest.ts',
+        argument: 'raw',
+      },
+    ]);
   });
 });

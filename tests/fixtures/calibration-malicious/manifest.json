@@ -1,0 +1,507 @@
+{
+  "generator": "node tests/fixtures/calibration-malicious/generate.mjs",
+  "provenance": "Synthetic hostile inputs authored from raw primitives for PrintFarmerDesktop issue #158; no third-party models or user profiles.",
+  "fixtures": [
+    {
+      "file": "legacy/valid.json",
+      "sha256": "99243d944e6a432bcbcd99496519d87704ceb8de3713697bd7d8c223045c684d",
+      "byteLen": 73,
+      "expectedOutcome": "ok"
+    },
+    {
+      "file": "legacy/wrong-magic.json",
+      "sha256": "0d798d0f716d73137f121fa615b703c8a41d9aebc4edf21cce476e4c150acca0",
+      "byteLen": 11,
+      "expectedOutcome": "LEGACY_BACKUP_INVALID_MARKER"
+    },
+    {
+      "file": "legacy/duplicate-keys.json",
+      "sha256": "b97c05b889684e36bbe551a79cc613320b7f4c3834ea03bf397ef402d2da1fea",
+      "byteLen": 91,
+      "expectedOutcome": "LEGACY_BACKUP_INVALID_JSON"
+    },
+    {
+      "file": "legacy/deeply-nested.json",
+      "sha256": "5b3788efbfd0fd848ebd3beb71417ab3b4ed6a43e75ae740f73597fde6c1588a",
+      "byteLen": 741,
+      "expectedOutcome": "LEGACY_BACKUP_TOO_DEEP"
+    },
+    {
+      "file": "legacy/unsafe-number.json",
+      "sha256": "6c238346e0600c814682b5a177a036cfe1429b1e4f25a81d26c72a53fdadeadb",
+      "byteLen": 518,
+      "expectedOutcome": "LEGACY_BACKUP_INVALID_SCHEMA"
+    },
+    {
+      "file": "legacy/unsafe-integer.json",
+      "sha256": "231f89cfb899c6a4b41018909fdfe89634f17731431b85ae92a72a4e09ccf722",
+      "byteLen": 510,
+      "expectedOutcome": "LEGACY_BACKUP_INVALID_SCHEMA"
+    },
+    {
+      "file": "legacy/negative-size.json",
+      "sha256": "51114419055594d0e7d0c6ff3b3b8db247552e4c21194d19970d04357e27c3cc",
+      "byteLen": 495,
+      "expectedOutcome": "LEGACY_BACKUP_INVALID_SCHEMA"
+    },
+    {
+      "file": "legacy/malformed-base64.json",
+      "sha256": "9227dc3e7965cbe81c447a845d0f20a8215dc5883dc0a979959ea08b872e1843",
+      "byteLen": 576,
+      "expectedOutcome": "LEGACY_BACKUP_INVALID_SCHEMA"
+    },
+    {
+      "file": "legacy/mime-mismatch.json",
+      "sha256": "a150cc2b8c6745cd3ba1de8ecbadbf460f59e53b4e508b8f369c4ef26add2769",
+      "byteLen": 573,
+      "expectedOutcome": "LEGACY_BACKUP_INVALID_SCHEMA"
+    },
+    {
+      "file": "legacy/cyclic-inheritance.json",
+      "sha256": "45be85a9c1e208b8c2d5f0b607eaec2b79090febd3b297dd41a1fea2d427c15b",
+      "byteLen": 564,
+      "expectedOutcome": "LEGACY_BACKUP_INVALID_SCHEMA"
+    },
+    {
+      "file": "legacy/path-traversal.json",
+      "sha256": "52aa60079eaf3e7ae40b3693a9727bd1c4e65aed8ccbcfd5531f71cad8afd8e3",
+      "byteLen": 578,
+      "expectedOutcome": "LEGACY_BACKUP_INVALID_SCHEMA"
+    },
+    {
+      "file": "legacy/gcode-shaped.json",
+      "sha256": "052c91adb08e660b312fd87ecb3076bd91ea74fe20cb332b11068e6b7988f730",
+      "byteLen": 514,
+      "expectedOutcome": "LEGACY_BACKUP_INVALID_SCHEMA"
+    },
+    {
+      "file": "legacy/script-shaped.json",
+      "sha256": "3b9a68f45ef77dffcede5e2906d1ccaddfeafb8b55e2c86add4d58cbdc402a06",
+      "byteLen": 530,
+      "expectedOutcome": "LEGACY_BACKUP_INVALID_SCHEMA"
+    },
+    {
+      "file": "orca/valid.json",
+      "sha256": "fb9d9b25b4755508a2da0e39de4ef4a707a5d646527f2c6beaa2f8bd17d98a1f",
+      "byteLen": 76,
+      "expectedOutcome": "ok"
+    },
+    {
+      "file": "orca/deeply-nested.json",
+      "sha256": "dc3dcbc593ed61d68f5ede6130cc1f8d0d629bcbb26d299d215002b95f0c5be5",
+      "byteLen": 469,
+      "expectedOutcome": "tooDeep"
+    },
+    {
+      "file": "orca/duplicate-keys.json",
+      "sha256": "53a5b2b31a1983185f1bd9386fa9acc351c1c3c546b4c991f2eb7bacb4004dd6",
+      "byteLen": 72,
+      "expectedOutcome": "duplicateKey"
+    },
+    {
+      "file": "orca/cycle-a.json",
+      "sha256": "15a0b784abb8dbd6d73e48da7b471615ee66959a90f9788e7d632c9ff3b2f3a9",
+      "byteLen": 77,
+      "expectedOutcome": "cycle"
+    },
+    {
+      "file": "orca/cycle-b.json",
+      "sha256": "d4935ce8e6c6c11a1cfb43b4dbd9d750256c615152ccedbf3cf864c5f05eeda4",
+      "byteLen": 63,
+      "expectedOutcome": "cycle"
+    },
+    {
+      "file": "orca/cycle-c.json",
+      "sha256": "b72cc9810c4a698f1a1377b5ebf09ebab3f778af467032bc4397fe462340dfa6",
+      "byteLen": 79,
+      "expectedOutcome": "cycle"
+    },
+    {
+      "file": "orca/path-traversal.json",
+      "sha256": "c75696db798c1231377f6ae37350db20b4426cbd27cda01ae19c3daab0b83d64",
+      "byteLen": 78,
+      "expectedOutcome": "unsafeInheritance"
+    },
+    {
+      "file": "orca/unsafe-number.json",
+      "sha256": "024c37902323d92e444695df9eee4e5d778222e1604e6dcc8586323186a34512",
+      "byteLen": 94,
+      "expectedOutcome": "unsafeNumber"
+    },
+    {
+      "file": "orca/unsafe-integer.json",
+      "sha256": "f3112c288b6561c5994dfeb0d7dd8e85e9b2b1b4cecedf246aade28d887b9cab",
+      "byteLen": 80,
+      "expectedOutcome": "unsafeNumber"
+    },
+    {
+      "file": "orca/negative-size.json",
+      "sha256": "4ff843b471e79f3a672654a78ca491f55e5d864c2bb6f6a563d52799290e3fed",
+      "byteLen": 72,
+      "expectedOutcome": "unsafeNumber"
+    },
+    {
+      "file": "orca/dangling-inheritance.json",
+      "sha256": "26d2946b27b08aadb22051f5c9dca2ca8e98dd00e9bdaad3dfbf1c6ca07e514d",
+      "byteLen": 82,
+      "expectedOutcome": "missingParent"
+    },
+    {
+      "file": "orca/empty-inheritance.json",
+      "sha256": "b1e1a0a3e680c08a0097d955dc6b0dd1c3f4a06bf42c6bb0c6b9f53c8951b01c",
+      "byteLen": 68,
+      "expectedOutcome": "ok"
+    },
+    {
+      "file": "orca/wrong-magic.json",
+      "sha256": "2903236941aa6407b3310ed97021debb187639a04423fb945ac36dcde3db25b6",
+      "byteLen": 8,
+      "expectedOutcome": "invalidJson"
+    },
+    {
+      "file": "orca/gcode-shaped.json",
+      "sha256": "93933779aebf2eb1d702e18e78353b6815217030b3c4f4305bc8a487d9ad4bc0",
+      "byteLen": 14,
+      "expectedOutcome": "invalidJson"
+    },
+    {
+      "file": "orca/script-shaped.json",
+      "sha256": "77fcc1cc8c1c615b876b28a927625e8df875c8a9fb935a9a0660b0bf14b1706c",
+      "byteLen": 27,
+      "expectedOutcome": "invalidJson"
+    },
+    {
+      "file": "asset/valid.stl",
+      "sha256": "d74cb40deec3197c4dfbe43cd8fe31d14e737e67b808b1d5e958afaa4d4e4078",
+      "byteLen": 134,
+      "expectedOutcome": "ok"
+    },
+    {
+      "file": "asset/wrong-magic.stl",
+      "sha256": "bfca652f5e96a3de2157627a800b350e7798ded367fb74a7eb52ef0aa35d9cfb",
+      "byteLen": 100,
+      "expectedOutcome": "badMagicBytes"
+    },
+    {
+      "file": "asset/gcode-shaped.stl",
+      "sha256": "93933779aebf2eb1d702e18e78353b6815217030b3c4f4305bc8a487d9ad4bc0",
+      "byteLen": 14,
+      "expectedOutcome": "badMagicBytes"
+    },
+    {
+      "file": "asset/script-shaped.stl",
+      "sha256": "77fcc1cc8c1c615b876b28a927625e8df875c8a9fb935a9a0660b0bf14b1706c",
+      "byteLen": 27,
+      "expectedOutcome": "badMagicBytes"
+    },
+    {
+      "file": "asset/mime-mismatch.3mf",
+      "sha256": "2903236941aa6407b3310ed97021debb187639a04423fb945ac36dcde3db25b6",
+      "byteLen": 8,
+      "expectedOutcome": "contentTypeMismatch"
+    },
+    {
+      "file": "orca/inheritance-depth-0.json",
+      "sha256": "9ffb0f8ae6364455fe2b41239d0f8a76eb0bde82399d16884696bff58faf57e0",
+      "byteLen": 81,
+      "expectedOutcome": "inheritanceTooDeep"
+    },
+    {
+      "file": "orca/inheritance-depth-1.json",
+      "sha256": "da2aec72d52645191bd2ae60b2f5e4ccd6b4b1c3e19e732e73d61b54f9243a82",
+      "byteLen": 69,
+      "expectedOutcome": "ok"
+    },
+    {
+      "file": "orca/inheritance-depth-2.json",
+      "sha256": "c74a4c63e0d5afa379e84e134fd0ac9a14752c73cd35f173e71c64b7383e3cd6",
+      "byteLen": 69,
+      "expectedOutcome": "ok"
+    },
+    {
+      "file": "orca/inheritance-depth-3.json",
+      "sha256": "5315bb6361280020773fa1fb2940d6781f4167f7d7f5cd5311bf911419e9db3f",
+      "byteLen": 69,
+      "expectedOutcome": "ok"
+    },
+    {
+      "file": "orca/inheritance-depth-4.json",
+      "sha256": "d7960733faedf306ab690a9992e508d77491f15242ae76ba6c859d8a8e2c90e5",
+      "byteLen": 69,
+      "expectedOutcome": "ok"
+    },
+    {
+      "file": "orca/inheritance-depth-5.json",
+      "sha256": "05b2d78a01f5fd62e916a02df80a5a7a2d285916e013fc5167acf9c007e67e33",
+      "byteLen": 69,
+      "expectedOutcome": "ok"
+    },
+    {
+      "file": "orca/inheritance-depth-6.json",
+      "sha256": "9ffa122b1fb8dfa12f87414d280460e88433196a8d70236850cc72f3c10ecce0",
+      "byteLen": 69,
+      "expectedOutcome": "ok"
+    },
+    {
+      "file": "orca/inheritance-depth-7.json",
+      "sha256": "59d097836a15a32bd7ce5bf7caf9054a95718e3016a483c1552f072c9aff56a3",
+      "byteLen": 69,
+      "expectedOutcome": "ok"
+    },
+    {
+      "file": "orca/inheritance-depth-8.json",
+      "sha256": "43f267bfcd056f17decc1311c06969f894a948b3ceb43aa763a1b3188f484c39",
+      "byteLen": 69,
+      "expectedOutcome": "ok"
+    },
+    {
+      "file": "orca/inheritance-depth-9.json",
+      "sha256": "4ed2cab2f73c4a4d4711861ce9204a57f9386d5c6a3d9460b32c6b318a23d292",
+      "byteLen": 70,
+      "expectedOutcome": "ok"
+    },
+    {
+      "file": "orca/inheritance-depth-10.json",
+      "sha256": "c04fb12fc5b9aac0c0d8e57c12d042008b88f7aad689f94f1f0e8b70d6e1a270",
+      "byteLen": 71,
+      "expectedOutcome": "ok"
+    },
+    {
+      "file": "orca/inheritance-depth-11.json",
+      "sha256": "be99c667536e28035d5a13c8bee6c3ed78b2f335ce564dbe4a7a783dd5a5e5f2",
+      "byteLen": 43,
+      "expectedOutcome": "ok"
+    },
+    {
+      "file": "orca/wide-profile.json",
+      "sha256": "77f2ee510ab0d6b5351fbc37760b5636ee461f402c93bfc845fd3d4971497fdb",
+      "byteLen": 15843,
+      "expectedOutcome": "ok"
+    }
+  ],
+  "materialized": [
+    {
+      "id": "legacy-at-limit",
+      "entryPoint": "legacy",
+      "recipe": "legacy/valid.json followed by ASCII spaces",
+      "byteLen": 52428800,
+      "expectedOutcome": "ok",
+      "sha256": "9a39c00eab201ab4acbcd985aca9b5d89b2beec98fe877675ae9b20ce9d22a84"
+    },
+    {
+      "id": "legacy-over-limit",
+      "entryPoint": "legacy",
+      "recipe": "legacy/valid.json followed by ASCII spaces",
+      "byteLen": 52428801,
+      "expectedOutcome": "LEGACY_BACKUP_TOO_LARGE",
+      "sha256": "826f6487c46875a1e9e1075d1df30b2a10812aeef93a20d36706b6d2c1e4607e"
+    },
+    {
+      "id": "orca-at-limit",
+      "entryPoint": "orca",
+      "recipe": "orca/valid.json followed by ASCII spaces",
+      "byteLen": 1048576,
+      "expectedOutcome": "ok",
+      "sha256": "755abc34ffe5d182ada0f7ea2d14819a0863ef6430c919c9e06a8084e4a2b50a"
+    },
+    {
+      "id": "orca-over-limit",
+      "entryPoint": "orca",
+      "recipe": "orca/valid.json followed by ASCII spaces",
+      "byteLen": 1048577,
+      "expectedOutcome": "tooLarge",
+      "sha256": "33d0cfc76d196bee5ba98a69e6fd699fc5c90a577566f789ac48435cd9f55f7b"
+    },
+    {
+      "id": "asset-at-limit",
+      "entryPoint": "asset",
+      "recipe": "ASCII STL marker followed by deterministic zero bytes",
+      "byteLen": 1024,
+      "expectedOutcome": "ok",
+      "sha256": "2847a5a054ecf12ec55f389935c894e73f4d102932387d08a9e677b19ee77cf5"
+    },
+    {
+      "id": "asset-over-limit",
+      "entryPoint": "asset",
+      "recipe": "ASCII STL marker followed by deterministic zero bytes",
+      "byteLen": 1025,
+      "expectedOutcome": "tooLarge",
+      "sha256": "06d10cba77af3926c4ac338bf120f711c0faec7488553236ff2ba238fb3f59c4"
+    }
+  ],
+  "matrix": [
+    {
+      "vector": "oversized",
+      "entryPoint": "legacy",
+      "applicable": true
+    },
+    {
+      "vector": "oversized",
+      "entryPoint": "orca",
+      "applicable": true
+    },
+    {
+      "vector": "oversized",
+      "entryPoint": "asset",
+      "applicable": true
+    },
+    {
+      "vector": "deeplyNestedJson",
+      "entryPoint": "legacy",
+      "applicable": true
+    },
+    {
+      "vector": "deeplyNestedJson",
+      "entryPoint": "orca",
+      "applicable": true
+    },
+    {
+      "vector": "deeplyNestedJson",
+      "entryPoint": "asset",
+      "applicable": false,
+      "reason": "Selected assets are opaque model bytes; asset content is never JSON-parsed."
+    },
+    {
+      "vector": "cyclicInheritance",
+      "entryPoint": "legacy",
+      "applicable": true
+    },
+    {
+      "vector": "cyclicInheritance",
+      "entryPoint": "orca",
+      "applicable": true
+    },
+    {
+      "vector": "cyclicInheritance",
+      "entryPoint": "asset",
+      "applicable": false,
+      "reason": "Selected assets have no profile inheritance resolver."
+    },
+    {
+      "vector": "duplicateKeys",
+      "entryPoint": "legacy",
+      "applicable": true
+    },
+    {
+      "vector": "duplicateKeys",
+      "entryPoint": "orca",
+      "applicable": true
+    },
+    {
+      "vector": "duplicateKeys",
+      "entryPoint": "asset",
+      "applicable": false,
+      "reason": "Selected assets are opaque model bytes; no object keys are parsed."
+    },
+    {
+      "vector": "pathTraversal",
+      "entryPoint": "legacy",
+      "applicable": true
+    },
+    {
+      "vector": "pathTraversal",
+      "entryPoint": "orca",
+      "applicable": true
+    },
+    {
+      "vector": "pathTraversal",
+      "entryPoint": "asset",
+      "applicable": false,
+      "reason": "Selected asset containers are never expanded and embedded paths are never read."
+    },
+    {
+      "vector": "symlinkOrJunctionEscape",
+      "entryPoint": "legacy",
+      "applicable": true
+    },
+    {
+      "vector": "symlinkOrJunctionEscape",
+      "entryPoint": "orca",
+      "applicable": true
+    },
+    {
+      "vector": "symlinkOrJunctionEscape",
+      "entryPoint": "asset",
+      "applicable": true
+    },
+    {
+      "vector": "wrongMagicBytes",
+      "entryPoint": "legacy",
+      "applicable": true
+    },
+    {
+      "vector": "wrongMagicBytes",
+      "entryPoint": "orca",
+      "applicable": true
+    },
+    {
+      "vector": "wrongMagicBytes",
+      "entryPoint": "asset",
+      "applicable": true
+    },
+    {
+      "vector": "mimeExtensionMismatch",
+      "entryPoint": "legacy",
+      "applicable": true
+    },
+    {
+      "vector": "mimeExtensionMismatch",
+      "entryPoint": "orca",
+      "applicable": false,
+      "reason": "Orca discovery receives a .json path and bytes; no MIME value enters the API."
+    },
+    {
+      "vector": "mimeExtensionMismatch",
+      "entryPoint": "asset",
+      "applicable": true
+    },
+    {
+      "vector": "unsafeNumericValues",
+      "entryPoint": "legacy",
+      "applicable": true
+    },
+    {
+      "vector": "unsafeNumericValues",
+      "entryPoint": "orca",
+      "applicable": true
+    },
+    {
+      "vector": "unsafeNumericValues",
+      "entryPoint": "asset",
+      "applicable": false,
+      "reason": "The only asset numeric field is an unsigned 32-bit STL triangle count."
+    },
+    {
+      "vector": "malformedBase64DataUrl",
+      "entryPoint": "legacy",
+      "applicable": true
+    },
+    {
+      "vector": "malformedBase64DataUrl",
+      "entryPoint": "orca",
+      "applicable": false,
+      "reason": "Orca profiles are never base64- or data-URL-decoded."
+    },
+    {
+      "vector": "malformedBase64DataUrl",
+      "entryPoint": "asset",
+      "applicable": false,
+      "reason": "Selected assets are raw bytes and are never base64- or data-URL-decoded."
+    },
+    {
+      "vector": "executableShapedContent",
+      "entryPoint": "legacy",
+      "applicable": true
+    },
+    {
+      "vector": "executableShapedContent",
+      "entryPoint": "orca",
+      "applicable": true
+    },
+    {
+      "vector": "executableShapedContent",
+      "entryPoint": "asset",
+      "applicable": true
+    }
+  ]
+}

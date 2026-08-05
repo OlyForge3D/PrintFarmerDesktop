@@ -27,7 +27,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import {
-  readFile,
+  open,
   realpath,
   readdir,
   lstat,
@@ -37,75 +37,23 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { OrcaProfileEntry, type OrcaProfileSource } from '@shared/ipc';
 import type { RemoteCalibrationPrinterContext } from './calibrationWire.js';
+import {
+  ORCA_PROFILE_MAX_BYTES,
+  type OrcaProfileContentRejectionCode,
+  type RawOrcaProfileJson,
+  validateOrcaProfileJson,
+} from './orcaProfileValidation.js';
 
 // ---------------------------------------------------------------------------
 // Traversal / security limits
 // ---------------------------------------------------------------------------
 
 /** Maximum files inspected per root (both user and system combined). */
-const MAX_FILES_PER_ROOT = 500;
-/** Maximum bytes read per profile JSON file. */
-const MAX_FILE_BYTES = 1_048_576; // 1 MiB
+export const ORCA_PROFILE_MAX_FILES_PER_ROOT = 500;
 /** Maximum directory traversal depth from any canonical root. */
-const MAX_TRAVERSAL_DEPTH = 8;
-/** Maximum depth of parsed JSON objects (guards against deeply nested JSON). */
-const MAX_JSON_DEPTH = 32;
+export const ORCA_PROFILE_MAX_TRAVERSAL_DEPTH = 8;
 /** Maximum length of the OrcaSlicer `inherits` chain. */
-const MAX_INHERITANCE_DEPTH = 10;
-
-// ---------------------------------------------------------------------------
-// Raw OrcaSlicer profile JSON schema (additive / passthrough)
-// ---------------------------------------------------------------------------
-
-/**
- * Minimal Zod schema for an OrcaSlicer filament profile JSON file.
- * We only validate the fields we need; unknown fields pass through so we
- * never silently drop content that a child profile relies on via inheritance.
- */
-const RawOrcaProfileJson = z
-  .object({
-    name: z.string().min(1).max(512).optional(),
-    type: z.string().max(64).optional(),
-    inherits: z.string().max(512).optional(),
-    filament_type: z
-      .union([z.string().max(64), z.array(z.string().max(64)).max(8)])
-      .optional(),
-    nozzle_temperature: z
-      .array(z.union([z.string().max(32), z.number()]))
-      .max(16)
-      .optional(),
-    filament_flow_ratio: z
-      .array(z.union([z.string().max(32), z.number()]))
-      .max(8)
-      .optional(),
-    enable_pressure_advance: z
-      .array(z.union([z.string().max(8), z.number()]))
-      .max(8)
-      .optional(),
-    pressure_advance: z
-      .array(z.union([z.string().max(32), z.number()]))
-      .max(8)
-      .optional(),
-    filament_retraction_length: z
-      .array(z.union([z.string().max(32), z.number()]))
-      .max(8)
-      .optional(),
-    filament_max_volumetric_speed: z
-      .array(z.union([z.string().max(32), z.number()]))
-      .max(8)
-      .optional(),
-    filament_shrink: z
-      .array(z.union([z.string().max(32), z.number()]))
-      .max(8)
-      .optional(),
-    filament_shrinkage_compensation_z: z
-      .array(z.union([z.string().max(32), z.number()]))
-      .max(8)
-      .optional(),
-  })
-  .passthrough();
-
-export type RawOrcaProfileJson = z.infer<typeof RawOrcaProfileJson>;
+export const ORCA_PROFILE_MAX_INHERITANCE_DEPTH = 10;
 
 // ---------------------------------------------------------------------------
 // Parsed profile internal type
@@ -181,33 +129,59 @@ export function orcaSystemProfileRoots(): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Depth-bounded JSON checker
-// ---------------------------------------------------------------------------
-
-function jsonDepth(value: unknown, current = 0): number {
-  if (current > MAX_JSON_DEPTH) return current;
-  if (Array.isArray(value)) {
-    let max = current + 1;
-    for (const item of value) {
-      max = Math.max(max, jsonDepth(item, current + 1));
-      if (max > MAX_JSON_DEPTH) return max;
-    }
-    return max;
-  }
-  if (value !== null && typeof value === 'object') {
-    let max = current + 1;
-    for (const v of Object.values(value as Record<string, unknown>)) {
-      max = Math.max(max, jsonDepth(v, current + 1));
-      if (max > MAX_JSON_DEPTH) return max;
-    }
-    return max;
-  }
-  return current;
-}
-
-// ---------------------------------------------------------------------------
 // Secure file reading with symlink/reparse rejection
 // ---------------------------------------------------------------------------
+
+type OrcaFileRejectionCode =
+  | OrcaProfileContentRejectionCode
+  | 'cycle'
+  | 'inheritanceTooDeep'
+  | 'missingParent'
+  | 'notFile'
+  | 'rootEscape'
+  | 'symlink';
+
+export interface OrcaDiscoveryDiagnostic {
+  readonly code: OrcaFileRejectionCode;
+  readonly relativePath: string;
+  readonly detail: string;
+}
+
+export interface OrcaDiscoveryMetrics {
+  readonly filesInspected: number;
+  readonly bytesRead: number;
+  readonly maximumTraversalDepth: number;
+}
+
+interface MutableOrcaDiscoveryMetrics {
+  filesInspected: number;
+  bytesRead: number;
+  maximumTraversalDepth: number;
+}
+
+function codedError(code: OrcaFileRejectionCode, message: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+
+function errorCode(error: unknown): OrcaFileRejectionCode {
+  if (
+    error !== null &&
+    typeof error === 'object' &&
+    'code' in error &&
+    typeof error.code === 'string'
+  ) {
+    const code = error.code;
+    if (
+      code === 'notFile' ||
+      code === 'rootEscape' ||
+      code === 'symlink' ||
+      code === 'tooLarge'
+    ) {
+      return code;
+    }
+  }
+  return 'notFile';
+}
 
 /**
  * Read a file, rejecting symlinks and files exceeding MAX_FILE_BYTES.
@@ -216,32 +190,43 @@ function jsonDepth(value: unknown, current = 0): number {
 async function readFileSecure(filePath: string): Promise<Buffer> {
   const info = await lstat(filePath);
   if (info.isSymbolicLink()) {
-    throw Object.assign(new Error('Symlink rejected.'), { code: 'SYMLINK' });
+    throw codedError('symlink', 'Symlink or reparse point rejected.');
   }
   if (!info.isFile()) {
-    throw Object.assign(new Error('Not a regular file.'), {
-      code: 'NOT_FILE',
-    });
+    throw codedError('notFile', 'Not a regular file.');
   }
-  if (info.size > MAX_FILE_BYTES) {
-    throw Object.assign(new Error('File exceeds size limit.'), {
-      code: 'TOO_LARGE',
-    });
+  if (info.size > ORCA_PROFILE_MAX_BYTES) {
+    throw codedError('tooLarge', 'File exceeds size limit.');
   }
-  // Attempt O_NOFOLLOW for an extra guard (best-effort — not all platforms).
-  const flagValue =
-    (fsConstants.O_NOFOLLOW as number | undefined) ??
-    (process.platform === 'linux' ? 0o400000 : 0);
-  const flags = 'r';
-  const buf = await readFile(filePath, {
-    ...(flagValue ? { flag: flags } : {}),
-  });
-  if (buf.byteLength > MAX_FILE_BYTES) {
-    throw Object.assign(new Error('File content exceeds size limit.'), {
-      code: 'TOO_LARGE',
-    });
+
+  const file = await open(
+    filePath,
+    fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+  );
+  try {
+    const before = await file.stat();
+    if (!before.isFile()) {
+      throw codedError('notFile', 'Not a regular file.');
+    }
+    if (before.size > ORCA_PROFILE_MAX_BYTES) {
+      throw codedError('tooLarge', 'File exceeds size limit.');
+    }
+    const buffer = await file.readFile();
+    const after = await file.stat();
+    if (
+      before.size !== after.size ||
+      before.mtimeMs !== after.mtimeMs ||
+      (before.ino !== 0 && before.ino !== after.ino)
+    ) {
+      throw codedError('notFile', 'Profile changed while it was read.');
+    }
+    if (buffer.byteLength > ORCA_PROFILE_MAX_BYTES) {
+      throw codedError('tooLarge', 'File content exceeds size limit.');
+    }
+    return buffer;
+  } finally {
+    await file.close();
   }
-  return buf;
 }
 
 // ---------------------------------------------------------------------------
@@ -267,10 +252,7 @@ async function canonicalizeUnderRoot(
   // Normalize root to ensure trailing separator comparison works.
   const root = rootPath.endsWith(path.sep) ? rootPath : rootPath + path.sep;
   if (canonical !== rootPath && !canonical.startsWith(root)) {
-    throw Object.assign(
-      new Error(`Path escapes canonical root: ${canonical}`),
-      { code: 'ROOT_ESCAPE' },
-    );
+    throw codedError('rootEscape', `Path escapes canonical root: ${canonical}`);
   }
   return canonical;
 }
@@ -283,41 +265,56 @@ async function canonicalizeUnderRoot(
  * Parse a single profile JSON file from `filePath`.
  * Returns null if the file is not a filament profile or fails validation.
  */
+type ParseProfileResult =
+  | {
+      readonly status: 'ok';
+      readonly profile: ParsedProfile;
+      readonly bytes: number;
+    }
+  | {
+      readonly status: 'rejected';
+      readonly code: OrcaFileRejectionCode;
+      readonly detail: string;
+    };
+
 async function parseProfileFile(
   filePath: string,
   rootPath: string,
   source: 'systemInstall' | 'userImported',
-): Promise<ParsedProfile | null> {
-  if (!filePath.endsWith('.json')) return null;
+): Promise<ParseProfileResult> {
+  if (!filePath.endsWith('.json')) {
+    return {
+      status: 'rejected',
+      code: 'invalidSchema',
+      detail: 'Profile filename does not end in .json.',
+    };
+  }
 
   let buf: Buffer;
   try {
     buf = await readFileSecure(filePath);
-  } catch {
-    return null;
+  } catch (error) {
+    return {
+      status: 'rejected',
+      code: errorCode(error),
+      detail: error instanceof Error ? error.message : 'Profile read failed.',
+    };
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(buf.toString('utf8')) as unknown;
-  } catch {
-    return null; // malformed JSON
-  }
-
-  // Reject excessively deep JSON structures.
-  if (jsonDepth(parsed) > MAX_JSON_DEPTH) {
-    return null;
-  }
-
-  const result = RawOrcaProfileJson.safeParse(parsed);
-  if (!result.success) return null;
-
-  const raw = result.data;
+  const result = validateOrcaProfileJson(buf.toString('utf8'));
+  if (result.status === 'rejected') return result;
+  const raw = result.raw;
 
   // Must be a filament profile.
   const typefield = raw.type;
   const nameField = raw.name;
-  if (!nameField || nameField.trim().length === 0) return null;
+  if (!nameField || nameField.trim().length === 0) {
+    return {
+      status: 'rejected',
+      code: 'invalidSchema',
+      detail: 'Profile name is missing.',
+    };
+  }
 
   // Check type field: OrcaSlicer uses 'filament' for filament profiles.
   // Some older profiles omit the type field; in that case we rely on directory.
@@ -325,17 +322,27 @@ async function parseProfileFile(
   const isFilamentByPath =
     filePath.includes(`${path.sep}filament${path.sep}`) ||
     filePath.endsWith(`${path.sep}filament`);
-  if (!isFilamentByType && !isFilamentByPath) return null;
+  if (!isFilamentByType && !isFilamentByPath) {
+    return {
+      status: 'rejected',
+      code: 'invalidSchema',
+      detail: 'File is not a filament profile.',
+    };
+  }
 
   const contentHash = createHash('sha256').update(buf).digest('hex');
 
   return {
-    filePath,
-    rootPath,
-    source,
-    raw,
-    name: nameField.trim(),
-    contentHash,
+    status: 'ok',
+    bytes: buf.byteLength,
+    profile: {
+      filePath,
+      rootPath,
+      source,
+      raw,
+      name: nameField.trim(),
+      contentHash,
+    },
   };
 }
 
@@ -354,9 +361,15 @@ async function traverseDir(
   depth: number,
   fileCount: { value: number },
   profiles: ParsedProfile[],
+  diagnostics: OrcaDiscoveryDiagnostic[],
+  metrics: MutableOrcaDiscoveryMetrics,
 ): Promise<void> {
-  if (depth > MAX_TRAVERSAL_DEPTH) return;
-  if (fileCount.value >= MAX_FILES_PER_ROOT) return;
+  if (depth > ORCA_PROFILE_MAX_TRAVERSAL_DEPTH) return;
+  if (fileCount.value >= ORCA_PROFILE_MAX_FILES_PER_ROOT) return;
+  metrics.maximumTraversalDepth = Math.max(
+    metrics.maximumTraversalDepth,
+    depth,
+  );
 
   let entries: import('node:fs').Dirent<string>[];
   try {
@@ -366,12 +379,19 @@ async function traverseDir(
   }
 
   for (const entry of entries) {
-    if (fileCount.value >= MAX_FILES_PER_ROOT) break;
+    if (fileCount.value >= ORCA_PROFILE_MAX_FILES_PER_ROOT) break;
 
     const entryPath = path.join(dirPath, entry.name);
 
     // Reject symbolic links and junctions at traversal time.
-    if (entry.isSymbolicLink()) continue;
+    if (entry.isSymbolicLink()) {
+      diagnostics.push({
+        code: 'symlink',
+        relativePath: path.relative(canonicalRoot, entryPath),
+        detail: 'Symlink or reparse point skipped.',
+      });
+      continue;
+    }
 
     if (entry.isDirectory()) {
       // Extra guard: verify the directory hasn't become a symlink since listing.
@@ -381,7 +401,15 @@ async function traverseDir(
       } catch {
         continue;
       }
-      if (dirInfo.isSymbolicLink() || !dirInfo.isDirectory()) continue;
+      if (dirInfo.isSymbolicLink()) {
+        diagnostics.push({
+          code: 'symlink',
+          relativePath: path.relative(canonicalRoot, entryPath),
+          detail: 'Symlink or reparse point skipped.',
+        });
+        continue;
+      }
+      if (!dirInfo.isDirectory()) continue;
 
       await traverseDir(
         entryPath,
@@ -390,25 +418,43 @@ async function traverseDir(
         depth + 1,
         fileCount,
         profiles,
+        diagnostics,
+        metrics,
       );
     } else if (entry.isFile() && entry.name.endsWith('.json')) {
       fileCount.value += 1;
+      metrics.filesInspected += 1;
 
       // Root-escape guard: canonicalize and verify the file stays under root.
       let canonicalPath: string;
       try {
         canonicalPath = await canonicalizeUnderRoot(entryPath, canonicalRoot);
-      } catch {
+      } catch (error) {
+        diagnostics.push({
+          code: 'rootEscape',
+          relativePath: path.relative(canonicalRoot, entryPath),
+          detail:
+            error instanceof Error
+              ? error.message
+              : 'Path escaped canonical root.',
+        });
         continue;
       }
 
-      const profile = await parseProfileFile(
+      const parsed = await parseProfileFile(
         canonicalPath,
         canonicalRoot,
         source,
       );
-      if (profile !== null) {
-        profiles.push(profile);
+      if (parsed.status === 'ok') {
+        profiles.push(parsed.profile);
+        metrics.bytesRead += parsed.bytes;
+      } else {
+        diagnostics.push({
+          code: parsed.code,
+          relativePath: path.relative(canonicalRoot, canonicalPath),
+          detail: parsed.detail,
+        });
       }
     }
   }
@@ -442,28 +488,54 @@ function mergeInheritedFields(
  * lookup table. Returns the merged raw JSON (leaf fields override parents).
  * Bounded by MAX_INHERITANCE_DEPTH and cycle detection.
  */
+type InheritanceResult =
+  | { readonly status: 'ok'; readonly raw: Record<string, unknown> }
+  | {
+      readonly status: 'rejected';
+      readonly code: 'cycle' | 'inheritanceTooDeep' | 'missingParent';
+      readonly detail: string;
+    };
+
 function resolveInheritance(
   profile: ParsedProfile,
   profilesByName: Map<string, ParsedProfile>,
-): Record<string, unknown> {
+): InheritanceResult {
   const visited = new Set<string>();
   let current: Record<string, unknown> = { ...profile.raw };
   visited.add(profile.name);
 
-  for (let depth = 0; depth < MAX_INHERITANCE_DEPTH; depth++) {
+  for (let depth = 0; depth < ORCA_PROFILE_MAX_INHERITANCE_DEPTH; depth++) {
     const inherits = current['inherits'];
-    if (typeof inherits !== 'string' || inherits.trim().length === 0) break;
+    if (typeof inherits !== 'string' || inherits.trim().length === 0) {
+      return { status: 'ok', raw: current };
+    }
     const parentName = inherits.trim();
-    if (visited.has(parentName)) break; // cycle detected
+    if (visited.has(parentName)) {
+      return {
+        status: 'rejected',
+        code: 'cycle',
+        detail: `Inheritance cycle reaches "${parentName}".`,
+      };
+    }
 
     const parent = profilesByName.get(parentName);
-    if (!parent) break; // parent not in discovered set — stop chain
+    if (!parent) {
+      return {
+        status: 'rejected',
+        code: 'missingParent',
+        detail: `Inheritance parent "${parentName}" was not discovered.`,
+      };
+    }
 
     visited.add(parentName);
     current = mergeInheritedFields(current, { ...parent.raw });
   }
 
-  return current;
+  return {
+    status: 'rejected',
+    code: 'inheritanceTooDeep',
+    detail: `Inheritance exceeds ${ORCA_PROFILE_MAX_INHERITANCE_DEPTH} profiles.`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -500,6 +572,68 @@ function profileCompatibleWithToolhead(
 // Public discovery API
 // ---------------------------------------------------------------------------
 
+export interface OrcaDiscoveryOptions {
+  readonly userRoots?: readonly string[];
+  readonly systemRoots?: readonly string[];
+}
+
+export interface OrcaDiscoveryResult {
+  readonly profiles: z.infer<typeof OrcaProfileEntry>[];
+  readonly diagnostics: OrcaDiscoveryDiagnostic[];
+  readonly metrics: OrcaDiscoveryMetrics;
+}
+
+async function scanProfiles(options: OrcaDiscoveryOptions): Promise<{
+  profiles: ParsedProfile[];
+  diagnostics: OrcaDiscoveryDiagnostic[];
+  metrics: MutableOrcaDiscoveryMetrics;
+}> {
+  const profiles: ParsedProfile[] = [];
+  const diagnostics: OrcaDiscoveryDiagnostic[] = [];
+  const metrics: MutableOrcaDiscoveryMetrics = {
+    filesInspected: 0,
+    bytesRead: 0,
+    maximumTraversalDepth: 0,
+  };
+  const roots: Array<{
+    values: readonly string[];
+    source: 'systemInstall' | 'userImported';
+  }> = [
+    {
+      values: options.userRoots ?? orcaUserDataRoots(),
+      source: 'userImported',
+    },
+    {
+      values: options.systemRoots ?? orcaSystemProfileRoots(),
+      source: 'systemInstall',
+    },
+  ];
+
+  for (const { values, source } of roots) {
+    for (const rootPath of values) {
+      let canonicalRoot: string;
+      try {
+        canonicalRoot = await realpath(rootPath);
+      } catch {
+        continue;
+      }
+      const fileCount = { value: 0 };
+      await traverseDir(
+        canonicalRoot,
+        canonicalRoot,
+        source,
+        0,
+        fileCount,
+        profiles,
+        diagnostics,
+        metrics,
+      );
+    }
+  }
+
+  return { profiles, diagnostics, metrics };
+}
+
 /**
  * Discover locally installed OrcaSlicer filament profiles that are compatible
  * with the given printer context. Each returned entry is bound to the specific
@@ -510,59 +644,50 @@ function profileCompatibleWithToolhead(
  */
 export async function discoverLocalOrcaFilamentProfiles(
   context: RemoteCalibrationPrinterContext,
+  options: OrcaDiscoveryOptions = {},
 ): Promise<z.infer<typeof OrcaProfileEntry>[]> {
+  const result = await discoverLocalOrcaFilamentProfilesWithDiagnostics(
+    context,
+    options,
+  );
+  return result.profiles;
+}
+
+/**
+ * Internal diagnostic seam for security tests and main-process observability.
+ * The renderer-facing API continues to return only profiles and preserves its
+ * established empty-array contract for rejected files.
+ */
+export async function discoverLocalOrcaFilamentProfilesWithDiagnostics(
+  context: RemoteCalibrationPrinterContext,
+  options: OrcaDiscoveryOptions = {},
+): Promise<OrcaDiscoveryResult> {
   if (
     !context.orcaProfileId ||
     context.configurationRevision === null ||
     !context.snapshotId ||
     context.toolheads.length === 0
   ) {
-    return [];
+    return {
+      profiles: [],
+      diagnostics: [],
+      metrics: {
+        filesInspected: 0,
+        bytesRead: 0,
+        maximumTraversalDepth: 0,
+      },
+    };
   }
 
-  const allProfiles: ParsedProfile[] = [];
-
-  // --- User data roots (userImported source) ---
-  const userRoots = orcaUserDataRoots();
-  for (const userRoot of userRoots) {
-    let canonicalRoot: string;
-    try {
-      canonicalRoot = await realpath(userRoot);
-    } catch {
-      continue; // root does not exist
-    }
-    const fileCount = { value: 0 };
-    await traverseDir(
-      canonicalRoot,
-      canonicalRoot,
-      'userImported',
-      0,
-      fileCount,
-      allProfiles,
-    );
+  const scan = await scanProfiles(options);
+  const allProfiles = scan.profiles;
+  if (allProfiles.length === 0) {
+    return {
+      profiles: [],
+      diagnostics: scan.diagnostics,
+      metrics: scan.metrics,
+    };
   }
-
-  // --- System profile roots (systemInstall source) ---
-  const systemRoots = orcaSystemProfileRoots();
-  for (const systemRoot of systemRoots) {
-    let canonicalRoot: string;
-    try {
-      canonicalRoot = await realpath(systemRoot);
-    } catch {
-      continue; // root does not exist
-    }
-    const fileCount = { value: 0 };
-    await traverseDir(
-      canonicalRoot,
-      canonicalRoot,
-      'systemInstall',
-      0,
-      fileCount,
-      allProfiles,
-    );
-  }
-
-  if (allProfiles.length === 0) return [];
 
   // Build lookup by profile name for inheritance resolution.
   const profilesByName = new Map<string, ParsedProfile>();
@@ -583,7 +708,16 @@ export async function discoverLocalOrcaFilamentProfiles(
       if (profile.name !== context.orcaProfileId) continue;
 
       // Resolve inheritance chain.
-      const resolvedRaw = resolveInheritance(profile, profilesByName);
+      const resolved = resolveInheritance(profile, profilesByName);
+      if (resolved.status === 'rejected') {
+        scan.diagnostics.push({
+          code: resolved.code,
+          relativePath: path.relative(profile.rootPath, profile.filePath),
+          detail: resolved.detail,
+        });
+        continue;
+      }
+      const resolvedRaw = resolved.raw;
 
       // Nozzle diameter exact match.
       if (
@@ -636,7 +770,11 @@ export async function discoverLocalOrcaFilamentProfiles(
     }
   }
 
-  return results;
+  return {
+    profiles: results,
+    diagnostics: scan.diagnostics,
+    metrics: scan.metrics,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -655,36 +793,7 @@ export async function findLocalOrcaProfileRaw(orcaProfileId: string): Promise<{
 } | null> {
   if (!orcaProfileId || orcaProfileId.length > 512) return null;
 
-  const allProfiles: ParsedProfile[] = [];
-
-  // Scan all roots.
-  const roots: Array<{
-    roots: string[];
-    source: 'systemInstall' | 'userImported';
-  }> = [
-    { roots: orcaUserDataRoots(), source: 'userImported' },
-    { roots: orcaSystemProfileRoots(), source: 'systemInstall' },
-  ];
-
-  for (const { roots: rootList, source } of roots) {
-    for (const root of rootList) {
-      let canonicalRoot: string;
-      try {
-        canonicalRoot = await realpath(root);
-      } catch {
-        continue;
-      }
-      const fileCount = { value: 0 };
-      await traverseDir(
-        canonicalRoot,
-        canonicalRoot,
-        source,
-        0,
-        fileCount,
-        allProfiles,
-      );
-    }
-  }
+  const { profiles: allProfiles } = await scanProfiles({});
 
   const profilesByName = new Map<string, ParsedProfile>();
   for (const p of allProfiles) {
@@ -696,9 +805,10 @@ export async function findLocalOrcaProfileRaw(orcaProfileId: string): Promise<{
   const found = profilesByName.get(orcaProfileId);
   if (!found) return null;
 
-  const resolvedRaw = resolveInheritance(found, profilesByName);
+  const resolved = resolveInheritance(found, profilesByName);
+  if (resolved.status === 'rejected') return null;
   return {
-    resolvedRaw,
+    resolvedRaw: resolved.raw,
     contentHash: found.contentHash,
     filePath: found.filePath,
   };

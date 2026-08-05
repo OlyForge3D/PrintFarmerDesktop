@@ -7,3 +7,6 @@ native
 package-lock.json
 resources/target-profiles/**/profiles
 .goals
+tests/fixtures/calibration-malicious/asset
+tests/fixtures/calibration-malicious/legacy
+tests/fixtures/calibration-malicious/orca

@@ -42,6 +42,10 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { OrcaProfileOperationError } from '@shared/ipc';
+import {
+  ORCA_PROFILE_MAX_BYTES,
+  validateOrcaProfileJson,
+} from './orcaProfileValidation.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -179,6 +183,113 @@ export interface InstallResult {
   readonly backupPath: string;
 }
 
+function isErrno(error: unknown, code: string): boolean {
+  return (
+    error !== null &&
+    typeof error === 'object' &&
+    'code' in error &&
+    error.code === code
+  );
+}
+
+function isUnderRoot(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === '' ||
+    (!relative.startsWith(`..${path.sep}`) &&
+      relative !== '..' &&
+      !path.isAbsolute(relative))
+  );
+}
+
+async function ensureInstallRootSafe(installRoot: string): Promise<void> {
+  const appData = process.env['APPDATA'];
+  if (!appData || !isUnderRoot(installRoot, appData)) {
+    throw makeError('pathRestricted', 'Install root is outside APPDATA.');
+  }
+
+  let canonicalAppData: string;
+  try {
+    canonicalAppData = await realpath(appData);
+  } catch {
+    throw makeError('pathRestricted', 'APPDATA is inaccessible.');
+  }
+
+  const relative = path.relative(appData, installRoot);
+  let current = appData;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    try {
+      const info = await lstat(current);
+      if (info.isSymbolicLink()) {
+        throw makeError(
+          'pathRestricted',
+          'Install root contains a symlink or junction.',
+        );
+      }
+      if (!info.isDirectory()) {
+        throw makeError(
+          'pathRestricted',
+          'Install root contains a non-directory component.',
+        );
+      }
+    } catch (error) {
+      if (!isErrno(error, 'ENOENT')) throw error;
+      await mkdir(current);
+      const created = await lstat(current);
+      if (created.isSymbolicLink() || !created.isDirectory()) {
+        throw makeError(
+          'pathRestricted',
+          'Install directory creation was redirected.',
+        );
+      }
+    }
+
+    const canonicalCurrent = await realpath(current);
+    if (!isUnderRoot(canonicalCurrent, canonicalAppData)) {
+      throw makeError(
+        'pathRestricted',
+        'Install root escapes canonical APPDATA.',
+      );
+    }
+  }
+}
+
+function validateInstallProfile(generatedJson: string): void {
+  if (Buffer.byteLength(generatedJson, 'utf8') > ORCA_PROFILE_MAX_BYTES) {
+    throw makeError(
+      'verificationFailed',
+      `Generated profile exceeds ${ORCA_PROFILE_MAX_BYTES} bytes.`,
+    );
+  }
+  const validation = validateOrcaProfileJson(generatedJson);
+  if (validation.status === 'rejected') {
+    throw makeError(
+      'verificationFailed',
+      `Generated profile rejected (${validation.code}): ${validation.detail}`,
+    );
+  }
+  if (
+    typeof validation.raw.name !== 'string' ||
+    validation.raw.name.trim().length === 0 ||
+    (validation.raw.type !== undefined && validation.raw.type !== 'filament')
+  ) {
+    throw makeError(
+      'verificationFailed',
+      'Generated profile is not a named filament profile.',
+    );
+  }
+  if (
+    typeof validation.raw.inherits === 'string' &&
+    validation.raw.inherits.trim().length > 0
+  ) {
+    throw makeError(
+      'verificationFailed',
+      'Generated install profiles must be fully resolved and cannot inherit.',
+    );
+  }
+}
+
 /**
  * Transactionally install `generatedJson` to the canonical OrcaSlicer
  * user-data filament directory.
@@ -196,6 +307,10 @@ export async function installOrcaProfileWindows(
       'Direct profile installation is only supported on Windows.',
     );
   }
+
+  validateInstallProfile(generatedJson);
+  const installRoot = getWindowsOrcaInstallRoot();
+  const destPath = computeInstallPath(safeFilename, installRoot);
 
   // 1. Verify OrcaSlicer is not running.
   if (await isOrcaSlicerRunning()) {
@@ -215,11 +330,8 @@ export async function installOrcaProfileWindows(
     );
   }
 
-  const installRoot = getWindowsOrcaInstallRoot();
-  const destPath = computeInstallPath(safeFilename, installRoot);
-
   // 3. Ensure destination directory exists.
-  await mkdir(installRoot, { recursive: true });
+  await ensureInstallRootSafe(installRoot);
 
   // 4. Canonicalize destination (may not exist yet — in that case just verify
   //    the parent is safe).
@@ -233,18 +345,13 @@ export async function installOrcaProfileWindows(
     destExists = true;
     priorHash = await sha256File(destPath);
   } catch (err) {
-    if (
-      err &&
-      typeof err === 'object' &&
-      'code' in err &&
-      (err as { code: string }).code === 'ENOENT'
-    ) {
+    if (isErrno(err, 'ENOENT')) {
       // File does not yet exist — that's fine.
     } else if (
-      err &&
+      err !== null &&
       typeof err === 'object' &&
       'code' in err &&
-      (err as { code: string }).code === 'pathRestricted'
+      err.code === 'pathRestricted'
     ) {
       throw err;
     } else {
@@ -366,6 +473,7 @@ export async function restoreOrcaProfileWindows(
 
   const installRoot = getWindowsOrcaInstallRoot();
   const destPath = computeInstallPath(safeFilename, installRoot);
+  await ensureInstallRootSafe(installRoot);
 
   // Reject if destination is a symlink.
   try {
@@ -377,12 +485,7 @@ export async function restoreOrcaProfileWindows(
       );
     }
   } catch (err) {
-    if (
-      err &&
-      typeof err === 'object' &&
-      'code' in err &&
-      (err as { code: string }).code === 'ENOENT'
-    ) {
+    if (isErrno(err, 'ENOENT')) {
       // Destination doesn't exist — restore will create it.
     } else {
       throw err;

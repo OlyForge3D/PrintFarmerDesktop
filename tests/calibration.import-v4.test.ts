@@ -623,18 +623,16 @@ describe('runLegacyBackupPreflight — safety number checks', () => {
 });
 
 describe('runLegacyBackupPreflight — duplicate key detection', () => {
-  it('detects and warns about duplicate JSON keys', async () => {
+  it('rejects duplicate JSON keys before last-value-wins parsing', async () => {
     // Manually construct JSON with duplicate key
     const jsonWithDup =
       '{"schemaVersion":4,"exportedAt":"' +
       NOW +
       '","projects":[],"schemaVersion":4}';
     const filePath = await writeTmpFile(tmpDir, 'dup-keys.json', jsonWithDup);
-    // JSON.parse ignores duplicate keys (last wins), but we warn
-    const result = await runLegacyBackupPreflight(filePath);
-    // The file may still parse due to last-wins behavior
-    // but we should at least not throw, and ideally warn
-    expect(result).toBeDefined();
+    await expect(runLegacyBackupPreflight(filePath)).rejects.toMatchObject({
+      code: 'LEGACY_BACKUP_INVALID_JSON',
+    });
   });
 });
 
@@ -758,7 +756,7 @@ describe('runLegacyBackupPreflight — photo validation', () => {
     expect(firstOutcome(result).outcome).toBe('importable');
   });
 
-  it('flags a project with invalid photo MIME as requiresAction', async () => {
+  it('rejects a project with invalid photo MIME', async () => {
     const backup = backupWithProject({
       photos: [
         {
@@ -774,12 +772,12 @@ describe('runLegacyBackupPreflight — photo validation', () => {
       'bad-mime.json',
       JSON.stringify(backup),
     );
-    const result = await runLegacyBackupPreflight(filePath);
-    expect(firstOutcome(result).outcome).toBe('requiresAction');
-    expect(firstOutcome(result).issues.length).toBeGreaterThan(0);
+    await expect(runLegacyBackupPreflight(filePath)).rejects.toMatchObject({
+      code: 'LEGACY_BACKUP_INVALID_SCHEMA',
+    });
   });
 
-  it('flags a project where magic bytes do not match declared MIME', async () => {
+  it('rejects a project where magic bytes do not match declared MIME', async () => {
     // PNG bytes but claim JPEG MIME
     const backup = backupWithProject({
       photos: [
@@ -796,11 +794,12 @@ describe('runLegacyBackupPreflight — photo validation', () => {
       'mime-mismatch.json',
       JSON.stringify(backup),
     );
-    const result = await runLegacyBackupPreflight(filePath);
-    expect(firstOutcome(result).outcome).toBe('requiresAction');
+    await expect(runLegacyBackupPreflight(filePath)).rejects.toMatchObject({
+      code: 'LEGACY_BACKUP_INVALID_SCHEMA',
+    });
   });
 
-  it('flags a project with invalid base64 photo', async () => {
+  it('rejects a project with invalid base64 photo', async () => {
     const backup = backupWithProject({
       photos: [
         {
@@ -816,8 +815,9 @@ describe('runLegacyBackupPreflight — photo validation', () => {
       'bad-b64.json',
       JSON.stringify(backup),
     );
-    const result = await runLegacyBackupPreflight(filePath);
-    expect(firstOutcome(result).outcome).toBe('requiresAction');
+    await expect(runLegacyBackupPreflight(filePath)).rejects.toMatchObject({
+      code: 'LEGACY_BACKUP_INVALID_SCHEMA',
+    });
   });
 });
 
@@ -840,7 +840,7 @@ describe('runLegacyBackupPreflight — generated profile validation', () => {
     expect(firstOutcome(result).outcome).toBe('importable');
   });
 
-  it('marks corrupt when generated profile exactJson is not valid JSON', async () => {
+  it('rejects generated profile exactJson that is not valid JSON', async () => {
     const backup = backupWithProject({
       generatedProfile: { exactJson: 'not-json', hash: null },
     });
@@ -849,12 +849,12 @@ describe('runLegacyBackupPreflight — generated profile validation', () => {
       'bad-profile.json',
       JSON.stringify(backup),
     );
-    const result = await runLegacyBackupPreflight(filePath);
-    expect(firstOutcome(result).outcome).toBe('corrupt');
-    expect(result.corruptCount).toBe(1);
+    await expect(runLegacyBackupPreflight(filePath)).rejects.toMatchObject({
+      code: 'LEGACY_BACKUP_INVALID_SCHEMA',
+    });
   });
 
-  it('marks corrupt when profile hash does not match content', async () => {
+  it('rejects a generated profile whose hash does not match content', async () => {
     const exactJson = JSON.stringify({ nozzle_temperature: 215 });
     const wrongHash = 'b'.repeat(64);
     const backup = backupWithProject({
@@ -865,8 +865,9 @@ describe('runLegacyBackupPreflight — generated profile validation', () => {
       'hash-mismatch.json',
       JSON.stringify(backup),
     );
-    const result = await runLegacyBackupPreflight(filePath);
-    expect(firstOutcome(result).outcome).toBe('corrupt');
+    await expect(runLegacyBackupPreflight(filePath)).rejects.toMatchObject({
+      code: 'LEGACY_BACKUP_INVALID_SCHEMA',
+    });
   });
 
   it('accepts profile with null hash (no hash to check)', async () => {
@@ -987,7 +988,7 @@ describe('runLegacyBackupPreflight — offline truthfulness', () => {
 });
 
 describe('runLegacyBackupPreflight — multiple projects', () => {
-  it('handles multiple projects with different outcomes', async () => {
+  it('rejects the whole backup when any project contains a corrupt profile', async () => {
     const backup = {
       schemaVersion: 4,
       exportedAt: NOW,
@@ -1006,12 +1007,9 @@ describe('runLegacyBackupPreflight — multiple projects', () => {
       'multi.json',
       JSON.stringify(backup),
     );
-    const result = await runLegacyBackupPreflight(filePath);
-    expect(result.summary.projectCount).toBe(3);
-    expect(result.importableCount).toBeGreaterThanOrEqual(1);
-    expect(result.unsupportedCount).toBe(1);
-    expect(result.corruptCount).toBe(1);
-    expect(result.projectOutcomes).toHaveLength(3);
+    await expect(runLegacyBackupPreflight(filePath)).rejects.toMatchObject({
+      code: 'LEGACY_BACKUP_INVALID_SCHEMA',
+    });
   });
 });
 

@@ -36,6 +36,12 @@ import {
   CalibrationApiError,
 } from '@shared/ipc.js';
 import type { CalibrationTokenProvider } from './calibrationHttp.js';
+import {
+  findDuplicateJsonObjectKey,
+  findUnsafeJsonNumber,
+  isPathShapedIdentifier,
+  measureJsonDepth,
+} from './untrustedJson.js';
 
 // ---------------------------------------------------------------------------
 // Bounded resource limits
@@ -54,9 +60,9 @@ const MAX_PHOTO_COUNT_PER_PROJECT = 200;
 /** Maximum number of steps per project */
 const MAX_STEP_COUNT_PER_PROJECT = 50;
 /** Maximum photo data URL decoded bytes: 10 MiB */
-const MAX_PHOTO_DECODED_BYTES = 10 * 1024 * 1024;
+export const MAX_PHOTO_DECODED_BYTES = 10 * 1024 * 1024;
 /** Maximum nesting depth for JSON parse validation */
-const MAX_JSON_NESTING_DEPTH = 20;
+export const MAX_JSON_NESTING_DEPTH = 20;
 /** Maximum string length in schema fields */
 const MAX_FIELD_STRING_LENGTH = 4096;
 /** Maximum approval TTL: 10 minutes */
@@ -418,86 +424,11 @@ const LegacyBackupV4 = z
 export type LegacyBackupV4 = z.infer<typeof LegacyBackupV4>;
 
 // ---------------------------------------------------------------------------
-// Depth limit: prevents deeply nested JSON from exhausting the stack
-// ---------------------------------------------------------------------------
-
-function measureJsonDepth(value: unknown, depth = 0): number {
-  if (depth > MAX_JSON_NESTING_DEPTH) return depth;
-  if (Array.isArray(value)) {
-    return Math.max(
-      depth,
-      ...value.map((item) => measureJsonDepth(item, depth + 1)),
-    );
-  }
-  if (typeof value === 'object' && value !== null) {
-    const entries = Object.values(value as Record<string, unknown>);
-    if (entries.length === 0) return depth;
-    return Math.max(
-      depth,
-      ...entries.map((v) => measureJsonDepth(v, depth + 1)),
-    );
-  }
-  return depth;
-}
-
-// ---------------------------------------------------------------------------
-// Duplicate key detection in JSON text
-// ---------------------------------------------------------------------------
-
-/**
- * Light-weight duplicate-key detector that works on the raw JSON text.
- * Returns the first duplicate key found, or null if none.
- */
-function findFirstDuplicateKey(jsonText: string): string | null {
-  const keyPattern = /"([^"\\]*(\\.[^"\\]*)*)"\s*:/g;
-  const objectStack: Set<string>[] = [];
-  const braceOrBracketPattern = /[{}[\]"]/g;
-  let inString = false;
-  let escapeNext = false;
-
-  // Simple structural scan: track when we enter/exit objects.
-  for (let i = 0; i < jsonText.length; i++) {
-    const ch = jsonText[i];
-    if (escapeNext) {
-      escapeNext = false;
-      continue;
-    }
-    if (ch === '\\' && inString) {
-      escapeNext = true;
-      continue;
-    }
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-    if (ch === '{') {
-      objectStack.push(new Set<string>());
-    } else if (ch === '}') {
-      objectStack.pop();
-    }
-    // ignore braceOrBracket noise — structural scan only
-    void braceOrBracketPattern;
-  }
-
-  // Second pass: use regex to find all keys and check for duplicates per object.
-  // Since full structural parsing is expensive, we just scan all keys globally.
-  const seenKeys = new Set<string>();
-  let match: RegExpExecArray | null;
-  while ((match = keyPattern.exec(jsonText)) !== null) {
-    const key = match[1]!;
-    if (seenKeys.has(key)) return key;
-    seenKeys.add(key);
-  }
-  return null;
-}
-
-// ---------------------------------------------------------------------------
 // Photo validation
 // ---------------------------------------------------------------------------
 
 const DATA_URL_PATTERN =
-  /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+=*)$/;
+  /^data:(image\/(?:jpeg|png|webp));base64,((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)$/;
 const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff]);
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const WEBP_RIFF = Buffer.from('RIFF', 'ascii');
@@ -520,6 +451,9 @@ function validatePhotoDataUrl(dataUrl: string): {
     decoded = Buffer.from(b64!, 'base64');
   } catch {
     return { valid: false, reason: 'Invalid base64 encoding' };
+  }
+  if (decoded.toString('base64') !== b64) {
+    return { valid: false, reason: 'Non-canonical base64 encoding' };
   }
   if (decoded.byteLength > MAX_PHOTO_DECODED_BYTES) {
     return {
@@ -580,6 +514,13 @@ interface ProfileValidationResult {
 function validateGeneratedProfile(
   profile: NonNullable<LegacyProject['generatedProfile']>,
 ): ProfileValidationResult {
+  const duplicateKey = findDuplicateJsonObjectKey(profile.exactJson);
+  if (duplicateKey !== null) {
+    return {
+      valid: false,
+      reason: `Generated profile contains duplicate key "${duplicateKey}"`,
+    };
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(profile.exactJson);
@@ -593,6 +534,30 @@ function validateGeneratedProfile(
     return {
       valid: false,
       reason: 'Generated profile exactJson is not a JSON object',
+    };
+  }
+  if (
+    measureJsonDepth(parsed, MAX_JSON_NESTING_DEPTH) > MAX_JSON_NESTING_DEPTH
+  ) {
+    return {
+      valid: false,
+      reason: 'Generated profile exceeds the JSON nesting limit',
+    };
+  }
+  const unsafeNumber = findUnsafeJsonNumber(parsed);
+  if (unsafeNumber !== null) {
+    return {
+      valid: false,
+      reason: `Generated profile contains ${unsafeNumber.reason} number at ${unsafeNumber.path}`,
+    };
+  }
+  const inherits = (parsed as Record<string, unknown>)['inherits'];
+  if (typeof inherits === 'string') {
+    return {
+      valid: false,
+      reason: isPathShapedIdentifier(inherits)
+        ? 'Generated profile contains a path-shaped inheritance reference'
+        : 'Generated profile inheritance cannot be resolved safely in a backup',
     };
   }
   const computedHash = createHash('sha256')
@@ -744,7 +709,7 @@ export async function runLegacyBackupPreflight(
   }
 
   // --- 6. Depth limit ---
-  const depth = measureJsonDepth(rawJson);
+  const depth = measureJsonDepth(rawJson, MAX_JSON_NESTING_DEPTH);
   if (depth > MAX_JSON_NESTING_DEPTH) {
     throw Object.assign(
       new Error(
@@ -755,11 +720,24 @@ export async function runLegacyBackupPreflight(
   }
 
   // --- 7. Duplicate key detection ---
-  const dupKey = findFirstDuplicateKey(jsonText);
-  const warnings: string[] = [];
+  const dupKey = findDuplicateJsonObjectKey(jsonText);
   if (dupKey !== null) {
-    warnings.push(`Duplicate JSON key detected: "${dupKey}" (last value wins)`);
+    throw Object.assign(
+      new Error(`Backup JSON contains duplicate object key "${dupKey}".`),
+      { code: 'LEGACY_BACKUP_INVALID_JSON' },
+    );
   }
+
+  const unsafeNumber = findUnsafeJsonNumber(rawJson);
+  if (unsafeNumber !== null) {
+    throw Object.assign(
+      new Error(
+        `Backup JSON contains ${unsafeNumber.reason} number at ${unsafeNumber.path}.`,
+      ),
+      { code: 'LEGACY_BACKUP_INVALID_SCHEMA' },
+    );
+  }
+  const warnings: string[] = [];
 
   // --- 8. Top-level schema validation ---
   const backupResult = LegacyBackupV4.safeParse(rawJson);
@@ -795,13 +773,12 @@ export async function runLegacyBackupPreflight(
   const projectOutcomes: z.infer<typeof LegacyBackupProjectOutcome>[] = [];
   let importableCount = 0;
   let unsupportedCount = 0;
-  let corruptCount = 0;
+  const corruptCount = 0;
   let requiresActionCount = 0;
 
   for (const project of backup.projects) {
     const issues: string[] = [];
-    let outcome: 'importable' | 'unsupported' | 'corrupt' | 'requiresAction' =
-      'importable';
+    let outcome: 'importable' | 'unsupported' | 'requiresAction' = 'importable';
 
     // Check profile
     if (project.generatedProfile !== null) {
@@ -809,8 +786,10 @@ export async function runLegacyBackupPreflight(
         project.generatedProfile,
       );
       if (!profileValidation.valid) {
-        issues.push(`Generated profile: ${profileValidation.reason}`);
-        outcome = 'corrupt';
+        throw Object.assign(
+          new Error(`Generated profile: ${profileValidation.reason}`),
+          { code: 'LEGACY_BACKUP_INVALID_SCHEMA' },
+        );
       }
     }
 
@@ -819,8 +798,10 @@ export async function runLegacyBackupPreflight(
     for (const photo of project.photos) {
       const photoCheck = validatePhotoDataUrl(photo.dataUrl);
       if (!photoCheck.valid) {
-        issues.push(`Photo ${photo.id}: ${photoCheck.reason}`);
-        if (outcome === 'importable') outcome = 'requiresAction';
+        throw Object.assign(
+          new Error(`Photo ${photo.id}: ${photoCheck.reason}`),
+          { code: 'LEGACY_BACKUP_INVALID_SCHEMA' },
+        );
       } else {
         validPhotoCount++;
       }
@@ -858,7 +839,7 @@ export async function runLegacyBackupPreflight(
     const requiresPrinterMapping = true; // Always require explicit mapping per spec
 
     const targetProjectId =
-      outcome !== 'corrupt' && outcome !== 'unsupported'
+      outcome !== 'unsupported'
         ? deriveTargetId(project.id, TARGET_ID_NAMESPACE)
         : null;
 
@@ -891,9 +872,6 @@ export async function runLegacyBackupPreflight(
         break;
       case 'unsupported':
         unsupportedCount++;
-        break;
-      case 'corrupt':
-        corruptCount++;
         break;
       case 'requiresAction':
         requiresActionCount++;
