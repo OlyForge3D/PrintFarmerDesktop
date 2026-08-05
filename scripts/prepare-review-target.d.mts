@@ -5,6 +5,8 @@ export const EXIT_DEFERRED: 1;
 export const EXIT_UNDETERMINED: 2;
 
 export const VERDICT_READY: 'ready';
+export const VERDICT_DRAFT: 'draft';
+export const VERDICT_DRAFT_MOVED: 'draft-moved';
 export const VERDICT_WAITING_FOR_CHECKS: 'waiting-for-checks';
 export const VERDICT_HEAD_MOVED: 'head-moved';
 export const VERDICT_BASE_MOVED: 'base-moved';
@@ -12,6 +14,7 @@ export const VERDICT_BASE_MOVED: 'base-moved';
 export interface PullSnapshot {
   number: number;
   state: 'open';
+  draft: boolean;
   baseRef: string;
   headRef: string;
   headSha: string;
@@ -29,7 +32,7 @@ export interface ReadyReviewTarget {
   verdict: typeof VERDICT_READY;
   exitCode: typeof EXIT_READY;
   reason: string;
-  pull: PullSnapshot;
+  pull: PullSnapshot & { draft: false };
   baseSha: string;
   checkRunCount: number;
   comparison: ReviewComparison;
@@ -37,6 +40,8 @@ export interface ReadyReviewTarget {
 
 export interface DeferredReviewTarget {
   verdict:
+    | typeof VERDICT_DRAFT
+    | typeof VERDICT_DRAFT_MOVED
     | typeof VERDICT_WAITING_FOR_CHECKS
     | typeof VERDICT_HEAD_MOVED
     | typeof VERDICT_BASE_MOVED;
@@ -70,9 +75,9 @@ export function parseComparison(
 export function classifyReviewTarget(input: {
   initial: PullSnapshot;
   final: PullSnapshot;
-  initialBaseSha: string;
-  finalBaseSha: string;
-  checkRunCount: number;
+  initialBaseSha: string | null;
+  finalBaseSha: string | null;
+  checkRunCount: number | null;
   comparison: ReviewComparison | null;
 }): ReviewTarget;
 

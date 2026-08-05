@@ -28,12 +28,13 @@ Immediately before every dispatch, run:
 npm run review:target -- --pr <number>
 ```
 
-Dispatch only from an exit-0 brief, and copy its full head SHA, base SHA, merge base, and `merge-base..head` range. The command deliberately accepts no SHA argument: it reads the current pull-request head and current base from GitHub, derives the range through the compare API, then re-reads both mutable inputs before emitting anything.
+Dispatch only from an exit-0 brief, and copy its full head SHA, base SHA, merge base, and `merge-base..head` range. The command deliberately accepts no SHA argument: it reads the current pull-request head, draft state, and current base from GitHub, derives the range through the compare API, then re-reads the mutable inputs before emitting anything.
 
-- **Exit 1 means wait and rerun; it is not a permanent rejection.** A newly pushed valid head can briefly have zero check runs, and the head or base can move while the brief is being derived.
+- **Exit 1 means wait and rerun; it is not a permanent rejection.** A draft PR is not ready for review dispatch, a newly pushed valid head can briefly have zero check runs, and the head, base, or draft state can move while the brief is being derived.
+- **Never dispatch a draft PR merely to obtain merge clearance.** Mark it ready through the normal process first, then rerun the guard. A stable draft defers without deriving a range; movement into or out of draft discards every value derived from the earlier read.
 - **Exit 2 means no target was established.** A CLI failure, API failure, empty response, or malformed count must never be interpreted as zero.
 - **A multi-parent head is not invalid.** A sync merge can be the real current branch head. Its bare commit diff is first-parent scope and can show only trunk's changes, so review `merge-base(current base, current head)..current head` instead.
-- **Do not cache or reuse a generated brief.** The command closes movement during its own reads; it cannot freeze the branch after it exits. Dispatch immediately, and the reviewer must re-read the live API head before returning a verdict.
+- **Do not cache or reuse a generated brief.** The command closes movement during its own reads; it cannot freeze the branch after it exits. Dispatch immediately, and the reviewer must re-read the live API head and draft state before returning a verdict.
 
 This is an executable guard only for dispatches that use its output. The repository cannot intercept the session-dispatch API, so bypassing it remains a process breach rather than a mechanically impossible action.
 

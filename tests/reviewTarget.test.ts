@@ -4,6 +4,8 @@ import {
   EXIT_DEFERRED,
   EXIT_READY,
   EXIT_UNDETERMINED,
+  VERDICT_DRAFT,
+  VERDICT_DRAFT_MOVED,
   VERDICT_HEAD_MOVED,
   VERDICT_READY,
   VERDICT_WAITING_FOR_CHECKS,
@@ -34,10 +36,11 @@ function response(body: unknown, status = 0, stderr = ''): CommandResult {
   return { status, stdout: JSON.stringify(body), stderr };
 }
 
-function pull(headSha = FEATURE) {
+function pull(headSha = FEATURE, draft = false) {
   return {
     number: PR_NUMBER,
     state: 'open',
+    draft,
     base: { ref: 'development' },
     head: { ref: 'feature', sha: headSha },
   };
@@ -123,7 +126,7 @@ function runMain(routes: Record<string, CommandResult | CommandResult[]>): {
 }
 
 describe('review scope selection', () => {
-  it('emits a brief for the normal current pull request head', () => {
+  it('POSITIVE CONTROL: emits a brief for the normal current non-draft head', () => {
     const p = paths();
     const result = runMain({
       [p.pull]: [response(pull()), response(pull())],
@@ -137,6 +140,7 @@ describe('review scope selection', () => {
     expect(result.output).toContain(`head sha      ${FEATURE}`);
     expect(result.output).toContain(`base sha      ${BASE}`);
     expect(result.output).toContain(`review range  ${BASE}..${FEATURE}`);
+    expect(result.output).toContain('draft         false');
     expect(result.calls.filter((path) => path === p.pull)).toHaveLength(2);
     expect(result.calls.filter((path) => path === p.base)).toHaveLength(2);
   });
@@ -175,6 +179,54 @@ describe('review scope selection', () => {
 });
 
 describe('transiently unsafe targets', () => {
+  it('defers a stable draft without emitting its derived range', () => {
+    const p = paths();
+    const result = runMain({
+      [p.pull]: [response(pull(FEATURE, true)), response(pull(FEATURE, true))],
+      [p.base]: [response(branch()), response(branch())],
+      [p.checks]: response({ total_count: 1, check_runs: [{}] }),
+      [p.compare]: response(comparison()),
+    });
+
+    expect(result.exitCode).toBe(EXIT_DEFERRED);
+    expect(result.output).toBe('');
+    expect(result.errors).toContain('[review-target] WAIT (draft)');
+    expect(result.errors).toContain('not ready for review dispatch');
+    expect(result.errors).not.toContain('review range');
+    expect(result.calls).not.toContain(p.checks);
+    expect(result.calls).not.toContain(p.compare);
+  });
+
+  it.each([
+    { initialDraft: false, finalDraft: true },
+    { initialDraft: true, finalDraft: false },
+  ])(
+    'discards derived values when draft moves $initialDraft -> $finalDraft',
+    ({ initialDraft, finalDraft }) => {
+      const p = paths();
+      const result = runMain({
+        [p.pull]: [
+          response(pull(FEATURE, initialDraft)),
+          response(pull(FEATURE, finalDraft)),
+        ],
+        [p.base]: [response(branch()), response(branch())],
+        [p.checks]: response({ total_count: 1, check_runs: [{}] }),
+        [p.compare]: response(comparison()),
+      });
+
+      expect(result.exitCode).toBe(EXIT_DEFERRED);
+      expect(result.output).toBe('');
+      expect(result.errors).toContain(
+        `draft state moved from ${String(initialDraft)} to ${String(finalDraft)}`,
+      );
+      expect(result.errors).not.toContain('review range');
+      if (initialDraft) {
+        expect(result.calls).not.toContain(p.checks);
+        expect(result.calls).not.toContain(p.compare);
+      }
+    },
+  );
+
   it('defers a current head with zero check runs without declaring the head invalid', () => {
     const p = paths();
     const result = runMain({
@@ -278,6 +330,7 @@ describe('classification controls', () => {
   const comparisonResult = parseComparison(comparison(), FEATURE);
 
   it('returns READY for a stable measured target', () => {
+    expect(initial.draft).toBe(false);
     expect(
       classifyReviewTarget({
         initial,
@@ -314,6 +367,44 @@ describe('classification controls', () => {
         comparison: comparisonResult,
       }).verdict,
     ).toBe(VERDICT_HEAD_MOVED);
+  });
+
+  it('classifies a stable draft separately from a draft-state movement', () => {
+    const draft = parsePullSnapshot(pull(FEATURE, true), PR_NUMBER);
+    expect(
+      classifyReviewTarget({
+        initial: draft,
+        final: draft,
+        initialBaseSha: BASE,
+        finalBaseSha: BASE,
+        checkRunCount: 1,
+        comparison: comparisonResult,
+      }).verdict,
+    ).toBe(VERDICT_DRAFT);
+    expect(
+      classifyReviewTarget({
+        initial,
+        final: draft,
+        initialBaseSha: BASE,
+        finalBaseSha: BASE,
+        checkRunCount: 1,
+        comparison: comparisonResult,
+      }).verdict,
+    ).toBe(VERDICT_DRAFT_MOVED);
+  });
+
+  it('requires the REST draft field to be boolean', () => {
+    expect(() =>
+      parsePullSnapshot({ ...pull(), draft: 'false' }, PR_NUMBER),
+    ).toThrow(/boolean draft/);
+    expect(() =>
+      parsePullSnapshot(
+        Object.fromEntries(
+          Object.entries(pull()).filter(([key]) => key !== 'draft'),
+        ),
+        PR_NUMBER,
+      ),
+    ).toThrow(/boolean draft/);
   });
 
   it('keeps ready, deferred, and undetermined exits distinct', () => {

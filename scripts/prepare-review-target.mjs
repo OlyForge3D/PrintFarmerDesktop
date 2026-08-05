@@ -9,15 +9,16 @@
 //
 //   merge-base(current base, current PR head)..current PR head
 //
-// Both mutable inputs are read again after the range is derived. If either
-// moved, no brief is emitted. Exact-head check runs are read through the
+// The mutable inputs are read again before a brief is emitted. If the head,
+// base, or draft state moved, no brief is emitted. Stable drafts defer before
+// check/range derivation. Exact-head check runs are read through the
 // dereferencing commits/<sha>/check-runs endpoint: zero means "wait and retry",
 // not "invalid head", while a command/API failure is exit 2 and never becomes
 // a synthetic zero.
 //
 // Exit codes:
 //   0  ready: a stable, current range was emitted
-//   1  deferred: the head/base moved or this new head has no check runs yet
+//   1  deferred: draft, mutable state moved, or this head has no check runs yet
 //   2  undetermined: a command, API response, or required field was unreadable
 //
 // This guards briefs produced through this command. The repository cannot wrap
@@ -36,6 +37,8 @@ export const EXIT_DEFERRED = 1;
 export const EXIT_UNDETERMINED = 2;
 
 export const VERDICT_READY = 'ready';
+export const VERDICT_DRAFT = 'draft';
+export const VERDICT_DRAFT_MOVED = 'draft-moved';
 export const VERDICT_WAITING_FOR_CHECKS = 'waiting-for-checks';
 export const VERDICT_HEAD_MOVED = 'head-moved';
 export const VERDICT_BASE_MOVED = 'base-moved';
@@ -83,6 +86,7 @@ export function parsePullSnapshot(payload, expectedNumber) {
   }
   const number = payload.number;
   const state = payload.state;
+  const draft = payload.draft;
   const baseRef = payload.base?.ref;
   const headRef = payload.head?.ref;
   const headSha = normalizeSha(payload.head?.sha);
@@ -97,6 +101,11 @@ export function parsePullSnapshot(payload, expectedNumber) {
       `pull request #${expectedNumber} is ${JSON.stringify(state)}, not open; no review target can be dispatched`,
     );
   }
+  if (typeof draft !== 'boolean') {
+    throw new Error(
+      `pull request #${expectedNumber} response carried no boolean draft field (${JSON.stringify(draft)})`,
+    );
+  }
   if (
     typeof baseRef !== 'string' ||
     baseRef === '' ||
@@ -109,7 +118,7 @@ export function parsePullSnapshot(payload, expectedNumber) {
     );
   }
 
-  return { number, state, baseRef, headRef, headSha };
+  return { number, state, draft, baseRef, headRef, headSha };
 }
 
 export function parseBaseSha(payload, baseRef) {
@@ -189,6 +198,33 @@ export function classifyReviewTarget({
         'discard every derived value and run the command again',
     };
   }
+  if (initial.draft !== final.draft) {
+    return {
+      verdict: VERDICT_DRAFT_MOVED,
+      exitCode: EXIT_DEFERRED,
+      reason:
+        `draft state moved from ${String(initial.draft)} to ${String(final.draft)} while the brief was derived; ` +
+        'discard every derived value and run the command again',
+    };
+  }
+  if (initial.draft) {
+    return {
+      verdict: VERDICT_DRAFT,
+      exitCode: EXIT_DEFERRED,
+      reason:
+        `pull request #${initial.number} remained draft while the target was derived and is not ready for review dispatch. ` +
+        'Mark it ready, then rerun; do not dispatch merely to obtain merge clearance.',
+    };
+  }
+  if (
+    initialBaseSha === null ||
+    finalBaseSha === null ||
+    checkRunCount === null
+  ) {
+    throw new Error(
+      'a stable non-draft pull request has no complete base or check-run reading',
+    );
+  }
   if (initialBaseSha !== finalBaseSha) {
     return {
       verdict: VERDICT_BASE_MOVED,
@@ -226,6 +262,9 @@ export function classifyReviewTarget({
 }
 
 export function formatReviewBrief(result, options = {}) {
+  if (result.pull.draft) {
+    throw new Error('cannot format a READY brief for a draft pull request');
+  }
   const readAt = options.readAt ?? new Date().toISOString();
   const lines = [
     '[review-target] READY',
@@ -234,6 +273,7 @@ export function formatReviewBrief(result, options = {}) {
     `base sha      ${result.baseSha}`,
     `head ref      ${result.pull.headRef}`,
     `head sha      ${result.pull.headSha}`,
+    `draft         ${String(result.pull.draft)}`,
     `merge base    ${result.comparison.mergeBaseSha}`,
     `review range  ${result.comparison.range}`,
     `check runs    ${result.checkRunCount}`,
@@ -246,7 +286,7 @@ export function formatReviewBrief(result, options = {}) {
     '',
     `Review only the branch contribution in ${result.comparison.range}.`,
     `Do not use a bare diff of ${result.pull.headSha}; a merge head's bare commit diff is first-parent scope.`,
-    `Before returning a verdict, re-read PR #${result.pull.number}'s API head and require it still equals ${result.pull.headSha}.`,
+    `Before returning a verdict, re-read PR #${result.pull.number}'s API head and draft state; require the head still equals ${result.pull.headSha} and draft remains false.`,
   );
   return lines.join('\n');
 }
@@ -278,9 +318,9 @@ export function readGhJson(run, path, env) {
 
 const USAGE = `usage: npm run review:target -- --pr <number> [--repo owner/name]
 
-Emits a review brief only when the current API head and base remain stable,
-the exact head has at least one check run, and the scope can be stated as
-merge-base(base, head)..head.
+Emits a review brief only when the pull request remains non-draft, the current
+API head and base remain stable, the exact head has at least one check run, and
+the scope can be stated as merge-base(base, head)..head.
 
 exit 0 ready and brief emitted
 exit 1 wait/retry; no brief emitted
@@ -311,15 +351,21 @@ function runMain(argv, env, run, writeOut, writeError) {
   const pullPath = `repos/${repository}/pulls/${args.pr}`;
   const initial = parsePullSnapshot(readGhJson(run, pullPath, env), args.pr);
   const basePath = `repos/${repository}/branches/${encodeURIComponent(initial.baseRef)}`;
-  const initialBaseSha = parseBaseSha(
-    readGhJson(run, basePath, env),
-    initial.baseRef,
-  );
-  const checksPath = `repos/${repository}/commits/${initial.headSha}/check-runs?per_page=1`;
-  const checkRunCount = parseCheckRunCount(readGhJson(run, checksPath, env));
+  const initialBaseSha = initial.draft
+    ? null
+    : parseBaseSha(readGhJson(run, basePath, env), initial.baseRef);
+  const checkRunCount = initial.draft
+    ? null
+    : parseCheckRunCount(
+        readGhJson(
+          run,
+          `repos/${repository}/commits/${initial.headSha}/check-runs?per_page=1`,
+          env,
+        ),
+      );
 
   const comparison =
-    checkRunCount === 0
+    checkRunCount === null || checkRunCount === 0
       ? null
       : parseComparison(
           readGhJson(
@@ -331,10 +377,14 @@ function runMain(argv, env, run, writeOut, writeError) {
         );
 
   const final = parsePullSnapshot(readGhJson(run, pullPath, env), args.pr);
-  const finalBaseSha = parseBaseSha(
-    readGhJson(run, basePath, env),
-    initial.baseRef,
-  );
+  const pullStateMoved =
+    initial.headSha !== final.headSha ||
+    initial.baseRef !== final.baseRef ||
+    initial.draft !== final.draft;
+  const finalBaseSha =
+    initialBaseSha === null || pullStateMoved
+      ? initialBaseSha
+      : parseBaseSha(readGhJson(run, basePath, env), initial.baseRef);
   const result = classifyReviewTarget({
     initial,
     final,
