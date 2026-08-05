@@ -351,6 +351,15 @@ At the head, `.squad/skills/git-workflow/SKILL.md` carries the heading **Do not 
   mainline. **Whether that sentence is what was read is not established and is not asserted here.** It is a hazard on its own terms: a
   superseded present-tense claim sitting in the corpus a checker greps will be found by any reader who stops at the first hit. Annotated
   in place this round.
+- **A second instance, in my own artifact, found while verifying the first.** The pull request body for this branch carried the
+  test count twice — `1978 passed in 94 files` in the standing block, which is re-derived at every push, and `1976 passed in 94 files`
+  in a validation section written once and never re-run. **Two renderings of one quantity inside one document, disagreeing**, in the
+  body of the pull request whose parent was opened about exactly that. Neither was treated as the authority; the object was measured
+  (**1978**) and the duplicate removed rather than corrected, since a second copy that agrees today is the same hazard one push later.
+- **It was found by reading, and no check here could have found it.** Every instrument on this branch compares an artifact against a
+  revision, a script, or another file. **Nothing compares a document against itself**, so an internal disagreement is invisible to all of
+  them — and a pull request body is exactly the kind of artifact that accretes figures written at different times under one heading.
+
 - **Grade: ❌ against the report, ✅ unavailable for the pair.** The two renderings of the diamond-DAG row total agree at the mainline,
   but they agree because one was repaired to match the other by a commit named in this ledger — a **discharge**, not independent
   convergence, so it resolves without earning ✅.
