@@ -23,6 +23,7 @@ import {
   ACK_FOREIGN_ENV,
   PROTECTED_REFS,
   authoredHere,
+  originLabel,
   readCommits,
   readEquivalentCommits,
   readLiveRemoteSha,
@@ -69,54 +70,12 @@ export function parseArgs(argv) {
   return options;
 }
 
-/**
- * What to print beside a commit this push would destroy, so the operator can
- * tell their own abandoned work from somebody else's.
- *
- * This line used to read `[session <id>]`, taken from the destroyed commit's
- * `Copilot-Session` trailer. That label asserted an identity the trailer cannot
- * support. The trailer reaches a committer through its PROMPT, not its
- * environment, so it identifies a BRIEF: measured on `development`, 249 commits
- * carry it across 48 distinct values, one of which covers 74 commits spanning 37
- * hours — longer than any session runs. `push-guard.mjs` stopped deciding
- * ownership from it for exactly this reason; the display kept reading it.
- *
- * The failure is not that the label is vague. Two sessions given the same brief
- * emit the same id, so when the other writer shares your brief this printed the
- * PUSHER'S OWN id against ANOTHER WRITER'S work — and the operator, reading a
- * list they were told to read before answering "are these genuinely obsolete",
- * sees their own id and answers yes. A wrong attribution is worse than no
- * attribution, because silence prompts the question and a familiar id settles
- * it.
- *
- * So the label is drawn from the reflog instead, which records what THIS
- * worktree did rather than what any commit says about itself. Three states, and
- * the third is the point:
- *
- *   created here      this worktree's HEAD reflog shows it authoring that exact
- *                     sha. Your own superseded work.
- *   NOT created here  the reflog is readable and that sha is absent from it.
- *                     Someone else made this.
- *   origin unverifiable  no reflog to read (`core.logAllRefUpdates=false`, or
- *                     expiry). NOT the same as "not yours".
- *
- * Collapsing the third state into the second would restate the original defect
- * with the sign flipped — an unreadable reflog would accuse every commit,
- * including the operator's own, and a refusal that fires on everything teaches
- * the override. `authoredHere()` is the same evidence flag the guard uses to
- * decide whether it may make a foreignness claim at all, so the two cannot
- * disagree about whether the question is answerable.
- *
- * @param {string} sha
- * @param {Set<string>} owned commits this worktree's reflog shows it creating
- * @param {boolean} attributable whether that reflog was readable at all
- * @returns {string}
- */
-export function originLabel(sha, owned, attributable) {
-  if (owned.has(sha)) return '[created here]';
-  if (!attributable) return '[origin unverifiable]';
-  return '[NOT created here]';
-}
+// The origin label lives in `push-guard.mjs` beside the ownership evidence it
+// is derived from, and is re-exported here because this script is where it is
+// read. One implementation on purpose: the hook's refusal list and this
+// script's discard list describe the same commits to the same operator, and two
+// copies of the rule are two things that can disagree.
+export { originLabel };
 
 function main(argv) {
   const options = parseArgs(argv);

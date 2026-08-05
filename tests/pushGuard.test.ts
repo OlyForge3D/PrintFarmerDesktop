@@ -2201,10 +2201,13 @@ describe('a solo rollback is not reported as a second writer', () => {
     // themselves as a second writer. That is the habit that disarms the real
     // refusal, taught on a push where no second writer existed.
     expect(stderr).not.toContain(ACK_FOREIGN_ENV);
-    // Not asserted: that the session id is absent entirely. The refusal does
-    // annotate the discarded commit with `[session session-solo]`, which is
-    // true and useful. The defect was the *claim* that it belonged to someone
-    // else, not the mention.
+    // The commit list is annotated from the reflog, not from the trailer. In
+    // this scenario the pusher really did author the discarded commit here, so
+    // the honest label is `[created here]` — and it is asserted rather than
+    // described, because the previous version of this block explained the
+    // annotation in a comment and the annotation was wrong.
+    expect(stderr).toContain('[created here]');
+    expect(stderr).not.toContain('[session ');
   });
 
   it('accepts the rollback with the tip acknowledgement alone, no foreign override', () => {
@@ -2482,6 +2485,14 @@ describe('two sessions sharing one brief share one session id', () => {
     }).toThrow();
 
     expect(stderr).toContain('push-guard.unowned-discard');
+    // The commit being destroyed was authored in the other worktree, so the
+    // hook's own commit list must say so. Under the trailer label this line
+    // printed `[session <SHARED>]` — the pusher's own id, against another
+    // writer's work, in the list they are told to read before deciding it is
+    // obsolete. Asserting the id is ABSENT is the load-bearing half: a
+    // correct-looking label is what makes a wrong one dangerous.
+    expect(stderr).toContain('[NOT created here]');
+    expect(stderr).not.toContain(`[session ${SHARED}]`);
     expect(
       git(['ls-remote', remote, 'refs/heads/feature'], one).split('\t')[0],
     ).toBe(theirs);
