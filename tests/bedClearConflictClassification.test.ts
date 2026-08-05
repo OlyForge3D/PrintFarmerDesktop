@@ -134,10 +134,10 @@ describe('#326 — unrecognised bed-clear 409 is distinguishable from a diagnose
   it('the distinction survives to the renderer, where the operator reads it', async () => {
     const diagnosed = (
       await bedClearError('idempotency_payload_mismatch')
-    ).toApiError();
+    ).toApiError(null);
     const unknown = (
       await bedClearError('bed_not_actually_clear')
-    ).toApiError();
+    ).toApiError(null);
 
     expect(diagnosed.code).toBe('idempotencyPayloadChanged');
     expect(unknown.code).toBe('serverError');
