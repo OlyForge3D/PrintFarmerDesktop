@@ -2691,6 +2691,100 @@ the previous version would have written a byte and declared itself verified.
 > to assert about.** A count with no floor and a comparison with no minimum population are the
 > same defect, and both read as diligence.
 
+#### 9. A fabricated revision survived in the one artifact no instrument reads
+
+Closing this round, the working note carried a pin for the retraction in §1 that renders as a
+seven-character revision and **resolves to nothing**. The ledger entry above carries a
+different value, and that one resolves. Measured `2026-08-05T16:2xZ`:
+
+| rendering                   | `cat-file -e` | full object                                |
+| --------------------------- | ------------- | ------------------------------------------ |
+| shipped in §1 above         | exit 0        | `43d2a6722355ff58422864752a99f8cb50de0c41` |
+| carried in the working note | exit 128      | none — no such object                      |
+
+The four ancestry readings §1 publishes were then re-derived against the resolving value, with
+both controls firing, and all four agree with what §1 states. **The published entry is correct;
+only the note was wrong.**
+
+The provenance is the point. The entry was written from the measurement. The note was written
+from a **summary** of the measurement, and the transposition happened in the copy. That is this
+ledger's oldest rule — _copying from the object is verification, copying from another rendering
+is contagion_ — arriving in the direction it has never yet arrived from.
+
+**The class this exposes is a scope, not a lapse.** The citation harness scans the repository.
+A session working note is not in the repository, so it is outside the harness **by
+construction**, and no configuration of the check reaches it.
+
+> **The citations most likely to be copied forward into the next round are exactly the ones
+> nothing checks.** A working note is upstream of every published claim and is the only artifact
+> in the chain with no gate on it. **Its errors do not stay in it** — they are drawn on next
+> round by an author who has, by then, no memory of which figures were measured and which were
+> copied.
+
+Two properties made this one cheap, and neither generalises. It failed toward **fabrication**,
+which is the single error class detectable at zero cost by one command against one object — no
+corpus, no scope, no unit. And the note and the ledger disagreed, so a second rendering existed
+to disagree **with**; a note that merely omitted the pin would have been silently consistent
+with everything.
+
+The remedy is not proofreading. **A working note that renders revisions must be scanned by the
+same rule as the artifact, or it must render none of them** — the second being available here
+and never taken, because a note that names its objects is more useful to its author right up
+until the moment it is wrong.
+
+**The splice of this section then refused to certify itself, and the refusal is the third
+finding.** Every content and volume assertion passed — the byte delta matched the payload
+exactly — and four _placement_ assertions failed, so the write was reverted rather than
+accepted. The cause is that this ledger carries **mixed line endings**: measured at the same
+instant, 52 carriage returns against 2828 line feeds. The inserted payload was uniformly the
+other kind, so every line of it acquired a trailing carriage return that the surrounding prose
+does not have, and an exact-match lookup for the new heading found nothing.
+
+The reason the ledger is mixed is the part worth keeping. The formatter normalises line endings
+in prose and **preserves the contents of fenced blocks verbatim**, so every carriage return in
+the file is inside a fence, and a formatter-clean file can carry two conventions indefinitely
+with no diagnostic.
+
+> **The lines that escape normalisation are exactly the lines the structural detectors care
+> about.** Fenced blocks are where a run heading must never appear and where transcripts of
+> commands are pasted, so a line-splitting instrument meets the anomalous endings **only in the
+> region it was written to police**, and reports a false negative there and nowhere else.
+> ⇒ a check that splits on one line-ending convention is not doing string comparison, it is
+> **sampling whichever convention its own author's tooling emitted**, and that is a property of
+> the writer, not of the document.
+
+The repair is normalisation at read time on both sides, not a looser comparison: a tolerant
+match would have accepted this write and would equally accept a heading that genuinely landed
+in the wrong place. **The assertions were right to refuse.** Volume said the payload arrived;
+only position could say it arrived legible, and the two disagreed for a reason neither the
+author nor the formatter could see.
+
+Applying that repair then produced a fourth instance in the same minute. Two of the edits to
+the splicer did not apply, because the search strings were written in an interpolating shell
+quotation and the fence characters in them were consumed as escapes before the replacement ran
+— so the pattern searched for was not the pattern intended, matched nothing, and **a
+search-and-replace that matches nothing is silent.** It reports the same thing on a
+no-op as on a success: nothing. The edits happened to be unnecessary, so no defect reached the
+file, and that is luck rather than a control.
+
+> **A tool whose failure signal and success signal are both silence cannot be used without an
+> independent count of what it changed.** This is the volume assertion arriving from the other
+> end: the splice needed a check on _where_, and the patcher needed a check on _whether_ — and
+> neither instrument volunteers the one the other lacks.
+
+**A further trap fired in the same call, and its presentation is new.** The construct that pins a
+revision to its commit was written unquoted, and the shell consumed the caret before the tool
+saw it. This ledger records that hazard as returning one exit value for both a present and an
+absent object. Here it produced neither: it produced a **parser** error, refusing to launch the
+command at all, and the diagnostic was printed under the name of the tool that never ran.
+
+> **An error message reports the layer that raised it, not the layer that caused it** — and the
+> raising layer had the tool's name in hand to print. So the recorded taxonomy is
+> under-specified: the same unquoted construct has now produced at least two unrelated
+> presentations, depending only on what follows it, and **neither of them says anything about
+> quoting.** The failure is loud, attributed to the wrong component, and gives the reader no
+> route to the cause.
+
 #### 8. Method note — what this entry does not claim
 
 Every reading above is stamped. Two are not re-derivable by a later reader in the form given:
