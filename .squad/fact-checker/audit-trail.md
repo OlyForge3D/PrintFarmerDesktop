@@ -2649,7 +2649,49 @@ next entry, not this one.
 > is the same each time — the reader loses recognition on sight — which is exactly why the
 > people documenting the hazard are the ones who keep reproducing it.
 
-#### 7. Method note — what this entry does not claim
+#### 7. The publisher extracted one byte and both of its guards passed
+
+Extracting this entry for the pull-request body, the extractor reported success and wrote
+**1 byte**. Its two pre-write assertions both passed:
+
+```
+closing-keyword matches in section: 0 (must be 0)
+verbatim against committed ledger: 1 lines, 0 divergent
+```
+
+Cause: the scan for the next entry ran against a string re-sliced one character past the
+heading, so the truncated heading matched the _top-level_ heading pattern at position zero
+and the section ended where it began.
+
+The defect is the off-by-one. **The finding is that neither guard could report it.** One asks
+whether the extracted text contains a forbidden form; the other asks whether every line of it
+appears in the ledger. **A one-byte section satisfies both perfectly** — it contains no
+forbidden string, and its single line is trivially present.
+
+> **A guard that validates what is present is structurally blind to almost nothing being
+> present**, and it does not fail quietly — **it reports success, in the same words it uses
+> when it has done its job.** Run AG reached this for a document (_a content check and a
+> structural check are both blind to material nobody wrote_); here it arrives for the
+> extraction step, where the blindness costs a published body rather than a ledger.
+
+This is also the vacuity class from run BI, with the polarity reversed. There a conditional
+guard stopped applying when its premise went false. Here the guards applied and had nothing
+to apply to. **In both, the passing output is identical to the output of a guard doing real
+work** — which is why _the check is green_ has never been the same statement as _the check
+looked_.
+
+Repaired at the cause and at the class: the scan now walks lines rather than character
+offsets, so no re-sliced string can match its own truncation; and three **non-vacuity**
+assertions bound what the content guards inspect — a minimum source-line count, a minimum
+byte count, and a minimum number of numbered subsections. Both arms exercised: the real label
+extracts a whole entry, and a label with no entry **refuses and writes no file at all**, where
+the previous version would have written a byte and declared itself verified.
+
+> **The general form: every content assertion needs a companion asserting there was something
+> to assert about.** A count with no floor and a comparison with no minimum population are the
+> same defect, and both read as diligence.
+
+#### 8. Method note — what this entry does not claim
 
 Every reading above is stamped. Two are not re-derivable by a later reader in the form given:
 the token-scope measurements describe this machine's credential store at an instant, and no
