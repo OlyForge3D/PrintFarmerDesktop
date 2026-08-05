@@ -332,6 +332,14 @@ export function validateSpec(spec) {
   if (!['pwsh', 'sh', 'none'].includes(shell)) {
     return { ok: false, reason: `unsupported shell ${JSON.stringify(shell)}` };
   }
+  // The spec has to vary with the case somewhere. It may vary in the command,
+  // in the script, OR in the reducer — a fixed command whose cases differ only
+  // in the question asked of its output is the strongest shape here, not a
+  // degenerate one. See substituteReduce(): requiring it in the command alone
+  // rejected `git rev-list A..B` reduced to `contains:{{SHA}}`, which is a
+  // live #214 instance.
+  const reduceVaries =
+    typeof s.reduce === 'string' && PLACEHOLDER.test(s.reduce);
   if (shell === 'none') {
     if (!Array.isArray(s.command) || s.command.length === 0) {
       return {
@@ -340,6 +348,7 @@ export function validateSpec(spec) {
       };
     }
     if (
+      !reduceVaries &&
       !s.command.some(
         (/** @type {unknown} */ el) =>
           typeof el === 'string' && PLACEHOLDER.test(el),
@@ -348,14 +357,17 @@ export function validateSpec(spec) {
       return {
         ok: false,
         reason:
-          'spec.command must contain at least one {{PLACEHOLDER}} element, or it cannot vary with the case',
+          'spec.command must contain at least one {{PLACEHOLDER}} element, or spec.reduce must, or it cannot vary with the case',
       };
     }
-  } else if (typeof s.script !== 'string' || !PLACEHOLDER.test(s.script)) {
+  } else if (
+    typeof s.script !== 'string' ||
+    (!PLACEHOLDER.test(s.script) && !reduceVaries)
+  ) {
     return {
       ok: false,
       reason:
-        'spec.script must be a string containing at least one {{PLACEHOLDER}}, or it cannot vary with the case',
+        'spec.script must be a string containing at least one {{PLACEHOLDER}}, or spec.reduce must, or it cannot vary with the case',
     };
   }
   const reading = s.reading ?? 'exitCode';
@@ -558,6 +570,32 @@ export function readingFrom(reading, result, reduce = 'raw') {
 }
 
 /**
+ * Substitute `{{NAME}}` tokens in the reducer from a case's vars.
+ *
+ * FOUND LIVE, a third time. A spec whose command is FIXED and whose cases vary
+ * only in the reduction is not degenerate — it is the strongest shape there is,
+ * because the instrument runs identically in both arms and only the question
+ * asked of its output moves. `git rev-list A..B` reduced to
+ * `contains:<sha>` is exactly that, and validateSpec rejected it outright for
+ * having no placeholder in the command. A false rejection of the best-formed
+ * spec the tool accepts.
+ *
+ * No shell risk here: the reducer never reaches a shell, it is applied in
+ * process to captured stdout.
+ *
+ * @param {string} reduce
+ * @param {Record<string, string>} vars
+ * @returns {string}
+ */
+export function substituteReduce(reduce, vars) {
+  let out = reduce;
+  for (const [k, v] of Object.entries(vars ?? {})) {
+    out = out.split(`{{${k}}}`).join(v);
+  }
+  return out;
+}
+
+/**
  * @param {any} spec
  * @param {(argv: string[], env: Record<string,string>) => {status: number|null, stdout: string, error?: string|undefined}} run
  * @param {string} nodePath
@@ -580,7 +618,11 @@ export function executeSpec(spec, run, nodePath, probePath) {
       PROBE_EXIT: String(c.probe?.exit ?? 0),
       PROBE_LINES: String(c.probe?.lines ?? 0),
     });
-    const r = readingFrom(spec.reading, result, spec.reduce);
+    const r = readingFrom(
+      spec.reading,
+      result,
+      substituteReduce(spec.reduce ?? 'raw', vars),
+    );
     return {
       label: c.label,
       reading: r.reading,

@@ -22,6 +22,7 @@ import {
   worstVerdict,
   exitCodeFor,
   isNonAnswerExit,
+  substituteReduce,
   classifyDiscrimination,
   applyReduce,
   validateSpec,
@@ -370,6 +371,115 @@ describe('isNonAnswerExit', () => {
 
   it('is false for the empty string, which is an answer', () => {
     expect(isNonAnswerExit('')).toBe(false);
+  });
+});
+
+describe('substituteReduce: the case may vary in the reducer, not the command', () => {
+  it('substitutes a var into the reducer', () => {
+    expect(substituteReduce('contains:{{SHA}}', { SHA: 'abc123' })).toBe(
+      'contains:abc123',
+    );
+  });
+
+  it('replaces every occurrence', () => {
+    expect(substituteReduce('contains:{{A}}{{A}}', { A: 'x' })).toBe(
+      'contains:xx',
+    );
+  });
+
+  it('leaves a reducer with no tokens alone', () => {
+    expect(substituteReduce('lineCount', { SHA: 'abc' })).toBe('lineCount');
+  });
+
+  it('leaves an unmatched token in place rather than guessing', () => {
+    expect(substituteReduce('contains:{{SHA}}', { OTHER: 'x' })).toBe(
+      'contains:{{SHA}}',
+    );
+  });
+
+  it('tolerates absent vars', () => {
+    expect(substituteReduce('contains:x', /** @type {any} */ undefined)).toBe(
+      'contains:x',
+    );
+  });
+
+  it('accepts a spec whose only placeholder is in the reducer', () => {
+    const r = validateSpec(
+      spec({
+        shell: 'none',
+        command: ['git', 'rev-list', 'a..b'],
+        reading: 'stdout',
+        reduce: 'contains:{{SHA}}',
+        cases: [
+          { label: 'a', vars: { SHA: 'aaa' } },
+          { label: 'b', vars: { SHA: 'bbb' } },
+        ],
+      }),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('still rejects a spec that varies nowhere at all', () => {
+    const r = validateSpec(
+      spec({
+        shell: 'none',
+        command: ['git', 'rev-list', 'a..b'],
+        reading: 'stdout',
+        reduce: 'lineCount',
+        cases: [{ label: 'a' }, { label: 'b' }],
+      }),
+    );
+    expect(r.ok).toBe(false);
+    expect('reason' in r && r.reason).toMatch(/cannot vary with the case/);
+  });
+
+  it('accepts a shell spec whose only placeholder is in the reducer', () => {
+    const r = validateSpec(
+      spec({
+        shell: 'pwsh',
+        script: 'git rev-list a..b',
+        reading: 'stdout',
+        reduce: 'contains:{{SHA}}',
+        cases: [
+          { label: 'a', vars: { SHA: 'aaa' } },
+          { label: 'b', vars: { SHA: 'bbb' } },
+        ],
+      }),
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('still rejects a shell spec that varies nowhere', () => {
+    const r = validateSpec(
+      spec({
+        shell: 'pwsh',
+        script: 'git rev-list a..b',
+        reading: 'stdout',
+        reduce: 'trim',
+        cases: [{ label: 'a' }, { label: 'b' }],
+      }),
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  it('reduces per case, so a fixed command can still discriminate', () => {
+    const out = executeSpec(
+      {
+        instrument: 'fixed command, varying reducer',
+        shell: 'none',
+        command: ['fixed'],
+        reading: 'stdout',
+        reduce: 'contains:{{SHA}}',
+        cases: [
+          { label: 'present', vars: { SHA: 'aaa' } },
+          { label: 'absent', vars: { SHA: 'zzz' } },
+        ],
+      },
+      () => ({ status: 0, stdout: 'aaa\nbbb\n' }),
+      'node',
+      'probe.mjs',
+    );
+    expect(out.map((c) => c.reading)).toEqual(['true', 'false']);
   });
 });
 

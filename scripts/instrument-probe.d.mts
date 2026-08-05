@@ -42,6 +42,10 @@ export function pathIsInterpolable(p: string | undefined): boolean;
 export function worstVerdict(verdicts: readonly string[]): ProbeVerdict;
 export function exitCodeFor(verdict: string): 0 | 1 | 2;
 export function isNonAnswerExit(reading: string | null | undefined): boolean;
+export function substituteReduce(
+  reduce: string,
+  vars: Record<string, string> | undefined,
+): string;
 
 export function classifyDiscrimination(
   cases: readonly ProbeCaseReading[],
