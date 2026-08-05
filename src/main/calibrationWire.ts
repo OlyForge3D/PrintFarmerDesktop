@@ -1712,45 +1712,6 @@ export const RemoteQueueEventEnvelope = z
   .passthrough();
 export type RemoteQueueEventEnvelope = z.infer<typeof RemoteQueueEventEnvelope>;
 
-/**
- * The source-declared current queue event schema version.
- * Maps to `QueueEventSchemaVersions.Current = "3"` in
- * `src/infra/Domain/QueueDispatchEntities.cs` at both
- * 167a3b134a678a0d9a8c10371da8333d03ddc636 and 9c1d7e4b97c5f0fee0f0c702aa864374b3e21cf0.
- * The schema uses `z.string()` (not `z.literal`) to preserve forward-compatibility
- * with future server versions.
- */
-export const QUEUE_EVENT_SCHEMA_VERSION_CURRENT = '3';
-
-/**
- * The fields that `QueueEventEnvelope.RedactForPrinter()` sets to null.
- * Printer-group envelopes carry only `schemaVersion`, `eventId`, `sequence`,
- * `eventType` ("PrintFarmer.Queue.PrinterStateChanged.v1"), `printerId`,
- * `occurredAtUtc`, and `jobStatus`. All fields listed here are null.
- * Source: `src/infra/Services/SignalR/QueueEventEnvelope.cs`, both commits.
- */
-export const PRINTER_GROUP_REDACTED_FIELDS = [
-  'jobId',
-  'projectId',
-  'calibrationAttemptId',
-  'jobKind',
-  'jobRevision',
-  'dispatchStateRevision',
-  'attemptId',
-  'attemptNumber',
-  'attemptOutcome',
-  'bedClearState',
-  'bedClearCommandId',
-  'bedClearExpiresAtUtc',
-  'errorCode',
-  'failureCode',
-  'failureRetryable',
-  'failureRequiresReconciliation',
-  'payloadJson',
-  'jobLogicalRevision',
-  'dispatchStateLogicalRevision',
-] as const satisfies readonly string[];
-
 // ─── Primary job-queue change feed (issue #54) ──────────────────────────────
 
 /**

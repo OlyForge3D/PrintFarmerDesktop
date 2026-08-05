@@ -3,22 +3,21 @@
 /**
  * Server contract parity guard — issue #138.
  *
- * Side A: `docs/printer-calibration-admin-guide.md` §10 is the maintained
- * documentation surface.
+ * Side A — docs: `docs/printer-calibration-admin-guide.md` §10 sections
+ * parsed for route templates, bed-clear header names, and attestations.
  *
- * Side B: exported production constants and behavior:
- *   - `CALIBRATION_QUEUE_ROUTE_TEMPLATES` (calibrationHttp.ts) — consumed by
- *     the HTTP client; tested via fetch mocks to verify exact URL match.
- *   - `BED_CLEAR_PRECONDITION_HEADER_NAMES` (calibrationHttp.ts) — used to
- *     build headers in `acknowledgeBedClearAndStart`; tested via fetch mock.
- *   - `QUEUE_EVENT_SCHEMA_VERSION_CURRENT`, `PRINTER_GROUP_REDACTED_FIELDS`
- *     (calibrationWire.ts) — compared against §10.5/10.5.2 doc text.
- *   - `detectQueueChangeFeedGap` (ipc.ts) — exercised for contiguous,
- *     cursor-gap, and internal-gap scenarios.
+ * Side B — production seams consumed by the desktop runtime:
+ *   • CALIBRATION_QUEUE_ROUTE_TEMPLATES: single source that ROUTES derives
+ *     from; mutating a template changes the executable HTTP call path.
+ *   • BED_CLEAR_PRECONDITION_HEADER_NAMES: used by acknowledgeBedClearAndStart
+ *     to build its request headers; fetch mocks verify values.
+ *   • isJobScopedEnvelope: used by CalibrationQueueDispatchPanel to skip
+ *     printer-group envelopes; tested for null-jobId exclusion.
+ *   • detectQueueChangeFeedGap: replaces the former inline IPC loop;
+ *     tested for cursor-gap, internal-gap, and contiguous cases.
  *
- * Both sides are asserted non-empty. Missing and unexpected values are
- * reported symmetrically. No test-local policy tables duplicate the
- * production constants.
+ * Schema version "3" is cited from source docs (both commits); the schema uses
+ * z.string() for forward compatibility — no separate production constant.
  */
 
 import path from 'node:path';
@@ -31,13 +30,13 @@ import {
   type CalibrationTokenProvider,
 } from '../src/main/calibrationHttp.js';
 import {
-  QUEUE_EVENT_SCHEMA_VERSION_CURRENT,
-  PRINTER_GROUP_REDACTED_FIELDS,
-  RemoteCalibrationOrchestrationStatus,
-} from '../src/main/calibrationWire.js';
+  isJobScopedEnvelope,
+  type CalibrationQueueEventEnvelope,
+} from '../src/shared/ipc.js';
+import { RemoteCalibrationOrchestrationStatus } from '../src/main/calibrationWire.js';
 import { detectQueueChangeFeedGap } from '../src/main/ipc.js';
 
-// ─── Side A: parse the maintained admin guide §10 ────────────────────────────
+// ─── Side A: parse §10 from the maintained admin guide ───────────────────────
 
 const GUIDE_PATH = path.resolve(
   import.meta.dirname,
@@ -45,87 +44,61 @@ const GUIDE_PATH = path.resolve(
   'docs',
   'printer-calibration-admin-guide.md',
 );
-const guideText = readFileSync(GUIDE_PATH, 'utf8');
+const guide = readFileSync(GUIDE_PATH, 'utf8');
 
-function extractSection(text: string, heading: string): string {
-  const start = text.indexOf(`\n${heading}`);
+function section(heading: string): string {
+  const start = guide.indexOf(`\n${heading}`);
   if (start === -1) return '';
-  const next = text.indexOf('\n## ', start + 5);
-  return next === -1 ? text.slice(start) : text.slice(start, next);
+  const next = guide.indexOf('\n## ', start + 5);
+  return next === -1 ? guide.slice(start) : guide.slice(start, next);
+}
+function subsection(within: string, heading: string): string {
+  const start = within.indexOf(`\n${heading}`);
+  if (start === -1) return '';
+  const next = within.indexOf('\n### ', start + 5);
+  return next === -1 ? within.slice(start) : within.slice(start, next);
 }
 
-function extractSubSection(text: string, heading: string): string {
-  const start = text.indexOf(`\n${heading}`);
-  if (start === -1) return '';
-  const next = text.indexOf('\n### ', start + 5);
-  return next === -1 ? text.slice(start) : text.slice(start, next);
-}
+const sec10 = section('## 10. PrintFarmer server REST contract');
+const sec101 = subsection(sec10, '### 10.1');
+const sec103 = subsection(sec10, '### 10.3');
 
-/** Route templates from §10.1 table rows (lines starting with `|`). */
-function extractDocRouteTemplates(text: string): string[] {
-  const results: string[] = [];
+/** Route templates from §10.1 table rows. */
+function docRoutes(text: string): string[] {
+  const acc: string[] = [];
   for (const line of text.split('\n')) {
     if (!line.startsWith('|')) continue;
-    for (const m of line.matchAll(/`(\/api\/[^`]+)`/g)) {
-      results.push(m[1]!);
-    }
+    for (const m of line.matchAll(/`(\/api\/[^`]+)`/g)) acc.push(m[1]!);
   }
-  return [...new Set(results)];
+  return [...new Set(acc)];
 }
 
-/** Header names from §10.3 table rows only (hyphenated, no slashes). */
-function extractDocBedClearHeaders(text: string): string[] {
-  const results: string[] = [];
+/** Precondition header names from §10.3 table rows (hyphenated identifiers). */
+function docHeaders(text: string): string[] {
+  const acc: string[] = [];
   for (const line of text.split('\n')) {
     if (!line.startsWith('|')) continue;
     for (const m of line.matchAll(/`([A-Za-z][A-Za-z0-9-]+[A-Za-z0-9])`/g)) {
       const h = m[1]!;
-      if (h.includes('-') && !h.includes('/') && !h.includes('.')) {
-        results.push(h.toLowerCase());
-      }
+      if (h.includes('-') && !h.includes('/') && !h.includes('.'))
+        acc.push(h.toLowerCase());
     }
   }
-  return [...new Set(results)];
+  return [...new Set(acc)];
 }
 
-/** Field names from §10.5 nulled-field list (before "forces eventType"). */
-function extractDocRedactedFields(text: string): string[] {
-  // Only extract from the "nulls X, Y, Z" segment, not the "forces eventType" clause
-  const nullsIdx = text.indexOf('which nulls');
-  const forcesIdx = text.indexOf('forces `eventType`');
-  if (nullsIdx === -1) return [];
-  const nullsSegment =
-    forcesIdx === -1 ? text.slice(nullsIdx) : text.slice(nullsIdx, forcesIdx);
-  const results: string[] = [];
-  for (const m of nullsSegment.matchAll(/`([a-z][A-Za-z]+)`/g)) {
-    const id = m[1]!;
-    if (id.length > 2 && /[A-Z]/.test(id)) results.push(id);
-  }
-  return [...new Set(results)];
-}
-
-const sec10 = extractSection(
-  guideText,
-  '## 10. PrintFarmer server REST contract',
-);
-const sec101 = extractSubSection(sec10, '### 10.1');
-const sec103 = extractSubSection(sec10, '### 10.3');
-const sec105 = extractSubSection(sec10, '### 10.5 ');
-const sec1052 = extractSubSection(sec10, '### 10.5.2');
-
-const docRouteTemplates = extractDocRouteTemplates(sec101);
-const docBedClearHeaders = extractDocBedClearHeaders(sec103);
-const docRedactedFields = extractDocRedactedFields(sec105);
+const documentedRoutes = docRoutes(sec101);
+const documentedHeaders = docHeaders(sec103);
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
-const PROFILE_ID = '11111111-1111-4111-8111-111111111111';
-const BASE_URL = 'http://farm.local';
-const PROJECT_ID = '22222222-2222-4222-8222-222222222222';
-const ATTEMPT_ID = '33333333-3333-4333-8333-333333333333';
-const JOB_ID = '44444444-4444-4444-8444-444444444444';
-const PRINTER_ID = '55555555-5555-4555-8555-555555555555';
-const OP_ID = '66666666-6666-4666-8666-666666666666';
+const BASE = 'http://farm.local';
+const PROFILE = '11111111-1111-4111-8111-111111111111';
+const PROJECT = '22222222-2222-4222-8222-222222222222';
+const ATTEMPT = '33333333-3333-4333-8333-333333333333';
+const JOB = '44444444-4444-4444-8444-444444444444';
+const PRINTER = '55555555-5555-4555-8555-555555555555';
+const OP = '66666666-6666-4666-8666-666666666666';
 
 function ok(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -133,39 +106,42 @@ function ok(body: unknown, status = 200): Response {
     headers: { 'content-type': 'application/json' },
   });
 }
-
-function mockTokens(): CalibrationTokenProvider {
+function tokens(): CalibrationTokenProvider {
   return {
     getAuthenticatedContext: vi.fn().mockResolvedValue({
-      baseUrl: BASE_URL,
+      baseUrl: BASE,
       token: 'tok',
       binding: 'b',
     }),
   };
 }
-
-function makeClient(fetch: typeof globalThis.fetch) {
-  return new CalibrationHttpClient(mockTokens(), {
+function client(fetch: typeof globalThis.fetch) {
+  return new CalibrationHttpClient(tokens(), {
     fetch,
     timeoutMs: 5000,
     sleep: () => Promise.resolve(),
   });
 }
-
-/** Replace concrete IDs with {param} placeholders for exact template matching. */
-function normalizeUrl(url: string): string {
+function callUrl(mock: ReturnType<typeof vi.fn>): string {
+  const [u] = mock.mock.calls[0] as [URL | string, RequestInit];
+  return (typeof u === 'string' ? u : u.href).replace(BASE, '');
+}
+function callInit(mock: ReturnType<typeof vi.fn>): RequestInit {
+  const [, init] = mock.mock.calls[0] as [URL | string, RequestInit];
+  return init;
+}
+function normalize(url: string): string {
   return url
-    .replace(BASE_URL, '')
-    .split(encodeURIComponent(PROJECT_ID))
+    .split(encodeURIComponent(PROJECT))
     .join('{projectId}')
-    .split(encodeURIComponent(ATTEMPT_ID))
+    .split(encodeURIComponent(ATTEMPT))
     .join('{attemptId}')
-    .split(encodeURIComponent(JOB_ID))
+    .split(encodeURIComponent(JOB))
     .join('{jobId}');
 }
 
 const QUEUE_JOB = {
-  id: JOB_ID,
+  id: JOB,
   rowVersion: 'AA==',
   dispatchStateRowVersion: 'BB==',
   revision: 1,
@@ -177,7 +153,7 @@ const QUEUE_JOB = {
   pinnedPrinterConfigRevision: null,
   gcodeFileId: null,
   gcodeFileName: '',
-  assignedPrinterId: PRINTER_ID,
+  assignedPrinterId: PRINTER,
   assignedPrinterName: '',
   status: 'Queued',
   bedClearState: 'None',
@@ -190,12 +166,11 @@ const QUEUE_JOB = {
   createdAt: '2025-01-01T00:00:00.000Z',
   updatedAt: '2025-01-01T00:00:00.000Z',
 };
-
 const ORCH = {
   id: '77777777-7777-4777-8777-777777777777',
-  projectId: PROJECT_ID,
-  attemptId: ATTEMPT_ID,
-  operationId: OP_ID,
+  projectId: PROJECT,
+  attemptId: ATTEMPT,
+  operationId: OP,
   status: 'Running',
   currentStep: 'submitting-slice-job',
   revision: 1,
@@ -222,104 +197,81 @@ const ORCH = {
   updatedAtUtc: '2025-01-01T00:00:01.000Z',
   completedAtUtc: null,
 };
+const BED_OK = { message: 'ok', jobETag: 'C==', dispatchStateETag: 'D==' };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 1. Both sides non-vacuous
+// 1. Non-vacuous: both sides non-empty
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('server contract parity — non-vacuous (issue #138)', () => {
-  it('§10 exists and §10.1 table has at least 4 route templates', () => {
+describe('parity — non-vacuous (issue #138)', () => {
+  it('§10.1 yields ≥4 documented route templates', () => {
     expect(sec10.length, '§10 not found').toBeGreaterThan(200);
     expect(
-      docRouteTemplates.length,
-      `§10.1 table has ${docRouteTemplates.length} routes: [${docRouteTemplates.join(', ')}].`,
+      documentedRoutes.length,
+      `§10.1 has ${documentedRoutes.length} templates: [${documentedRoutes.join(', ')}]`,
     ).toBeGreaterThanOrEqual(4);
   });
-
   it('production CALIBRATION_QUEUE_ROUTE_TEMPLATES has exactly 4 entries', () => {
-    const keys = Object.keys(CALIBRATION_QUEUE_ROUTE_TEMPLATES);
-    expect(keys.length, 'production route templates must have 4 entries').toBe(
-      4,
-    );
+    expect(Object.keys(CALIBRATION_QUEUE_ROUTE_TEMPLATES).length).toBe(4);
   });
-
-  it('§10.3 table has exactly 3 precondition headers; production constant matches', () => {
+  it('§10.3 yields exactly 3 header names; production constant matches', () => {
     expect(
-      docBedClearHeaders.length,
-      `§10.3 has ${docBedClearHeaders.length} headers`,
+      documentedHeaders.length,
+      `§10.3 has ${documentedHeaders.length}: [${documentedHeaders.join(', ')}]`,
     ).toBe(3);
     expect(BED_CLEAR_PRECONDITION_HEADER_NAMES.length).toBe(3);
-  });
-
-  it('§10.5 documents at least 10 redacted fields; production constant non-empty', () => {
-    expect(
-      docRedactedFields.length,
-      `§10.5 yields ${docRedactedFields.length} camelCase field names`,
-    ).toBeGreaterThanOrEqual(10);
-    expect(PRINTER_GROUP_REDACTED_FIELDS.length).toBeGreaterThanOrEqual(10);
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 2. Route templates: doc vs production (symmetric, exact, dead-route check)
+// 2. Route templates: docs vs production (symmetric exact match, dead routes)
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('server contract parity — route templates (issue #138)', () => {
-  const prodTemplates = new Set<string>(
+describe('parity — route templates (issue #138)', () => {
+  const prodSet = new Set<string>(
     Object.values(CALIBRATION_QUEUE_ROUTE_TEMPLATES),
   );
+  const docSet = new Set(documentedRoutes);
 
-  it('production route templates and §10.1 documented routes match exactly', () => {
-    const docSet = new Set(docRouteTemplates);
-    const missing = [...prodTemplates].filter((t) => !docSet.has(t));
-    const unexpected = [...docSet].filter((t) => !prodTemplates.has(t));
+  it('production templates and §10.1 documented routes match exactly', () => {
+    const missing = [...prodSet].filter((t) => !docSet.has(t));
+    const unexpected = [...docSet].filter((t) => !prodSet.has(t));
     expect(
       missing,
-      `Production routes not documented in §10.1: ${JSON.stringify(missing)}`,
+      `production not in docs: ${JSON.stringify(missing)}`,
     ).toHaveLength(0);
     expect(
       unexpected,
-      `§10.1 routes not in production: ${JSON.stringify(unexpected)}`,
+      `docs not in production: ${JSON.stringify(unexpected)}`,
     ).toHaveLength(0);
   });
 
-  it('dead project-scoped queue/generation routes are absent from production', () => {
-    const dead = [
-      '/api/calibration-projects/{id}/queue',
-      '/api/calibration-projects/{id}/generation',
-    ];
-    for (const d of dead) {
-      expect(prodTemplates.has(d), `Dead route ${d} found in production`).toBe(
-        false,
-      );
-    }
+  it('dead project-scoped routes are absent from templates', () => {
+    expect(prodSet.has('/api/calibration-projects/{id}/queue')).toBe(false);
+    expect(prodSet.has('/api/calibration-projects/{id}/generation')).toBe(
+      false,
+    );
+    // Broader: no template ends with /queue or /generation terminal segment
+    const vals = [...prodSet];
+    expect(vals.every((t) => !t.endsWith('/queue'))).toBe(true);
+    expect(vals.every((t) => !/\/generation$/.test(t))).toBe(true);
   });
 
-  it('production /start route is absent (no /start route in exported templates)', () => {
-    // BED_CLEAR_PRECONDITION_HEADER_NAMES and CALIBRATION_QUEUE_ROUTE_TEMPLATES
-    // are exported constants that the HTTP client uses. Neither contains /start.
-    const allRouteValues = Object.values(
-      CALIBRATION_QUEUE_ROUTE_TEMPLATES,
-    ) as string[];
-    const hasStart = allRouteValues.some((r) => r.includes('/start'));
-    expect(
-      hasStart,
-      'A /start route was found in CALIBRATION_QUEUE_ROUTE_TEMPLATES',
-    ).toBe(false);
-    // Non-vacuous: we must have at least one route in the list to prove absence is meaningful
-    expect(allRouteValues.length).toBeGreaterThan(0);
+  it('/start is absent from production templates (no /start route in contract)', () => {
+    const vals = Object.values(CALIBRATION_QUEUE_ROUTE_TEMPLATES) as string[];
+    expect(vals.some((t) => t.includes('/start'))).toBe(false);
+    expect(vals.length).toBeGreaterThan(0); // non-vacuous
   });
 
-  it('createQueueJob calls the exact documented /api/job-queue URL', async () => {
-    const fetch = vi.fn().mockResolvedValue(ok(QUEUE_JOB, 201));
-    const client = makeClient(fetch);
-    await client.createQueueJob(
-      PROFILE_ID,
-      BASE_URL,
+  it('createQueueJob calls exact documented template', async () => {
+    const f = vi.fn().mockResolvedValue(ok(QUEUE_JOB, 201));
+    await client(f).createQueueJob(
+      PROFILE,
+      BASE,
       {
-        gcodeFileId: JOB_ID,
-        assignedPrinterId: PRINTER_ID,
-        operationId: OP_ID,
+        gcodeFileId: JOB,
+        assignedPrinterId: PRINTER,
+        operationId: OP,
         pinnedPrinterConfigRevision: null,
         gcodeContentSha256: null,
         specificationSha256: null,
@@ -336,207 +288,211 @@ describe('server contract parity — route templates (issue #138)', () => {
       },
       AbortSignal.timeout(5000),
     );
-    const [u] = fetch.mock.calls[0] as [URL | string];
-    const called = (typeof u === 'string' ? u : u.href).replace(BASE_URL, '');
-    expect(called).toBe(CALIBRATION_QUEUE_ROUTE_TEMPLATES.jobQueue);
+    expect(callUrl(f)).toBe(CALIBRATION_QUEUE_ROUTE_TEMPLATES.jobQueue);
   });
 
-  it('getQueueJob calls the exact documented /api/job-queue/{jobId} URL', async () => {
-    const fetch = vi.fn().mockResolvedValue(ok(QUEUE_JOB));
-    const client = makeClient(fetch);
-    await client.getQueueJob(
-      PROFILE_ID,
-      BASE_URL,
-      JOB_ID,
-      AbortSignal.timeout(5000),
+  it('getQueueJob calls exact documented template', async () => {
+    const f = vi.fn().mockResolvedValue(ok(QUEUE_JOB));
+    await client(f).getQueueJob(PROFILE, BASE, JOB, AbortSignal.timeout(5000));
+    expect(normalize(callUrl(f))).toBe(
+      CALIBRATION_QUEUE_ROUTE_TEMPLATES.jobQueueJob,
     );
-    const [u] = fetch.mock.calls[0] as [URL | string];
-    const normalized = normalizeUrl(typeof u === 'string' ? u : u.href);
-    expect(normalized).toBe(CALIBRATION_QUEUE_ROUTE_TEMPLATES.jobQueueJob);
   });
 
-  it('startGeneration calls the exact documented per-attempt URL with both projectId and attemptId', async () => {
-    const fetch = vi.fn().mockResolvedValue(ok(ORCH));
-    const client = makeClient(fetch);
-    await client.startGeneration(
-      PROFILE_ID,
-      BASE_URL,
-      PROJECT_ID,
-      ATTEMPT_ID,
+  it('startGeneration calls exact documented per-attempt template (both projectId and attemptId)', async () => {
+    const f = vi.fn().mockResolvedValue(ok(ORCH));
+    await client(f).startGeneration(
+      PROFILE,
+      BASE,
+      PROJECT,
+      ATTEMPT,
       'temperature',
       '1.0',
       undefined,
-      OP_ID,
+      OP,
       null,
       AbortSignal.timeout(5000),
     );
-    const [u] = fetch.mock.calls[0] as [URL | string];
-    const normalized = normalizeUrl(typeof u === 'string' ? u : u.href);
+    const normalized = normalize(callUrl(f));
     expect(normalized).toBe(CALIBRATION_QUEUE_ROUTE_TEMPLATES.generateJob);
+    // Confirm both IDs are required and present
+    expect(normalized).toContain('{projectId}');
+    expect(normalized).toContain('{attemptId}');
   });
 
-  it('acknowledgeBedClearAndStart calls the exact documented acknowledge URL', async () => {
-    const fetch = vi
-      .fn()
-      .mockResolvedValue(
-        ok({ message: 'ok', jobETag: 'C==', dispatchStateETag: 'D==' }, 202),
-      );
-    const client = makeClient(fetch);
-    await client.acknowledgeBedClearAndStart(
-      PROFILE_ID,
-      BASE_URL,
-      JOB_ID,
-      PRINTER_ID,
-      OP_ID,
+  it('acknowledgeBedClearAndStart calls exact documented template', async () => {
+    const f = vi.fn().mockResolvedValue(ok(BED_OK, 202));
+    await client(f).acknowledgeBedClearAndStart(
+      PROFILE,
+      BASE,
+      JOB,
+      PRINTER,
+      OP,
       'A==',
       'B==',
       null,
       AbortSignal.timeout(5000),
     );
-    const [u] = fetch.mock.calls[0] as [URL | string];
-    const normalized = normalizeUrl(typeof u === 'string' ? u : u.href);
-    expect(normalized).toBe(
+    expect(normalize(callUrl(f))).toBe(
       CALIBRATION_QUEUE_ROUTE_TEMPLATES.acknowledgeBedClear,
     );
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 3. Bed-clear headers: production constant vs §10.3 (symmetric, with control)
+// 3. Bed-clear headers: docs vs production constant + request behavior
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('server contract parity — bed-clear precondition headers (issue #138)', () => {
-  it('§10.3 documented headers and production BED_CLEAR_PRECONDITION_HEADER_NAMES match exactly', () => {
-    const docSet = new Set(docBedClearHeaders);
+describe('parity — bed-clear precondition headers (issue #138)', () => {
+  it('§10.3 headers and BED_CLEAR_PRECONDITION_HEADER_NAMES match exactly', () => {
+    const docSet = new Set(documentedHeaders);
     const prodSet = new Set<string>(BED_CLEAR_PRECONDITION_HEADER_NAMES);
     const missing = [...prodSet].filter((h) => !docSet.has(h));
     const unexpected = [...docSet].filter((h) => !prodSet.has(h));
     expect(
       missing,
-      `Production headers missing from §10.3: ${JSON.stringify(missing)}`,
+      `production not in §10.3: ${JSON.stringify(missing)}`,
     ).toHaveLength(0);
     expect(
       unexpected,
-      `§10.3 headers not in production: ${JSON.stringify(unexpected)}`,
+      `§10.3 not in production: ${JSON.stringify(unexpected)}`,
     ).toHaveLength(0);
   });
 
-  it('unrelated transport headers are not in the precondition set (control)', () => {
-    // Comparison uses BED_CLEAR_PRECONDITION_HEADER_NAMES, not all request headers.
-    // A future traceparent, x-correlation-id, etc. cannot enter the precondition check.
-    const prodSet = new Set<string>(BED_CLEAR_PRECONDITION_HEADER_NAMES);
-    expect(prodSet.has('traceparent')).toBe(false);
-    expect(prodSet.has('x-correlation-id')).toBe(false);
-    expect(prodSet.has('x-request-id')).toBe(false);
+  it('unrelated transport headers are not preconditions (control)', () => {
+    const s = new Set<string>(BED_CLEAR_PRECONDITION_HEADER_NAMES);
+    expect(s.has('traceparent')).toBe(false);
+    expect(s.has('x-correlation-id')).toBe(false);
   });
 
-  it('acknowledgeBedClearAndStart sends every production precondition header (fetch mock)', async () => {
-    const fetch = vi
-      .fn()
-      .mockResolvedValue(
-        ok({ message: 'ok', jobETag: 'C==', dispatchStateETag: 'D==' }, 202),
-      );
-    const client = makeClient(fetch);
-    await client.acknowledgeBedClearAndStart(
-      PROFILE_ID,
-      BASE_URL,
-      JOB_ID,
-      PRINTER_ID,
-      OP_ID,
+  it('acknowledgeBedClearAndStart sends all precondition headers (fetch mock)', async () => {
+    const f = vi.fn().mockResolvedValue(ok(BED_OK, 202));
+    await client(f).acknowledgeBedClearAndStart(
+      PROFILE,
+      BASE,
+      JOB,
+      PRINTER,
+      OP,
       'AAAA==',
       'BBBB==',
       null,
       AbortSignal.timeout(5000),
     );
-    const [, init] = fetch.mock.calls[0] as [URL | string, RequestInit];
-    const sent = new Headers(init.headers);
+    const sent = new Headers(callInit(f).headers);
     for (const h of BED_CLEAR_PRECONDITION_HEADER_NAMES) {
-      expect(sent.has(h), `missing precondition header: ${h}`).toBe(true);
+      expect(sent.has(h), `missing header: ${h}`).toBe(true);
     }
   });
 
-  it('opaque ETag values are forwarded byte-identical to If-Match and X-Dispatch-State-If-Match', async () => {
-    const ROW = 'AAAAAAAAAAAA==';
-    const DSP = 'BBBBBBBBBBBB==';
-    const fetch = vi
-      .fn()
-      .mockResolvedValue(
-        ok({ message: 'ok', jobETag: 'C==', dispatchStateETag: 'D==' }, 202),
-      );
-    const client = makeClient(fetch);
-    await client.acknowledgeBedClearAndStart(
-      PROFILE_ID,
-      BASE_URL,
-      JOB_ID,
-      PRINTER_ID,
-      OP_ID,
-      ROW,
-      DSP,
+  it('opaque ETag tokens are forwarded byte-identical to If-Match and X-Dispatch-State-If-Match', async () => {
+    const f = vi.fn().mockResolvedValue(ok(BED_OK, 202));
+    await client(f).acknowledgeBedClearAndStart(
+      PROFILE,
+      BASE,
+      JOB,
+      PRINTER,
+      OP,
+      'AAAAAAAAAAAA==',
+      'BBBBBBBBBBBB==',
       null,
       AbortSignal.timeout(5000),
     );
-    const [, init] = fetch.mock.calls[0] as [URL | string, RequestInit];
-    const sent = new Headers(init.headers);
-    expect(sent.get('if-match')).toBe(ROW);
-    expect(sent.get('x-dispatch-state-if-match')).toBe(DSP);
+    const sent = new Headers(callInit(f).headers);
+    expect(sent.get('if-match')).toBe('AAAAAAAAAAAA==');
+    expect(sent.get('x-dispatch-state-if-match')).toBe('BBBBBBBBBBBB==');
+  });
+
+  it('§10.3 body fallback: idempotencyKey is sent in request body (server Idempotency-Key fallback)', async () => {
+    // Server reads: Request.Headers["Idempotency-Key"] ?? request.IdempotencyKey
+    // PFD always sends both; the body provides the documented fallback.
+    const f = vi.fn().mockResolvedValue(ok(BED_OK, 202));
+    await client(f).acknowledgeBedClearAndStart(
+      PROFILE,
+      BASE,
+      JOB,
+      PRINTER,
+      OP,
+      'A==',
+      'B==',
+      null,
+      AbortSignal.timeout(5000),
+    );
+    const body = JSON.parse(callInit(f).body as string) as {
+      idempotencyKey?: string;
+    };
+    expect(body.idempotencyKey).toBe(OP);
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 4. Sequence gap detection: contiguous / cursor-gap / internal-gap
+// 4. Printer-group envelope filter (isJobScopedEnvelope — production seam)
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('server contract parity — sequence gap detection (issue #138)', () => {
-  it('detects no gap for a contiguous page starting immediately after cursor', () => {
-    const events = [{ sequence: 11 }, { sequence: 12 }, { sequence: 13 }];
-    expect(detectQueueChangeFeedGap(events, 10)).toBe(false);
+describe('parity — printer-group envelope filter (issue #138)', () => {
+  it('§10.5 documents Printer-{id} group redaction', () => {
+    const sec105 = subsection(sec10, '### 10.5 ');
+    expect(sec105).toContain('Printer-{printerId}');
+    expect(sec105).toMatch(/REDACT/i);
   });
 
-  it('detects cursor gap: first event does not immediately follow afterSequence', () => {
-    const events = [{ sequence: 13 }, { sequence: 14 }];
-    expect(detectQueueChangeFeedGap(events, 10)).toBe(true);
+  it('isJobScopedEnvelope returns false for null jobId (redacted printer envelope)', () => {
+    const evt = { jobId: null } as unknown as CalibrationQueueEventEnvelope;
+    expect(isJobScopedEnvelope(evt, JOB)).toBe(false);
   });
 
-  it('detects internal gap: non-contiguous sequence within page', () => {
-    const events = [{ sequence: 11 }, { sequence: 12 }, { sequence: 15 }];
-    expect(detectQueueChangeFeedGap(events, 10)).toBe(true);
+  it('isJobScopedEnvelope returns false for a different-job envelope', () => {
+    const otherJob = '99999999-9999-4999-8999-999999999999';
+    expect(isJobScopedEnvelope({ jobId: otherJob }, JOB)).toBe(false);
   });
 
-  it('handles empty event list without error (no gap)', () => {
+  it('isJobScopedEnvelope returns true only for an exact-match jobId', () => {
+    expect(isJobScopedEnvelope({ jobId: JOB }, JOB)).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 5. Sequence gap detection (detectQueueChangeFeedGap — production seam)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('parity — sequence gap detection (issue #138)', () => {
+  it('contiguous page starting immediately after cursor: no gap', () => {
+    expect(
+      detectQueueChangeFeedGap([{ sequence: 11 }, { sequence: 12 }], 10),
+    ).toBe(false);
+  });
+  it('cursor gap: first event does not follow afterSequence + 1', () => {
+    expect(detectQueueChangeFeedGap([{ sequence: 13 }], 10)).toBe(true);
+  });
+  it('internal gap: non-contiguous sequences within page', () => {
+    expect(
+      detectQueueChangeFeedGap([{ sequence: 11 }, { sequence: 13 }], 10),
+    ).toBe(true);
+  });
+  it('empty page: no gap', () => {
     expect(detectQueueChangeFeedGap([], 42)).toBe(false);
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 5. Schema version and redacted fields: doc vs production constants
+// 6. Schema version: source-cited doc vs z.string() forward-compat behavior
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('server contract parity — schema version and redacted fields (issue #138)', () => {
-  it('§10.5.2 mentions schema version "3" and production constant matches', () => {
+describe('parity — schema version and forward compatibility (issue #138)', () => {
+  it('§10.5.2 documents schemaVersion "3" from authoritative source', () => {
+    const sec1052 = subsection(sec10, '### 10.5.2');
     expect(sec1052.length, '§10.5.2 not found').toBeGreaterThan(50);
-    expect(sec1052).toContain(`"${QUEUE_EVENT_SCHEMA_VERSION_CURRENT}"`);
+    // "3" is QueueEventSchemaVersions.Current at both 167a3b13 and 9c1d7e4b
+    expect(sec1052).toContain('"3"');
   });
 
-  it('§10.5 documented redacted-field set and PRINTER_GROUP_REDACTED_FIELDS match symmetrically', () => {
-    const prodSet = new Set<string>(PRINTER_GROUP_REDACTED_FIELDS);
-    const docSet = new Set(docRedactedFields);
-    const missing = [...prodSet].filter((f) => !docSet.has(f));
-    const unexpected = [...docSet].filter((f) => !prodSet.has(f));
+  it('RemoteCalibrationOrchestrationStatus accepts real current-step values and future ones', () => {
+    // status is CalibrationOrchestrationStatus.ToString() — current values:
+    // Pending, Running, WaitingToRetry, Completed, Failed, Cancelled
+    const withRunning = { ...ORCH };
     expect(
-      missing,
-      `Production redacted fields not in §10.5 prose: ${JSON.stringify(missing)}`,
-    ).toHaveLength(0);
-    expect(
-      unexpected,
-      `§10.5 prose fields not in production PRINTER_GROUP_REDACTED_FIELDS: ${JSON.stringify(unexpected)}`,
-    ).toHaveLength(0);
-  });
-
-  it('orchestration schema accepts real step constants and unknown future values', () => {
-    const base = { ...ORCH };
-    expect(RemoteCalibrationOrchestrationStatus.safeParse(base).success).toBe(
-      true,
-    );
+      RemoteCalibrationOrchestrationStatus.safeParse(withRunning).success,
+    ).toBe(true);
+    // Forward compatibility: unrecognised values must not throw
     const future = {
       ...ORCH,
       status: 'FutureStatus',

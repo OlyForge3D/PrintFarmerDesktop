@@ -54,9 +54,44 @@ import {
   RemoteQueueSubscriptionResources as QueueSubscriptionResourcesSchema,
 } from './calibrationWire.js';
 
-// --- Fixed API route constants ---------------------------------------------
+// --- Issue-#138 route templates (single authoritative source) ----------------
+// The four parity-guarded contract routes are defined here as templates; ROUTES
+// derives those four entries from them. Mutating a template changes the actual
+// HTTP call path and fails the executable fetch parity tests.
+
+/**
+ * Normalized route templates for the four issue-#138 contract paths.
+ * Parameters use `{name}` placeholders. Each template is the single source
+ * from which the corresponding `ROUTES` entry (and executable HTTP call) is
+ * derived via `buildRoute`. Exported so documentation-parity tests can compare
+ * these values against admin guide §10.1 without a second policy table.
+ * Source: OlyForge3D/PrintFarmer JobQueueController + CalibrationGenerationController,
+ * verified at 167a3b134a678a0d9a8c10371da8333d03ddc636 and 9c1d7e4b97c5f0fee0f0c702aa864374b3e21cf0.
+ */
+export const CALIBRATION_QUEUE_ROUTE_TEMPLATES = {
+  /** POST — create a FilamentCalibration queue job. */
+  jobQueue: '/api/job-queue',
+  /** GET — fetch a specific queue job by its ID. */
+  jobQueueJob: '/api/job-queue/{jobId}',
+  /** POST — start generation for one immutable attempt; both IDs required. */
+  generateJob:
+    '/api/calibration-projects/{projectId}/attempts/{attemptId}/generate-job',
+  /** POST — acknowledge bed clear and start dispatch for an exact job. */
+  acknowledgeBedClear: '/api/job-queue/{jobId}/acknowledge-bed-clear-and-start',
+} as const;
+
+/** Replace `{key}` placeholders with URI-encoded values. */
+function buildRoute(template: string, params: Record<string, string>): string {
+  return Object.entries(params).reduce(
+    (path, [key, value]) => path.replace(`{${key}}`, encodeURIComponent(value)),
+    template,
+  );
+}
+
+// --- Fixed API route constants -----------------------------------------------
 // These are the only routes this client will ever call. The renderer cannot
-// influence them.
+// influence them. The four contract-critical routes derive from
+// CALIBRATION_QUEUE_ROUTE_TEMPLATES so a template mutation changes the call.
 
 const ROUTES = {
   capabilities: '/api/calibration/capabilities',
@@ -81,55 +116,41 @@ const ROUTES = {
   // --- Generation orchestration (issue #899) ---------------------------------
   /** POST — starts generation for a specific attempt. */
   generateJob: (projectId: string, attemptId: string) =>
-    `/api/calibration-projects/${encodeURIComponent(projectId)}/attempts/${encodeURIComponent(attemptId)}/generate-job`,
+    buildRoute(CALIBRATION_QUEUE_ROUTE_TEMPLATES.generateJob, {
+      projectId,
+      attemptId,
+    }),
   /** GET — polls orchestration status by orchestration ID. */
   orchestrationStatus: (orchestrationId: string) =>
     `/api/calibration-orchestrations/${encodeURIComponent(orchestrationId)}`,
-  // --- Primary job-queue REST (issue #900) ------------------------------------
+  // --- Primary job-queue REST (issue #900) — derived from CALIBRATION_QUEUE_ROUTE_TEMPLATES ----
   /** POST — create a queue job. */
-  jobQueue: '/api/job-queue',
+  jobQueue: CALIBRATION_QUEUE_ROUTE_TEMPLATES.jobQueue,
   /** GET — fetch a single queue job by ID. */
-  jobQueueJob: (jobId: string) => `/api/job-queue/${encodeURIComponent(jobId)}`,
+  jobQueueJob: (jobId: string) =>
+    buildRoute(CALIBRATION_QUEUE_ROUTE_TEMPLATES.jobQueueJob, { jobId }),
   /** GET — change feed cursor poll. */
   jobQueueChanges: '/api/job-queue/changes',
   /** GET — subscription resources hint. */
   jobQueueSubscriptionResources: '/api/job-queue/subscription-resources',
   /** POST — acknowledge bed clear and start dispatch. */
   acknowledgeBedClearAndStart: (jobId: string) =>
-    `/api/job-queue/${encodeURIComponent(jobId)}/acknowledge-bed-clear-and-start`,
-} as const;
-
-/**
- * Normalized route templates for the four documented queue contract paths.
- * Parameters use `{name}` placeholders. The CalibrationHttpClient methods
- * use ROUTES (above) which URI-encodes concrete IDs; these templates are the
- * stable, human-readable form exported for documentation-parity testing.
- * Source: OlyForge3D/PrintFarmer JobQueueController + CalibrationGenerationController,
- * verified at 167a3b134a678a0d9a8c10371da8333d03ddc636 and 9c1d7e4b97c5f0fee0f0c702aa864374b3e21cf0.
- */
-export const CALIBRATION_QUEUE_ROUTE_TEMPLATES = {
-  /** POST — create a FilamentCalibration queue job. */
-  jobQueue: '/api/job-queue',
-  /** GET — fetch a specific queue job by its ID. */
-  jobQueueJob: '/api/job-queue/{jobId}',
-  /** POST — start generation for one immutable attempt; both IDs required. */
-  generateJob:
-    '/api/calibration-projects/{projectId}/attempts/{attemptId}/generate-job',
-  /** POST — acknowledge bed clear and start dispatch for an exact job. */
-  acknowledgeBedClear: '/api/job-queue/{jobId}/acknowledge-bed-clear-and-start',
+    buildRoute(CALIBRATION_QUEUE_ROUTE_TEMPLATES.acknowledgeBedClear, {
+      jobId,
+    }),
 } as const;
 
 /**
  * The three semantic precondition header names enforced by the server
  * `AcknowledgeBedClearAndStartAsync` action (JobQueueController.cs).
  * This constant is the production authority used to build the headers in
- * `acknowledgeBedClearAndStart`; it is also exported so documentation-parity
- * tests can compare the same values against the maintained admin guide §10.3
- * table without duplicating constants in the test.
+ * `acknowledgeBedClearAndStart`; it is exported so documentation-parity
+ * tests can compare the same values against admin guide §10.3 without
+ * duplicating constants.
  *
- * If-Match and X-Dispatch-State-If-Match have no body fallback and return 428
- * when absent. Idempotency-Key has a body fallback; 428 requires both header
- * and body to be blank (see admin guide §10.3).
+ * Server semantics: If-Match and X-Dispatch-State-If-Match have no body
+ * fallback and return 428 when absent. Idempotency-Key has a body fallback
+ * (`request.IdempotencyKey`); 428 requires both header and body to be blank.
  */
 export const BED_CLEAR_PRECONDITION_HEADER_NAMES = [
   'idempotency-key',

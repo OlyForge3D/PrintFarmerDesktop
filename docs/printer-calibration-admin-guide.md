@@ -492,9 +492,9 @@ file for the test strategy.
 > Orca worker, or printer hardware was exercised. The residual live-instance
 > requirement for issue #57 is stated in §10.7.
 
-### 10.1 No project-scoped queue or generation route; documented contract routes
+### 10.1 Four issue-#138 parity routes
 
-The four routes PFD calls for queue/generation operations:
+The four routes guarded by the parity test (`CALIBRATION_QUEUE_ROUTE_TEMPLATES`):
 
 | Path template                                                             | Method | Symbol                                                | Line                         |
 | ------------------------------------------------------------------------- | ------ | ----------------------------------------------------- | ---------------------------- |
@@ -505,11 +505,12 @@ The four routes PFD calls for queue/generation operations:
 
 Source files: `src/api/Controllers/JobQueueController.cs`,
 `src/api/Controllers/CalibrationGenerationController.cs`.
+PFD makes additional calls (change-feed, subscription-resources, orchestration-status)
+not listed here; this table covers only the four parity-guarded paths.
 
 There is no route of the form `/api/calibration-projects/{id}/queue` and no
 project-level `/api/calibration-projects/{id}/generation` route at either
-inspected commit. These dead paths are absent from both the server source and
-PFD's exported `CALIBRATION_QUEUE_ROUTE_TEMPLATES` constant.
+inspected commit.
 
 ### 10.2 Generation is per-attempt
 
@@ -543,12 +544,11 @@ Two distinct `[Timestamp] byte[]?` properties produce the bed-clear ETags:
 
 - **Job ETag** (`If-Match`): `PrintJob.RowVersion`
   (`src/infra/Domain/PrintJob.cs` lines 19–20@167a3b13 / 20–21@9c1d7e4b)
-  mapped to base-64 by `JobQueueService.ToBase64RowVersion` (calls
-  `Convert.ToBase64String`; `src/infra/Services/Queue/JobQueueService.cs`
-  line 1532@9c1d7e4b).
+  mapped to base-64 by `JobQueueService.ToBase64RowVersion` (lines
+  1408–1409@167a3b13 / 1532–1533@9c1d7e4b; calls `Convert.ToBase64String`).
 - **Dispatch-state ETag** (`X-Dispatch-State-If-Match`): `PrinterDispatchState.RowVersion`
-  (`src/infra/Domain/PrinterDispatchState.cs` lines 37–38@9c1d7e4b), mapped
-  by the same `ToBase64RowVersion` helper.
+  (`src/infra/Domain/PrinterDispatchState.cs` lines 37–38 at both commits),
+  mapped by the same `ToBase64RowVersion` helper (called at line 806@9c1d7e4b).
 
 **Treat both as opaque and forward without application-level interpretation.**
 The server decodes them via `DecodeEtag` (calls `Convert.FromBase64String` after
@@ -584,12 +584,11 @@ both commits), which nulls `jobId`, `projectId`, `calibrationAttemptId`,
 `payloadJson`, `jobLogicalRevision`, and `dispatchStateLogicalRevision`, and
 forces `eventType` to `"PrintFarmer.Queue.PrinterStateChanged.v1"`.
 
-These field names are declared in PFD's exported `PRINTER_GROUP_REDACTED_FIELDS`
-constant (`src/main/calibrationWire.ts`) for documentation-parity testing.
-
 **Never read job state, bed-clear state, or revision tokens from a printer-group
 envelope.** For full job data subscribe to `QueueJob-{jobId}` (symbol
-`AuthorizedHubGroups.QueueJob(Guid)`).
+`AuthorizedHubGroups.QueueJob(Guid)`). PFD enforces this via the exported
+`isJobScopedEnvelope` helper (`src/shared/ipc.ts`) used by
+`CalibrationQueueDispatchPanel`.
 
 ### 10.5.1 Orchestration `status` and `currentStep` are forward-compatible strings
 
@@ -617,9 +616,11 @@ declares both as `z.string()` for forward compatibility.
 `src/infra/Domain/QueueDispatchEntities.cs` line 7 at 9c1d7e4b (same at
 167a3b13). The `SchemaVersion` field on `QueueDispatchOutbox` is initialized to
 `QueueEventSchemaVersions.Current` (line 148@9c1d7e4b), persisted to the outbox
-row at write time, and carried byte-for-byte into every published
-`QueueEventEnvelope`. PFD declares this as `QUEUE_EVENT_SCHEMA_VERSION_CURRENT`
-in `src/main/calibrationWire.ts`.
+row at write time. `QueueOutboxPublisherService` (lines 155–180@9c1d7e4b,
+`src/infra/Services/Queue/QueueOutboxPublisherService.cs`) passes the persisted
+`evt.SchemaVersion` into each `QueueEventEnvelope.FromOutbox` call, so
+every SignalR-published envelope carries the value written at outbox insert time.
+The change-feed REST projection similarly echoes the persisted value.
 
 `QueueDispatchOutbox.Sequence` (`src/infra/Domain/QueueDispatchEntities.cs`
 line 56@9c1d7e4b) is a durable, monotonically increasing outbox sequence
