@@ -344,13 +344,20 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
       // 'emits no such record when initialize succeeds' red. Before this
       // change that mutation left it green (#430).
       //
-      // What it does NOT cover, stated so the next reader does not have to
-      // rediscover it: a split created inside `ipc.ts` itself -- importing
-      // the module under a different specifier or alias -- leaves this
-      // import equal to `capture`, so the probe stays visible and this
-      // assertion stays green while `ipc.ts` talks to another copy. The
-      // named-event assertions in the failure spec are what would notice
-      // that, since they read records `ipc.ts` emits itself.
+      // What it does NOT cover, measured rather than reasoned: a split
+      // created inside `ipc.ts` itself -- importing the module under a
+      // different specifier -- leaves this import equal to `capture`, so the
+      // probe stays visible and this assertion stays green while `ipc.ts`
+      // talks to another copy. Adding a second `emitCalibrationLog` import in
+      // `ipc.ts` under `./calibrationLog.js?aliasSplit=1` and routing the
+      // startup-failure emit through it leaves this spec GREEN and turns
+      // 'survives a rejecting initialize' RED -- the red arm is what proves
+      // the split was real, so the green above is a gap and not an artefact.
+      // What catches it is the failure spec reading records `ipc.ts` emits
+      // itself: `records.length > 0` at the top of that spec fires first
+      // ('expected 0 to be greater than 0'), before the named-event
+      // assertion below it is ever reached. That bare count is deliberately
+      // left in place (#430) and this is the case it covers.
       emitSinkLivenessProbe: () =>
         ipcLog.emitCalibrationLog({
           level: 'info',
