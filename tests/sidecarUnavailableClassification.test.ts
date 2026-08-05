@@ -48,7 +48,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RetargetArtifactService } from '../src/main/retargetArtifacts.js';
-import { SidecarRespondedError } from '../src/main/sidecar.js';
+import { SidecarClient, SidecarRespondedError } from '../src/main/sidecar.js';
+import type { SidecarChannel } from '../src/main/sidecar.js';
 
 const temporaryDirectories: string[] = [];
 const profileId =
@@ -240,5 +241,78 @@ describe('loadScene splits the two populations that shared its catch', () => {
 
     expect(outcome.status).toBe('ok');
     expect(outcome.error).toBeUndefined();
+  });
+});
+
+/**
+ * Closes the hole that mutation M-3 found in the specs above.
+ *
+ * Those specs construct `SidecarRespondedError` directly, so they prove
+ * `loadScene` discriminates on the type -- and prove nothing about whether the
+ * client ever produces it. Measured: reverting the throw site in `sidecar.ts`
+ * to a bare `Error` left all of them green, which would have let the whole fix
+ * be undone silently.
+ *
+ * A discriminator and its producer are two claims. Injecting the discriminant
+ * tests one of them and reads as though it tested both.
+ */
+describe('the client raises the discriminant the classification depends on', () => {
+  function channelAnswering(envelope: (id: number) => unknown): SidecarChannel {
+    let onMessage: ((line: string) => void) | null = null;
+    return {
+      send(line: string): void {
+        const request = JSON.parse(line) as { id: number };
+        queueMicrotask(() => onMessage?.(JSON.stringify(envelope(request.id))));
+      },
+      onMessage(handler): void {
+        onMessage = handler;
+      },
+      onClose(): void {},
+      close(): void {},
+    };
+  }
+
+  it('rejects an answered error with SidecarRespondedError', async () => {
+    const client = new SidecarClient(() =>
+      channelAnswering((id) => ({
+        id,
+        ok: false,
+        error: 'scene could not be parsed',
+      })),
+    );
+
+    await expect(
+      client.loadRetargetScene('C:/part.3mf'),
+    ).rejects.toBeInstanceOf(SidecarRespondedError);
+  });
+
+  it('CONTROL: a successful answer resolves rather than rejecting', async () => {
+    // Guards the fake. Without it, "rejects with X" is satisfiable by a channel
+    // that rejects everything, including one that never delivers a response at
+    // all and fails for an unrelated reason.
+    const client = new SidecarClient(() =>
+      channelAnswering((id) => ({ id, ok: true, result: { sceneVersion: 2 } })),
+    );
+
+    await expect(client.loadRetargetScene('C:/part.3mf')).resolves.toEqual({
+      sceneVersion: 2,
+    });
+  });
+
+  it('CONTROL: an unreachable sidecar does not raise the discriminant', async () => {
+    // The other half. If `SidecarRespondedError` were thrown for every failure
+    // it would be useless as a discriminator, and the first spec here could not
+    // tell the difference.
+    const client = new SidecarClient(() => {
+      throw new Error('sidecar unavailable after 3 consecutive failures');
+    });
+
+    const raised = await client.loadRetargetScene('C:/part.3mf').then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    expect(raised).toBeInstanceOf(Error);
+    expect(raised).not.toBeInstanceOf(SidecarRespondedError);
   });
 });
