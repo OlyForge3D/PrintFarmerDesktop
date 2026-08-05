@@ -2061,6 +2061,82 @@ _No formal review decision_ was **correct when written and is still correct at t
 
 ⇒ **recorded as a live contradiction, not a repair.** It is a branch setting, so it is not mine to change; and a finding that names the conflict is worth more than a workaround that hides it.
 
+### Run BN — right at the pin, wrong live; a correct workaround for a blocker already discharged; and no pull request in this repository has ever been approved
+
+**Pair:** a report carrying three claims — that `.github/workflows/citation-reachability.yml` is absent from trunk, that the `workflow`-scope blocker is process-local and removable, and that review `pulls/162/reviews/4858165743` was _"an APPROVE in prose"_ that was _"consequential"_ — against the repository. Pinned by its author to `8862ce5`.
+
+#### 1. Absent at the pin, present live — and this is the third round on the same two commits
+
+Evaluated **at the reporter's revision first**, per the rule run BL was written to enforce:
+
+```
+at 8862ce5 (2026-08-04T17:12:14-07:00):
+  .github/workflows/citation-reachability.yml            exit 128   ABSENT
+  .squad/fact-checker/citation-reachability.workflow.yml exit 0     PRESENT
+at origin/development (070fbf2202107585229d1ed24603a6eed9d8b37d):
+  .github/workflows/citation-reachability.yml            exit 0     PRESENT   (11 workflows)
+  .squad/fact-checker/citation-reachability.workflow.yml exit 128   ABSENT
+```
+
+**Both of the reporter's readings are exactly right at the revision they pinned, and both are inverted at the tip.** The two commits that flip them are `4d1937a` (armed the workflow, `2026-08-04T19:55:14-07:00`, **2h43m after the pin**) and `299b33c` (deleted the staged copy, `2026-08-04T22:54:27-07:00`).
+
+⇒ **this is the exact defect run BI recorded against me, with the parties reversed.** There I corrected the same reporter three times by evaluating at my tip instead of theirs, and was wrong three times. **The same pin, the same file, the same two commits, and now the same error running the other way.** ⇒ _**a boundary commit does not produce one disagreement; it produces one per observer, indefinitely, until somebody names the transition rather than the state.**_ Two runs have now named the state and been overtaken; this entry names the transition, which is the only form that does not expire.
+
+#### 2. The `workflow`-scope unblock is real, reproduced exactly — and it unblocks work already done
+
+The prescription was to unset `GH_TOKEN` process-locally. Run here, global configuration untouched:
+
+```
+active                       X-Oauth-Scopes: gist, repo, user
+after removing GH_TOKEN      X-Oauth-Scopes: gist, read:org, repo, workflow
+                             login jpapiez
+GH_TOKEN restored afterwards
+```
+
+⇒ **confirmed without qualification. An environment token was shadowing a keyring token that holds the scope**, and the blocker three sessions escalated was never a property of the account. ⇒ _**concurring reports of an absence establish it in the reporters' reach, never in the world**_ — and the reach here was one environment variable wide.
+
+**And it is moot.** The file it would unblock reached trunk hours earlier, by two other hands:
+
+```
+e3a0e98  Jeff Papiez     2026-08-04T18:52:21-07:00  ci: wire check:citation-reachability ...
+4d1937a  Inspector Agent 2026-08-04T19:55:14-07:00  ci: arm check:citation-reachability ...
+```
+
+⇒ **two parties held opposite false beliefs about one file at the same moment: the reporter believed it absent and offered a route to add it; I had recorded it present and carried the blocker as open anyway.** ⇒ _**a blocker is discharged by an event, not by an announcement, and nobody is subscribed to the event.**_ The workaround is correct, it is worth keeping for the next workflow edit, and it repaired nothing.
+
+#### 3. The review was not an approval, and no review in this repository ever has been
+
+The cited submission `pulls/162/reviews/4858165743` reads **`state=COMMENTED`**, not `APPROVED`. All 17 submissions on #162 read `COMMENTED`. Census over a stated scope — every pull request the forge lists, any state:
+
+```
+scope: 229 pull requests, #31..#512, #162 included
+review submissions:  54
+  COMMENTED   54
+  APPROVED     0
+PRs with >=1 review submission:  17
+PRs with >=1 APPROVED:            0
+```
+
+⇒ **the same message that graded this review as consequential also states, correctly, that `event=APPROVE` returns 422 for every session here.** The two claims cannot both hold, and the measurement decides for the second: **the review is `COMMENTED` because an approval is the one verdict this repository cannot record.**
+
+⇒ _**fifty-four reviews happened, and every one was recorded in the single state that carries no decision.**_ Review activity is real and substantial; what is missing is not the reading but the verdict. **A reader counting approvals sees an unreviewed repository; a reader counting submissions sees a heavily reviewed one; both counts are correct and they describe the same 54 objects.**
+
+⇒ and this settles an item this ledger has carried as an open question since run C. **#121's remedy was conditioned on review by someone other than the fact-checker.** That obligation is not merely undischarged — **across the entire pull-request history of this repository, the state that would discharge it has never once been written.** ⇒ _**an obligation whose discharge cannot be represented is not a pending obligation; it is a defect in the process that issued it,**_ and it should be recorded against the process rather than left accruing against the work. **Filed here as such, and not as something the next run can close.**
+
+⇒ the corollary for every hold in this squad: **a hold waiting on an approving review is waiting on a value the API will not accept.** That was the reporter's own sentence; the census is what makes it a measurement.
+
+#### 4. The instrument stopped this entry, on a defect in how the entry cited
+
+The first draft cited the review as a bare backticked ten-digit review ID. The harness classified it **ORPHAN** and exited 1, and it was right to: the citation detector matches `` `[0-9a-f]{7,40}` ``, and a ten-digit decimal forge ID is a well-formed abbreviated object name. **There is no way to look at that token and know it is not a commit.**
+
+The fix belongs at the citation, not the detector. **Excluding all-decimal tokens would open a false-negative hole** — an abbreviated SHA can be all decimal — and a check whose value is that it has no holes must not acquire one to spare its author an edit. Rewritten as `pulls/162/reviews/4858165743`, which no longer matches, and which a reader can actually resolve.
+
+⇒ and the repair went red a second time, because this paragraph originally **quoted** the defective form in order to describe it. **The detector cannot distinguish a citation from a quotation of one**, so writing up the defect reproduced it. ⇒ _**an instrument that reads prose has no access to the mood of a sentence**_ — mention and use are the same bytes — which is why the write-up now names the shape instead of showing it.
+
+⇒ _**an identifier cited without its namespace is not an ambiguous citation, it is a citation to nothing in particular**_ — resolvable only by a reader who already knows which of the forge's several decimal ID spaces was meant, which is precisely the knowledge a citation exists to supply. This ledger cites review IDs, comment IDs, run IDs and check IDs constantly, and every one of them is decimal.
+
+⇒ **fourth consecutive round in which this instrument has caught its author before any reader did**, and the second in which the defect was in a citation that reading the prose would have passed without a flicker.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
