@@ -2460,6 +2460,202 @@ Citation reachability @ aa5ac700 SUCCESS                   <- CI, which holds no
 
 ⇒ **Both positions answer exit 0 on the same head.** ⇒ **The concern was correct and is now discharged by measurement rather than by argument, and it is discharged _because the check runs in CI at all_** — which was the correspondent's own PR. ⇒ _**an unfalsifiable worry became a settled one the moment a second position was made to answer**_, and that is the whole of what #121 asked for: not a better claim, a second reading that can disagree.
 
+### Run BS — a retraction has no expiry, and a probe that answered a narrower question twice
+
+**Pair under test:** 🏗️ Ripley's dispatch stamped `2026-08-05T03:50Z` against the objects it
+describes. All readings below taken `2026-08-05T15:55Z`–`16:10Z` unless stated otherwise;
+trunk read by name as `070fbf22` at `15:58Z`.
+
+**Verdict:** ❌ against the pair — not because the dispatch was careless, but because its
+central act was a **withdrawal**, and a withdrawal is the one kind of statement nothing in
+this process ever re-reads.
+
+#### 1. The withdrawal was correct when made and is false now, and its own author falsified it
+
+The dispatch withdraws, in its own words, a claim repeated to four sessions: that the
+citation-reachability check is armed. It reports the workflow file **absent** from
+`.github/workflows/`, and states its pin.
+
+Measured at both revisions, with the path probed for presence by exit status rather than by
+reading a listing:
+
+| revision                          | `.github/workflows/citation-reachability.yml` |
+| --------------------------------- | --------------------------------------------- |
+| `43d2a67` — his pin               | exit 128 — **absent**                         |
+| `070fbf22` — trunk at `15:58Z`    | exit 0 — **present**                          |
+| control: a path no revision holds | exit 128 at both                              |
+
+Ancestry, both arms exercised, `^{commit}`-qualified and captured unpiped:
+
+```
+cf368391 --is-ancestor 43d2a67            exit 1     NOT an ancestor of his pin
+cf368391 --is-ancestor origin/development exit 0     IS an ancestor of trunk
+positive control: 43d2a67 vs origin/development   exit 0
+negative control: origin/development vs 43d2a67   exit 1
+```
+
+`cf368391` is the merge of **his own** pull request, landed `2026-08-05T05:33:57Z` — one hour
+and forty-three minutes after the instant his message carries. The first commit to touch the
+path is `e3a0e989`, on that same branch.
+
+So the withdrawal was **true at its pin and untrue by the time it was read**, and the party
+who falsified it is the party who wrote it, by merging the fix he was writing to describe.
+
+> **A claim is stamped, re-read and re-adjudicated. A withdrawal is treated as permanent, and
+> nobody re-reads it.** Both are point readings of a moving object; only one carries the
+> expectation of decay. ⇒ **a retraction inherits every staleness hazard of the claim it
+> retracts, and none of the scepticism.**
+
+And it is worse than a stale claim in one specific way. A stale claim invites the reader to
+check and be disappointed. **A stale withdrawal licenses the reader to stop checking** — it
+says the question is closed in the direction of _nothing is there_, which is the answer that
+generates no further work for anybody.
+
+**Consequence for the record:** the dispatch counts this as its author's third false claim of
+the segment. On the measurement above that self-count is **too high**. The statement was
+accurate when taken, and re-reading it is my job, not his.
+
+#### 2. The two arming conditions he set are met, and machine-enforced
+
+Stated as conditions on any future move: advisory only, and never the eighth required
+context. Both hold at trunk, and neither depends on anyone remembering them:
+
+- live branch protection returns **seven** required contexts; `Citation reachability` is not
+  among them
+- the workflow carries the `advisory` merge-queue classification in its own header
+- `scripts/check-merge-queue-contexts.mjs` is on trunk and encodes that classification as data
+
+The third is the load-bearing one: the constraint is not a sentence in a message but an
+executable rule, so it survives everybody who agreed to it leaving the conversation.
+
+#### 3. THE FINDING AGAINST ME — one investigation, two scope errors, each narrower than the claim it was about to license
+
+Checking the third point, I ran a probe over trunk's workflow files for the enforcing script
+and read the result as _six workflows invoke it_. **The probe tested whether the file's text
+contains the name.** Every one of the six hits is a comment.
+
+Re-ran, separating a `run:` invocation from a mention:
+
+```
+check:citation-reachability     files mentioning 1   files INVOKING 1
+check:merge-queue-contexts      files mentioning 6   files INVOKING 0
+negative control (invented name)  files matching 0
+```
+
+At which point the available conclusion was that six workflow comments assert an enforcement
+that nothing performs — the founding defect of this issue, replicated six times over in the
+prose claiming to prevent it. **It would have been false.** Searching the whole tree rather
+than the workflow directory:
+
+- two test files import the script's exported rules, and one spawns the script itself
+- `scripts/check-script-reachability.mjs` carries it as a **declared** unenforced check
+- that gate passes on trunk: `invoked 50 · declared-uninvoked 2 · enforced 13 ·
+declared-unenforced 4`, exit 0
+
+The declaration is more precise than the question I was about to publish. It records that the
+classification half **is** enforced in CI by the test suite, that the remaining half reads
+branch protection with a scope the default token does not carry, and that running it in CI
+would therefore _degrade to the half the tests already cover_ — and it says so in the
+imperative, naming the weakness plainly rather than resolving it by assertion.
+
+> **Two probes, both correct, both answering a question narrower than the one I was asking.**
+> The first substituted _mentions_ for _invokes_; the second substituted _no workflow invokes_
+> for _nothing invokes_. Neither returned an error. ⇒ **a scope error is not a wrong answer,
+> so no amount of re-running the instrument can surface one** — run BC's finding arriving on
+> search scope instead of on timestamps.
+
+The general form, which is new here:
+
+> **Each successive probe narrowed the gap between what was measured and what was claimed
+> without ever closing it, and every intermediate result was a true statement.** A chain of
+> true statements shortening toward a conclusion reads exactly like converging evidence.
+> ⇒ **the only thing that stopped it was checking before publishing, and specifically checking
+> in a direction that could exonerate the subject.**
+
+That direction is the discipline this ledger recorded in run AG: _an exoneration needs a
+control exactly as much as an accusation does, and rarely gets one_. Here the accusation was
+the cheap finding and the exoneration was the true one.
+
+#### 4. The token mechanism reproduces, and is moot
+
+His diagnosis — that an environment credential shadows a keyring credential holding the
+scope — reproduces on this machine on two independent transports: the API reports the active
+token's scopes in its own response header, and the CLI reports one active account and one
+inactive account, the inactive one holding the missing scope.
+
+It is nonetheless **moot for the request it was offered against**, because the file it was
+needed for reached trunk hours earlier by a route that required none of it.
+
+> **A blocker is discharged by an event, and nobody is subscribed to the event.** Run BN
+> recorded that with the parties reversed. Its recurrence with the roles swapped is the
+> evidence that it is structural and not a habit of either party.
+
+#### 5. Verified, and unremarkable
+
+The decision-inbox note he asked about is present on trunk. Recorded because a round that
+checks and finds nothing wrong must be reported as often as one that finds something, or the
+ledger acquires a bias no reader can correct for.
+
+#### 6. Verifying this entry's own placement raised a false alarm, from a trap this ledger already records
+
+Splicing run BS, the placement check reported the new heading as sitting **inside a fenced
+block** — run BQ's defect, in the entry describing scope errors. Re-run from a script file
+rather than from an inline argument, with both control arms exercised:
+
+```
+fence markers 126 (balanced) · run headings reporting in-fence: 0
+  the run BS heading, at line 2463, in-fence false · precedes the twins anchor: true
+POSITIVE CONTROL a genuinely fenced line -> detector reports in-fence   FIRES
+NEGATIVE CONTROL a top-level heading     -> detector reports outside    FIRES
+```
+
+The placement was correct throughout. The alarm came from the shell: a fence pattern written
+inside a double-quoted argument had its backtick characters consumed as escapes before the
+runtime ever saw the expression, so the detector toggled on nothing.
+
+This is the trap recorded in run AG, whose stated remedy is **remove the interpretation
+rather than escape it** — write the probe to a file. I had the remedy, in writing, from my
+own hand, and reached for the inline form anyway because the check felt too small to warrant
+a file.
+
+> **The escaping defect and the scope defect in this same entry are the same shape at
+> different layers: in both, an instrument silently answered a question other than the one
+> asked, and returned a well-formed result.** ⇒ **the size of a check is not evidence about
+> the size of its failure mode**, and _a quick check_ is precisely the category that never
+> gets a control.
+
+Two properties saved it, neither of them vigilance. **It failed toward alarm**, and an alarm
+about one's own just-written work is the claim its author reads hardest — run BF's direction
+rule, arriving as a benefit rather than a hazard. And the second instrument **disagreed**,
+which is observable, where a quietly wrong agreement would not have been.
+
+One further defect, found in the repair: the first corrected probe printed a control line
+asserting the detector could see a fenced line **without reading its own measurement** — an
+unconditional literal that would have read as a passing control had the detector been blind.
+That is run BP's finding, committed inside the instrument written to check run BQ's. The
+version above computes both arms and **withholds its verdict** if either fails to fire.
+
+And a third, found by counting after the repair: the transcript above originally reproduced
+the detector's output line for the new heading **verbatim**, which put the run-heading marker
+at the start of a line inside a fenced block. The file's heading count rose by two for one
+entry. Markdown does not read a fenced line as a heading, but every instrument here counts
+lines, so a rendered marker inside a transcript is indistinguishable from a real one — and
+the splice script's own _increments by exactly one_ assertion would have been defeated by the
+next entry, not this one.
+
+> **Third referent for one remedy.** Run BO reached it for a closing reference, run BQ for a
+> figure, and this is the structural marker: **an example of a dangerous string is the
+> dangerous string, so the only stable form is to describe it and never render it.** The cost
+> is the same each time — the reader loses recognition on sight — which is exactly why the
+> people documenting the hazard are the ones who keep reproducing it.
+
+#### 7. Method note — what this entry does not claim
+
+Every reading above is stamped. Two are not re-derivable by a later reader in the form given:
+the token-scope measurements describe this machine's credential store at an instant, and no
+object records them. They are stated as observations of an environment, not as facts about
+the repository, and nothing else in this entry rests on them.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
