@@ -2556,6 +2556,76 @@ describe('hostile content that is carried but never acted on', () => {
     expect(forwarding).not.toMatch(/exactJson/);
   });
 
+  it('never reads a profile the inherits field points at outside the root', async () => {
+    await withSandbox(async (ctx) => {
+      // `bc35a0b` added an `isPathShapedIdentifier` check that rejects a
+      // profile whose `inherits` looks like a path. This code accepts it.
+      // Measured, the acceptance is contained rather than exploitable —
+      // `canonicalizeUnderRoot` re-derives the parent's real path and drops
+      // anything outside the root, so the lookup simply fails and the leaf is
+      // returned, exactly as for a dangling parent.
+      //
+      // But "contained" was an inference from reading the code, and my matrix
+      // had no cell for traversal through the *inherits* channel as distinct
+      // from traversal through a filename. This is that cell: plant a real,
+      // well-formed profile at the escape target carrying a value that could
+      // only come from outside, and require it never to appear.
+      const outsideProfile = path.join(ctx.outside, 'evil.json');
+      await writeFile(
+        outsideProfile,
+        JSON.stringify({
+          type: 'filament',
+          name: 'evil',
+          filament_type: 'PFD_CORPUS_OUTSIDE_ROOT_MATERIAL',
+          nozzle_temperature: ['999'],
+        }),
+        'utf8',
+      );
+      await ctx.armTreeGuard();
+      const beforeTree = await snapshotOutsideSandbox(ctx);
+
+      for (const inherits of [
+        '../../../../evil',
+        '..\\..\\..\\..\\evil',
+        outsideProfile,
+        outsideProfile.replace(/\.json$/, ''),
+      ]) {
+        await seedOrcaRoot(ctx, {
+          'profile.json': JSON.stringify({
+            type: 'filament',
+            name: CORPUS_PROFILE_NAME,
+            filament_type: 'PLA',
+            inherits,
+          }),
+        });
+
+        const started = Date.now();
+        const entries = await discoverLocalOrcaFilamentProfiles(
+          corpusPrinterContext(),
+        );
+        const elapsed = Date.now() - started;
+
+        // The leaf still resolves — this is the dangling-parent disposition,
+        // not a rejection — but nothing from outside the root came with it.
+        expect(entries.map((entry) => entry.orcaProfileId)).toEqual([
+          CORPUS_PROFILE_NAME,
+        ]);
+        expect(
+          JSON.stringify(entries),
+          `inherits ${inherits} pulled in a profile from outside the root`,
+        ).not.toContain('PFD_CORPUS_OUTSIDE_ROOT_MATERIAL');
+        expect(elapsed, `inherits ${inherits} took ${elapsed}ms`).toBeLessThan(
+          TIME_BUDGET_MS,
+        );
+      }
+
+      expectNoWriteOutsideSandbox(
+        beforeTree,
+        await snapshotOutsideSandbox(ctx),
+      );
+    });
+  });
+
   it('terminates cyclic, over-deep, dangling and empty Orca inheritance without dropping the leaf', async () => {
     await withSandbox(async (ctx) => {
       // Recorded as measured rather than as the sibling implementation would
