@@ -330,6 +330,56 @@ describe('startup sweep under deletion refusal (issue #229)', () => {
       'a refusal on the first stale root stopped the sweep collecting the rest',
     ).toBe(false);
   });
+
+  it('collects on a later sweep what a refusal left behind', async () => {
+    // Issue #454. The `catch` above leaves the directory "for a later sweep, by
+    // this process or another one", and that promise is load-bearing outside
+    // this file: `e2e/retarget.spec.ts` relaunches the packaged app and asserts
+    // the closed instance's roots are gone. Every test above stops at "the
+    // refusal was tolerated and the directory survived" -- none of them
+    // exercises the later sweep, so the sentence the E2E depends on was
+    // unproven.
+    //
+    // Stated as the property rather than the mechanism: a refusal must defer a
+    // collection, not cancel it.
+    const { root, stale } = await staleInstance();
+    blocked.path = stale;
+
+    await serviceFor(root).initialize();
+
+    // Control, and the reason this test is not trivial. Without it the whole
+    // test passes when the FIRST sweep already deleted the directory, which
+    // proves nothing about a later one -- the assertion after the second sweep
+    // would be reading the first sweep's success.
+    expect(
+      blocked.calls,
+      'rm was never called on the stale root, so the first sweep never refused',
+    ).toContain(stale);
+    expect(
+      await exists(stale),
+      'the first sweep deleted the stale root, so there is nothing left for a later sweep to collect and this test proves nothing',
+    ).toBe(true);
+
+    // The contention is gone, as it is once the other process releases its
+    // handles. A second startup is a second sweep.
+    blocked.path = null;
+    const callsBeforeLaterSweep = blocked.calls.length;
+
+    await serviceFor(root).initialize();
+
+    expect(
+      blocked.calls
+        .slice(callsBeforeLaterSweep)
+        .some(
+          (call) => call === stale || call.startsWith(`${stale}${path.sep}`),
+        ),
+      'the later sweep never attempted a deletion anywhere under the deferred root, so it was dropped from consideration rather than retried',
+    ).toBe(true);
+    expect(
+      await exists(stale),
+      'the root a refusal deferred was never collected by a later sweep, so the deferral is permanent and e2e/retarget.spec.ts asserts a property the module does not deliver',
+    ).toBe(false);
+  });
 });
 
 describe("disposing this process's instance root", () => {
