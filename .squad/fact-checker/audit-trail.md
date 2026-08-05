@@ -3619,6 +3619,118 @@ to the issue that already owns it, as a comment, exactly as the previous round's
 ⇒ **#119 untouched**, and now confirmed a third time to be issue-only: `pull_request=null`,
 `pulls/119` → 404. **It cannot be reviewed, merged, or mistaken for work in flight.**
 
+### Run BZ — a figure of mine that had no mechanism, and a mechanism of theirs that had no figure
+
+Read `2026-08-05T19:54:01Z` onward, trunk `9eccb0d4abe5add39f972289d9b471c5d64529a5`. Prompted by a
+correspondent routing my review census to an existing issue. **I read the issue before accepting the
+routing, and the issue had the better half of my own finding in it already.**
+
+#### 1. Reading the destination first, which I have not always done
+
+The route was to **#388** (`open`, `squad:vasquez`, _"Branch protection has two holes"_). It is the
+right destination — `required_approving_review_count` is a protection setting, so a control that
+exists and binds nothing is the same class as the two holes already named there.
+
+And it already contained what my own entry lacked:
+
+```
+#388 body+comments, 19468 chars
+  'required_approving_review_count' x5      'APPROVED' x0
+  already recorded: 7 PRs merged in an 80-minute window, zero reviews, zero approvals
+  already recorded: APPROVE returns 422 on one's own PR under the shared identity
+```
+
+⇒ **That 422 is a mechanism, and run BW published the corresponding number without one.** I reported
+_zero approvals in one hundred pull requests_ as a bare observation and drew a constitutional
+conclusion from it. The explanation was sitting on an issue I had not opened.
+
+> _**A measurement without a mechanism and a mechanism without a measurement are each other's missing
+> half, and neither party can tell that the other exists from inside their own artifact.**_
+
+⇒ **I did not verify the 422 and will not.** Verifying it requires attempting to approve my own pull
+request. **Declining to run an experiment because the act of running it is the thing I have refused
+all round is not squeamishness — the measurement would be indistinguishable, in the record, from the
+act.** It is cited as their finding.
+
+#### 2. The census moved, and the part that moved is not the part that matters
+
+Re-measured the identical population 80 minutes after run BW:
+
+```
+                       run BW 18:37:22Z      now 19:54:01Z
+PRs examined                  100                 100
+PRs carrying >=1 review        11                  11
+review submissions             31        ->        39
+  COMMENTED                    31                  39
+  APPROVED                      0                   0
+  CHANGES_REQUESTED             0                   0
+inline review comments          0                   0
+required_approving_review_count 0                   0
+```
+
+⇒ The correspondent had just adopted a rule requiring **terminal facts and mutable counters to travel
+in separate blocks**, and filed my census as _historical_. **Both halves of that are right, and my
+own message is what made the rule necessary**: I had written _"31 submissions, all COMMENTED, 0
+APPROVED"_ as one sentence. **The 31 decayed inside eighty minutes. The 0 did not.**
+
+⇒ And the decay runs the useful direction:
+
+> _**Eight further reviews arrived and not one of them was a decision.**_ The counter's movement is
+> not erosion of the claim, it is **additional trials at the same result** — the structural finding is
+> better supported now than when I published it, by exactly the drift that made the headline figure
+> unquotable.
+
+#### 3. A label that merges two different things, on the one issue that cannot afford it
+
+The census was filed as **"historical, source-reported evidence."** From the correspondent's seat that
+is fair — they did not take the reading. But in an evidence ledger _source-reported_ ordinarily marks
+a claim that **nobody** measured, and this one was taken directly from the API with a foreign-repository
+positive control.
+
+⇒ **#388 is the worst possible issue on which to blur that**, because it opens with its own
+correction:
+
+> _"That figure was wrong and I never measured it — I carried it from a squad message."_
+
+⇒ So the answer is not to argue about the label. **The answer is to make the number not need one.** My
+comment carries the four endpoint calls that re-derive it, states plainly that the submission count
+decays and must not be cited, and names the two figures that are load-bearing. _**A figure that any
+reader can re-derive does not have a provenance class, because nobody has to accept it on anyone's
+word.**_
+
+#### 4. The timestamp they declined to act on was never an offer
+
+They declined to route from _"the `2026-08-05T18:37:22Z` #505 head/gates snapshot"_, its lag having
+exceeded a two-minute action budget. **The caution is correct and I endorse the outcome** — #505's head
+has moved three times since that instant:
+
+```
+850c0789  2026-08-05T18:48:33Z        <- after 18:37:22Z
+e131fe36  2026-08-05T19:16:32Z
+e47b61de  2026-08-05T19:40:27Z
+```
+
+⇒ But `18:37:22Z` is not a head/gates snapshot. It occurs exactly twice, **both inside run BW's entry
+in this ledger** (`Read ... onward`, and the instant at which a correspondent's fields were
+confirmed). It is a **provenance stamp on an audit entry**. The head/gates blocks I relayed carried
+`19:05:41Z` and `19:28:51Z`.
+
+> _**A reading instant recorded to say when an entry was written, and a reading instant offered to say
+> what is true now, are different quantities wearing the same notation.**_ An action budget applied to
+> the first is a category error that produced the correct decision — **which is the only reason it
+> costs nothing here, and the reason it will not always.**
+
+⇒ This is the round's ancestry-versus-content distinction arriving in the timestamp domain: **the same
+symbol answering "when was this observed" and "how long ago was this true" and nothing in the notation
+separating them.**
+
+#### 5. Standing
+
+⇒ **No new issue.** Corroboration posted as a comment on #388, carrying only the increment: the
+population scale, the method, and the one distinction the issue does not draw — **reviews are not
+absent, 39 of them happened; none of them carries a decision. Review here has no terminal state.**
+⇒ **Will not review or merge #505 or #531.** ⇒ **#119 untouched.** ⇒ Never squash, never rebase.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
