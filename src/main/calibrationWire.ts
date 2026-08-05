@@ -1407,8 +1407,9 @@ export type RemoteCalibrationOrchestrationStatus = z.infer<
  * `outcome` is a DispatchAttemptOutcome literal:
  *   InProgress | Accepted | Rejected | FailedBeforeStart | Unknown
  *
- * `jobRevision` and `dispatchStateRevision` are opaque base-64 byte arrays —
- * send them back byte-identical; never parse or re-encode.
+ * `jobRevision` and `dispatchStateRevision` are opaque base-64 strings
+ * encoding provider row-version bytes. Treat as opaque tokens and forward
+ * without application-level interpretation (see admin guide §10.4).
  */
 export const RemoteDispatchAttemptResult = z
   .object({
@@ -1458,9 +1459,11 @@ export type RemoteDispatchAttemptResult = z.infer<
 /**
  * Response from GET /api/job-queue/{id} and (on creation) POST /api/job-queue.
  *
- * `rowVersion` / `dispatchStateRowVersion` are opaque base-64 byte arrays
- * that represent SQL Server rowversion columns.  Send them back byte-identical
- * as `If-Match` / `X-Dispatch-State-If-Match` headers on mutations.
+ * `rowVersion` / `dispatchStateRowVersion` are opaque base-64 strings encoding
+ * provider row-version bytes (application-managed on SQLite/PostgreSQL; native
+ * ROWVERSION on SQL Server). Forward them without interpretation as
+ * `If-Match` / `X-Dispatch-State-If-Match` headers on bed-clear mutations.
+ * See admin guide §10.4 for the 400/412/428 outcome distinction.
  *
  * `status` is a PrintJobStatus literal:
  *   Queued | Assigned | Starting | Printing | Paused | Completed | Failed | Cancelled
