@@ -2559,17 +2559,22 @@ describe('hostile content that is carried but never acted on', () => {
   it('never reads a profile the inherits field points at outside the root', async () => {
     await withSandbox(async (ctx) => {
       // `bc35a0b` added an `isPathShapedIdentifier` check that rejects a
-      // profile whose `inherits` looks like a path. This code accepts it.
-      // Measured, the acceptance is contained rather than exploitable —
-      // `canonicalizeUnderRoot` re-derives the parent's real path and drops
-      // anything outside the root, so the lookup simply fails and the leaf is
-      // returned, exactly as for a dangling parent.
+      // profile whose `inherits` looks like a path. This code accepts it, and
+      // measuring why turned out to matter: my first reading credited
+      // `canonicalizeUnderRoot`, which is wrong — that runs in `traverseDir`,
+      // over directory entries, and never sees this field.
       //
-      // But "contained" was an inference from reading the code, and my matrix
-      // had no cell for traversal through the *inherits* channel as distinct
-      // from traversal through a filename. This is that cell: plant a real,
+      // The real containment is stronger and structural. `resolveInheritance`
+      // resolves a parent by *name*, against a Map of profiles already
+      // discovered under the root, and never touches the filesystem. A
+      // path-shaped `inherits` therefore cannot cause a read — not "is
+      // filtered before one", but cannot produce one at all. The lookup misses
+      // and the chain stops, exactly as for a dangling parent.
+      //
+      // The matrix had no cell for traversal through the inherits channel as
+      // distinct from traversal through a filename. This is that cell: plant a
       // well-formed profile at the escape target carrying a value that could
-      // only come from outside, and require it never to appear.
+      // only come from outside the root, and require it never to appear.
       const outsideProfile = path.join(ctx.outside, 'evil.json');
       await writeFile(
         outsideProfile,
@@ -2624,6 +2629,26 @@ describe('hostile content that is carried but never acted on', () => {
         await snapshotOutsideSandbox(ctx),
       );
     });
+  });
+
+  it('resolves inheritance by name against discovered profiles, never by path', () => {
+    // The cell above rests on an absence — `resolveInheritance` performing no
+    // filesystem lookup — and an absence has no guard to delete, so a mutation
+    // cannot pin it. Enforce it structurally instead, the same way #357
+    // enforces the expansion excuse.
+    //
+    // If this ever fails, the cell above stops being a statement about
+    // structure and becomes a statement about filtering, which is a weaker
+    // claim that needs different evidence.
+    const source = mainSource('orcaProfileDiscovery');
+    const start = source.indexOf('function resolveInheritance');
+    expect(start).toBeGreaterThan(-1);
+    const body = source.slice(start, source.indexOf('\n}', start));
+
+    expect(body).toContain('profilesByName.get(parentName)');
+    expect(body).not.toMatch(
+      /\breadFile|\bopen\(|\bstat\(|\blstat\(|\brealpath|\breaddir|existsSync|path\.(?:resolve|join)\(/,
+    );
   });
 
   it('terminates cyclic, over-deep, dangling and empty Orca inheritance without dropping the leaf', async () => {
