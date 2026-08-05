@@ -15,6 +15,7 @@ import {
   formatSweep,
   normalizeSha,
   reviewCoversHead,
+  sweepExitCode,
 } from '../scripts/check-review-head-coverage.mjs';
 
 const HEAD = '9f426be0a1b2c3d4e5f60718293a4b5c6d7e8f90';
@@ -248,5 +249,71 @@ describe('exit codes are distinct', () => {
   // measure anything as a finding — the alarming direction.
   it('separates ok, uncovered and unverifiable', () => {
     expect(new Set([EXIT_OK, EXIT_UNCOVERED, EXIT_UNVERIFIABLE]).size).toBe(3);
+  });
+});
+
+describe('the exit code a census returns', () => {
+  const covered = classifyCoverage({
+    prNumber: 1,
+    mergedHead: HEAD,
+    reviews: [review(HEAD)],
+  });
+  const superseded = classifyCoverage({
+    prNumber: 2,
+    mergedHead: HEAD,
+    reviews: [review(OLDER)],
+  });
+  const unreviewed = classifyCoverage({
+    prNumber: 3,
+    mergedHead: HEAD,
+    reviews: [],
+  });
+
+  // Measured against this repository at 2026-08-05T11:22Z, authenticated:
+  // forty merged pull requests, two covered, one superseded, thirty-seven with
+  // no review of any state. The controls pass on that population, because one
+  // usable review anywhere in the run satisfies a population-level check — a
+  // wider scope than the claim a zero exit would license. The population below
+  // is the all-stale shape that guard exists for, not a transcript of the repo.
+  const zeroCoverage = evaluateSweep([
+    superseded,
+    ...Array.from({ length: 39 }, (_unused, index) =>
+      classifyCoverage({
+        prNumber: 100 + index,
+        mergedHead: HEAD,
+        reviews: [],
+      }),
+    ),
+  ]);
+
+  it('does not report success when nothing in the population is covered', () => {
+    expect(zeroCoverage.total).toBe(40);
+    expect(zeroCoverage.covered).toEqual([]);
+    expect(sweepExitCode(zeroCoverage)).toBe(EXIT_UNCOVERED);
+  });
+
+  // Without this arm the assertion above is equally satisfied by a function
+  // that never returns EXIT_OK at all. One covered PR in the same shape has
+  // to flip it, or the check above proves only that something is non-zero.
+  it('reports success once one PR in the same population is covered', () => {
+    const withOne = evaluateSweep([covered, superseded, unreviewed]);
+    expect(withOne.covered).toHaveLength(1);
+    expect(sweepExitCode(withOne)).toBe(EXIT_OK);
+  });
+
+  // Unreachable through `main`: clearing the controls requires a usable
+  // review, which requires a result, so the population cannot be empty by
+  // that path. Reached only by calling this function directly.
+  it('treats an empty population as unverifiable rather than as a pass', () => {
+    expect(sweepExitCode(evaluateSweep([]))).toBe(EXIT_UNVERIFIABLE);
+  });
+
+  it('treats a malformed sweep as unverifiable rather than as a pass', () => {
+    expect(sweepExitCode(null)).toBe(EXIT_UNVERIFIABLE);
+    expect(
+      sweepExitCode({ total: 2 } as unknown as ReturnType<
+        typeof evaluateSweep
+      >),
+    ).toBe(EXIT_UNVERIFIABLE);
   });
 });

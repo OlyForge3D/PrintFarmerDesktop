@@ -220,6 +220,38 @@ export function evaluateSweep(results) {
   };
 }
 
+/**
+ * Exit code for a sweep (census) run.
+ *
+ * The controls in `evaluateControls` are a *population* check — "does any
+ * review in this run carry a usable commit_id" — and one usable review
+ * anywhere satisfies them for the entire sweep. That is a wider scope than
+ * the claim a zero exit licenses, so a run whose every review sits on a
+ * superseded head clears the controls and still reports success. Exiting 0
+ * there puts "the census ran" on the same channel a verified gate uses, and
+ * the exit code is what a caller reads, not the banner.
+ *
+ * This does not make the census complete. The same controls passed on a run
+ * that received one review where an authenticated run received three, so
+ * `selfMatched/usableReviews` certifies that the matcher works on the reviews
+ * it was given and says nothing about whether it was given all of them.
+ *
+ * `total === 0` is unreachable through `main`, because passing controls
+ * requires a usable review, which requires a result. It is handled here and
+ * exercised by calling this function directly.
+ */
+export function sweepExitCode(sweep) {
+  if (
+    !sweep ||
+    typeof sweep.total !== 'number' ||
+    !Array.isArray(sweep.covered)
+  )
+    return EXIT_UNVERIFIABLE;
+  if (sweep.total === 0) return EXIT_UNVERIFIABLE;
+  if (sweep.covered.length === 0) return EXIT_UNCOVERED;
+  return EXIT_OK;
+}
+
 export function formatSweep(sweep, options = {}) {
   const lines = [];
   const readAt = options.readAt ?? new Date().toISOString();
@@ -412,7 +444,17 @@ async function main() {
     return;
   }
 
-  process.exitCode = EXIT_OK;
+  const code = sweepExitCode(sweep);
+  if (code === EXIT_UNCOVERED) {
+    console.error(
+      `[review-coverage] no PR in this sweep of ${sweep.total} is covered at its merged head; a zero-coverage census is not a pass`,
+    );
+  } else if (code === EXIT_UNVERIFIABLE) {
+    console.error(
+      '[review-coverage] sweep produced no results; there is nothing to have measured',
+    );
+  }
+  process.exitCode = code;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

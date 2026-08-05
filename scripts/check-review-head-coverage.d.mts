@@ -67,6 +67,10 @@ export function evaluateControls(input?: {
 
 export function evaluateSweep(results: CoverageResult[]): CoverageSweep;
 
+export function sweepExitCode(
+  sweep: CoverageSweep | null | undefined,
+): typeof EXIT_OK | typeof EXIT_UNCOVERED | typeof EXIT_UNVERIFIABLE;
+
 export function formatSweep(
   sweep: CoverageSweep,
   options?: { readAt?: string },
