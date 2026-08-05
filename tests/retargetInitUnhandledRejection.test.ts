@@ -354,10 +354,14 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
       // 'survives a rejecting initialize' RED -- the red arm is what proves
       // the split was real, so the green above is a gap and not an artefact.
       // What catches it is the failure spec reading records `ipc.ts` emits
-      // itself: `records.length > 0` at the top of that spec fires first
-      // ('expected 0 to be greater than 0'), before the named-event
-      // assertion below it is ever reached. That bare count is deliberately
-      // left in place (#430) and this is the case it covers.
+      // itself. In the measured run the bare `records.length > 0` at the top
+      // of that spec fired ('expected 0 to be greater than 0'), because the
+      // reroute left the capture with no records at all. Do not read that as
+      // a property: `ipc.ts` has other startup emit sites still bound to the
+      // base instance, and if any of them fires the count passes and the
+      // named-event assertion below it fires instead. Either way the split is
+      // caught -- which one reports it is environment-dependent, and only the
+      // named assertion is load-bearing in every environment.
       emitSinkLivenessProbe: () =>
         ipcLog.emitCalibrationLog({
           level: 'info',
