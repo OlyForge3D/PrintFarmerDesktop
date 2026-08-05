@@ -2189,10 +2189,10 @@ The workflow was armed by `4d1937a`, which post-dates every revision this report
 ```
 #328  MERGED 2026-08-05T02:48:29Z   merge_commit 1e84cb8f, TWO parents
       head that merged c4f4713b — every check run success
-body: "closed #121"  ABSENT      "closed `#121`"  PRESENT      closing keywords: 0
+body: the bare `close`-plus-reference form ABSENT; the backticked form PRESENT; closing keywords 0
 ```
 
-⇒ **the edit is in the merged object and it did what it was for.** The past-tense narration _"which merged and closed #121"_ was arming a closing reference on a second pull request; backticking it disarmed exactly that and nothing else. **#121 was not re-closed.**
+⇒ **the edit is in the merged object and it did what it was for.** The past-tense narration — a sentence saying that pull request had merged and closed the issue — was arming a closing reference on a second pull request; backticking it disarmed exactly that and nothing else. **#121 was not re-closed.**
 
 ⇒ **and the mechanism is real and under-documented**: a closing keyword is matched without regard to tense or subject, so **a sentence reporting that another pull request closed an issue arms this one to close it again.** The check's error text anticipates negation and not narration.
 
@@ -2201,6 +2201,16 @@ body: "closed #121"  ABSENT      "closed `#121`"  PRESENT      closing keywords:
 ⇒ same shape across the rest of the board: **#390, #349 and #350 are all merged** — at `2026-08-05T05:05:33Z`, `04:43:23Z` and `03:25:54Z` — and all three are carried as open items. **#398, #397 and #271 are genuinely open issues**, and #173 is closed, as stated.
 
 ⇒ **the verdict that matters is not the staleness.** Every mechanical claim in the report is correct: the two closure checks are distinct scripts (`check:closure-scope` in the required context, `check:closing-references` inside `ci.yml`), the baseline split is right, and the diagnosis and repair held through the merge. ⇒ _**a report can be right about every mechanism it describes and wrong about every state it asserts, and the two failure modes have no bearing on each other.**_
+
+#### Addendum — the section describing this defect committed it, twice
+
+Publishing the passage above armed the pull request carrying it against the issue a second time. The repository's own gate said so plainly — `declared=[] armed=[121] reads=12 settled=true`, exit 1 — with **two** matches, both inside the paragraph explaining the mechanism, one of them the quoted example of the _repaired_ form.
+
+⇒ **and the first draft of this addendum did it again**, a third match in the sentence reporting the first two. It never shipped: the repair script asserts the pattern is absent **before** it writes, so the guard fired against its own author's correction with the artifact untouched. ⇒ _**a check placed before the write catches what a check placed after the write can only report**_ — the same instrument, moved one step earlier, converts a defect that must be published and retracted into one that is never published at all.
+
+⇒ **the shape is now four rounds old.** Run BN went red because its write-up quoted the malformed citation it was reporting. Run AD found a content check and a structural check blind to each other's mentions. Here the remedy was printed in the same sentence as the violation, by an author who had written _mention and use are the same bytes_ one entry earlier. ⇒ _**knowing a rule does not create the habit of applying it to the text that announces it**_, and no amount of restatement will: the announcement is exactly the context in which the dangerous form must appear.
+
+⇒ **so the repair is not a quoting convention.** Backticking the reference worked for #328 because the reference was incidental to a sentence of prose. Here the reference **is the exhibit**, and _**an example of a dangerous string is the dangerous string**_. The only repair available is to describe the form and never render it — which costs the reader the ability to recognise it on sight, and is the reason this defect keeps being committed by people trying to document it.
 
 ## Superseded citations and their live twins
 
