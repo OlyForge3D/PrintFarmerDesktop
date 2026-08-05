@@ -309,6 +309,12 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
     const ipc = (await import('../src/main/ipc.js')) as unknown as {
       registerIpcHandlers: (...args: unknown[]) => () => Promise<void>;
     };
+    // Resolved AFTER `ipc.ts`, and therefore the instance `ipc.ts` itself
+    // imported: loading `ipc.ts` populates the registry entry for
+    // `calibrationLog.js`, and this import reads that entry rather than
+    // creating another one. Deliberately a second binding instead of reusing
+    // `log` above -- see the probe below for the property that depends on it.
+    const ipcLog = await import('../src/main/calibrationLog.js');
     return {
       // Wrapped so the injected channel and the disposer are impossible to
       // forget at a call site: every spec goes through this one function, and
@@ -321,11 +327,23 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
         pendingDisposers.push(dispose);
         return dispose;
       },
-      // Emitted through the same module instance `ipc.ts` imports, so if the
-      // capture were installed on a different copy this probe would go missing
-      // and the liveness assertion would fail rather than pass vacuously.
+      // Emitted through `ipcLog` -- the instance `ipc.ts` resolved -- while
+      // `capture` above is installed on the instance this function resolved
+      // BEFORE loading `ipc.ts`. While nothing resets the registry between the
+      // two, they are the same object and the probe is visible to the capture.
+      // If anything ever splits them, the probe lands on `ipc.ts`'s copy, the
+      // capture observes the other, and the liveness assertion goes red.
+      //
+      // The two bindings are what makes that detectable. Emitting through
+      // `log` -- the same binding `capture` came from -- would assert only
+      // that a module equals itself, which is true however many copies of
+      // `calibrationLog` exist and whichever one `ipc.ts` is talking to.
+      // Verified by mutation, not by reading this comment: inserting
+      // `vi.resetModules()` after the capture turns the liveness assertion in
+      // 'emits no such record when initialize succeeds' red. Before this
+      // change that mutation left it green (#430).
       emitSinkLivenessProbe: () =>
-        log.emitCalibrationLog({
+        ipcLog.emitCalibrationLog({
           level: 'info',
           component: 'calibration.sidecar',
           event: SINK_LIVENESS_SENTINEL,
