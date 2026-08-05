@@ -1828,7 +1828,30 @@ export function registerIpcHandlers(
       // Falls back to the selected profile rather than requiring one, so the
       // command still answers when no profile is selected — "no profile" is
       // itself a diagnosis.
+      //
+      // Not requiring a profile is not the same as accepting whichever one the
+      // renderer names, and this handler used to do both (#157). `?? selected`
+      // only needs the *fallback*; admitting an arbitrary `profileId` also made
+      // this an enumeration oracle, answering with local outbox counts and
+      // conflict metadata for profiles the user has not selected — reachable
+      // from a renderer that never went near the profile switcher. Every other
+      // profile-scoped calibration channel refuses that request; diagnostics
+      // read it.
+      //
+      // The fence is therefore conditional rather than absent: omitting
+      // `profileId` still diagnoses the current state, including the state of
+      // having nothing selected, while naming a profile that is not the
+      // selected one refuses exactly as the other 25 channels do.
       const profileList = await profiles.list();
+      if (
+        request.profileId !== undefined &&
+        request.profileId !== profileList.selectedProfileId
+      ) {
+        throw Object.assign(
+          new Error('Calibration request does not match the selected profile.'),
+          { code: 'CALIBRATION_PROFILE_MISMATCH' },
+        );
+      }
       const profileId = request.profileId ?? profileList.selectedProfileId;
       const diagnostics = await calibrationDiagnostics.collect({
         profileId,
