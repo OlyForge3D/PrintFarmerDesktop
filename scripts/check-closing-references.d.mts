@@ -49,3 +49,43 @@ export function formatFailure(input: {
   hasBlock: boolean;
   prNumber: number | string;
 }): string;
+
+/** #513. Commit-message surface. */
+
+export interface CommitClosure {
+  keyword: string;
+  issue: number;
+}
+
+export interface CommitClosureSource {
+  oid: string;
+  keyword: string;
+}
+
+export interface ScannedCommitClosure {
+  issue: number;
+  sources: CommitClosureSource[];
+}
+
+export interface ScannedCommit {
+  oid?: string;
+  message?: string;
+}
+
+export const CLOSING_KEYWORDS: readonly string[];
+
+export function parseCommitClosures(message: string): CommitClosure[];
+
+export function scanCommitMessages(
+  commits: readonly ScannedCommit[] | undefined,
+): ScannedCommitClosure[];
+
+export function compareCommitClosures(
+  declared: number[],
+  scanned: readonly ScannedCommitClosure[],
+): ScannedCommitClosure[];
+
+export function formatCommitFailure(input: {
+  unexpected: readonly ScannedCommitClosure[];
+  prNumber: number | string;
+}): string;

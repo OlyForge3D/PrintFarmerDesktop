@@ -146,6 +146,157 @@ export async function readSettled(read, options = {}) {
   };
 }
 
+/**
+ * #513. The check above reads `closingIssuesReferences`, which GitHub derives
+ * from the pull request BODY. Commit messages close issues too, on merge to the
+ * default branch, and that surface was unscanned -- so a green "PR closure
+ * scope" did not mean "no issue will be closed by this merge".
+ *
+ * Measured, not hypothetical. Commit 0ab96610 is a docs-only commit whose prose
+ * argues that it is deliberately NOT repairing #435, and it closed #435:
+ *
+ *   PR #433 body        -> closingIssuesReferences = [158]   check GREEN
+ *   commit 0ab96610     -> closed #435 at 07:54:14Z          unscanned
+ *
+ * The control was sound and aimed at the wrong surface.
+ *
+ * THE TRAP, and the reason this is not a three-line addition. The keyword in
+ * that message is split across a newline by ordinary paragraph wrapping:
+ *
+ *     ... would fail the very change that fixes
+ *     #435.
+ *
+ * GitHub honoured it. A scanner that iterates lines and matches each one
+ * independently -- the natural way to write this -- finds NOTHING on the one
+ * real instance we have, and ships green. So the scan runs over the whole
+ * message as a single string and `\s+` is allowed to cross newlines.
+ *
+ * Two deliberate asymmetries with the body parser above:
+ *
+ *   - Code fences and backticks are NOT stripped here. They are stripped for
+ *     the body because fenced and inline-code references were MEASURED inert to
+ *     the closing parser on a live pull request. No equivalent measurement
+ *     exists for commit messages, and the fail-closed direction is to flag. The
+ *     cost of a false positive is rewording a commit; the cost of a false
+ *     negative is a release gate closed with every check green. If someone
+ *     takes that measurement, this comment is where the answer belongs.
+ *
+ *   - Only the unexpected direction is reported. A DECLARED closure that no
+ *     commit message arms is not a defect: declarations are armed through the
+ *     body, which the check above already verifies. Requiring both surfaces to
+ *     arm would fail every correctly-formed pull request in the repository.
+ */
+
+/**
+ * Every keyword GitHub honours. Deliberately a list of whole literal words
+ * rather than a compressed pattern like `close[sd]?`: dropping one entry then
+ * fails exactly one test, so the per-keyword tests in
+ * tests/closingReferences.test.ts are individually load-bearing. Under a
+ * compressed pattern a single edit silently disarms three of them at once.
+ */
+export const CLOSING_KEYWORDS = Object.freeze([
+  'close',
+  'closes',
+  'closed',
+  'fix',
+  'fixes',
+  'fixed',
+  'resolve',
+  'resolves',
+  'resolved',
+]);
+
+/**
+ * Longest-first so the alternation cannot settle on a prefix. Backtracking
+ * would rescue it here, because a `close` match is followed by `s` where the
+ * pattern wants whitespace -- but that is an accident of this keyword set, and
+ * relying on it makes the ordering silently load-bearing.
+ */
+function closingReferencePattern() {
+  const alternation = [...CLOSING_KEYWORDS]
+    .sort((a, b) => b.length - a.length || a.localeCompare(b))
+    .join('|');
+  return new RegExp(String.raw`\b(${alternation})\s+#(\d+)\b`, 'gi');
+}
+
+/**
+ * Finds every closing reference in one commit message.
+ *
+ * Runs against the message as a single string, so a keyword and its reference
+ * separated by a newline are found. That case is not an edge case: it is the
+ * only real instance this repository has.
+ */
+export function parseCommitClosures(message) {
+  const source =
+    typeof message === 'string' ? message.replace(/\r\n/g, '\n') : '';
+  return [...source.matchAll(closingReferencePattern())].map((match) => ({
+    keyword: match[1].toLowerCase(),
+    issue: Number(match[2]),
+  }));
+}
+
+/**
+ * Scans every commit in a pull request's range.
+ *
+ * Keeps the originating commit and keyword per issue rather than collapsing to
+ * a set of numbers, because "which commit did this" is the first thing the
+ * author needs and the last thing they can recover from a bare list once the
+ * branch has grown.
+ */
+export function scanCommitMessages(commits) {
+  const bySubject = new Map();
+  for (const commit of commits ?? []) {
+    const oid = typeof commit?.oid === 'string' ? commit.oid : '';
+    for (const { keyword, issue } of parseCommitClosures(commit?.message)) {
+      if (!bySubject.has(issue)) {
+        bySubject.set(issue, []);
+      }
+      bySubject.get(issue).push({ oid, keyword });
+    }
+  }
+  return [...bySubject.entries()]
+    .map(([issue, sources]) => ({ issue, sources }))
+    .sort((a, b) => a.issue - b.issue);
+}
+
+/** Commit-armed closures the pull request never declared. */
+export function compareCommitClosures(declared, scanned) {
+  const declaredSet = new Set(declared);
+  return scanned.filter((entry) => !declaredSet.has(entry.issue));
+}
+
+export function formatCommitFailure({ unexpected, prNumber }) {
+  const lines = [
+    `Commit messages in PR #${prNumber} arm closures the PR does not declare.`,
+    '',
+    '  A closing keyword in a COMMIT MESSAGE closes its issue on merge, and',
+    '  `closingIssuesReferences` does not report it -- that field is derived',
+    '  from the pull request body alone. This surface is why a release gate can',
+    '  close with every check green.',
+  ];
+  for (const { issue, sources } of unexpected) {
+    lines.push(
+      '',
+      `  ARMED BY COMMIT, NOT DECLARED: #${issue}`,
+      ...sources.map(
+        ({ oid, keyword }) =>
+          `    ${oid.slice(0, 8) || '(unknown)'}  ${keyword} #${issue}`,
+      ),
+    );
+  }
+  lines.push(
+    '',
+    '  The parser does not read sentences, so a message explaining that the',
+    '  change must NOT close the issue arms it anyway. Note also that the',
+    '  keyword and the reference may sit on different lines: ordinary paragraph',
+    '  wrapping is how the one real instance in this repository was written.',
+    '',
+    '  Either add the issue to the body declaration block, or reword the commit',
+    '  message so the keyword and the reference are not adjacent.',
+  );
+  return lines.join('\n');
+}
+
 export function formatFailure({ unexpected, missing, hasBlock, prNumber }) {
   const lines = [
     `Closing references for PR #${prNumber} do not match its declaration.`,
@@ -201,6 +352,35 @@ async function main(argv) {
   const body = gh(['pr', 'view', prNumber, '--json', 'body', '--jq', '.body']);
   const { declared, hasBlock } = parseDeclaredClosures(body);
 
+  // Read before the settling loop below: this is a plain string comparison with
+  // no eventual consistency to wait out, so a failure here should not cost the
+  // author sixty seconds of polling on an unrelated field.
+  const commits = JSON.parse(
+    gh([
+      'pr',
+      'view',
+      prNumber,
+      '--json',
+      'commits',
+      '--jq',
+      '[.commits[] | {oid: .oid, message: ((.messageHeadline // "") + "\n\n" + (.messageBody // ""))}]',
+    ]),
+  );
+  const commitUnexpected = compareCommitClosures(
+    declared,
+    scanCommitMessages(commits),
+  );
+  if (commitUnexpected.length > 0) {
+    console.error(
+      formatCommitFailure({ unexpected: commitUnexpected, prNumber }),
+    );
+    console.error(
+      `\n  declared=[${declared.join(', ')}] commits=${commits.length}`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   const {
     value: actual,
     reads,
@@ -230,7 +410,10 @@ async function main(argv) {
     return;
   }
 
-  console.log(`Closing references match the declaration. ${summary}`);
+  console.log(
+    `Closing references match the declaration. ${summary} ` +
+      `commitsScanned=${commits.length}`,
+  );
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

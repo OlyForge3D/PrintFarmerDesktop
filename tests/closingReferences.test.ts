@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CLOSING_KEYWORDS,
   compareClosures,
+  compareCommitClosures,
+  formatCommitFailure,
   formatFailure,
+  parseCommitClosures,
   parseDeclaredClosures,
   readSettled,
+  scanCommitMessages,
 } from '../scripts/check-closing-references.mjs';
 
 /**
@@ -188,6 +193,185 @@ describe('readSettled', () => {
     });
     expect(result.settled).toBe(true);
     expect(result.value).toEqual([1, 2]);
+  });
+});
+
+/**
+ * #513. The block above verifies the pull request BODY. Commit messages close
+ * issues too, and that surface was unscanned -- proven by commit 0ab96610,
+ * which closed #435 while the "PR closure scope" check was green.
+ *
+ * The fixture below is that commit's real message. Its keyword is split across
+ * a newline by ordinary paragraph wrapping, which is the whole reason these
+ * tests exist: a line-wise scanner passes every plausible hand-written case and
+ * misses the only real one.
+ */
+const WRAPPED_COMMIT_MESSAGE = [
+  'docs(test): mark the two excused expansion cells provisional on #435',
+  '',
+  'Deliberately not repaired here. A one-issue change belongs in a one-issue',
+  'pull request, and the completeness test deliberately does not assert the',
+  "walker's shape — a tripwire on it would fail the very change that fixes",
+  '#435.',
+].join('\n');
+
+/**
+ * The keyword list stated independently of the source. Deliberately NOT
+ * imported: see the per-keyword test below for the measurement that forced it.
+ */
+const EXPECTED_KEYWORDS = [
+  'close',
+  'closes',
+  'closed',
+  'fix',
+  'fixes',
+  'fixed',
+  'resolve',
+  'resolves',
+  'resolved',
+] as const;
+
+describe('parseCommitClosures', () => {
+  it('flags the real wrapped message of 0ab96610', () => {
+    // Criterion 2, and the one assertion in this file that pins a real event.
+    // A future refactor to line-wise scanning goes red here rather than at a
+    // release gate.
+    expect(parseCommitClosures(WRAPPED_COMMIT_MESSAGE)).toEqual([
+      { keyword: 'fixes', issue: 435 },
+    ]);
+  });
+
+  it('would find nothing if scanned line by line', () => {
+    // The positive control for the control. Without this, the test above is
+    // just "the parser works" and gives no reason for the whole-string scan --
+    // and the next person to simplify it has no evidence they broke anything.
+    const perLine = WRAPPED_COMMIT_MESSAGE.split('\n').flatMap((line) =>
+      parseCommitClosures(line),
+    );
+    expect(perLine).toEqual([]);
+    expect(parseCommitClosures(WRAPPED_COMMIT_MESSAGE)).toHaveLength(1);
+  });
+
+  it('flags a plain single-line reference', () => {
+    expect(parseCommitClosures(`${KEYWORD} #57`)).toEqual([
+      { keyword: 'closes', issue: 57 },
+    ]);
+  });
+
+  it('flags negated prose, because the parser does not read sentences', () => {
+    // Criterion 4. This looks like a false positive and is not: GitHub arms the
+    // closure here. A scanner that tried to infer intent would disagree with
+    // the thing it is modelling, and would do so in the passing direction.
+    expect(parseCommitClosures(`this must not ${KEYWORD} #57`)).toEqual([
+      { keyword: 'closes', issue: 57 },
+    ]);
+  });
+
+  it('does not fire on a bare reference or on a non-keyword verb', () => {
+    // Criterion 5. Both are how an author legitimately mentions an issue, so a
+    // check that flagged them would be routed around within a day.
+    expect(parseCommitClosures('follow-up to #57')).toEqual([]);
+    expect(parseCommitClosures('see #57')).toEqual([]);
+    expect(parseCommitClosures('#57')).toEqual([]);
+  });
+
+  it('does not fire on a keyword embedded in a longer word', () => {
+    expect(parseCommitClosures('the enclosure #57 was measured')).toEqual([]);
+    expect(parseCommitClosures('prefixes #57 are not keywords')).toEqual([]);
+  });
+
+  it.each([...EXPECTED_KEYWORDS])('honours the keyword %s', (keyword) => {
+    // Criterion 6. One test per keyword, driven from EXPECTED_KEYWORDS rather
+    // than from CLOSING_KEYWORDS, and that is the whole point.
+    //
+    // Written the obvious way -- `it.each([...CLOSING_KEYWORDS])` -- this
+    // block draws its cases from the thing it is testing, so deleting an entry
+    // deletes the test that would have caught it. Measured: dropping
+    // 'resolves' from the source went from 38 passed to 37 passed, ZERO
+    // failed. A control drawn from its own subject cannot detect the subject
+    // shrinking; it reports a smaller green.
+    expect(parseCommitClosures(`${keyword} #57`)).toEqual([
+      { keyword, issue: 57 },
+    ]);
+  });
+
+  it('honours exactly the keywords GitHub does, no more and no fewer', () => {
+    // The second half of the fix above. The per-keyword tests prove each listed
+    // word works; this proves the list itself has not been edited. Without it,
+    // an ADDED keyword would go untested and a REMOVED one is caught only here.
+    expect([...CLOSING_KEYWORDS].sort()).toEqual([...EXPECTED_KEYWORDS].sort());
+  });
+
+  it('is case insensitive, as GitHub is', () => {
+    expect(parseCommitClosures('CLOSES #57')).toEqual([
+      { keyword: 'closes', issue: 57 },
+    ]);
+  });
+
+  it('survives CRLF messages', () => {
+    expect(parseCommitClosures(`that ${KEYWORD}\r\n#57`)).toEqual([
+      { keyword: 'closes', issue: 57 },
+    ]);
+  });
+
+  it('does not read a longer number as the reference', () => {
+    expect(parseCommitClosures(`${KEYWORD} #5712`)).toEqual([
+      { keyword: 'closes', issue: 5712 },
+    ]);
+  });
+});
+
+describe('scanCommitMessages', () => {
+  it('names the commit that armed each closure', () => {
+    // A bare list of numbers is unactionable once a branch has more than a few
+    // commits: the author has to bisect their own history to find the word.
+    const scanned = scanCommitMessages([
+      { oid: 'aaaaaaaa1111', message: `${KEYWORD} #57` },
+      { oid: 'bbbbbbbb2222', message: 'no reference here' },
+      { oid: 'cccccccc3333', message: WRAPPED_COMMIT_MESSAGE },
+    ]);
+    expect(scanned).toEqual([
+      { issue: 57, sources: [{ oid: 'aaaaaaaa1111', keyword: 'closes' }] },
+      { issue: 435, sources: [{ oid: 'cccccccc3333', keyword: 'fixes' }] },
+    ]);
+  });
+
+  it('tolerates an empty or malformed commit list rather than throwing', () => {
+    // A crash here reports as a failed check, which reads as "a closure was
+    // found". Wrong subject, and it trains the reader to ignore the check.
+    expect(scanCommitMessages([])).toEqual([]);
+    expect(scanCommitMessages(undefined)).toEqual([]);
+    expect(scanCommitMessages([{}])).toEqual([]);
+  });
+});
+
+describe('compareCommitClosures', () => {
+  it('fails an out-of-scope closure and passes a declared one', () => {
+    // Criterion 7, both directions in one test so neither can be satisfied by
+    // a parser that always returns the same answer.
+    const scanned = scanCommitMessages([
+      { oid: 'aaaaaaaa1111', message: `${KEYWORD} #435` },
+    ]);
+    expect(compareCommitClosures([], scanned)).toHaveLength(1);
+    expect(compareCommitClosures([158], scanned)).toHaveLength(1);
+    expect(compareCommitClosures([435], scanned)).toEqual([]);
+  });
+});
+
+describe('formatCommitFailure', () => {
+  it('names the issue, the commit and the wrapping trap', () => {
+    const message = formatCommitFailure({
+      unexpected: scanCommitMessages([
+        { oid: 'cccccccc3333', message: WRAPPED_COMMIT_MESSAGE },
+      ]),
+      prNumber: 433,
+    });
+    expect(message).toContain('#435');
+    expect(message).toContain('cccccccc');
+    expect(message).toContain('different lines');
+    // And it must say which surface it read, or the author edits the body and
+    // watches the check fail again for a reason it never named.
+    expect(message).toContain('COMMIT MESSAGE');
   });
 });
 
