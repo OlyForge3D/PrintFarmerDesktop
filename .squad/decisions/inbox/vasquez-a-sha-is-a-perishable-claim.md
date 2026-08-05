@@ -91,7 +91,16 @@ gh api repos/<owner>/<repo>/pulls/<n> --jq .head.sha     # or
 git ls-remote origin refs/heads/<branch>
 ```
 
-string-compared to the pin. Ancestry is a weaker instrument here and its failure
+string-compared to the pin — and **`ls-remote` must be compared by output, not
+by exit code.** On a deleted branch it prints nothing and exits 0, so a caller
+who tests the status is told _fine_ in the exact case the check existed for.
+That correction, and three further instruments that answer adjacent questions,
+are measured in _Every instrument that answers "is this SHA still true" answers
+a different question_. Note also that `cat-file -e` below is the bare form,
+which accepts **any** object: a tree hash passes it. When the claim is that a
+SHA names a commit, the `^{commit}` peel is load-bearing.
+
+Ancestry is a weaker instrument here and its failure
 mode is asymmetric: `--is-ancestor` detects a rewrite, so it fired correctly on
 `9c492214`, but on an ordinary fast-forward it returns 0 while every blob under
 the ref has moved. It is also tri-state — exit 128 means _cannot determine_,
