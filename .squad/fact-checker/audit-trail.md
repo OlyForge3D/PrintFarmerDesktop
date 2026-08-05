@@ -1641,6 +1641,21 @@ against trunk while the squash `3fac5567` exits 0; `3fac5567` has one parent; #1
 withdrawn one of them — a round that checks and finds nothing wrong is the same instrument
 working, and omitting it would bias the record.**
 
+**Addendum, measured on this entry's own verification pass.** The final check read the branch
+from the **remote ref** rather than the local checkout — run M's control, restated to the
+correspondent earlier in the same round — and the two disagreed: local `81c3085`, remote
+`a6ebd5f`. A maintainer had merged `development` in from outside this session, **49 commits and
+24 merge commits**, while the worktree was clean and correct and knew nothing.
+
+`--is-ancestor 81c3085 <remote>` exits **0**; run BF is present in the remote blob. **Nothing was
+lost.** Measured from the merge base `840e6ad` in the same call: this branch carried `rev-list --merges`
+**0** before the event and **24** after. Had the verification read the local checkout, as every earlier round's final pass did, it
+would have published _8 commits, no merges_: **true of my checkout and false of the branch.**
+
+⇒ **the control fired on its author, in the round that restated it, against a writer who had done
+nothing wrong.** A shape self-check is valid only while the author is the only writer, and on this
+repository the author is never the only writer for long.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
