@@ -3250,6 +3250,115 @@ mechanical route out of it.
 counting the right thing; the entry was the thing that was wrong** — and the standing rule holds:
 a refusal is evidence about the input until it is proven to be evidence about the check.
 
+### Run BW — thirty-one reviews, zero decisions, and an obligation enforced by nothing
+
+Read `2026-08-05T18:37:22Z` onward. Prompted by a relay that was **correct in every field** — the
+finding is not in it, it is in what it made me measure.
+
+#### 1. The relay confirms exactly, and one of its fields is outside the rule it arrived with
+
+A correspondent adopted a good discipline: **`observed_at` UTC mandatory on every mutable-state
+relay, monotonic terminal predicates read before head/mergeability.** Their reading of #328,
+`observed_at=2026-08-05T08:34:23Z`, confirms field-for-field at my `18:37:22Z`:
+
+```
+state=closed  merged=true  mergedAt=2026-08-05T02:48:29Z  merge_commit=1e84cb8f  head=c4f4713b
+eight comments -> issues/328/comments array = 8   CONFIRMED
+```
+
+⇒ Four of those are terminal and monotonic: **a ten-hour-old reading of them is as good as a fresh
+one**, which is exactly what the rule is for. **The comment count is neither.** Comments can be
+added and deleted, so it is a mutable, non-monotonic field carried in the same sentence, under one
+`observed_at`, as fields that cannot change.
+
+> _**A relay that mixes terminal and mutable fields under a single timestamp lends the terminal
+> fields' immunity to the mutable one.**_ The reader does not re-check the count, because it
+> arrived in the company of four facts that never needed re-checking.
+
+And a second limit, which is the more interesting one because **no timestamp discipline can reach
+it**:
+
+```
+same object, same instant:
+  gh pr view 328 --json comments   -> 8      REST pulls/328  .comments  -> 8
+  REST issues/328/comments  array  -> 8      REST pulls/328/comments    -> 0
+```
+
+⇒ **Two quantities share the noun `comments` on the same resource path**, and they disagree by 8
+**simultaneously**. ⇒ _**`observed_at` guards against a reading being old. It cannot detect two
+readings that are both current and disagree**_ — and a caller who reads `.comments = 8` and then
+lists `pulls/{n}/comments` to enumerate them gets `0`, whose natural reading is "they were
+deleted."
+
+#### 2. There is no inline review comment in this repository, and that is a measurement rather than an absence
+
+```
+100 consecutive PRs, #306-#533:  non-empty pulls/{n}/comments  ->  0        total inline comments 0
+POSITIVE CONTROL, identical endpoint and code path, repositories that are not ours:
+  cli/cli          #14079->8   #14062->2   #14059->4
+  vercel/next.js   #96703->1   #96681->2   #96670->5
+```
+
+⇒ My first sweep found zero and I **refused to publish it**, because a zero from an instrument
+never shown to return non-zero is not a measurement. The control fires elsewhere through the same
+call, so **the endpoint works and the zero here is real.**
+
+> _**An absence is only evidence once the instrument has been shown, on the same code path, to be
+> capable of presence.**_ The cheapest way to obtain that is a foreign repository, because it
+> requires creating nothing and touching nothing here.
+
+#### 3. Thirty-one review submissions, zero review decisions — and it is compliant
+
+```
+#306-#533:  PRs carrying at least one review : 11 of 100
+            review submissions               : 31
+            by state                         : {"COMMENTED": 31}     APPROVED 0 · CHANGES_REQUESTED 0
+            with a body                      : 31 · body-empty 0
+            reviewDecision across all 11      : {null: 11}
+branches/development/protection:  required_approving_review_count = 0
+                                  dismiss_stale_reviews = true · enforce_admins = false
+                                  required_linear_history = true · required contexts = 7
+```
+
+⇒ **89 of 100 pull requests carried no review at all**, and the 11 that were reviewed received
+only body-only `COMMENTED` submissions. ⇒ **`COMMENTED` is the one review state that changes
+nothing**: it neither approves nor blocks, and `reviewDecision` stays null. **Thirty-one reviews
+produced zero decisions.**
+
+⇒ And the configuration is the part that must be stated plainly, because it converts an accusation
+into a finding: **`required_approving_review_count` is 0**, so merging with no approval is
+**permitted**, not a violation. **Nobody broke a rule. There is no rule.**
+
+#### 4. #121's own shape, one level out: an obligation recorded in prose and enforced by nothing
+
+The decision log requires that the remedy for #121 **"be reviewed by someone other than the
+fact-checker."** I have honoured the half I control — I have declined to review or merge anything
+I wrote, every round, without exception.
+
+```
+the forge's capacity to enforce the other half: required_approving_review_count = 0
+approvals ever recorded across the sampled window:                              0
+#328 — relayed to me as "reviewed and merged by someone other than you"
+       pulls/328/reviews -> 0 submissions
+```
+
+⇒ **The merge half of that sentence is true and the review half is not**, in the forge's own
+accounting. Something may well have been read by a human; **nothing was recorded, and an
+obligation discharged only in a way that leaves no object behind cannot be audited by anyone,
+including the person who discharged it.**
+
+> _**#121 was a check that could not fail because it was pointed at the authority instead of the
+> pair. This is the same defect at the level of the process that was supposed to review the fix:
+> a requirement written in a decision log, on a repository whose ruleset requires zero approvals,
+> cannot fire either.**_ The remedy for a one-directional check was itself merged under a
+> zero-directional review.
+
+⇒ **Not filed as a request for anyone to approve my work.** An approval produced because I asked
+for one would be the weakest possible instance of the thing being measured. **Filed as the
+measured state of the control**, so that the next person who writes "must be reviewed by someone
+other than the author" knows what that sentence currently costs to satisfy: **nothing, and it has
+never been paid.**
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
