@@ -67,13 +67,55 @@ function sessionsOf(commits) {
   return seen;
 }
 
-function describe(commits) {
+/**
+ * Label one commit with where it came from, for display.
+ *
+ * The session trailer cannot carry this. It names the BRIEF a session was
+ * handed, not the session: measured on this repository, 249 commits carry the
+ * trailer under 48 distinct values, one of them spanning 74 commits over 37
+ * hours. Two sessions working the same brief emit the same id, so a trailer
+ * label prints the PUSHER'S OWN id against ANOTHER WRITER'S work — on the list
+ * the operator is told to read before answering "are these genuinely obsolete".
+ * A wrong attribution is worse than none: silence prompts the question, and a
+ * familiar id settles it.
+ *
+ * So the label comes from the reflog, which records what THIS worktree did
+ * rather than what a commit says about itself — the same source `decide` uses
+ * for `ownCommits`, so the list the operator reads and the verdict they are
+ * reading it for cannot disagree.
+ *
+ * Three states, and the third is the point:
+ *
+ *   created here         this worktree's reflog shows it authoring that sha.
+ *   NOT created here     the reflog is readable and the sha is absent from it.
+ *   origin unverifiable  there was no reflog to read (`logAllRefUpdates=false`,
+ *                        or expiry). NOT the same as "not yours".
+ *
+ * Collapsing the third into the second restates the original defect with the
+ * sign flipped: an unreadable reflog would accuse every commit, including the
+ * operator's own, and a refusal that fires on everything teaches the override.
+ *
+ * @param {string} sha
+ * @param {Set<string>} owned commits this worktree's reflog shows it creating
+ * @param {boolean} attributable whether that reflog was readable at all
+ * @returns {string}
+ */
+export function originLabel(sha, owned, attributable) {
+  if (owned.has(sha)) return '[created here]';
+  if (!attributable) return '[origin unverifiable]';
+  return '[NOT created here]';
+}
+
+function describe(commits, owned, attributable) {
   return commits
-    .map((commit) => {
-      const sessions = (commit.sessions ?? []).join(', ');
-      const suffix = sessions ? `   [session ${sessions}]` : '';
-      return `    ${commit.sha.slice(0, 12)}  ${commit.subject ?? ''}${suffix}`;
-    })
+    .map(
+      (commit) =>
+        `    ${commit.sha.slice(0, 12)}  ${commit.subject ?? ''}   ${originLabel(
+          commit.sha,
+          owned,
+          attributable,
+        )}`,
+    )
     .join('\n');
 }
 
@@ -113,6 +155,12 @@ export function evaluateRefUpdate(update, facts) {
   const { liveRemoteSha, discarded = [], preserved = [] } = facts;
   const ack = (facts.ack ?? '').trim();
   const ackForeign = facts.ackForeign ?? '';
+  // Hoisted above the first refusal that renders a commit list. Every message
+  // this function emits describes the same commits from the same evidence the
+  // verdict was reached on; computing the label anywhere else would let the
+  // list and the verdict drift.
+  const ownCommits = new Set(facts.ownCommits ?? []);
+  const attributable = facts.ownershipEvidence === true;
 
   if (PROTECTED_REFS.includes(remoteRef)) {
     return {
@@ -202,7 +250,7 @@ export function evaluateRefUpdate(update, facts) {
       message: [
         `This deletes ${remoteRef}, discarding everything at ${live}.`,
         '',
-        describe(discarded),
+        describe(discarded, ownCommits, attributable),
         '',
         `If that is intended:  ${ACK_ENV}=${live} git push ...`,
       ].join('\n'),
@@ -278,7 +326,6 @@ export function evaluateRefUpdate(update, facts) {
   }
 
   const ownSessions = new Set(facts.ownSessions ?? []);
-  const ownCommits = new Set(facts.ownCommits ?? []);
   // Ownership is a question about objects, not about what those objects say
   // about themselves. A discarded commit is this worktree's only if this
   // worktree created that exact commit — see `readOwnedCommits` for why the
@@ -329,7 +376,7 @@ export function evaluateRefUpdate(update, facts) {
           'this worktree has never authored a commit under.',
           `Session id(s) never authored here: ${foreign.join(', ')}`,
           '',
-          describe(discarded),
+          describe(discarded, ownCommits, attributable),
           '',
           'Two sessions are writing this branch. Read that work and rebase onto it',
           'rather than over it. If you have read it and it is genuinely obsolete:',
@@ -348,7 +395,7 @@ export function evaluateRefUpdate(update, facts) {
         'establish whether they are yours.',
         `Session id(s) never authored here: ${foreign.join(', ')}`,
         '',
-        describe(discarded),
+        describe(discarded, ownCommits, attributable),
         '',
         'That is an absence, not a finding: this worktree has recorded no authorship',
         "of its own, so the same absence is produced by another session's work",
@@ -413,7 +460,7 @@ export function evaluateRefUpdate(update, facts) {
           'id alone cannot tell your work apart from a second writer handed the',
           'same brief.',
           '',
-          describe(unacknowledged),
+          describe(unacknowledged, ownCommits, attributable),
           '',
           'That is an absence, not a finding: no creation of these commits is',
           'recorded here, which is equally what a second writer and an expired',
@@ -433,7 +480,7 @@ export function evaluateRefUpdate(update, facts) {
       message: [
         `This push destroys ${discarded.length} commit(s) currently on the remote:`,
         '',
-        describe(discarded),
+        describe(discarded, ownCommits, attributable),
         '',
         'Read them, then acknowledge the tip you are overwriting:',
         `  npm run push:force`,
