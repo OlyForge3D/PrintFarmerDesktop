@@ -108,6 +108,8 @@ So when a change works by making a symptom go away, **assert the mechanism is in
 
 Same shape outside tests: an identifier reconstructed by hand instead of copied from the tool that emitted it returns an empty result, and empty reads as a fact about the world rather than a fault in the query. See `.squad/decisions/inbox/hicks-empty-query-results.md`, and #188 for both rules together.
 
+The same structure governs arguments, in review comments and briefs as much as in code: a conclusion can be true while the mechanism attached to it is false, and the conclusion's truth is what stops anyone checking the mechanism. When you refute a claim of the form _X because Y_, say separately whether X survives Y's failure — the next reader acts on the half that carries a citation, and that half is Y. See `.squad/decisions/inbox/bishop-mutation-effectiveness.md`, #186 and #239.
+
 ## Mocks hide missing production code
 
 Downstream tests that mock the sidecar stayed green while the entire native retarget engine was missing from `development`. If a test mocks the thing it is nominally validating, it cannot detect that the thing is gone. At least one test per integration boundary must exercise the real implementation.
