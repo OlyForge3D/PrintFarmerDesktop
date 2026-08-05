@@ -155,13 +155,13 @@ export class RetargetArtifactService {
       const candidate = path.join(this.parentRoot, entry.name);
       const marker = await readOwnerMarker(candidate);
       if (!marker || isProcessRunning(marker.pid)) continue;
-      // Reaping another instance's leftovers is opportunistic. Pending handles
-      // may outlive that process, but unrelated failures still indicate a
-      // broken temp root and must abort startup.
+      // Reaping another instance's leftovers is opportunistic. A directory that
+      // is merely busy is left for a later sweep; only a temp root the
+      // filesystem cannot serve at all aborts startup.
       try {
         await removeOwnedInstance(candidate, marker.instanceId);
       } catch (error) {
-        if (!isPendingHandleError(error)) throw error;
+        if (isBrokenTempRootError(error)) throw error;
         // Left for a later sweep, by this process or another one.
       }
     }
@@ -695,11 +695,25 @@ async function removeOwnedInstance(
   if (!marker || marker.instanceId !== expectedInstanceId) return;
   await rm(directory, { recursive: true, force: true });
 }
-function isPendingHandleError(error: unknown): boolean {
+// The list is written on the fatal side because that is the side that is safe
+// to get wrong. #330 established that the codes Windows can raise for a
+// contended delete are an open set, so an allowlist of *tolerated* codes aborts
+// startup on the first code nobody thought of — the #229 crash, reintroduced.
+// #349 then established that a genuinely broken temp root must not be swallowed
+// silently, which is a real requirement and the reason the allowlist was added.
+//
+// Naming the fatal codes satisfies both. The discriminator is not "did anyone
+// predict this code" but "is this a property of the filesystem or of this one
+// directory right now": EIO, ENOSPC and EROFS mean the temp root cannot be
+// served at all, and no later sweep will do better. Everything else — including
+// EACCES, ENOTDIR, EMFILE and libuv's UNKNOWN, which is by construction the code
+// nobody thought of — costs one leftover directory that a later sweep collects,
+// which is strictly cheaper than a process that will not start.
+function isBrokenTempRootError(error: unknown): boolean {
   return (
     error instanceof Error &&
     'code' in error &&
-    ['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(String(error.code))
+    ['EIO', 'ENOSPC', 'EROFS'].includes(String(error.code))
   );
 }
 function isProcessRunning(pid: number): boolean {
