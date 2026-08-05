@@ -61,6 +61,7 @@ import { execFileSync } from 'node:child_process';
 import {
   collectCitations,
   loadCorpus,
+  refuse,
   requireCorpusFloor,
   requireScanRoots,
 } from './citation-corpus.mjs';
@@ -460,7 +461,29 @@ if (failures.length) {
 // corpus is ever legitimately pruned; do not raise it to track growth, which would reintroduce
 // exactly the false-alarm risk the margin buys off.
 const CITATION_FLOOR = 90;
-requireCorpusFloor({ count: cited.size, floor: CITATION_FLOOR });
+
+// The floor is calibrated against *this* repository's corpus, so a synthetic fixture with a
+// hand-built ledger of two citations trips it legitimately. `--floor=N` lets such a fixture say
+// so explicitly. It is a flag and not an environment variable on purpose: a flag cannot arrive
+// ambiently from CI configuration, it appears in the diff of whatever invokes the check, and
+// `states a guarantee its own guards actually deliver` asserts that neither the npm script nor
+// the workflow passes one. An override is also announced on stdout, so a run that lowered its
+// own bar cannot look like a run that cleared it.
+const floorArg = process.argv.find((a) => a.startsWith('--floor='));
+const floor = floorArg
+  ? Number(floorArg.slice('--floor='.length))
+  : CITATION_FLOOR;
+if (!Number.isInteger(floor) || floor < 0) {
+  refuse(
+    `--floor expects a non-negative integer, got ${JSON.stringify(floorArg)}.`,
+  );
+}
+if (floor !== CITATION_FLOOR) {
+  console.log(
+    `citation floor overridden: ${floor} (calibrated floor is ${CITATION_FLOOR})`,
+  );
+}
+requireCorpusFloor({ count: cited.size, floor });
 
 // --- the run -----------------------------------------------------------------------------
 console.log(

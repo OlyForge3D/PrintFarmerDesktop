@@ -128,8 +128,14 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     // guard. Measured - that mutation stayed green until these were tightened.
     expect(harness).toMatch(/const CITATION_FLOOR = \d+;/);
     expect(harness).toMatch(
-      /requireCorpusFloor\(\{\s*count: cited\.size,\s*floor: CITATION_FLOOR,?\s*\}\)/,
+      /requireCorpusFloor\(\{\s*count: cited\.size,\s*floor,?\s*\}\)/,
     );
+    // Whitespace-tolerant: prettier reflows this ternary across lines, and a
+    // formatter is a mutation operator this file does not control. Measured -
+    // an exact-spacing version of the next assertion broke on `prettier --write`
+    // with the guard entirely intact, which is a false positive, not a finding.
+    expect(harness).toMatch(/floorArg\s*\?\s*Number\(floorArg\.slice/);
+    expect(harness).toMatch(/:\s*CITATION_FLOOR;/);
     expect(harness).toMatch(/requireScanRoots\(loadCorpus\(FILES\)\)/);
     expect(corpus).toContain('a scan root is missing or unreadable');
     // classifier side
@@ -139,6 +145,16 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     // #421's corpus is disjoint, so a shared constant would be wrong for one of
     // them by construction.
     expect(corpus).not.toMatch(/const CITATION_FLOOR/);
+
+    // `--floor` exists for synthetic fixtures whose ledger is built by hand. An
+    // armed invocation must never pass it, or the guard is unarmed by the very
+    // thing that runs it - and unlike an environment variable, a flag has to be
+    // written here to take effect, so its absence is assertable.
+    expect(read('package.json')).not.toContain('--floor');
+    expect(workflowText).not.toContain('--floor');
+    // Positive control: the flag is real and the harness does parse it, so the
+    // two assertions above are absences of something that exists.
+    expect(harness).toContain('--floor=');
 
     // Negative control: strings a reader might expect and these files do not
     // carry, so the assertions above are not passing on a substring of
@@ -310,12 +326,21 @@ describe('a declared twin is checked for being a twin', () => {
       ].join('\n'),
     );
 
+  // These fixtures build a two-citation ledger by hand, which sits below the corpus floor the
+  // harness carries for this repository. `--floor=0` says so explicitly rather than leaving the
+  // arms to fail for a reason none of them is about. The floor itself is exercised in
+  // `the harness refuses to publish a verdict it cannot support`, and no armed invocation passes
+  // this flag - asserted in `states a guarantee its own guards actually deliver`.
   const runHarness = (dir: string) => {
-    const r = spawnSync('node', ['scripts/check-citation-reachability.mjs'], {
-      cwd: dir,
-      encoding: 'utf8',
-      maxBuffer: 1 << 28,
-    });
+    const r = spawnSync(
+      'node',
+      ['scripts/check-citation-reachability.mjs', '--floor=0'],
+      {
+        cwd: dir,
+        encoding: 'utf8',
+        maxBuffer: 1 << 28,
+      },
+    );
     return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
   };
 
@@ -340,10 +365,12 @@ describe('a declared twin is checked for being a twin', () => {
     execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
     mkdirSync(path.join(dir, 'scripts'), { recursive: true });
     mkdirSync(path.join(dir, '.squad', 'fact-checker'), { recursive: true });
-    copyFileSync(
-      path.join(repositoryRoot, HARNESS),
-      path.join(dir, 'scripts', 'check-citation-reachability.mjs'),
-    );
+    for (const script of [HARNESS, CORPUS_MODULE]) {
+      copyFileSync(
+        path.join(repositoryRoot, script),
+        path.join(dir, script.replace(/\//g, path.sep)),
+      );
+    }
     writeFileSync(path.join(dir, '.squad', 'fact-checker', 'policy.md'), '');
 
     const notes = path.join(dir, 'notes.md');
@@ -487,10 +514,12 @@ describe('a declared twin is checked for being a twin', () => {
     execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
     mkdirSync(path.join(dir, 'scripts'), { recursive: true });
     mkdirSync(path.join(dir, '.squad', 'fact-checker'), { recursive: true });
-    copyFileSync(
-      path.join(repositoryRoot, HARNESS),
-      path.join(dir, 'scripts', 'check-citation-reachability.mjs'),
-    );
+    for (const script of [HARNESS, CORPUS_MODULE]) {
+      copyFileSync(
+        path.join(repositoryRoot, script),
+        path.join(dir, script.replace(/\//g, path.sep)),
+      );
+    }
     writeFileSync(path.join(dir, '.squad', 'fact-checker', 'policy.md'), '');
 
     const notes = path.join(dir, 'notes.md');
