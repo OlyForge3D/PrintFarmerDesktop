@@ -70,6 +70,25 @@ export const UNENFORCED_CHECKS = {
     'that the default GITHUB_TOKEN does not carry, so running it in CI would ' +
     'degrade to the half the tests already cover. Invoked by hand with a ' +
     'privileged token when the queue configuration changes.',
+  'check:required-contexts':
+    'Its judgement IS enforced in CI: tests/requiredContexts.test.ts drives ' +
+    'evaluateRequiredContexts, latestRunNamed and main over plain objects and ' +
+    'a stub spawn, so all four exit codes are exercised under `npm run test`. ' +
+    'Its main() additionally needs two things CI cannot supply for the PR it is ' +
+    'asked about: a credential, and a PULL REQUEST NUMBER. The second is the ' +
+    'real obstruction and it is not incidental — this check answers "is THIS ' +
+    'pull request ready to merge", which is a question asked BY a human or a ' +
+    'merge driver at the moment of merging, not a property of a commit that a ' +
+    'per-PR workflow could assert about itself. A pull_request run of it would ' +
+    'be asking whether its own still-running checks had finished, which is ' +
+    'answerable only in the negative. ' +
+    'STATE THE WEAKNESS PLAINLY: nothing forces anyone to run this before ' +
+    'merging, so it does not prevent a merge on a head missing a required ' +
+    'context. It replaces a ritual ("report the seven by name") with a command, ' +
+    'which is strictly better than the ritual and strictly weaker than a gate. ' +
+    'Discharge path: invoke it from whatever performs the merge, and treat a ' +
+    'non-zero exit as a refusal — at which point it becomes a gate and this ' +
+    'entry should be deleted.',
 };
 
 // `check:citation-reachability` was here, with a four-condition discharge path.

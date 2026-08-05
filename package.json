@@ -45,6 +45,7 @@
     "check:closure-scope": "node scripts/check-pr-closure-scope.mjs",
     "check:stacked-base": "node scripts/check-stacked-base.mjs",
     "check:merge-queue-contexts": "node scripts/check-merge-queue-contexts.mjs",
+    "check:required-contexts": "node scripts/check-required-contexts.mjs",
     "check:protection-assumptions": "node scripts/check-protection-assumptions.mjs",
     "check:script-reachability": "node scripts/check-script-reachability.mjs",
     "check:sequencing-hold": "node scripts/check-sequencing-hold.mjs",
