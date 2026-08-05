@@ -174,10 +174,82 @@ function mainSource(file: string): string {
   return readFileSync(path.join(mainDir, `${file}.ts`), 'utf8');
 }
 
-function relativeImportsOf(file: string): string[] {
-  return [...mainSource(file).matchAll(/\bfrom\s+['"](\.[^'"]*)['"]/g)].map(
-    (m) => m[1]!,
+/**
+ * #517. Resolves a first-party specifier to a source path.
+ *
+ * `@shared/*` is first-party -- tsconfig maps it to `src/shared/*` -- but it
+ * does not begin with a dot, so the previous regex could not see it. Seven of
+ * the twelve modules in the entry points' closure import it, five of them as
+ * value imports, and `src/shared/ipc.ts` is 5,624 lines. Treating "local" as
+ * "starts with a dot" left the single largest first-party region in the
+ * repository outside every closure assertion here.
+ */
+function firstPartySourcePath(specifier: string): string | null {
+  if (specifier.startsWith('.')) {
+    return path.join(mainDir, specifier.replace(/\.js$/, '.ts'));
+  }
+  if (specifier.startsWith('@shared/')) {
+    return path.join(
+      mainDir,
+      '..',
+      'shared',
+      `${specifier.slice('@shared/'.length)}.ts`,
+    );
+  }
+  return null;
+}
+
+/**
+ * Every first-party specifier a module imports: relative AND aliased.
+ *
+ * The old name said `relative` and the assertions read as "imports nothing
+ * first-party". Those are different claims and the gap between them is
+ * exactly the defect in #435, reproduced inside the corpus that documents
+ * #435. The name now states what is measured.
+ *
+ * Still `from '...'` only: a specifier reached by `await import()` is out of
+ * scope here and is #435's subject, not this helper's.
+ */
+function firstPartyImportsOf(file: string): string[] {
+  return [...mainSource(file).matchAll(/\bfrom\s+['"]([^'"]+)['"]/g)]
+    .map((m) => m[1]!)
+    .filter((specifier) => firstPartySourcePath(specifier) !== null);
+}
+
+/**
+ * The subset that survives compilation, i.e. excluding `import type`.
+ *
+ * This is the honest reading of "does this module depend on first-party code
+ * at runtime", and keeping it separate from the closure helper above is what
+ * makes the `orcaProfileInstall` assertion falsifiable: that module's only
+ * first-party import is type-only, so the runtime set is empty TODAY, and
+ * dropping the `type` keyword turns it red. Under a single combined helper
+ * the assertion would either be permanently red or permanently blind.
+ *
+ * Only the unambiguous `import type ...` form counts as erased. An inline
+ * `import { type A, B }` still carries a value binding, and treating the
+ * all-inline case as erased would need a judgement about TypeScript's
+ * elision settings that this file has no business making. Fail closed.
+ */
+function runtimeFirstPartyImportsOf(file: string): string[] {
+  const source = mainSource(file);
+  const erased = new Set(
+    [...source.matchAll(/\bimport\s+type\b[\s\S]*?\bfrom\s+['"]([^'"]+)['"]/g)]
+      .map((m) => m[1]!)
+      .filter((specifier) => firstPartySourcePath(specifier) !== null),
   );
+  return firstPartyImportsOf(file).filter(
+    (specifier) => !erased.has(specifier),
+  );
+}
+
+/** Source of a first-party specifier, so the closure loops can scan it. */
+function firstPartySource(specifier: string): string {
+  const resolved = firstPartySourcePath(specifier);
+  if (resolved === null) {
+    throw new Error(`not a first-party specifier: ${specifier}`);
+  }
+  return readFileSync(resolved, 'utf8');
 }
 
 // ---------------------------------------------------------------------------
@@ -1229,13 +1301,32 @@ const CELLS: Cell[] = [
       'to be malformed in.',
     expect: EXCUSE_HOLDS,
     run: () => {
-      // The closure is the module plus its single relative import, which is
-      // type-only. Both are checked so the excuse covers everything discovery
-      // can reach in this repository's own source.
-      expect(relativeImportsOf('orcaProfileDiscovery')).toEqual([
+      // #517. The closure is the module plus its first-party imports. Both the
+      // relative ones and the aliased `@shared/ipc` are listed: the latter was
+      // invisible to the old helper, and it is a VALUE import here, so it is a
+      // real runtime edge rather than an erased one.
+      expect(firstPartyImportsOf('orcaProfileDiscovery')).toEqual([
+        '@shared/ipc',
         './calibrationWire.js',
         './untrustedJson.js',
       ]);
+      // #517 criterion 4. The banned-API scan below is a NEGATIVE assertion, so
+      // it passes just as happily on the wrong file, or on an empty string.
+      // This positive control proves which file was actually read, using a
+      // token present in src/shared/ipc.ts and absent from BOTH src/main/
+      // modules in this closure and from the sibling guard
+      // tests/calibrationUntrustedInputNoExpansion.test.ts.
+      //
+      // `ENTRY_POINTS` is the obvious control and is unusable: it appears in
+      // this file and in the sibling, so it proves a file was read without
+      // proving which one. That is how the defect this issue records was
+      // misdiagnosed in the first place.
+      expect(firstPartySource('@shared/ipc')).toContain(
+        'deriveCalibrationWorkspaceProjection',
+      );
+      expect(firstPartySource('@shared/ipc')).not.toMatch(
+        /\bzlib\b|\bgunzip|\binflate|\bbrotli|\bsharp\b|\bjimp\b/i,
+      );
       for (const file of [
         'orcaProfileDiscovery',
         'calibrationWire',
@@ -1525,9 +1616,19 @@ const CELLS: Cell[] = [
       'written verbatim; there is no encoded payload on this path.',
     expect: EXCUSE_HOLDS,
     run: () => {
-      // No relative imports at all, so the module *is* its own closure and this
-      // single-file check is not narrower than the property it claims.
-      expect(relativeImportsOf('orcaProfileInstall')).toEqual([]);
+      // #517. Two assertions, not one, and the pair is the point. The first
+      // pins that the aliased import IS SEEN -- so the empty result below is a
+      // measured absence rather than a blind spot reporting zero. The second
+      // says the module has no first-party dependency at runtime, which is what
+      // "the module is its own closure" actually claims.
+      //
+      // Dropping the `type` keyword at orcaProfileInstall.ts:44 turns the
+      // second assertion red. Under the old relative-only helper both read
+      // `[]` and neither could notice.
+      expect(firstPartyImportsOf('orcaProfileInstall')).toEqual([
+        '@shared/ipc',
+      ]);
+      expect(runtimeFirstPartyImportsOf('orcaProfileInstall')).toEqual([]);
       expect(mainSource('orcaProfileInstall')).not.toMatch(
         /base64|atob\(|data:[a-z]+\//i,
       );
@@ -1613,7 +1714,7 @@ const CELLS: Cell[] = [
       'reference from one document to another, so there is no chain to cycle.',
     expect: EXCUSE_HOLDS,
     run: () => {
-      expect(relativeImportsOf('calibrationAssetManifest')).toEqual([]);
+      expect(firstPartyImportsOf('calibrationAssetManifest')).toEqual([]);
       expect(mainSource('calibrationAssetManifest')).not.toMatch(
         /\binherits\b|\bextends\b/,
       );
@@ -1803,7 +1904,7 @@ const CELLS: Cell[] = [
       'compared to magic signatures; there is no encoded payload to malform.',
     expect: EXCUSE_HOLDS,
     run: () => {
-      expect(relativeImportsOf('calibrationAssetManifest')).toEqual([]);
+      expect(firstPartyImportsOf('calibrationAssetManifest')).toEqual([]);
       expect(mainSource('calibrationAssetManifest')).not.toMatch(
         /base64|atob\(|data:[a-z]+\//i,
       );
