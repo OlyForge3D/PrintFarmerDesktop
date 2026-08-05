@@ -183,68 +183,78 @@ function installApplicationMenu(): void {
 if (!enforceSingleInstance()) {
   app.quit();
 } else {
-  void app.whenReady().then(() => {
-    if (process.platform === 'darwin' && !app.isPackaged) {
-      app.dock.setIcon(
-        resolveAppIconPath(app.getAppPath(), process.resourcesPath, false),
-      );
-    }
-    installApplicationMenu();
-    applyContentSecurityPolicy(
-      session.defaultSession,
-      MAIN_WINDOW_VITE_DEV_SERVER_URL,
-    );
-    // Persist the model catalog under the per-user data directory so it
-    // survives restarts. The sidecar reads this via PRINTFARMER_CATALOG_DB.
-    if (!process.env.PRINTFARMER_CATALOG_DB) {
-      process.env.PRINTFARMER_CATALOG_DB = path.join(
-        app.getPath('userData'),
-        'catalog.sqlite3',
-      );
-    }
-    sharedSidecar = new SidecarClient(spawnSidecarChannel, {
-      requireProtocolHandshake: true,
-    });
-    sharedRetargetSidecar = new SidecarClient(spawnSidecarChannel, {
-      serializeRequests: true,
-      requireProtocolHandshake: true,
-    });
-    sharedProfiles = new ServerProfileService({
-      userDataPath: app.getPath('userData'),
-      secretStorage: safeStorage,
-    });
-    disposeIpcResources = registerIpcHandlers(
-      undefined,
-      sharedProfiles,
-      sharedSidecar,
-      sharedRetargetSidecar,
-    );
-    syncEngine = new PrintFarmerSyncEngine(
-      sharedProfiles,
-      sharedSidecar,
-      new SyncHttpClient(sharedProfiles),
-    );
-    void syncEngine.start().catch(() => {
-      console.error('[sync] scheduler startup failed');
-    });
-    if (app.isPackaged && __PRINTFARMER_UPDATE_PUBLIC_KEY__) {
-      updateManager = new UpdateManager({
-        app,
-        publicKeyPem: __PRINTFARMER_UPDATE_PUBLIC_KEY__,
-        metadataUrl: __PRINTFARMER_UPDATE_METADATA_URL__,
-      });
-      void updateManager.initialize().catch((error: unknown) => {
-        console.error('[updates] initialization failed', error);
-      });
-    }
-    createMainWindow();
-
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        createMainWindow();
+  void app
+    .whenReady()
+    .then(() => {
+      if (process.platform === 'darwin' && !app.isPackaged) {
+        app.dock.setIcon(
+          resolveAppIconPath(app.getAppPath(), process.resourcesPath, false),
+        );
       }
+      installApplicationMenu();
+      applyContentSecurityPolicy(
+        session.defaultSession,
+        MAIN_WINDOW_VITE_DEV_SERVER_URL,
+      );
+      // Persist the model catalog under the per-user data directory so it
+      // survives restarts. The sidecar reads this via PRINTFARMER_CATALOG_DB.
+      if (!process.env.PRINTFARMER_CATALOG_DB) {
+        process.env.PRINTFARMER_CATALOG_DB = path.join(
+          app.getPath('userData'),
+          'catalog.sqlite3',
+        );
+      }
+      sharedSidecar = new SidecarClient(spawnSidecarChannel, {
+        requireProtocolHandshake: true,
+      });
+      sharedRetargetSidecar = new SidecarClient(spawnSidecarChannel, {
+        serializeRequests: true,
+        requireProtocolHandshake: true,
+      });
+      sharedProfiles = new ServerProfileService({
+        userDataPath: app.getPath('userData'),
+        secretStorage: safeStorage,
+      });
+      disposeIpcResources = registerIpcHandlers(
+        undefined,
+        sharedProfiles,
+        sharedSidecar,
+        sharedRetargetSidecar,
+      );
+      syncEngine = new PrintFarmerSyncEngine(
+        sharedProfiles,
+        sharedSidecar,
+        new SyncHttpClient(sharedProfiles),
+      );
+      void syncEngine.start().catch(() => {
+        console.error('[sync] scheduler startup failed');
+      });
+      if (app.isPackaged && __PRINTFARMER_UPDATE_PUBLIC_KEY__) {
+        updateManager = new UpdateManager({
+          app,
+          publicKeyPem: __PRINTFARMER_UPDATE_PUBLIC_KEY__,
+          metadataUrl: __PRINTFARMER_UPDATE_METADATA_URL__,
+        });
+        void updateManager.initialize().catch((error: unknown) => {
+          console.error('[updates] initialization failed', error);
+        });
+      }
+      createMainWindow();
+
+      app.on('activate', () => {
+        if (BrowserWindow.getAllWindows().length === 0) {
+          createMainWindow();
+        }
+      });
+    })
+    .catch((error: unknown) => {
+      // One-argument `.then` has no rejection path, so every failure in the
+      // bootstrap above — CSP installation, IPC registration, window creation —
+      // was an unhandled rejection. Reported rather than acted on: there is no
+      // established policy for a half-initialized app, and inventing a quit here
+      // would be a behaviour change this repair has no evidence to justify.
+      console.error('[startup] application bootstrap failed', error);
     });
-  });
 
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
@@ -282,7 +292,7 @@ if (!enforceSingleInstance()) {
         await Promise.race([
           disposal,
           new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
-        ]);
+        ]).catch(() => undefined);
         sharedProfiles?.clearTokens();
         sharedProfiles = null;
         cleanupComplete = true;
@@ -295,7 +305,17 @@ if (!enforceSingleInstance()) {
         }
         if (!updaterOwnsQuit) app.quit();
       }
-    })();
+    })().catch((error: unknown) => {
+      // `before-quit` has already called `preventDefault()`, so this promise is
+      // the only thing that can complete the quit. A throw escaping the
+      // `finally` above skips both `cleanupComplete = true` and `app.quit()`,
+      // and the guard at the top of this handler then returns early on every
+      // subsequent attempt — the window closes and the process stays alive.
+      // Logging alone would preserve that hang, so the quit is completed here.
+      console.error('[shutdown] cleanup failed to complete', error);
+      cleanupComplete = true;
+      app.quit();
+    });
   });
 
   // Refuse to attach webviews or open arbitrary windows from any web contents.
