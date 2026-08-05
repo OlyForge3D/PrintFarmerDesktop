@@ -1,11 +1,16 @@
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  attachPackagedFailureDiagnostics,
   cleanupPackagedApp,
+  createPackagedFailureDiagnostics,
   createPackagedProcessLog,
+  createPackagedStartupTrace,
   decodeBoundedUtf8Tail,
+  launchInstrumentedElectronTestApp,
   MAX_PROCESS_OUTPUT_BYTES,
   runWithPackagedTestCleanup,
   type PackagedApp,
@@ -215,6 +220,178 @@ describe('packaged test failure cleanup', () => {
       MAX_PROCESS_OUTPUT_BYTES,
     );
     expect(processLog.read()).toMatch(/retained-tail$/);
+  });
+
+  it('records timestamped spawn-to-DOM milestones and labeled process output', async () => {
+    let now = Date.parse('2026-08-05T10:00:00.000Z');
+    const processLog = createPackagedProcessLog();
+    const startupTrace = createPackagedStartupTrace(() => now);
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const waitForLoadState = vi.fn(() => {
+      now += 11;
+      return Promise.resolve();
+    });
+    const page = { waitForLoadState };
+    const firstWindow = vi.fn(() => {
+      stdout.write('main output\n');
+      stderr.write('main error\n');
+      now += 7;
+      return Promise.resolve(page);
+    });
+    const close = vi.fn(() => Promise.resolve());
+
+    const launched = await launchInstrumentedElectronTestApp(
+      () => {
+        now += 5;
+        return Promise.resolve({
+          process: () => ({ stdout, stderr }),
+          firstWindow,
+          close,
+        });
+      },
+      processLog,
+      startupTrace,
+    );
+
+    expect(launched.page).toBe(page);
+    expect(waitForLoadState).toHaveBeenCalledWith('domcontentloaded');
+    expect(startupTrace.snapshot()).toEqual({
+      startedAtUtc: '2026-08-05T10:00:00.000Z',
+      elapsedMs: 23,
+      waitingFor: null,
+      milestones: [
+        {
+          name: 'spawn',
+          timestampUtc: '2026-08-05T10:00:00.000Z',
+          elapsedMs: 0,
+        },
+        {
+          name: 'electronLaunch',
+          timestampUtc: '2026-08-05T10:00:00.005Z',
+          elapsedMs: 5,
+        },
+        {
+          name: 'firstWindow',
+          timestampUtc: '2026-08-05T10:00:00.012Z',
+          elapsedMs: 12,
+        },
+        {
+          name: 'domcontentloaded',
+          timestampUtc: '2026-08-05T10:00:00.023Z',
+          elapsedMs: 23,
+        },
+      ],
+    });
+    expect(processLog.read()).toContain('[stdout] main output');
+    expect(processLog.read()).toContain('[stderr] main error');
+  });
+
+  it('reports firstWindow as the named startup failure phase', async () => {
+    const processLog = createPackagedProcessLog();
+    const startupTrace = createPackagedStartupTrace();
+    const close = vi.fn(() => Promise.resolve());
+
+    const thrown = await captureError(
+      launchInstrumentedElectronTestApp(
+        () =>
+          Promise.resolve({
+            process: () => ({
+              stdout: new PassThrough(),
+              stderr: new PassThrough(),
+            }),
+            firstWindow: () =>
+              Promise.reject(new Error('controlled first-window timeout')),
+            close,
+          }),
+        processLog,
+        startupTrace,
+      ),
+    );
+
+    expect(thrown).toEqual(
+      expect.objectContaining({
+        message:
+          'Packaged Electron startup failed while waiting for firstWindow.',
+      }),
+    );
+    expect(startupTrace.snapshot().waitingFor).toBe('firstWindow');
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('reports domcontentloaded as the named startup failure phase', async () => {
+    const processLog = createPackagedProcessLog();
+    const startupTrace = createPackagedStartupTrace();
+    const close = vi.fn(() => Promise.resolve());
+
+    const thrown = await captureError(
+      launchInstrumentedElectronTestApp(
+        () =>
+          Promise.resolve({
+            process: () => ({
+              stdout: new PassThrough(),
+              stderr: new PassThrough(),
+            }),
+            firstWindow: () =>
+              Promise.resolve({
+                waitForLoadState: () =>
+                  Promise.reject(new Error('controlled DOM timeout')),
+              }),
+            close,
+          }),
+        processLog,
+        startupTrace,
+      ),
+    );
+
+    expect(thrown).toEqual(
+      expect.objectContaining({
+        message:
+          'Packaged Electron startup failed while waiting for domcontentloaded.',
+      }),
+    );
+    expect(startupTrace.snapshot().waitingFor).toBe('domcontentloaded');
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('attaches the startup phase snapshot independently from process output', async () => {
+    const attached = new Map<string, Buffer>();
+    const attach = vi.fn(
+      (
+        name: string,
+        options: { body: Buffer | string; contentType: string },
+      ) => {
+        attached.set(name, Buffer.from(options.body));
+        return Promise.resolve();
+      },
+    );
+    const trace = createPackagedStartupTrace(() =>
+      Date.parse('2026-08-05T10:00:00.000Z'),
+    );
+    trace.mark('spawn');
+    trace.waitFor('firstWindow');
+
+    await attachPackagedFailureDiagnostics(
+      { attach },
+      '[stderr] controlled failure',
+      createPackagedFailureDiagnostics(new Error('startup failed'), []),
+      trace.snapshot(),
+    );
+
+    expect([...attached.keys()]).toEqual([
+      'packaged-startup.json',
+      'packaged-process.log',
+    ]);
+    expect(
+      JSON.parse(attached.get('packaged-startup.json')!.toString('utf8')),
+    ).toMatchObject({
+      schemaVersion: 1,
+      waitingFor: 'firstWindow',
+      milestones: [{ name: 'spawn', elapsedMs: 0 }],
+    });
+    expect(attached.get('packaged-process.log')?.toString('utf8')).toBe(
+      '[stderr] controlled failure',
+    );
   });
 });
 

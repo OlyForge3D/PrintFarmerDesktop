@@ -57,6 +57,15 @@ interface DiagnosticAttachment {
   }>;
 }
 
+interface StartupAttachment {
+  schemaVersion: number;
+  waitingFor: string | null;
+  milestones: Array<{
+    name: string;
+    elapsedMs: number;
+  }>;
+}
+
 describe('Playwright secondary diagnostics reporting', () => {
   it('survives the pinned worker serializer and JSON reporter', () => {
     const outputRoot = mkdtempSync(
@@ -148,6 +157,22 @@ describe('Playwright secondary diagnostics reporting', () => {
       expect(cleanupOnlyDiagnostics.secondary[0]?.stack).toContain(
         'root deletion failed with EPERM',
       );
+
+      const startup = requiredResult(results, 'startup phase diagnostics');
+      expect(serializedErrorText(startup)).toContain(
+        'Packaged Electron startup failed while waiting for firstWindow.',
+      );
+      expect(attachmentText(startup, 'packaged-process.log')).toBe(
+        '[stderr] controlled startup failure',
+      );
+      const startupDiagnostics = JSON.parse(
+        attachmentText(startup, 'packaged-startup.json'),
+      ) as StartupAttachment;
+      expect(startupDiagnostics).toMatchObject({
+        schemaVersion: 1,
+        waitingFor: 'firstWindow',
+        milestones: [{ name: 'spawn', elapsedMs: 0 }],
+      });
     } finally {
       rmSync(outputRoot, { recursive: true, force: true });
     }

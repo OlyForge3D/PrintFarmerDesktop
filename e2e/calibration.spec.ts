@@ -34,12 +34,13 @@
  * data-testid attributes to production components is out of scope).
  *
  * Fixture strategy:
- *   - beforeAll installs deterministic IPC fixture handlers ONLY for channels
+ *   - beforeEach launches an isolated app and installs deterministic IPC fixture
+ *     handlers ONLY for channels
  *     where no production behaviour is under test (serverProfiles:list,
  *     catalog:listModels, workspace-state seeding, photo operations).
  *   - calibration:startGeneration, calibration:getQueueState,
  *     calibration:getOrchestrationStatus, and calibration:acknowledgeBedClear
- *     are NOT overridden in beforeAll — the real production handlers remain
+ *     are NOT overridden in beforeEach — the real production handlers remain
  *     active so request-schema rejection tests target the real Zod parse.
  *   - Acceptance tests for those channels install a local fixture inside the
  *     test itself via app.evaluate(), exercising the preload response.parse().
@@ -54,9 +55,19 @@ import {
   type ElectronApplication,
   type Page,
 } from '@playwright/test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  attachPackagedFailureDiagnostics,
+  cleanupPackagedApp,
+  createPackagedFailureDiagnostics,
+  createPackagedProcessLog,
+  createPackagedStartupTrace,
+  launchInstrumentedElectronTestApp,
+  type PackagedProcessLog,
+  type PackagedStartupTrace,
+} from './helpers/packagedApp.js';
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -372,9 +383,18 @@ void F_PHOTO_HASH;
 
 let app: ElectronApplication;
 let page: Page;
-let e2eStateRoot: string;
+let appStarted = false;
+let e2eStateRoot: string | null = null;
+let processLog: PackagedProcessLog;
+let startupTrace: PackagedStartupTrace;
 
-test.beforeAll(async () => {
+test.beforeEach(async ({ browserName }) => {
+  expect(browserName).toBe('chromium');
+  appStarted = false;
+  e2eStateRoot = null;
+  processLog = createPackagedProcessLog();
+  startupTrace = createPackagedStartupTrace();
+
   for (const artifact of requiredArtifacts) {
     if (!existsSync(artifact)) {
       throw new Error(
@@ -389,18 +409,26 @@ test.beforeAll(async () => {
   const userDataPath = path.join(e2eStateRoot, 'user-data');
   mkdirSync(userDataPath, { recursive: true });
 
-  app = await electron.launch({
-    args: ['.'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      PRINTFARMER_CATALOG_DB: catalogDb,
-      PRINTFARMER_USER_DATA_PATH: userDataPath,
-    },
-  });
-
-  page = await app.firstWindow();
-  await page.waitForLoadState('domcontentloaded');
+  const launched = await launchInstrumentedElectronTestApp<
+    Page,
+    ElectronApplication
+  >(
+    () =>
+      electron.launch({
+        args: ['.'],
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          PRINTFARMER_CATALOG_DB: catalogDb,
+          PRINTFARMER_USER_DATA_PATH: userDataPath,
+        },
+      }),
+    processLog,
+    startupTrace,
+  );
+  app = launched.app;
+  page = launched.page;
+  appStarted = true;
 
   // Build fixture data in Node context then pass to main process
   const fixtureRecord = buildFixtureRecord();
@@ -560,7 +588,11 @@ test.beforeAll(async () => {
             toolId,
             toolheadId,
             extruderType: 'directDrive',
-            nozzle: { id: nozzleId, diameterMm: nozzleDim, material: 'brass' },
+            nozzle: {
+              id: nozzleId,
+              diameterMm: nozzleDim,
+              material: 'brass',
+            },
           },
         ],
         safety: {
@@ -687,10 +719,44 @@ test.beforeAll(async () => {
   ).toBeEnabled({ timeout: 15_000 });
 });
 
-test.afterAll(async () => {
-  await app?.close();
-  if (e2eStateRoot) {
-    rmSync(e2eStateRoot, { recursive: true, force: true });
+test.afterEach(async ({ browserName }, testInfo) => {
+  expect(browserName).toBe('chromium');
+  let cleanupError: unknown;
+  try {
+    await cleanupPackagedApp(
+      appStarted ? app : null,
+      e2eStateRoot === null ? [] : [e2eStateRoot],
+    );
+  } catch (error) {
+    cleanupError = error;
+  }
+  appStarted = false;
+  e2eStateRoot = null;
+
+  const primaryError =
+    testInfo.error ??
+    cleanupError ??
+    new Error(`Calibration E2E ended with status ${testInfo.status}.`);
+  if (
+    testInfo.status !== testInfo.expectedStatus ||
+    cleanupError !== undefined
+  ) {
+    await attachPackagedFailureDiagnostics(
+      testInfo,
+      processLog.read(),
+      createPackagedFailureDiagnostics(
+        primaryError,
+        cleanupError === undefined ? [] : [cleanupError],
+      ),
+      startupTrace.snapshot(),
+    );
+  }
+  if (cleanupError !== undefined) {
+    throw cleanupError instanceof Error
+      ? cleanupError
+      : new Error('Calibration E2E cleanup failed with a non-Error value.', {
+          cause: cleanupError,
+        });
   }
 });
 
@@ -1066,7 +1132,7 @@ test('calibration: startCalibrationGeneration rejects request with invalid UUID 
 
 test('calibration: startCalibrationGeneration preload response schema parses valid submitted response (G-04)', async () => {
   // Install a local fixture that returns a valid CalibrationStartGenerationResponse.
-  // The real production handler was NOT overridden in beforeAll; this fixture is
+  // The real production handler was NOT overridden in beforeEach; this fixture is
   // local to this test and stays installed for the remainder of the run.
   // Mutation target: CalibrationStartGenerationResponse.orchestrationId → z.string().min(100)
   //   → preload response.parse() rejects the short UUID → threw = true → test fails.
@@ -1109,7 +1175,7 @@ test('calibration: startCalibrationGeneration preload response schema parses val
 test('calibration: getCalibrationOrchestrationStatus preload response schema parses valid fixture response (D-07/G-06)', async () => {
   // Install a temporary fixture so the preload's response.parse() is exercised
   // against a valid CalibrationGetOrchestrationStatusResponse.
-  // The real production handler was NOT overridden in beforeAll; this fixture is
+  // The real production handler was NOT overridden in beforeEach; this fixture is
   // local to this test.
   // Mutation target: CalibrationOrchestrationStatus.id → z.string().min(100)
   await app.evaluate(
