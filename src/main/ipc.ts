@@ -2530,11 +2530,19 @@ export function registerIpcHandlers(
             break;
           }
         }
-        // Also detect gap between cursor and first event
+        // Also detect a gap between the cursor and the first event. The
+        // comparison is against `request.afterSequence` — the cursor THIS
+        // process sent — and never against `page.afterSequence`, which the
+        // server supplies in its own response and nothing ties to the request.
+        // A server echoing `events[0].sequence - 1` would otherwise make this
+        // condition false however many events it skipped, so the one check that
+        // exists to catch a skipped page could never fire (#429). The same
+        // signature is produced by a merely truncated or mis-paginated
+        // response, so this is not only a hostile-server concern.
         const firstEvent = events[0];
         if (
           firstEvent !== undefined &&
-          firstEvent.sequence !== page.afterSequence + 1
+          firstEvent.sequence !== request.afterSequence + 1
         ) {
           gapDetected = true;
         }
