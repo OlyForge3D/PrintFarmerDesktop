@@ -48,6 +48,17 @@ const repositoryRoot = path.resolve(
  * to contain the string, and weakening the match to avoid a self-hit narrows
  * what the criterion means. Assembling it costs one line and keeps the scan
  * total.
+ *
+ * What assembling costs is discoverability, and it is named here rather than
+ * left for the next reader to hit. Grepping the forbidden name returns zero
+ * whether this guard exists or not, so that query cannot tell an enforced
+ * criterion from an unenforced one -- and a reader who runs it may reasonably
+ * conclude the tree is unguarded. The queries that do separate those two cases
+ * are `git grep -il 152 tests/`, which returns this file, and this file's own
+ * name. Spelling the name here would make the literal query work, at the price
+ * of making #152's criterion -- zero hits, tree-wide -- false by construction,
+ * which is the criterion a reviewer actually runs. So the guard is made
+ * findable by the question it answers rather than by the string it forbids.
  */
 const forbiddenJobName = ['Package', 'smoke'].join(' ');
 
