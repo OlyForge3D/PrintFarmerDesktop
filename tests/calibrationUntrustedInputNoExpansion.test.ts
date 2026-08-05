@@ -44,9 +44,17 @@
  * of the whole tree.
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(
@@ -113,20 +121,103 @@ function resolveLocalImport(
   return null;
 }
 
+type NonLiteralReferenceKind = 'dynamic import' | 'require';
+
+function literalSpecifier(
+  expression: ts.Expression | undefined,
+): string | null {
+  return expression !== undefined && ts.isStringLiteralLike(expression)
+    ? expression.text
+    : null;
+}
+
+function moduleSpecifiers(file: string, source: string): string[] {
+  const sourceFile = ts.createSourceFile(
+    file,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const specifiers: string[] = [];
+  const unresolved: string[] = [];
+
+  const collectReference = (
+    expression: ts.Expression | undefined,
+    node: ts.Node,
+    kind: NonLiteralReferenceKind,
+  ): void => {
+    const specifier = literalSpecifier(expression);
+    if (specifier !== null) {
+      specifiers.push(specifier);
+      return;
+    }
+
+    const position = sourceFile.getLineAndCharacterOfPosition(
+      node.getStart(sourceFile),
+    );
+    unresolved.push(
+      `${file}:${position.line + 1}:${position.character + 1}: ${kind} uses a ` +
+        `non-literal specifier: ${node.getText(sourceFile)}`,
+    );
+  };
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      if (
+        node.moduleSpecifier !== undefined &&
+        ts.isStringLiteralLike(node.moduleSpecifier)
+      ) {
+        specifiers.push(node.moduleSpecifier.text);
+      }
+    } else if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference)
+    ) {
+      collectReference(
+        node.moduleReference.expression,
+        node.moduleReference,
+        'require',
+      );
+    } else if (ts.isCallExpression(node)) {
+      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+        collectReference(node.arguments[0], node, 'dynamic import');
+      } else if (
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === 'require'
+      ) {
+        collectReference(node.arguments[0], node, 'require');
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  visit(sourceFile);
+
+  if (unresolved.length > 0) {
+    throw new Error(
+      `Cannot statically resolve module references in the untrusted ` +
+        `calibration closure:\n${unresolved.map((item) => `- ${item}`).join('\n')}`,
+    );
+  }
+
+  return specifiers;
+}
+
 /** Transitive closure of local imports reachable from the entry points. */
-function reachableFromEntryPoints(): Map<string, string> {
+function reachableFromEntryPoints(
+  entryDirectory = mainDir,
+  entryPoints: readonly string[] = ENTRY_POINTS,
+): Map<string, string> {
   const seen = new Map<string, string>();
-  const queue = ENTRY_POINTS.map((name) => path.join(mainDir, name));
+  const queue = entryPoints.map((name) => path.join(entryDirectory, name));
   while (queue.length > 0) {
     const file = queue.pop()!;
     if (seen.has(file)) continue;
     if (!existsSync(file)) continue;
     const source = readFileSync(file, 'utf8');
     seen.set(file, source);
-    const specifiers = [...source.matchAll(/\bfrom\s+['"]([^'"]+)['"]/g)].map(
-      (match) => match[1]!,
-    );
-    for (const specifier of specifiers) {
+    for (const specifier of moduleSpecifiers(file, source)) {
       const resolved = resolveLocalImport(file, specifier);
       if (resolved !== null && !seen.has(resolved)) queue.push(resolved);
     }
@@ -137,6 +228,156 @@ function reachableFromEntryPoints(): Map<string, string> {
 function relative(file: string): string {
   return path.relative(repoRoot, file).split(path.sep).join('/');
 }
+
+function withSourceFixture<T>(
+  files: Readonly<Record<string, string>>,
+  run: (directory: string) => T,
+): T {
+  const directory = mkdtempSync(path.join(tmpdir(), 'pfd-expansion-closure-'));
+  try {
+    for (const [name, source] of Object.entries(files)) {
+      writeFileSync(path.join(directory, name), source, 'utf8');
+    }
+    return run(directory);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+function scannedFileNames(closure: ReadonlyMap<string, string>): string[] {
+  return [...closure.keys()].map((file) => path.basename(file)).sort();
+}
+
+function expansionOffenders(
+  closure: ReadonlyMap<string, string>,
+  pattern: RegExp,
+): string[] {
+  return [...closure]
+    .filter(([, source]) => pattern.test(source))
+    .map(([file]) => file);
+}
+
+function expansionMatches(
+  closure: ReadonlyMap<string, string>,
+): { file: string; why: string }[] {
+  return EXPANDING_APIS.flatMap(({ pattern, why }) =>
+    expansionOffenders(closure, pattern).map((file) => ({
+      file: path.basename(file),
+      why,
+    })),
+  );
+}
+
+describe('the closure walker follows every supported module-reference form', () => {
+  it('follows a literal static import specifier', () => {
+    withSourceFixture(
+      {
+        'entry.ts': "import './static.js';\n",
+        'static.ts': 'export const reached = true;\n',
+      },
+      (directory) => {
+        const closure = reachableFromEntryPoints(directory, ['entry.ts']);
+        expect(scannedFileNames(closure)).toEqual(['entry.ts', 'static.ts']);
+      },
+    );
+  });
+
+  it('detects a banned API reached only through a literal dynamic import', () => {
+    withSourceFixture(
+      {
+        'entry.ts':
+          "export async function load() { return await import('./expanding.js'); }\n",
+        'expanding.ts':
+          "import { gunzipSync } from 'node:zlib';\nexport const expand = gunzipSync;\n",
+      },
+      (directory) => {
+        const closure = reachableFromEntryPoints(directory, ['entry.ts']);
+        expect(scannedFileNames(closure)).toEqual(['entry.ts', 'expanding.ts']);
+        expect(expansionMatches(closure)).toEqual([
+          { file: 'expanding.ts', why: 'node:zlib (decompression)' },
+          { file: 'expanding.ts', why: 'gunzipSync' },
+        ]);
+      },
+    );
+  });
+
+  it('follows a literal require specifier', () => {
+    withSourceFixture(
+      {
+        'entry.ts': "export const loaded = require('./required.js');\n",
+        'required.ts': 'export const reached = true;\n',
+      },
+      (directory) => {
+        const closure = reachableFromEntryPoints(directory, ['entry.ts']);
+        expect(scannedFileNames(closure)).toEqual(['entry.ts', 'required.ts']);
+      },
+    );
+  });
+
+  it('reports zero expansion matches only after scanning a safe dynamic import', () => {
+    withSourceFixture(
+      {
+        'entry.ts':
+          "export async function load() { return await import('./safe.js'); }\n",
+        'safe.ts': 'export const safe = true;\n',
+      },
+      (directory) => {
+        const closure = reachableFromEntryPoints(directory, ['entry.ts']);
+        expect(scannedFileNames(closure)).toEqual(['entry.ts', 'safe.ts']);
+        expect(expansionMatches(closure)).toEqual([]);
+      },
+    );
+  });
+
+  it('fails closed and reports a non-literal dynamic import expression', () => {
+    withSourceFixture(
+      {
+        'entry.ts':
+          "const target = './hidden.js';\nexport async function load() { return await import(target); }\n",
+        'hidden.ts': 'export const hidden = true;\n',
+      },
+      (directory) => {
+        expect(() =>
+          reachableFromEntryPoints(directory, ['entry.ts']),
+        ).toThrowError(
+          /dynamic import uses a non-literal specifier: import\(target\)/,
+        );
+      },
+    );
+  });
+
+  it('fails closed and reports a non-literal require expression', () => {
+    withSourceFixture(
+      {
+        'entry.ts':
+          "const target = './hidden.js';\nexport const loaded = require(target);\n",
+        'hidden.ts': 'export const hidden = true;\n',
+      },
+      (directory) => {
+        expect(() =>
+          reachableFromEntryPoints(directory, ['entry.ts']),
+        ).toThrowError(
+          /require uses a non-literal specifier: require\(target\)/,
+        );
+      },
+    );
+  });
+
+  it('ignores module-like text in comments and string literals', () => {
+    withSourceFixture(
+      {
+        'entry.ts':
+          "const examples = ['import(target)', 'require(target)'];\n" +
+          '// await import(commentedTarget); require(commentedTarget);\n' +
+          'export { examples };\n',
+      },
+      (directory) => {
+        const closure = reachableFromEntryPoints(directory, ['entry.ts']);
+        expect(scannedFileNames(closure)).toEqual(['entry.ts']);
+      },
+    );
+  });
+});
 
 describe('the untrusted calibration input path expands nothing', () => {
   const closure = reachableFromEntryPoints();
@@ -162,11 +403,7 @@ describe('the untrusted calibration input path expands nothing', () => {
   it.each(EXPANDING_APIS)(
     'does not reach $why anywhere in that closure',
     ({ pattern, why }) => {
-      const offenders: string[] = [];
-      for (const [file, source] of closure) {
-        // Skip this guard's own scan table if it ever lands in src/main.
-        if (pattern.test(source)) offenders.push(relative(file));
-      }
+      const offenders = expansionOffenders(closure, pattern).map(relative);
       expect(
         offenders,
         `${why} is now reachable from an untrusted calibration entry point. ` +
