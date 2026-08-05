@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -19,6 +21,29 @@ import {
 
 const REAL_TEST_FILE = 'tests/vitestStrict.test.ts';
 const ABSENT_TEST_FILE = 'tests/thisFileDoesNotExistAnywhere.test.ts';
+
+describe('the exit codes are the numbers the shell reads', () => {
+  // #512 review: every other exit-code assertion in this file compares
+  // `main`'s return against the imported constant, so both sides move together
+  // and mutating the constant is invisible. `EXIT_UNMATCHED = 0` passed all 19
+  // tests while turning the refusal into a success for every caller -- the
+  // wrapper announced it was refusing and returned 0 to the shell, which is the
+  // whole defect this script exists to prevent, reintroduced silently.
+  //
+  // The contract here is with the shell, not with the module: a non-zero exit
+  // is the entire mechanism. So these are pinned to literals on purpose. That
+  // is not brittleness -- changing one of these numbers IS a breaking change to
+  // every caller, and it should require editing a test that says so.
+  it('pins the wire values rather than comparing a constant to itself', () => {
+    expect(EXIT_OK).toBe(0);
+    expect(EXIT_UNMATCHED).toBe(1);
+    expect(EXIT_INCONCLUSIVE).toBe(2);
+    // And they must stay distinguishable from each other: a caller that cannot
+    // tell "matched nothing" from "could not tell" has lost the distinction
+    // this script was written to draw.
+    expect(new Set([EXIT_OK, EXIT_UNMATCHED, EXIT_INCONCLUSIVE]).size).toBe(3);
+  });
+});
 
 describe('selectorCandidates separates what it will check from what it will not', () => {
   it('drops the subcommand and keeps the positional selectors', () => {
@@ -247,4 +272,59 @@ describe('listFilesFor is executed for real, not merely injected past', () => {
     // The defect restated as an assertion: vitest reports success either way.
     expect(absent.code).toBe(0);
   }, 180_000);
+});
+
+describe("main's own defaults are executed, not just its injected doubles", () => {
+  // #512 review: every `main` arm above injects both `list` and `run`, so the
+  // default bindings on the parameter list were never executed by any test.
+  // Rebinding `list` to a stub that always reports a match left all 19 tests
+  // green while disabling the check for every real caller -- the wiring, which
+  // is the only part the shell actually runs, was the untested part.
+
+  it('refuses an absent selector through the real listing, with no doubles', () => {
+    let ran = false;
+    // `list` is deliberately NOT injected: this exercises the default binding.
+    // `run` is injected only to prove it is never reached -- if the default
+    // listing wrongly reported a match, this would run the whole suite.
+    const code = main(['run', ABSENT_TEST_FILE], {
+      run: () => {
+        ran = true;
+        return EXIT_OK;
+      },
+      log: () => {},
+    });
+    expect(code).toBe(1);
+    expect(ran).toBe(false);
+  }, 180_000);
+
+  it('proceeds on a real selector through the real listing', () => {
+    // POSITIVE CONTROL for the arm above. Without it, a default listing that
+    // reported UNMATCHED for everything would satisfy that assertion while
+    // refusing every legitimate run -- the opposite failure, equally silent.
+    let ran = false;
+    const code = main(['run', REAL_TEST_FILE], {
+      run: () => {
+        ran = true;
+        return EXIT_OK;
+      },
+      log: () => {},
+    });
+    expect(ran).toBe(true);
+    expect(code).toBe(0);
+  }, 180_000);
+
+  it('runs the real vitest through the real default when invoked as a CLI', () => {
+    // The `run` default is the one binding the two arms above still stub. This
+    // reaches it the only way a test can without recursion: as a subprocess,
+    // against a small unrelated file. Naming this file here would recurse.
+    const result = spawnSync(
+      process.execPath,
+      ['scripts/vitest-strict.mjs', 'run', 'tests/viewer.types.test.ts'],
+      { encoding: 'utf8' },
+    );
+    expect(result.status).toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain(
+      'viewer.types.test.ts',
+    );
+  }, 300_000);
 });
