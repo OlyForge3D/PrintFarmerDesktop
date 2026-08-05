@@ -2,10 +2,17 @@ name: Citation reachability
 
 # merge-queue: advisory
 #
-# Runs on pull_request, emits a check run, and does NOT report for a queued
-# entry, so this context MUST NOT be added to a branch ruleset's required
-# contexts. scripts/check-merge-queue-contexts.mjs enforces that against live
-# branch protection rather than leaving it to this comment.
+# Runs on pull_request, on pushes to the trunk, and on a daily schedule. It
+# emits a check run and does NOT report for a queued entry, so this context
+# MUST NOT be added to a branch ruleset's required contexts.
+# scripts/check-merge-queue-contexts.mjs enforces that against live branch
+# protection rather than leaving it to this comment.
+#
+# "Advisory" here means "no ruleset may require it". It does NOT mean
+# continue-on-error, and this job deliberately has none: a check that cannot
+# go red is not a lenient check, it is a check that has no output. The whole
+# point of the class is a red that does not block, not a green that cannot
+# fail.
 
 # Deliberately a separate workflow rather than a job in ci.yml.
 #
@@ -31,6 +38,29 @@ name: Citation reachability
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  # The pull_request trigger alone cannot detect the failure this check exists
+  # for, and the reason is in the harness's own reader model: it treats HEAD and
+  # origin/development as the reader's holdings. On a pull_request run HEAD *is*
+  # the branch tip, so a PR that cites its own commits classifies them REACHABLE
+  # by construction. Squash-merging that PR and deleting the branch is what
+  # destroys those objects, and it happens strictly after the only run that ever
+  # looked. So the check was green at the position that creates the defect and
+  # the defect exists only at a position nothing evaluated.
+  #
+  # Worse than a permanent green: the next unrelated pull request inherits the
+  # trunk ledger, classifies those revisions ORPHAN, and goes red for citation
+  # debt its author did not create and cannot fix. The failure is real, delayed,
+  # and attributed to the wrong person.
+  #
+  # push covers the event that causes it. schedule covers decay with no push at
+  # all - a branch deleted a week after its merge orphans citations while nobody
+  # is doing anything. workflow_dispatch is for verifying the wiring itself,
+  # since this file's own subject is instruments that are never exercised.
+  push:
+    branches: [development]
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -44,20 +74,32 @@ jobs:
       # checkout is the merge commit, whose ancestry is not the branch's. The
       # twin index is built over the branch's own commits, so measuring it
       # against a synthetic merge would index the wrong set.
+      #
+      # Written as an explicit conditional rather than relying on the empty
+      # string a null `github.event.pull_request` would render. That would
+      # happen to work here, and a value that is correct because an unrelated
+      # default absorbed it is not a value anyone can reason about later.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       # The mainline is half of the reader model. Fetched by name and pinned to
       # a local ref the harness looks for: without it the run silently narrows to
       # HEAD alone, which is stricter and would report orphans that a reader can
       # in fact reach. A check that fails for the wrong reason teaches people to
       # ignore it.
+      #
+      # Off a pull request there is no base ref, and the interpolation would
+      # otherwise collapse to `+refs/heads/:refs/...`, which is a malformed
+      # refspec rather than a missing one. The trunk name is named explicitly so
+      # the failure mode is "no such branch" instead of a syntax error.
       - name: Fetch the mainline the reader is assumed to hold
+        env:
+          BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || 'development' }}
         run: |
           git fetch --no-tags origin \
-            +refs/heads/${{ github.event.pull_request.base.ref }}:refs/remotes/origin/development
+            "+refs/heads/${BASE_REF}:refs/remotes/origin/development"
           git rev-parse --verify refs/remotes/origin/development^{commit}
 
       # Condition 4 of the discharge path stated in UNENFORCED_CHECKS
