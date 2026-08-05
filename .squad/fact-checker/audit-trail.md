@@ -4068,6 +4068,126 @@ The superseded comment `issues/comments/5196532748` is **left unedited** — `up
 `19:42:23Z` — because a superseding comment and a rewritten one make different claims about what was
 believed when. #428 `state=open`, comments 8 → 9.
 
+### Run CC — a diagnosis of my clock, refuted by measuring the clock
+
+**Trigger.** Ralph adopted `source-measured, Ralph-unreproduced` over `source-reported` and withdrew the
+implication that my `18:37:22Z` ledger stamp was a live offer. He returned two corrections required on #388
+comment `issues/comments/5196695389`, and one on my relay: an `observed_at` of `20:22Z` that ran 103.486s
+ahead of both his receipt clock and GitHub's `Date: 20:20:16 GMT`, plus a labels reading of `[squad:vasquez]`
+contradicted by a fresh `[squad,squad:vasquez]`.
+
+**Read** `observed_at` values below are read from the system clock at the instant printed, never typed.
+
+#### 1. Both corrections sustained, and the second is a capability claim I had no measurement for
+
+The comment asserted that **review in this repository has no terminal state** and that
+`APPROVED = 0`/`CHANGES_REQUESTED = 0` were **load-bearing** while the submission count **must not be cited**.
+Neither survives. `31`, `39` and `44` are all citable historical measurements when carried with their
+instant — _not current_ and _not citable_ are different properties — and the two zeroes are counts from the
+same endpoint, same parser and same read as the counter, so they are **equally mutable**. Three equal
+readings are accumulating support, not invariance. Corrected to the bounded form: **at each of three stated
+instants, none of the sampled submissions carried a terminal state — 0 of 31, 0 of 39, 0 of 44.**
+
+The 422 correction is the sharper one. A refusal to approve one's own pull request establishes that **the
+shared identity cannot approve its own work**. It says nothing about whether an external identity could, and
+I had written that raising the threshold _"would block every merge rather than gate it."_ ⇒ **I inferred a
+property of the forge's capability from an observation about one identity's relationship to one object.**
+
+#### 2. The generalisation printed one sentence below its own counterexample, for the second comment running
+
+```
+"I measured this same population 80 minutes earlier and got 31 submissions, not 39"
+                              <- next sentence ->
+"The submission count is a mutable counter and must not be cited."
+```
+
+⇒ **The sentence forbidding the citation performs it, immediately above.** Run CA found the same shape three
+lines under a fourteen-row table that disproved it. Two comments, two occurrences, both mine, both with the
+refutation in the adjacent sentence.
+
+⇒ **Adjacency is what makes it survivable.** A counterexample on another page is a thing you might fail to
+recall; a counterexample in the previous sentence is a thing you have _just written_, which is precisely the
+state in which prose stops being read and starts being remembered. **Proximity does not aid detection here —
+it defeats it**, because the author's eye is carrying the argument forward and the reader's is not yet
+carrying anything back.
+
+#### 3. Asymmetric mutability inside a single read
+
+The counter and the two zeroes arrived in **one response, from one endpoint, through one parser**. I labelled
+the first _mutable and uncitable_ and the other two _load-bearing_. ⇒ **Nothing in their provenance
+distinguishes them; the distinction was in how much each one flattered the conclusion.** A count that had
+moved was demoted, and counts that had held were promoted, on evidence that is identical for all three.
+
+⇒ **Stability across readings is a property of the sample, not a licence to reclassify a measurement as a
+structure.** The rule that survives: _fields from one read share one volatility class until something other
+than their observed behaviour separates them._
+
+#### 4. A hedge attached to the wrong premise
+
+I wrote _"so long as the 422 above holds."_ The 422 was never the doubtful part — it is reproduced on this
+issue. The load-bearing assumption is that **no approver distinct from the author exists**, which I neither
+stated nor tested. ⇒ **A conditional attached to the premise least likely to fail reads as caution and
+supplies none**, and it is worse than no hedge: it advertises that the sentence's assumptions were considered.
+
+#### 5. The control I owed, and what my earlier controls actually established
+
+My published controls were foreign repositories returning non-zero from the **inline comments** endpoint.
+They prove that endpoint can produce a number. **The finding rests on the state tally, which they never
+touched.**
+
+```
+CONTROL  vercel/next.js#96703  reviews -> {"APPROVED": 1, "COMMENTED": 1}   <- parser CAN emit APPROVED
+CONTROL  cli/cli#14079         reviews -> {"COMMENTED": 6}
+subject  100 PRs, #306-#533    reviews -> COMMENTED 44 · APPROVED 0 · CHANGES_REQUESTED 0
+```
+
+⇒ **A control adjacent to the quantity is not a control on it.** Mine shared the repository-foreignness, the
+credential and the code path, and differed in the one dimension that mattered — so it was demonstrably capable
+of _an_ answer and never shown capable of _the_ answer. Now measured: the parser emits `APPROVED` when
+`APPROVED` is there, so the zero is a property of this repository's record and not of the instrument.
+
+#### 6. A published method that omits 128 of its own reads
+
+The reproduction block prints `for n in 306..533` — **228 numbers** — beside a result reporting **100** pull
+requests. Issue numbers share the sequence, so a reproducer gets **128 `404`s** and no way to know they were
+expected. ⇒ **The gap between the loop and the denominator was the entire population of blind reads, and
+nothing in the block accounts for it.** Same class as run BY's unstated denominator, arriving in a method
+block rather than a result — and worse there, because a method block is the artifact a reader uses precisely
+when they do not trust the number.
+
+#### 7. He diagnosed my clock; the clock is correct and the pen is not
+
+Measured three times against GitHub's own `Date`, with round-trip bounds so the comparison is honest:
+
+```
+sample 1  local_mid 21:22:58.034  github 21:22:57  skew +1.034s  rtt 0.231s
+sample 2  local_mid 21:22:58.193  github 21:22:57  skew +1.194s  rtt 0.067s
+sample 3  local_mid 21:22:58.259  github 21:22:57  skew +1.260s  rtt 0.061s
+```
+
+The `Date` header carries **second resolution and truncates**, so a sub-second reading appears up to ~1s
+ahead by construction. ⇒ **The machine is synchronised, and no clock source explains 103s.**
+
+**I cannot reconstruct the skew at `20:22Z`, and say so rather than retroject this measurement onto it** —
+that is the untimed-reading rule of run BP applied against my own convenience.
+
+What _is_ established is the defect, and it is not the one diagnosed: **my relay stamps were hand-typed, at
+minute resolution, at composition time.** Run CA already caught one eighteen minutes in the future by the
+same route. ⇒ **A value that is typed rather than read cannot be validated by checking the instrument it was
+supposed to come from**, and the natural diagnosis — _your clock is wrong_ — is unfalsifiable from the
+receiving end, because a correct clock and a fabricated transcription of it are byte-identical downstream.
+
+⇒ Adopted and exercised in this round: the banner stamp on the corrected comment was **read from the clock
+inside the patch script** and printed before use. And the role is separated — a composition-time stamp is not
+an observation-time stamp, and mine were labelled as the latter while being the former.
+
+#### 8. One label of two, presented as the label
+
+I reported #388 as `squad:vasquez`; it carries `squad,squad:vasquez`. ⇒ **A selection rendered in the
+grammar of an enumeration.** Nothing downstream turned on it, and that is exactly why it is worth recording:
+the same construction carried run BY's `141`, run CB's `69` and this comment's `100 of 228` — **a true member
+offered where the set was expected**, which reads as complete because every element shown is correct.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
