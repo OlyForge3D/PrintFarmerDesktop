@@ -114,6 +114,7 @@ import {
   orcaUserDataRoots,
 } from '../src/main/orcaProfileDiscovery.js';
 import {
+  ORCA_INSTALL_MAX_BYTES,
   OrcaInstallError,
   canonicalizeSaveTarget,
   computeInstallPath,
@@ -121,6 +122,7 @@ import {
   installOrcaProfileWindows,
 } from '../src/main/orcaProfileInstall.js';
 import { CalibrationAssetManifestService } from '../src/main/calibrationAssetManifest.js';
+import { generateProfileIdentity } from '../src/main/orcaProfileGenerator.js';
 import { RemoteCalibrationPrinterContext } from '../src/main/calibrationWire.js';
 
 // ---------------------------------------------------------------------------
@@ -773,13 +775,13 @@ const CELLS: Cell[] = [
   {
     vector: 'duplicateKeys',
     entryPoint: 'calibrationImportV4',
-    // Preflight does not throw here: it accepts last-value-wins and surfaces
-    // the duplicate as a warning. Asserting a thrown code would be asserting
-    // behaviour this entry point does not have.
-    expect: {
-      kind: 'classifiedContained',
-      note: 'duplicate key surfaced as a warning, last value wins',
-    },
+    // This cell used to record `classifiedContained` with the note "duplicate
+    // key surfaced as a warning, last value wins". That was the corpus
+    // describing the implementation: it asserted whatever preflight happened
+    // to do. A repeated key means the document supports two readings while
+    // `fileHash` covers bytes consistent with both, so the entry point now
+    // fails closed and the cell asserts the code.
+    expect: { kind: 'threwTypedCode', code: 'LEGACY_BACKUP_INVALID_JSON' },
     control: (ctx) => v4ControlAccepted(ctx, 'v4-control.json'),
     run: async (ctx) => {
       const file = await writeBackup(
@@ -787,13 +789,7 @@ const CELLS: Cell[] = [
         'duplicate.json',
         fixture('v4-duplicate-keys.json'),
       );
-      const result = await runLegacyBackupPreflight(file);
-      expect(result.warnings.join(' ')).toMatch(/Duplicate JSON key/);
-      expect(result.summary.projectCount).toBe(1);
-      return {
-        kind: 'classifiedContained',
-        note: 'duplicate key surfaced as a warning, last value wins',
-      };
+      return v4ThrownCode(file);
     },
   },
   {
@@ -1899,12 +1895,14 @@ describe('the fixtures are synthetic and committed', () => {
   });
 
   it('holds nothing large enough to be a real model or a real user profile', () => {
-    // generate.mjs is excluded: it is the provenance record, not corpus
-    // content, and it is never fed to any entry point. manifest.json is
-    // included deliberately — if it ever grew past the cap something is
-    // being carried in it that should be a fixture.
+    // generate.mjs and manifest.json are excluded: both are provenance
+    // records, not corpus content, and neither is ever fed to an entry point.
+    // The property the size cap protects for manifest.json — that no payload
+    // is smuggled into it — is asserted directly in the next test instead,
+    // because richer per-fixture provenance legitimately made it longer than
+    // any fixture is allowed to be.
     const files = readdirSyncSorted(fixturesDir).filter(
-      (name) => name !== 'generate.mjs',
+      (name) => name !== 'generate.mjs' && name !== 'manifest.json',
     );
     expect(files.length).toBeGreaterThan(20);
     for (const name of files) {
@@ -1912,6 +1910,30 @@ describe('the fixtures are synthetic and committed', () => {
       expect(size, `${name} is ${size} bytes`).toBeLessThanOrEqual(
         MAX_COMMITTED_FIXTURE_BYTES,
       );
+    }
+  });
+
+  it('keeps manifest.json to metadata, with no fixture content smuggled into it', () => {
+    const raw = readFileSync(path.join(fixturesDir, 'manifest.json'), 'utf8');
+    const manifest = JSON.parse(raw) as {
+      fixtures: Record<string, unknown>[];
+    };
+    // Every leaf is a short scalar. A payload hidden here — base64, G-code, a
+    // nested document — would have to be a long string, so bounding the
+    // longest string bounds what the file can carry.
+    const longest = (value: unknown): number => {
+      if (typeof value === 'string') return value.length;
+      if (Array.isArray(value)) return Math.max(0, ...value.map(longest));
+      if (value !== null && typeof value === 'object') {
+        return Math.max(0, ...Object.values(value).map(longest));
+      }
+      return 0;
+    };
+    for (const entry of manifest.fixtures) {
+      expect(
+        longest(entry),
+        `${String(entry['name'])} carries an unexpectedly long string`,
+      ).toBeLessThanOrEqual(160);
     }
   });
 
@@ -1968,7 +1990,17 @@ describe('the fixtures are synthetic and committed', () => {
       readFileSync(path.join(fixturesDir, 'manifest.json'), 'utf8'),
     ) as {
       synthetic: boolean;
-      fixtures: { name: string; sha256: string; purpose: string }[];
+      fixtures: {
+        name: string;
+        bytes: number;
+        sha256: string;
+        synthetic: boolean;
+        vector: string | null;
+        entryPoint: string;
+        role: string;
+        expectedOutcome: string;
+        purpose: string;
+      }[];
     };
     expect(manifest.synthetic).toBe(true);
 
@@ -1979,16 +2011,70 @@ describe('the fixtures are synthetic and committed', () => {
       ),
     );
     for (const entry of manifest.fixtures) {
+      const bytes = readFileSync(path.join(fixturesDir, entry.name));
       expect(
         entry.purpose.length,
         `${entry.name} has no stated purpose`,
       ).toBeGreaterThan(0);
       expect(
-        createHash('sha256')
-          .update(readFileSync(path.join(fixturesDir, entry.name)))
-          .digest('hex'),
+        entry.expectedOutcome.length,
+        `${entry.name} does not say what it is expected to do`,
+      ).toBeGreaterThan(0);
+      expect(entry.synthetic, `${entry.name} is not declared synthetic`).toBe(
+        true,
+      );
+      expect(entry.bytes, `${entry.name} has the wrong recorded length`).toBe(
+        bytes.byteLength,
+      );
+      expect(
+        createHash('sha256').update(bytes).digest('hex'),
         `${entry.name} does not match its recorded digest`,
       ).toBe(entry.sha256);
+    }
+  });
+
+  it('records provenance in the matrix vocabulary, so the two cannot drift', () => {
+    // The point of this one: a manifest is only provenance if it names the
+    // same vectors and entry points the matrix does. If a fixture claimed a
+    // vector the corpus does not have, or an entry point nobody drives, the
+    // record would read as coverage while describing nothing.
+    const manifest = JSON.parse(
+      readFileSync(path.join(fixturesDir, 'manifest.json'), 'utf8'),
+    ) as {
+      fixtures: {
+        name: string;
+        vector: string | null;
+        entryPoint: string;
+        role: string;
+      }[];
+    };
+
+    for (const entry of manifest.fixtures) {
+      expect(
+        ['control', 'malicious'],
+        `${entry.name} has an unknown role`,
+      ).toContain(entry.role);
+      expect(
+        ENTRY_POINTS as readonly string[],
+        `${entry.name} names an entry point that is not in the matrix`,
+      ).toContain(entry.entryPoint);
+      if (entry.vector !== null) {
+        expect(
+          VECTORS as readonly string[],
+          `${entry.name} names a vector that is not in the matrix`,
+        ).toContain(entry.vector);
+      }
+    }
+
+    // Every entry point must own at least one control, or its hostile fixtures
+    // have nothing proving they reached the code.
+    for (const entryPoint of ENTRY_POINTS) {
+      expect(
+        manifest.fixtures.some(
+          (f) => f.entryPoint === entryPoint && f.role === 'control',
+        ),
+        `${entryPoint} has no control fixture`,
+      ).toBe(true);
     }
   });
 });
@@ -1996,6 +2082,304 @@ describe('the fixtures are synthetic and committed', () => {
 function readdirSyncSorted(dir: string): string[] {
   return readdirSync(dir).sort();
 }
+
+// ---------------------------------------------------------------------------
+// The bounds bite where they are declared
+// ---------------------------------------------------------------------------
+
+/**
+ * A cell proves that a guard fires. It does not prove the guard fires *at the
+ * declared limit* — a cap accidentally set an order of magnitude low, or one
+ * that rejects everything, produces the same green cell. Each pair below
+ * differs by a single byte or a single level across the boundary and asserts
+ * that the two sides land differently, so the offset itself is under test.
+ *
+ * The under-limit side deliberately does not assert plain success everywhere.
+ * For the v4 size gate a 50 MiB valid backup is not worth materialising, so
+ * the discriminator is *which* guard fired: at exactly the limit the size gate
+ * must not be the one that answers.
+ */
+/**
+ * Run `body` against a fresh sandboxed cell context and always tear it down.
+ * These boundary tests do not go through the cell registry — they assert a
+ * relationship *between* two runs rather than the disposition of one input —
+ * but they need the same environment redirection and the same cleanup.
+ */
+async function withSandbox(
+  body: (ctx: CellContext) => Promise<void>,
+): Promise<void> {
+  const { ctx, restore } = await makeCell();
+  try {
+    await body(ctx);
+  } finally {
+    await restore();
+  }
+}
+
+describe('the bounds bite where they are declared', () => {
+  it('refuses a v4 backup one byte over the size limit and not one byte under', async () => {
+    await withSandbox(async (ctx) => {
+      const atLimit = path.join(ctx.sandbox, 'at-limit.json');
+      const overLimit = path.join(ctx.sandbox, 'over-limit.json');
+      // Sparse: `truncate` allocates no blocks, so this costs no disk.
+      for (const [file, size] of [
+        [atLimit, MAX_BACKUP_FILE_BYTES],
+        [overLimit, MAX_BACKUP_FILE_BYTES + 1],
+      ] as const) {
+        const handle = await open(file, 'w');
+        await handle.truncate(size);
+        await handle.close();
+      }
+
+      const over = await v4ThrownCode(overLimit);
+      expect(over).toEqual({
+        kind: 'threwTypedCode',
+        code: 'LEGACY_BACKUP_TOO_LARGE',
+      });
+
+      // One byte smaller the size gate must stay silent. The file is still
+      // rubbish, so it is refused — but by the marker check, further in.
+      const under = await v4ThrownCode(atLimit);
+      expect(under).toEqual({
+        kind: 'threwTypedCode',
+        code: 'LEGACY_BACKUP_INVALID_MARKER',
+      });
+    });
+  });
+
+  it('refuses v4 nesting one level over the depth limit and not one level under', async () => {
+    await withSandbox(async (ctx) => {
+      // measureJsonDepth counts the root object as depth 0, so a backup whose
+      // deepest value sits at exactly MAX_JSON_NESTING_DEPTH must survive.
+      const nest = (levels: number): Record<string, unknown> => {
+        let node: Record<string, unknown> = { leaf: true };
+        for (let i = 0; i < levels; i++) node = { child: node };
+        return node;
+      };
+      const backup = (levels: number): string =>
+        JSON.stringify({
+          schemaVersion: 4,
+          exportedAt: '2024-01-01T00:00:00.000Z',
+          projects: [],
+          padding: nest(levels),
+        });
+
+      // Find the deepest nesting the entry point still accepts, then assert the
+      // very next level is refused. Searching rather than hardcoding keeps this
+      // honest if the constant moves; the assertion is that a boundary exists
+      // and that it is one level wide, not that it sits at a magic number.
+      let deepestAccepted = -1;
+      for (let levels = 1; levels < 40; levels++) {
+        const file = path.join(ctx.sandbox, `depth-${levels}.json`);
+        await writeFile(file, backup(levels), 'utf8');
+        const code = await v4ThrownCode(file);
+        if (
+          code.kind === 'threwTypedCode' &&
+          code.code === 'LEGACY_BACKUP_TOO_DEEP'
+        ) {
+          break;
+        }
+        deepestAccepted = levels;
+      }
+
+      expect(
+        deepestAccepted,
+        'no nesting level was accepted, so the depth cell proves nothing about where the bound sits',
+      ).toBeGreaterThan(0);
+
+      // The level immediately above must be refused, and for depth specifically.
+      const justOver = path.join(ctx.sandbox, 'just-over.json');
+      await writeFile(justOver, backup(deepestAccepted + 1), 'utf8');
+      expect(await v4ThrownCode(justOver)).toEqual({
+        kind: 'threwTypedCode',
+        code: 'LEGACY_BACKUP_TOO_DEEP',
+      });
+
+      // And the level immediately below must not be refused for depth.
+      const justUnder = path.join(ctx.sandbox, 'just-under.json');
+      await writeFile(justUnder, backup(deepestAccepted), 'utf8');
+      const under = await v4ThrownCode(justUnder);
+      expect(under.kind === 'threwTypedCode' && under.code).not.toBe(
+        'LEGACY_BACKUP_TOO_DEEP',
+      );
+    });
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'refuses an install payload one byte over the size limit and not one byte under',
+    async () => {
+      await withSandbox(async (ctx) => {
+        const root = await installRoot(ctx);
+
+        // Pad a real control payload to an exact byte length by growing one
+        // string field, so both sides of the boundary are equally well-formed
+        // and the only difference between them is the single byte.
+        const padTo = (target: number): string => {
+          const base = JSON.parse(INSTALL_CONTROL_JSON) as Record<
+            string,
+            unknown
+          >;
+          const withoutPad = JSON.stringify({ ...base, _pad: '' });
+          const room = target - Buffer.byteLength(withoutPad, 'utf8');
+          expect(room).toBeGreaterThanOrEqual(0);
+          const padded = JSON.stringify({ ...base, _pad: 'a'.repeat(room) });
+          expect(Buffer.byteLength(padded, 'utf8')).toBe(target);
+          return padded;
+        };
+
+        const atLimit = padTo(ORCA_INSTALL_MAX_BYTES);
+        const overLimit = padTo(ORCA_INSTALL_MAX_BYTES + 1);
+
+        const over = await installThrownCode(() =>
+          installOrcaProfileWindows(
+            overLimit,
+            sha256(overLimit),
+            'pfd-corpus-over.json',
+          ),
+        );
+        expect(over).toEqual({
+          kind: 'threwTypedCode',
+          code: 'verificationFailed',
+        });
+        expect(existsSync(path.join(root, 'pfd-corpus-over.json'))).toBe(false);
+
+        // Exactly at the limit the payload is installed. This is the assertion
+        // that would have caught the original gap from the other side: before
+        // the cap existed, both sides passed.
+        const result = await installOrcaProfileWindows(
+          atLimit,
+          sha256(atLimit),
+          'pfd-corpus-at.json',
+        );
+        expect(result.installedHash).toBe(sha256(atLimit));
+        expect(existsSync(path.join(root, 'pfd-corpus-at.json'))).toBe(true);
+      });
+    },
+  );
+
+  it('refuses Windows path syntax a .json suffix does not neutralise', () => {
+    // Adjudicating a finding disclosed on this PR rather than blessing it.
+    // These names all satisfy the original filter — no separators, no NUL,
+    // ends in .json, right length — and all name something other than a
+    // plain file inside the root.
+    for (const name of [
+      'x:evil.json', // alternate data stream on `x`
+      'CON.json', // console device
+      'PRN.json',
+      'NUL.json',
+      'COM1.json',
+      'LPT1.json',
+      'trailing .json', // trailing space, trimmed by the filesystem
+      'trailing..json', // trailing dot, likewise
+    ]) {
+      expect(
+        () => computeInstallPath(name, 'C:\\pfd-root'),
+        `${name} was accepted as an install destination`,
+      ).toThrow(OrcaInstallError);
+    }
+
+    // The boundary: ordinary names, and a device name that is only a prefix,
+    // must still be accepted. A guard that refuses everything proves nothing.
+    for (const name of [
+      'ok.json',
+      'CONSOLE.json',
+      'COM10.json',
+      'Bambu_PLA_[PFD-abcd1234].json',
+    ]) {
+      expect(
+        computeInstallPath(name, 'C:\\pfd-root'),
+        `${name} should be a valid install destination`,
+      ).toBe(path.join('C:\\pfd-root', name));
+    }
+  });
+
+  it('is never handed a silent path hazard by the only producer of install filenames', () => {
+    // The reachability half of the finding above, enforced rather than
+    // asserted. `generateProfileIdentity` is the sole source of
+    // `safeFilename`, and its input — the base profile id — comes from a
+    // *discovered* Orca profile, which is untrusted.
+    //
+    // The claim being enforced is specifically about the *silent* hazards: a
+    // device name or an alternate data stream writes somewhere other than the
+    // file it appears to name, and nothing complains. Those the producer must
+    // neutralise, and it does — it strips `:` and always appends
+    // `_[PFD-<hash>]`, so no output can be a bare device name.
+    //
+    // It does not neutralise everything. A NUL in a discovered profile name
+    // survives into the filename, because the character filter does not cover
+    // control characters. That one is caught at the guard and fails closed as
+    // `pathRestricted`, which is the acceptable outcome and is asserted here
+    // rather than left unsaid.
+    const RESERVED_DEVICE = /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i;
+
+    for (const hostile of [
+      'CON',
+      'NUL',
+      'COM1',
+      'x:evil',
+      '..\\..\\escape',
+      'trailing ',
+      'trailing.',
+      '\u0000embedded',
+      'A'.repeat(400),
+    ]) {
+      const { safeFilename } = generateProfileIdentity(
+        hostile,
+        'proj-1',
+        'snap-1',
+      );
+
+      // No silent hazard, whatever the input.
+      expect(
+        safeFilename,
+        `${JSON.stringify(hostile)} produced a device name`,
+      ).not.toMatch(RESERVED_DEVICE);
+      expect(
+        safeFilename,
+        `${JSON.stringify(hostile)} produced a stream separator`,
+      ).not.toContain(':');
+
+      // And the guard either accepts it or refuses it typed — never anything
+      // in between.
+      try {
+        computeInstallPath(safeFilename, 'C:\\pfd-root');
+      } catch (error) {
+        expect(error).toBeInstanceOf(OrcaInstallError);
+        expect((error as OrcaInstallError).code).toBe('pathRestricted');
+      }
+    }
+  });
+
+  it('refuses an asset one byte over the manifest limit and not one byte under', async () => {
+    await withSandbox(async (ctx) => {
+      // The control asset, not a synthetic zero-filled one: an all-zero STL is
+      // structurally valid but geometrically degenerate, so it is refused for
+      // a reason that has nothing to do with size and the pair would prove
+      // nothing. Holding the accepted control constant means the bound is the
+      // only thing that differs between the two runs.
+      const stl = fixture('asset-control.stl');
+      const size = stl.byteLength;
+
+      // Sequenced, not interleaved: `assetService` writes the manifest to one
+      // fixed path per sandbox, so constructing both services up front would
+      // leave the second manifest on disk for both validations and the pair
+      // would silently compare a bound against itself.
+      const accepting = await assetService(ctx, { maxSizeBytes: size });
+      const acceptedId = await assetStage(ctx, accepting, 'at.stl', stl);
+      expect(
+        (await accepting.validateFile(acceptedId, ASSET_METHOD)).status,
+      ).toBe('ok');
+
+      const rejecting = await assetService(ctx, { maxSizeBytes: size - 1 });
+      const rejectedId = await assetStage(ctx, rejecting, 'over.stl', stl);
+      expect(
+        assetInvalidReason(
+          await rejecting.validateFile(rejectedId, ASSET_METHOD),
+        ),
+      ).toEqual({ kind: 'typedInvalidResult', reason: 'tooLarge' });
+    });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Nothing in the corpus is executed

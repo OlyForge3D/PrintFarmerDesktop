@@ -258,6 +258,33 @@ export function computeInstallPath(
       'Invalid safe filename for install path.',
     );
   }
+  // Windows path syntax that a `.json` suffix does not neutralise.
+  //
+  // `x:evil.json` names an alternate data stream on `x` — content that a
+  // directory listing does not show and that the backup/restore bookkeeping
+  // would then be wrong about. `CON.json` and `COM1.json` still resolve to
+  // devices, extension notwithstanding, so a write goes somewhere that is not
+  // a file. A trailing space or dot is silently trimmed by the filesystem, so
+  // the name written is not the name checked.
+  //
+  // Reachability, stated honestly: no untrusted input reaches here today.
+  // `deriveProfileNames` is the only producer, and it strips `:` along with
+  // the other reserved characters and always appends `_[PFD-<hash>].json`,
+  // which cannot be a device name. That argument is enforced by a test rather
+  // than left as a comment, because it is the argument that makes this guard
+  // defence in depth rather than a live fix.
+  if (
+    safeFilename.includes(':') ||
+    // eslint-disable-next-line no-control-regex -- matching control characters is the point: they are legal in a JS string, illegal in an NTFS name, and a profile name carrying one must not reach a path.
+    /[\u0000-\u001f]/.test(safeFilename) ||
+    /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(safeFilename) ||
+    /[ .]$/.test(safeFilename.slice(0, -'.json'.length))
+  ) {
+    throw makeError(
+      'pathRestricted',
+      'Install filename uses reserved Windows path syntax.',
+    );
+  }
   const dest = path.join(installRoot, safeFilename);
   // Verify no path traversal via basename comparison.
   if (path.basename(dest) !== safeFilename) {

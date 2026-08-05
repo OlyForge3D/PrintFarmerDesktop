@@ -732,11 +732,23 @@ export async function runLegacyBackupPreflight(
   // and a photo repeated `id` and earned a duplicate-key warning with
   // nothing duplicated — a false positive that a real regression could have
   // hidden behind.
+  //
+  // Rejected, not warned. A document with a repeated key has no single
+  // meaning: `JSON.parse` keeps the last value, other parsers keep the first,
+  // and `fileHash` above is computed over bytes that support both readings.
+  // Warning and continuing meant the import proceeded on one interpretation
+  // of a document that demonstrably has two, which is the whole point of the
+  // vector. There is nothing to salvage here, so it fails closed.
   const dupKey = findDuplicateJsonObjectKey(jsonText);
-  const warnings: string[] = [];
   if (dupKey !== null) {
-    warnings.push(`Duplicate JSON key detected: "${dupKey}" (last value wins)`);
+    throw Object.assign(
+      new Error(
+        `Backup JSON repeats the key "${dupKey}" within a single object, so its contents are ambiguous.`,
+      ),
+      { code: 'LEGACY_BACKUP_INVALID_JSON' },
+    );
   }
+  const warnings: string[] = [];
 
   // --- 9. Top-level schema validation ---
   const backupResult = LegacyBackupV4.safeParse(rawJson);

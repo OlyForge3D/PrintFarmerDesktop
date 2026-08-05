@@ -14,8 +14,12 @@
 // fixture without editing this script fails that test, which is the point:
 // the fixture cannot drift away from its stated derivation.
 //
-// It also writes manifest.json, one line per fixture: sha256, byte length,
-// and what the fixture is hostile about.
+// It also writes manifest.json, one record per fixture: sha256, byte length,
+// the vector it carries, the entry point it is aimed at, whether it is a
+// control or a hostile input, and the outcome the corpus expects. `w` refuses
+// a fixture with no record, so a new fixture cannot be committed without
+// stating what it is for, and the corpus cross-checks the vector and entry
+// point names against its own matrix so the two cannot drift apart.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -27,18 +31,293 @@ if (!out) {
 }
 mkdirSync(out, { recursive: true });
 
-/** name -> what makes this fixture hostile. Every `w` call must be described. */
-const PURPOSE = new Map();
+// name -> [vector, entryPoint, role, expectedOutcome, purpose]
+//
+// `vector` and `entryPoint` use the corpus's own spellings. `role` is
+// 'control' for a benign fixture whose job is to prove the hostile one
+// reached the same code, and 'malicious' otherwise. A control carries the
+// vector name it is the control *for*, so the pairing is readable here.
+const RECORDS = new Map(
+  Object.entries({
+    // --- legacy v4 backup ---
+    'v4-control.json': [
+      null,
+      'calibrationImportV4',
+      'control',
+      'accepted, importable=1',
+      'benign schema-v4 backup; the reachability control for every v4 cell',
+    ],
+    'v4-control-number.json': [
+      'unsafeNumerics',
+      'calibrationImportV4',
+      'control',
+      'accepted, importable=1',
+      'same shape as the unsafe-number fixtures but every number is representable',
+    ],
+    'v4-deep-nesting.json': [
+      'deepJson',
+      'calibrationImportV4',
+      'malicious',
+      'LEGACY_BACKUP_TOO_DEEP',
+      'object nested 40 deep, past the depth bound',
+    ],
+    'v4-duplicate-keys.json': [
+      'duplicateKeys',
+      'calibrationImportV4',
+      'malicious',
+      'LEGACY_BACKUP_INVALID_JSON',
+      'a key repeated inside one object, so the document has two readings',
+    ],
+    'v4-nonfinite-number.json': [
+      'unsafeNumerics',
+      'calibrationImportV4',
+      'malicious',
+      'LEGACY_BACKUP_UNSAFE_NUMBER',
+      'magnitude past the double range, which parses to Infinity',
+    ],
+    'v4-unsafe-integer.json': [
+      'unsafeNumerics',
+      'calibrationImportV4',
+      'malicious',
+      'LEGACY_BACKUP_UNSAFE_NUMBER',
+      'integer past 2^53, which silently loses identity on every comparison',
+    ],
+    'v4-negative-size.json': [
+      'unsafeNumerics',
+      'calibrationImportV4',
+      'malicious',
+      'LEGACY_BACKUP_UNSAFE_NUMBER',
+      'negative declared size: a length no allocation or bound can honour',
+    ],
+    'v4-wrong-magic.json': [
+      'wrongMagicBytes',
+      'calibrationImportV4',
+      'malicious',
+      'LEGACY_BACKUP_INVALID_MARKER',
+      'does not begin with a JSON object, so it is not a v4 backup at all',
+    ],
+    'v4-gcode-shaped.json': [
+      'gcodeOrScriptShaped',
+      'calibrationImportV4',
+      'malicious',
+      'LEGACY_BACKUP_INVALID_MARKER',
+      'G-code and shell text where the backup document should be',
+    ],
+    'v4-path-traversal-fields.json': [
+      'pathTraversal',
+      'calibrationImportV4',
+      'malicious',
+      'accepted as inert data, no path built from it',
+      'traversal strings in name fields, to prove none is used to build a path',
+    ],
+    'v4-photo-control.json': [
+      'malformedBase64',
+      'calibrationImportV4',
+      'control',
+      'accepted, importable=1',
+      'a correctly encoded staged photo, the control for the base64 cells',
+    ],
+    'v4-photo-malformed-base64.json': [
+      'malformedBase64',
+      'calibrationImportV4',
+      'malicious',
+      'LEGACY_BACKUP_INVALID_SCHEMA',
+      'photo payload that is not decodable base64',
+    ],
+    'v4-photo-mime-mismatch.json': [
+      'mimeExtensionMismatch',
+      'calibrationImportV4',
+      'malicious',
+      'LEGACY_BACKUP_INVALID_SCHEMA',
+      'declared image/png carrying JPEG bytes',
+    ],
+
+    // --- Orca profile discovery ---
+    'orca-control.json': [
+      null,
+      'orcaProfileDiscovery',
+      'control',
+      'discovered',
+      'benign filament profile; the reachability control for every discovery cell',
+    ],
+    'orca-deep-nesting.json': [
+      'deepJson',
+      'orcaProfileDiscovery',
+      'malicious',
+      'excluded from results',
+      'profile nested past the depth bound',
+    ],
+    'orca-duplicate-keys.json': [
+      'duplicateKeys',
+      'orcaProfileDiscovery',
+      'malicious',
+      'excluded from results',
+      'a key repeated inside one object of the profile',
+    ],
+    'orca-nonfinite-number.json': [
+      'unsafeNumerics',
+      'orcaProfileDiscovery',
+      'malicious',
+      'excluded from results',
+      'magnitude past the double range',
+    ],
+    'orca-unsafe-integer.json': [
+      'unsafeNumerics',
+      'orcaProfileDiscovery',
+      'malicious',
+      'excluded from results',
+      'integer past 2^53 in a discovered profile',
+    ],
+    'orca-negative-size.json': [
+      'unsafeNumerics',
+      'orcaProfileDiscovery',
+      'malicious',
+      'excluded from results',
+      'negative declared size in a discovered profile',
+    ],
+    'orca-cycle-a.json': [
+      'cyclicInheritance',
+      'orcaProfileDiscovery',
+      'malicious',
+      'resolution terminates, leaf still returned',
+      'half of an a->b->a inheritance cycle',
+    ],
+    'orca-cycle-b.json': [
+      'cyclicInheritance',
+      'orcaProfileDiscovery',
+      'malicious',
+      'resolution terminates, leaf still returned',
+      'the other half of the a->b->a inheritance cycle',
+    ],
+    'orca-traversal-inherits.json': [
+      'pathTraversal',
+      'orcaProfileDiscovery',
+      'malicious',
+      'no file opened for the inherited name',
+      'traversal path as an `inherits` value; inheritance is a name lookup, not a read',
+    ],
+    'orca-outside.json': [
+      'symlinkJunctionEscape',
+      'orcaProfileDiscovery',
+      'malicious',
+      'excluded from results',
+      'the profile a link out of the search root points at',
+    ],
+    'orca-wrong-magic.json': [
+      'wrongMagicBytes',
+      'orcaProfileDiscovery',
+      'malicious',
+      'excluded from results',
+      'binary content behind a .json name',
+    ],
+    'orca-gcode-shaped.json': [
+      'gcodeOrScriptShaped',
+      'orcaProfileDiscovery',
+      'malicious',
+      'excluded from results',
+      'G-code and shell text behind a .json name',
+    ],
+
+    // --- Orca profile install ---
+    'install-control.json': [
+      null,
+      'orcaProfileInstall',
+      'control',
+      'installed, hash verified',
+      'benign generated profile; the reachability control for every install cell',
+    ],
+    'install-gcode-payload.txt': [
+      'gcodeOrScriptShaped',
+      'orcaProfileInstall',
+      'malicious',
+      'verificationFailed',
+      'G-code and shell text offered as the payload to install',
+    ],
+    'install-zip-magic.bin': [
+      'wrongMagicBytes',
+      'orcaProfileInstall',
+      'malicious',
+      'verificationFailed',
+      'ZIP magic bytes; also the fixture that would matter if a decompressor ever appeared',
+    ],
+
+    // --- calibration asset manifest ---
+    'asset-control.stl': [
+      null,
+      'calibrationAssetManifest',
+      'control',
+      'ok',
+      'a minimal structurally exact binary STL; the reachability control for every asset cell',
+    ],
+    'asset-deep-nesting.stl': [
+      'deepJson',
+      'calibrationAssetManifest',
+      'malicious',
+      'badMagicBytes',
+      'deeply nested JSON wearing a .stl extension; never parsed as JSON',
+    ],
+    'asset-duplicate-keys.stl': [
+      'duplicateKeys',
+      'calibrationAssetManifest',
+      'malicious',
+      'badMagicBytes',
+      'duplicate-key JSON wearing a .stl extension',
+    ],
+    'asset-wrong-magic.stl': [
+      'wrongMagicBytes',
+      'calibrationAssetManifest',
+      'malicious',
+      'badMagicBytes',
+      'content that is not STL behind a .stl name',
+    ],
+    'asset-extension-mismatch.3mf': [
+      'mimeExtensionMismatch',
+      'calibrationAssetManifest',
+      'malicious',
+      'badExtension',
+      'STL content offered under a .3mf extension the manifest does not declare',
+    ],
+    'asset-gcode-shaped.stl': [
+      'gcodeOrScriptShaped',
+      'calibrationAssetManifest',
+      'malicious',
+      'badMagicBytes',
+      'G-code and shell text behind a .stl name',
+    ],
+    'asset-triangle-count-overflow.stl': [
+      'oversized',
+      'calibrationAssetManifest',
+      'malicious',
+      'badMagicBytes',
+      'declares 0xFFFFFFFF triangles in 84 bytes: an allocation request from a header field',
+    ],
+  }),
+);
+
 const written = [];
 
-const w = (name, data, purpose) => {
+const w = (name, data) => {
+  const record = RECORDS.get(name);
+  if (!record) {
+    throw new Error(
+      `${name} has no provenance record. Add one to RECORDS: a fixture with ` +
+        `no stated vector, entry point, role and expected outcome is a ` +
+        `committed blob a reviewer has to take on trust.`,
+    );
+  }
+  const [vector, entryPoint, role, expectedOutcome, purpose] = record;
   const bytes = typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
   writeFileSync(path.join(out, name), bytes);
   written.push({
     name,
     bytes: bytes.byteLength,
     sha256: createHash('sha256').update(bytes).digest('hex'),
-    purpose: purpose ?? PURPOSE.get(name) ?? 'control fixture (vector removed)',
+    synthetic: true,
+    vector,
+    entryPoint,
+    role,
+    expectedOutcome,
+    purpose,
   });
 };
 
@@ -331,7 +610,6 @@ w(
       ),
     ),
   ),
-  'integer past 2^53 in a v4 backup step',
 );
 w(
   'v4-negative-size.json',
@@ -351,17 +629,14 @@ w(
       }),
     ),
   ),
-  'negative declared size in a v4 backup step',
 );
 w(
   'orca-unsafe-integer.json',
   withUnsafeInt(j(profile({ filament_length: [UNSAFE_INT_SENTINEL] }))),
-  'integer past 2^53 in a discovered Orca profile',
 );
 w(
   'orca-negative-size.json',
   j(profile({ filament_spool_size: [-1] })),
-  'negative declared size in a discovered Orca profile',
 );
 
 writeFileSync(
