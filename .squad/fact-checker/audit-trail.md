@@ -903,6 +903,46 @@ skill. **A count of this figure now measures the remediation almost exclusively.
 > it rises monotonically with diligence. **It cannot be a grade, in either direction**, and
 > the only reading that survives is the one that opens each hit and asks whether it asserts.
 
+### Run AW — the guard read a different file depending on where it ran
+
+**Pair.** `.github/workflows/citation-reachability.yml` against
+`.squad/fact-checker/citation-reachability.workflow.yml`. Neither designated authority — the
+chartered check, on the two artifacts that describe this trail's own enforcement.
+
+**Disagreement.** The staged copy's header asserted, in the present tense, that the check was
+**not active** and that "no artifact in this repository may claim the check is enforced". A
+maintainer had moved it into `.github/workflows/` some hours earlier; the live file runs
+`npm run check:citation-reachability` on every pull request and **passes on this branch**.
+The header was false at the moment it was read, and the two copies had **drifted by twenty
+lines** — the live one having gained a step asserting the checkout holds history and not
+merely refs.
+
+**The defect the pair exposed is in the guard, not the prose.** `tests/citationReachability.test.ts`
+fell back to the staged copy whenever no live workflow was found:
+
+```
+working tree not yet holding the wiring commit   isEnforced = false  -> tests the staged copy
+CI, whose pull_request checkout is a merge       isEnforced = true   -> tests the live copy
+```
+
+**One suite, one commit, two different files under test, one verdict** — and the verdict was
+green in both positions because the only property asserted of both happened to hold for each.
+
+> **A fallback that substitutes a second artifact does not make a check more robust; it makes
+> the check's subject a function of where it runs.** The disjunction that let it survive the
+> transition is exactly what hid the transition having happened.
+
+**Repair.** Staged copy removed — its purpose was discharged the moment the workflow went live,
+and a second source that can drift is the hazard, not the insurance. The guard reads the live
+workflow only, and the presence case is **strengthened** from `isEnforced || staged exists` to
+`isEnforced`. **Negative control run:** removing the live workflow fails the suite; restoring
+it passes. `108` test files green.
+
+**Result.** The check chartered in `.squad/fact-checker/policy.md` is, as of this entry,
+**enforced by a workflow rather than described by one** — the last unwired part of the #121
+deliverable, closed by a maintainer and verified here from the artifacts rather than from the
+report.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
