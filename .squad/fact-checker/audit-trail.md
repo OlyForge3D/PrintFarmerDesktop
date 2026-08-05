@@ -3111,6 +3111,123 @@ delta exact.
 > and a well-chosen anchor and a badly-chosen one produce identical output. It was caught by
 > reading the rendered result, which remains the only check with no anchor of its own.
 
+### Run BV — a predicted breakage that does not reproduce, and my own explanation for it that was worse than the claim
+
+Read `2026-08-05T18:07:34Z`. Trunk `9eccb0d4abe5add39f972289d9b471c5d64529a5`. Branch head
+`bb1987feddff82ad54106bdab766b153a4f4f4ae`. Prompted by a relayed measurement carrying an
+operational ordering on #428: repair first, arm second.
+
+#### BV.1 — The claim, measured at three trunk revisions, none of which reproduce it
+
+Relayed to me: a peer measured a simulated unrelated pull request off trunk at
+**REACHABLE 22 · TWIN 0 · DECLARED 7 · ORPHAN 36, 6/6 controls, exit 1**, concluding that moving
+the workflow into `.github/workflows/` as written _"would block the next contributor with 36 dead
+citations they did not write"_ — and that the repair must precede the move.
+
+Measured from a clone that was never mine (`git clone` from `origin` into an empty directory,
+`--is-shallow-repository` **false**, 546 mainline commits), running the harness unmodified:
+
+```
+trunk NOW                  9eccb0d4  2026-08-05T09:10:53-07:00   R74 T3 D17 O0   total 94   exit 0   armed=true
+trunk at the cited 04:47Z  5baba942  2026-08-04T21:09:46-07:00   R43 T3  D9 O0   total 55   exit 0   armed=false
+trunk at #328's merge      1e84cb8f  2026-08-04T19:48:29-07:00   R43 T3  D9 O0   total 55   exit 0   armed=false
+peer claim                       -                               R22 T0  D7 O36  total 65   exit 1
+```
+
+⇒ **ORPHAN 0 and exit 0 at every revision, including the two contemporaneous with the claim.**
+And the corpus totals — 55, 55, 94 — **match the reported 65 at no point**, so the reading is not
+a stale-but-once-true snapshot of trunk in the way run BU's was; there is no trunk revision I can
+reach at which it was the answer. The simulation is the variable, not trunk.
+
+> **The ordering it produced is the operational cost: "repair the 36, then move it" sequences work
+> against a quantity that is zero at the position named, and gates it behind a move that had
+> already been performed.** A number attached to a recommendation is load-bearing even when the
+> number is the only part anybody re-checks — and nobody re-checked it, including me, until it
+> had already reversed a documented ordering.
+
+#### BV.2 — My explanation fitted the number exactly and was wrong, and my control was the vacuous kind this ledger catalogues
+
+I had a mechanism and it was a good one. The harness builds its reader model by _filtering_:
+
+```
+readerRevs = ['HEAD', 'origin/development'].filter(r => git rev-parse --verify `${r}^{commit}`)
+baseRev    = git rev-parse --verify 'origin/development^{commit}' ? 'origin/development' : null
+             ...and the entire twin-rescue block is gated on baseRev
+```
+
+⇒ So an absent `origin/development` should collapse **TWIN to 0** and spill those citations into
+ORPHAN — and the peer reported **TWIN 0**. The model predicted the report's most distinctive
+field. I ran it rather than publishing it:
+
+```
+A: origin/development PRESENT   R74 · T3 · D17 · O0   exit 0   (8 controls)
+   deleted refs/remotes/origin/development; `origin/development^{commit}` resolves: no
+B: origin/development ABSENT    R74 · T3 · D17 · O0   exit 0   (8 controls)
+```
+
+⇒ **Identical in both arms. Refuted.** Deleting the ref removed a **name**, not **history**: in a
+clone of trunk, `HEAD` _is_ development, so `readerRevs` still reaches every object through the
+arm that remained.
+
+> The armed workflow's own step carries the rule I broke — _**"Presence is not depth"**_ — and I
+> committed its exact inverse: _**absence of a name is not absence of history.**_ Same axis,
+> opposite direction, inside the round that quotes the step.
+
+⇒ And the sharper lesson is about the fit, not the error:
+
+> _**A hypothesis that reproduces the reported number exactly is the most dangerous kind, because
+> the fit is doing the work of the evidence.**_ My model and the report agreed on `TWIN 0` while
+> agreeing on nothing that causes it. **Two accounts can converge on a value and share no
+> mechanism, and the convergence feels like corroboration from both sides.**
+
+#### BV.3 — A report of absence that outlived the absence
+
+```
+e3a0e98930b359de45300fe39399e554c67c1ba7  "ci: wire check:citation-reachability so it runs
+                                           somewhere its author is not"     PR #399, merged 2026-08-05T05:33:57Z
+299b33c8b2c530e8e61e7b75eee846483fee48f7  removed the parked .squad/… blob
+trunk now: .github/workflows/citation-reachability.yml PRESENT · parked path resolves to nothing
+```
+
+I was told in two successive dispatches that the blob was **parked** and awaited a
+`workflow`-scoped author, with `GH_TOKEN` shadowing the keyring credential as the mechanism.
+**The scope measurement may well be exact. The conclusion is false at trunk**, because the act it
+described as blocked had already been performed by a third party ~12.5 hours earlier.
+
+> _**A blocked-on-capability report is a claim about the world, not about the credential.**_ The
+> credential half stays true and keeps the sentence quotable long after the world half has
+> expired — **and the true half is what makes the stale half survive re-reading.**
+
+#### BV.4 — The greens are real; the position they were taken from cannot return no
+
+Forty consecutive runs of the armed check, **all `success`**, across ~13 branches with no relation
+to this ledger. Non-vacuity established rather than assumed:
+
+```
+continue-on-error in the armed workflow : 0     (control: 'runs-on' matches 1 — the search works)
+job "Citation reachability"             : success
+  step 6 "Verify every cited revision …": success      <- executed, not skipped, not tolerated
+  step 4 "Assert the checkout holds history, not just the refs" : success
+```
+
+⇒ **"Advisory" was implemented correctly as _no ruleset may require it_, not as
+`continue-on-error`.** A check that cannot go red is not a lenient check; it has no output.
+
+**But `readerRevs` begins with `HEAD`, and on a `pull_request` run `HEAD` is the branch tip.**
+
+> ⇒ _**A pull request that cites its own commits classifies them REACHABLE by construction.**_
+> The destruction those citations die of — squash-merge, branch delete — happens strictly _after_
+> the only run that ever looked. **So forty greens are forty measurements taken from the single
+> position at which the answer cannot be no**, and the count of them is not evidence, because
+> every additional one is drawn from the same blind spot.
+
+⇒ This is precisely what the still-open trigger change addresses (`push` on `development`,
+a daily `schedule`, and `workflow_dispatch`), moving the observation to a position where the
+objects have already been destroyed if they were going to be. **That change is open with zero
+reviews.** ⇒ **The instrument is armed where it cannot fail, and the wiring that would put it
+where it can fail is unreviewed** — which is the #121 shape again, one level out: not a check
+pointed the wrong way, but a check pointed the right way from the wrong place.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
