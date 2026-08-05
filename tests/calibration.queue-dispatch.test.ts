@@ -950,7 +950,7 @@ describe('CalibrationHttpError.toApiError — bed-clear error code mapping', () 
     'maps CalibrationHttpErrorCode("%s") → CalibrationApiErrorCode("%s")',
     (httpCode, expectedApiCode) => {
       const err = new CalibrationHttpError(httpCode, 'test', 409, null, false);
-      const apiError = err.toApiError();
+      const apiError = err.toApiError(null);
       expect(apiError.code).toBe(expectedApiCode);
     },
   );

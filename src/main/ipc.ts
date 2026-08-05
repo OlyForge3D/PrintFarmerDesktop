@@ -1864,6 +1864,7 @@ export function registerIpcHandlers(
               message: prerequisiteError,
               retryable: true,
               retryAfterSeconds: null,
+              reference: null,
             },
           },
         );
@@ -1940,13 +1941,14 @@ export function registerIpcHandlers(
         });
         const apiError =
           error instanceof CalibrationHttpError
-            ? error.toApiError()
+            ? error.toApiError(correlationId)
             : {
                 code: 'serverError' as const,
                 message:
                   error instanceof Error ? error.message : 'Generation failed.',
                 retryable: false,
                 retryAfterSeconds: null,
+                reference: correlationId,
               };
         return ipcSchemas[IpcChannel.CalibrationStartGeneration].response.parse(
           {
@@ -2059,7 +2061,7 @@ export function registerIpcHandlers(
         });
         const apiError =
           error instanceof CalibrationHttpError
-            ? error.toApiError()
+            ? error.toApiError(correlationId)
             : {
                 code: 'serverError' as const,
                 message:
@@ -2068,6 +2070,7 @@ export function registerIpcHandlers(
                     : 'Orchestration status fetch failed.',
                 retryable: false,
                 retryAfterSeconds: null,
+                reference: correlationId,
               };
         return ipcSchemas[
           IpcChannel.CalibrationGetOrchestrationStatus
@@ -2102,6 +2105,7 @@ export function registerIpcHandlers(
             message: prerequisiteError,
             retryable: true,
             retryAfterSeconds: null,
+            reference: null,
           },
         });
       }
@@ -2114,6 +2118,7 @@ export function registerIpcHandlers(
             message: 'No job ID provided — no queue job to look up.',
             retryable: false,
             retryAfterSeconds: null,
+            reference: null,
           },
         });
       }
@@ -2166,6 +2171,7 @@ export function registerIpcHandlers(
                 message: `Queue job ${request.jobId} does not exist.`,
                 retryable: false,
                 retryAfterSeconds: null,
+                reference: null,
               },
             },
           );
@@ -2228,7 +2234,7 @@ export function registerIpcHandlers(
         });
         const apiError =
           error instanceof CalibrationHttpError
-            ? error.toApiError()
+            ? error.toApiError(flowId())
             : {
                 code: 'serverError' as const,
                 message:
@@ -2237,6 +2243,7 @@ export function registerIpcHandlers(
                     : 'Queue job lookup failed.',
                 retryable: false,
                 retryAfterSeconds: null,
+                reference: flowId(),
               };
         return ipcSchemas[IpcChannel.CalibrationGetQueueState].response.parse({
           status: 'error',
@@ -2337,13 +2344,14 @@ export function registerIpcHandlers(
         });
         const apiError =
           error instanceof CalibrationHttpError
-            ? error.toApiError()
+            ? error.toApiError(correlationId)
             : {
                 code: 'serverError' as const,
                 message:
                   error instanceof Error ? error.message : 'Bed-clear failed.',
                 retryable: false,
                 retryAfterSeconds: null,
+                reference: correlationId,
               };
         return ipcSchemas[
           IpcChannel.CalibrationAcknowledgeBedClear
@@ -2419,7 +2427,10 @@ export function registerIpcHandlers(
       } catch (error) {
         const apiError =
           error instanceof CalibrationHttpError
-            ? error.toApiError()
+            ? // No reference: this handler neither begins a correlated flow nor
+              // emits a failure log, so any id minted here would appear in no
+              // record and resolve to nothing when quoted (#177).
+              error.toApiError(null)
             : {
                 code: 'serverError' as const,
                 message:
@@ -2428,6 +2439,7 @@ export function registerIpcHandlers(
                     : 'Print start failed.',
                 retryable: false,
                 retryAfterSeconds: null,
+                reference: null,
               };
         return ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse({
           status: 'error',
@@ -2496,7 +2508,8 @@ export function registerIpcHandlers(
       } catch (error) {
         const apiError =
           error instanceof CalibrationHttpError
-            ? error.toApiError()
+            ? // No reference: see the note on the print-start handler (#177).
+              error.toApiError(null)
             : {
                 code: 'serverError' as const,
                 message:
@@ -2505,6 +2518,7 @@ export function registerIpcHandlers(
                     : 'Queue change feed poll failed.',
                 retryable: false,
                 retryAfterSeconds: null,
+                reference: null,
               };
         return ipcSchemas[
           IpcChannel.CalibrationPollQueueChanges
@@ -2542,7 +2556,8 @@ export function registerIpcHandlers(
       } catch (error) {
         const apiError =
           error instanceof CalibrationHttpError
-            ? error.toApiError()
+            ? // No reference: see the note on the print-start handler (#177).
+              error.toApiError(null)
             : {
                 code: 'serverError' as const,
                 message:
@@ -2551,6 +2566,7 @@ export function registerIpcHandlers(
                     : 'Subscription resources fetch failed.',
                 retryable: false,
                 retryAfterSeconds: null,
+                reference: null,
               };
         return ipcSchemas[
           IpcChannel.CalibrationGetSubscriptionResources
@@ -2926,6 +2942,7 @@ export function registerIpcHandlers(
             message: 'Backup preflight failed; no valid data to import.',
             retryable: false,
             retryAfterSeconds: null,
+            reference: null,
           },
         });
       }
@@ -2959,6 +2976,7 @@ export function registerIpcHandlers(
             message: `Missing explicit printer/toolhead mappings for ${missingMappings.length} project(s): ${missingIds}`,
             retryable: false,
             retryAfterSeconds: null,
+            reference: null,
           },
         });
       }
