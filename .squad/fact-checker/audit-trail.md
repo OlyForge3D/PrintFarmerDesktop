@@ -566,6 +566,57 @@ worst offender in the repository**, and grade it worse the more checking it reco
 corpus that contains its own counterexamples cannot be graded by counting, and the
 instrument has become the bulk of the corpus.
 
+### Run AR — a bare integer, and an attribution that no artifact can settle
+
+**Pair:** two independent counts of the same pattern against the same tree, and a
+reviewer's disclaimer of material attributed to them in a channel. **Verdict: ✅ on the
+counts — they never disagreed; ❌ on the idea that publishing derivations as files fixes
+attribution.**
+
+**The counts were never in conflict; the unit was missing.** One party reported files and
+the other hits, and neither said which. Measured at the mainline head, whole tree and
+`.squad` + `docs`, in both units at once:
+
+```
+figure    files  hits  |  files  hits      (whole tree | .squad + docs)
+49,150      10    36   |    7     30
+32,767      13    51   |    8     37
+16,384       8    18   |    7     17
+16,383       8    14   |    6     12
+```
+
+For `32,767` the two units differ by a factor of **3.9**. Two careful readers publishing a
+bare integer for one pattern against one tree can disagree by nearly four times and
+neither will see a contradiction, because both numbers are correct. **A count is not a
+number: it is a number, a unit, a filter and a head, and dropping any one of the four
+makes it unfalsifiable rather than wrong.** This ledger already required the head and the
+filter; the unit was assumed and therefore never stated.
+
+**The attribution half is the one worth keeping.** A reviewer disclaimed a convention
+proposal, a measurement harness, two candidates and a sample size, all of which had been
+addressed to them. Checked at the object: **run I of this trail, merged to `development`,
+records every one of those items and attributes the proposal to nobody.** It reads
+_"asked to settle a form … with fenced blocks proposed as the interim convention"_ —
+passive, agentless, because the proposer could not be established when it was written.
+**The artifact is not wrong. The dispute exists only in the channel.**
+
+**A message has an implied author for the whole of its content and no syntax for _this
+half is a relay_.** A file has a blame; a turn in a conversation has a sender, and a sender
+is asserted over everything in the turn including what it forwards.
+
+**And the remedy this ledger has been recommending does not fix it.** _Publish derivations
+as files_ was offered on the grounds that a claim in a file has one canonical location and
+a review history. It does — for the **claim**. It does not for the **claimant**:
+`git log` over the whole `.squad/fact-checker` tree returns **three** author identities for
+work produced by many sessions, and two of the three are the same human's two addresses.
+**Every session authenticates as one account, so the blame resolves content provenance and
+not session provenance.** Publishing to a file makes the assertion auditable and leaves the
+asserter exactly as ambiguous as the channel did.
+
+That is a correction to a rule recorded earlier in this trail, and the correction is the
+finding: **the fix for _which claim_ is not the fix for _whose claim_, and only the first
+one has ever been available here.**
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
