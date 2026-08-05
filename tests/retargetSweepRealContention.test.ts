@@ -61,28 +61,17 @@
 
 import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import {
   mkdir,
   mkdtemp,
   readdir,
   readFile,
   rm,
-  stat,
   writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  describe,
-  expect,
-  it,
-  vi,
-} from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   RetargetArtifactService,
@@ -150,9 +139,9 @@ const EXPECTED_EVIDENCE: Record<string, Record<string, unknown>> = {
 };
 
 /**
- * Whether this run was narrowed, which changes what "an arm did not run" means.
+ * Whether the current run's filter selected `arm`.
  *
- * A reviewer of PR #518 measured the reason this exists: `vitest -t <name>` on
+ * A reviewer of PR #518 measured why any of this exists: `vitest -t <name>` on
  * a clean Windows tree failed, because the completeness check below cannot tell
  * a deliberately narrowed run from a neutered file. A guard that reddens a
  * correct tree is a false-red generator, and this repository has already had
@@ -161,53 +150,62 @@ const EXPECTED_EVIDENCE: Record<string, Record<string, unknown>> = {
  * `process.argv` is not the signal -- measured, not assumed: inside a vitest
  * worker it is `[node, tinypool/dist/entry/process.js]` and carries no CLI
  * flags at all. The run configuration is reachable only through
- * `globalThis.__vitest_worker__`, which is internal API. So the fallback is
- * deliberate: if that global is ever missing, this reports NOT narrowed and the
- * completeness check runs. An upstream change then produces a loud false red
- * rather than a silent exemption, and silence is the failure this whole file
- * exists to prevent.
+ * `globalThis.__vitest_worker__`, which is internal API. The fallback is
+ * deliberate: if that global is ever missing, no filter is reported, every arm
+ * is required, and the completeness check runs. An upstream change then
+ * produces a loud false red rather than a silent exemption, and silence is the
+ * failure this whole file exists to prevent.
  *
- * Two narrowings that look equivalent here are not, and a round-4 reviewer
- * measured the difference: skipping an arm while `vitest.config.ts` declares a
- * `testNamePattern` reported `1 passed | 4 skipped` and exit 0. A pattern typed
- * at a terminal is one person's one run. A pattern committed to the config is
- * every run on every machine including CI, for as long as it stays there -- so
- * treating the two the same turns a transient exemption into a permanent one,
- * and this file would go quiet in the only place its silence matters. So the
- * exemption is granted only when the narrowing is NOT in the committed config.
+ * Two earlier versions of this asked the wrong question, and the second one was
+ * defeated by two independent round-5 reviewers within minutes of each other,
+ * which is the useful part of the history:
  *
- * `shard` no longer exempts at all. Vitest shards by file: if this file's
- * `afterAll` is running then this file was in the shard, and every arm in it
- * should have run. Exempting on `shard` gave away a case that cannot occur.
+ *   1. "Was the run narrowed at all?" exempted the whole check whenever a
+ *      pattern was present, so a pattern committed to `vitest.config.ts`
+ *      disabled it permanently and silently.
+ *   2. "Did the narrowing come from the committed config?" answered that by
+ *      substring-searching the config's SOURCE TEXT for `testNamePattern`. Two
+ *      reviewers defeated it identically with a computed key
+ *      (`['testName' + 'Pattern']`), and a third showed the same instrument
+ *      produced a FALSE RED when the word appeared only in a comment. Matching
+ *      source text is not reading configuration: it is defeated by any spelling
+ *      the author did not anticipate and fooled by any mention that is not code.
  *
- * The trade-off is stated rather than hidden: adding `-t` to the workflow would
- * still disable the completeness check. That is a visible edit to `.github/`, a
- * much louder act than skipping a test, and the evidence assertions still run
- * for whichever arms did execute.
+ * So this asks the question that has an answer: does the filter this run is
+ * ACTUALLY using select this arm? Where the filter came from stops mattering,
+ * which is what makes the origin-based bypasses meaningless. An arm the filter
+ * excludes is legitimately absent. An arm the filter selects must have run, no
+ * matter how the filter was spelled or where it was declared.
  */
-function narrowingIsCommitted(): boolean {
-  // Fails towards enforcing: if the config cannot be read, the narrowing is
-  // treated as committed and the completeness check runs. An unreadable config
-  // must not buy an exemption.
-  try {
-    const configPath = path.join(
-      path.dirname(fileURLToPath(import.meta.url)),
-      '..',
-      'vitest.config.ts',
-    );
-    return readFileSync(configPath, 'utf8').includes('testNamePattern');
-  } catch {
-    return true;
-  }
-}
+const DESCRIBE_TITLE =
+  'startup sweep against a real filesystem refusal (issue #514)';
 
-function runWasNarrowed(): boolean {
+function runFilter(): RegExp | undefined {
   const worker = (globalThis as Record<string, unknown>).__vitest_worker__ as
     { config?: { testNamePattern?: unknown } } | undefined;
-  const config = worker?.config;
-  if (config === undefined) return false;
-  if (config.testNamePattern === undefined) return false;
-  return !narrowingIsCommitted();
+  const pattern = worker?.config?.testNamePattern;
+  if (pattern instanceof RegExp) {
+    // A `g` flag would make `test()` stateful across arms, so the last arm
+    // checked could be reported absent purely because of where `lastIndex`
+    // happened to land.
+    return new RegExp(pattern.source, pattern.flags.replace(/g/g, ''));
+  }
+  if (typeof pattern === 'string' && pattern.length > 0) {
+    return new RegExp(pattern);
+  }
+  return undefined;
+}
+
+function armWasSelected(arm: string, filter: RegExp | undefined): boolean {
+  if (filter === undefined) return true;
+  // Vitest matches the full name including enclosing describes. Both forms are
+  // tried rather than assuming the separator, so a change to how vitest joins
+  // them widens the required set rather than silently exempting an arm.
+  return (
+    filter.test(arm) ||
+    filter.test(`${DESCRIBE_TITLE} > ${arm}`) ||
+    filter.test(`${DESCRIBE_TITLE} ${arm}`)
+  );
 }
 
 /**
@@ -331,40 +329,18 @@ async function realRemovalError(
 
 const TEMP_ROOT_PREFIX = 'u1-real-sweep-';
 
-/**
- * Collect temp roots abandoned by an earlier interrupted run.
- *
- * A round-4 reviewer measured the hole: cleanup lives in `afterEach`, and a run
- * killed mid-arm never reaches it, so a root and a live holding process are left
- * in `os.tmpdir()`. Nothing can be added to this file that runs after a SIGKILL,
- * so the leak is closed on the next run in rather than at the moment it happens.
- *
- * Only roots older than an hour are touched. A concurrent run of this file on
- * the same machine -- two CI jobs, another agent's worktree -- owns roots that
- * are seconds old, and deleting those would make this file the flake it exists
- * to avoid. Every failure here is swallowed: this is hygiene, and it must never
- * be the reason a correct tree goes red.
- */
-beforeAll(async () => {
-  const cutoff = Date.now() - 60 * 60 * 1000;
-  let entries: string[];
-  try {
-    entries = await readdir(os.tmpdir());
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    if (!entry.startsWith(TEMP_ROOT_PREFIX)) continue;
-    const candidate = path.join(os.tmpdir(), entry);
-    try {
-      if ((await stat(candidate)).mtimeMs > cutoff) continue;
-      await rm(candidate, { recursive: true, force: true, maxRetries: 5 });
-    } catch {
-      // Another run owns it, or it is already gone. Neither is this file's
-      // business, and neither is a reason to fail.
-    }
-  }
-});
+// A round-4 reviewer noted that a run killed mid-arm leaves its temp root
+// behind, because cleanup lives in `afterEach` and nothing in this file runs
+// after a SIGKILL. A `beforeAll` sweep of `os.tmpdir()` by prefix and age was
+// tried and is deliberately NOT here: a round-5 reviewer measured it deleting
+// the signed artifact of a still-BUSY root and then hanging for 10 seconds
+// inside a required Desktop context. `os.tmpdir()` is shared between concurrent
+// CI jobs, worktrees and other agents, so a sweep keyed on a name prefix cannot
+// tell another run's live directory from an abandoned one -- and a hook that
+// can stall a required context is a far worse defect than the leak it closes,
+// being exactly the deadlock shape this repository already carries a scar from
+// (issue #122). The leak is bounded, confined to the OS temp directory, and
+// collected by the platform. Not every hole is worth the plug.
 
 afterEach(async () => {
   for (const child of children.splice(0)) child.kill();
@@ -520,14 +496,21 @@ describe.skipIf(!onWindows)(
 // them. The cheapest way to make this file lie is to write a false literal into
 // a `record(...)` call, which is a deliberate act and reads as one in a diff.
 //
-// Two limits, stated rather than implied, both measured by reviewers rather
-// than guessed:
+// Three limits, stated rather than implied, all measured by reviewers or by
+// the experiments above rather than guessed:
 //   - Deleting an arm together with its constant and its `REQUIRED_ON_WINDOWS`
-//     entry passes, as does deleting this `afterAll`. No guard inside a file
-//     survives an edit to that file.
+//     entry passes, as does deleting this `afterAll` or editing the filter it
+//     consults. No guard inside a file survives an edit to that file.
 //   - Nothing inside a file can notice that the file was deleted.
-// Both need a policy test that reads the test directory from outside. That is
-// deliberately not in this PR.
+//   - If NO test in this file runs, this hook does not run either, so nothing
+//     is checked. Measured: skipping an arm and then narrowing to only that arm
+//     (`-t 'starts up when a real refusal'`) reports `1 skipped | 5 skipped`,
+//     tests 0ms, exit 0. That is inherent -- an in-file hook cannot fire in a
+//     run that executes none of the file's tests -- and it is visible, because
+//     a run that measured nothing says so in its counts. CI narrows nothing, so
+//     every arm is required there.
+// The first two need a policy test that reads the test directory from outside.
+// That is deliberately not in this PR.
 //
 // This runs after every test in the file regardless of declaration order, and
 // checks both platform directions.
@@ -556,8 +539,16 @@ afterAll(() => {
     return;
   }
 
-  const missing = REQUIRED_ON_WINDOWS.filter((name) => !observations.has(name));
-  if (missing.length > 0 && !runWasNarrowed()) {
+  // An arm may be absent only if the filter this run is ACTUALLY using excludes
+  // it. Asking that, rather than "was the run narrowed", is what makes it
+  // irrelevant where the filter was declared or how it was spelled -- the two
+  // bypasses round 5 found both attacked the origin question, which no longer
+  // gets asked.
+  const filter = runFilter();
+  const missing = REQUIRED_ON_WINDOWS.filter(
+    (name) => !observations.has(name) && armWasSelected(name, filter),
+  );
+  if (missing.length > 0) {
     throw new Error(
       `this runner is win32, where the real-refusal arms are the only reason ` +
         `this file exists, but ${missing.length} of ` +
