@@ -7,3 +7,8 @@ native
 package-lock.json
 resources/target-profiles/**/profiles
 .goals
+
+# Malicious-input corpus fixtures (#158). Deliberately malformed: duplicate
+# keys, non-finite numbers, wrong magic bytes, G-code in a .json. Formatting
+# them would repair the very defect each one exists to carry.
+tests/fixtures/malicious-input
