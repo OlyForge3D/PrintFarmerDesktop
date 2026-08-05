@@ -325,3 +325,43 @@ only at the _following_ commit. **Same check name, same colour, different step.*
 Verifying a fix by reading the fix commit's status returns _not fixed_, with no signal that
 the question was answered about something else. Read the step, and read the commit after
 the one carrying the fix.
+
+## A verdict recorded against an object that does not determine it
+
+A check that reads something mutable — a pull request body, a label, a live upstream
+ref — and reports its result on an immutable commit is measuring two things and naming
+one. The same commit can then carry opposite conclusions, both honestly produced, and
+nothing in either report says which of the two inputs moved.
+
+Observed on one commit: `Desktop (windows-latest)` failed and `Desktop (macos-latest)`
+succeeded, because a step in both reads the pull request body and the body was edited
+between the two starts. **The reading that pair invites is a platform-specific defect,
+because platform is the only difference the two names expose.** The actual discriminator
+was the clock, which is in no field.
+
+The consequence runs in the reassuring direction. A required _code_ context was turned
+green by editing prose; the tree never moved, so nothing re-evaluated the code, and the
+green is truthful about the body while saying nothing about the commit it is attached to.
+
+## Re-running a job is not a second sample when the job reads outside the tree
+
+A re-run is normally a flake test: same inputs, drawn again. That holds only while the
+job's inputs are the tree. When a job reads a mutable object, the second run has
+**different inputs**, so a green re-run is evidence about that object now and not about
+the commit — and it is indistinguishable, in the check list, from a flake that settled.
+
+The practical rule: a job that reads outside the tree should say what it read and when,
+in its own output, because its verdict cannot otherwise be re-derived by anyone reading
+the commit later.
+
+## A guard for a rule must consult the rule, not restate it
+
+When guarding against a gate's failure, the tempting shape is to compute the gate's
+answer locally before publishing. That makes the guard a **second rendering of one rule**,
+and two renderings agree until they do not — which is the failure this whole check exists
+to surface, reintroduced in the instrument that guards against it.
+
+Where the deciding value is computed elsewhere, the guard cannot precede the write. It
+has to publish and then re-read through the gate itself, keeping three values: pass, fail,
+and _no settled answer yet_. Collapsing the third into pass is the multi-valued-status
+collapse recorded elsewhere in this note, and it fails toward reassurance.
