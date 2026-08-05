@@ -1724,6 +1724,57 @@ Two of those 35 comments contain the string BEHIND and one contains the revision
 
 `3fac5567` is a merge commit and is permanent; the branch that produced it is not. **Verify by the merge commit, never by the branch.** Nothing is owed on it and it is not being guarded.
 
+### Run BH — the two-position defect does not reproduce, and the table came from my own undated comment
+
+**Claim under test**, from a correspondent: `scripts/check-citation-reachability.mjs` computes the TWIN class with `git patch-id --stable` of the orphan, which a reader does not have, so the harness returns `TWIN 16 / ORPHAN 0 / exit 0` for the author and `TWIN 0 / ORPHAN 16 / exit 1` for a reader — the defect the tool exists to close, reproduced inside the tool.
+
+**Method: cloned the mainline into an empty directory over the network, confirmed the clone is not sharing an object store, confirmed it genuinely cannot resolve a known orphan, and ran the file unmodified.**
+
+```
+alternates file present            : False
+git cat-file -e <known orphan>     : exit 129   (the clone does NOT have it)
+commits reachable                  : 501
+
+REACHABLE 61   TWIN 44   DECLARED 17   ORPHAN 0     exit 0     both controls firing
+```
+
+❌ **Does not reproduce.** The reader position and the author position agree. **And the mechanism is refuted directly rather than by the totals:** the clone classifies as TWIN a revision it provably cannot resolve, so **twin classification never consults the orphan.** It reads a declaration out of the ledger and verifies **the twin**, which is on the mainline. The claimed dependency does not exist in this version.
+
+#### Where the table actually came from, which is worse for me than for the correspondent
+
+The four numbers are quoted verbatim from this repository's own source — the header of the file under discussion, in the paragraph explaining why the class is read rather than computed. That prose is **accurate**: it says _an earlier version_ behaved that way, and that is true. It is also **undated**, and it states measured figures in the present tense of the design note.
+
+⇒ **an undated number in a design note is read as a present-tense measurement**, and a reader who reproduces it finds the opposite and reasonably concludes the tool is broken. ⇒ **this is the defect this very file exists to prevent, occurring in the file's own prose rather than in its data.** The remedy applied is the one the ledger demands of every citation: **the current figure is now stated beside the historical one, with the method for reproducing it**, so the two readings agree instead of colliding.
+
+> **A tool that requires claims to be re-derivable must hold its own commentary to that standard, or it teaches the opposite lesson to everyone who reads it.**
+
+#### The correspondent's positive claim is confirmed, and adopted in a narrowed form
+
+```
+revision   local to a virgin clone   served by the forge commit endpoint
+orphan A            False                        True
+orphan B            False                        True
+orphan C            False                        True
+synthetic           False                        False      <- negative control fires
+```
+
+✅ **Confirmed.** Objects that no branch reaches and no fetch route recovers are still served individually, because the forge addresses commits by content and that store outlives every ref. ⇒ **ORPHAN means _no route through the commit graph_, which is strictly narrower than _gone_** — the harness's own verdict was overstating itself.
+
+**Adopted as printed guidance and deliberately not as an input to the verdict.** This check gates pull requests; a verdict that consulted the network would convert an outage into a red and could not run in a clone with no remote. ⇒ **the instrument stays hermetic and the operator is told where else to look.** Exercised by injecting a synthetic orphan: exit 1 with the route printed, then exit 0 on revert.
+
+#### Run D, as restated to me, is refuted in both directions
+
+The restatement was that `docs/security/THREAT_MODEL.md` renders `32,767` once and `49,150` zero times on the mainline. Measured in the virgin clone at `f3687117`:
+
+```
+49,150   10 files repository-wide;  in THREAT_MODEL.md: ONE occurrence   (claimed: zero)
+32,767   13 files repository-wide;  in THREAT_MODEL.md: TWO occurrences  (claimed: one)
+```
+
+**And the occurrences are not assertions of the figure.** The passage attributes `2^15-1 = 32,767` to a fixture's doc comment and then corrects it in the same sentence — _summed over the chain, not the distinct paths to its tail, and not the total_ — and names the script that rebuilds the fixture and measures the two populations separately.
+
+⇒ **the figure is on the mainline as the subject of its own correction, with the correcting apparatus beside it.** ⇒ **a `grep` count cannot distinguish an assertion from a mention, and a mention inside a correction is the strongest possible evidence _against_ the defect being alleged.** The verdict of "a figure known wrong is on trunk" is an artifact of counting renderings instead of reading them — which is this trail's own standing rule, arriving as a correction of a claim made about me.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.

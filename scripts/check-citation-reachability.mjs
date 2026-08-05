@@ -31,6 +31,18 @@
 //              see the defect. Found by a reviewer who ran it in a fresh clone rather than
 //              reading it. A twin is therefore evidence only when it is written down, because
 //              only then can the reader check the same thing the author checked.
+//
+//              THOSE FOUR NUMBERS DESCRIBE THE SUPERSEDED VERSION AND DO NOT REPRODUCE HERE.
+//              They are retained because they are the evidence for the design, and they have
+//              since been quoted back at this file's author as a measurement of the shipped
+//              version - so the current figure is stated beside them rather than left to be
+//              inferred. Measured by cloning the mainline into an empty directory, confirming
+//              `git cat-file -e` fails for a known orphan, and running this file unmodified:
+//              REACHABLE 61 / TWIN 44 / DECLARED 17 / ORPHAN 0, exit 0, both controls firing.
+//              The reader position and the author position now agree, which is the property the
+//              rewrite was for. An undated number in a design note is read as a present-tense
+//              measurement, and this file exists because pins decay - so its own prose must
+//              carry the same anchor it demands of the ledger.
 //   DECLARED   listed in the ledger's declaration block with a reason. Two reasons are valid:
 //              the object's *absence* is the finding being recorded (run F is entirely about
 //              commits that are not in this PR - demanding they be reachable would delete the
@@ -333,6 +345,20 @@ if (orphans.length) {
     '\nRepair by naming the live twin, documenting a fetch route, or declaring the absence under:',
   );
   console.error(`  ${DECLARATION_HEADING}`);
+  // ORPHAN means "no route through the commit graph", which is narrower than "gone". The forge
+  // serves single commits by SHA from a content-addressed store that outlives every ref, so an
+  // object no branch reaches and no `git fetch` route recovers is often still retrievable -
+  // measured on this repository against three revisions whose branch was deleted on merge, all
+  // three served, with a synthetic SHA rejected as the negative control. That route is printed
+  // rather than taken: this check gates pull requests, and a verdict that depends on the network
+  // would turn an outage into a red and could not run in a clone with no remote. The instrument
+  // stays hermetic; the operator gets told where else to look.
+  console.error(
+    '\nA graph route is not the only route. To test whether the forge still serves one:',
+  );
+  console.error(
+    '  gh api repos/<owner>/<repo>/commits/<sha> --jq .sha   # non-zero exit means genuinely gone',
+  );
   process.exit(1);
 }
 
