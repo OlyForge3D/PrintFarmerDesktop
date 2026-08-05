@@ -631,7 +631,11 @@ async function readBoundedBody(
         signal: AbortSignal,
       ): Promise<ReadableStreamReadResult<Uint8Array>> {
         if (signal.aborted) {
-          void reader.cancel();
+          // The authoritative failure is the `SyncHttpError` returned below;
+          // a `cancel()` rejection carries no independently actionable
+          // information, so it is discarded rather than left floating. Same
+          // idiom as `serverProfiles.ts` for the identical call.
+          void reader.cancel().catch(() => undefined);
           return Promise.reject(
             new SyncHttpError(
               'cancelled',
@@ -641,7 +645,7 @@ async function readBoundedBody(
         }
         return new Promise((resolve, reject) => {
           const onAbort = (): void => {
-            void reader.cancel();
+            void reader.cancel().catch(() => undefined);
             reject(
               new SyncHttpError(
                 'cancelled',

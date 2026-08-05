@@ -114,6 +114,32 @@ test. PR #169 does the deliberate version as its mutation 11: bypass
 red with `expected 'bearer ******' to be '[unsafe-revision-dropped]'`. Testing
 the helper alone passes even if the builder never calls it.
 
+**The same structure governs arguments, and that direction is harder to see.** A
+conclusion can be true while the mechanism welded to it is false, and **the
+conclusion's truth is what stops anyone checking the mechanism** — nothing
+downstream disagrees, so the false half is never reached. When refuting a claim
+of the form _X because Y_, state separately whether X survives Y's failure. The
+next reader acts on the half that carries a citation, and that half is Y, so
+refuting Y and reporting the claim as refuted invites the deletion of a true X.
+
+**Instance C — a counterfactual whose implementation was an unpinned argument.**
+The extractor guard in `tests/ciWorkflowTriggers.test.ts` documents positional
+drift as reporting contexts "as omitted or fictional." There is no positional
+extractor in the tree, so testing that claim means writing one, and _positional_
+does not pin its behaviour. Against the same two-line insertion above the
+`## CI gate` heading, a line-slice variant reports two omitted and two
+**fictional**; a bullet-matching variant reports two omitted and **none**,
+because the fictional entries are the prose line `Seven required checks must
+pass:` and a `- ` filter cannot emit it. Both are "a positional extractor." _The
+omission result is robust across both arms; the fictional result is a property
+of the arm chosen._ Measured twice in one session by one author, who published
+the stronger arm and found the weaker one only by re-reading his own notes —
+**an unspecified argument does not stay unspecified, it settles where the claim
+needs it.** Corrected on #234.
+
+The prohibition case below is this same shape and is **not restated here**: see
+`## Related` and **#186, which is authoritative for it**.
+
 ## Related, and not restated here: a prohibition in a brief carries a citation
 
 Ripley adopted a third rule of the same family today, and it binds **the issuer
