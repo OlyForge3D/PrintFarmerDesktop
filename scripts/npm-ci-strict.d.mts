@@ -1,5 +1,6 @@
 export const CLEANUP_WARNING_MARKER: string;
 export const CLEANUP_FAILURE_ANCHOR: string;
+export const CLEANUP_FAILURE_DIAGNOSTIC: string;
 export const CLEANUP_EVIDENCE_OUTPUT: string;
 export const CLEANUP_EVIDENCE_FILENAME: string;
 export const NPM_PRODUCTION_TREE_COMMAND: string;
@@ -47,7 +48,7 @@ export interface CleanupEvidence {
   runnerName: string | null;
   cleanupPaths: string[];
   cleanupDirectories: string[];
-  recovery: CleanupRecovery;
+  recovery: Pick<CleanupRecovery, 'attempted' | 'recovered' | 'reason'>;
   warningExcerpt: string[];
 }
 export function createCleanupEvidence(input: {
@@ -85,3 +86,14 @@ export function npmInvocation(commandLine: string): {
   command: string;
   args: string[];
 };
+export interface MainDependencies {
+  runNpmCi(): Promise<{ code: number; output: string }>;
+  retryCleanupRemovals(output: string): Promise<CleanupRecovery>;
+  writeCleanupEvidence(evidence: CleanupEvidence): Promise<string>;
+  markCleanupEvidenceOutput(): Promise<boolean>;
+  readProductionTree(): unknown;
+  fail(lines: string[]): void;
+  exit(code: number): void;
+  writeStderr(message: string): void;
+}
+export function main(dependencies?: Partial<MainDependencies>): Promise<void>;

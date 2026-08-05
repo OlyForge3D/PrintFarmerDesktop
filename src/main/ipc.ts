@@ -29,6 +29,7 @@ import { ServerProfileService } from './serverProfiles.js';
 import {
   TargetProfileNativeError,
   TargetProfileService,
+  TargetProfileUnavailableError,
 } from './targetProfiles.js';
 import { RetargetArtifactService, type Dialogs } from './retargetArtifacts.js';
 import { SceneCacheService } from './sceneCache.js';
@@ -150,18 +151,66 @@ function retargetDialogs(): Dialogs {
   };
 }
 
+/**
+ * Maps a target-profile failure onto a renderer-visible envelope.
+ *
+ * Three arms, and the third one is the point. `sidecarUnavailable` used to be
+ * the `else`, so it was returned for the fault that genuinely is a sidecar
+ * problem *and* for every fault that is not — including a rejected
+ * `retargetReady`, which is the temp-root reaper failing on ordinary
+ * filesystem contention. The operator was told the profile bundle was missing
+ * and advised to reinstall, which cannot clear a stale temp directory.
+ *
+ * An `else` means "I do not know what this is". It must not render as "I know
+ * exactly what this is", so the unclassified arm reports `internalError` and
+ * says the cause is unidentified. That loses no information the old envelope
+ * carried — it never knew the cause either — and it misdirects nobody.
+ */
+/**
+ * The envelope for a `retargetReady` rejection, which is the temp-root reaper
+ * failing — a workspace fault, not a profile fault.
+ *
+ * `RetargetPreflight` already isolates this await and names the workspace in
+ * its message; the two profile channels shared one `catch` with the profile
+ * load and so inherited the profile diagnosis instead. The code is
+ * `internalError` rather than `sidecarUnavailable` because the sidecar is not
+ * implicated: the message carries the cause, and the code declines to claim a
+ * classification the enum does not have.
+ */
+function retargetWorkspaceFailure() {
+  return {
+    domain: 'electron' as const,
+    code: 'internalError' as const,
+    message: 'The retarget workspace could not be prepared.',
+    action:
+      'Restart the application and try again. Reinstalling does not help: the profile bundle is not implicated.',
+    part: null,
+    setting: null,
+  };
+}
+
 function targetProfileFailure(error: unknown) {
-  return error instanceof TargetProfileNativeError
-    ? error.failure
-    : {
-        domain: 'electron' as const,
-        code: 'sidecarUnavailable' as const,
-        message: 'Snapmaker U1 profiles could not be loaded.',
-        action:
-          'Restart the application; reinstall it if the profile bundle remains unavailable.',
-        part: null,
-        setting: null,
-      };
+  if (error instanceof TargetProfileNativeError) return error.failure;
+  if (error instanceof TargetProfileUnavailableError) {
+    return {
+      domain: 'electron' as const,
+      code: 'sidecarUnavailable' as const,
+      message: 'Snapmaker U1 profiles could not be loaded.',
+      action:
+        'Restart the application; reinstall it if the profile bundle remains unavailable.',
+      part: null,
+      setting: null,
+    };
+  }
+  return {
+    domain: 'electron' as const,
+    code: 'internalError' as const,
+    message: 'Snapmaker U1 profiles could not be loaded.',
+    action:
+      'Restart the application. The cause was not identified; collect the application logs before reinstalling, because a reinstall does not clear a stale retarget workspace.',
+    part: null,
+    setting: null,
+  };
 }
 import { createUploadJobService, type UploadJobService } from './uploadJobs.js';
 import { RootApprovalStore } from './rootApprovals.js';
@@ -241,9 +290,14 @@ export function registerIpcHandlers(
   // awaits happens when the renderer first retargets — minutes after startup, or
   // never in a session where nobody does. Until an awaiter attaches a handler,
   // Node treats a rejection here as unhandled and can terminate the main
-  // process. `initialize()` reaps stale instance directories, so it rejects on
-  // ordinary filesystem contention: this is the call that threw `EPERM: rmdir`
-  // and exited the #159 suite non-zero with every test passing.
+  // process.
+  //
+  // The specific cause that motivated this — `EPERM: rmdir` escaping the stale
+  // instance sweep, which exited the #159 suite non-zero with every test
+  // passing — was fixed at the source in `initialize()` (issue #229), so that
+  // rejection no longer reaches here. This handler stays because the window it
+  // closes is structural, not specific to that one cause: `initialize()` still
+  // creates directories and writes a marker, and any of that can fail.
   //
   // Attaching the handler here closes that window without swallowing anything —
   // `retargetReady` still rejects for its awaiters, so a retarget attempted
@@ -467,6 +521,13 @@ export function registerIpcHandlers(
   ipcMain.handle(IpcChannel.RetargetListProfiles, async () => {
     try {
       await retargetReady;
+    } catch {
+      return ipcSchemas[IpcChannel.RetargetListProfiles].response.parse({
+        status: 'error',
+        error: retargetWorkspaceFailure(),
+      });
+    }
+    try {
       return ipcSchemas[IpcChannel.RetargetListProfiles].response.parse({
         status: 'ok',
         value: await refreshTargetProfiles(),
@@ -482,6 +543,13 @@ export function registerIpcHandlers(
   ipcMain.handle(IpcChannel.RetargetImportProfile, async (event) => {
     try {
       await retargetReady;
+    } catch {
+      return ipcSchemas[IpcChannel.RetargetImportProfile].response.parse({
+        status: 'error',
+        error: retargetWorkspaceFailure(),
+      });
+    }
+    try {
       if (!targetProfilesInitialized) {
         await refreshTargetProfiles();
       }
@@ -1760,7 +1828,30 @@ export function registerIpcHandlers(
       // Falls back to the selected profile rather than requiring one, so the
       // command still answers when no profile is selected — "no profile" is
       // itself a diagnosis.
+      //
+      // Not requiring a profile is not the same as accepting whichever one the
+      // renderer names, and this handler used to do both (#157). `?? selected`
+      // only needs the *fallback*; admitting an arbitrary `profileId` also made
+      // this an enumeration oracle, answering with local outbox counts and
+      // conflict metadata for profiles the user has not selected — reachable
+      // from a renderer that never went near the profile switcher. Every other
+      // profile-scoped calibration channel refuses that request; diagnostics
+      // read it.
+      //
+      // The fence is therefore conditional rather than absent: omitting
+      // `profileId` still diagnoses the current state, including the state of
+      // having nothing selected, while naming a profile that is not the
+      // selected one refuses exactly as the other 25 channels do.
       const profileList = await profiles.list();
+      if (
+        request.profileId !== undefined &&
+        request.profileId !== profileList.selectedProfileId
+      ) {
+        throw Object.assign(
+          new Error('Calibration request does not match the selected profile.'),
+          { code: 'CALIBRATION_PROFILE_MISMATCH' },
+        );
+      }
       const profileId = request.profileId ?? profileList.selectedProfileId;
       const diagnostics = await calibrationDiagnostics.collect({
         profileId,
@@ -1801,6 +1892,7 @@ export function registerIpcHandlers(
               message: prerequisiteError,
               retryable: true,
               retryAfterSeconds: null,
+              reference: null,
             },
           },
         );
@@ -1877,13 +1969,14 @@ export function registerIpcHandlers(
         });
         const apiError =
           error instanceof CalibrationHttpError
-            ? error.toApiError()
+            ? error.toApiError(correlationId)
             : {
                 code: 'serverError' as const,
                 message:
                   error instanceof Error ? error.message : 'Generation failed.',
                 retryable: false,
                 retryAfterSeconds: null,
+                reference: correlationId,
               };
         return ipcSchemas[IpcChannel.CalibrationStartGeneration].response.parse(
           {
@@ -1996,7 +2089,7 @@ export function registerIpcHandlers(
         });
         const apiError =
           error instanceof CalibrationHttpError
-            ? error.toApiError()
+            ? error.toApiError(correlationId)
             : {
                 code: 'serverError' as const,
                 message:
@@ -2005,6 +2098,7 @@ export function registerIpcHandlers(
                     : 'Orchestration status fetch failed.',
                 retryable: false,
                 retryAfterSeconds: null,
+                reference: correlationId,
               };
         return ipcSchemas[
           IpcChannel.CalibrationGetOrchestrationStatus
@@ -2039,6 +2133,7 @@ export function registerIpcHandlers(
             message: prerequisiteError,
             retryable: true,
             retryAfterSeconds: null,
+            reference: null,
           },
         });
       }
@@ -2051,6 +2146,7 @@ export function registerIpcHandlers(
             message: 'No job ID provided — no queue job to look up.',
             retryable: false,
             retryAfterSeconds: null,
+            reference: null,
           },
         });
       }
@@ -2103,6 +2199,7 @@ export function registerIpcHandlers(
                 message: `Queue job ${request.jobId} does not exist.`,
                 retryable: false,
                 retryAfterSeconds: null,
+                reference: null,
               },
             },
           );
@@ -2165,7 +2262,7 @@ export function registerIpcHandlers(
         });
         const apiError =
           error instanceof CalibrationHttpError
-            ? error.toApiError()
+            ? error.toApiError(flowId())
             : {
                 code: 'serverError' as const,
                 message:
@@ -2174,6 +2271,7 @@ export function registerIpcHandlers(
                     : 'Queue job lookup failed.',
                 retryable: false,
                 retryAfterSeconds: null,
+                reference: flowId(),
               };
         return ipcSchemas[IpcChannel.CalibrationGetQueueState].response.parse({
           status: 'error',
@@ -2274,13 +2372,14 @@ export function registerIpcHandlers(
         });
         const apiError =
           error instanceof CalibrationHttpError
-            ? error.toApiError()
+            ? error.toApiError(correlationId)
             : {
                 code: 'serverError' as const,
                 message:
                   error instanceof Error ? error.message : 'Bed-clear failed.',
                 retryable: false,
                 retryAfterSeconds: null,
+                reference: correlationId,
               };
         return ipcSchemas[
           IpcChannel.CalibrationAcknowledgeBedClear
@@ -2356,7 +2455,10 @@ export function registerIpcHandlers(
       } catch (error) {
         const apiError =
           error instanceof CalibrationHttpError
-            ? error.toApiError()
+            ? // No reference: this handler neither begins a correlated flow nor
+              // emits a failure log, so any id minted here would appear in no
+              // record and resolve to nothing when quoted (#177).
+              error.toApiError(null)
             : {
                 code: 'serverError' as const,
                 message:
@@ -2365,6 +2467,7 @@ export function registerIpcHandlers(
                     : 'Print start failed.',
                 retryable: false,
                 retryAfterSeconds: null,
+                reference: null,
               };
         return ipcSchemas[IpcChannel.CalibrationStartPrint].response.parse({
           status: 'error',
@@ -2433,7 +2536,8 @@ export function registerIpcHandlers(
       } catch (error) {
         const apiError =
           error instanceof CalibrationHttpError
-            ? error.toApiError()
+            ? // No reference: see the note on the print-start handler (#177).
+              error.toApiError(null)
             : {
                 code: 'serverError' as const,
                 message:
@@ -2442,6 +2546,7 @@ export function registerIpcHandlers(
                     : 'Queue change feed poll failed.',
                 retryable: false,
                 retryAfterSeconds: null,
+                reference: null,
               };
         return ipcSchemas[
           IpcChannel.CalibrationPollQueueChanges
@@ -2479,7 +2584,8 @@ export function registerIpcHandlers(
       } catch (error) {
         const apiError =
           error instanceof CalibrationHttpError
-            ? error.toApiError()
+            ? // No reference: see the note on the print-start handler (#177).
+              error.toApiError(null)
             : {
                 code: 'serverError' as const,
                 message:
@@ -2488,6 +2594,7 @@ export function registerIpcHandlers(
                     : 'Subscription resources fetch failed.',
                 retryable: false,
                 retryAfterSeconds: null,
+                reference: null,
               };
         return ipcSchemas[
           IpcChannel.CalibrationGetSubscriptionResources
@@ -2863,6 +2970,7 @@ export function registerIpcHandlers(
             message: 'Backup preflight failed; no valid data to import.',
             retryable: false,
             retryAfterSeconds: null,
+            reference: null,
           },
         });
       }
@@ -2896,6 +3004,7 @@ export function registerIpcHandlers(
             message: `Missing explicit printer/toolhead mappings for ${missingMappings.length} project(s): ${missingIds}`,
             retryable: false,
             retryAfterSeconds: null,
+            reference: null,
           },
         });
       }

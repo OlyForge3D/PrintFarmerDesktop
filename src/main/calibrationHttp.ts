@@ -125,7 +125,11 @@ export type CalibrationHttpErrorCode =
   | 'jobNotDispatchable'
   | 'dispatchRevisionConflict'
   | 'calibrationJobIncompatible'
-  | 'filamentCheckFailed';
+  | 'filamentCheckFailed'
+  // A 409 whose server-supplied error code this build does not recognise.
+  // Deliberately distinct from every diagnosed 409 so that an unclassified
+  // refusal cannot be read as a diagnosed one (#326).
+  | 'unclassifiedConflict';
 
 export class CalibrationHttpError extends Error {
   constructor(
@@ -134,13 +138,43 @@ export class CalibrationHttpError extends Error {
     readonly status: number | null = null,
     readonly retryAfterMs: number | null = null,
     readonly ambiguous = false,
+    /**
+     * The backend's ProblemDetails `detail`/`title`, verbatim and untrusted.
+     *
+     * Kept off `message` deliberately (issue #177): `message` reaches the
+     * renderer through {@link toApiError} and through
+     * `CalibrationSyncStatus.error`, and a server that puts a token, a GPS pair
+     * or an absolute path in `detail` would have it rendered. This field is the
+     * same text with no path to either surface, so the operator's only
+     * actionable string is preserved rather than destroyed.
+     *
+     * It is *not* logged. `calibrationLog.ts` refuses server-controlled free
+     * text by construction and `tests/calibrationLogPolicy.test.ts` enforces
+     * that; routing this into a record would breach that control.
+     *
+     * The disposition was ratified on #177 as **catalogued-plus-opaque-
+     * reference**: the renderer gets a catalogued message plus the flow's
+     * correlation id (`CalibrationApiError.reference`), and this text never
+     * leaves the main process. Recoverability is carried by the reference, not
+     * by the string — the operator quotes the reference and the raw detail is
+     * read here, in process, rather than rendered or logged.
+     */
+    readonly serverDetail: string | null = null,
   ) {
     super(message);
     this.name = 'CalibrationHttpError';
   }
 
-  /** Map this transport-layer error to the IPC-level CalibrationApiError type. */
-  toApiError(): z.infer<typeof CalibrationApiError> {
+  /**
+   * Map this transport-layer error to the IPC-level CalibrationApiError type.
+   *
+   * `reference` is required rather than defaulted: this is the only place the
+   * renderer's error is minted, so a default here would silently produce a null
+   * reference on every caller that forgot one, and nothing would fail. Callers
+   * that genuinely have no correlated flow pass `null` explicitly, which is a
+   * decision in the diff instead of an omission.
+   */
+  toApiError(reference: string | null): z.infer<typeof CalibrationApiError> {
     const codeMap: Partial<
       Record<CalibrationHttpErrorCode, CalibrationApiErrorCode>
     > = {
@@ -159,6 +193,12 @@ export class CalibrationHttpError extends Error {
       calibrationJobIncompatible: 'calibrationJobIncompatible',
       filamentCheckFailed: 'filamentCheckFailed',
     };
+    // 'unclassifiedConflict' is deliberately absent from this map. The shared
+    // IPC enum has no unclassified member and widening it is a contract change
+    // owned by #219, so the fall-through to 'serverError' is a *rendering*
+    // fallback and not a classification. The honest code survives where it can
+    // be acted on: in the main process, in the structured log vocabulary, and
+    // in this error's message, which carries the raw server code (#326).
     const apiCode = codeMap[this.code] ?? 'serverError';
     const retryable = [
       'timeout',
@@ -174,6 +214,7 @@ export class CalibrationHttpError extends Error {
       retryAfterSeconds: this.retryAfterMs
         ? Math.ceil(this.retryAfterMs / 1000)
         : null,
+      reference,
     };
   }
 }
@@ -362,7 +403,15 @@ function isTransient(error: CalibrationHttpError): boolean {
 
 /**
  * Map a 409 error code string from the bed-clear endpoint to a typed error code.
- * Unrecognised codes fall back to 'idempotencyPayloadChanged'.
+ *
+ * Unrecognised codes return `'unclassifiedConflict'`, which no named case
+ * produces. Returning a diagnosed code here would make *"the server told us the
+ * payload changed"* and *"the server told us something we have never seen"*
+ * byte-identical to every consumer — including the runbooks, which assign the
+ * diagnosed code a definite cause (#326).
+ *
+ * This matches {@link mapBedClearErrorCode422}, whose fallback is likewise a
+ * code that none of its named cases produces.
  */
 function mapBedClearErrorCode409(
   errorCode: string | null,
@@ -377,7 +426,7 @@ function mapBedClearErrorCode409(
     case 'idempotency_payload_mismatch':
       return 'idempotencyPayloadChanged';
     default:
-      return 'idempotencyPayloadChanged';
+      return 'unclassifiedConflict';
   }
 }
 
@@ -1378,7 +1427,9 @@ export class CalibrationHttpClient {
     ambiguous: boolean,
     timedOut: boolean,
   ): Promise<CalibrationHttpError> {
-    // Try to read ProblemDetails for richer error context
+    // Read ProblemDetails for operator context. This text is server-controlled
+    // and never becomes the error's `message` -- see issue #177 and the
+    // `serverDetail` docblock on CalibrationHttpError.
     let detail: string | null = null;
     try {
       const body = await response.text();
@@ -1388,82 +1439,98 @@ export class CalibrationHttpClient {
           title?: string;
           errorCode?: string;
         };
+        // `title` is as server-controlled as `detail`; both are untrusted and
+        // both are carried on `serverDetail` only.
         detail = parsed.detail ?? parsed.title ?? null;
       }
     } catch {
       // Non-JSON error body; ignore
     }
-    const msg = (fallback: string) => detail ?? fallback;
+    // The catalogued string is what the user sees. It used to be a *fallback*
+    // -- `detail ?? fallback` -- so the untrusted value silently outranked all
+    // eleven reviewed literals below whenever the server supplied one.
+    //
+    // `fail` exists so the server text cannot be forgotten at a call site: it
+    // attaches `serverDetail` on every arm, and any new arm that uses it gets
+    // the same treatment without the author having to remember a sixth
+    // positional argument.
+    const fail = (
+      code: CalibrationHttpErrorCode,
+      catalogued: string,
+      status: number | null,
+      retryAfterMs: number | null = null,
+      isAmbiguous = false,
+    ) =>
+      new CalibrationHttpError(
+        code,
+        catalogued,
+        status,
+        retryAfterMs,
+        isAmbiguous,
+        detail,
+      );
 
     // HTTP semantic mapping (issue #52 contract)
     switch (response.status) {
       case 400:
-        return new CalibrationHttpError(
+        return fail(
           'invalidData',
-          msg('Invalid calibration request.'),
+          'Invalid calibration request.',
           400,
           null,
           ambiguous,
         );
       case 401:
-        return new CalibrationHttpError(
+        return fail(
           'authentication',
-          msg('Calibration authentication required.'),
+          'Calibration authentication required.',
           401,
         );
       case 403:
-        return new CalibrationHttpError(
-          'authorization',
-          msg('Calibration access denied.'),
-          403,
-        );
+        return fail('authorization', 'Calibration access denied.', 403);
       case 404:
-        return new CalibrationHttpError(
-          'notFound',
-          msg('Calibration resource not found.'),
-          404,
-        );
+        return fail('notFound', 'Calibration resource not found.', 404);
       case 409:
-        return new CalibrationHttpError(
+        return fail(
           'idempotencyPayloadChanged',
-          msg('Idempotency key payload changed.'),
+          'Idempotency key payload changed.',
           409,
           null,
           ambiguous,
         );
       case 412:
-        return new CalibrationHttpError(
+        return fail(
           'revisionConflict',
-          msg('Revision precondition failed (If-Match).'),
+          'Revision precondition failed (If-Match).',
           412,
           null,
           ambiguous,
         );
       case 422:
-        return new CalibrationHttpError(
+        return fail(
           'invalidData',
-          msg('Calibration data is invalid or unsafe.'),
+          'Calibration data is invalid or unsafe.',
           422,
           null,
           ambiguous,
         );
       case 428:
-        return new CalibrationHttpError(
+        return fail(
           'preconditionRequired',
-          msg('Base revision is required for this calibration operation.'),
+          'Base revision is required for this calibration operation.',
           428,
         );
       case 503:
-        return new CalibrationHttpError(
+        return fail(
           'workerUnavailable',
-          msg('Calibration generation or telemetry service is unavailable.'),
+          'Calibration generation or telemetry service is unavailable.',
           503,
           null,
           ambiguous,
         );
       default: {
         if (timedOut) {
-          return new CalibrationHttpError(
+          return fail(
             'timeout',
             'Calibration request timed out.',
             null,
@@ -1476,17 +1543,17 @@ export class CalibrationHttpClient {
           const retryMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : null;
           const code: CalibrationHttpErrorCode =
             response.status === 429 ? 'rateLimited' : 'server';
-          return new CalibrationHttpError(
+          return fail(
             code,
-            msg(`Calibration server error (${response.status}).`),
+            `Calibration server error (${response.status}).`,
             response.status,
             retryMs,
             ambiguous,
           );
         }
-        return new CalibrationHttpError(
+        return fail(
           'server',
-          msg(`Calibration request failed (${response.status}).`),
+          `Calibration request failed (${response.status}).`,
           response.status,
           null,
           ambiguous,

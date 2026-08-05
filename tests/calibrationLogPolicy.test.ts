@@ -73,6 +73,21 @@ const EXPECTED_SURFACE_SIZE = 15;
  */
 const PERMITTED_STREAM_WRITERS = ['calibrationLog.ts', 'sidecar.ts'];
 
+/**
+ * Removes block and line comments so a policy regex matches code, not prose.
+ *
+ * Without this, a module that *documents* the rule it obeys is indicted by the
+ * rule. #177 hit this exactly: a docblock explaining that `serverDetail` must
+ * never be logged made `calibrationLog.ts` look like it read `serverDetail`.
+ *
+ * Deliberately not a parser. It over-strips inside string literals containing
+ * comment markers, which is why every caller asserts the stripped source still
+ * contains a known code landmark before concluding anything from an absence.
+ */
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+}
+
 function read(file: string): string {
   return readFileSync(path.join(mainDir, file), 'utf8');
 }
@@ -164,12 +179,29 @@ describe('calibration logging policy', () => {
     ).toEqual([...PERMITTED_STREAM_WRITERS].sort());
   });
 
-  it('never logs an error message field from the calibration log module', () => {
-    // `CalibrationHttpError.message` carries the backend's ProblemDetails
-    // `detail` (see `statusError`), so it is server-controlled text. The log
-    // module must not read it.
-    const source = read('calibrationLog.ts');
+  it('never logs an error message or the raw server detail', () => {
+    // Before #177, `CalibrationHttpError.message` carried the backend's
+    // ProblemDetails `detail`. It no longer does -- but the untrusted text did
+    // not cease to exist, it moved to `serverDetail`. A guard that named only
+    // the old field would have gone on passing while the value it was written
+    // to stop walked past it under a new name.
+    //
+    // Comments are stripped first. Both assertions below match raw source, so
+    // a docblock *explaining* that the module must not read `serverDetail`
+    // fires the guard against the module for describing the rule it obeys --
+    // which is what happened when #177 documented the change here.
+    const source = stripComments(read('calibrationLog.ts'));
+    // Positive control: a stripper that over-matches would empty the file and
+    // every `not.toMatch` below would pass on nothing.
+    expect(
+      source,
+      'comment stripping removed the module body, so the assertions below are vacuous',
+    ).toMatch(/export function emitCalibrationLog/);
     expect(source).not.toMatch(/candidate\.message|error\.message/);
+    expect(
+      source,
+      'calibrationLog.ts reads serverDetail, which is verbatim server-controlled text',
+    ).not.toMatch(/serverDetail/);
   });
 });
 

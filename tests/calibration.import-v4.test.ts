@@ -320,6 +320,7 @@ describe('CalibrationPickLegacyBackupV4 IPC schemas', () => {
         message: 'Bad file',
         retryable: false,
         retryAfterSeconds: null,
+        reference: null,
       },
     });
     expect(result.status).toBe('error');

@@ -53,3 +53,49 @@ export function fetchClosingIssues(options: {
   token: string;
   fetchImpl?: typeof fetch;
 }): Promise<ClosingIssue[]>;
+
+export interface ArmedReference {
+  readonly number: number;
+  readonly keyword: string;
+  readonly text: string;
+}
+
+export interface PullRequestCommit {
+  readonly sha: string;
+  readonly message: string;
+}
+
+export interface ArmingCommit {
+  readonly sha: string;
+  readonly keyword: string;
+  readonly text: string;
+}
+
+export const CLOSING_KEYWORDS: readonly string[];
+
+export function extractArmedIssueNumbers(text: string): ArmedReference[];
+
+export function collectArmedCommitReferences(
+  commits: readonly PullRequestCommit[],
+): Map<number, ArmingCommit[]>;
+
+export function formatCommitViolations(
+  violations: readonly ClosureViolation[],
+  armedBy: ReadonlyMap<number, readonly ArmingCommit[]>,
+): string;
+
+export function fetchPullRequestCommits(options: {
+  owner: string;
+  repo: string;
+  prNumber: number;
+  token: string;
+  fetchImpl?: typeof fetch;
+}): Promise<PullRequestCommit[]>;
+
+export function fetchIssuesByNumber(options: {
+  owner: string;
+  repo: string;
+  numbers: readonly number[];
+  token: string;
+  fetchImpl?: typeof fetch;
+}): Promise<ClosingIssue[]>;

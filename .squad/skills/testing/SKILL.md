@@ -78,9 +78,12 @@ Seven required checks must pass:
 - Dependency advisories
 
 **This list is a transcription, and the authoritative source is the branch-protection
-endpoint — not this file.** It has been wrong before (see #152: it named a packaging job that
-has never existed, and omitted `Dependency advisories`), and every agent reads this file on
-activation, so a stale copy here misleads everyone at once. Re-verify rather than trust it:
+endpoint — not this file.** It has been wrong before (see #152: it named the packaging job by a
+name `ci.yml` had already renamed, and omitted `Dependency advisories`), and every agent reads
+this file on activation, so a stale copy here misleads everyone at once. That transcription was
+accurate the day it was written — the job was renamed afterwards, in an unrelated commit, and
+nothing updated this file — so re-verify even when the list looks settled. A citation does not
+have to be wrong when written to be wrong now:
 
 ```powershell
 gh api repos/OlyForge3D/PrintFarmerDesktop/branches/development/protection `
@@ -89,11 +92,96 @@ gh api repos/OlyForge3D/PrintFarmerDesktop/branches/development/protection `
 
 If that output disagrees with the list above, the endpoint wins — fix this file.
 
+### "How many checks?" conflates three different numbers
+
+| number                       | on an open PR | after it closes | is it a gate?     |
+| ---------------------------- | ------------- | --------------- | ----------------- |
+| required contexts            | 7             | 7               | **yes, this one** |
+| distinct check-run names     | 9             | 10              | no                |
+| check-run objects on the SHA | 9 or more     | 10 or more      | no                |
+
+The two extra names on an open PR are `Sequencing hold` and `PR closure scope`, advisory by
+design and carrying a `# merge-queue: advisory` header saying so. The tenth name appears only
+after the PR closes: `Lift sequencing hold` runs on `closed` only, so it does not exist on an
+open PR at all.
+
+**Run objects are not names.** `pr-closure-scope.yml` also triggers on `edited`, so editing a
+title or body adds another run object under a name that is already there. Measured on this
+file's own pull request: 10 run objects, 9 distinct names, `PR closure scope` twice.
+
+That is why the count keeps moving, and it moved twice while this section was being written:
+
+| reading                              | got | why                                            |
+| ------------------------------------ | --- | ---------------------------------------------- |
+| a merged PR's head, called it "a PR" | 10  | `Lift sequencing hold` only exists after close |
+| an open PR, counted run objects      | 10  | `PR closure scope` ran twice, from `edited`    |
+| an open PR, counted distinct names   | 9   | the honest answer to the question asked        |
+
+**Watching a PR tells you what ran, not what binds**, and neither number is derivable from
+the other.
+
+**Promoting an advisory check would not tighten the gate; it would jam it.** These workflows
+subscribe to `pull_request` or `closed` only, because a `merge_group` event carries no pull
+request number and no `closingIssuesReferences` — there is nothing for them to read. A
+required context that no workflow emits for an event does not fail that entry, it leaves it
+**Pending forever** (issue 122). `Lift sequencing hold` is the sharpest case: requiring it
+would make every open PR wait for a check that cannot report until after the merge it is
+blocking.
+
+Ask both questions in one call, and read them as two answers rather than one:
+
+```powershell
+$req = gh api repos/OlyForge3D/PrintFarmerDesktop/branches/development/protection/required_status_checks --jq '.contexts[]'
+$sha = gh pr view <N> --repo OlyForge3D/PrintFarmerDesktop --json headRefOid --jq .headRefOid
+$run = @(gh api "repos/OlyForge3D/PrintFarmerDesktop/commits/$sha/check-runs?per_page=100" --jq '.check_runs[].name') | Sort-Object -Unique
+"required=$($req.Count)  distinct emitted=$($run.Count)"
+"required but never emitted (deadlock risk): $(($req | Where-Object { $_ -notin $run }) -join ', ')"
+```
+
+**Assert the required names, not a total.** A gate written as `emitted -ge 9` answers _at
+least this many succeeded_ — narrower than _which required contexts are green on this commit_
+— and passes identically on nine names, nine names plus a duplicate, or eight names plus two
+reruns. Check the seven by name. No total is a safety property.
+
 ```powershell
 gh pr checks <N> --repo OlyForge3D/PrintFarmerDesktop --watch --interval 20
 ```
 
 Never hand back a red PR. If a check fails, read the failing job log, fix the cause, and push again.
+
+### Reading a failing job log after a re-run
+
+**`gh run view --log --job <id>` serves the _latest_ attempt's log regardless of which attempt
+the job id belongs to.** It exits 0 and returns a complete, well-formed log naming the right
+job — it is simply the wrong object. If the run was re-run and passed, you get a clean log for
+a job that failed, and the investigation ends there.
+
+Measured against run `30880293283` (attempt 1 failed 05:18:39Z, attempt 2 passed 05:54:42Z):
+
+| command                                    | job id asked for   | `##[error]` | first timestamp |
+| ------------------------------------------ | ------------------ | ----------- | --------------- |
+| `gh run view --log --job 91900014923`      | the **failed** one | 0           | 05:54:49Z       |
+| `gh run view --log --job 91905697047`      | the **passed** one | 0           | 05:54:49Z       |
+| `gh api .../actions/jobs/91900014923/logs` | the **failed** one | 2           | 05:18:45Z       |
+
+The two CLI outputs are **byte-identical**, so no diff, length anomaly or truncation marker
+distinguishes them. (Control: the token `checkout` appears 8 times in all three, so the zero
+counts are a property of the content, not of a broken search.)
+
+The tell is free and already in the output:
+
+> **A log whose first timestamp postdates the attempt you asked for is serving something else.**
+
+Use the REST endpoints instead, which are attempt-correct:
+
+```powershell
+gh api repos/OlyForge3D/PrintFarmerDesktop/actions/runs/<run-id>/attempts/<n>/jobs   # per-attempt job ids
+gh api repos/OlyForge3D/PrintFarmerDesktop/actions/jobs/<job-id>/logs                # true log for that job id
+```
+
+Check `attempt` before trusting any log: `gh run list --json attempt`. Only 1 of the 200 most
+recent runs has `attempt >= 2` — but re-runs are concentrated on exactly the failures someone
+cared enough to re-run, which is the population an investigation samples from. See #261.
 
 `mergeStateStatus: UNSTABLE` means CI is still running or has failed — it is **not** ready to merge. `CLEAN` plus seven passes is the bar.
 

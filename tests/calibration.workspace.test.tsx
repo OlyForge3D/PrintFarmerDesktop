@@ -483,6 +483,7 @@ function makeApi(savedRecord = record()) {
           message: 'Not implemented in test.',
           retryable: false,
           retryAfterSeconds: null,
+          reference: null,
         },
       }),
     getCalibrationOrchestrationStatus: vi
@@ -494,6 +495,7 @@ function makeApi(savedRecord = record()) {
           message: 'Not implemented in test.',
           retryable: false,
           retryAfterSeconds: null,
+          reference: null,
         },
       }),
     getCalibrationQueueState: vi
@@ -505,6 +507,7 @@ function makeApi(savedRecord = record()) {
           message: 'Not implemented in test.',
           retryable: false,
           retryAfterSeconds: null,
+          reference: null,
         },
       }),
     acknowledgeCalibrationBedClear: vi
@@ -516,6 +519,7 @@ function makeApi(savedRecord = record()) {
           message: 'Not implemented in test.',
           retryable: false,
           retryAfterSeconds: null,
+          reference: null,
         },
       }),
     startCalibrationPrint: vi
@@ -527,6 +531,7 @@ function makeApi(savedRecord = record()) {
           message: 'Not implemented in test.',
           retryable: false,
           retryAfterSeconds: null,
+          reference: null,
         },
       }),
     // --- Queue reconciliation (issue #54) ------------------------------------
@@ -539,6 +544,7 @@ function makeApi(savedRecord = record()) {
           message: 'Not implemented in test.',
           retryable: false,
           retryAfterSeconds: null,
+          reference: null,
         },
       }),
     getCalibrationSubscriptionResources: vi
@@ -550,6 +556,7 @@ function makeApi(savedRecord = record()) {
           message: 'Not implemented in test.',
           retryable: false,
           retryAfterSeconds: null,
+          reference: null,
         },
       }),
     // --- External calibration asset manifest (issue #54) -------------------
@@ -2032,6 +2039,142 @@ describe('CalibrationWorkspace', () => {
       expect(liveRegion).toHaveTextContent(/Do not retry/);
     });
     expect(liveRegion).toHaveTextContent(/check the printer/);
+  });
+
+  it('shows the operator the quotable reference when the detail was withheld (issue #177)', async () => {
+    // The catalogued message is what the renderer now receives instead of the
+    // backend's ProblemDetails `detail`. That closes the leak and removes the
+    // only actionable string the failure had, so the reference is what has to
+    // reach the screen -- a reference carried in the IPC payload and never
+    // rendered satisfies the ruling in the type and fails it for the operator.
+    //
+    // The panel only mounts once a queue job has loaded, so the failure has to
+    // be reached the way it is reached in production: a successful first fetch,
+    // then a gap-triggered refetch that returns an error response.
+    const api = makeApi(record(domainState()));
+    const REFERENCE = '7f1c9a34-2b6e-4d51-9a02-5c8e3f0b71d4';
+    let failFetch = false;
+    api.getCalibrationQueueState.mockImplementation(() => {
+      if (failFetch)
+        return Promise.resolve({
+          status: 'error' as const,
+          error: {
+            code: 'workerUnavailable' as const,
+            message: 'No generation worker is available.',
+            retryable: true,
+            retryAfterSeconds: null,
+            reference: REFERENCE,
+          },
+        });
+      return Promise.resolve(queueJobFixture());
+    });
+
+    let fireGap!: () => void;
+    api.pollCalibrationQueueChanges.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          fireGap = () =>
+            resolve({
+              status: 'ok',
+              afterSequence: 0,
+              nextSequence: 5,
+              hasMore: false,
+              gapDetected: true,
+              events: [],
+            });
+        }),
+    );
+    api.pollCalibrationQueueChanges.mockResolvedValue({
+      status: 'ok',
+      afterSequence: 5,
+      nextSequence: 5,
+      hasMore: false,
+      gapDetected: false,
+      events: [],
+    });
+
+    await openStepView(api);
+    const panel = await screen.findByRole('region', {
+      name: 'Queue and dispatch status',
+    });
+
+    failFetch = true;
+    act(() => {
+      fireGap();
+    });
+
+    // Precondition: the failure actually rendered. Without this the reference
+    // assertion below would pass on a panel that never showed an error.
+    const alert = await within(panel).findByText(
+      /No generation worker is available\./,
+    );
+    expect(
+      (alert.textContent ?? '').includes(REFERENCE),
+      `the reference is absent from the rendered failure, so the operator has nothing to quote for a detail that was withheld. Rendered text: ${alert.textContent ?? ''}`,
+    ).toBe(true);
+  });
+
+  it('shows no reference when the failure withheld nothing to reference (issue #177)', async () => {
+    // Discriminating control for the test above. Without it a formatter that
+    // appended a reference unconditionally -- including `undefined` or an empty
+    // one -- would satisfy every assertion there while telling the operator to
+    // quote a value that does not exist.
+    const api = makeApi(record(domainState()));
+    let failFetch = false;
+    api.getCalibrationQueueState.mockImplementation(() => {
+      if (failFetch)
+        return Promise.resolve({
+          status: 'error' as const,
+          error: {
+            code: 'jobNotFound' as const,
+            message: 'No queue job to look up.',
+            retryable: false,
+            retryAfterSeconds: null,
+            reference: null,
+          },
+        });
+      return Promise.resolve(queueJobFixture());
+    });
+
+    let fireGap!: () => void;
+    api.pollCalibrationQueueChanges.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          fireGap = () =>
+            resolve({
+              status: 'ok',
+              afterSequence: 0,
+              nextSequence: 5,
+              hasMore: false,
+              gapDetected: true,
+              events: [],
+            });
+        }),
+    );
+    api.pollCalibrationQueueChanges.mockResolvedValue({
+      status: 'ok',
+      afterSequence: 5,
+      nextSequence: 5,
+      hasMore: false,
+      gapDetected: false,
+      events: [],
+    });
+
+    await openStepView(api);
+    const panel = await screen.findByRole('region', {
+      name: 'Queue and dispatch status',
+    });
+
+    failFetch = true;
+    act(() => {
+      fireGap();
+    });
+
+    const alert = await within(panel).findByText(/No queue job to look up\./);
+    expect(
+      alert.textContent ?? '',
+      'a reference was rendered for a failure that carried none, so the operator is being told to quote a value that does not exist',
+    ).not.toMatch(/Reference/i);
   });
 
   it('guidance arrives into the already-mounted region on the transition path (issue #242)', async () => {

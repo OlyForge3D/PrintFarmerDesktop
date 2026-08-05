@@ -146,6 +146,24 @@ export class TargetProfileNativeError extends Error {
   }
 }
 
+/**
+ * The sidecar answered, and answered `blocked` — it is reachable but cannot
+ * serve profiles right now.
+ *
+ * This exists so the condition is carried by the error's *type* rather than by
+ * which branch of a caller's `catch` happens to be reached. It was previously
+ * `new Error('sidecarUnavailable')`, which is indistinguishable from any other
+ * failure once it crosses a `catch (error: unknown)` boundary, so the only way
+ * to report it correctly was to make it the default — and a default that names
+ * a specific cause reports that cause for every fault that shares the branch.
+ */
+export class TargetProfileUnavailableError extends Error {
+  constructor() {
+    super('sidecarUnavailable');
+    this.name = 'TargetProfileUnavailableError';
+  }
+}
+
 export interface TargetProfileServiceOptions {
   userDataPath: string;
   sidecar: Pick<
@@ -325,7 +343,7 @@ export class TargetProfileService {
     ).parse(await this.options.sidecar.listRetargetProfiles());
     if (listed.status === 'error')
       throw new TargetProfileNativeError(listed.error);
-    if (listed.status !== 'ok') throw new Error('sidecarUnavailable');
+    if (listed.status !== 'ok') throw new TargetProfileUnavailableError();
     const next = new Map<string, RetargetProfile>();
     for (const summary of listed.value) {
       const inspected = nativeOutcome(bundledDetails).parse(
@@ -333,7 +351,7 @@ export class TargetProfileService {
       );
       if (inspected.status === 'error')
         throw new TargetProfileNativeError(inspected.error);
-      if (inspected.status !== 'ok') throw new Error('sidecarUnavailable');
+      if (inspected.status !== 'ok') throw new TargetProfileUnavailableError();
       const value = inspected.value;
       next.set(value.profileId, {
         id: value.profileId,

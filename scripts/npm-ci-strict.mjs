@@ -51,6 +51,7 @@ const repoRoot = path.resolve(
  */
 export const CLEANUP_WARNING_MARKER = 'cleanup Failed to remove';
 export const CLEANUP_FAILURE_ANCHOR = 'could not finish removing node_modules';
+export const CLEANUP_FAILURE_DIAGNOSTIC = `npm-ci-strict: \`npm ci\` exited 0 but reported it ${CLEANUP_FAILURE_ANCHOR}.`;
 export const CLEANUP_EVIDENCE_OUTPUT = 'cleanup_evidence';
 export const CLEANUP_EVIDENCE_FILENAME = 'npm-cleanup-evidence.json';
 
@@ -278,7 +279,7 @@ export function createCleanupEvidence(input) {
   return {
     schemaVersion: 1,
     anchor: CLEANUP_FAILURE_ANCHOR,
-    diagnostic: `npm-ci-strict: \`npm ci\` exited 0 but reported it ${CLEANUP_FAILURE_ANCHOR}.`,
+    diagnostic: CLEANUP_FAILURE_DIAGNOSTIC,
     recordedAt: input.recordedAt ?? new Date().toISOString(),
     repository,
     runId,
@@ -527,17 +528,41 @@ function fail(lines) {
   process.exit(1);
 }
 
-async function main() {
-  const { code, output } = await runNpmCi();
+/**
+ * Run the shipped CLI decision layer with injectable process boundaries.
+ *
+ * @param {{
+ *   runNpmCi?: typeof runNpmCi,
+ *   retryCleanupRemovals?: typeof retryCleanupRemovals,
+ *   writeCleanupEvidence?: typeof writeCleanupEvidence,
+ *   markCleanupEvidenceOutput?: typeof markCleanupEvidenceOutput,
+ *   readProductionTree?: typeof readProductionTree,
+ *   fail?: typeof fail,
+ *   exit?: (code: number) => void,
+ *   writeStderr?: (message: string) => void
+ * }} [dependencies]
+ */
+export async function main({
+  runNpmCi: runNpmCiImpl = runNpmCi,
+  retryCleanupRemovals: retryCleanupRemovalsImpl = retryCleanupRemovals,
+  writeCleanupEvidence: writeCleanupEvidenceImpl = writeCleanupEvidence,
+  markCleanupEvidenceOutput:
+    markCleanupEvidenceOutputImpl = markCleanupEvidenceOutput,
+  readProductionTree: readProductionTreeImpl = readProductionTree,
+  fail: failImpl = fail,
+  exit: exitImpl = (code) => process.exit(code),
+  writeStderr = (message) => process.stderr.write(message),
+} = {}) {
+  const { code, output } = await runNpmCiImpl();
 
   if (code !== 0) {
-    process.exit(code);
+    return exitImpl(code);
   }
 
   if (hasCleanupFailure(output)) {
     let recovery;
     try {
-      recovery = await retryCleanupRemovals(output);
+      recovery = await retryCleanupRemovalsImpl(output);
     } catch (error) {
       recovery = {
         attempted: true,
@@ -548,7 +573,7 @@ async function main() {
     }
 
     if (recovery.recovered) {
-      process.stderr.write(
+      writeStderr(
         `npm-ci-strict: retried npm's requested Windows removal for ${recovery.directories.join(
           ', ',
         )}; validating the resulting tree before continuing.\n`,
@@ -557,17 +582,17 @@ async function main() {
       const evidence = createCleanupEvidence({ output, recovery });
       let evidenceResult;
       try {
-        const evidencePath = await writeCleanupEvidence(evidence);
-        await markCleanupEvidenceOutput();
+        const evidencePath = await writeCleanupEvidenceImpl(evidence);
+        await markCleanupEvidenceOutputImpl();
         evidenceResult = `Durable evidence staged at ${evidencePath}.`;
       } catch (error) {
         evidenceResult = `Durable evidence could not be staged: ${error.message}`;
       }
 
       const paths = extractCleanupPaths(output);
-      fail([
+      failImpl([
         '',
-        `npm-ci-strict: \`npm ci\` exited 0 but reported it ${CLEANUP_FAILURE_ANCHOR}.`,
+        CLEANUP_FAILURE_DIAGNOSTIC,
         '',
         'The installed tree is therefore neither the lockfile tree nor a clean one,',
         'and every later step in this job would run against it.',
@@ -580,14 +605,15 @@ async function main() {
         'reference on #274, and refuses to rerun mixed or policy failures.',
         '',
       ]);
+      return;
     }
   }
 
-  const tree = readProductionTree();
+  const tree = readProductionTreeImpl();
 
   const problems = findTreeProblems(tree);
   if (problems.length > 0) {
-    fail([
+    failImpl([
       '',
       'npm-ci-strict: npm itself reported problems with the installed tree.',
       '',
@@ -598,11 +624,12 @@ async function main() {
       'reads there as an unrelated failure. Origin: #195. This control: #274.',
       '',
     ]);
+    return;
   }
 
   const unresolved = findUnresolvedPackages(tree);
   if (unresolved.length > 0) {
-    fail([
+    failImpl([
       '',
       'npm-ci-strict: the installed production tree contains packages npm cannot resolve.',
       '',
@@ -615,6 +642,7 @@ async function main() {
       'control: #274.',
       '',
     ]);
+    return;
   }
 }
 

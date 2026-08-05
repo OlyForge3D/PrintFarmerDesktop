@@ -19,6 +19,8 @@ on:
 
 permissions:
   contents: read
+  # Read-only, and only used by the closing-reference declaration check below.
+  pull-requests: read
 
 jobs:
   desktop:
@@ -38,6 +40,14 @@ jobs:
           node-version: 22
           cache: npm
 
+      # Guarded to pull_request because no PR context exists under merge_group
+      # or push. An unguarded step here would fail every queued entry, which is
+      # the deadlock #122 removed from this file -- do not drop the condition.
+      - name: Closing-reference declaration
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npm run check:closing-references -- ${{ github.event.pull_request.number }}
       - name: Install dependencies
         id: npm_ci
         env:
@@ -55,6 +65,12 @@ jobs:
 
       - name: Calibration provenance
         run: npm run check:provenance
+
+      - name: Target profile bundle
+        run: npm run verify:target-profiles
+
+      - name: Script reachability
+        run: npm run check:script-reachability
 
       - name: Type-check
         run: npm run typecheck
