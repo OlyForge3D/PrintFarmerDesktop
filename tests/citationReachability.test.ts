@@ -40,6 +40,10 @@ const liveWorkflows = readdirSync(workflowsDir)
   }));
 
 const HARNESS = 'scripts/check-citation-reachability.mjs';
+// The refusal mechanism the harness imports. #421's cross-repository arm imports
+// the same module with its own scan roots and its own floor: share the
+// mechanism, never the number, because the two corpora are disjoint.
+const CORPUS_MODULE = 'scripts/citation-corpus.mjs';
 const SCRIPT_NAME = 'check:citation-reachability';
 
 const invokers = liveWorkflows.filter((w) =>
@@ -113,22 +117,31 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     // the distinction actually rests on must exist where it is claimed to. If one
     // is deleted, this fails whether or not the header was ever corrected.
     const harness = read(HARNESS);
+    const corpus = read(CORPUS_MODULE);
 
     // reader side - depth
     expect(workflowText).toMatch(/MAINLINE_FLOOR/);
     expect(harness).toContain('INCONCLUSIVE: this is a shallow clone');
     // corpus side - the two guards added for #481. Matched on the declaration and
-    // the comparison rather than on the bare name: `toContain('CITATION_FLOOR')`
-    // is satisfied by `CITATION_FLOOR_X`, so it survives a rename that removes
-    // the guard. Measured - that mutation stayed green until these were tightened.
+    // the call rather than on the bare name: `toContain('CITATION_FLOOR')` is
+    // satisfied by `CITATION_FLOOR_X`, so it survives a rename that removes the
+    // guard. Measured - that mutation stayed green until these were tightened.
     expect(harness).toMatch(/const CITATION_FLOOR = \d+;/);
-    expect(harness).toMatch(/cited\.size < CITATION_FLOOR\b/);
-    expect(harness).toContain('a scan root is missing or unreadable');
+    expect(harness).toMatch(
+      /requireCorpusFloor\(\{\s*count: cited\.size,\s*floor: CITATION_FLOOR,?\s*\}\)/,
+    );
+    expect(harness).toMatch(/requireScanRoots\(loadCorpus\(FILES\)\)/);
+    expect(corpus).toContain('a scan root is missing or unreadable');
     // classifier side
     expect(harness).toContain('CONTROL FAILED');
 
+    // The floor must be stated by the caller, never by the shared mechanism -
+    // #421's corpus is disjoint, so a shared constant would be wrong for one of
+    // them by construction.
+    expect(corpus).not.toMatch(/const CITATION_FLOOR/);
+
     // Negative control: strings a reader might expect and these files do not
-    // carry, so the four assertions above are not passing on a substring of
+    // carry, so the assertions above are not passing on a substring of
     // something else.
     expect(harness).not.toContain('CORPUS_FLOOR');
     expect(workflowText).not.toContain('CITATION_FLOOR');
@@ -594,10 +607,12 @@ describe('the harness refuses to publish a verdict it cannot support', () => {
   const stage = (dir: string) => {
     mkdirSync(path.join(dir, 'scripts'), { recursive: true });
     mkdirSync(path.join(dir, '.squad', 'fact-checker'), { recursive: true });
-    copyFileSync(
-      path.join(repositoryRoot, HARNESS),
-      path.join(dir, 'scripts', 'check-citation-reachability.mjs'),
-    );
+    for (const script of [HARNESS, CORPUS_MODULE]) {
+      copyFileSync(
+        path.join(repositoryRoot, script),
+        path.join(dir, script.replace(/\//g, path.sep)),
+      );
+    }
     for (const f of ['audit-trail.md', 'policy.md']) {
       copyFileSync(
         path.join(repositoryRoot, '.squad', 'fact-checker', f),

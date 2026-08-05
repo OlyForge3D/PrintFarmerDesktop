@@ -58,7 +58,12 @@
 //
 // Run:  node scripts/check-citation-reachability.mjs
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import {
+  collectCitations,
+  loadCorpus,
+  requireCorpusFloor,
+  requireScanRoots,
+} from './citation-corpus.mjs';
 
 const FILES = [
   '.squad/fact-checker/audit-trail.md',
@@ -107,25 +112,10 @@ if (git(['rev-parse', '--is-shallow-repository']) === 'true') {
 // not cover. The roots below are hardcoded paths, so any `.squad/` rename, move or restructure
 // disarms the check silently and nothing reports it. Read them once, here, and refuse the
 // verdict rather than publish one about the empty set.
-const sources = new Map();
-const unreadable = [];
-for (const f of FILES) {
-  try {
-    sources.set(f, readFileSync(f, 'utf8'));
-  } catch (e) {
-    unreadable.push(`${f} (${e.code ?? e.message})`);
-  }
-}
-if (unreadable.length) {
-  console.error(
-    'INCONCLUSIVE: a scan root is missing or unreadable, so the citation corpus cannot be assembled.',
-  );
-  for (const u of unreadable) console.error(`  ${u}`);
-  console.error(
-    'Restore the artifact, or update FILES if it moved -- do not read the empty result as a pass.',
-  );
-  process.exit(2);
-}
+//
+// The mechanism lives in citation-corpus.mjs so #421's cross-repository arm imports it rather
+// than reimplementing it. The number stays here: that corpus is disjoint from this one.
+const sources = requireScanRoots(loadCorpus(FILES));
 
 // Revisions a reader is assumed to hold. `origin/development` may be absent in a shallow or
 // branch-only checkout; the branch head alone still gives a usable, if stricter, answer.
@@ -241,13 +231,7 @@ for (const [sha, note] of readBlock(TWIN_HEADING)) {
 
 // Cited SHAs. Only backticked tokens count: prose that happens to contain a hex-looking word is
 // not a citation, and treating it as one manufactures findings.
-const cited = new Map();
-for (const [f, text] of sources) {
-  for (const m of text.matchAll(/`([0-9a-f]{7,40})`/g)) {
-    if (!cited.has(m[1])) cited.set(m[1], []);
-    cited.get(m[1]).push(f);
-  }
-}
+const cited = collectCitations(sources);
 
 // The verdict is computed from exactly two things a reader also has: what is reachable from the
 // reader's revisions, and what the artifacts say. Local object presence is never consulted for a
@@ -454,28 +438,29 @@ if (failures.length) {
 // the backticked pins leaves both files readable and the corpus empty or nearly so, and the
 // verdict is vacuous in exactly the same way. Same shape as `MAINLINE_FLOOR: 250` in #399.
 //
-// Measured at the time of writing, at 6a8bc7a0: 122 cited SHAs across the two roots
-// (REACHABLE 61, TWIN 44, DECLARED 17, ORPHAN 0). The floor is set at 90 -- comfortably below
-// 122 so ordinary editing, consolidation and archival pruning do not trip it, and far above the
-// failure mode it exists to catch, which lands at or near zero. A floor that tracks the count
-// closely would fail on every routine edit and be removed within a week; this one only fires
-// when the corpus has collapsed rather than merely changed.
+// The floor is a number and therefore expires, so it is justified against a series rather than
+// a single reading. Unique cited SHAs across the two roots, measured over all 46 commits that
+// have touched audit-trail.md:
+//
+//   2026-07-23  0  (file created)      2026-08-04 17:51   89
+//   2026-08-04 12:29   65               2026-08-04 19:37   96
+//   2026-08-04 14:23   74               2026-08-04 21:28  101
+//   2026-08-04 15:59   86               2026-08-05 01:33  115
+//                                       2026-08-05 01:51  122   <- 6a8bc7a0
+//
+// The series is monotonically non-decreasing across all 46 commits: this corpus only ever
+// grows. That matters more than the endpoint, because it fixes the direction a fixed floor
+// drifts. It drifts toward *under*-protection - a floor of 90 guards 26% of today's corpus and
+// proportionally less every day - and never toward false alarms. Given the choice, that is the
+// correct direction for a gate to age in: an advisory check that quietly protects less is worth
+// more than one that fires on routine work and gets deleted in a week.
+//
+// 90 is chosen to sit below every reading from 2026-08-04 17:51 onward while remaining far
+// above the failure mode this exists to catch, which lands at or near zero. Re-derive it if the
+// corpus is ever legitimately pruned; do not raise it to track growth, which would reintroduce
+// exactly the false-alarm risk the margin buys off.
 const CITATION_FLOOR = 90;
-if (cited.size < CITATION_FLOOR) {
-  console.error(
-    `INCONCLUSIVE: only ${cited.size} cited SHAs were found, below the floor of ${CITATION_FLOOR}.`,
-  );
-  console.error(
-    'The scan roots are readable but carry far fewer citations than the corpus this check was',
-  );
-  console.error(
-    'calibrated against, so a clean result here would describe the sample and not the ledger.',
-  );
-  console.error(
-    'Investigate the artifacts; if the corpus shrank legitimately, re-justify and lower the floor.',
-  );
-  process.exit(2);
-}
+requireCorpusFloor({ count: cited.size, floor: CITATION_FLOOR });
 
 // --- the run -----------------------------------------------------------------------------
 console.log(
