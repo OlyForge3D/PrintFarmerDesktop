@@ -538,8 +538,8 @@ via `acknowledgeBedClearAndStart`, which builds its headers from the exported
 | Header                      | Carries                    | Server behavior when absent                                                                                                                  |
 | --------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Idempotency-Key`           | Stable per-operation key   | 428 when both header **and** body `idempotencyKey` are blank (body fallback exists; symbol `idempotencyKey` at 973@167a3b13 / 1038@9c1d7e4b) |
-| `If-Match`                  | Opaque job ETag (§10.4)    | 428 when absent or blank (no body fallback; `ifMatchHeader` at 984@167a3b13 / 1049@9c1d7e4b)                                                 |
-| `X-Dispatch-State-If-Match` | Opaque dispatch-state ETag | 428 when absent or blank (no body fallback; `dispatchIfMatchHeader` at 986@167a3b13 / 1051@9c1d7e4b)                                         |
+| `If-Match`                  | Opaque job ETag (§10.4)    | 428 when absent or blank (no body fallback; server variable _ifMatchHeader_ at 984@167a3b13 / 1049@9c1d7e4b)                                 |
+| `X-Dispatch-State-If-Match` | Opaque dispatch-state ETag | 428 when absent or blank (no body fallback; server variable _dispatchIfMatchHeader_ at 986@167a3b13 / 1051@9c1d7e4b)                         |
 
 Source: `src/api/Controllers/JobQueueController.cs`,
 `AcknowledgeBedClearAndStartAsync`.
@@ -587,7 +587,7 @@ both commits), which nulls `jobId`, `projectId`, `calibrationAttemptId`,
 `jobKind`, `jobRevision`, `dispatchStateRevision`, `attemptId`, `attemptNumber`,
 `attemptOutcome`, `bedClearState`, `bedClearCommandId`, `bedClearExpiresAtUtc`,
 `errorCode`, `failureCode`, `failureRetryable`, `failureRequiresReconciliation`,
-`payloadJson`, `jobLogicalRevision`, and `dispatchStateLogicalRevision`, and
+_payloadJson_, `jobLogicalRevision`, and `dispatchStateLogicalRevision`, and
 forces `eventType` to `"PrintFarmer.Queue.PrinterStateChanged.v1"`.
 
 **Never read job state, bed-clear state, or revision tokens from a printer-group
@@ -624,10 +624,10 @@ declares both as `z.string()` for forward compatibility.
 `QueueEventSchemaVersions.Current` (line 148@9c1d7e4b), persisted to the outbox
 row at write time. `QueueOutboxPublisherService` (lines 155–180@9c1d7e4b,
 `src/infra/Services/Queue/QueueOutboxPublisherService.cs`) passes the persisted
-`evt.SchemaVersion` into each `QueueEventEnvelope.FromOutbox` call, so every
+the event's `SchemaVersion` into each `QueueEventEnvelope.FromOutbox` call, so every
 SignalR-published envelope carries the value written at outbox insert time.
 The change-feed REST projection also echoes the persisted value: symbol
-`GetChangesAsync`, statement `schemaVersion: evt.SchemaVersion` at line
+`GetChangesAsync`, assigning the event's `SchemaVersion` property at line
 336@167a3b13 / 346@9c1d7e4b in `src/api/Controllers/JobQueueController.cs`.
 
 **Desktop handling:** PFD's `RemoteQueueEventEnvelope` parses `schemaVersion` as
