@@ -1641,6 +1641,263 @@ against trunk while the squash `3fac5567` exits 0; `3fac5567` has one parent; #1
 withdrawn one of them — a round that checks and finds nothing wrong is the same instrument
 working, and omitting it would bias the record.**
 
+**Addendum, measured on this entry's own verification pass.** The final check read the branch
+from the **remote ref** rather than the local checkout — run M's control, restated to the
+correspondent earlier in the same round — and the two disagreed: local `81c3085`, remote
+`a6ebd5f`. A maintainer had merged `development` in from outside this session, **49 commits and
+24 merge commits**, while the worktree was clean and correct and knew nothing.
+
+`--is-ancestor 81c3085 <remote>` exits **0**; run BF is present in the remote blob. **Nothing was
+lost.** Measured from the merge base `840e6ad` in the same call: this branch carried `rev-list --merges`
+**0** before the event and **24** after. Had the verification read the local checkout, as every earlier round's final pass did, it
+would have published _8 commits, no merges_: **true of my checkout and false of the branch.**
+
+⇒ **the control fired on its author, in the round that restated it, against a writer who had done
+nothing wrong.** A shape self-check is valid only while the author is the only writer, and on this
+repository the author is never the only writer for long.
+
+**And this addendum was itself stranded by the merge it describes.** PR #455 merged at
+`2026-08-05T09:01:37Z` as a **true merge — two parents**, `de9be25`, with **0 reviews**; its head
+at merge was `a6ebd5f`. The addendum commit `b5c399e` was pushed to the branch after that
+snapshot, so `--is-ancestor b5c399e origin/development` exits **1** while the entry it annotates
+is on trunk. ⇒ **third occurrence of this pattern on this issue** (#328 stranded a commit into
+#416; #455 strands this one), and the mechanism is identical every time: **a branch stays
+writable after the pull request stops reading it**, so the push succeeds, the ref advances, and
+nothing dispatches or merges. **The push report is truthful and the work is not delivered** —
+which is why delivery must be verified against trunk rather than against the push.
+
+### Run BG — an instrument that cannot report the absence of what it reads, and a medium that carries no attribution
+
+**Claim under test**, from a correspondent: `git ls-remote` on a ref deleted by merge returns nothing, at exit 0, silently — so a read-at-send performed with it reports a live-looking result for a branch that is gone.
+
+**Measured, this repository, at `7791258e`:**
+
+```
+ls-remote refs/heads/jpapiez-fact-checker-symmetric-diff   exit 0   rows 0
+ls-remote refs/heads/this-ref-never-existed-at-all         exit 0   rows 0
+ls-remote refs/heads/squad/fact-checker-bf-addendumX       exit 0   rows 0
+ls-remote refs/heads/squad/fact-checker-bf-addendum        exit 0   rows 1
+```
+
+✅ **Sustained, and stronger than claimed.** The instrument does not merely fail to report deletion: **deleted, never-existed, and misspelled return the identical observation.** A typo in the query and a merged-and-deleted branch are indistinguishable at the call site.
+
+> **Read-at-send fixes staleness in the value. It cannot fix an instrument with no channel for the absence of the thing being read.**
+
+#### The pairing remedy fails through the pipe, and it convicts this run's own verification
+
+The proposed remedy is to pair the silent instrument with a loud one — `git fetch`, which is fatal and prints. Measured:
+
+```
+primed with a SUCCESS, then failing fetch | Select-Object -First 1   ->  exit code reads 0
+primed with a FAILURE, then failing fetch | Select-Object -First 1   ->  exit code reads 128
+bare, or captured to a variable, or piped to Out-Null                ->  exit code reads 128
+```
+
+⇒ **the exit status after `native | Select-Object -First N` reports the _previous_ native command.** This run first read 0 for a fetch that exited 128, announced the hypothesis refuted on a second reading of 128 — **and that 128 was also inherited**, from the failing fetch immediately preceding it. **Neither reading measured the fetch. The refutation was correct and its instrument was not.**
+
+> **A control that returns the right answer for the wrong reason is not a control** — and agreement with the truth is not evidence that it measured anything.
+
+Note what did **not** fail here: the discipline. The wrong hypothesis was flagged by its own author and re-run before publication. **The re-run used the same broken instrument**, so the second reading inherited its way to the correct answer. ⇒ **repeating a measurement tests the reading, never the instrument.**
+
+And it lands on the pairing rule directly: `fetch` is loud in **two** places — stderr text and exit status — and truncating the pipe destroys the status while leaving the text, which nothing was parsing. ⇒ **a noisy instrument read through a truncating pipe is a silent one.** The pairing rule must name the channel, not the command.
+
+#### The medium carries no attribution
+
+The same correspondent attributed to this session a status report on a merged pull request, and separately conceded misattributing a table of revisions to it. Measured:
+
+```
+commits on this branch carrying the Copilot-Session trailer :  2 of 2
+comments on #162 carrying any session identifier            :  0 of 35
+distinct comment authors on #162                            :  jpapiez        (one)
+distinct commit authors on trunk, last 100                  :  two names
+```
+
+Two of those 35 comments contain the string BEHIND and one contains the revision c98182e6 — stated here without backticks because that object, and the head e5a90df7, exist locally but are **not reachable** from any surviving ref: they were the branch deleted on merge. The ledger's twin table already maps **both** of those revisions to the merge commit, so backticking them would in fact have been safe — **the prose form was a repair applied without checking whether it was needed**, and the check was one command away. It is left in place, and this sentence is the correction: an unverified precaution is an unverified claim wearing the clothes of caution.
+
+⇒ **Commits are attributable — trailer plus author. Comments are not attributable at all:** one login for every session, no trailer, no identifier in any of the 35 bodies. So the attribution can be neither confirmed nor denied from the objects, and this session's own transcript holds zero bytes of assistant output, so absence there supports nothing either.
+
+> **A revision identifies an object, not the party citing it. An author field identifies an account, not the session.** Both channels a reader reaches for are non-discriminating; the only one that works, the commit trailer, exists on commits alone.
+
+⇒ **The dispute was conducted entirely in the medium that carries no attribution, about work in the medium that does.** Recorded without adjudication, because the record cannot settle it.
+
+#### Standing
+
+`3fac5567` is a merge commit and is permanent; the branch that produced it is not. **Verify by the merge commit, never by the branch.** Nothing is owed on it and it is not being guarded.
+
+### Run BH — the two-position defect does not reproduce, and the table came from my own undated comment
+
+**Claim under test**, from a correspondent: `scripts/check-citation-reachability.mjs` computes the TWIN class with `git patch-id --stable` of the orphan, which a reader does not have, so the harness returns `TWIN 16 / ORPHAN 0 / exit 0` for the author and `TWIN 0 / ORPHAN 16 / exit 1` for a reader — the defect the tool exists to close, reproduced inside the tool.
+
+**Method: cloned the mainline into an empty directory over the network, confirmed the clone is not sharing an object store, confirmed it genuinely cannot resolve a known orphan, and ran the file unmodified.**
+
+```
+alternates file present            : False
+git cat-file -e <known orphan>     : exit 129   (the clone does NOT have it)
+commits reachable                  : 501
+
+REACHABLE 61   TWIN 44   DECLARED 17   ORPHAN 0     exit 0     both controls firing
+```
+
+❌ **Does not reproduce.** The reader position and the author position agree. **And the mechanism is refuted directly rather than by the totals:** the clone classifies as TWIN a revision it provably cannot resolve, so **twin classification never consults the orphan.** It reads a declaration out of the ledger and verifies **the twin**, which is on the mainline. The claimed dependency does not exist in this version.
+
+#### Where the table actually came from, which is worse for me than for the correspondent
+
+The four numbers are quoted verbatim from this repository's own source — the header of the file under discussion, in the paragraph explaining why the class is read rather than computed. That prose is **accurate**: it says _an earlier version_ behaved that way, and that is true. It is also **undated**, and it states measured figures in the present tense of the design note.
+
+⇒ **an undated number in a design note is read as a present-tense measurement**, and a reader who reproduces it finds the opposite and reasonably concludes the tool is broken. ⇒ **this is the defect this very file exists to prevent, occurring in the file's own prose rather than in its data.** The remedy applied is the one the ledger demands of every citation: **the current figure is now stated beside the historical one, with the method for reproducing it**, so the two readings agree instead of colliding.
+
+> **A tool that requires claims to be re-derivable must hold its own commentary to that standard, or it teaches the opposite lesson to everyone who reads it.**
+
+#### The correspondent's positive claim is confirmed, and adopted in a narrowed form
+
+```
+revision   local to a virgin clone   served by the forge commit endpoint
+orphan A            False                        True
+orphan B            False                        True
+orphan C            False                        True
+synthetic           False                        False      <- negative control fires
+```
+
+✅ **Confirmed.** Objects that no branch reaches and no fetch route recovers are still served individually, because the forge addresses commits by content and that store outlives every ref. ⇒ **ORPHAN means _no route through the commit graph_, which is strictly narrower than _gone_** — the harness's own verdict was overstating itself.
+
+**Adopted as printed guidance and deliberately not as an input to the verdict.** This check gates pull requests; a verdict that consulted the network would convert an outage into a red and could not run in a clone with no remote. ⇒ **the instrument stays hermetic and the operator is told where else to look.** Exercised by injecting a synthetic orphan: exit 1 with the route printed, then exit 0 on revert.
+
+#### Run D, as restated to me, is refuted in both directions
+
+The restatement was that `docs/security/THREAT_MODEL.md` renders `32,767` once and `49,150` zero times on the mainline. Measured in the virgin clone at `f3687117`:
+
+```
+49,150   10 files repository-wide;  in THREAT_MODEL.md: ONE occurrence   (claimed: zero)
+32,767   13 files repository-wide;  in THREAT_MODEL.md: TWO occurrences  (claimed: one)
+```
+
+**And the occurrences are not assertions of the figure.** The passage attributes `2^15-1 = 32,767` to a fixture's doc comment and then corrects it in the same sentence — _summed over the chain, not the distinct paths to its tail, and not the total_ — and names the script that rebuilds the fixture and measures the two populations separately.
+
+⇒ **the figure is on the mainline as the subject of its own correction, with the correcting apparatus beside it.** ⇒ **a `grep` count cannot distinguish an assertion from a mention, and a mention inside a correction is the strongest possible evidence _against_ the defect being alleged.** The verdict of "a figure known wrong is on trunk" is an artifact of counting renderings instead of reading them — which is this trail's own standing rule, arriving as a correction of a claim made about me.
+
+### Run BI — the move was already made, and the documents that denied it went unchecked because the guard had gone vacuous
+
+**Request under test**, from a correspondent: one item is outstanding across the whole thread — `git mv` the citation-reachability workflow out of `.squad/fact-checker/` into `.github/workflows/` — and it is being handed to a third party to perform.
+
+**Measured at trunk `55803ee`:**
+
+```
+.github/workflows/citation-reachability.yml              present   5372 bytes
+.squad/fact-checker/citation-reachability.workflow.yml   ABSENT
+
+e3a0e98  2026-08-05T01:52:21Z  copied into .github/workflows   (C078)
+4d1937a  2026-08-05T02:55:14Z  armed
+299b33c  2026-08-05T05:54:27Z  staged copy DELETED
+```
+
+❌ **The move was made hours ago and the source file no longer exists**, so the dispatch would have been a no-op against a missing path. The live workflow also demonstrably dispatches — `Citation reachability` returned success on both of this branch's recent heads, which a file parked outside `.github/workflows/` cannot do.
+
+#### But there was a live defect, and it is mine
+
+Three **normative** documents still asserted the opposite, naming the deleted path:
+
+```
+.squad/fact-checker/policy.md
+.squad/decisions/inbox/sha-reporting-rule.md
+.squad/decisions/inbox/fact-checker-symmetric-diff.md
+
+  "Not yet enforced, and this document does not claim it is: the workflow …
+   is staged at .squad/fact-checker/citation-reachability.workflow.yml"
+```
+
+**False since `4d1937a`, and pointing at a path that has not existed since `299b33c`.**
+
+#### Why nothing caught it: the guard went vacuous at the moment it became checkable
+
+The test written to hold this open reads `if (!isEnforced) { expect(claimants).toEqual([]) }`. While enforcement was absent it carried the whole burden. **The moment a maintainer moved the workflow it became `if (false)` — an assertion whose outcome is decided by a condition outside its subject.**
+
+> **A test that guards a claim only while the claim is false stops guarding it exactly when it becomes checkable.** ⇒ **and it reports success while doing so**, which is the quiet form of a constant-valued assertion: the loud form goes permanently red and gets fixed, this one goes permanently green and gets trusted.
+
+**The one-directional design was deliberate and is recorded as such** — _an artifact may say nothing, but an artifact claiming enforcement obliges enforcement._ ⇒ **the direction left open is the one that fired.** Reasoning that an under-claim is harmless is what licensed omitting the check, and it is wrong:
+
+> **A stale over-claim invites the reader to check and be disappointed. A stale denial invites them not to rely on a control that is in fact protecting them** — it decays silently toward _do the work by hand_, and no reader can detect the omission because the document reads as modest rather than wrong.
+
+#### Repairs, and one deliberate non-repair
+
+- The three normative documents now state what is true, anchored to the commits that moved, armed, and deleted.
+- The **second direction** is added: no artifact may deny enforcement while something enforces it.
+- **`isEnforced` is now asserted rather than trusted.** Both branching cases were unfalsifiable if the flag itself were misread, and the staged path is asserted **absent** rather than assumed gone.
+- **The ledger is deliberately excluded from the detector.** This trail's entries at bullets P and the run-X region contain those very sentences as **dated observations that were true when taken**. ⇒ **a present-tense detector run over a historical record demands the record be falsified in order to pass.** A policy asserts what is true now and must track the object; a ledger records what was seen and must not. **The transition is recorded here instead of being edited into the past.**
+
+**Non-vacuity control, because a case that has only ever passed is unproven:** reintroducing the denial into the policy fails the new case at the expected assertion; reverting restores 10 of 10. **The instrument was shown able to return the other answer before it was trusted.**
+
+#### Addendum — the CI clearance was true, and it was about the wrong object
+
+Immediately after publishing this entry I asserted **11 of 11 distinct checks, 0 pending, every workflow run attempt 1** at `8365e77`, the SHA I had pushed. **Every field was correct.** But the pull request's head was already `c0e566f` — a second writer had merged `development` into the branch in the interval, fast-forward, nothing lost, and this worktree unaware.
+
+Re-measured at the head the pull request is actually gated on: **14 runs / 12 distinct, 0 pending, 0 non-success, every workflow run attempt 1.** The two extra runs are `PR closure scope` and `Stacked base` firing a second time on `pull_request: edited` — this ledger's own run AE finding, so the surplus is explained without invoking a re-run.
+
+> **A commit's check results are immutable, so a clearance pinned to a pushed SHA never decays into a falsehood — it silently stops being about the object under review.** Staleness in a mutable value eventually contradicts something; staleness in a claim about a permanent object cannot, because the object keeps agreeing with it forever.
+
+⇒ **Run BF added the _attempt_ to the claim, because the method could not see which attempt it was reading. This adds the _subject_:** re-read the pull request's head at the moment CI is asserted, not the SHA that was pushed. Reading the branch ref would also have caught it — the remote ref and the pull request agreed with each other and both disagreed with me — which is the same discipline as reading a ref at send, applied to a derived verdict instead of to a value.
+
+⇒ **And the entry recording this was itself stranded by the merge of the pull request carrying it** — the fourth occurrence of that pattern on this issue, and the third consecutive one. **Merged at `2026-08-05T11:07:14Z`, merge commit `c2d932d`, two parents, so no citation was destroyed;** run BI, the three repaired documents and the new test case are all verified present on the mainline. The addendum ships on a branch cut from the mainline instead.
+
+⇒ **Direction: reassuring.** A green about a superseded head reads exactly like a green about the current one, and the party who pushed is the party least likely to suspect the branch moved without them.
+
+### Run BJ — the right mechanism behind the wrong observable, and a control that varied two things at once
+
+**Claim under test**, offered as the explanation for a pull request with zero check runs: _a dirty pull request gets no synthetic merge commit, so nothing is dispatched._ **Offered observable: `refs/pull/N/merge` is ABSENT.** **Offered control: five clean open pull requests, 5 of 5 PRESENT.**
+
+#### The control varied two variables simultaneously
+
+The subject was **closed and dirty**; the control was **open and clean**. ⇒ **so the design cannot separate closure from dirtiness.** Both missing arms, measured across 60 recent pull requests:
+
+```
+open,   dirty        merge ref PRESENT   4 / 4
+open,   behind       merge ref PRESENT   2 / 2
+open,   blocked      merge ref PRESENT   1 / 1
+closed, dirty        merge ref ABSENT    3 / 3
+closed, behind       merge ref ABSENT    1 / 1
+closed, merged       merge ref ABSENT   47 / 47
+```
+
+❌ **Perfect separation on open/closed. Zero separation on mergeable state.** The observable tracks the variable the control held constant.
+
+#### One airtight contemporaneous counterexample
+
+```
+#500  state open   mergeable false   mergeable_state dirty
+      refs/pull/500/merge PRESENT
+      merge-ref parents: 55803ee (base) + 2a3396d (head)   2nd parent == current head
+      check-runs at head: 11        dispatched by pull_request, 47s after branch creation
+```
+
+⇒ **a dirty pull request with a present merge ref that is current with respect to its own head, and eleven dispatched checks.**
+
+#### But the mechanism is right, and the merge ref says so from the other end
+
+**That merge ref's base parent is `55803ee`; the mainline has moved on.** ⇒ **the merge commit was generated while the pull request was still clean and has not been regenerated since.** ⇒ **so "no new synthetic merge while dirty" is supported — and the ref does not disappear when regeneration stops, it freezes.**
+
+> **A cache that stops refreshing does not become empty. It becomes confidently wrong at the last good value** ⇒ **so presence is the wrong probe for a regeneration failure; currency against the _base_ is the right one.**
+
+#### The premise itself was false
+
+The subject was not CI-silent. **Its branch carries nineteen workflow runs.** Only the last two pushes produced none — and the forge's ref-activity endpoint dates them **while the pull request was open**, closing 23 minutes later:
+
+```
+17:46:03Z  push  c299a41 -> 3e8d1c3     0 runs
+17:31:20Z  push  7686c77 -> c299a41     0 runs
+17:03:12Z  push  6c792bd -> 7686c77     runs dispatched
+```
+
+⇒ **"zero check runs at the head" was read as "no CI on this pull request."** ⇒ **and closure is not the cause either: three closed-unmerged pull requests carry 10, 11 and 12 check runs at their heads.**
+
+⇒ **the head commit's own committer date is `17:45:54Z`, nine seconds before the push.** **It happened to agree here, and it is not the same quantity** — a commit date is written by the author's clock at authoring time and survives rebase, cherry-pick and replay. **The ref-activity endpoint is the only instrument here that reports when the server's ref actually moved.**
+
+#### And the instrument both sides built tables on has a third value
+
+`mergeable_state` returned `unknown` for three of these four pull requests in one sweep and `dirty` in seven other reads, six of them consecutive at twelve-second spacing.
+
+> **`unknown` does not mean "neither clean nor dirty" — it means the forge has not computed it yet, and it arrives in the same field, at exit 0, shaped exactly like an answer.** ⇒ **a single read cannot distinguish a measurement from a not-yet-measured.**
+
+⇒ **so a table built from one read per subject — mine above included, and the one it corrects — is only sound where `unknown` was explicitly excluded.** The counts here were re-read until stable before being written down.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
@@ -1691,6 +1948,8 @@ working, and omitting it would bias the record.**
 - `d64704d7` — squashed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` when #162 merged; live twin `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`. The same revision as `d64704d` above at one more character; declarations are keyed on the exact string.
 
 Each revision on the left was the branch head, or an ancestor of it, when it was cited; a rebase or a sync merge rewrote it afterwards. The revision on the right is the surviving copy of the same change on this branch, identified with `git patch-id --stable` **at authoring time** and written down here because a reader cannot run that comparison — it requires the rewritten-away commit, which is precisely what the reader does not have. `scripts/check-citation-reachability.mjs` reads this block and accepts the citation only if the twin named here is **itself reachable**; it does not look for twins in the local object store, so it returns the same verdict in a fresh clone as it does for the author.
+
+- `b5c399e` — live twin `7a27a12a9e3cffd5b8c7f4311f3655e869437ec1`. Pushed to squad/fact-checker-advisory-gate after #455's merge snapshot, so it is not an ancestor of development and the pull request never read it. Cherry-picked onto squad/fact-checker-bf-addendum and verified identical with git patch-id --stable, a non-merge commit used as the discrimination control. The patch-id itself is deliberately not written as a revision: it is forty hex characters and names no object in any repository, so backticking it both creates an orphan and captures the twin slot ahead of the real twin.
 
 ## Citations whose object is not reachable from this repository
 

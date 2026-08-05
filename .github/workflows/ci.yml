@@ -11,6 +11,13 @@ on:
   push:
     branches: [development, main]
   pull_request:
+    # `edited` is not in GitHub's default set (opened, synchronize, reopened),
+    # and the PR body is the input the closing-reference check reads -- both
+    # the declaration and the armed references derive from it. Without this,
+    # a PR passes the check at open and can then be edited to arm anything at
+    # all without the gate running again: the one field the check is about is
+    # the one field that did not retrigger it.
+    types: [opened, synchronize, reopened, edited]
   # Inert until a merge queue exists — GitHub dispatches `merge_group` only when
   # one is enabled. Without this, a queued entry's required contexts are never
   # reported and the queue hangs rather than fails. See
