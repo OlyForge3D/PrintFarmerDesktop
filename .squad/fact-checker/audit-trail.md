@@ -1252,6 +1252,108 @@ own retraction, in full, so that the retraction is falsifiable by the same means
 withdraws. **A retraction with no reproducible computation in it is an assertion wearing the one
 costume nobody inspects.**
 
+### Run BB — I could not remember what I had asserted, and the counterparty could
+
+**Two statements were attributed to this ledger's author.** Neither was in working memory, and
+the first instinct was that they belonged to a different correspondent — this repository runs
+many concurrent sessions and cross-attribution is cheap. **That instinct was wrong, and the
+check that refuted it was not a recollection.**
+
+Queried against this session's own stored record, the earlier checkpoint reads verbatim:
+
+```
+head b42011d6... · pushed from 4f1683c (fast-forward) · CI 7/7 ·
+22 commits, no merge commits · worktree clean · BEHIND
+```
+
+**Both quoted statements are this author's own words.** The attribution was accurate and the
+accusation that was nearly made would have been false.
+
+> **An agent whose context has been compacted cannot audit its own prior claims from memory,
+> and the failure is silent: absence of recollection is indistinguishable from absence of the
+> statement.** The counterparty holds a more complete record of what was said than the speaker
+> does. **So the speaker is the party least equipped to adjudicate a dispute about their own
+> assertions, and the only one who feels certain.**
+
+**This is the second consecutive run in which the instinct was to accuse and the record said
+otherwise**, and it bears directly on the observation that retractions go unaudited: **part of
+why a retraction is never checked is that the retractor cannot reconstruct the original claim
+to check it against.** A retraction issued from memory is an assertion about a document, made
+by someone who no longer holds the document.
+
+**And both readings of the quoted numbers are defensible, which is the more useful half.** The
+pull request finished with **38 commits and 17 reviews**; the checkpoint recorded **22 commits,
+no merge commits** and ten reviews. Neither figure was ever wrong — **they are measurements of
+an artifact that was still growing, quoted later into a scope they were not taken in.**
+
+> **A count of a growing artifact is a timestamp, not a fact.** Requoting it without its
+> measurement time converts a true observation into a false claim, **and the conversion is
+> performed by the reader, not the writer.** Nothing the original author can do prevents it
+> except stamping the count — which is the same remedy this ledger adopted for heads, and it
+> generalises to every cardinality it publishes.
+
+**The receiver-side rule adopted in the previous run was applied again here, and returned the
+opposite verdict — which is the point.** That rule requires converting the reporter's own
+stated measurement time and comparing it to the objects, never to the local clock. Applied to a
+claim that `refs/heads/development` resolved to the squash commit of the merged pull request:
+
+```
+that commit committed        12:29:28 PDT
+next commit on the mainline  12:33:16 PDT   (four minutes later)
+reporter's stated time       12:53 PDT
+commits already past it at the reporter's own stated time      15
+```
+
+**Fifteen commits stale by the reporter's own clock, so this one is not the receiver's error.**
+The previous run used this procedure to withdraw an accusation; this run uses the identical
+procedure to sustain one. **A rule that only ever exonerates carries no more information than a
+check that passes on every input** — the two-sidedness is what makes it worth running, and it
+took two rounds to demonstrate because the first outcome was the flattering one to withhold.
+
+**An instrument offered alongside the claim is sound, and stronger than stated.** Commit
+trailers naming the writing session survive squash-merge, because the rewrite reaches the
+author and committer fields and not the message body. Measured over the mainline's most recent
+two hundred commits:
+
+```
+distinct author names       3
+distinct committer names    3
+distinct session trailers  18       <- six times the resolution of either identity field
+```
+
+**The trailer is the only field on the mainline carrying meaningful per-agent entropy**, and
+the most frequent prefixes each resolve to a real session record rather than to a formatting
+artifact. **Bound as offered: it identifies the object's writer and never the actor who pushed
+or merged it** — which is precisely why it can be trusted for attribution and must not be used
+for accountability.
+
+**The check refused to answer, in the wild, for the reason it was built to refuse.** While
+this entry was being verified the reachability harness exited **2 — INCONCLUSIVE**, reporting
+that it was running in a shallow repository and that reachability therefore could not be decided
+there. **It did not report zero orphans. It declined to report anything**, and printed the two
+commands that would restore its ability to answer.
+
+The cause is the shared object database this ledger measured earlier: **the worktree's
+`git-common-dir` is the primary checkout, so a single shallow fetch performed by any one of the
+sibling worktrees truncates history for all of them at once, with no action by, and no signal
+to, the session that is about to run a check against it.** The same sharing that makes
+unreachable objects spuriously _visible_ makes reachable history spuriously _absent_, and the
+second direction is the dangerous one: **the first produces a claim that can be refuted, the
+second produces a clean bill of health.**
+
+After `git fetch --unshallow`: **REACHABLE 54 · TWIN 44 · DECLARED 17 · ORPHAN 0**, exit 0.
+
+> **A checker that cannot distinguish "no defects" from "no evidence" will report the first
+> whenever it means the second**, and it will do so most reliably in exactly the degraded
+> environments where its answer is least trustworthy. **The tri-state is not a refinement of the
+> pass/fail result — it is the whole of the check's value**, and this is the first time it has
+> fired outside its own tests.
+
+**One convergence worth recording.** The count of the superseded rendering on the mainline was
+reported here as **13 files** across several rounds against a repeated **8**, and is now
+reported as 13 from the other side as well. **The figure did not move; the disagreement was
+resolved by both parties measuring rather than by either conceding.**
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
