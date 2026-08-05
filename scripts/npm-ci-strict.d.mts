@@ -81,6 +81,10 @@ export function markCleanupEvidenceOutput(
   ) => Promise<unknown>,
 ): Promise<boolean>;
 export function findTreeProblems(tree: unknown): string[];
+export function findTreeExitProblems(
+  status: unknown,
+  stderr: unknown,
+): string[];
 export function findUnresolvedPackages(tree: unknown): string[];
 export function npmInvocation(commandLine: string): {
   command: string;
@@ -91,7 +95,7 @@ export interface MainDependencies {
   retryCleanupRemovals(output: string): Promise<CleanupRecovery>;
   writeCleanupEvidence(evidence: CleanupEvidence): Promise<string>;
   markCleanupEvidenceOutput(): Promise<boolean>;
-  readProductionTree(): unknown;
+  readProductionTree(): { tree: unknown; status: unknown; stderr: string };
   fail(lines: string[]): void;
   exit(code: number): void;
   writeStderr(message: string): void;
