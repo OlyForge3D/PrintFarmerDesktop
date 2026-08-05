@@ -16,6 +16,9 @@ import {
   readWorkflows,
   renderedContexts,
   triggersOf,
+  discoverToken,
+  type CredentialProbe,
+  discoverRepository,
 } from '../scripts/check-merge-queue-contexts.mjs';
 
 const repositoryRoot = path.resolve(
@@ -385,6 +388,14 @@ describe('fetchRequiredContexts fails loudly rather than reporting an empty rule
  *
  * Both cases below are offline by construction — they return before any fetch —
  * so these do not reach the network.
+ *
+ * `SKIP_CREDENTIAL_DISCOVERY` is what keeps that true now. The script used to
+ * read the environment and nothing else, so clearing four variables was enough
+ * to guarantee the degrade path. It now falls back to `gh auth token` and to the
+ * `origin` remote, which means on a logged-in machine these tests would discover
+ * a real credential and take the live branch — the same class of mistake the
+ * paragraph above records, where the no-token control had a token. The flag
+ * makes the absence explicit rather than ambient.
  */
 describe('the script degrades to the local check instead of failing', () => {
   const runOffline = (env: Record<string, string>) =>
@@ -399,6 +410,7 @@ describe('the script degrades to the local check instead of failing', () => {
           GH_TOKEN: '',
           GITHUB_REPOSITORY: '',
           GITHUB_REPOSITORY_OWNER: '',
+          SKIP_CREDENTIAL_DISCOVERY: '1',
           ...env,
         },
       },
@@ -431,5 +443,99 @@ describe('the script degrades to the local check instead of failing', () => {
         { encoding: 'utf8' },
       ),
     ).toThrow();
+  });
+});
+
+describe('a credential it never asked for is not a credential it does not have', () => {
+  // The live half is the only half that reads branch protection, and the script
+  // skipped it whenever GITHUB_TOKEN was unset -- which on a developer machine
+  // with `gh` logged in is always. It then printed a clean classification and
+  // exited 0, so the run that guards the queue reported success for the check it
+  // did not perform. Measured before changing it: `gh auth token` returned a
+  // credential, and supplying it made the live check run and pass.
+  const fakeRun = (
+    outcomes: Record<string, { status: number; stdout?: string }>,
+  ) =>
+    ((command: string) =>
+      outcomes[command] ?? { status: 1, stdout: '' }) as CredentialProbe;
+
+  it('uses the environment when it is set, without shelling out at all', () => {
+    let called = false;
+    const run: CredentialProbe = () => {
+      called = true;
+      return { status: 0, stdout: 'from-gh' };
+    };
+
+    expect(discoverToken({ GITHUB_TOKEN: 'from-env' }, run)).toBe('from-env');
+    expect(called).toBe(false);
+  });
+
+  it('falls back to the gh credential when the environment is empty', () => {
+    const run = fakeRun({
+      gh: { status: 0, stdout: 'gh-token\n' },
+      'gh.cmd': { status: 0, stdout: 'gh-token\n' },
+    });
+
+    expect(discoverToken({}, run)).toBe('gh-token');
+  });
+
+  it('reports no credential rather than an empty one', () => {
+    // `gh auth token` exiting 0 with nothing on stdout is not a token, and
+    // returning '' here would send the live half off with no credential.
+    const run = fakeRun({
+      gh: { status: 0, stdout: '   \n' },
+      'gh.cmd': { status: 0, stdout: '   \n' },
+    });
+
+    expect(discoverToken({}, run)).toBeNull();
+    expect(discoverToken({}, fakeRun({}))).toBeNull();
+  });
+
+  it('does not discover anything when discovery is explicitly disabled', () => {
+    const run = fakeRun({
+      gh: { status: 0, stdout: 'gh-token\n' },
+      'gh.cmd': { status: 0, stdout: 'gh-token\n' },
+    });
+
+    expect(discoverToken({ SKIP_CREDENTIAL_DISCOVERY: '1' }, run)).toBeNull();
+    expect(
+      discoverRepository({ SKIP_CREDENTIAL_DISCOVERY: '1' }, run),
+    ).toBeNull();
+  });
+
+  it('reads the repository off the origin remote, in both URL forms', () => {
+    const https = fakeRun({
+      git: {
+        status: 0,
+        stdout: 'https://github.com/OlyForge3D/PrintFarmerDesktop.git\n',
+      },
+    });
+    const ssh = fakeRun({
+      git: {
+        status: 0,
+        stdout: 'git@github.com:OlyForge3D/PrintFarmerDesktop\n',
+      },
+    });
+
+    expect(discoverRepository({}, https)).toBe('OlyForge3D/PrintFarmerDesktop');
+    expect(discoverRepository({}, ssh)).toBe('OlyForge3D/PrintFarmerDesktop');
+  });
+
+  it('leaves an environment that already names the repository alone', () => {
+    let called = false;
+    const run: CredentialProbe = () => {
+      called = true;
+      return { status: 0, stdout: 'x' };
+    };
+
+    expect(discoverRepository({ GITHUB_REPOSITORY: 'owner/name' }, run)).toBe(
+      'owner/name',
+    );
+    // Owner-only is already understood downstream, so this must not be treated
+    // as missing and must not be overwritten by a guess from the remote.
+    expect(discoverRepository({ GITHUB_REPOSITORY_OWNER: 'owner' }, run)).toBe(
+      '',
+    );
+    expect(called).toBe(false);
   });
 });
