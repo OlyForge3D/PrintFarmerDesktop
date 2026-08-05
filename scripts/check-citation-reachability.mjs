@@ -98,6 +98,35 @@ if (git(['rev-parse', '--is-shallow-repository']) === 'true') {
   process.exit(2);
 }
 
+// A scan root that is absent or unreadable yields an empty corpus, and an empty corpus satisfies
+// "every cited revision is reachable" vacuously. Measured on the shipping script: renaming
+// `.squad/fact-checker/audit-trail.md` printed `OK` and exited 0 with REACHABLE 0 / TWIN 0 /
+// DECLARED 0 / ORPHAN 0 -- while all four self-controls still passed, because the controls
+// certify the classifier and never the corpus. That is this file's own subject again: a check
+// that reports clean because it cannot see, in a second blind arm the shallow guard above does
+// not cover. The roots below are hardcoded paths, so any `.squad/` rename, move or restructure
+// disarms the check silently and nothing reports it. Read them once, here, and refuse the
+// verdict rather than publish one about the empty set.
+const sources = new Map();
+const unreadable = [];
+for (const f of FILES) {
+  try {
+    sources.set(f, readFileSync(f, 'utf8'));
+  } catch (e) {
+    unreadable.push(`${f} (${e.code ?? e.message})`);
+  }
+}
+if (unreadable.length) {
+  console.error(
+    'INCONCLUSIVE: a scan root is missing or unreadable, so the citation corpus cannot be assembled.',
+  );
+  for (const u of unreadable) console.error(`  ${u}`);
+  console.error(
+    'Restore the artifact, or update FILES if it moved -- do not read the empty result as a pass.',
+  );
+  process.exit(2);
+}
+
 // Revisions a reader is assumed to hold. `origin/development` may be absent in a shallow or
 // branch-only checkout; the branch head alone still gives a usable, if stricter, answer.
 const readerRevs = ['HEAD', 'origin/development'].filter((r) =>
@@ -181,16 +210,12 @@ const addedLinesOf = (rev) => {
   return lines.size ? lines : null;
 };
 
-// Reads a `- `sha` — text` list under a heading, from any of the artifacts.
+// Reads a `- `sha` — text` list under a heading, from any of the artifacts. The text comes from
+// the preflight map rather than a fresh read, so a root that disappears mid-run cannot be
+// swallowed here: there is exactly one place a scan root can fail, and it refuses.
 const readBlock = (heading) => {
   const found = new Map();
-  for (const f of FILES) {
-    let text;
-    try {
-      text = readFileSync(f, 'utf8');
-    } catch {
-      continue;
-    }
+  for (const text of sources.values()) {
     const at = text.indexOf(heading);
     if (at < 0) continue;
     const rest = text.slice(at + heading.length);
@@ -217,13 +242,7 @@ for (const [sha, note] of readBlock(TWIN_HEADING)) {
 // Cited SHAs. Only backticked tokens count: prose that happens to contain a hex-looking word is
 // not a citation, and treating it as one manufactures findings.
 const cited = new Map();
-for (const f of FILES) {
-  let text;
-  try {
-    text = readFileSync(f, 'utf8');
-  } catch {
-    continue;
-  }
+for (const [f, text] of sources) {
   for (const m of text.matchAll(/`([0-9a-f]{7,40})`/g)) {
     if (!cited.has(m[1])) cited.set(m[1], []);
     cited.get(m[1]).push(f);
@@ -426,6 +445,35 @@ if (linesA && linesB) {
 if (failures.length) {
   for (const f of failures) console.error('CONTROL FAILED - ' + f);
   console.error('verdict withheld.');
+  process.exit(2);
+}
+
+// --- corpus floor ------------------------------------------------------------------------
+// The preflight above catches a scan root that vanished. It cannot catch a root that still
+// exists and no longer carries citations: a truncation, a botched merge, or an edit that strips
+// the backticked pins leaves both files readable and the corpus empty or nearly so, and the
+// verdict is vacuous in exactly the same way. Same shape as `MAINLINE_FLOOR: 250` in #399.
+//
+// Measured at the time of writing, at 6a8bc7a0: 122 cited SHAs across the two roots
+// (REACHABLE 61, TWIN 44, DECLARED 17, ORPHAN 0). The floor is set at 90 -- comfortably below
+// 122 so ordinary editing, consolidation and archival pruning do not trip it, and far above the
+// failure mode it exists to catch, which lands at or near zero. A floor that tracks the count
+// closely would fail on every routine edit and be removed within a week; this one only fires
+// when the corpus has collapsed rather than merely changed.
+const CITATION_FLOOR = 90;
+if (cited.size < CITATION_FLOOR) {
+  console.error(
+    `INCONCLUSIVE: only ${cited.size} cited SHAs were found, below the floor of ${CITATION_FLOOR}.`,
+  );
+  console.error(
+    'The scan roots are readable but carry far fewer citations than the corpus this check was',
+  );
+  console.error(
+    'calibrated against, so a clean result here would describe the sample and not the ledger.',
+  );
+  console.error(
+    'Investigate the artifacts; if the corpus shrank legitimately, re-justify and lower the floor.',
+  );
   process.exit(2);
 }
 

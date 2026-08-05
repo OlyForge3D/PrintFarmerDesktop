@@ -95,6 +95,45 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     expect(isEnforced).toBe(true);
   });
 
+  it('states a guarantee its own guards actually deliver', () => {
+    // #481. The header says the control arm is what distinguishes "no orphans"
+    // from "cannot see orphans". That was false as measured: the controls run on
+    // inputs the harness supplies itself, so they passed unchanged throughout the
+    // defect, while a renamed scan root produced `OK` with every count at zero.
+    // They are necessary and not sufficient.
+    //
+    // The header correction is NOT in this commit. `.github/workflows/` cannot be
+    // written by this branch's token - it lacks the `workflow` OAuth scope, the
+    // same constraint recorded above - so the wording change is delivered as a
+    // maintainer patch on the pull request. Asserting the new wording here would
+    // make this suite fail until a human acts, which reports the token rather
+    // than the workflow.
+    //
+    // What is assertable now, and is the load-bearing half: every guard family
+    // the distinction actually rests on must exist where it is claimed to. If one
+    // is deleted, this fails whether or not the header was ever corrected.
+    const harness = read(HARNESS);
+
+    // reader side - depth
+    expect(workflowText).toMatch(/MAINLINE_FLOOR/);
+    expect(harness).toContain('INCONCLUSIVE: this is a shallow clone');
+    // corpus side - the two guards added for #481. Matched on the declaration and
+    // the comparison rather than on the bare name: `toContain('CITATION_FLOOR')`
+    // is satisfied by `CITATION_FLOOR_X`, so it survives a rename that removes
+    // the guard. Measured - that mutation stayed green until these were tightened.
+    expect(harness).toMatch(/const CITATION_FLOOR = \d+;/);
+    expect(harness).toMatch(/cited\.size < CITATION_FLOOR\b/);
+    expect(harness).toContain('a scan root is missing or unreadable');
+    // classifier side
+    expect(harness).toContain('CONTROL FAILED');
+
+    // Negative control: strings a reader might expect and these files do not
+    // carry, so the four assertions above are not passing on a substring of
+    // something else.
+    expect(harness).not.toContain('CORPUS_FLOOR');
+    expect(workflowText).not.toContain('CITATION_FLOOR');
+  });
+
   it('subscribes to pull_request, the only event carrying the branch to check', () => {
     const workflow = workflowText;
 
@@ -632,5 +671,151 @@ describe('the harness refuses to publish a verdict it cannot support', () => {
     // A count decides nothing until its scope is stated, so the verdict carries
     // the revisions it was computed against rather than leaving them implied.
     expect(out).toMatch(/reader revisions: .+\(\d+ commits reachable\)/);
+  });
+
+  /**
+   * #481. The two tests above cover a reader that cannot resolve revisions. Neither
+   * covers a *corpus* that is not there, and that is a separate blind arm: the scan
+   * roots are hardcoded paths, so renaming `.squad/fact-checker/audit-trail.md`
+   * made the shipping harness print `OK - every cited revision is reachable` and
+   * exit 0 with REACHABLE 0 / TWIN 0 / DECLARED 0 / ORPHAN 0 - while every
+   * self-control still passed, because the controls certify the classifier and
+   * never the corpus. An empty corpus satisfies "every cited revision is
+   * reachable" vacuously, and a gate that reports clean because it examined
+   * nothing is worse than no gate, because it also reports confidence.
+   *
+   * The obvious repair inverts the defect into a check that cannot tell "broken"
+   * from "fine", so the negative control below is not decoration: a floor that
+   * always refuses is exactly as useless as one that always passes, and these
+   * three cases run together so the refusals are shown to discriminate.
+   */
+  const seeded = (prefix: string) => {
+    const dir = newRepo(prefix);
+    execFileSync('git', [
+      '-C',
+      dir,
+      'config',
+      'user.email',
+      't@example.invalid',
+    ]);
+    execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
+    writeFileSync(path.join(dir, 'seed.txt'), 'seed\n');
+    execFileSync('git', ['-C', dir, 'add', '-A'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', dir, 'commit', '-qm', 'seed'], {
+      stdio: 'ignore',
+    });
+    return dir;
+  };
+
+  // Both roots, because they are not symmetric and only one of them is covered
+  // twice. Measured at 6a8bc7a0: audit-trail.md carries all 122 cited SHAs (436
+  // occurrences) and policy.md carries 0. So losing audit-trail.md also collapses
+  // the corpus and the floor would catch it as a backstop, while losing policy.md
+  // changes no count at all and the preflight is the only thing that can see it.
+  // Testing only the loud root would leave the guard's whole reason for existing
+  // untested.
+  for (const root of ['audit-trail.md', 'policy.md']) {
+    it(`withholds the verdict where the scan root ${root} has moved or been removed`, () => {
+      const dir = seeded(`rootless-${root.replace(/\W/g, '')}-`);
+      rmSync(path.join(dir, '.squad', 'fact-checker', root));
+
+      const { status, out } = runHarness(dir);
+
+      expect(status).toBe(2);
+      expect(out).toContain('INCONCLUSIVE');
+      expect(out).toContain(root);
+      expect(publishedAVerdict(out)).toBe(false);
+
+      // Specifically not the empty tally the defect produced.
+      expect(out).not.toContain('REACHABLE 0   TWIN 0   DECLARED 0   ORPHAN 0');
+    });
+  }
+
+  it('withholds the verdict where the roots are readable but the corpus has collapsed', () => {
+    const dir = seeded('stripped-');
+    for (const f of ['audit-trail.md', 'policy.md']) {
+      const at = path.join(dir, '.squad', 'fact-checker', f);
+      writeFileSync(
+        at,
+        readFileSync(at, 'utf8').replace(/`[0-9a-f]{7,40}`/g, '`REDACTED`'),
+      );
+    }
+
+    const { status, out } = runHarness(dir);
+
+    expect(status).toBe(2);
+    expect(out).toContain('INCONCLUSIVE');
+    expect(out).toMatch(/only 0 cited SHAs were found, below the floor of \d+/);
+    expect(publishedAVerdict(out)).toBe(false);
+
+    // The reason this arm needs a floor at all: the classifier is provably fine
+    // here. Its controls pass, and it is the corpus that is missing.
+    expect(out).not.toContain('CONTROL FAILED');
+    expect(out).toContain('control: known-present SHA classifies REACHABLE');
+  });
+
+  it('negative control: an intact corpus trips neither new guard, in any checkout', () => {
+    // Environment-independent by construction: a temp repo staged with the real,
+    // unmodified artifacts. This is the same corpus the two tests above mutate, so
+    // running it untouched here is what makes those two discriminating rather than
+    // merely loud. A guard that always refuses is exactly as useless as one that
+    // always passes, and only the pair shows which of the two this is.
+    const { status, out } = runHarness(seeded('intact-'));
+
+    expect(out).not.toContain('a scan root is missing or unreadable');
+    expect(out).not.toMatch(/below the floor of \d+/);
+    expect(status).not.toBe(2);
+    expect(publishedAVerdict(out)).toBe(true);
+
+    // The corpus was actually read, and read past the floor.
+    const cited = out.match(/cited SHAs: (\d+)/);
+    expect(cited).not.toBeNull();
+    expect(Number(cited![1])).toBeGreaterThan(90);
+  });
+
+  it('negative control: the working checkout passes outright where it can see', () => {
+    // `.github/workflows/ci.yml` runs this suite behind `actions/checkout@v4` with
+    // no `fetch-depth`, i.e. depth 1 - so the real repository's history is not
+    // available to this test in CI, and asserting exit 0 unconditionally would fail
+    // there for an environmental reason. Both branches below assert; neither skips.
+    const shallow =
+      execFileSync('git', [
+        '-C',
+        repositoryRoot,
+        'rev-parse',
+        '--is-shallow-repository',
+      ])
+        .toString()
+        .trim() === 'true';
+
+    const { status, out } = runHarness(repositoryRoot);
+
+    // Holds either way: the corpus is intact here, so whatever stops the run, it
+    // must not be one of the two guards added for #481.
+    expect(out).not.toContain('a scan root is missing or unreadable');
+    expect(out).not.toMatch(/below the floor of \d+/);
+
+    if (shallow) {
+      // The only thing allowed to stop an intact corpus in a narrowed checkout is
+      // the pre-existing reader guard, which is a different instrument.
+      expect(status).toBe(2);
+      expect(out).toContain('INCONCLUSIVE: this is a shallow clone');
+      return;
+    }
+
+    expect(status).toBe(0);
+    expect(out).toContain('OK - every cited revision is reachable');
+    expect(out).not.toContain('INCONCLUSIVE');
+
+    // Counts must be non-zero, or this control would also pass on the empty corpus
+    // the two tests above exist to reject.
+    const tally = out.match(
+      /REACHABLE (\d+)\s+TWIN (\d+)\s+DECLARED (\d+)\s+ORPHAN (\d+)/,
+    );
+    expect(tally).not.toBeNull();
+    const [, reachable, twin, declared] = tally!;
+    expect(Number(reachable)).toBeGreaterThan(0);
+    expect(Number(twin)).toBeGreaterThan(0);
+    expect(Number(declared)).toBeGreaterThan(0);
   });
 });
