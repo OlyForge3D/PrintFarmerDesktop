@@ -63,7 +63,7 @@ const repoRoot = path.resolve(
 );
 const mainDir = path.join(repoRoot, 'src', 'main');
 
-/** The three untrusted calibration entry points named by #158. */
+/** The four untrusted calibration entry points named by #158. */
 const ENTRY_POINTS = [
   'calibrationImportV4.ts', // legacy v4 backup files, native picker
   'orcaProfileDiscovery.ts', // upstream-Orca profiles, scanned from disk
@@ -269,6 +269,29 @@ function expansionMatches(
 }
 
 describe('the closure walker follows every supported module-reference form', () => {
+  it('anchors dynamic import and require traversal in the walker source', () => {
+    const source = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+    const walkerStart = source.indexOf('function moduleSpecifiers(');
+    const walkerEnd = source.indexOf(
+      '/** Transitive closure of local imports reachable from the entry points. */',
+      walkerStart,
+    );
+
+    expect(
+      walkerStart,
+      'moduleSpecifiers implementation is absent',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      walkerEnd,
+      'moduleSpecifiers implementation boundary is absent',
+    ).toBeGreaterThan(walkerStart);
+
+    const walkerSource = source.slice(walkerStart, walkerEnd);
+    expect(walkerSource).toContain('ts.SyntaxKind.ImportKeyword');
+    expect(walkerSource).toContain("node.expression.text === 'require'");
+    expect(walkerSource).toContain('non-literal specifier');
+  });
+
   it('follows a literal static import specifier', () => {
     withSourceFixture(
       {
@@ -363,16 +386,23 @@ describe('the closure walker follows every supported module-reference form', () 
     );
   });
 
-  it('ignores module-like text in comments and string literals', () => {
+  it("ignores the exact 'import (issue #56).' prose and module-like text", () => {
     withSourceFixture(
       {
         'entry.ts':
+          '/**\n * import (issue #56).\n */\n' +
           "const examples = ['import(target)', 'require(target)'];\n" +
           '// await import(commentedTarget); require(commentedTarget);\n' +
           'export { examples };\n',
       },
       (directory) => {
         const closure = reachableFromEntryPoints(directory, ['entry.ts']);
+        const proseRows = closure
+          .get(path.join(directory, 'entry.ts'))!
+          .split('\n')
+          .filter((row) => row.includes('import (issue #56).'));
+
+        expect(proseRows).toEqual([' * import (issue #56).']);
         expect(scannedFileNames(closure)).toEqual(['entry.ts']);
       },
     );
