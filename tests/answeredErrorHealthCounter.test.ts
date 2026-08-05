@@ -7,37 +7,48 @@ import {
 
 /**
  * #522. `consecutiveFailures` gates `ensureChannel()`, which refuses to create a
- * channel at all once the ceiling is reached and reports "sidecar unavailable
- * after N consecutive failures". An answered error envelope used to advance that
- * counter — so N unhappy-but-correct answers in a row silenced a demonstrably
- * healthy sidecar, under a message that could only ever be false.
+ * channel once the ceiling is reached and reports "sidecar unavailable after N
+ * consecutive failures". An answered error envelope used to advance that
+ * counter — so unhappy-but-correct answers silenced a demonstrably healthy
+ * sidecar, under a claim that could only be false: the counter could only have
+ * reached N because the sidecar answered N times.
  *
  * The distinction is the same one #404 drew one layer up: *could not ask* versus
- * *asked, and was answered*. Here it is behavioural rather than diagnostic, so
- * the assertions below are about whether a request is DISPATCHED, not about
- * which error came back. An error-code assertion would pass against a client
+ * *asked, and was answered*. Here it is behavioural, so these specs assert that
+ * a request is DISPATCHED. An error-code assertion would pass against a client
  * that had stopped talking to the sidecar entirely.
  *
- * Mutations run against this file (each reverted; control green):
+ * THE SHAPE OF THIS FILE IS THE RESULT OF A SURVIVING MUTATION. The first
+ * version drove answered errors against a channel that stayed open, and M-1
+ * survived it green. `ensureChannel()` returns early whenever `this.channel` is
+ * set, so the ceiling is never consulted while a channel is alive — the counter
+ * can sit far past the ceiling with no observable effect. The defect surfaces
+ * only on the first request after the channel is replaced. Every spec below
+ * therefore closes the channel before the assertion that matters.
+ *
+ * Mutations run (each reverted; control green):
  *   M-1  restore `this.recordFailure()` on the answered branch
- *          -> RED, 'still contacts the sidecar' + 'mixed sequence' both fire
+ *          -> SURVIVED the first draft (see above); RED against this one on all
+ *             three non-control specs, naming 'sidecar unavailable after 3'
  *   M-2  delete recordFailure() from ALL five sites (the over-broad "fix")
  *          -> RED, the CONTROL fires: the ceiling never trips for transport
- *             faults. This is the mutation that a passing-tests-only reading of
- *             #522 would have shipped.
- *   M-3  make the fake channel resolve every request successfully
+ *             faults. This is what a passing-tests-only reading of #522 ships.
+ *   M-3  fake channel resolves every request successfully
  *          -> RED, positive control first: the specs stop observing rejections
  *   CONTROL  all reverted -> GREEN
  */
 
-/** Records every dispatched request line so a spec can assert delivery. */
 function makeCountingChannel(
   respond: (
     request: { id: number; method: string },
     emit: (line: string) => void,
     close: (code: number | null) => void,
   ) => void,
-): { channel: SidecarChannel; sent: string[] } {
+): {
+  channel: SidecarChannel;
+  sent: string[];
+  closeFromSidecar: (code: number | null) => void;
+} {
   let messageHandler: ((line: string) => void) | null = null;
   let closeHandler: ((info: { code: number | null }) => void) | null = null;
   const sent: string[] = [];
@@ -65,83 +76,83 @@ function makeCountingChannel(
     },
   };
 
-  return { channel, sent };
+  return {
+    channel,
+    sent,
+    closeFromSidecar: (code) => closeHandler?.({ code }),
+  };
 }
 
 const CEILING = 3;
+const ANSWERED = 'mesh has no manifold surface';
+
+function answeringChannel() {
+  return makeCountingChannel((request, emit) => {
+    emit(JSON.stringify({ id: request.id, ok: false, error: ANSWERED }));
+  });
+}
 
 describe('an answered sidecar error is not a transport failure (#522)', () => {
-  it('still contacts the sidecar after more consecutive answered errors than the ceiling', async () => {
-    const { channel, sent } = makeCountingChannel((request, emit) => {
-      emit(
-        JSON.stringify({
-          id: request.id,
-          ok: false,
-          error: 'mesh has no manifold surface',
-        }),
-      );
-    });
+  it('still contacts the sidecar after the channel is replaced, having answered more errors than the ceiling', async () => {
+    const { channel, sent, closeFromSidecar } = answeringChannel();
     const client = new SidecarClient(() => channel, {
       maxConsecutiveFailures: CEILING,
     });
 
-    const attempts = CEILING + 3;
-    for (let i = 0; i < attempts; i += 1) {
-      await expect(client.loadScene(`C:/models/broken-${i}.stl`)).rejects.toThrow(
-        SidecarRespondedError,
-      );
+    const answers = CEILING + 3;
+    for (let i = 0; i < answers; i += 1) {
+      await expect(
+        client.loadScene(`C:/models/broken-${i}.stl`),
+      ).rejects.toThrow(SidecarRespondedError);
     }
 
-    // The load-bearing assertion. Every attempt reached the transport; had the
-    // answered errors advanced the counter, ensureChannel() would have thrown
-    // before `send` on attempt CEILING + 1 and `sent` would be short.
-    expect(sent).toHaveLength(attempts);
+    // A clean replacement with nothing in flight: no transport fault is
+    // recorded, so the only thing that could refuse the next request is a
+    // streak built from answered errors.
+    closeFromSidecar(0);
+
+    await expect(client.loadScene('C:/models/next.stl')).rejects.toThrow(
+      SidecarRespondedError,
+    );
+    // Load-bearing: the request reached the transport rather than being
+    // refused by the ceiling.
+    expect(sent).toHaveLength(answers + 1);
   });
 
   it('reports the sidecar-supplied reason, never an availability claim', async () => {
-    const { channel } = makeCountingChannel((request, emit) => {
-      emit(
-        JSON.stringify({
-          id: request.id,
-          ok: false,
-          error: 'mesh has no manifold surface',
-        }),
-      );
-    });
+    const { channel, closeFromSidecar } = answeringChannel();
     const client = new SidecarClient(() => channel, {
       maxConsecutiveFailures: CEILING,
     });
 
     for (let i = 0; i < CEILING; i += 1) {
-      await client.loadScene(`C:/models/broken-${i}.stl`).catch(() => undefined);
+      await client
+        .loadScene(`C:/models/broken-${i}.stl`)
+        .catch(() => undefined);
     }
+    closeFromSidecar(0);
 
-    // The attempt that previously crossed the ceiling.
     const error = await client
       .loadScene('C:/models/broken-final.stl')
       .then(() => null)
       .catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(SidecarRespondedError);
-    expect((error as Error).message).toBe('mesh has no manifold surface');
+    expect((error as Error).message).toBe(ANSWERED);
     expect((error as Error).message).not.toMatch(/unavailable/i);
   });
 
   it('does not let answered errors advance a streak of real transport faults', async () => {
     let mode: 'close' | 'answer' = 'close';
-    const { channel, sent } = makeCountingChannel((request, emit, close) => {
-      if (mode === 'close') {
-        close(1);
-        return;
-      }
-      emit(
-        JSON.stringify({
-          id: request.id,
-          ok: false,
-          error: 'mesh has no manifold surface',
-        }),
-      );
-    });
+    const { channel, sent, closeFromSidecar } = makeCountingChannel(
+      (request, emit, close) => {
+        if (mode === 'close') {
+          close(1);
+          return;
+        }
+        emit(JSON.stringify({ id: request.id, ok: false, error: ANSWERED }));
+      },
+    );
     const client = new SidecarClient(() => channel, {
       maxConsecutiveFailures: CEILING,
     });
@@ -154,20 +165,19 @@ describe('an answered sidecar error is not a transport failure (#522)', () => {
     }
 
     mode = 'answer';
-    const beforeAnswers = sent.length;
     for (let i = 0; i < 10; i += 1) {
       await expect(client.loadScene('C:/models/part.stl')).rejects.toThrow(
         SidecarRespondedError,
       );
     }
+    const dispatchedBefore = sent.length;
+    closeFromSidecar(0);
 
-    // Ten answered errors must not have moved the streak: all ten dispatched,
-    // and an eleventh still reaches the transport.
-    expect(sent).toHaveLength(beforeAnswers + 10);
+    // Ten answered errors must not push a streak of two past a ceiling of three.
     await expect(client.loadScene('C:/models/part.stl')).rejects.toThrow(
       SidecarRespondedError,
     );
-    expect(sent).toHaveLength(beforeAnswers + 11);
+    expect(sent).toHaveLength(dispatchedBefore + 1);
   });
 
   it('CONTROL: the ceiling still fires for genuinely unreachable faults', async () => {
@@ -189,8 +199,8 @@ describe('an answered sidecar error is not a transport failure (#522)', () => {
       `sidecar unavailable after ${CEILING} consecutive failures`,
     );
 
-    // Supervision is intact: the refused attempt never reached the transport.
-    // Without this arm, deleting every recordFailure() call would pass.
+    // Supervision is intact, and the refused attempt never reached the
+    // transport. Without this arm, deleting every recordFailure() call passes.
     expect(sent).toHaveLength(dispatchedBefore);
   });
 });
