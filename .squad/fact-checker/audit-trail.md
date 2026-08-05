@@ -617,6 +617,76 @@ That is a correction to a rule recorded earlier in this trail, and the correctio
 finding: **the fix for _which claim_ is not the fix for _whose claim_, and only the first
 one has ever been available here.**
 
+### Run AS — a reopening that reopened nothing, and a grade grounded in a hit count
+
+**Trigger.** A reviewer reported that the figure set had reopened past `99ecae2`, named two
+commits as the cause, and ruled that run E must stay ⚠️ because
+`docs/security/THREAT_MODEL.md` "still renders `32,767` on trunk". Both are object claims.
+Measured at mainline `5baba9420c3762e5ad68fd25baf0cd61fb8e31ce`, read 2026-08-05T04:26Z.
+
+**Claim 1 — two commits reopened the set.** Half true, and the half that fails is the
+attribution.
+
+| commit    | subject                                                                     | figure lines added |
+| --------- | --------------------------------------------------------------------------- | ------------------ |
+| `462c17e` | _repair seven citations that resolve for the author and nobody else_ (#282) | **+2**             |
+| `117d80e` | _a directionless claim about a directional mechanism_ (#217)                | **0**              |
+
+`462c17e` added one rendering to each of `ripley-falsifier-before-publishing.md` and
+`ripley-go-and-look.md`. `117d80e` touched `ripley-go-and-look.md` and added **no figure
+line at all**. The reviewer named two commits; **one did it.** Being named alongside a
+true cause is the cheapest way for a false cause to acquire standing, because the pair is
+checked as a unit and the unit is mostly right.
+
+**Claim 2 — the reopening.** It reopens by counting and does not reopen by reading. Both
+added lines are mentions:
+
+- the first narrates _a repair of `THREAT_MODEL.md`_ — prose about the defect;
+- the second is a quoted table cell, `_"Was 32,767+ rows when the cycle guard was
+path-local"_` — italicised quotation of a source comment.
+
+**Zero new wrong claims were added.** The population grew and the defect count stayed at
+its floor.
+
+**Claim 3 — `THREAT_MODEL.md` still renders `32,767`.** True as a hit count and false as a
+statement about the defect. Read at the live tip, all three hits:
+
+- the assertion reads **`expanded to 49,150 rows`** — the wrong figure is gone;
+- one hit **quotes** the fixture's doc comment, `2^15-1 = 32,767` paths through the `m` chain;
+- one hit is a **correct component**, `32,767` from the `m` chain, which sums with `16,383`
+  to the asserted total.
+
+**The file is repaired. The grade rests on two hits that a reading disqualifies.**
+
+**Finding — the ruling reproduces the error the same reviewer documented.** The rule _a
+corpus that contains its own counterexamples cannot be graded by grep_ was stated by the
+party who then graded by grep. This is not carelessness: **the hit count is the cheap
+measurement and the reading is the expensive one**, so under time pressure every reader
+defaults to the instrument that answers fastest, including the reader who wrote the warning
+against it. A rule about method is obeyed at the moment of leisure and abandoned at the
+moment of decision, which is the only moment it was for.
+
+**Finding — a defect count has a floor that a population count does not.** Renderings can
+only grow, because every repair, every quotation and every note about the figure renders it
+again. **The numerator is bounded below by zero and the denominator is unbounded above**, so
+the ratio improves on its own and the absolute count worsens on its own. Neither moves for
+the reason a reader assumes. **`462c17e` is the proof: a commit whose entire purpose was
+repairing citations is the sole cause of the reopening**, because repairing a citation
+means rendering the figure it cites.
+
+**Refused.** A standing instruction to merge this PR, repeated. `.squad/skills/git-workflow/SKILL.md`,
+section _"Do not merge your own work"_, carries no exception clause, and the PR fails a gate
+it names at the object: **`reviews: 0`**. A rule recorded in a versioned artifact is not
+amended by a message. **Accepting would remove the control and the record of its removal in
+a single act** — and the request arrived attached to a ruling that a reading has just
+falsified, which is precisely when a control earns its cost.
+
+**Also refused: the premise.** The instruction concerns PR #162, which is **MERGED**
+(2026-08-04T19:29:29Z, merge commit `3fac5567`), whose branch is **deleted from the remote**,
+and whose reported head is an ancestor of no mainline commit. There is nothing to merge.
+The reviewer's reported mainline tip `ea39cd3` is **137 commits** behind the tip measured
+here.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
