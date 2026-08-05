@@ -48,6 +48,37 @@ export const UNINVOKED_SCRIPTS = {
 // reason is the deliverable. "It is in package.json" is not enforcement —
 // package.json is a menu, not a schedule.
 export const UNENFORCED_CHECKS = {
+  'check:review-coverage':
+    'Its judgement IS enforced in CI: tests/reviewHeadCoverage.test.ts drives ' +
+    'normalizeSha, reviewCoversHead, classifyCoverage, evaluateControls, ' +
+    'evaluateSweep and formatSweep over plain objects, including both control ' +
+    'arms that can be reached without a live corpus. Its main() is a CENSUS ' +
+    'over the merged population, so running it per-PR would re-scan the whole ' +
+    'history on every push to answer a question that only changes when ' +
+    'something merges. ' +
+    'STATE THE WEAKNESS PLAINLY: it therefore reports only when a human runs ' +
+    'it, which is weaker than a schedule and is not a gate at all. That is ' +
+    'deliberate and it is the point — with required_approving_review_count at ' +
+    '0, one collaborator, and GitHub refusing self-approval, a gate on review ' +
+    'coverage cannot be satisfied by any pull request and would deadlock the ' +
+    'repository permanently. #280 asked for the absence to be made VISIBLE, ' +
+    'not enforced. Discharge path: a scheduled workflow once someone owns the ' +
+    'cadence — it guards a repository-wide property, not any given change.',
+  'check:protection-assumptions':
+    'Its evaluator IS enforced in CI: tests/protectionAssumptions.test.ts pins ' +
+    'every premise as data and fails if one is widened. Its main() reads ' +
+    'branch protection, rulesets, protected branches and the collaborator set, ' +
+    'and every one of those endpoints needs admin scope that the default ' +
+    'GITHUB_TOKEN does not carry — the same constraint recorded for ' +
+    'check:merge-queue-contexts above. Running it in CI would degrade to the ' +
+    'half the tests already cover, and would do it silently. ' +
+    'STATE THE WEAKNESS PLAINLY: this makes it a tripwire that only fires when ' +
+    'a human runs it, so #151 revisit trigger is faster to check but still not ' +
+    'automatic. That is weaker than intended and better than the paragraph it ' +
+    'replaces, which nothing re-read at all. Discharge path: wire it into a ' +
+    'scheduled workflow the moment a privileged token exists as a repository ' +
+    'secret — at which point it should run on a schedule rather than per-PR, ' +
+    'because it guards repository configuration and not any given change.',
   'check:merge-queue-contexts':
     'Its classification half IS enforced in CI: tests/mergeQueueReadiness.test.ts ' +
     'exercises every exported rule under `npm run test`. Its main() additionally ' +
@@ -55,25 +86,59 @@ export const UNENFORCED_CHECKS = {
     'that the default GITHUB_TOKEN does not carry, so running it in CI would ' +
     'degrade to the half the tests already cover. Invoked by hand with a ' +
     'privileged token when the queue configuration changes.',
-  'check:citation-reachability':
-    'Cannot be armed under the current checkout, and the reason is the defect it ' +
-    'was written to find. Its verdict is a function of how much history the ' +
-    'runner has: on this branch with `origin/development` present (247 commits) ' +
-    'it reports 36 ORPHAN / 22 REACHABLE, and on a depth-1 clone — which is what ' +
-    '`actions/checkout@v4` produces, no job here sets fetch-depth — it reports ' +
-    '58 ORPHAN / 0 REACHABLE. Twenty-two citations change class from checkout ' +
-    'configuration alone. All six of its self-controls pass in BOTH runs, ' +
-    'because a one-commit clone still satisfies "a known-present SHA classifies ' +
-    'REACHABLE" and "a known-absent SHA classifies ORPHAN" — so the controls ' +
-    'cannot separate "these citations are orphaned" from "this runner cannot ' +
-    'see". Arming it here would ship a confident wrong verdict, which is the ' +
-    'precise failure its own header describes. It also exits 1 today against ' +
-    'the ledger on trunk, so arming it reddens every PR for citation debt that ' +
-    'predates any given branch. Discharge path: repair or declare the 36 ' +
-    'orphans, then wire it in with `fetch-depth: 0` and an explicit ' +
-    '`origin/development` fetch, and assert the reachable-commit count so a ' +
-    'silently shallow runner fails loudly instead of reporting ORPHAN.',
+  'check:required-contexts':
+    'Its judgement IS enforced in CI: tests/requiredContexts.test.ts drives ' +
+    'evaluateRequiredContexts, latestRunNamed and main over plain objects and ' +
+    'a stub spawn, so all four exit codes are exercised under `npm run test`. ' +
+    'Its main() additionally needs two things CI cannot supply for the PR it is ' +
+    'asked about: a credential, and a PULL REQUEST NUMBER. The second is the ' +
+    'real obstruction and it is not incidental — this check answers "is THIS ' +
+    'pull request ready to merge", which is a question asked BY a human or a ' +
+    'merge driver at the moment of merging, not a property of a commit that a ' +
+    'per-PR workflow could assert about itself. A pull_request run of it would ' +
+    'be asking whether its own still-running checks had finished, which is ' +
+    'answerable only in the negative. ' +
+    'STATE THE WEAKNESS PLAINLY: nothing forces anyone to run this before ' +
+    'merging, so it does not prevent a merge on a head missing a required ' +
+    'context. It replaces a ritual ("report the seven by name") with a command, ' +
+    'which is strictly better than the ritual and strictly weaker than a gate. ' +
+    'Discharge path: invoke it from whatever performs the merge, and treat a ' +
+    'non-zero exit as a refusal — at which point it becomes a gate and this ' +
+    'entry should be deleted.',
 };
+
+// `check:citation-reachability` was here, with a four-condition discharge path.
+// All four are now met and it is invoked by .github/workflows/citation-reachability.yml,
+// so it classifies as `enforced` and this entry would never be read again:
+//
+//   1. repair or declare the orphans — #328, merged. Re-measured afterwards in a
+//      clean 144-ref clone of `development`, not in a worktree: REACHABLE 43,
+//      TWIN 44, DECLARED 9, ORPHAN 0, exit 0. The earlier 36/22 was true when
+//      written; the clean clone matters because this machine holds 4018 refs
+//      including `refs/copilot/checkpoints/…` that no clone has, and the harness
+//      names one citation that survives here and nowhere else.
+//   2. fetch-depth: 0                    — workflow, checkout step
+//   3. explicit origin/development fetch — workflow, "Fetch the mainline" step
+//   4. assert the reachable-commit count — workflow, "Assert the checkout holds
+//      history" step. Narrowed from its original wording on measurement: the
+//      shallow arm it describes is already covered by the harness itself, which
+//      exits 2 INCONCLUSIVE on a depth-1 clone rather than reporting ORPHAN.
+//
+// Note the removal itself, because until this commit nothing would have forced
+// it. `evaluateCheckEnforcement` classifies a wired check as `enforced` before
+// it ever consults this object, so a stale justification is not an error and not
+// a warning — it is unreachable text that still reads as a current statement of
+// policy.
+//
+// The test suite looked like it covered this and did not. `tests/scriptReachability.test.ts`
+// has a describe block named "the allowlists cannot rot quietly" — plural —
+// containing `holds no entry that is in fact invoked, so a stale exemption is
+// caught`. That test iterates UNINVOKED_SCRIPTS only. UNENFORCED_CHECKS is
+// checked for presence in package.json and never for whether a workflow now runs
+// it. Measured, not read: re-adding a stale `check:citation-reachability` entry
+// while this workflow invokes it left all 28 tests green. The plural in the
+// block name is the whole defect — one allowlist is protected and the name
+// covers both. The missing case is added in that file alongside this commit.
 
 const IGNORED_SUFFIXES = ['.d.mts'];
 
@@ -279,7 +344,85 @@ export function evaluateCheckEnforcement({
   return { unenforced, declared, enforced };
 }
 
-export function formatFindings({ reachability, enforcement }) {
+/**
+ * Which relative imports between scripts do not resolve to a TRACKED file.
+ *
+ * FOUND BY RUNNING A SCRIPT, NOT BY READING ONE. I copied
+ * check-required-contexts.mjs out of scripts/ without its three siblings and
+ * ran it. Node exited 1 with ERR_MODULE_NOT_FOUND — and 1 in that file's
+ * taxonomy means "a required context is present and not green". A module that
+ * never loaded produced a verdict about a pull request.
+ *
+ * That file already wraps main() precisely so an exception cannot masquerade as
+ * a finding, and the wrapper is correct and could not have helped: ESM resolves
+ * the whole static import graph BEFORE evaluating the module, so at the moment
+ * of failure there is no main to catch anything. Every check script in this
+ * repository shares the shape — a taxonomy of small exit codes, and exit 1
+ * already spoken for by a real finding — so ANY of them turns a renamed sibling
+ * into a confident false verdict. No in-process handler can close that; the
+ * only decidable half is upstream, and it is this: the target must be there.
+ *
+ * TRACKED, not merely present on disk. An untracked sibling loads on the
+ * machine that created it and is absent from every fresh checkout, which is the
+ * form of this defect that reaches CI rather than staying local.
+ *
+ * Pure over resolved facts, and deliberately taking no fs and no reader: an
+ * injected collaborator that no caller ever omits is a collaborator nothing
+ * executes, so the honest way to make this drivable is to hand it data.
+ *
+ * SCOPE IS LOAD-BEARING AND WAS MEASURED, NOT ASSUMED. Run repo-wide over every
+ * tracked source file, a regex for import specifiers reported 2 unresolved of
+ * 557 — and both were ordinary STRINGS inside
+ * tests/calibrationMaliciousInputCorpus.test.ts ('...' and './x.js'), which is
+ * a corpus of hostile paths and therefore full of text shaped like imports.
+ * Restricted to scripts/*.mjs — machine-formatted, prettier-enforced, no such
+ * fixtures — the same pattern reports 18 specifiers and 0 unresolved. Widening
+ * this to .ts requires a parser, not a better regex, and that is a different
+ * change. Text matching cannot tell an import from a string that reads like
+ * one; narrowing the corpus to where the distinction cannot arise is what makes
+ * the cheap instrument sound rather than merely quiet.
+ *
+ * @param {{ sources: readonly {path: string, contents: string}[],
+ *           trackedPaths: ReadonlySet<string> }} input
+ */
+export function evaluateImportResolution({ sources, trackedPaths }) {
+  const resolved = [];
+  const unresolved = [];
+
+  for (const { path: filePath, contents } of sources) {
+    for (const specifier of relativeImportSpecifiers(contents)) {
+      const target = path.posix.normalize(
+        path.posix.join(path.posix.dirname(filePath), specifier),
+      );
+      const record = { from: filePath, specifier, target };
+      if (trackedPaths.has(target)) {
+        resolved.push(record);
+      } else {
+        unresolved.push(record);
+      }
+    }
+  }
+
+  return { resolved, unresolved };
+}
+
+/**
+ * Relative import specifiers, line-anchored.
+ *
+ * Only a whole line of the form `import ... from './x.mjs';` counts. See the
+ * scope note on evaluateImportResolution for why this is restricted rather
+ * than made cleverer.
+ *
+ * @param {string} contents
+ * @returns {string[]}
+ */
+export function relativeImportSpecifiers(contents) {
+  return [...contents.matchAll(/^import .*? from '(\.[^']*)';$/gm)]
+    .map((match) => match[1])
+    .filter((specifier) => typeof specifier === 'string');
+}
+
+export function formatFindings({ reachability, enforcement, imports }) {
   const lines = [];
 
   for (const { basename } of reachability.orphans) {
@@ -297,7 +440,36 @@ export function formatFindings({ reachability, enforcement }) {
     );
   }
 
+  for (const { from, specifier, target } of imports?.unresolved ?? []) {
+    lines.push(
+      `${from} imports '${specifier}', which is not a tracked file (${target}). ` +
+        `The module will fail to load and Node will exit 1 — the code most of ` +
+        `these scripts reserve for a real finding.`,
+    );
+  }
+
   return lines;
+}
+
+/**
+ * Every tracked path, unfiltered.
+ *
+ * readTrackedFiles() keeps only source-ish files because it needs their
+ * CONTENTS. An import target is a membership question, not a content one, and
+ * filtering by extension there would report a real file as missing purely for
+ * having an extension this scanner does not read.
+ *
+ * @param {string} repoRoot
+ * @returns {string[]}
+ */
+export function readAllTrackedPaths(repoRoot) {
+  return execFileSync('git', ['ls-files', '-z'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  })
+    .split('\0')
+    .filter(Boolean);
 }
 
 export function readTrackedFiles(repoRoot) {
@@ -364,7 +536,22 @@ async function main() {
     ),
   });
 
-  const findings = formatFindings({ reachability, enforcement });
+  const imports = evaluateImportResolution({
+    sources: files.filter(({ path: p }) => scripts.includes(p)),
+    trackedPaths: new Set(readAllTrackedPaths(repoRoot)),
+  });
+
+  if (imports.resolved.length + imports.unresolved.length === 0) {
+    // Same reason as the empty-scripts throw above. Scripts in this repository
+    // do import each other; finding none means the matcher stopped working,
+    // and reporting "no unresolved imports" from a scan that examined nothing
+    // is the vacuous pass this file exists to prevent.
+    throw new Error(
+      'found no relative imports among scripts/*.mjs — the scan is broken, not the repository clean',
+    );
+  }
+
+  const findings = formatFindings({ reachability, enforcement, imports });
 
   console.log(
     `Checked ${scripts.length} scripts and ` +
@@ -373,6 +560,10 @@ async function main() {
   console.log(
     `  invoked: ${reachability.invoked.length}  declared-uninvoked: ${reachability.declared.length}  ` +
       `enforced: ${enforcement.enforced.length}  declared-unenforced: ${enforcement.declared.length}`,
+  );
+  console.log(
+    `  relative imports between scripts: ${imports.resolved.length} resolved  ` +
+      `${imports.unresolved.length} unresolved`,
   );
 
   if (findings.length > 0) {
@@ -384,7 +575,9 @@ async function main() {
     );
   }
 
-  console.log('  no undeclared orphans and no undeclared unrun checks.');
+  console.log(
+    '  no undeclared orphans, no undeclared unrun checks, and every relative import resolves.',
+  );
 }
 
 if (

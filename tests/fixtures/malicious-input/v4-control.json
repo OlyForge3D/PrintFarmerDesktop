@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 4,
+  "exportedAt": "2026-07-01T12:00:00.000Z",
+  "appVersion": "4.0.0",
+  "projects": [
+    {
+      "id": "proj-1",
+      "name": "Flow Rate",
+      "mode": "flowRate",
+      "status": "inProgress"
+    }
+  ]
+}

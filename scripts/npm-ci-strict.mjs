@@ -396,6 +396,49 @@ export function findTreeProblems(tree) {
 }
 
 /**
+ * npm's exit status for the tree read, as a problem in its own right.
+ *
+ * `findTreeProblems` above reads npm's *self-report* — the `problems` and
+ * `error` keys it prints inside the JSON. That is a different channel from the
+ * exit status, and the two are only correlated:
+ *
+ *     healthy tree            exit 0   `problems` absent
+ *     an extraneous package   exit 0   `problems` present   <- status says nothing
+ *     an invalid package      exit 1   `problems` present   <- both fire
+ *
+ * Every non-zero exit reachable through the real pipeline also populated
+ * `problems`, so the tree self-report caught them all. But that is an
+ * observation about npm's behaviour, not a property of this guard: if npm ever
+ * exits non-zero without populating `problems`, a caller reading only the JSON
+ * accepts a tree npm has already refused to vouch for. Reading the status makes
+ * the refusal binding by construction rather than by correlation. Origin: #255.
+ *
+ * Fails closed on `null`, which is what `spawnSync` reports when the child is
+ * killed by a signal and when the spawn itself never happened — neither is a
+ * tree anyone should walk.
+ *
+ * @param {unknown} status exit status from `spawnSync`
+ * @param {unknown} stderr the child's stderr, used only for the message
+ * @returns {string[]} one problem string when npm refused, otherwise empty
+ */
+export function findTreeExitProblems(status, stderr) {
+  if (status === 0) return [];
+  const described =
+    typeof status === 'number'
+      ? `exited ${status}`
+      : `exited ${String(status)}`;
+  const detail =
+    typeof stderr === 'string'
+      ? (stderr.split(/\r?\n/).find((line) => line.trim().length > 0) ?? '')
+      : '';
+  return [
+    `\`${NPM_PRODUCTION_TREE_COMMAND}\` ${described}${
+      detail ? `: ${detail.trim()}` : ''
+    }`,
+  ];
+}
+
+/**
  * Walk an `npm ls --json` tree and return every dependency npm could not
  * resolve to a version.
  *
@@ -499,6 +542,16 @@ function runNpmCi() {
   });
 }
 
+/**
+ * Read the production tree, carrying npm's exit status alongside its output.
+ *
+ * Returns the status rather than throwing on it, so the decision layer in
+ * `main` owns the verdict and can report npm's own problem strings in the same
+ * message — the package names are what make a tree failure actionable, and npm
+ * prints a usable tree alongside the failure. Origin: #255.
+ *
+ * @returns {{ tree: unknown, status: unknown, stderr: string }}
+ */
 function readProductionTree() {
   const { command, args } = npmInvocation(NPM_PRODUCTION_TREE_COMMAND);
   const result = spawnSync(command, args, {
@@ -506,8 +559,9 @@ function readProductionTree() {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
   });
+  const stderr = result.stderr ?? '';
   if (!result.stdout || !result.stdout.trim()) {
-    const detail = (result.stderr ?? '').trim().split(/\r?\n/, 1)[0];
+    const detail = stderr.trim().split(/\r?\n/, 1)[0];
     throw new Error(
       `npm-ci-strict: \`${NPM_PRODUCTION_TREE_COMMAND}\` produced no JSON output${
         detail ? `: ${detail}` : ''
@@ -515,7 +569,7 @@ function readProductionTree() {
     );
   }
   try {
-    return JSON.parse(result.stdout);
+    return { tree: JSON.parse(result.stdout), status: result.status, stderr };
   } catch (error) {
     throw new Error(
       `npm-ci-strict: \`${NPM_PRODUCTION_TREE_COMMAND}\` output was not valid JSON: ${error.message}`,
@@ -609,9 +663,26 @@ export async function main({
     }
   }
 
-  const tree = readProductionTreeImpl();
+  const { tree, status, stderr } = readProductionTreeImpl();
 
   const problems = findTreeProblems(tree);
+  const exitProblems = findTreeExitProblems(status, stderr);
+  if (exitProblems.length > 0) {
+    failImpl([
+      '',
+      `npm-ci-strict: \`${NPM_PRODUCTION_TREE_COMMAND}\` refused the installed tree.`,
+      '',
+      ...[...exitProblems, ...problems].map((problem) => `  - ${problem}`),
+      '',
+      'npm printed a tree and exited non-zero. The exit status and the `problems`',
+      'key are separate channels: every failure seen through the real pipeline set',
+      'both, but this guard does not depend on that holding. A tree npm refuses to',
+      'vouch for is not walked here regardless of what it printed. Origin: #255.',
+      '',
+    ]);
+    return;
+  }
+
   if (problems.length > 0) {
     failImpl([
       '',

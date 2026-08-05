@@ -655,7 +655,22 @@ export function registerIpcHandlers(
         retargetOwnerCleanup.add(event.sender);
         const ownerId = event.sender.id;
         event.sender.once('destroyed', () => {
-          void retargetArtifacts.disposeOwner(ownerId);
+          // `disposeOwner()` is the same reaper as `initialize()` (#178) and
+          // fails the same way on filesystem contention. It is invoked from a
+          // `'destroyed'` listener, so unlike `retargetReady` there is never a
+          // later awaiter to receive the rejection — the handler here is the
+          // only one this call can ever get.
+          void retargetArtifacts
+            .disposeOwner(ownerId)
+            .catch((error: unknown) => {
+              emitCalibrationLog({
+                level: 'error',
+                component: 'calibration.sidecar',
+                event: 'retargetArtifacts.ownerDisposalFailed',
+                ...describeCalibrationFailure(error),
+                outcome: 'failed',
+              });
+            });
         });
       }
       const response = await retargetArtifacts.preflight(
@@ -2540,9 +2555,17 @@ export function registerIpcHandlers(
           request.limit ?? 200,
           signal,
         );
+        // The cursor compared against is `request.afterSequence` — the cursor
+        // THIS process sent — and never `page.afterSequence`, which the server
+        // supplies in its own response and nothing ties to the request. A
+        // server echoing `events[0].sequence - 1` would otherwise make the
+        // cursor-gap check false however many events it skipped, so the one
+        // check that exists to catch a skipped page could never fire (#429).
+        // The same signature is produced by a merely truncated or
+        // mis-paginated response, so this is not only a hostile-server concern.
         const gapDetected = detectQueueChangeFeedGap(
           page.events,
-          page.afterSequence,
+          request.afterSequence,
         );
         return ipcSchemas[
           IpcChannel.CalibrationPollQueueChanges

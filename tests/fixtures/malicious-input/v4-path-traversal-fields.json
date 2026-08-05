@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 4,
+  "exportedAt": "2026-07-01T12:00:00.000Z",
+  "appVersion": "4.0.0",
+  "projects": [
+    {
+      "id": "proj-1",
+      "name": "../../../../etc/passwd",
+      "mode": "flowRate",
+      "status": "inProgress",
+      "legacyId": "..\\..\\..\\Windows\\System32\\config\\SAM",
+      "filamentName": "__PFD_TRAVERSAL_TARGET__"
+    }
+  ]
+}

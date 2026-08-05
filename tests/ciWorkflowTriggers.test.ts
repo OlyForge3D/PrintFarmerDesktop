@@ -382,6 +382,22 @@ describe('CI is safe to run under a merge queue', () => {
  *
  * Throws rather than returning `[]` when the anchor is gone, so a renamed
  * heading fails by name instead of by an empty set that reads as agreement.
+ *
+ * The same applies one level down, and #266 is the case: the terminator used to
+ * be guarded on `bullets.length > 0`, so an EMPTY list under a present heading
+ * never ended the run and the loop scanned to EOF, harvesting bullets from
+ * unrelated sections. `.squad/skills/testing/SKILL.md` has carried a second
+ * bullet list since #149, so the extractor returned SBOM fixture guidance as CI
+ * contexts — and, worse, that harvest DISARMED the non-vacuity guard below,
+ * which passed on three bullets it should never have seen. The failure was red,
+ * but named the wrong section and sent the reader to a file that is correct.
+ *
+ * The gate could not simply be dropped: prose sits between this heading and its
+ * list, so an ungated terminator ends the run before it starts. The bound is
+ * the SECTION — heading to the next `## ` — and the first contiguous run within
+ * it. An empty section then throws by name, because the distinction that
+ * matters is "the run ended" versus "the run never started", and only the first
+ * has an empty-set-shaped answer.
  */
 function documentedCiContexts(doc: string): string[] {
   const lines = doc.split(/\r?\n/);
@@ -392,7 +408,21 @@ function documentedCiContexts(doc: string): string[] {
     );
   }
   const bullets: string[] = [];
-  for (const line of lines.slice(heading + 1)) {
+  // Bound the search to the CI gate SECTION -- heading to the next `## ` -- and
+  // only then take the first contiguous bullet run inside it. #266 was that the
+  // run had no outer bound: the terminator was gated on `bullets.length > 0`,
+  // which is necessary because prose sits between this heading and its list
+  // ("Seven required checks must pass:"), but with an EMPTY list nothing ever
+  // sets that gate, so the scan left the section and ran to EOF. Removing the
+  // gate breaks the prose case; bounding the section fixes both.
+  const nextHeading = lines.findIndex(
+    (line, index) => index > heading && /^##\s/.test(line),
+  );
+  const section = lines.slice(
+    heading + 1,
+    nextHeading < 0 ? lines.length : nextHeading,
+  );
+  for (const line of section) {
     const match = /^-\s+(.+?)\s*$/.exec(line);
     if (match?.[1] !== undefined) {
       bullets.push(match[1]);
@@ -401,6 +431,13 @@ function documentedCiContexts(doc: string): string[] {
     // Blank lines inside the run are tolerated; the first prose line after a
     // bullet has been seen ends it.
     if (bullets.length > 0 && line.trim() !== '') break;
+  }
+  if (bullets.length === 0) {
+    throw new Error(
+      'the "## CI gate" section of SKILL.md contains no bullet list. ' +
+        'Reported by name because the alternative -- an empty array -- is ' +
+        'indistinguishable from a list that was read and found to disagree',
+    );
   }
   return bullets.sort();
 }
@@ -426,6 +463,85 @@ describe('the testing skill transcribes the contexts ci.yml emits', () => {
       renderedContexts(ciWorkflow),
     );
   });
+
+  // Both assertions above read one real document, and that is why #266 survived
+  // them for as long as it did: the defect only becomes visible when the file
+  // carries a SECOND bullet list, and whether SKILL.md does is not a property
+  // this suite controls -- #149 added one, silently arming the bug, and #234's
+  // subject is that a mutation table is evidence about the code only at the
+  // fixture it ran on. These build the document instead.
+  const withTrailingList = (ciGateBody: string): string =>
+    [
+      '# Testing',
+      '',
+      '## CI gate',
+      ciGateBody,
+      '## Fixtures',
+      '',
+      '- Pad with incompressible bytes (a seeded PRNG)',
+      '- Size the fixture to the named constant',
+      '- Assert the violating part name alongside the diagnostic code',
+    ].join('\n');
+
+  it('ends the run at the first prose line and never reaches a later list', () => {
+    expect(
+      documentedCiContexts(
+        withTrailingList(
+          [
+            '',
+            'Seven required checks must pass:',
+            '',
+            '- Desktop (windows-latest)',
+            '- Dependency advisories',
+            '',
+            'Re-verify these against branch protection before relying on them.',
+            '',
+          ].join('\n'),
+        ),
+      ),
+    ).toEqual(['Dependency advisories', 'Desktop (windows-latest)']);
+  });
+
+  // The discriminating case. Before #266 this returned the three `## Fixtures`
+  // bullets: a non-empty answer, so the non-vacuity assertion above PASSED, and
+  // the equality assertion failed naming SBOM guidance as a CI context. Red for
+  // a false cause is worse than green, because it is acted on.
+  it('throws when the section holds no list, instead of filling from further down', () => {
+    expect(() =>
+      documentedCiContexts(
+        withTrailingList(
+          ['', 'Seven required checks must pass:', ''].join('\n'),
+        ),
+      ),
+    ).toThrow(/contains no bullet list/);
+  });
+
+  // Regression pin for the first attempt at this fix, which dropped the
+  // `bullets.length > 0` gate outright. That terminates an empty run correctly
+  // and breaks the real document, where prose separates the heading from its
+  // list -- both real-file assertions above went red at once. The repair has to
+  // keep the gate and bound the section instead.
+  it('reaches a list that prose separates from the heading', () => {
+    expect(
+      documentedCiContexts(
+        withTrailingList(
+          [
+            '',
+            'Seven required checks must pass:',
+            '',
+            '- Dependency advisories',
+            '',
+          ].join('\n'),
+        ),
+      ),
+    ).toEqual(['Dependency advisories']);
+  });
+
+  it('still reports a missing heading by name, not as an empty run', () => {
+    expect(() =>
+      documentedCiContexts('# Testing\n\n- Desktop (macos-latest)'),
+    ).toThrow(/no "## CI gate" heading/);
+  });
 });
 
 describe('publication workflows stay outside the merge queue', () => {
@@ -449,4 +565,99 @@ describe('publication workflows stay outside the merge queue', () => {
       expect(triggersOf(contents)).not.toContain('merge_group');
     },
   );
+});
+
+/**
+ * Reviewer finding on #366: the closing-reference gate did not rerun when a PR
+ * body was edited, which is the only action that changes what it measures.
+ *
+ * `pull_request:` with no `types:` subscribes to GitHub's default set --
+ * opened, synchronize, reopened -- and `edited` is not in it. So the check ran
+ * once at open and never again, and a body edited afterwards to arm an
+ * unrelated issue sailed through a gate that exists to catch exactly that.
+ * The gate watched every event except the one it is about.
+ */
+describe('ci.yml reruns when the PR body changes', () => {
+  /**
+   * Event types listed under a subscribed event, sorted.
+   *
+   * The forward scan stops at the next sibling key. An earlier version sliced
+   * to the end of the `on:` section, so an event with no `types:` of its own
+   * silently reported the NEXT event's list: adding a `pull_request_target:`
+   * carrying the standard types, then dropping `types:` from `pull_request:`,
+   * left both tests below green with the fix entirely absent. Anchoring on
+   * `  ${event}:` rather than `.trim()` likewise stops a nested key matching.
+   */
+  function typesOf(workflow: string, event: string): string[] {
+    const section = topLevelSection(workflow, 'on');
+    const start = section.findIndex((line) => line === `  ${event}:`);
+    if (start < 0) throw new Error(`workflow does not subscribe to ${event}`);
+    const body = section.slice(start + 1);
+    const end = body.findIndex((entry) => /^ {2}\S/.test(entry));
+    const block = end < 0 ? body : body.slice(0, end);
+    const line = block.find((entry) => /^ {4}types:/.test(entry));
+    if (line === undefined) return [];
+    return [...line.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)]
+      .map((match) => match[0])
+      .filter((token) => token !== 'types')
+      .sort();
+  }
+
+  it('subscribes to pull_request edited', () => {
+    // The harness must be able to see a type at all before an absence means
+    // anything: an extractor that always returns [] satisfies "does not
+    // contain edited" and would satisfy this too if it were the only claim.
+    const types = typesOf(ciWorkflow, 'pull_request');
+    expect(types).toContain('opened');
+    expect(types).toContain('edited');
+  });
+
+  it('keeps the events an unlisted default would have supplied', () => {
+    // Naming any type discards GitHub's defaults for that event. Adding
+    // `edited` therefore silently unsubscribes from push-driven reruns unless
+    // synchronize and reopened are relisted -- a fix that breaks CI on every
+    // subsequent commit would be worse than the gap it closes.
+    // Containment, not equality. The property being defended is that the three
+    // defaults are RELISTED; forbidding a fourth type defends nothing and is
+    // reachable today -- taking this very PR out of draft fires
+    // `ready_for_review`, and subscribing to it is a defensible change that
+    // adds no risk. An exact-set assertion turns "someone added a trigger"
+    // into a red build with no added safety, which is the shape that reddened
+    // PR #146 on a correct change.
+    expect(typesOf(ciWorkflow, 'pull_request')).toEqual(
+      expect.arrayContaining(['opened', 'synchronize', 'reopened', 'edited']),
+    );
+  });
+
+  /**
+   * The control the two tests above cannot supply for themselves.
+   *
+   * Both run against the real ci.yml, where `pull_request:` does carry
+   * `types:`. Neither can therefore distinguish "read the right block" from
+   * "read a block that happened to hold the right answer". This one asserts
+   * the absence directly, on a workflow built so the wrong answer is
+   * available and attributable: only `pull_request_target:` carries `types:`,
+   * so an unbounded scan returns its list and a bounded scan returns [].
+   *
+   * Guarding an extractor against returning NOTHING is not the same as
+   * guarding it against returning SOMEONE ELSE'S ANSWER, and the second is
+   * the failure mode that stays green.
+   */
+  it('does not read types from a sibling event block', () => {
+    const crafted = [
+      'name: CI',
+      'on:',
+      '  pull_request:',
+      '  pull_request_target:',
+      '    types: [opened, synchronize, reopened, edited]',
+      'jobs:',
+      '  desktop:',
+    ].join('\n');
+
+    expect(typesOf(crafted, 'pull_request')).toEqual([]);
+    // The wrong answer really is reachable in this fixture -- without this,
+    // the assertion above would also hold for a workflow with no `types:`
+    // anywhere, and would prove nothing about the bound.
+    expect(typesOf(crafted, 'pull_request_target')).toContain('edited');
+  });
 });
