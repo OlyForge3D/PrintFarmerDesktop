@@ -3731,6 +3731,180 @@ population scale, the method, and the one distinction the issue does not draw �
 absent, 39 of them happened; none of them carries a decision. Review here has no terminal state.**
 ⇒ **Will not review or merge #505 or #531.** ⇒ **#119 untouched.** ⇒ Never squash, never rebase.
 
+### Run CA — a correction I could have derived from my own table, and a stamp eighteen minutes in the future
+
+**Trigger.** Ralph round-tripped my #428 comment `issues/comments/5196272727`, accepted the filter/limit finding, and
+returned one precision correction: the sentence _"a recent N census is not a fact about a commit"_ is too
+strong, and **my own per-SHA table disproves it**. `41/60` is reproducible and citable once the immutable
+tip SHA, N, traversal/order semantics, and classifier are named — for example at `070fbf22`. What was
+uncitable was the value attached only to a movable ref with omitted query semantics. He also objected that
+the SHA-pinned range `3fac5567..9eccb0d4`, while a good historical-span statistic, **answers a different
+question** from "last 60" and should not be presented as the same metric's replacement.
+
+**Read** `observed_at=2026-08-05T20:23Z`, trunk `9eccb0d4abe5add39f972289d9b471c5d64529a5`.
+
+#### 1. The correction is right, and the evidence against me was already inside my own comment
+
+He is correct on both counts, and the part that should sting is the location of the refutation. The
+blockquote asserting the metric _"is not a fact about a commit"_ sat **three lines below a fourteen-row
+table showing `41/60` reproducing exactly at five named revisions.** The table is the disproof of the
+sentence it supports.
+
+⇒ **A generalisation printed adjacent to its own counterexample is not caught by re-reading the
+generalisation** — it is caught by reading the evidence _as evidence_, which is the operation the author
+has already performed and therefore skips. I published the data that refutes my summary of the data, in
+one artifact, and did not see it. The reviewer read the same artifact once and did.
+
+The true defect was narrower than what I wrote: **not that the metric is unfit to be a fact about an
+object, but that the instance I received was bound to a movable ref with its query semantics unstated.**
+I generalised from one missing component to the whole metric.
+
+#### 2. Measuring his four-part list — every part is load-bearing, which I had not shown
+
+His remedy names four components: **tip SHA, N, traversal/order semantics, classifier.** I had treated
+only the first as carrying weight. Measured at two immutable tips, `N=60`, classifier `parents == 2`:
+
+```
+tip 070fbf2202107585229d1ed24603a6eed9d8b37d
+  default order        41/60      --topo-order         37/60
+  --date-order         41/60
+  --author-date-order  41/60
+
+tip 9eccb0d4abe5add39f972289d9b471c5d64529a5
+  default order        39/60      --topo-order         36/60
+  --date-order         39/60      --first-parent       59/60
+  --author-date-order  39/60
+
+CONTROL  octopus commits reachable from 9eccb0d4 (parents > 2) = 0
+CONTROL  070fbf22 --is-ancestor 9eccb0d4 -> 0 ; reversed -> 1   (ordered pair, not a tie)
+```
+
+⇒ **At one immutable tip the same census takes 36, 39 and 59 under three standard traversals.** Pinning
+the SHA does not make the figure citable by itself. `git log`'s default is **commit-date order, not
+topological**, and the two disagree by 4 at `070fbf22` and by 3 at `9eccb0d4`.
+
+⇒ And the classifier looks like a formality here **only because the octopus count is zero** — `parents == 2`
+and `parents >= 2` cannot diverge in this repository, so a reader who omits it gets away with it _on this
+repo_ and carries a latent error to any repo with a three-parent merge. **A component that is inert in the
+sample is not thereby optional in the specification.**
+
+Corrected form, adopted: **a "recent N" census is a fact about the tuple (tip SHA, N, traversal order,
+classifier), and about nothing less.**
+
+#### 3. The §3 framing error is worse than the §2 one
+
+I had headed the SHA-pinned range **"the citable replacement."** It is not a replacement. A pinned span
+measures a **fixed historical interval**; a last-N window measures the **recent state of a branch**. Both
+are citable and neither substitutes for the other.
+
+⇒ **Offering it as the replacement did not repair the citation — it silently swapped the question**, and
+delivered a stable number to a reader who asked a different one. That is a strictly worse failure than the
+overstatement in §2, because an overstatement invites argument while a substituted question reads as a
+satisfied request. Corrected in place, both metrics retained with their distinct referents, and the
+window now cited in full tuple form.
+
+#### 4. Self-caught: a stamp eighteen minutes in the future, inside the correction about stamps
+
+The banner I attached to the corrected comment read **`observed_at=2026-08-05T20:41Z`**. The edit landed at
+`updated_at=2026-08-05T20:22:52Z`; the clock at that moment read `20:23:17Z`.
+
+```
+banner stamp written      2026-08-05T20:41Z
+actual edit landed        2026-08-05T20:22:52Z     <- 18 minutes EARLIER than the stamp
+```
+
+The value was neither the reading instant nor the edit instant — **I typed a plausible-looking time
+instead of reading one**, and it was in the future when published. Caught by comparing the banner against
+`updated_at` on the round-trip rather than by re-reading the banner.
+
+⇒ **A timestamp is the one field that looks equally correct at every value**, so it is the field least
+protected by proofreading and most dependent on being read from an instrument. Repaired in a second edit
+whose text discloses the first, rather than silently. Note the recursion this creates and why it is not a
+regression: `updated_at` now reports the **repair**, not the correction, so the banner says so explicitly.
+
+#### 5. An instrument note: two "preserved-intact" controls that failed for probe reasons
+
+My post-edit verification asserted that untouched sections survived. Two probes returned **0**:
+
+```
+'not a replacement for the first'          -> 0    body has "— *not* a replacement..." (asterisks)
+'-`n` applies after `--merges`...'         -> 0    probe mistyped; body has "`-n` applies after..."
+re-probed correctly                        -> 1, 1
+```
+
+Both were **defects in the probe, not the artifact.** Had I trusted the first reading I would have
+concluded my own edit destroyed §4's filter/limit finding and "repaired" prose that was never damaged —
+the same shape as the remediation-for-an-absent-defect trap recorded earlier in this ledger.
+
+⇒ **A control that fails is a claim about two things — the artifact and the instrument — and it does not
+say which.** Re-probing before reacting cost one command; acting on it would have cost an edit to a
+correct passage.
+
+#### 6. Disposition
+
+Comment `issues/comments/5196272727` edited twice and round-tripped: **8344 chars**, superseded sentences struck through
+rather than removed, no published figure altered, §4 unchanged, **0 closing keywords**, #428 `state=open`
+with 8 comments before and after. Anchor assertions required an **exactly-once** match for each of the four
+edits and all four passed; a zero or a two would have aborted the patch.
+
+#### 7. The harness refused this entry, and it was right: a forge id is a valid hexadecimal string
+
+Running the citation check over the draft of this very entry returned **ORPHAN 1**, naming
+the GitHub comment id 5196272727, which I had just cited twice in backticks.
+
+```
+scripts/check-citation-reachability.mjs:227   text.matchAll(/`([0-9a-f]{7,40})`/g)
+"5196272727"   10 chars, every one of them a hex digit   -> parses as an abbreviated object id
+```
+
+⇒ **A decimal identifier drawn from the forge is a syntactically valid abbreviated SHA**, so a
+convention that says "cite objects as backticked hex" silently annexes comment ids, issue ids, run
+ids and check-run ids — every one of which is decimal, and every one of which will be looked up in
+the object store and found missing. The instrument was not wrong; **my citation form was ambiguous
+and the instrument is what disambiguated it.**
+
+Repaired by citing the **endpoint path** rather than the bare number:
+`issues/comments/5196272727`. That form cannot be mistaken for an object id, and it names where
+the value is resolvable — which converges with the protocol rule adopted this round that an
+overloaded field must carry its endpoint alongside its quantity.
+
+⇒ Worth stating because of which direction the catch came from: **this is the first time the #121
+instrument has fired against my own prose rather than against a stale pin**, and it fired on a
+citation that was true, current, and resolvable — just not resolvable _as the kind of thing its
+notation declared it to be._ **A citation can be accurate and still misdeclare its own type.**
+
+⇒ Note the form of the sentence naming the offending id two paragraphs above: it is **deliberately
+not backticked**. Quoting a defective citation in the notation that made it defective **re-commits the
+defect** — the same shape as the earlier finding that quoting someone else's abbreviation creates a new
+citation rather than referring to theirs.
+
+#### 8. A gate figure I had been repeating for rounds, which reproduces nowhere
+
+Reaching for this round's test gate I expected **23/23**, the number I have been carrying in my
+own reporting for several rounds. Measured:
+
+```
+tests/citationReachability.test.ts    19 passed    (file last changed at 4b16a8d8, long before)
+tests/closingReferences.test.ts       16 passed
+both together                         35 passed
+no pair or subset of the four candidate suites sums to 23:  19 / 16 / 9 / 5
+CONTROL  "23/23" in the #505 body       0 occurrences
+CONTROL  "23/23" in this ledger         0 occurrences
+```
+
+⇒ **The figure was never published.** It lived only in session narration, which is why it survived:
+it was never written into an artifact, so **no instrument in this repository could see it** — not the
+citation check, not prettier, not CI, not a reviewer. The one place a wrong number is safest from
+correction is the place where it is repeated most often.
+
+⇒ This is the parked-draft hazard with the draft removed entirely: **a value that is asserted
+repeatedly and stored nowhere.** The correct gate line is the measured one, and it is reported below
+as **19 + 16 = 35**, with the sum stated so a reader can check the addition rather than trust it.
+
+⇒ Nothing needs retracting against an artifact, and that is exactly the uncomfortable part: **the
+absence of a retraction here is not evidence the claim was harmless, only evidence it was never
+exposed.**
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
