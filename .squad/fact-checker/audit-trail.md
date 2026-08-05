@@ -812,6 +812,22 @@ is unrepaired is the commit that repaired it.
 This is the fourth instance in this ledger of a remediation raising the metric it discharges,
 and the first in which the remediation supplied the specific text later cited against it.
 
+**Caught by the guard, against its author, in the same round.** Publishing this entry to
+the pull request body inserted it at `indexOf('## Standing')` — which is byte 0 — so the
+generator's Standing block was no longer the first thing in the body. Its next refresh wrote a
+fresh block at the top and failed to remove the old one: **two blocks, both headed _read at the
+moment of writing_, differing only in a timestamp, a head and a harness count (`REACHABLE 50`
+against `REACHABLE 48`).**
+
+> **A deduplicating writer that assumes its own output is at a fixed position is defeated by
+> any insertion above it**, and the failure is silent because both copies are well-formed. The
+> stale copy is not detectably stale from inside the document; only its timestamp says so, and
+> a reader who stops at the first heading never compares them.
+
+It was caught by the generator's own `one Standing block: N` count — a self-check added after
+an earlier duplication in this same body — **not by me, and not by any gate**, all of which
+compare an artifact to a revision or a script rather than to itself.
+
 **Noted, and it is the right shape.** `c8d379f` also added `tests/documentedDiamondDagFigures.test.ts`,
 present at the tip, which walks the fixture and binds documented figures to the measurement
 rather than restating them — and requires each claim to carry an anchor of more than ten
