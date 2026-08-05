@@ -77,7 +77,7 @@ export function buildArgv(
   },
   nodePath: string,
   probePath: string,
-  vars?: Record<string, string> | undefined,
+  vars?: Record<string, string>,
 ): { ok: true; argv: string[] } | { ok: false; reason: string };
 
 export function runArgv(argv: string[], env: Record<string, string>): RunResult;
@@ -85,7 +85,7 @@ export function runArgv(argv: string[], env: Record<string, string>): RunResult;
 export function readingFrom(
   reading: 'exitCode' | 'stdout',
   result: RunResult,
-  reduce?: string | undefined,
+  reduce?: string,
 ): { reading: string | null; error?: string | undefined };
 
 export function executeSpec(
