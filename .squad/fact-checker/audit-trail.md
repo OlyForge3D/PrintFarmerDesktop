@@ -1014,6 +1014,99 @@ conflict existed and none was resolved.**
 > whether anyone checks it**, which makes the reassuring direction the expensive one — the
 > fourth time this ledger has recorded a control failing in the direction nobody audits.
 
+### Run AY — a control that lives in a required check, when the check cannot be required
+
+**Claim under test, received as a correction to an earlier one:** _"Two new **required** checks
+exist that did not exist an hour ago, and one of them is the hold — enforced in CI rather than
+by broadcast,"_ generalised to _"a control that lives in a message can be orphaned; one that
+lives in a required check cannot."_ Measured against live branch protection on `development`
+at mainline `840e6ad`.
+
+**The named checks are not required.** `GET /branches/development/protection` returns exactly
+seven required contexts — `Desktop` and `Sidecar` and `Release package` on two runners each,
+plus `Dependency advisories` — and **`Sequencing hold` and `PR closure scope` are not among
+them.** Neither is `Citation reachability`, which is this ledger's own deliverable.
+
+**And the first half of that measurement, published alone, would have been a false accusation
+supported entirely by true evidence.** Each of those workflows carries a machine-readable
+`# merge-queue: advisory` declaration and a header stating, in the imperative, that it **MUST
+NOT** be added to a required-context list. The non-requiredness is not an oversight to be
+reported; it is a documented decision with a stated reason, and reading one field further is
+the whole difference between an audit and an indictment.
+
+**The reason is the finding.** A hold is applied and released **by adding or removing a label**.
+Labels are carried by `pull_request` events. A `merge_group` event carries no pull request
+number and no labels, so a hold check cannot subscribe to it; and a required context that no
+workflow emits does not fail the queue entry, it **hangs it Pending forever**. So the hold must
+not be required — not because nobody got around to it, but because requiring it would replace a
+control that does nothing with a gate that blocks everything.
+
+> **A control that depends on data the gating event does not carry cannot be enforced at that
+> gate.** The remedy proposed — bind the authority to a required check — is structurally
+> unavailable for precisely the class of control it was proposed for. **The set of things a
+> gate can enforce is bounded by what its triggering event carries, and that bound is not
+> discoverable from the control's own text.**
+
+**The repo side of the constraint is genuinely enforced, and better than its own comment
+claims.** `scripts/check-merge-queue-contexts.mjs` **enumerates the workflow directory**, so a
+newly added workflow fails until somebody classifies it — which is why this ledger's own
+`citation-reachability.yml` is covered despite being added after that script was written. Its
+own header says the constraint was _"documented twice, by two authors, and enforced zero
+times"_; that is now false in the good direction, and the file that says it is the file that
+fixed it.
+
+**The ruleset side is the half that is still manual, and this run exercised it rather than
+describing it.** Run live against branch protection, exit code captured unpiped:
+
+```
+node scripts/check-merge-queue-contexts.mjs
+  All 7 required context(s) on development are emitted by a workflow that
+  reports under merge_group (strict=true).
+  A merge queue can be enabled without deadlocking.                        exit 0
+```
+
+**The invariant holds today.** What is unguarded is the moment it would be broken: making a
+green pull-request check required is **a checkbox in a settings page**, and the only thing
+standing against it is a script a human must remember to run. **The guard is correct, and it is
+not attached to the event it guards against** — which is this ledger's founding defect,
+one level up, in the tooling built to prevent it.
+
+**Correcting myself, since the same measurement lands on this ledger's own deliverable.** A
+previous report from this session stated that `Citation reachability` is _"a required green
+check on trunk."_ **It is not required, and it cannot be**, for the reason above: it does not
+report under `merge_group`. It runs on every pull request and it blocks nothing. The claim was
+wrong when written, and it was wrong in the flattering direction.
+
+**Two of this run's own instruments failed, both silently, both caught before publication.**
+
+**First**, the detector for "does this workflow subscribe to `merge_group`" was a token search
+over the file, and it returned **YES for four workflows that do not subscribe** — because each
+one's header contains the sentence explaining that it does not. **The explanation of an absence
+contains the token that denotes its presence.** Re-measured by parsing the `on:` block only:
+of ten workflows, **exactly one** subscribes. Third occurrence of this shape in this ledger.
+
+**Second, and it is a new result:** the negative control `77,777` — used in earlier runs to
+show that a search term returns zero when it should — **now returns one file.** The hit is this
+ledger, at the line recording _"Control `77,777` → 0 files."_
+
+> **A negative control written down inside the corpus it controls stops being a negative
+> control.** Its published value is the mechanism of its own falsification, it degrades on the
+> next run rather than at some later edit, and **the direction of the drift is always toward
+> the reassuring answer** — the control appears to find something, so the corpus appears
+> searched. **A control must be chosen from outside the corpus, or re-chosen every time it is
+> reported.**
+
+**Companion measurement, same pattern, third consecutive run:** `32,767` at mainline `840e6ad`
+is **13 files and 68 hits**, up from 51 at the previous reading with no new defect introduced.
+Every hit remains an instrument, a record, a fixture comment or a rule; **none is a wrong
+claim.** The count rises monotonically with the diligence applied to it.
+
+**Unrelated to the remedy and not fixed by it:** `required_approving_review_count` on
+`development` is **0**. No pull request in this repository can be blocked for lacking a review.
+The independent-review obligation attached to this ledger's founding decision is therefore not
+merely undischarged — **it has no mechanism to discharge it**, and the pull request carrying
+this ledger merged with `reviews: 0` for that reason rather than by anyone's omission.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
