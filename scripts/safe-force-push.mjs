@@ -22,9 +22,12 @@ import {
   ACK_ENV,
   ACK_FOREIGN_ENV,
   PROTECTED_REFS,
+  authoredHere,
+  originLabel,
   readCommits,
   readEquivalentCommits,
   readLiveRemoteSha,
+  readOwnedCommits,
 } from './push-guard.mjs';
 
 // Every git call here runs in the CURRENT directory, and that is load-bearing
@@ -66,6 +69,13 @@ export function parseArgs(argv) {
   }
   return options;
 }
+
+// The origin label lives in `push-guard.mjs` beside the ownership evidence it
+// is derived from, and is re-exported here because this script is where it is
+// read. One implementation on purpose: the hook's refusal list and this
+// script's discard list describe the same commits to the same operator, and two
+// copies of the rule are two things that can disagree.
+export { originLabel };
 
 function main(argv) {
   const options = parseArgs(argv);
@@ -126,10 +136,15 @@ function main(argv) {
     console.log(
       `[push:force] this push DESTROYS ${discarded.length} commit(s) on the remote:`,
     );
+    // Same source of truth as the guard's `unowned-discard` arm, for the same
+    // reason the subtraction above shares one: this list is the thing the
+    // operator reads before deciding, so a label drawn from a different source
+    // than the decision is a second opinion presented as a fact.
+    const owned = readOwnedCommits();
+    const attributable = authoredHere();
     for (const commit of discarded) {
-      const sessions = commit.sessions.join(', ');
       console.log(
-        `             ${commit.sha.slice(0, 12)}  ${commit.subject}${sessions ? `   [session ${sessions}]` : ''}`,
+        `             ${commit.sha.slice(0, 12)}  ${commit.subject}   ${originLabel(commit.sha, owned, attributable)}`,
       );
     }
     if (!options.yes) {

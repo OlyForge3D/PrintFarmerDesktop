@@ -14,7 +14,11 @@ export default tseslint.config(
     languageOptions: {
       parserOptions: {
         projectService: {
-          allowDefaultProject: ['eslint.config.js', 'scripts/*.mjs'],
+          allowDefaultProject: [
+            'eslint.config.js',
+            'scripts/*.mjs',
+            'tests/fixtures/malicious-input/generate.mjs',
+          ],
         },
         tsconfigRootDir: import.meta.dirname,
       },
@@ -35,7 +39,7 @@ export default tseslint.config(
   },
   {
     // Standalone Node ESM build scripts run outside the app bundle.
-    files: ['scripts/**/*.mjs'],
+    files: ['scripts/**/*.mjs', 'tests/fixtures/**/*.mjs'],
     languageOptions: {
       globals: { ...globals.node },
     },
