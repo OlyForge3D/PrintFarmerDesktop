@@ -181,6 +181,29 @@ describe('readSettled', () => {
     expect(result.settled).toBe(true);
   });
 
+  it('requires the agreement and not only the floor', async () => {
+    // The docblock claims BOTH a floor and agreement, and `requiredAgreements`
+    // is a documented option. Every other fixture here lets the floor dominate
+    // -- the second agreement always lands at or before it -- so the agreement
+    // counter is never the binding constraint and could be dropped to 1 with
+    // nothing noticing. Removing the floor makes agreement the only thing left
+    // holding the guard up. The first reading never recurs: at 1 it settles on
+    // that single read, at 2 it must wait for a value that repeats.
+    // Deliberately does NOT pass `requiredAgreements`: the guard being pinned is
+    // the DEFAULT, and a spec that supplies the value it means to test is immune
+    // to a mutation of that default. (Measured -- the first version of this spec
+    // passed `requiredAgreements: 2` and the 2 -> 1 mutant survived it.)
+    const readings = [[231], [999], [999]];
+    let index = 0;
+    const result = await readSettled(() => readings[index++] as number[], {
+      ...fakeClock(),
+      delayMs: 20_000,
+      minElapsedMs: 0,
+    });
+    expect(result.value).toEqual([999]);
+    expect(result.settled).toBe(true);
+  });
+
   it('reports settled: false rather than guessing when it runs out of reads', async () => {
     const result = await readSettled(() => [231], {
       ...fakeClock(),
@@ -560,6 +583,16 @@ describe('witnessUnreadableBinding', () => {
     );
   });
 
+  it('reports the unreadable field in a stable order', () => {
+    // Every other fixture in this block is single-element, so the sort is
+    // unverified and could be removed without any of them noticing. The
+    // equivalent sort in parseDeclaredClosures is covered by a two-element
+    // fixture; this one was not.
+    expect(
+      witnessUnreadableBinding('prose that binds nothing', [999, 231]),
+    ).toEqual([231, 999]);
+  });
+
   it('fires on the binding forms this parser cannot read', () => {
     // Stated as a COST, not hidden. These are correct pull requests, and the
     // witness fires on every one of them -- which is precisely why it must
@@ -639,6 +672,34 @@ describe('main staleness witness', () => {
     expect(printed).not.toContain('do not match its declaration');
   });
 
+  it('keeps the witness on the unsettled path, where certainty is lowest', async () => {
+    silenced();
+    // The unsettled early return is taken BEFORE both note branches, so on this
+    // one path suspicion is carried only by the returned field -- nothing is
+    // printed. Without this spec `stale: suspect` can be replaced by
+    // `stale: false` and all the others still pass. `false` here would not mean
+    // "fresh" or "not suspected", it would mean "unchecked", and asserting
+    // freshness the check has not established is the exact overclaim this
+    // module exists to refuse.
+    const result = await main(['231'], {
+      run: ghStub('no declaration here', PROSE, []),
+      readClosures: async (read) => {
+        await read();
+        return {
+          value: [],
+          reads: 13,
+          settled: false,
+          elapsedMs: 60000,
+          stableMs: 0,
+        };
+      },
+    });
+
+    expect(result).toEqual({ ok: false, settled: false, stale: true });
+    // Unsettled is fatal on its own; the witness must not be what decides that.
+    expect(process.exitCode).toBe(1);
+  });
+
   it('does not fail again on a re-run, because the body cannot change it', async () => {
     // The bound the previous design claimed -- "the cost of being wrong is
     // bounded to a retry" -- was false: the input is the PR body, so the
@@ -663,7 +724,18 @@ describe('main staleness witness', () => {
       return { result, exitCode: process.exitCode };
     };
 
-    expect(await attempt()).toEqual(await attempt());
+    // Assert the CONTENT of each run, not merely that the two agree with each
+    // other. `attempt` closes over nothing but literals and pure stubs, so
+    // comparing the two attempts holds for EVERY possible implementation --
+    // including one that fails unconditionally, whose arms would simply be
+    // equally failed and still equal. The determinism claim needs a fixed
+    // point to bite on, or it is an assertion that cannot fail.
+    const expected = {
+      result: { ok: true, settled: true, stale: true },
+      exitCode: undefined,
+    };
+    expect(await attempt()).toEqual(expected);
+    expect(await attempt()).toEqual(expected);
     expect(process.exitCode).toBeUndefined();
   });
 

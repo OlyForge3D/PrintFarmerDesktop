@@ -617,8 +617,15 @@ describe('ci.yml reruns when the PR body changes', () => {
     // `edited` therefore silently unsubscribes from push-driven reruns unless
     // synchronize and reopened are relisted -- a fix that breaks CI on every
     // subsequent commit would be worse than the gap it closes.
+    // Containment, not equality. The property being defended is that the three
+    // defaults are RELISTED; forbidding a fourth type defends nothing and is
+    // reachable today -- taking this very PR out of draft fires
+    // `ready_for_review`, and subscribing to it is a defensible change that
+    // adds no risk. An exact-set assertion turns "someone added a trigger"
+    // into a red build with no added safety, which is the shape that reddened
+    // PR #146 on a correct change.
     expect(typesOf(ciWorkflow, 'pull_request')).toEqual(
-      ['opened', 'synchronize', 'reopened', 'edited'].sort(),
+      expect.arrayContaining(['opened', 'synchronize', 'reopened', 'edited']),
     );
   });
 
