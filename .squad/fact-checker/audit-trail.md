@@ -2287,6 +2287,85 @@ e3a0e98  vs  4d1937a             differs by the 32-line depth-floor step
 
 ⇒ **and the depth floor is the part worth keeping**: it refuses a checkout that resolves every ref and holds too little history, which is **the CI-side form of exactly the defect in §2 above.** ⇒ _**the control against this round's error was already in the file whose provenance this round got wrong.**_
 
+### Run BQ — a number I quoted instead of measuring, in the entry about readings that cannot be re-adjudicated
+
+**Pair:** run BP, published one round earlier, against the machine it describes; and a dispatch stamped `2026-08-05T02:17:15Z` reporting four unmet conditions, against the repository. _All readings below taken between `14:48Z` and `14:51Z` on 2026-08-05, at trunk `070fbf2`._
+
+#### 1. Run BP's count is wrong, and the way it is wrong defeats the remedy run BP adopted
+
+```
+git worktree list --porcelain | count "^worktree "   ->  41
+git rev-parse --git-common-dir                       ->  D:/s/PrintFarmerDesktop/.git
+run BP, as published: "nineteen worktrees share one object database"
+the figure also appears at three other points in this ledger
+```
+
+⇒ **the entry whose entire subject is that untimed readings cannot be re-adjudicated published a quantity it never read.** Nineteen was measured once, rounds earlier, and thereafter **quoted**. It is now wrong by twenty-two.
+
+⇒ **and this is exactly the case the remedy adopted in run BP does not cover.** That remedy was to stamp every entry with the instant of its readings. **A quoted number sits inside a stamped entry and inherits the stamp.** ⇒ _**an instant attached to a quotation certifies the quotation, not the quantity**_ — the timestamp says truthfully when the sentence was written and says nothing about when the number in it was last true.
+
+⇒ **the discrimination that is actually needed is between a figure read in this round and a figure carried into it**, and prose has no grammar for that distinction: **both render as a numeral.** The stamp is necessary and it is not sufficient, and one round was enough to find the gap.
+
+#### 2. And the number was doing no work
+
+The load-bearing fact in run BP's argument is that the object database is **shared** — `--git-common-dir` resolving outside this worktree. **How many peers share it is irrelevant to every claim built on it.**
+
+⇒ _**a precise figure placed where precision does no work invites exactly the staleness it cannot repay.**_ Nineteen bought nothing and cost a correction; _"this worktree's object store is shared, see `--git-common-dir`"_ is both stronger and unfalsifiable-by-drift. **Specificity is not rigour when the specific quantity is not the one the argument turns on.**
+
+#### 3. The dispatch's four unmet conditions were discharged by its own author, and it does not know
+
+Reported as blocking: condition 1, _repair or declare the orphans_, "NOT MET — full history 36 ORPHAN / 22 REACHABLE"; condition 4, _assert the reachable-commit count_, "NOT MET". Measured against trunk's own ledger in a detached worktree at `070fbf2`:
+
+```
+node scripts/check-citation-reachability.mjs   ->  exit 0
+  cited SHAs 136   REACHABLE 74   TWIN 45   DECLARED 17   ORPHAN 0
+  all eight self-controls fire
+```
+
+⇒ **condition 1 was discharged by #328, merged `02:48:29Z` — thirty-one minutes after that dispatch was read.** Condition 4 was discharged by the depth-floor step that reached trunk with #399, merged `05:33:57Z`. **Both merges are the dispatching party's own.**
+
+⇒ _**a correctly measured blocker, reported honestly, whose remedy the reporter had already merged before the report was read.**_ The report is not stale in the ordinary way — nothing in it was wrong when written. **It describes a state that its author dismantled in the interval between measuring and sending.**
+
+#### 4. The allowlist entry is gone, and it left a defect in its own test behind
+
+Trunk's `scripts/check-script-reachability.mjs` no longer carries the entry; in its place is a comment recording the discharge, and — measured, not asserted — a defect the removal exposed: **re-adding a stale entry for a check that a workflow now invokes leaves the whole suite green.** The staleness test iterates one of the two allowlists the guard maintains, and the block's name covers both.
+
+⇒ _**a test named for a plural that iterates a singular**_ — the same object as this trail's own scope defect, and as §1 above: **a name that covers more than the measurement does.** Three instruments, three rounds, one shape.
+
+⇒ **and the honourable part is that it was written down by the party who found it, inside the artifact, at the moment of removal.** A control's preconditions recorded next to the control is the remedy this ledger has been asking for since run BK, arriving from a hand that is not mine.
+
+#### 5. The correction to §1 was itself spliced wrong, by the run BL mechanism, again
+
+The first attempt to record the correction injected it inline at each stale rendering, placing it "at the end of the sentence containing the figure" — implemented as _the next full stop after the phrase_. Five renderings were found and five annotations were written, and **every count agreed**.
+
+```
+renderings found 5   annotated 5   occurrence check PASS   byte delta PASS
+placement audit:
+  one landed on an unrelated sentence, two lines past the claim
+  two landed inside fenced code blocks
+  run BP's own rendering received no annotation at all
+```
+
+⇒ **the phrase and the terminator are not in the same sentence when the phrase is inside a code block**, where the next full stop may be several paragraphs away. ⇒ _**"the end of the sentence containing X" is not computable by scanning forward for a period**_, and the failure is silent because **every quantity the splice checks — occurrences found, annotations written, bytes added — is correct.**
+
+⇒ **this is run BL's defect in a new costume.** There, an offset was read before an edit and used after it. Here the offset is computed correctly against a rule that does not mean what it says. **Both produce a document that is byte-perfect and wrong, and both passed the formatter.** ⇒ _**a splice can only be verified by asserting where the text landed**_, and every check short of that is a check on volume.
+
+⇒ **repaired by not splicing inline at all:** the correction is stated once, here, naming the renderings it governs. **A correction that must be injected at five sites is a correction whose placement is five chances to be wrong**; one that is stated once and scoped by reference has none.
+
+**The renderings this section corrects:** the four that _assert_ the count — run AV's original finding, run BP's annotation on run BO, run BP's body, and the twins block. **The count is 41, read `2026-08-05T14:50Z`. The claim each one supports is unaffected**, since all of them turn on the store being shared and none on how many share it.
+
+⇒ **stated as four sites, and deliberately not as _"every occurrence"_, which is how it was written first.** The phrase occurs **five** times in this trail; the fifth is the quotation of run BP in §1 above, inside a fenced block. **A correction that quotes what it corrects enters its own scope**, so the universal form was false at the instant it was written, by its own act of writing. ⇒ _**a scoped correction must enumerate uses, never occurrences**_ — the use/mention distinction run BN recorded as unavailable to any instrument that reads prose, committed one entry later in prose by the party who recorded it.
+
+⇒ **and the repair moved the number again.** The first draft of this paragraph measured **six**, and was true: it rendered the phrase itself, in italics, as the subject of its own sentence. Rewriting it to describe the phrase rather than reproduce it **removed one occurrence and made its own count wrong in the same keystroke**. ⇒ _**a claim about a population it belongs to cannot be edited without editing the population**_, and the only stable form is the one that does not render what it counts — **run BO's remedy for a closing keyword, arriving unrecognised for a figure.**
+
+⇒ **and it was caught by attribution, not by counting.** The verification that found the over-quantification did not ask _how many_; it asked _which entry owns each line_, and the answer had more rows than the sentence claimed. **A bare count would have agreed with the sentence at four and disagreed at six with nothing to say about why.** ⇒ _**the check that catches a scoping error is the one that reports where, not how many**_ — the same instrument this section already demanded for splices, arriving a second time for claims.
+
+#### 6. Adopted, and one instrument retired
+
+**Adopted without qualification:** _a positive control failing and an assertion failing are different events, and CI renders them as the same red._ This trail's own greens were audited in run BF for the dual — a pass that could not fail — and never for this: **a red that reports only that the test could not reach the state it needed.** Both are results that certify nothing, and neither is visible in the colour.
+
+⇒ **retired:** `git branch -a --contains` as an attribution instrument. Asked which branches contain two revisions attributed to me, it named **more than a hundred**, because both are old trunk commits every branch descends from. ⇒ **a containment query whose answer is _almost every ref_ has not identified anything**; it has measured the shape of the repository. **Same subtraction as the store-versus-refs error in run BP, one level up: a true answer to a question with no discriminating power.**
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
