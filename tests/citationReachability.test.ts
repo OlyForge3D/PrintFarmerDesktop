@@ -1,7 +1,18 @@
 import path from 'node:path';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -132,5 +143,115 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     if (!isEnforced) {
       expect(claimants).toEqual([]);
     }
+  });
+});
+
+/**
+ * A reviewer raised a hazard about three-valued answers read through two-valued
+ * tests: `git merge-base --is-ancestor` exits 0 for yes, 1 for no, and 128 when
+ * the object or the ref is absent, so any caller testing truthiness collapses
+ * "cannot tell" into "no". Measured here, all four shapes reproduce - including
+ * one the report did not name, an absent *second* argument, which also gives 128.
+ *
+ * The harness has the structural precondition for that bug: its `git()` helper
+ * catches every failure and returns null, so 1 and 128 are one value to it. What
+ * it does not have is the bug, and the reason is worth pinning rather than
+ * trusting. When the instrument goes blind the positive control goes with it -
+ * a known-present SHA stops classifying REACHABLE - and the run withholds the
+ * verdict instead of publishing one. That covers failure modes nobody
+ * enumerated, which branching on exit codes by value cannot do, because it only
+ * covers the codes someone thought of.
+ *
+ * The pair below is the discrimination, in both directions, over identical
+ * artifacts and the identical script. A repository whose HEAD is unborn is the
+ * blind case: note that the shallow-clone guard does *not* fire there, so this
+ * is a genuinely different way to be unable to see. A repository with a single
+ * commit is the sighted case; it reaches a verdict, and that verdict is a
+ * failing one, which is the point - the check is allowed to say no, and is not
+ * allowed to say no when it means it could not look.
+ */
+describe('the harness refuses to publish a verdict it cannot support', () => {
+  const made: string[] = [];
+
+  const stage = (dir: string) => {
+    mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+    mkdirSync(path.join(dir, '.squad', 'fact-checker'), { recursive: true });
+    copyFileSync(
+      path.join(repositoryRoot, HARNESS),
+      path.join(dir, 'scripts', 'check-citation-reachability.mjs'),
+    );
+    for (const f of ['audit-trail.md', 'policy.md']) {
+      copyFileSync(
+        path.join(repositoryRoot, '.squad', 'fact-checker', f),
+        path.join(dir, '.squad', 'fact-checker', f),
+      );
+    }
+  };
+
+  const newRepo = (prefix: string) => {
+    const dir = mkdtempSync(path.join(tmpdir(), prefix));
+    made.push(dir);
+    execFileSync('git', ['-C', dir, 'init', '-q'], { stdio: 'ignore' });
+    stage(dir);
+    return dir;
+  };
+
+  const runHarness = (dir: string) => {
+    const r = spawnSync('node', ['scripts/check-citation-reachability.mjs'], {
+      cwd: dir,
+      encoding: 'utf8',
+      maxBuffer: 1 << 28,
+    });
+    return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+  };
+
+  const publishedAVerdict = (out: string) =>
+    /OK - every cited|ORPHANED CITATIONS/.test(out);
+
+  afterAll(() => {
+    for (const d of made) rmSync(d, { recursive: true, force: true });
+  });
+
+  it('withholds the verdict where no reader revision resolves at all', () => {
+    const { status, out } = runHarness(newRepo('blind-'));
+
+    // 2, not 1: "I could not look" must not be reported through the same channel
+    // as "these citations are broken", or the repair instruction sends someone
+    // to fix citations that are fine.
+    expect(status).toBe(2);
+    expect(out).toContain('CONTROL FAILED');
+    expect(out).toContain('verdict withheld');
+    expect(publishedAVerdict(out)).toBe(false);
+
+    // The shallow guard is a different instrument and is silent here, so this
+    // case is not covered by it - the control arm is what catches this one.
+    expect(out).not.toContain('INCONCLUSIVE: this is a shallow clone');
+  });
+
+  it('reaches a verdict, and states its reader model, once it can see', () => {
+    const dir = newRepo('sighted-');
+    execFileSync('git', [
+      '-C',
+      dir,
+      'config',
+      'user.email',
+      't@example.invalid',
+    ]);
+    execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
+    writeFileSync(path.join(dir, 'seed.txt'), 'seed\n');
+    execFileSync('git', ['-C', dir, 'add', '-A'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', dir, 'commit', '-qm', 'seed'], {
+      stdio: 'ignore',
+    });
+
+    const { status, out } = runHarness(dir);
+
+    expect(status).not.toBe(2);
+    expect(out).not.toContain('verdict withheld');
+    expect(publishedAVerdict(out)).toBe(true);
+
+    // A count decides nothing until its scope is stated, so the verdict carries
+    // the revisions it was computed against rather than leaving them implied.
+    expect(out).toMatch(/reader revisions: .+\(\d+ commits reachable\)/);
   });
 });
