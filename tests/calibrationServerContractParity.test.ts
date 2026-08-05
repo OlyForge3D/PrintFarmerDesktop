@@ -33,7 +33,10 @@ import {
   isJobScopedEnvelope,
   type CalibrationQueueEventEnvelope,
 } from '../src/shared/ipc.js';
-import { RemoteCalibrationOrchestrationStatus } from '../src/main/calibrationWire.js';
+import {
+  RemoteCalibrationOrchestrationStatus,
+  RemoteQueueEventEnvelope,
+} from '../src/main/calibrationWire.js';
 import { detectQueueChangeFeedGap } from '../src/main/ipc.js';
 
 // ─── Side A: parse §10 from the maintained admin guide ───────────────────────
@@ -89,6 +92,24 @@ function docHeaders(text: string): string[] {
 
 const documentedRoutes = docRoutes(sec101);
 const documentedHeaders = docHeaders(sec103);
+
+const sec104 = subsection(sec10, '### 10.4');
+
+/**
+ * Extract HTTP outcome entries from §10.4 text.
+ * Matches "- **NNN**" and "- **NNN `error_token`**" bullet lines.
+ */
+function docOutcomes(
+  text: string,
+): Array<{ status: number; token: string | null }> {
+  const acc: Array<{ status: number; token: string | null }> = [];
+  for (const m of text.matchAll(/^\s*-\s+\*\*(\d{3})(?:\s+`([^`]+)`)?\*\*/gm)) {
+    acc.push({ status: parseInt(m[1]!), token: m[2] ?? null });
+  }
+  return acc;
+}
+
+const documentedOutcomes = docOutcomes(sec104);
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -198,6 +219,16 @@ const ORCH = {
   completedAtUtc: null,
 };
 const BED_OK = { message: 'ok', jobETag: 'C==', dispatchStateETag: 'D==' };
+
+/** Minimal valid RemoteQueueEventEnvelope fixture for schema tests. */
+const QUEUE_ENV_BASE = {
+  schemaVersion: '3',
+  eventId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  sequence: 11,
+  eventType: 'PrintFarmer.Queue.JobStatusChanged.v1',
+  occurredAtUtc: '2025-01-01T00:00:00.000Z',
+  printerId: PRINTER,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. Non-vacuous: both sides non-empty
@@ -474,25 +505,149 @@ describe('parity — sequence gap detection (issue #138)', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 6. Schema version: source-cited doc vs z.string() forward-compat behavior
+// 6. §10.3/§10.4 HTTP outcomes: doc vs production behavior
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('parity — schema version and forward compatibility (issue #138)', () => {
-  it('§10.5.2 documents schemaVersion "3" from authoritative source', () => {
-    const sec1052 = subsection(sec10, '### 10.5.2');
-    expect(sec1052.length, '§10.5.2 not found').toBeGreaterThan(50);
-    // "3" is QueueEventSchemaVersions.Current at both 167a3b13 and 9c1d7e4b
-    expect(sec1052).toContain('"3"');
+describe('parity — §10.4 HTTP outcome claims (issue #138)', () => {
+  it('§10.4 documents exactly 400, 412, and 428 outcomes (doc side non-vacuous)', () => {
+    expect(
+      documentedOutcomes.length,
+      `§10.4 extracts ${documentedOutcomes.length} outcome entries; expected 3. ` +
+        `Check the "- **NNN**" bullet format in §10.4.`,
+    ).toBe(3);
+    const statuses = documentedOutcomes.map((o) => o.status);
+    expect(statuses).toContain(400);
+    expect(statuses).toContain(412);
+    expect(statuses).toContain(428);
   });
 
-  it('RemoteCalibrationOrchestrationStatus accepts real current-step values and future ones', () => {
-    // status is CalibrationOrchestrationStatus.ToString() — current values:
-    // Pending, Running, WaitingToRetry, Completed, Failed, Cancelled
-    const withRunning = { ...ORCH };
+  it('§10.4 documents "dispatch_revision_conflict" for 412', () => {
+    const e412 = documentedOutcomes.find((o) => o.status === 412);
     expect(
-      RemoteCalibrationOrchestrationStatus.safeParse(withRunning).success,
+      e412?.token,
+      '§10.4 must cite dispatch_revision_conflict as the 412 error token',
+    ).toBe('dispatch_revision_conflict');
+  });
+
+  it('§10.4 documents "precondition_required" for 428', () => {
+    const e428 = documentedOutcomes.find((o) => o.status === 428);
+    expect(
+      e428?.token,
+      '§10.4 must cite precondition_required as the 428 error token',
+    ).toBe('precondition_required');
+  });
+
+  it('§10.4 documents 400 as server-only source attestation (malformed base-64)', () => {
+    // The 400 outcome is cited from server source: DecodeEtag / FormatException.
+    // PFD cannot prove server decoding behavior; the desktop receives 400 and
+    // maps it via statusError → 'invalidData'. This test guards the doc claim.
+    const e400 = documentedOutcomes.find((o) => o.status === 400);
+    expect(e400, '§10.4 must document a 400 outcome').toBeDefined();
+    expect(sec104).toMatch(/malformed|FormatException/i);
+  });
+
+  it('production: 412 dispatch_revision_conflict → revisionConflict result (not thrown)', async () => {
+    // The maintained guide states 412 maps to dispatch_revision_conflict.
+    // PFD's acknowledgeBedClearAndStart handles 412 specially and returns
+    // kind: 'revisionConflict' with the current ETags for retry.
+    const conflictBody = {
+      error: 'dispatch_revision_conflict',
+      jobETag: 'EEE==',
+      dispatchStateETag: 'FFF==',
+    };
+    const f = vi.fn().mockResolvedValue(ok(conflictBody, 412));
+    const result = await client(f).acknowledgeBedClearAndStart(
+      PROFILE,
+      BASE,
+      JOB,
+      PRINTER,
+      OP,
+      'A==',
+      'B==',
+      null,
+      AbortSignal.timeout(5000),
+    );
+    expect(result.kind).toBe('revisionConflict');
+    if (result.kind === 'revisionConflict') {
+      expect(result.jobETag).toBe('EEE==');
+      expect(result.dispatchStateETag).toBe('FFF==');
+    }
+  });
+
+  it('production: 428 precondition_required → CalibrationHttpError preconditionRequired', async () => {
+    // The maintained guide states 428 maps to precondition_required.
+    // PFD's statusError maps 428 → 'preconditionRequired'.
+    const f = vi
+      .fn()
+      .mockResolvedValue(
+        ok({ detail: 'Precondition header(s) missing.' }, 428),
+      );
+    await expect(
+      client(f).acknowledgeBedClearAndStart(
+        PROFILE,
+        BASE,
+        JOB,
+        PRINTER,
+        OP,
+        'A==',
+        'B==',
+        null,
+        AbortSignal.timeout(5000),
+      ),
+    ).rejects.toMatchObject({ code: 'preconditionRequired' });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 7. Queue envelope schema: forward-compatible schemaVersion, required sequence
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('parity — RemoteQueueEventEnvelope schema compatibility (issue #138)', () => {
+  it('§10.5.2 documents schemaVersion "3" and PFD z.string() forward compatibility', () => {
+    const sec1052 = subsection(sec10, '### 10.5.2');
+    expect(sec1052.length, '§10.5.2 not found').toBeGreaterThan(50);
+    expect(sec1052).toContain('"3"');
+    // Guide must explicitly state z.string() forward compat and no local authority
+    expect(sec1052).toMatch(/z\.string\(\)|forward.compat/i);
+  });
+
+  it('RemoteQueueEventEnvelope accepts schemaVersion "3" (current per source)', () => {
+    const result = RemoteQueueEventEnvelope.safeParse(QUEUE_ENV_BASE);
+    expect(result.success, 'Must accept source-current version "3"').toBe(true);
+    if (result.success) expect(result.data.schemaVersion).toBe('3');
+  });
+
+  it('RemoteQueueEventEnvelope accepts unknown future schemaVersion (z.string forward-compat)', () => {
+    const future = { ...QUEUE_ENV_BASE, schemaVersion: 'future-unknown-99' };
+    const result = RemoteQueueEventEnvelope.safeParse(future);
+    expect(
+      result.success,
+      'Must accept unknown future schema version — schema is z.string(), not z.literal("3")',
     ).toBe(true);
-    // Forward compatibility: unrecognised values must not throw
+  });
+
+  it('RemoteQueueEventEnvelope rejects missing sequence (required integer)', () => {
+    const { sequence: _seq, ...noSeq } = QUEUE_ENV_BASE;
+    void _seq;
+    expect(RemoteQueueEventEnvelope.safeParse(noSeq).success).toBe(false);
+  });
+
+  it('RemoteQueueEventEnvelope rejects non-integer sequence', () => {
+    const nonInt = { ...QUEUE_ENV_BASE, sequence: 11.5 };
+    expect(RemoteQueueEventEnvelope.safeParse(nonInt).success).toBe(false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 8. Orchestration free-form strings (forward compatible)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('parity — orchestration status/currentStep forward-compatible strings (issue #138)', () => {
+  it('RemoteCalibrationOrchestrationStatus accepts real step constants and unknown future values', () => {
+    const base = { ...ORCH };
+    expect(RemoteCalibrationOrchestrationStatus.safeParse(base).success).toBe(
+      true,
+    );
     const future = {
       ...ORCH,
       status: 'FutureStatus',

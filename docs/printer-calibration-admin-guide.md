@@ -475,11 +475,17 @@ by itself evidence that an operation key was reused.**
 
 ## 10. PrintFarmer server REST contract
 
-Verified from OlyForge3D/PrintFarmer read-only source at two immutable commits:
+Verified from OlyForge3D/PrintFarmer read-only source:
 
 - **Pinned:** `167a3b134a678a0d9a8c10371da8333d03ddc636`
-- **Default-branch HEAD (queried 2026-08-05):**
+- **Contract snapshot (queried 2026-08-05):**
   `9c1d7e4b97c5f0fee0f0c702aa864374b3e21cf0`
+- **Default-branch HEAD (re-queried 2026-08-05):**
+  `09f6cae810c5b48992f905bab89d5e334a3fb98c`
+  — two commits ahead of the contract snapshot; changed files are UI/design
+  material only (theme CSS, ThemeContext, DESIGN_SYSTEM.md). No queue, calibration,
+  controller, DTO, or contract file was modified between `9c1d7e4b` and
+  `09f6cae8`. All claims below remain accurate at the latest head.
 
 Every claim is cited to a stable source path and named symbol; line numbers are
 given as `line@commit-prefix` where they differ between commits. The parity
@@ -618,9 +624,18 @@ declares both as `z.string()` for forward compatibility.
 `QueueEventSchemaVersions.Current` (line 148@9c1d7e4b), persisted to the outbox
 row at write time. `QueueOutboxPublisherService` (lines 155–180@9c1d7e4b,
 `src/infra/Services/Queue/QueueOutboxPublisherService.cs`) passes the persisted
-`evt.SchemaVersion` into each `QueueEventEnvelope.FromOutbox` call, so
-every SignalR-published envelope carries the value written at outbox insert time.
-The change-feed REST projection similarly echoes the persisted value.
+`evt.SchemaVersion` into each `QueueEventEnvelope.FromOutbox` call, so every
+SignalR-published envelope carries the value written at outbox insert time.
+The change-feed REST projection also echoes the persisted value: symbol
+`GetChangesAsync`, statement `schemaVersion: evt.SchemaVersion` at line
+336@167a3b13 / 346@9c1d7e4b in `src/api/Controllers/JobQueueController.cs`.
+
+**Desktop handling:** PFD's `RemoteQueueEventEnvelope` parses `schemaVersion` as
+`z.string()` (not a literal), so it accepts `"3"` from the server today and
+any future version without a code change. PFD does not hold a local authority on
+the deployed version — only live confirmation can establish which value a
+specific deployment emits. `sequence` is `z.number().int()` and is required;
+absent or non-integer `sequence` fails the schema parse.
 
 `QueueDispatchOutbox.Sequence` (`src/infra/Domain/QueueDispatchEntities.cs`
 line 56@9c1d7e4b) is a durable, monotonically increasing outbox sequence
