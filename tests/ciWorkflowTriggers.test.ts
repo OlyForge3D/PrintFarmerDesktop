@@ -428,6 +428,15 @@ function documentedCiContexts(doc: string): string[] {
       bullets.push(match[1]);
       continue;
     }
+    // A heading of ANY level ends the search, whether or not a bullet has been
+    // seen. The section bound above is `/^##\s/`, which deliberately does not
+    // match `### ` because a subsection belongs to its section -- but a
+    // subsection's bullets are not the gate's list. With the gate list empty,
+    // nothing sets the `bullets.length > 0` gate below, so the prose-tolerant
+    // scan walks past the prose and harvests the first subsection instead:
+    // #266's exact failure -- a non-empty answer that disarms the non-vacuity
+    // guard -- surviving inside the bound that #266 added to stop it.
+    if (/^#{1,6}\s/.test(line)) break;
     // Blank lines inside the run are tolerated; the first prose line after a
     // bullet has been seen ends it.
     if (bullets.length > 0 && line.trim() !== '') break;
@@ -541,6 +550,95 @@ describe('the testing skill transcribes the contexts ci.yml emits', () => {
     expect(() =>
       documentedCiContexts('# Testing\n\n- Desktop (macos-latest)'),
     ).toThrow(/no "## CI gate" heading/);
+  });
+
+  // #266 bounded the scan at the next `## `, and every fixture above proves that
+  // bound holds. None of them can say anything about what happens INSIDE it,
+  // because all four are built by `withTrailingList`, which always appends a
+  // `## Fixtures` heading and never puts a subheading in the section. The
+  // section bound is the only thing they vary, so it is the only thing they
+  // test -- a discriminator measured where it does not vary has been assumed.
+  //
+  // `/^##\s/` does not match `### `, by construction: a subsection belongs to
+  // its section. So a `### ` inside the CI gate section does not end it, and
+  // with the gate's own list empty the run search walks straight past the prose
+  // into the subsection's bullets. That is #266 exactly -- a non-empty answer
+  // that disarms the non-vacuity guard and reports the wrong section's content
+  // as CI contexts -- surviving inside the bound that was added to stop it.
+  //
+  // SKILL.md carries two `### ` subheadings inside this section today (neither
+  // has bullets, which is the only reason this is latent rather than live), so
+  // the arming edit is now "add a bullet under an existing subheading" -- a
+  // smaller and more ordinary change than the second `## ` list that armed #266.
+  const withSubheading = (ciGateBody: string): string =>
+    [
+      '# Testing',
+      '',
+      '## CI gate',
+      ciGateBody,
+      '### Reading a failing job log after a re-run',
+      '',
+      '- Open the run that the check links to, not the newest run',
+      '- Read the first failing step, not the last',
+      '',
+      '## Fixtures',
+      '',
+      '- Pad with incompressible bytes (a seeded PRNG)',
+    ].join('\n');
+
+  it('throws rather than harvesting a subsection when the gate list is empty', () => {
+    expect(() =>
+      documentedCiContexts(
+        withSubheading(['', 'Seven required checks must pass:', ''].join('\n')),
+      ),
+    ).toThrow(/contains no bullet list/);
+  });
+
+  // The control the assertion above cannot supply for itself. It would also
+  // hold for an extractor that threw on every document, and for a fixture whose
+  // subsection bullets were unreachable for some unrelated reason. This asserts
+  // the wrong answer really is available in this exact fixture: move one bullet
+  // up under the heading and the subsection bullets must NOT join it.
+  it('takes only the gate list when a subsection with bullets follows it', () => {
+    expect(
+      documentedCiContexts(
+        withSubheading(
+          [
+            '',
+            'Seven required checks must pass:',
+            '',
+            '- Dependency advisories',
+            '',
+          ].join('\n'),
+        ),
+      ),
+    ).toEqual(['Dependency advisories']);
+  });
+
+  // Coverage pin, deliberately NOT labelled a defect. `nextHeading < 0` falls
+  // back to `lines.length`, and no fixture above reaches it because every one
+  // appends a trailing `## `. Scanning to EOF is the CORRECT reading when the
+  // gate genuinely is the last section, so there is nothing to fix here -- but
+  // an unexercised branch that is correct today is one edit from not being, and
+  // nothing would have gone red. This pins the semantic, not a bug.
+  it('reads its own list when the gate is the last section in the file', () => {
+    expect(
+      documentedCiContexts(
+        [
+          '# Testing',
+          '',
+          '## CI gate',
+          '',
+          'Seven required checks must pass:',
+          '',
+          '- Desktop (macos-latest)',
+          '- Dependency advisories',
+          '',
+          'Re-verify these against branch protection before relying on them.',
+          '',
+        ].join('\n'),
+      ),
+    ).toEqual(['Dependency advisories', 'Desktop (macos-latest)']);
   });
 });
 
