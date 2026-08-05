@@ -1656,6 +1656,16 @@ would have published _8 commits, no merges_: **true of my checkout and false of 
 nothing wrong.** A shape self-check is valid only while the author is the only writer, and on this
 repository the author is never the only writer for long.
 
+**And this addendum was itself stranded by the merge it describes.** PR #455 merged at
+`2026-08-05T09:01:37Z` as a **true merge — two parents**, `de9be25`, with **0 reviews**; its head
+at merge was `a6ebd5f`. The addendum commit `b5c399e` was pushed to the branch after that
+snapshot, so `--is-ancestor b5c399e origin/development` exits **1** while the entry it annotates
+is on trunk. ⇒ **third occurrence of this pattern on this issue** (#328 stranded a commit into
+#416; #455 strands this one), and the mechanism is identical every time: **a branch stays
+writable after the pull request stops reading it**, so the push succeeds, the ref advances, and
+nothing dispatches or merges. **The push report is truthful and the work is not delivered** —
+which is why delivery must be verified against trunk rather than against the push.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
@@ -1706,6 +1716,8 @@ repository the author is never the only writer for long.
 - `d64704d7` — squashed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` when #162 merged; live twin `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`. The same revision as `d64704d` above at one more character; declarations are keyed on the exact string.
 
 Each revision on the left was the branch head, or an ancestor of it, when it was cited; a rebase or a sync merge rewrote it afterwards. The revision on the right is the surviving copy of the same change on this branch, identified with `git patch-id --stable` **at authoring time** and written down here because a reader cannot run that comparison — it requires the rewritten-away commit, which is precisely what the reader does not have. `scripts/check-citation-reachability.mjs` reads this block and accepts the citation only if the twin named here is **itself reachable**; it does not look for twins in the local object store, so it returns the same verdict in a fresh clone as it does for the author.
+
+- `b5c399e` — live twin `7a27a12a9e3cffd5b8c7f4311f3655e869437ec1`. Pushed to squad/fact-checker-advisory-gate after #455's merge snapshot, so it is not an ancestor of development and the pull request never read it. Cherry-picked onto squad/fact-checker-bf-addendum and verified identical with git patch-id --stable, a non-merge commit used as the discrimination control. The patch-id itself is deliberately not written as a revision: it is forty hex characters and names no object in any repository, so backticking it both creates an orphan and captures the twin slot ahead of the real twin.
 
 ## Citations whose object is not reachable from this repository
 
