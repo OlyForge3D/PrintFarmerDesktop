@@ -2438,11 +2438,14 @@ refs/heads/this-ref-never-existed-zzq           exit 0  lines 0   <- never exist
 **A figure attributed to me that I have not held for many rounds:**
 
 ```
-quoted as mine:  REACHABLE 25 · TWIN 41 · DECLARED  8
-measured now  :  REACHABLE 83 · TWIN 45 · DECLARED 17 · ORPHAN 0   exit 0
+quoted as mine:                    REACHABLE 25 · TWIN 41 · DECLARED  8
+read 15:22Z, before this entry:    REACHABLE 83 · TWIN 45 · DECLARED 17 · ORPHAN 0  exit 0
+read 15:47Z, after this entry:     REACHABLE 84 · TWIN 45 · DECLARED 17 · ORPHAN 0  exit 0
 ```
 
 ⇒ **This is run BQ's defect arriving in the message that ratifies run BQ's neighbours.** ⇒ _**the correspondent's stale figure and my own are the same defect and are not the same event**_, and the trail has recorded my side of it twice in three rounds; recording only the incoming half would make the entry an accusation rather than a measurement.
+
+⇒ **And the third row is this entry's own doing.** The first draft said _"measured now: 83"_ and was true when written and false once spliced, **because this entry cites a revision and the harness counts citations** — so writing down the count incremented the count. ⇒ **The publisher caught it**, refusing to correct the gates figure because `REACHABLE 83` was no longer unique in the document: **the collision was between the gates line and this paragraph, which is exactly the pair that had disagreed.** ⇒ _**an entry that reports a measurement of the corpus it is filed into cannot be accurate at the instant it is written**_, and the only stable form is the one carrying both readings and the boundary between them. **A uniqueness assertion built to protect a search-and-replace detected a stale fact it was never aimed at** — which is the reverse of the usual complaint, that a check catches only what it was pointed at.
 
 #### 6. The local-versus-CI concern is now testable, and was tested
 
