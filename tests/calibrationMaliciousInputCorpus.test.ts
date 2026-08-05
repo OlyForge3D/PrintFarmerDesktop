@@ -81,7 +81,14 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+} from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 vi.mock('electron', () => ({
@@ -1892,7 +1899,13 @@ describe('the fixtures are synthetic and committed', () => {
   });
 
   it('holds nothing large enough to be a real model or a real user profile', () => {
-    const files = readdirSyncSorted(fixturesDir);
+    // generate.mjs is excluded: it is the provenance record, not corpus
+    // content, and it is never fed to any entry point. manifest.json is
+    // included deliberately — if it ever grew past the cap something is
+    // being carried in it that should be a fixture.
+    const files = readdirSyncSorted(fixturesDir).filter(
+      (name) => name !== 'generate.mjs',
+    );
     expect(files.length).toBeGreaterThan(20);
     for (const name of files) {
       const size = readFileSync(path.join(fixturesDir, name)).length;
@@ -1910,6 +1923,72 @@ describe('the fixtures are synthetic and committed', () => {
       expect(fixture(name).subarray(0, 39).toString('ascii')).toBe(
         'PFD synthetic binary STL corpus fixture',
       );
+    }
+  });
+
+  it('regenerates byte-for-byte from generate.mjs', () => {
+    // Provenance, enforced rather than asserted. A reviewer must be able to
+    // rebuild a hostile fixture instead of trusting a committed blob, so the
+    // committed generator is run into a temporary directory here and the
+    // bytes are compared. Editing a fixture by hand — or adding one with no
+    // stated derivation — fails this.
+    //
+    // Not a fixture read: `generate.mjs` is *executed*, which is the one
+    // deliberate exception to "nothing in the corpus is executed" below. It
+    // is repository source, not corpus content; the corpus content is what it
+    // emits, and none of that is ever run.
+    const outDir = mkdtempSync(path.join(os.tmpdir(), 'pfd-corpus-regen-'));
+    try {
+      execFileSync(
+        process.execPath,
+        [path.join(fixturesDir, 'generate.mjs'), outDir],
+        { stdio: 'pipe' },
+      );
+
+      const committed = readdirSyncSorted(fixturesDir).filter(
+        (name) => name !== 'generate.mjs',
+      );
+      expect(readdirSyncSorted(outDir)).toEqual(committed);
+
+      for (const name of committed) {
+        expect(
+          readFileSync(path.join(outDir, name)).equals(
+            readFileSync(path.join(fixturesDir, name)),
+          ),
+          `${name} does not match what generate.mjs produces`,
+        ).toBe(true);
+      }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  it('describes every fixture in manifest.json, with nothing undeclared', () => {
+    const manifest = JSON.parse(
+      readFileSync(path.join(fixturesDir, 'manifest.json'), 'utf8'),
+    ) as {
+      synthetic: boolean;
+      fixtures: { name: string; sha256: string; purpose: string }[];
+    };
+    expect(manifest.synthetic).toBe(true);
+
+    const described = manifest.fixtures.map((f) => f.name).sort();
+    expect(described).toEqual(
+      readdirSyncSorted(fixturesDir).filter(
+        (name) => name !== 'generate.mjs' && name !== 'manifest.json',
+      ),
+    );
+    for (const entry of manifest.fixtures) {
+      expect(
+        entry.purpose.length,
+        `${entry.name} has no stated purpose`,
+      ).toBeGreaterThan(0);
+      expect(
+        createHash('sha256')
+          .update(readFileSync(path.join(fixturesDir, entry.name)))
+          .digest('hex'),
+        `${entry.name} does not match its recorded digest`,
+      ).toBe(entry.sha256);
     }
   });
 });
@@ -1939,6 +2018,10 @@ describe('nothing in the corpus is executed', () => {
     'calibrationImportV4',
     'orcaProfileDiscovery',
     'calibrationAssetManifest',
+    // Reached transitively from the first two. It is the module that inspects
+    // untrusted JSON, so it is exactly where an execution primitive would be
+    // most dangerous and least visible.
+    'untrustedJson',
   ];
 
   it('the execution-primitive pattern actually fires', () => {

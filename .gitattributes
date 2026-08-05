@@ -25,3 +25,6 @@ resources/target-profiles/**/profiles/** -text -whitespace
 # bytes, declared-vs-actual lengths, and offsets are the thing under test, so
 # no normalization may touch them.
 tests/fixtures/malicious-input/** -text
+# The generator is ordinary repository source, not a fixture, so it keeps
+# normal end-of-line handling.
+tests/fixtures/malicious-input/generate.mjs text eol=lf
