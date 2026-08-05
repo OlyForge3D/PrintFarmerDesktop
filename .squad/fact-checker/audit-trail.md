@@ -1107,6 +1107,76 @@ The independent-review obligation attached to this ledger's founding decision is
 merely undischarged — **it has no mechanism to discharge it**, and the pull request carrying
 this ledger merged with `reviews: 0` for that reason rather than by anyone's omission.
 
+### Run AZ — the gate is unsatisfiable, and relabelling the verdict cannot fix it
+
+**Claim under test, and it is a ruling rather than a measurement:** that the
+review gate on this ledger's own pull request _"is satisfied by a `COMMENTED` verdict at the
+current head that names an approval"_, on the reasoning that **a gate whose satisfying
+mechanism returns 422 is unfalsifiable, therefore carries zero bits, therefore should be read
+loosely.** The supporting evidence offered was four pull requests, one `COMMENTED` and three
+with an empty review array.
+
+**The premise is correct, and the stronger measurement supports it rather than undermining it.**
+Every pull request in this repository, most recent hundred by creation:
+
+```
+authors            100 / 100   a single login
+review states       92         (no reviews at all)
+                    12         COMMENTED
+                     0         APPROVED        <- never, not once, in any state
+```
+
+**No pull request in this repository has ever carried an `APPROVED` review.** So the gate is
+not a standard this one fails to meet; it is a standard **nothing has ever met**, and the
+ruling's central observation is confirmed at a hundred times the sample that produced it.
+
+**But the cause is not the 422, and this is where the remedy goes wrong.** The refusal is a
+property of the **author–reviewer pair**, not of the platform: a review is rejected because the
+approver is the author. **The measurement above shows there is only one login.** With one
+account there is no pair, so there is no second party to be rejected — **the 422 is the symptom,
+and the single-account topology is the disease.**
+
+> **Relabelling the verdict cannot manufacture the independence the gate existed to require.**
+> Reading `COMMENTED` as approval changes what the one party's verdict is called; it does not
+> add a second party. A rule requiring _"someone other than the author"_ under a topology with
+> exactly one identity **has no one to name**, and every verdict it accepts will be the author's
+> regardless of which field carries it.
+
+**The founding decision for this ledger attached exactly that obligation** — the remedy must be
+reviewed by someone other than its author — and it is therefore **not undischarged through
+anyone's omission. It has no mechanism to discharge it.** Consistent with this,
+`required_approving_review_count` on the default branch is **0**: nothing here can be blocked
+for lacking a review, which is why merges with an empty review array are the norm at 92 of 100
+rather than an exception at 3 of 4.
+
+**The offered control is one-sided, and completing it is prohibited.** Zero `APPROVED` across a
+hundred pull requests is consistent with _approval is impossible_ and equally consistent with
+_nobody ever attempted one_; the two hypotheses produce an identical record. **The experiment
+that separates them is an attempted self-approval** — and this ledger's author is barred from
+self-review, so running it would violate the rule whose enforceability it is measuring.
+**Declining to run it, and saying so, is the only available honest move.**
+
+> **Fourth defect in a control's constitution, and it completes the set:** a threshold with no
+> single referent; an authority with no single referent; a satisfaction with no mechanism; and
+> now **a control whose two-sided completion requires performing the prohibited act.** Its
+> falsifiability is available only to a party not bound by it — who has no reason to run it.
+> **The people best placed to test a prohibition are exactly the people forbidden to.**
+
+**None of the four is detectable by auditing compliance**, because in every one of them each
+participant behaved correctly and the control still produced nothing. **Audit the control's
+constitution, not the population's behaviour** — and the diagnostic that finds all four is a
+single question: **what result would falsify this, and who is permitted to produce it?**
+
+**Three figures re-derived, because they were asserted again after being corrected.**
+
+- The pull request this ruling governs has been **merged** since `2026-08-04T19:29:29Z`; it has
+  been reported as open in five consecutive messages, the last four of them after the merge.
+- `32,767` is **13 files and 68 hits** at mainline, not 8 files. Every hit is an instrument,
+  record, fixture comment or rule; **none is a wrong claim.**
+- `Sequencing hold` passing is **not** evidence that a base is acceptable. That check is
+  declared `advisory`, does not report under `merge_group`, and **is not a required context**:
+  it reports and gates nothing. A green advisory check is an observation, not a permission.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
