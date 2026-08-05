@@ -49,7 +49,7 @@ import {
 /** Maximum files inspected per root (both user and system combined). */
 const MAX_FILES_PER_ROOT = 500;
 /** Maximum bytes read per profile JSON file. */
-const MAX_FILE_BYTES = 1_048_576; // 1 MiB
+export const MAX_FILE_BYTES = 1_048_576; // 1 MiB
 /** Maximum directory traversal depth from any canonical root. */
 const MAX_TRAVERSAL_DEPTH = 8;
 /** Maximum depth of parsed JSON objects (guards against deeply nested JSON). */

@@ -110,6 +110,7 @@ import {
   runLegacyBackupPreflight,
 } from '../src/main/calibrationImportV4.js';
 import {
+  MAX_FILE_BYTES,
   discoverLocalOrcaFilamentProfiles,
   orcaUserDataRoots,
 } from '../src/main/orcaProfileDiscovery.js';
@@ -930,6 +931,47 @@ const CELLS: Cell[] = [
       expect(outcome.outcome).toBe('requiresAction');
       expect(outcome.issues.join(' ')).toMatch(/Invalid data URL format/);
       expect(outcome.photoCount).toBe(0);
+
+      // Malformed is the easy half. The harder half is base64 that is *well
+      // formed enough to decode* but is not the canonical encoding of what it
+      // decodes to. `Buffer.from(…, 'base64')` never throws and silently drops
+      // characters it cannot place, so all three shapes below were measured
+      // being accepted as `importable` with `photoCount: 1` before the
+      // canonicality check existed. Each is built by perturbing the *accepted*
+      // control payload, so a refusal cannot be a schema rejection wearing this
+      // vector's clothes.
+      const controlUrl = (
+        JSON.parse(fixtureText('v4-photo-control.json')) as {
+          projects: { photos: { dataUrl: string }[] }[];
+        }
+      ).projects[0]!.photos[0]!.dataUrl;
+      const [prefix, payload] = controlUrl.split('base64,') as [string, string];
+
+      for (const [label, variant] of [
+        ['a trailing pad byte', `${payload}=`],
+        ['two trailing pad bytes', `${payload}==`],
+        ['a payload of length 1 mod 4', `${payload.slice(0, -2)}A`],
+      ] as const) {
+        const perturbed = await writeBackup(
+          ctx,
+          `base64-${label.replace(/\W+/g, '-')}.json`,
+          fixtureText('v4-photo-control.json').replace(
+            controlUrl,
+            `${prefix}base64,${variant}`,
+          ),
+        );
+        const got = await runLegacyBackupPreflight(perturbed);
+        const perturbedOutcome = got.projectOutcomes[0]!;
+        expect(
+          perturbedOutcome.outcome,
+          `${label} was accepted; the same string decodes to different bytes under a stricter decoder`,
+        ).toBe('requiresAction');
+        expect(perturbedOutcome.issues.join(' ')).toMatch(
+          /base64 is not canonically encoded/,
+        );
+        expect(perturbedOutcome.photoCount).toBe(0);
+      }
+
       return {
         kind: 'classifiedContained',
         note: 'malformed data URL classified requiresAction',
@@ -2387,6 +2429,198 @@ describe('the bounds bite where they are declared', () => {
           await rejecting.validateFile(rejectedId, ASSET_METHOD),
         ),
       ).toEqual({ kind: 'typedInvalidResult', reason: 'tooLarge' });
+    });
+  });
+
+  it('refuses an Orca profile one byte over the read limit and not one byte under', async () => {
+    await withSandbox(async (ctx) => {
+      // The fourth entry point had no boundary pair. Both files are the
+      // accepted control profile padded to an exact byte count, so the only
+      // thing that differs across the boundary is the length.
+      const padded = (bytes: number): string => {
+        const shell = (pad: string) =>
+          JSON.stringify({
+            type: 'filament',
+            name: CORPUS_PROFILE_NAME,
+            filament_type: 'PLA',
+            pad,
+          });
+        const overhead = Buffer.byteLength(shell(''));
+        return shell('x'.repeat(bytes - overhead));
+      };
+
+      const atLimit = padded(MAX_FILE_BYTES);
+      expect(Buffer.byteLength(atLimit)).toBe(MAX_FILE_BYTES);
+      await seedOrcaRoot(ctx, { 'profile.json': atLimit });
+      expect(
+        await discoverNames(),
+        'a profile exactly at the read limit must still be discovered',
+      ).toEqual([CORPUS_PROFILE_NAME]);
+
+      const overLimit = padded(MAX_FILE_BYTES + 1);
+      expect(Buffer.byteLength(overLimit)).toBe(MAX_FILE_BYTES + 1);
+      await seedOrcaRoot(ctx, { 'profile.json': overLimit });
+      expect(await discoverNames()).toEqual([]);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hostile content that is accepted as inert data, and why that is not a hole
+// ---------------------------------------------------------------------------
+
+describe('hostile content that is carried but never acted on', () => {
+  it('accepts a hostile embedded profile as opaque text without resolving any of it', async () => {
+    await withSandbox(async (ctx) => {
+      // `generatedProfile.exactJson` is the one place a v4 backup carries a
+      // whole second JSON document. The sibling implementation added a depth
+      // bound, duplicate-key and unsafe-number checks here. Measured against
+      // this code, none of those is forced: `validateGeneratedProfile` parses
+      // the string only to assert it is a JSON *object*, discards the parsed
+      // value, and hashes the raw text. Nothing walks it, and the forwarded
+      // payload carries `hash` and `normalizedSettings` — never `exactJson`.
+      //
+      // So the property to hold is containment, not rejection: every shape
+      // below is accepted as data, none of it reaches the result, and the work
+      // stays bounded. If a future change ever traverses the parsed value,
+      // these become live and this test is where that shows up.
+      const secret = path.join(ctx.outside, 'embedded-secret.txt');
+      await writeFile(secret, 'PFD_CORPUS_EMBEDDED_SECRET\n', 'utf8');
+
+      const hostile: Record<string, string> = {
+        'deeply nested': (() => {
+          let json = '1';
+          for (let index = 0; index < 5000; index += 1) json = `{"a":${json}}`;
+          return json;
+        })(),
+        'duplicate keys': '{"a":1,"a":2}',
+        'unsafe numbers': '{"payload_size":-1,"n":9007199254740993}',
+        'traversal-shaped inherits': JSON.stringify({
+          inherits: secret,
+        }),
+      };
+
+      await ctx.armTreeGuard();
+
+      for (const [label, exactJson] of Object.entries(hostile)) {
+        const file = await writeBackup(
+          ctx,
+          `embedded-${label.replace(/\W+/g, '-')}.json`,
+          JSON.stringify({
+            schemaVersion: 4,
+            exportedAt: '2026-07-01T12:00:00.000Z',
+            appVersion: '4.0.0',
+            projects: [
+              {
+                id: 'proj-1',
+                name: 'Flow Rate',
+                mode: 'flowRate',
+                status: 'inProgress',
+                generatedProfile: { exactJson, hash: null },
+              },
+            ],
+          }),
+        );
+
+        const started = Date.now();
+        const result = await runLegacyBackupPreflight(file);
+        const elapsed = Date.now() - started;
+
+        const outcome = result.projectOutcomes[0]!;
+        expect(() => LegacyBackupProjectOutcome.parse(outcome)).not.toThrow();
+        expect(outcome.outcome, `${label} was not classified`).toBe(
+          'importable',
+        );
+        // Measured, and worth stating precisely: the embedded text *is* echoed
+        // back in the preflight result. That is not a leak — it is the user's
+        // own file coming back to the renderer as data. The property that
+        // matters is that nothing dereferences it, so the file the traversal
+        // string names is never opened and its contents never appear.
+        expect(JSON.stringify(result)).not.toContain(
+          'PFD_CORPUS_EMBEDDED_SECRET',
+        );
+        expect(
+          elapsed,
+          `${label} took ${elapsed}ms, which is not a bounded parse`,
+        ).toBeLessThan(TIME_BUDGET_MS);
+      }
+    });
+  });
+
+  it('never forwards the embedded profile text, which is what makes the above safe', () => {
+    // The containment argument above rests on `exactJson` not being forwarded.
+    // Enforce that over the source rather than leaving it as a comment, because
+    // it is one property away from every shape in that test becoming live.
+    const source = mainSource('calibrationImportV4');
+    const forwarding = source.slice(source.indexOf('generatedProfile: p.'));
+    expect(forwarding).not.toMatch(/exactJson/);
+  });
+
+  it('terminates cyclic, over-deep, dangling and empty Orca inheritance without dropping the leaf', async () => {
+    await withSandbox(async (ctx) => {
+      // Recorded as measured rather than as the sibling implementation would
+      // have it. It rejects these outright; this code resolves what it can and
+      // returns the leaf. I am not porting that change, because the property
+      // #158 asks for is bounded termination with a deterministic result, and
+      // that is what these assert. A cycle here is not the duplicate-key case:
+      // the resolution order is fixed, so the document has one reading, not two.
+      const shapes: Record<string, Record<string, string>> = {
+        'a self-referential cycle': {
+          'a.json': JSON.stringify({
+            type: 'filament',
+            name: CORPUS_PROFILE_NAME,
+            inherits: 'b',
+          }),
+          'b.json': JSON.stringify({
+            type: 'filament',
+            name: 'b',
+            inherits: CORPUS_PROFILE_NAME,
+          }),
+        },
+        'a chain past the depth budget': Object.fromEntries(
+          Array.from({ length: 14 }, (_, index) => [
+            `p${index}.json`,
+            JSON.stringify({
+              type: 'filament',
+              name: index === 0 ? CORPUS_PROFILE_NAME : `p${index}`,
+              ...(index < 13 ? { inherits: `p${index + 1}` } : {}),
+            }),
+          ]),
+        ),
+        'a dangling parent': {
+          'profile.json': JSON.stringify({
+            type: 'filament',
+            name: CORPUS_PROFILE_NAME,
+            inherits: 'no-such-profile',
+          }),
+        },
+        'an empty inherits': {
+          'profile.json': JSON.stringify({
+            type: 'filament',
+            name: CORPUS_PROFILE_NAME,
+            inherits: '',
+          }),
+        },
+      };
+
+      for (const [label, files] of Object.entries(shapes)) {
+        await seedOrcaRoot(ctx, files);
+        const started = Date.now();
+        const found = await discoverNames();
+        const elapsed = Date.now() - started;
+        expect(found, `${label} did not terminate with the leaf`).toEqual([
+          CORPUS_PROFILE_NAME,
+        ]);
+        expect(
+          elapsed,
+          `${label} took ${elapsed}ms, so termination is not bounded`,
+        ).toBeLessThan(TIME_BUDGET_MS);
+
+        // Determinism: the same tree must resolve the same way twice, which is
+        // the property that distinguishes this from the ambiguous-document case
+        // that duplicate keys are rejected for.
+        expect(await discoverNames()).toEqual(found);
+      }
     });
   });
 });

@@ -479,6 +479,21 @@ function validatePhotoDataUrl(dataUrl: string): {
       reason: `Photo exceeds ${MAX_PHOTO_DECODED_BYTES} decoded bytes`,
     };
   }
+  // `Buffer.from(…, 'base64')` is lenient: it never throws, and silently
+  // discards characters it cannot place. Measured against this entry point,
+  // `<payload>=`, `<payload>==` and a payload whose length is 1 mod 4 were all
+  // accepted as `importable`, decoding to bytes the text does not canonically
+  // encode. That is the duplicate-key problem in another alphabet: the document
+  // supports more than one reading, a stricter decoder elsewhere gets different
+  // bytes or refuses outright, and `fileHash` covers bytes consistent with
+  // both. Require the payload to be exactly what re-encoding produces, checked
+  // after the size cap so an oversized photo is never re-encoded.
+  if (decoded.toString('base64') !== b64) {
+    return {
+      valid: false,
+      reason: 'Photo base64 is not canonically encoded',
+    };
+  }
   if (decoded.byteLength < 8) {
     return {
       valid: false,
