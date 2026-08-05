@@ -272,6 +272,27 @@ interface RequestPolicy {
   terminateOnTimeout: boolean;
 }
 
+/**
+ * The sidecar was reached, understood the request, and answered with an error.
+ *
+ * This exists so the condition is carried by the error's *type* rather than by
+ * which branch of a caller's `catch` happens to be reached. Every other
+ * rejection out of this client — a disposed client, an unreachable channel, a
+ * timeout, a restart mid-request — means the sidecar could not be *asked*. This
+ * one means it was asked and said no, so a caller that reports it as
+ * `sidecarUnavailable` names a cause the evidence positively excludes: the
+ * sidecar is manifestly running.
+ *
+ * It carries no code of its own because the wire envelope does not supply one;
+ * `message` is whatever the sidecar sent, and callers must not parse it.
+ */
+export class SidecarRespondedError extends Error {
+  constructor(detail?: string) {
+    super(detail ?? 'sidecar returned an error');
+    this.name = 'SidecarRespondedError';
+  }
+}
+
 export class SidecarClient {
   private disposed = false;
   private channel: SidecarChannel | null = null;
@@ -1298,7 +1319,7 @@ export class SidecarClient {
       pending.resolve(envelope.result);
     } else {
       this.recordFailure();
-      pending.reject(new Error(envelope.error ?? 'sidecar returned an error'));
+      pending.reject(new SidecarRespondedError(envelope.error));
     }
   }
 
