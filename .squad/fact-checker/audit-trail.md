@@ -2184,6 +2184,16 @@ The workflow was armed by `4d1937a`, which post-dates every revision this report
 
 ⇒ **and the reporter's positive control was sound and could not have saved them.** Five workflows do invoke npm scripts; the sixth did not exist at their revision. **A control proves the search works; it cannot report that the corpus moved.**
 
+**Annotation (run BP, read 2026-08-05T14:20Z at trunk `070fbf2`):** the section above is
+retracted in its explanation and stands in its conclusion. `e3a0e98` and `4d1937a` were
+**commits on the reporter's own branch**, not on `development`: both are ancestors of
+`2617c947` (head of PR #399) and neither is an ancestor of `fb6689d` (trunk at that PR's
+merge). The file reached `development` exactly once, at `cf368391`, the merge of #399, at
+`2026-08-05T05:33:57Z`. **So the reporter's claim was true when made, and the party who
+falsified it is the reporter, by merging the fix they were writing to describe.** It resolved
+here because nineteen worktrees share one object database — **the hazard this trail recorded in
+run AV, committed four rounds running by its author.** See run BP.
+
 #### 3. §5's repair worked, and §6 does not know it
 
 ```
@@ -2211,6 +2221,71 @@ Publishing the passage above armed the pull request carrying it against the issu
 ⇒ **the shape is now four rounds old.** Run BN went red because its write-up quoted the malformed citation it was reporting. Run AD found a content check and a structural check blind to each other's mentions. Here the remedy was printed in the same sentence as the violation, by an author who had written _mention and use are the same bytes_ one entry earlier. ⇒ _**knowing a rule does not create the habit of applying it to the text that announces it**_, and no amount of restatement will: the announcement is exactly the context in which the dangerous form must appear.
 
 ⇒ **so the repair is not a quoting convention.** Backticking the reference worked for #328 because the reference was incidental to a sentence of prose. Here the reference **is the exhibit**, and _**an example of a dangerous string is the dangerous string**_. The only repair available is to describe the form and never render it — which costs the reader the ability to recognise it on sight, and is the reason this defect keeps being committed by people trying to document it.
+
+### Run BP — the boundary commit I scored four rounds running was on the other party's branch
+
+**Pair:** run BO's account of why a colleague's "the check is unwired" claim was false — against the repository's actual history of the file in question.
+
+#### 1. The claim I refuted four times was true when made, and my explanation named the wrong commit
+
+Run BO stated that `.github/workflows/citation-reachability.yml` is on `origin/development` running `npm run check:citation-reachability`, "armed by `4d1937a`, which post-dates every revision they have pinned." Both clauses are true. **The account they were offered as is not.**
+
+```
+                    file      MAINLINE_FLOOR   npm-run line
+  2505c203          absent    -                -            <- the reporter's pin
+  e3a0e98           PRESENT   no               yes
+  4d1937a           PRESENT   yes              yes
+  2617c947          PRESENT   yes              yes           <- head of PR #399
+  fb6689d           absent    -                -             <- TRUNK, at #399's merge
+  cf368391          PRESENT   yes              yes           <- #399's merge commit
+  origin/development PRESENT  yes              yes
+```
+
+```
+e3a0e98  -> 2617c947  ANCESTOR      e3a0e98  -> fb6689d  not-ancestor
+4d1937a  -> 2617c947  ANCESTOR      4d1937a  -> fb6689d  not-ancestor
+2505c203 -> 2617c947  ANCESTOR      cf368391 -> origin/development  ANCESTOR
+first-parent index on trunk:  cf368391 = 30    2505c203 = 38
+                              4d1937a, e3a0e98 = NOT ON THE SPINE
+```
+
+⇒ **`e3a0e98` and `4d1937a` were never on trunk as independent commits. They are commits on the reporter's own branch**, cut from the very revision they pinned, and the file reached `development` **once**, at `cf368391` — the merge of **their** pull request, at `2026-08-05T05:33:57Z`.
+
+⇒ **so the "boundary commit" this trail has been naming for four rounds is not a boundary on trunk at all.** The transition exists; it is `cf368391`; and **the party whose claim I was refuting is the party who made it false, by merging the fix they told me about.**
+
+#### 2. Why the misreading was available, and it is this trail's own documented hazard
+
+`git cat-file -e 4d1937a:<path>` and `git log --follow` both resolved, so the file "was there". **This checkout shares one object database with nineteen worktrees**, which makes every object any sibling has ever fetched resolvable here regardless of whether a ref ever reached it. **Run AV recorded exactly this hazard**, for a revision that resolved locally while `git branch -r --contains` returned zero.
+
+⇒ _**the author of that finding then spent four rounds committing it**_, because the failure presents as success: a resolvable revision, a readable blob, a grep that exits 0. **Nothing in the output of a successful read reports which refs could reach the object.** ⇒ **resolution is a property of the store; reachability is a property of the refs; and only one of them was measured.**
+
+#### 3. The defect that makes this unrecoverable is that my readings carry no instant
+
+Run BO's grep genuinely exited 0 naming the file — it ran after `cf368391` merged, so it was correct. **Whether the same claim in the preceding rounds was correct cannot be determined from this ledger**, because entries record _what_ was measured and never _when_.
+
+⇒ _**a state-dependent reading with no timestamp cannot be re-adjudicated, only re-run**_ — and re-running answers a different question, since the corpus has moved. **The trail's entire method is to pin claims to revisions; it has been pinning its own conclusions to nothing.**
+
+⇒ **and the party graded on staleness all night stamps every report with its reading instant.** ⇒ _**the discipline I have been scoring against is the one I do not practise**_, and the asymmetry was invisible because a stale reading announces itself while an untimed one does not. **Every entry from here states the instant of its readings.**
+
+#### 4. A caption that asserts the outcome of a test it does not read
+
+A probe in this round printed a grep of the workflow for the depth-floor variable, followed by the fixed line _"no such line above = this copy lacks the depth floor."_ **The grep printed four matching lines directly above it.**
+
+⇒ **the caption was an unconditional literal**, emitted whether or not the thing it described occurred, and it contradicted its own output on screen. Had the grep found nothing it would have read as correct — **by coincidence, having tested nothing.**
+
+⇒ _**a legend that does not read its measurement is a claim wearing the costume of a result**_, and it is the same object as a check that cannot fail. It was caught only because the contradiction was visible in one frame; a caption printed a page away from its evidence would have shipped.
+
+#### 5. What the two copies say about convergence
+
+```
+4d1937a  vs  2617c947            IDENTICAL
+4d1937a  vs  origin/development  IDENTICAL
+e3a0e98  vs  4d1937a             differs by the 32-line depth-floor step
+```
+
+⇒ **the file was staged by one hand, wired by a second, hardened by a third, and merged as one blob.** The reporter's earlier observation — that copying another party's exact bytes converts a merge conflict into a no-op and needs no coordination — **is what this file records**, and it is why three authors touching one path produced no conflict and no divergence.
+
+⇒ **and the depth floor is the part worth keeping**: it refuses a checkout that resolves every ref and holds too little history, which is **the CI-side form of exactly the defect in §2 above.** ⇒ _**the control against this round's error was already in the file whose provenance this round got wrong.**_
 
 ## Superseded citations and their live twins
 
