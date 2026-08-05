@@ -459,6 +459,65 @@ At the head, `.squad/skills/git-workflow/SKILL.md` carries the heading **Do not 
 - **How sixteen merges landed red under `strict=true` with these as required contexts is still not established, and is still not asserted.**
 - **Verdict: ❌ against this ledger's own filed diagnosis, discharged at the object.** The finding that the mainline was red stands and was correct; the mechanism attached to it did not, and the two were published as one claim.
 
+### Run AP — a line of four gate figures, three of which could not go stale
+
+**Pair:** the `Gates at the pushed head` line published in this pull request's Standing
+block, against the object it describes. **Verdict: ❌ against the pair.**
+
+The Standing block is regenerated on every push and its heading reads _"read at the
+moment of writing, not carried from a report."_ Four of its five gate figures were
+**string literals** in the generator. The generator's own comment, thirty lines above the
+statement that rendered them, reads _"a transcribed count is the defect this ledger
+recorded as run AE."_ Measured at this head: `vitest` reports **2320 passed in 106
+files**; the block published **1978 passed in 94 files** — stale by 342 tests and 12
+files, and republished on every refresh since.
+
+**Why it survived two earlier repairs of literals in the same statement.** The other
+three literals were `prettier 0 · eslint 0 · tsc 0`, and all three were still true when
+measured here. **A gate whose passing value is a constant cannot go stale; a gate whose
+passing value is a count goes stale on every commit.** The line read as four figures of
+one kind. Three of them carried no information, and the uniformity was cosmetic.
+
+**Direction.** The stale figure **understated** the suite by 342 tests. A count that
+under-claims reads as conservative and embarrasses nobody, so nothing re-reads it. Round
+AK recorded that detection latency is a function of whom a false report embarrasses; this
+is the same rule with the sign that produces the longest survival.
+
+**The repair's own control could not discriminate.** Seven arms were written for the
+replacement function — skip, cannot-run, non-zero, unparseable, parses, parses-but-failed,
+hangs — and **all seven returned one string.** `shell: true` concatenates argv and lets
+`cmd` re-parse it, so every arm's arguments were eaten. They collapsed onto the
+**withheld** branch, which is the safe direction, so a control that could distinguish
+nothing read as a control that was working. Fixed by removing the shell; the arms then
+returned five distinct outcomes, and **no arm can publish a figure it did not measure** —
+a suite that parses but exits non-zero withholds.
+
+**Two more removals of interpretation in the same function.** `npx.cmd` under
+`shell: false` returns **EINVAL**, because Node refuses to spawn a `.cmd` without a shell;
+the first live run therefore withheld all four figures at once. Repaired by spawning
+`node` against each package's entry point, which needs neither shell nor shim. And the
+summary regex was written against what a terminal **displayed**; the process emits
+`Tests \e[22m \e[1m\e[32m2320 passed`. **A rendering of the output is not the output.**
+
+**The arms covered every branch of the function and none of the actual commands**, which
+is why the first live run was uniformly blind. Recorded with run R's finding, of which it
+is an instance one layer out: a control that proves the code path is reached proves
+nothing about what was invoked on it.
+
+**A gate with no timeout returns no verdict at all** — not even a withheld one. Found by
+the control harness hanging on a watch-mode invocation. `spawnSync` now carries a timeout,
+whose expiry lands on the withheld branch.
+
+**Two smaller notes, recorded because both nearly went the other way.** This entry cites
+run R; a check for `Run R` in this file returned **zero**, and the entry survived only
+because the citation was re-checked against a second pattern — run R is a bullet, not a
+`### Run` heading. **A grep pattern is a rendering**, which this ledger has recorded
+before and which came within one edit of deleting a true citation here. And a zero-byte
+untracked file appeared in the repository root during this round; six candidate commands
+were each run in isolation and **none reproduced it**, so no cause is asserted. It was
+removed, and the control that caught it is `git status --porcelain` before committing —
+which works without knowing the cause.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
