@@ -174,10 +174,11 @@ export function contentShipped(sha, base) {
  * Classify from facts already gathered. Pure, so every verdict is testable
  * without a repository — including the ones that need a git failure to reach.
  *
- * @param {{exists: boolean, baseFresh?: boolean, onBase: boolean|null, onPr: boolean|null, shipped: string|null}} facts
+ * @param {{exists: boolean, baseFresh?: boolean, onBase: boolean|null, onPr: boolean|null, isBaseTip?: boolean|null, behind?: number|null, shipped: string|null}} facts
  */
 export function classify(facts) {
   const { exists, baseFresh = true, onBase, onPr, isPrHead, shipped } = facts;
+  const { isBaseTip = null, behind = null } = facts;
 
   // Whether the WORK landed is decisive regardless of which not-on-the-base
   // case this is, so it is reported by every arm that has it rather than only
@@ -199,7 +200,37 @@ export function classify(facts) {
     };
   }
   if (onBase === true) {
-    return { verdict: 'live', summary: 'an ancestor of the base. Current.' };
+    // The ancestry answer is correct and stays. What it cannot do is tell a head
+    // from its predecessors, because not telling them apart is what ancestry is
+    // for: `--is-ancestor` is true of the tip and of all 40 commits behind it,
+    // so all 41 used to print the same line and that line ended in "Current."
+    // Two sessions read an interior commit as the live head within one hour.
+    //
+    // The repair is the one already made at the PR-head arm below and never
+    // carried across: a named head is a claim of EQUALITY, so only equality
+    // settles it. Distance is what makes the remaining case self-correcting -
+    // "40 commits behind the tip" cannot be misread as "this is the head",
+    // whereas the absence of a claim can.
+    if (isBaseTip === true) {
+      return {
+        verdict: 'tip',
+        summary: 'the tip of the base itself. This is the head.',
+      };
+    }
+    // Reported as unmeasured rather than as zero. If equality could not be
+    // resolved, substituting the distance would answer the question with a
+    // second instrument and present it as the first; and a caller cannot act on
+    // "0 commits behind" from an arm that has just declined to say it is the
+    // tip. The verdict stays `live` - it is on the trunk, which is a real
+    // question with real callers - and only the claim of identity is withdrawn.
+    const measured =
+      typeof behind === 'number' && behind > 0
+        ? `${behind} commit${behind === 1 ? '' : 's'} behind the tip`
+        : 'an unmeasured distance behind the tip';
+    return {
+      verdict: 'live',
+      summary: `an ancestor of the base, ${measured}. On the trunk, and NOT the head — quoting it as the current one is the misreading this arm exists to prevent.`,
+    };
   }
   if (onBase === null) {
     return {
@@ -358,6 +389,35 @@ export function fetchBase(base, remote = 'origin') {
     : { ref: base, fresh: false, refreshable: true };
 }
 
+/**
+ * Resolve to a full commit id, or null. Both sides of the tip comparison go
+ * through this: the caller may pass an abbreviation, and an abbreviation never
+ * equals a 40-hex string no matter which commit it names, so comparing the
+ * inputs directly would report every abbreviated tip as a non-tip.
+ */
+export function resolveCommit(rev) {
+  try {
+    return git(['rev-parse', `${rev}^{commit}`]);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * How many commits the base has that this one does not. Measured rather than
+ * inferred, and returned as null when it cannot be measured, so a caller can
+ * tell "zero" from "unknown" — the distinction the verdict below depends on.
+ */
+export function distanceToTip(sha, base) {
+  try {
+    const count = git(['rev-list', '--count', `${sha}..${base}`]);
+    const parsed = Number.parseInt(count, 10);
+    return Number.isNaN(parsed) ? null : parsed;
+  } catch {
+    return null;
+  }
+}
+
 export function inspect(
   sha,
   { base = 'origin/development', prRef = null, baseFresh = true } = {},
@@ -378,8 +438,19 @@ export function inspect(
     onBase: exists ? isAncestor(sha, base) : null,
     onPr: exists && prRef ? isAncestor(sha, prRef) : null,
     isPrHead: prHeadSha ? sha === prHeadSha : null,
+    isBaseTip: null,
+    behind: null,
     shipped: null,
   };
+  if (facts.onBase === true) {
+    // Only asked where it can change an answer. Everything below "on the base"
+    // is already not the tip, so the two extra reads are confined to the arm
+    // that was conflating them.
+    const here = resolveCommit(sha);
+    const tip = resolveCommit(base);
+    facts.isBaseTip = here && tip ? here === tip : null;
+    facts.behind = distanceToTip(sha, base);
+  }
   if (exists && facts.onBase === false && baseFresh) {
     facts.shipped = contentShipped(sha, base);
   }
@@ -462,7 +533,17 @@ export function main(argv = process.argv.slice(2), out = console) {
     // `pr-head` is the ref's own answer and not a failure of the check, but it
     // is also not a clean bill: the ref survives a merge. The exit code answers
     // "is every SHA here still worth quoting", not "is everything merged".
-    if (result.verdict !== 'live' && result.verdict !== 'pr-head')
+    //
+    // `tip` is listed explicitly. It was carved out of `live`, so omitting it
+    // here would have made the single most current object a caller can name -
+    // the head itself - exit 1, while its own predecessors kept exiting 0. A
+    // new verdict is not an additive change: every place that tests a verdict
+    // by value has to be revisited, and this is the one that gates the process.
+    if (
+      result.verdict !== 'live' &&
+      result.verdict !== 'tip' &&
+      result.verdict !== 'pr-head'
+    )
       allLive = false;
     out.log(
       `[sha-status] ${sha.slice(0, 12)}  ${result.verdict.toUpperCase()}`,

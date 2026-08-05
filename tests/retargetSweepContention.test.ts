@@ -281,16 +281,49 @@ describe('startup sweep under deletion refusal (issue #229)', () => {
     },
   );
 
-  it('propagates a sweep error outside the pending-handle family', async () => {
-    const { root, stale } = await staleInstance();
-    blocked.path = stale;
-    blocked.code = 'EIO';
+  it.each(['EACCES', 'ENOTDIR', 'EMFILE', 'UNKNOWN', 'ESOMETHINGNOBODYNAMED'])(
+    'tolerates %s, which no allowlist of tolerated codes anticipated',
+    async (code) => {
+      // The four named codes are the ones #441 measured aborting startup. The
+      // fifth is the load-bearing one: it is not a real libuv code and never
+      // will be, so no list of *tolerated* codes can contain it. It passes only
+      // because the predicate names the fatal codes instead, which is the whole
+      // claim of this change. If someone later reverts to an allowlist, this
+      // case is the one that goes red.
+      const { root, stale } = await staleInstance();
+      blocked.path = stale;
+      blocked.code = code;
 
-    await expect(serviceFor(root).initialize()).rejects.toMatchObject({
-      code: 'EIO',
-    });
-    expect(blocked.calls).toContain(stale);
-  });
+      await expect(serviceFor(root).initialize()).resolves.toBeUndefined();
+
+      expect(
+        blocked.calls,
+        'rm was never called on the stale root, so no refusal was triggered',
+      ).toContain(stale);
+      await expect(exists(stale)).resolves.toBe(true);
+
+      // Control: initialize() completed rather than merely not throwing. Without
+      // it a catch around too much of the method passes every assertion above.
+      expect(
+        await ownedByThisProcess(root),
+        'initialize() tolerated the failed sweep but never registered this instance',
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each(['EIO', 'ENOSPC', 'EROFS'])(
+    'propagates %s, which means the temp root itself is unusable',
+    async (code) => {
+      const { root, stale } = await staleInstance();
+      blocked.path = stale;
+      blocked.code = code;
+
+      await expect(serviceFor(root).initialize()).rejects.toMatchObject({
+        code,
+      });
+      expect(blocked.calls).toContain(stale);
+    },
+  );
 
   it('collects the other stale roots when one of them refuses', async () => {
     // A refusal must not abort the loop and strand the remaining directories.
@@ -328,6 +361,56 @@ describe('startup sweep under deletion refusal (issue #229)', () => {
     expect(
       await exists(rest),
       'a refusal on the first stale root stopped the sweep collecting the rest',
+    ).toBe(false);
+  });
+
+  it('collects on a later sweep what a refusal left behind', async () => {
+    // Issue #454. The `catch` above leaves the directory "for a later sweep, by
+    // this process or another one", and that promise is load-bearing outside
+    // this file: `e2e/retarget.spec.ts` relaunches the packaged app and asserts
+    // the closed instance's roots are gone. Every test above stops at "the
+    // refusal was tolerated and the directory survived" -- none of them
+    // exercises the later sweep, so the sentence the E2E depends on was
+    // unproven.
+    //
+    // Stated as the property rather than the mechanism: a refusal must defer a
+    // collection, not cancel it.
+    const { root, stale } = await staleInstance();
+    blocked.path = stale;
+
+    await serviceFor(root).initialize();
+
+    // Control, and the reason this test is not trivial. Without it the whole
+    // test passes when the FIRST sweep already deleted the directory, which
+    // proves nothing about a later one -- the assertion after the second sweep
+    // would be reading the first sweep's success.
+    expect(
+      blocked.calls,
+      'rm was never called on the stale root, so the first sweep never refused',
+    ).toContain(stale);
+    expect(
+      await exists(stale),
+      'the first sweep deleted the stale root, so there is nothing left for a later sweep to collect and this test proves nothing',
+    ).toBe(true);
+
+    // The contention is gone, as it is once the other process releases its
+    // handles. A second startup is a second sweep.
+    blocked.path = null;
+    const callsBeforeLaterSweep = blocked.calls.length;
+
+    await serviceFor(root).initialize();
+
+    expect(
+      blocked.calls
+        .slice(callsBeforeLaterSweep)
+        .some(
+          (call) => call === stale || call.startsWith(`${stale}${path.sep}`),
+        ),
+      'the later sweep never attempted a deletion anywhere under the deferred root, so it was dropped from consideration rather than retried',
+    ).toBe(true);
+    expect(
+      await exists(stale),
+      'the root a refusal deferred was never collected by a later sweep, so the deferral is permanent and e2e/retarget.spec.ts asserts a property the module does not deliver',
     ).toBe(false);
   });
 });
