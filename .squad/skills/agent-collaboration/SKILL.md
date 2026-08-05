@@ -18,7 +18,24 @@ Charters live in `.squad/agents/<name>/charter.md`. Standing decisions live in `
 
 A PR merges only with **unanimous reviewer approval** plus **green CI**. The author never merges their own work.
 
-Reviews are run as independent agents against an **exact commit SHA**, not "the PR". Always pin the SHA in the review request and require the reviewer to confirm it.
+Reviews are run as independent agents against an **exact commit SHA and branch-contribution range**, not "the PR" and not a bare commit diff. Always pin both in the review request and require the reviewer to confirm them.
+
+## Generate the review target; do not select one by hand
+
+Immediately before every dispatch, run:
+
+```powershell
+npm run review:target -- --pr <number>
+```
+
+Dispatch only from an exit-0 brief, and copy its full head SHA, base SHA, merge base, and `merge-base..head` range. The command deliberately accepts no SHA argument: it reads the current pull-request head and current base from GitHub, derives the range through the compare API, then re-reads both mutable inputs before emitting anything.
+
+- **Exit 1 means wait and rerun; it is not a permanent rejection.** A newly pushed valid head can briefly have zero check runs, and the head or base can move while the brief is being derived.
+- **Exit 2 means no target was established.** A CLI failure, API failure, empty response, or malformed count must never be interpreted as zero.
+- **A multi-parent head is not invalid.** A sync merge can be the real current branch head. Its bare commit diff is first-parent scope and can show only trunk's changes, so review `merge-base(current base, current head)..current head` instead.
+- **Do not cache or reuse a generated brief.** The command closes movement during its own reads; it cannot freeze the branch after it exits. Dispatch immediately, and the reviewer must re-read the live API head before returning a verdict.
+
+This is an executable guard only for dispatches that use its output. The repository cannot intercept the session-dispatch API, so bypassing it remains a process breach rather than a mechanically impossible action.
 
 ## Record the verdict on the pull request
 
