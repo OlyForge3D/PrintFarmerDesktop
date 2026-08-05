@@ -62,6 +62,14 @@
  * misreporting instrument still varies with its subject, so its output retains
  * information; a blind one has none to retain.
  *
+ * VACUOUS sits between them, and it is the one verdict that is not about the
+ * instrument at all — it is about the case pair. An instrument can separate
+ * two cases for a reason unrelated to the predicate, most commonly because the
+ * negative case makes it refuse to run. Then the readings differ, the probe
+ * says SOUND, and nothing has been established. It ranks above MISREPORTS
+ * because it yields no evidence on the question asked, and below BLIND because
+ * blindness is proven whereas vacuity means the question was never put.
+ *
  * EXIT CODES ARE THREE-VALUED ON PURPOSE (issue #315)
  *   0 sound · 1 defective instrument · 2 could not be determined
  * Never collapse 2 into 1: "this instrument lies" and "I could not find out
@@ -77,6 +85,7 @@ import { pathToFileURL } from 'node:url';
 
 export const VERDICT_SOUND = 'SOUND';
 export const VERDICT_BLIND = 'BLIND';
+export const VERDICT_VACUOUS = 'VACUOUS';
 export const VERDICT_MISREPORTS = 'MISREPORTS';
 export const VERDICT_UNUSABLE = 'UNUSABLE';
 
@@ -87,10 +96,30 @@ export const EXIT_UNDETERMINED = 2;
 /** Worst-first. Index 0 dominates. See the ranking note in the header. */
 export const VERDICT_RANK = [
   VERDICT_BLIND,
+  VERDICT_VACUOUS,
   VERDICT_MISREPORTS,
   VERDICT_UNUSABLE,
   VERDICT_SOUND,
 ];
+
+/**
+ * Exit codes that mean the command did not answer, as opposed to answering no.
+ *
+ * 126 not executable · 127 not found · 128 fatal (git's "Not a valid object
+ * name", among others) · 129 usage error. A reading drawn from one of these is
+ * a report that the instrument declined to run, and a case pair separated only
+ * by one of them has established nothing about the predicate.
+ */
+export const NON_ANSWER_EXIT_CODES = Object.freeze([126, 127, 128, 129]);
+
+/**
+ * @param {string|null|undefined} reading
+ * @returns {boolean}
+ */
+export function isNonAnswerExit(reading) {
+  if (typeof reading !== 'string' || !/^[0-9]+$/.test(reading)) return false;
+  return NON_ANSWER_EXIT_CODES.includes(Number(reading));
+}
 
 export const PROBE_PLACEHOLDER = '{{PROBE}}';
 
@@ -132,6 +161,9 @@ export function worstVerdict(verdicts) {
 export function exitCodeFor(verdict) {
   if (verdict === VERDICT_SOUND) return EXIT_SOUND;
   if (verdict === VERDICT_UNUSABLE) return EXIT_UNDETERMINED;
+  // VACUOUS is not a finding against the instrument — it is a finding against
+  // the case pair. Nothing was determined about the instrument, so 2.
+  if (verdict === VERDICT_VACUOUS) return EXIT_UNDETERMINED;
   return EXIT_DEFECTIVE;
 }
 
@@ -143,9 +175,12 @@ export function exitCodeFor(verdict) {
  * is #214 instance 4 (an unfinished check's conclusion is "").
  *
  * @param {readonly {label: string, reading: string|null, expect?: string|undefined, error?: string|undefined}[]} cases
- * @returns {{verdict: string, blind: boolean, findings: string[], readings: {label: string, reading: string|null}[]}}
+ * @param {string} [reading] the spec's reading kind; only "exitCode" readings
+ *   can be checked for vacuity, because only there is a non-answer code
+ *   distinguishable from an answer
+ * @returns {{verdict: string, blind: boolean, vacuous: boolean, findings: string[], readings: {label: string, reading: string|null}[]}}
  */
-export function classifyDiscrimination(cases) {
+export function classifyDiscrimination(cases, reading) {
   const findings = [];
   const readings = cases.map((c) => ({ label: c.label, reading: c.reading }));
 
@@ -153,6 +188,7 @@ export function classifyDiscrimination(cases) {
     return {
       verdict: VERDICT_UNUSABLE,
       blind: false,
+      vacuous: false,
       findings: [
         'fewer than two cases: discrimination is undefined with one subject',
       ],
@@ -196,8 +232,39 @@ export function classifyDiscrimination(cases) {
     }
   }
 
-  const verdict = blind ? VERDICT_BLIND : worstVerdict(perCase);
-  return { verdict, blind, findings, readings };
+  // VACUITY. A pair can separate for a reason that has nothing to do with the
+  // predicate: if one arm's exit code says the command declined to run, the
+  // readings differ and the probe would certify SOUND, while the case pair has
+  // established only that the instrument rejects bad arguments.
+  //
+  // FOUND LIVE, against a control proposed to me by the session adjudicating
+  // this work: `git merge-base --is-ancestor <sha> origin/development` with a
+  // FABRICATED sha as the negative arm. 0 vs 128, distinct, certified SOUND —
+  // but 128 is "Not a valid object name", not "no". The real absent case is
+  // exit 1, and it had never been run. Same defect as the four red tests that
+  // all died in a stub: a control that passes for the wrong reason.
+  let vacuous = false;
+  if (reading === 'exitCode' && present.length === cases.length) {
+    const answers = new Set(
+      present.map((c) => c.reading).filter((r) => !isNonAnswerExit(r)),
+    );
+    const nonAnswers = present.filter((c) => isNonAnswerExit(c.reading));
+    if (nonAnswers.length > 0 && answers.size <= 1) {
+      vacuous = true;
+      findings.unshift(
+        `VACUOUS: ${nonAnswers
+          .map((c) => `${c.label} returned ${JSON.stringify(c.reading)}`)
+          .join(', ')} — that code means the command did not answer, so this ` +
+          'pair separates "answered" from "did not run", not the two subjects ' +
+          'you named. Supply a negative case the instrument can actually reach.',
+      );
+    }
+  }
+
+  let verdict = worstVerdict(perCase);
+  if (vacuous) verdict = worstVerdict([verdict, VERDICT_VACUOUS]);
+  if (blind) verdict = VERDICT_BLIND;
+  return { verdict, blind, vacuous, findings, readings };
 }
 
 /**
@@ -668,6 +735,7 @@ export function main(argv = process.argv.slice(2)) {
           error: read.error,
         };
       }),
+      'exitCode',
     );
     if (control.verdict !== VERDICT_SOUND) {
       process.stderr.write(
@@ -680,7 +748,7 @@ export function main(argv = process.argv.slice(2)) {
     }
 
     const cases = executeSpec(valid.spec, runArgv, process.execPath, probePath);
-    const outcome = classifyDiscrimination(cases);
+    const outcome = classifyDiscrimination(cases, valid.spec.reading);
     process.stdout.write(formatOutcome(valid.spec.instrument, outcome) + '\n');
     return exitCodeFor(outcome.verdict);
   } finally {

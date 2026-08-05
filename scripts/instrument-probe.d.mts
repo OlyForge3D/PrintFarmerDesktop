@@ -1,4 +1,5 @@
-export type ProbeVerdict = 'SOUND' | 'BLIND' | 'MISREPORTS' | 'UNUSABLE';
+export type ProbeVerdict =
+  'SOUND' | 'BLIND' | 'VACUOUS' | 'MISREPORTS' | 'UNUSABLE';
 
 export interface ProbeCaseReading {
   readonly label: string;
@@ -10,6 +11,7 @@ export interface ProbeCaseReading {
 export interface DiscriminationOutcome {
   readonly verdict: ProbeVerdict;
   readonly blind: boolean;
+  readonly vacuous: boolean;
   readonly findings: string[];
   readonly readings: { label: string; reading: string | null }[];
 }
@@ -22,6 +24,7 @@ export interface RunResult {
 
 export const VERDICT_SOUND: 'SOUND';
 export const VERDICT_BLIND: 'BLIND';
+export const VERDICT_VACUOUS: 'VACUOUS';
 export const VERDICT_MISREPORTS: 'MISREPORTS';
 export const VERDICT_UNUSABLE: 'UNUSABLE';
 
@@ -33,13 +36,16 @@ export const VERDICT_RANK: readonly ProbeVerdict[];
 export const PROBE_PLACEHOLDER: '{{PROBE}}';
 export const PLACEHOLDER: RegExp;
 export const REDUCERS: readonly string[];
+export const NON_ANSWER_EXIT_CODES: readonly number[];
 
 export function pathIsInterpolable(p: string | undefined): boolean;
 export function worstVerdict(verdicts: readonly string[]): ProbeVerdict;
 export function exitCodeFor(verdict: string): 0 | 1 | 2;
+export function isNonAnswerExit(reading: string | null | undefined): boolean;
 
 export function classifyDiscrimination(
   cases: readonly ProbeCaseReading[],
+  reading?: string,
 ): DiscriminationOutcome;
 
 export function applyReduce(

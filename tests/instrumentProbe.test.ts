@@ -7,18 +7,21 @@ import path, { join } from 'node:path';
 import {
   VERDICT_SOUND,
   VERDICT_BLIND,
+  VERDICT_VACUOUS,
   VERDICT_MISREPORTS,
   VERDICT_UNUSABLE,
   EXIT_SOUND,
   EXIT_DEFECTIVE,
   EXIT_UNDETERMINED,
   VERDICT_RANK,
+  NON_ANSWER_EXIT_CODES,
   PROBE_PLACEHOLDER,
   PLACEHOLDER,
   REDUCERS,
   pathIsInterpolable,
   worstVerdict,
   exitCodeFor,
+  isNonAnswerExit,
   classifyDiscrimination,
   applyReduce,
   validateSpec,
@@ -213,10 +216,168 @@ describe('classifyDiscrimination', () => {
   });
 });
 
+describe('vacuity: a pair can separate for a reason that is not the predicate', () => {
+  it('refuses to certify when the negative arm returned a non-answer code', () => {
+    const out = classifyDiscrimination(
+      [
+        { label: 'on trunk', reading: '0' },
+        { label: 'fabricated sha', reading: '128' },
+      ],
+      'exitCode',
+    );
+    expect(out.verdict).toBe(VERDICT_VACUOUS);
+    expect(out.vacuous).toBe(true);
+    expect(out.findings[0]).toMatch(/did not answer/);
+  });
+
+  it('is SOUND for the same instrument once the negative arm can be reached', () => {
+    const out = classifyDiscrimination(
+      [
+        { label: 'on trunk', reading: '0' },
+        { label: 'real commit, not on trunk', reading: '1' },
+      ],
+      'exitCode',
+    );
+    expect(out.verdict).toBe(VERDICT_SOUND);
+    expect(out.vacuous).toBe(false);
+  });
+
+  it('is vacuous when BOTH arms declined, even though the codes differ', () => {
+    const out = classifyDiscrimination(
+      [
+        { label: 'a', reading: '128' },
+        { label: 'b', reading: '129' },
+      ],
+      'exitCode',
+    );
+    expect(out.verdict).toBe(VERDICT_VACUOUS);
+  });
+
+  it('does not fire when no arm returned a non-answer code', () => {
+    const out = classifyDiscrimination(
+      [
+        { label: 'a', reading: '0' },
+        { label: 'b', reading: '3' },
+      ],
+      'exitCode',
+    );
+    expect(out.verdict).toBe(VERDICT_SOUND);
+    expect(out.vacuous).toBe(false);
+  });
+
+  it('does not fire on stdout readings, where 128 is just text', () => {
+    const out = classifyDiscrimination(
+      [
+        { label: 'a', reading: '128' },
+        { label: 'b', reading: '4' },
+      ],
+      'stdout',
+    );
+    expect(out.verdict).toBe(VERDICT_SOUND);
+    expect(out.vacuous).toBe(false);
+  });
+
+  it('does not fire when the reading kind was not supplied', () => {
+    const out = classifyDiscrimination([
+      { label: 'a', reading: '0' },
+      { label: 'b', reading: '128' },
+    ]);
+    expect(out.verdict).toBe(VERDICT_SOUND);
+  });
+
+  it('does not fire when two arms gave real answers and a third declined', () => {
+    const out = classifyDiscrimination(
+      [
+        { label: 'on trunk', reading: '0' },
+        { label: 'real commit, not on trunk', reading: '1' },
+        { label: 'fabricated sha', reading: '128' },
+      ],
+      'exitCode',
+    );
+    expect(out.vacuous).toBe(false);
+    expect(out.verdict).toBe(VERDICT_SOUND);
+  });
+
+  it('reports BLIND over VACUOUS: proven blindness is the worse finding', () => {
+    const out = classifyDiscrimination(
+      [
+        { label: 'a', reading: '128' },
+        { label: 'b', reading: '128' },
+      ],
+      'exitCode',
+    );
+    expect(out.verdict).toBe(VERDICT_BLIND);
+  });
+
+  it('reports VACUOUS over a MISREPORTS on the other arm', () => {
+    const out = classifyDiscrimination(
+      [
+        { label: 'a', reading: '0', expect: '5' },
+        { label: 'b', reading: '128' },
+      ],
+      'exitCode',
+    );
+    expect(out.verdict).toBe(VERDICT_VACUOUS);
+  });
+
+  it('cannot be vacuous when an arm produced no reading at all', () => {
+    const out = classifyDiscrimination(
+      [
+        { label: 'a', reading: null, error: 'spawn failed' },
+        { label: 'b', reading: '128' },
+      ],
+      'exitCode',
+    );
+    expect(out.vacuous).toBe(false);
+    expect(out.verdict).toBe(VERDICT_UNUSABLE);
+  });
+
+  it('exits 2, not 1: vacuity is a finding against the case pair, not the instrument', () => {
+    expect(exitCodeFor(VERDICT_VACUOUS)).toBe(EXIT_UNDETERMINED);
+  });
+
+  it('ranks VACUOUS below BLIND and above MISREPORTS', () => {
+    expect(VERDICT_RANK.indexOf(VERDICT_BLIND)).toBeLessThan(
+      VERDICT_RANK.indexOf(VERDICT_VACUOUS),
+    );
+    expect(VERDICT_RANK.indexOf(VERDICT_VACUOUS)).toBeLessThan(
+      VERDICT_RANK.indexOf(VERDICT_MISREPORTS),
+    );
+  });
+});
+
+describe('isNonAnswerExit', () => {
+  for (const code of NON_ANSWER_EXIT_CODES) {
+    it(`treats ${code} as a non-answer`, () => {
+      expect(isNonAnswerExit(String(code))).toBe(true);
+    });
+  }
+
+  for (const code of ['0', '1', '2', '3', '77', '125', '130']) {
+    it(`treats ${code} as a real answer`, () => {
+      expect(isNonAnswerExit(code)).toBe(false);
+    });
+  }
+
+  it('is false for a non-numeric reading', () => {
+    expect(isNonAnswerExit('128 files')).toBe(false);
+  });
+
+  it('is false for an absent reading', () => {
+    expect(isNonAnswerExit(null)).toBe(false);
+    expect(isNonAnswerExit(undefined)).toBe(false);
+  });
+
+  it('is false for the empty string, which is an answer', () => {
+    expect(isNonAnswerExit('')).toBe(false);
+  });
+});
+
 describe('verdict ranking', () => {
-  it('orders worst-first: BLIND, MISREPORTS, UNUSABLE, SOUND', () => {
+  it('orders worst-first: BLIND, VACUOUS, MISREPORTS, UNUSABLE, SOUND', () => {
     expect(VERDICT_RANK).toEqual([
       VERDICT_BLIND,
+      VERDICT_VACUOUS,
       VERDICT_MISREPORTS,
       VERDICT_UNUSABLE,
       VERDICT_SOUND,
