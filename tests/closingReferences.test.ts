@@ -8,6 +8,7 @@ import {
   parseDeclaredClosures,
   readSettled,
   witnessContradiction,
+  witnessUnreadableBinding,
 } from '../scripts/check-closing-references.mjs';
 
 /**
@@ -518,9 +519,14 @@ describe('witnessContradiction', () => {
     // retried when THIS direction is wrong: a stale non-empty snapshot taken
     // after an unintended closure was added is reported clean, and the
     // closure ships silently. A retry is what a false POSITIVE costs, and
-    // this is the branch where the false NEGATIVE lives. Accepted anyway,
-    // because the alternative reds correct PRs with no way to clear it --
-    // but it is a gap, not a bound, and it is the residual risk of the fix.
+    // this is the branch where the false NEGATIVE lives.
+    //
+    // That gap is no longer silent. `witnessUnreadableBinding` covers the
+    // reachable half of it -- a non-empty field beside a body binding nothing
+    // readable -- and `main` reports it. This function stays one-directional
+    // because the OTHER half, where the two sets merely disagree on which
+    // numbers, is the half that cannot be judged without claiming parity with
+    // GitHub's grammar.
     expect(witnessContradiction('prose that binds nothing', [231])).toEqual([]);
     expect(witnessContradiction(`${KEYWORD} #999`, [231])).toEqual([]);
   });
@@ -529,6 +535,45 @@ describe('witnessContradiction', () => {
     expect(witnessContradiction('a body that mentions #231 only', [])).toEqual(
       [],
     );
+  });
+});
+
+describe('witnessUnreadableBinding', () => {
+  it('reports a non-empty field beside a body that binds nothing readable', () => {
+    expect(witnessUnreadableBinding('prose that binds nothing', [231])).toEqual(
+      [231],
+    );
+  });
+
+  it('says nothing when the body binds something this parser can read', () => {
+    // The narrowing that keeps it usable. Once the parser sees ANY binding
+    // construct, the question becomes which numbers are right, and answering
+    // that asserts parity with GitHub's grammar.
+    expect(witnessUnreadableBinding(`${KEYWORD} #999`, [231])).toEqual([]);
+  });
+
+  it('says nothing when the derived field is empty', () => {
+    // That case belongs to witnessContradiction. Both firing on it would
+    // report one condition twice and tell a reader nothing extra.
+    expect(witnessUnreadableBinding('prose that binds nothing', [])).toEqual(
+      [],
+    );
+  });
+
+  it('fires on the binding forms this parser cannot read', () => {
+    // Stated as a COST, not hidden. These are correct pull requests, and the
+    // witness fires on every one of them -- which is precisely why it must
+    // never move the exit code. The bare form is the positive control: it is
+    // readable, so it must NOT fire, or the three arms below would pass for a
+    // function that fires unconditionally.
+    expect(witnessUnreadableBinding(`${KEYWORD} #123`, [123])).toEqual([]);
+    for (const unreadable of [
+      `${KEYWORD} OlyForge3D/PrintFarmerDesktop#123`,
+      `${KEYWORD} GH-123`,
+      `${KEYWORD} https://github.com/OlyForge3D/PrintFarmerDesktop/issues/123`,
+    ]) {
+      expect(witnessUnreadableBinding(unreadable, [123])).toEqual([123]);
+    }
   });
 });
 
@@ -648,6 +693,65 @@ describe('main staleness witness', () => {
     expect(result).toEqual({ ok: true, settled: true, stale: false });
     expect(process.exitCode).toBeUndefined();
     expect(spies.error).not.toHaveBeenCalled();
+  });
+
+  it('reports a stale non-empty field that matches an inert declaration', async () => {
+    // The reachable false pass, with its own control. The body still DECLARES
+    // #231 while its prose no longer binds it -- the shape left behind when a
+    // closing reference is removed from a body and the declaration block is
+    // not removed with it.
+    const BODY = [
+      'This PR does some work.',
+      'The prose no longer binds any closing reference.',
+      '',
+      '```' + KEYWORD,
+      '#231',
+      '```',
+    ].join('\n');
+
+    const arm = async (refs: number[]) => {
+      const spies = silenced();
+      const result = await main(['231'], {
+        run: ghStub(BODY, BODY, refs),
+        readClosures: async (read) => {
+          await read();
+          return {
+            value: refs,
+            reads: 13,
+            settled: true,
+            elapsedMs: 60000,
+            stableMs: 60000,
+          };
+        },
+      });
+      const printed = spies.error.mock.calls
+        .map((call) => String(call[0]))
+        .join('\n');
+      const exitCode = process.exitCode;
+      vi.restoreAllMocks();
+      process.exitCode = undefined;
+      return { result, printed, exitCode };
+    };
+
+    const stale = await arm([231]);
+    const fresh = await arm([]);
+
+    // Observable in the result and in the output, and it changes NO verdict.
+    // The exit code must not move: this fires on every pull request that binds
+    // through a cross-repository reference, a GH-123 form, or an issue URL,
+    // and failing on those would be a red no author could clear.
+    expect(stale.result).toEqual({ ok: true, settled: true, stale: true });
+    expect(stale.exitCode).toBeUndefined();
+    expect(stale.printed).toContain('binds');
+    expect(stale.printed).toContain('#231');
+    expect(stale.printed).not.toContain('do not match its declaration');
+
+    // THE CONTROL, and it is what makes the arm above attributable. The same
+    // declaration and the same body fail the moment the read is fresh, so the
+    // pass is caused by the stale field rather than by a fixture that cannot
+    // fail. Without this arm both results are one observation.
+    expect(fresh.result).toEqual({ ok: false, settled: true, stale: false });
+    expect(fresh.exitCode).toBe(1);
   });
 
   it('does not let the witness override a real declaration mismatch', async () => {

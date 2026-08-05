@@ -52,6 +52,11 @@ export function parseBoundClosures(body: string): number[];
 
 export function witnessContradiction(body: string, derived: number[]): number[];
 
+export function witnessUnreadableBinding(
+  body: string,
+  derived: number[],
+): number[];
+
 export function compareClosures(
   declared: number[],
   actual: number[],

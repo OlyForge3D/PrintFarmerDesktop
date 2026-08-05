@@ -146,6 +146,41 @@ export function witnessContradiction(body, derived) {
   return parseBoundClosures(body);
 }
 
+/**
+ * The other direction, and the one `witnessContradiction` deliberately leaves
+ * alone: a NON-EMPTY derived field beside a body that binds nothing readable.
+ *
+ * Reachable and measured: with the declaration block still listing #231 and
+ * the live `fix`+`es #231` removed from the prose, a derived field still
+ * holding `[231]` matches the declaration and `main` returns ok. The same
+ * fixture fails the moment the read is fresh, so the pass is caused by the
+ * staleness rather than by the fixture.
+ *
+ * Reported, never fatal, and the narrowness is the whole point. Firing
+ * whenever the two sets merely DISAGREE would assert that
+ * `parseBoundClosures` reproduces GitHub's grammar. It does not, measured
+ * against a positive control that returns [123] for a bare reference:
+ *
+ *   fix+es OlyForge3D/PrintFarmerDesktop#123   -> []   cross-repo
+ *   fix+es GH-123                              -> []   GH- form
+ *   fix+es https://github.com/o/r/issues/123   -> []   issue URL
+ *
+ * GitHub binds all three. Failing on them would be a red no author could
+ * clear by any action the message names -- #146's shape, which is the thing
+ * this check exists to avoid. So this fires only when the parser sees NO
+ * binding construct anywhere, which is the narrowest form that still covers
+ * the case above, and it moves `stale`, never the exit code.
+ */
+export function witnessUnreadableBinding(body, derived) {
+  if (derived.length === 0) {
+    return [];
+  }
+  if (parseBoundClosures(body).length > 0) {
+    return [];
+  }
+  return [...derived].sort((a, b) => a - b);
+}
+
 /** Set comparison, reported as the two directions rather than a boolean. */
 export function compareClosures(declared, actual) {
   const declaredSet = new Set(declared);
@@ -347,6 +382,12 @@ export async function main(argv, deps = {}) {
   // each other: two calls can straddle the propagation, so a fresh body and a
   // stale derived field would be an ordinary result rather than a contradiction.
   let witnessBody = '';
+  // Whether the body was actually observed ALONGSIDE the field, rather than
+  // left at its initial value. An unread body and a body that binds nothing
+  // are both `''`, and only the second is evidence -- so without this the
+  // witness below fires on a non-observation, which is the failure mode this
+  // whole file exists to remove.
+  let witnessSeen = false;
   const {
     value: actual,
     reads,
@@ -365,10 +406,15 @@ export async function main(argv, deps = {}) {
     ]);
     const parsed = JSON.parse(raw);
     witnessBody = typeof parsed.body === 'string' ? parsed.body : '';
+    witnessSeen = true;
     return parsed.refs;
   });
 
   const contradiction = witnessContradiction(witnessBody, actual);
+  const unreadable = witnessSeen
+    ? witnessUnreadableBinding(witnessBody, actual)
+    : [];
+  const suspect = contradiction.length > 0 || unreadable.length > 0;
   const result = compareClosures(declared, actual);
   const summary =
     `declared=[${declared.join(', ')}] armed=[${actual.join(', ')}] ` +
@@ -383,7 +429,7 @@ export async function main(argv, deps = {}) {
     );
     console.error(`\n  ${summary}`);
     process.exitCode = 1;
-    return { ok: false, settled: false, stale: contradiction.length > 0 };
+    return { ok: false, settled: false, stale: suspect };
   }
 
   // Settled and self-contradictory. Reported, never fatal: the witness cannot
@@ -401,15 +447,31 @@ export async function main(argv, deps = {}) {
     );
   }
 
+  // The mirror case, on the same terms: reported, never fatal. `stale` moves,
+  // the exit code does not, so a body binding through a form this parser
+  // cannot read costs a note rather than a red nobody can clear.
+  if (unreadable.length > 0) {
+    console.error(
+      `Note: the derived field settled on ` +
+        `${unreadable.map((n) => `#${n}`).join(', ')} while the body binds ` +
+        `nothing this check can read. Either the field is stale -- a closing ` +
+        `reference removed from the body within the propagation window still ` +
+        `matches a declaration that was not removed with it -- or the body ` +
+        `binds through a cross-repository reference, a GH-123 form, or an ` +
+        `issue URL, none of which this parser reads. Not failing on it: ` +
+        `re-reading cannot distinguish the two.`,
+    );
+  }
+
   if (!result.ok) {
     console.error(formatFailure({ ...result, hasBlock, prNumber }));
     console.error(`\n  ${summary}`);
     process.exitCode = 1;
-    return { ok: false, settled: true, stale: contradiction.length > 0 };
+    return { ok: false, settled: true, stale: suspect };
   }
 
   console.log(`Closing references match the declaration. ${summary}`);
-  return { ok: true, settled: true, stale: contradiction.length > 0 };
+  return { ok: true, settled: true, stale: suspect };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
