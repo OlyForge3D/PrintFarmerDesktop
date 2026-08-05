@@ -20,15 +20,22 @@ export interface SettledRead {
   reads: number;
   settled: boolean;
   elapsedMs: number;
-  /**
-   * Time the returned value has held still. The floor is measured on this.
-   *
-   * Optional because `readClosures` is an injection point and `main` supplies
-   * a default: requiring it would force every stub to model an internal of a
-   * function it is standing in for. `readSettled` itself always populates it.
-   */
-  stableMs?: number;
+  /** Time the returned value has held still. The floor is measured on this. */
+  stableMs: number;
 }
+
+/**
+ * What `main` will accept from an injected reader.
+ *
+ * `stableMs` is optional here and required above, which is the honest pair:
+ * `readSettled` always populates it, but a stub standing in for `readSettled`
+ * is not obliged to model an internal of the function it replaces. Relaxing
+ * it on `SettledRead` itself would have been the easier edit and would have
+ * weakened every real caller to `number | undefined` to spare the stubs.
+ */
+export type InjectedSettledRead = Omit<SettledRead, 'stableMs'> & {
+  stableMs?: number;
+};
 
 export interface SettleOptions {
   requiredAgreements?: number;
@@ -74,7 +81,7 @@ export interface MainDeps {
   readClosures?: (
     read: () => number[] | Promise<number[]>,
     options?: SettleOptions,
-  ) => Promise<SettledRead>;
+  ) => Promise<InjectedSettledRead>;
 }
 
 export function main(

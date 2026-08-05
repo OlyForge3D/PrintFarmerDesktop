@@ -287,17 +287,20 @@ describe('main', () => {
       // Matches the declaration exactly. Under the previous implementation
       // this was the passing case, which is the defect: the value may still
       // be arriving, so the match is not evidence of anything.
-      readClosures: async () => ({
-        value: [231],
-        reads: 20,
-        settled: false,
-        elapsedMs: 95000,
-      }),
+      readClosures: () =>
+        Promise.resolve({
+          value: [231],
+          reads: 20,
+          settled: false,
+          elapsedMs: 95000,
+        }),
     });
 
     expect(result).toEqual({ ok: false, settled: false });
     expect(process.exitCode).toBe(1);
-    const printed = spies.error.mock.calls.map((call) => call[0]).join('\n');
+    const printed = spies.error.mock.calls
+      .map((call) => String(call[0]))
+      .join('\n');
     // It must not be reported as a mismatch: the references may be correct.
     expect(printed).toContain('Could not read the closing references');
     expect(printed).not.toContain('do not match its declaration');
@@ -309,19 +312,20 @@ describe('main', () => {
     const spies = silenced();
     const result = await main(['231'], {
       run: ghStub([231]),
-      readClosures: async () => ({
-        value: [231],
-        reads: 13,
-        settled: true,
-        elapsedMs: 61000,
-      }),
+      readClosures: () =>
+        Promise.resolve({
+          value: [231],
+          reads: 13,
+          settled: true,
+          elapsedMs: 61000,
+        }),
     });
 
     expect(result).toEqual({ ok: true, settled: true });
     expect(process.exitCode).toBeUndefined();
-    expect(spies.log.mock.calls.map((call) => call[0]).join('\n')).toContain(
-      'match the declaration',
-    );
+    expect(
+      spies.log.mock.calls.map((call) => String(call[0])).join('\n'),
+    ).toContain('match the declaration');
   });
 
   it('reports a settled mismatch as a mismatch, not as an unsettled read', async () => {
@@ -331,27 +335,32 @@ describe('main', () => {
     const spies = silenced();
     const result = await main(['231'], {
       run: ghStub([231, 999]),
-      readClosures: async () => ({
-        value: [231, 999],
-        reads: 13,
-        settled: true,
-        elapsedMs: 61000,
-      }),
+      readClosures: () =>
+        Promise.resolve({
+          value: [231, 999],
+          reads: 13,
+          settled: true,
+          elapsedMs: 61000,
+        }),
     });
 
     expect(result).toEqual({ ok: false, settled: true });
     expect(process.exitCode).toBe(1);
-    const printed = spies.error.mock.calls.map((call) => call[0]).join('\n');
+    const printed = spies.error.mock.calls
+      .map((call) => String(call[0]))
+      .join('\n');
     expect(printed).toContain('do not match its declaration');
     expect(printed).toContain('#999');
     expect(printed).not.toContain('Could not read the closing references');
   });
 
-  it('does not report the last value as a result when unsettled', async () => {
+  it('does not report the last value as a result when unsettled', () => {
     const message = formatUnsettled({
       prNumber: 366,
-      reads: 20,
-      elapsedMs: 95000,
+      // The exhausted-budget figures, kept in step with the shipped defaults
+      // so the fixture reads as a scenario that can actually occur.
+      reads: 40,
+      elapsedMs: 195000,
       value: [231],
     });
     expect(message).toContain('It is not reported as a result');
@@ -371,7 +380,13 @@ describe('readSettled wall-clock floor', () => {
   /** Virtual clock: advances only on sleep, so elapsed figures are exact. */
   function clock() {
     let t = 0;
-    return { sleep: async (ms: number) => void (t += ms), now: () => t };
+    return {
+      sleep: (ms: number) => {
+        t += ms;
+        return Promise.resolve();
+      },
+      now: () => t,
+    };
   }
 
   it('refuses a value that agreed only briefly, however long polling ran', async () => {
@@ -388,7 +403,7 @@ describe('readSettled wall-clock floor', () => {
     // that relied on the default budget would pass today and go green the
     // moment the budget widened, which is exactly what happened to it once.
     const result = await readSettled(
-      async () => {
+      () => {
         i += 1;
         return i <= 12 ? [i] : [999];
       },
@@ -412,10 +427,10 @@ describe('readSettled wall-clock floor', () => {
     // Nothing else in this file fails when that happens, because every other
     // spec passes its own budget. This one runs on the shipped defaults on
     // purpose.
-    const result = await readSettled(
-      async () => (now() < 45_000 ? [] : [231]),
-      { sleep, now },
-    );
+    const result = await readSettled(() => (now() < 45_000 ? [] : [231]), {
+      sleep,
+      now,
+    });
 
     expect(result.settled).toBe(true);
     expect(result.value).toEqual([231]);
@@ -423,7 +438,7 @@ describe('readSettled wall-clock floor', () => {
 
   it('settles a value that has actually held still for the floor', async () => {
     const { sleep, now } = clock();
-    const result = await readSettled(async () => [231], { sleep, now });
+    const result = await readSettled(() => [231], { sleep, now });
 
     // The control for the spec above: same instrument, same floor, and the
     // only difference is that this value really did hold still. Without it,
@@ -437,7 +452,7 @@ describe('readSettled wall-clock floor', () => {
     const { sleep, now } = clock();
     let i = 0;
     const result = await readSettled(
-      async () => {
+      () => {
         i += 1;
         return i <= 2 ? [1] : [2];
       },
@@ -557,7 +572,9 @@ describe('main staleness witness', () => {
 
     expect(result).toEqual({ ok: false, settled: true, stale: true });
     expect(process.exitCode).toBe(1);
-    const printed = spies.error.mock.calls.map((call) => call[0]).join('\n');
+    const printed = spies.error.mock.calls
+      .map((call) => String(call[0]))
+      .join('\n');
     expect(printed).toContain('stale');
     // It must not read as an authoring mistake. Nothing is wrong with the PR.
     expect(printed).not.toContain('do not match its declaration');
@@ -611,7 +628,9 @@ describe('main staleness witness', () => {
     // Declared #231, armed nothing, and the body does not contradict the read.
     // That is a genuine finding and must still be reported as one.
     expect(result).toEqual({ ok: false, settled: true });
-    const printed = spies.error.mock.calls.map((call) => call[0]).join('\n');
+    const printed = spies.error.mock.calls
+      .map((call) => String(call[0]))
+      .join('\n');
     expect(printed).toContain('do not match its declaration');
     expect(printed).not.toContain('field is stale');
   });
