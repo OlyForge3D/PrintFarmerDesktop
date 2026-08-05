@@ -309,6 +309,14 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
     const ipc = (await import('../src/main/ipc.js')) as unknown as {
       registerIpcHandlers: (...args: unknown[]) => () => Promise<void>;
     };
+    // Re-resolved AFTER `ipc.js`, and that ordering is the whole point. Nothing
+    // runs between the two imports, so this is the same module instance `ipc.ts`
+    // just resolved for its own static import of `./calibrationLog.js`. The
+    // binding captured above is a different question: if the registry was reset
+    // between the capture and the `ipc.js` import, `log` and `logSeenByIpc` are
+    // two distinct copies, and only the second one is the sink `ipc.ts` writes
+    // to.
+    const logSeenByIpc = await import('../src/main/calibrationLog.js');
     return {
       // Wrapped so the injected channel and the disposer are impossible to
       // forget at a call site: every spec goes through this one function, and
@@ -321,11 +329,15 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
         pendingDisposers.push(dispose);
         return dispose;
       },
-      // Emitted through the same module instance `ipc.ts` imports, so if the
-      // capture were installed on a different copy this probe would go missing
-      // and the liveness assertion would fail rather than pass vacuously.
+      // Emitted through `logSeenByIpc`, NOT through the `log` binding the
+      // capture came from. Emitting through `log` would have proved `log ===
+      // log`: the probe would reach the capture no matter which copy `ipc.ts`
+      // resolved, which is the one thing this is supposed to detect. Sourcing
+      // it here means a divergence sends the probe into the other instance's
+      // sink, the sentinel never reaches `capture.records`, and the liveness
+      // assertion goes red instead of passing vacuously.
       emitSinkLivenessProbe: () =>
-        log.emitCalibrationLog({
+        logSeenByIpc.emitCalibrationLog({
           level: 'info',
           component: 'calibration.sidecar',
           event: SINK_LIVENESS_SENTINEL,
