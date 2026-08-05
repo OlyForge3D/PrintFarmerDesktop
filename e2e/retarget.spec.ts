@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import {
   createEditableRetargetFixture,
@@ -49,6 +50,31 @@ function instanceRoots(): string[] {
     }
     throw error;
   }
+}
+
+/**
+ * How many packaged startup sweeps the closed instance's roots get before the
+ * test calls them unreclaimed.
+ */
+const MAX_RECLAIM_SWEEPS = 3;
+const SWEEP_SETTLE_MS = 5_000;
+
+/**
+ * The entries of `roots` that still exist, once the startup sweep already
+ * running has had time to finish.
+ *
+ * The wait is bounded and short because it covers sweep *latency*, not a
+ * retry. A directory the sweep refused is still here when it expires, and that
+ * is the caller's signal to grant another sweep rather than to keep waiting.
+ */
+async function rootsStillPresent(roots: string[]): Promise<string[]> {
+  const deadline = Date.now() + SWEEP_SETTLE_MS;
+  let present = roots.filter((entry) => existsSync(entry));
+  while (present.length > 0 && Date.now() < deadline) {
+    await sleep(250);
+    present = roots.filter((entry) => existsSync(entry));
+  }
+  return present;
 }
 
 async function dismissOnboarding(page: Page): Promise<void> {
@@ -303,14 +329,50 @@ test('runs the U1 workflow in the packaged app without changing the source', asy
         environment: dialogEnvironment,
       });
       await dismissOnboarding(launched.page);
-      await expect
-        .poll(() => createdRoots.every((entry) => !existsSync(entry)))
-        .toBe(true);
+      // The startup sweep runs exactly once per process, inside
+      // `RetargetArtifactService.initialize()`, and it gives up on
+      // EPERM/EBUSY/ENOTEMPTY -- the codes Windows raises while the instance
+      // closed just above still holds handles -- leaving the directory "for a
+      // later sweep, by this process or another one".
+      //
+      // `expect.poll` retried the observation, but nothing retries the
+      // deletion, so it re-read a verdict that was already fixed before its
+      // first iteration. On a refusal it could only burn its 15s timeout and
+      // report `Expected true / Received false`, naming neither the surviving
+      // directory nor the refusal. Each relaunch is one more sweep, so the
+      // retry has to be the relaunch.
+      //
+      // That a later sweep does collect what a refusal deferred is not assumed
+      // here -- `tests/retargetSweepContention.test.ts` proves it at the
+      // mechanism, so a genuine failure to reclaim still fails this test.
+      // Issue #454.
+      let active = launched;
+      let survivors = await rootsStillPresent(createdRoots);
+      let sweeps = 1;
+      while (survivors.length > 0 && sweeps < MAX_RECLAIM_SWEEPS) {
+        await active.close();
+        launched = null;
+        active = await launchPackagedApp({
+          executablePath: executable,
+          userDataPath: userData,
+          catalogDb,
+          processLog,
+          environment: dialogEnvironment,
+        });
+        launched = active;
+        await dismissOnboarding(active.page);
+        sweeps += 1;
+        survivors = await rootsStillPresent(createdRoots);
+      }
+      expect(
+        survivors,
+        `after ${sweeps} startup sweeps the closed instance's retarget roots were never reclaimed: ${survivors.join(', ')}`,
+      ).toEqual([]);
       expect(hash(fixture.file)).toBe(fixture.sha256);
-      await refreshCatalog(launched.page);
-      await openWorkflow(launched.page, fileName);
+      await refreshCatalog(active.page);
+      await openWorkflow(active.page, fileName);
       await expect(
-        launched.page.getByRole('radio', { name: /\(imported\)$/ }).first(),
+        active.page.getByRole('radio', { name: /\(imported\)$/ }).first(),
       ).toBeVisible();
     },
     async () => {

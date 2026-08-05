@@ -579,7 +579,13 @@ describe('the base is a cache, and this tool shipped trusting it', () => {
 
     const result = run([landed, '--base', 'origin/development'], work);
 
-    expect(result.stdout).toContain('LIVE');
+    // TIP rather than LIVE since #438. `landed` is the tip of `development` by
+    // construction two lines above, and the tip is now reported as such: the
+    // ancestry answer could not tell a head from its predecessors, so all of
+    // them printed "Current." What this test is about is unchanged - the commit
+    // must come back as on the trunk rather than as missing - and TIP is that
+    // answer stated more precisely, not a different one.
+    expect(result.stdout).toContain('TIP');
     expect(result.stdout).not.toContain('INDETERMINATE');
     expect(result.status).toBe(0);
   });
@@ -619,7 +625,12 @@ describe('the base is a cache, and this tool shipped trusting it', () => {
     // and is already correct. Refreshing is not this tool's business.
     const result = run([landed, '--base', 'development'], work);
 
-    expect(result.stdout).toContain('LIVE');
+    // TIP rather than LIVE since #438, for the same reason as above: `landed`
+    // is the tip of the local `development` this run is pointed at. The
+    // property under test is the one in the title - a non-remote-tracking base
+    // is left alone - and it is untouched by which of the two on-trunk verdicts
+    // comes back.
+    expect(result.stdout).toContain('TIP');
     expect(result.stderr).not.toContain('could not refresh');
     expect(result.status).toBe(0);
   });
@@ -673,5 +684,173 @@ describe('the base is a cache, and this tool shipped trusting it', () => {
         shipped: null,
       }).verdict,
     ).toBe('live');
+  });
+});
+
+/**
+ * #438. `--is-ancestor` is true of the tip and of every commit behind it, which
+ * is what ancestry is for, so the trunk tip and a commit forty behind it came
+ * back byte-identical - same verdict, same summary, both ending "Current." Two
+ * sessions quoted an interior commit as the live head within one hour.
+ *
+ * The assertions here are properties, not strings. Every subject is built from
+ * the base at runtime and every expected distance is measured by an independent
+ * `rev-list --count`, so nothing here can be satisfied by a hard-coded verdict
+ * and nothing rots into a false red when the wording changes. A fixed-string
+ * guard on this file would reproduce `supplyChainPolicy.test.ts`, which reddens
+ * correct work without gaining safety.
+ */
+describe('the tip and its ancestors are told apart, which ancestry alone cannot do', () => {
+  let root: string;
+  let work: string;
+  let tip: string;
+  let mid: string;
+  let old: string;
+
+  const BEHIND = 6;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'sha-status-tip-'));
+    const remote = path.join(root, 'remote.git');
+    work = path.join(root, 'work');
+    git(['init', '-q', '--bare', '--initial-branch=development', remote], root);
+    git(['clone', '-q', remote, work], root);
+    configure(work);
+    for (let i = 0; i <= BEHIND; i += 1) commit(work, `commit ${i}`);
+    git(['push', '-q', '--no-verify', '-u', 'origin', 'development'], work);
+    git(['fetch', '-q', 'origin'], work);
+
+    tip = git(['rev-parse', 'origin/development'], work);
+    mid = git(['rev-parse', `origin/development~${BEHIND - 1}`], work);
+    old = git(['rev-parse', `origin/development~${BEHIND}`], work);
+  });
+
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  /** The verdict and summary for one SHA, with the SHA itself removed. */
+  const reportFor = (stdout: string, sha: string) => {
+    const lines = stdout.split('\n');
+    const index = lines.findIndex((l) => l.includes(sha.slice(0, 12)));
+    expect(index).toBeGreaterThanOrEqual(0);
+    return `${lines[index]}\n${lines[index + 1]}`
+      .replace(sha.slice(0, 12), '')
+      .trim();
+  };
+
+  /** The verdict token alone, read from the line rather than named here. */
+  const verdictFor = (stdout: string, sha: string) => {
+    const [line] = reportFor(stdout, sha).split('\n');
+    // Asserted rather than defaulted. A silent `?? ''` would make two missing
+    // lines compare equal, so the inequality below could pass on nothing.
+    expect(line).toBeDefined();
+    return (line ?? '').trim();
+  };
+
+  it('holds its own premises: all three are ancestors, and only one is the tip', () => {
+    // Without this the block proves nothing. If a subject were not an ancestor
+    // it would take a different arm entirely, and the reports would differ for
+    // a reason that has nothing to do with the defect.
+    for (const sha of [tip, mid, old]) {
+      expect(
+        gitExit(
+          ['merge-base', '--is-ancestor', sha, 'origin/development'],
+          work,
+        ),
+      ).toBe(0);
+    }
+    expect(git(['rev-parse', 'origin/development'], work)).toBe(tip);
+    expect(mid).not.toBe(tip);
+    expect(old).not.toBe(tip);
+    expect(
+      Number(git(['rev-list', '--count', `${old}..origin/development`], work)),
+    ).toBe(BEHIND);
+  });
+
+  it('does not give the tip and an ancestor the same report', () => {
+    const { stdout, status } = run(
+      [tip, mid, old, '--base', 'origin/development'],
+      work,
+    );
+
+    const atTip = reportFor(stdout, tip);
+    const atMid = reportFor(stdout, mid);
+    const atOld = reportFor(stdout, old);
+
+    // The anti-vacuity control, and it is the whole reason this test is worth
+    // having: every report differs by the SHA it names, so comparing raw lines
+    // would pass against the defect it is written for. The comparison is only
+    // meaningful once the SHA is gone, so that removal is asserted rather than
+    // assumed.
+    for (const [report, sha] of [
+      [atTip, tip],
+      [atMid, mid],
+      [atOld, old],
+    ] as const) {
+      expect(report).not.toContain(sha.slice(0, 12));
+    }
+
+    expect(atTip).not.toBe(atOld);
+    expect(atTip).not.toBe(atMid);
+    // The two ancestors must differ from each other too. Without this, a fix
+    // that said "not the head" and stopped would pass - and a reader still
+    // could not tell one commit behind from forty.
+    expect(atMid).not.toBe(atOld);
+
+    // The verdicts themselves must differ, and this is the assertion that
+    // actually pins the repair. Measured, not assumed: with the tip arm removed
+    // the tip falls through to the ancestor arm at distance zero and prints
+    // "an unmeasured distance behind the tip", which still differs textually
+    // from an ancestor's line - so the three comparisons above all pass against
+    // the defect. They establish that the reports are distinguishable; only
+    // this one establishes that the tip is identified as the tip. Neither
+    // token is named here, so the wording stays free to change.
+    expect(verdictFor(stdout, tip)).not.toBe(verdictFor(stdout, mid));
+    expect(verdictFor(stdout, mid)).toBe(verdictFor(stdout, old));
+
+    // The tip stays a clean bill. `tip` was carved out of `live`, and the exit
+    // code tests verdicts by value, so the head itself was one omission away
+    // from exiting 1 while its own predecessors exited 0.
+    expect(status).toBe(0);
+  });
+
+  it('reports the measured distance, not merely that there is one', () => {
+    const { stdout } = run([mid, old, '--base', 'origin/development'], work);
+
+    // Measured independently, so the expectation cannot drift with the fixture.
+    for (const sha of [mid, old]) {
+      const distance = git(
+        ['rev-list', '--count', `${sha}..origin/development`],
+        work,
+      );
+      expect(Number(distance)).toBeGreaterThan(0);
+      expect(reportFor(stdout, sha)).toContain(distance);
+    }
+  });
+
+  it('withdraws the claim of currency from everything that is not the head', () => {
+    const { stdout } = run([tip, old, '--base', 'origin/development'], work);
+
+    // The word two sessions acted on. It may appear for the tip, which is the
+    // only subject it was ever true of.
+    expect(reportFor(stdout, old)).not.toContain('Current.');
+  });
+
+  it('says so rather than guessing when the tip cannot be resolved by equality', () => {
+    // classify is pure, so the arm that has ancestry but no equality answer is
+    // reachable without contriving a repository state to produce it.
+    const undecided = classify({
+      exists: true,
+      onBase: true,
+      onPr: null,
+      isBaseTip: null,
+      behind: null,
+      shipped: null,
+    });
+
+    expect(undecided.verdict).toBe('live');
+    expect(undecided.summary).not.toContain('Current.');
+    // Not "0 commits behind": unknown and zero are different answers, and the
+    // second is the one a reader would act on.
+    expect(undecided.summary).not.toMatch(/\b0 commits?\b/);
   });
 });

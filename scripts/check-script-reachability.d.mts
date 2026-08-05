@@ -45,9 +45,33 @@ export declare function evaluateCheckEnforcement(options: {
   allowlist?: Record<string, string>;
 }): EnforcementReport;
 
+export interface UnresolvedImport {
+  from: string;
+  specifier: string;
+  target: string;
+}
+
+export interface ImportResolutionReport {
+  resolved: UnresolvedImport[];
+  unresolved: UnresolvedImport[];
+}
+
+export declare function relativeImportSpecifiers(contents: string): string[];
+
+export declare function evaluateImportResolution(options: {
+  sources: readonly SourceFile[];
+  trackedPaths: ReadonlySet<string>;
+}): ImportResolutionReport;
+
 export declare function formatFindings(options: {
   reachability: ReachabilityReport;
   enforcement: EnforcementReport;
+  // Optional on purpose. Two call sites in the test suite predate this
+  // evaluator, and making it required would turn a missing argument into a
+  // type error at exactly the sites that have nothing to say about imports.
+  imports?: ImportResolutionReport;
 }): string[];
 
 export declare function readTrackedFiles(repoRoot: string): SourceFile[];
+
+export declare function readAllTrackedPaths(repoRoot: string): string[];
