@@ -4188,6 +4188,157 @@ grammar of an enumeration.** Nothing downstream turned on it, and that is exactl
 the same construction carried run BY's `141`, run CB's `69` and this comment's `100 of 228` — **a true member
 offered where the set was expected**, which reads as complete because every element shown is correct.
 
+### Run CD — a repair that would have made the check quieter than the defect it fixed
+
+Ralph reported that `scripts/check-citation-reachability.mjs` cannot tell a Git object id from a
+GitHub forge id, and asked for a canonical issue with a reproducer. He proposed the repair in the
+same message: prefer an explicit typed citation syntax over merely excluding all-digit strings,
+"since an all-digit abbreviated Git ID is possible."
+
+He was right about the defect and right about the repair. **Neither was established by the argument
+he sent, and one of them is decided by a count nobody had taken.** Measured at `51b7be69` against
+trunk `9eccb0d4abe5add39f972289d9b471c5d64529a5`, `observed_at 2026-08-05T21:45:36Z`.
+
+#### 1. The defect reproduces, and I had never let it run
+
+I had been treating this as caught. It was not caught; it was **avoided**. My standing practice was
+to gate my own writing before posting — never backtick a bare all-digit token — which meant the
+harness had never once been given the input in dispute. A precaution that prevents the failure also
+prevents the measurement, and I had been reporting the former as though it were the latter.
+
+So I constructed the input and ran the instrument on it:
+
+```
+fixture appended to a scanned artifact -- the forge id inside single backticks, which this
+entry cannot itself reproduce verbatim for the reason given in section 5:
+  REPRODUCER: see the correction at <backtick>5196272727<backtick> on issue #388.
+
+node scripts/check-citation-reachability.mjs
+  5196272727 ORPHAN     unreachable, no declared twin, undeclared
+  exit 1                (measured without a pipe: $LASTEXITCODE after a pipe reports the
+                         previous native command, and would have read 0 here)
+  all four built-in controls fired normally in the same run
+```
+
+The object is live: `issues/comments/5196272727` returns exit 0, 8343 chars, `updated
+2026-08-05T20:23:34Z`. ⇒ **A true citation to a live object fails the check that exists to catch
+untrue ones.**
+
+#### 2. The repair instruction is a second instrument with the same blind spot
+
+On failure the harness prints `gh api repos/<owner>/<repo>/commits/<sha>` and tells the reader that
+a non-zero exit means the object is _genuinely gone_. Followed literally on the false positive:
+
+```
+.../commits/5196272727          -> HTTP 422, exit 1    "No commit found for SHA"
+POS CONTROL .../commits/9eccb0d4abe5add39f972289d9b471c5d64529a5 -> exit 0
+SAME TOKEN  issues/comments/5196272727                 -> exit 0, 8343 chars
+```
+
+⇒ **An author who does exactly what the failure message tells them to do receives confirmation that
+their live citation is gone.** The advice inherits the type assumption from the code that printed
+it, so it cannot dissent from it. **Corroboration between a check and its own remediation advice is
+worth nothing when the second step reads the token through the first step's assumption** — this is
+the #121 shape again, not a wrong answer but a pair of instruments structurally unable to
+disagree.
+
+**My first control here was void and I published nothing on it.** I reached for a commit from
+`rev-list --all` as the positive control; it returned 422 as well, and I inferred the endpoint was
+broken. It was a local-only object — `--all` includes refs the remote has never seen. The control
+and the subject failed for **different** reasons that render identically. Replacing it with the
+trunk tip made the control discriminate. ⇒ _A control drawn from a wider namespace than the claim is
+not a weaker control; it is a differently-scoped one, and it fails toward agreement._
+
+#### 3. The proposed repair is right, and the argument for it was not
+
+Ralph's ground was that an all-digit Git abbreviation is _possible_. That is a statement about
+hexadecimal, and it is true of every repository, which is why it settles nothing about this one: a
+defect that occurs at a negligible rate is repaired differently from one that occurs constantly.
+The cheap fix — ignore `/^[0-9]+$/` — stands or falls on a count, so I took it.
+
+**I took it over the wrong population, and the pre-splice gate on this very entry caught it.** My
+first count came from `git rev-list --all`: 5759 commits, 192 all-digit at seven characters, 60 at
+ten. I filed those figures. Then the gate that resolves each of this entry's own citations classified
+my worked example 4479409 (unbackticked here, because it is an orphan by construction and
+backticking it would red the ledger) as ORPHAN — because `--all` includes checkpoint and remote-tracking refs
+that no reader holds, and the harness classifies against `HEAD` and `origin/development` only.
+
+```
+reader (HEAD + origin/development) -- the population the harness classifies
+  commits: 571
+    all-digit first  7:  18   e.g. 7791258 -> 7791258e444ed66c7f514eb31552fd9c1724f377
+    all-digit first  8:  10
+    all-digit first  9:   8
+    all-digit first 10:   7   <- the width of the forge id in dispute
+  all 18 of the seven-char cases resolve unambiguously AND are reachable from the reader
+
+all refs (--all) -- the population I published
+  commits: 5760   <- and 5759 twenty minutes earlier: --all is session-local and moving
+    all-digit first 7: 192       all-digit first 10: 60
+```
+
+⇒ **The collision survives at the disputed width — seven cases, not sixty — so the conclusion holds
+and the magnitude was overstated about tenfold.** Excluding all-digit tokens still **converts a false
+positive into a false negative**: those citations stop being checked, silently, by the check whose
+whole purpose is to notice unreachable citations. That trade is still strictly worse than the defect,
+**because a false ORPHAN is loud and a skipped citation is not.**
+
+⇒ **And the error is section 2's void control a second time, in the same document, twenty minutes
+apart.** There a positive control drawn from `--all` failed for a reason unrelated to the subject and
+rendered identically to a real failure. Here a headline count drawn from `--all` measured a
+population the instrument never searches. ⇒ _A namespace wider than the claim does not read as wrong;
+it reads as a larger sample_ — 5759 looked like better evidence than 571 precisely because it was
+bigger, and the number that made it persuasive was the number that made it inapplicable.
+
+⇒ _Both proposed repairs looked reasonable from the source alone; only counting the objects
+separated them_ — and counting them **in the space the check searches** separated the right count
+from the flattering one. The reading that would have picked the wrong repair is not a careless
+reading; it is the ordinary one, because the source contains no information about how often its
+assumption is wrong.
+
+Issue #538 was corrected in place: the original figures struck through rather than deleted, the
+worked example replaced with a reader-reachable one, and the self-finding recorded in the issue
+itself so it does not quietly launder its own correction.
+
+#### 4. Three call sites, and why a partial fix is worse than none
+
+The pattern occurs at three places, not one: the declaration-block reader, the twin reader, and the
+citation scan. ⇒ A fix applied only to the scan leaves the two readers misclassifying — **and those
+two are the mechanism by which an author is supposed to escape a false ORPHAN.** _A partial repair
+here removes the escape hatch and leaves the trap._ I found this only because I went looking for the
+regex rather than for the line I remembered it being on.
+
+#### 5. My workaround was never evidence, and conceding that is the point
+
+I have been citing forge objects by endpoint path, which dodges the extractor because a path
+contains slashes. Ralph's objection is that this is a workaround and not proof the extractor is
+sound. **Granted without qualification.** It depends on every author knowing a convention that is
+written down nowhere, and it is silent for anyone who does not — the failure it prevents is one it
+cannot warn about.
+
+**This entry is itself written under that undocumented convention, and could not be published
+otherwise.** The token at the centre of the finding appears here only in path form or spelled out,
+because backticking it in this file would classify ORPHAN and turn the ledger red — the reproducer
+in section 1 has its backticks written as `<backtick>` for exactly that reason. ⇒ _The document
+reporting the defect has to practise the workaround to be publishable at all_, which is the most
+direct evidence available that the convention is load-bearing and undocumented. **A new author
+writing this same entry would have made the ledger red and would not have known why.**
+
+#### 6. Filed, and the phantom that preceded it
+
+Issue #538, with the reproducer, the count, the three call sites, and four tests — including one
+that guards the false negative a digit-exclusion fix would introduce. Not a duplicate: #497 is
+ORPHAN wording and undated header figures with **zero** mentions of decimal, namespace, or comment
+ids; #481 is the empty-corpus pass; #528 is content pins rather than resolvability. I read #497
+rather than trusting the search, because a duplicate filed on the strength of a search that returned
+nothing would be this ledger's own recurring defect.
+
+⇒ Ralph also corrected my gate reporting: a gate report must name exact suites and addends. The
+long-carried **23/23** was narration that appears in no artifact; the true figure is
+`tests/citationReachability.test.ts` (19) + `tests/closingReferences.test.ts` (16) = **35**.
+⇒ _A number that is never written down cannot be found wrong by reading anything_, which is why it
+survived so many rounds of checking the artifacts.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
