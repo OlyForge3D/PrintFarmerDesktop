@@ -3486,6 +3486,139 @@ in the forge will ever stop me from merging my own work. ⇒ **That the restrain
 precisely why it has to be restated in the record every time it is exercised** — an unenforced rule
 kept silently is indistinguishable, in the artifacts, from no rule at all.
 
+### Run BY — a confound broken by ninety-six cases, and a denominator that was never asked about
+
+Read `2026-08-05T19:28:51Z` onward, trunk `9eccb0d4abe5add39f972289d9b471c5d64529a5`. Prompted by a
+correction pinning two objects. **Every field in it confirms.** The run is what happened when I tried
+to turn the two objects into evidence.
+
+#### 1. The correction confirms, and it demonstrates the correspondent's own new rule on its own subject
+
+```
+pulls/416   state=closed  merged=true  merged_at=2026-08-05T06:37:18Z
+            head 8ef108611748136c011944ab4d0a48add2369697
+            merge_commit 840e6ad133340dc7bcf9dd0ae85eab4e5cdb409b
+            reviews 0   inline comments 0
+issues/119  state=open   pull_request=null        pulls/119 -> HTTP 404
+```
+
+⇒ Confirmed field-for-field at a reading 1h46m later than theirs. All of it is terminal and
+monotonic, which is exactly the class their discipline says may be trusted across that gap.
+
+⇒ **And the same read returns `mergeable=null`, `mergeable_state=unknown`.** They had just adopted
+the rule that _mergeability is an ephemeral forge cache that can go UNKNOWN after close_ — **the
+object they pinned it to is displaying the behaviour.** ⇒ Worth stating because the pleasant version
+of this is a coincidence and the useful version is not:
+_**a rule stated in the abstract and a rule instantiated on the object in front of you are different
+levels of belief, and the second one is cheap here.**_
+
+#### 2. Two PRs that look like a controlled experiment, and are confounded
+
+```
+PR #162   merge_commit 3fac5567  parents=1  SQUASH      branch DELETED   head e5a90df7  is-ancestor 1  ORPHANED
+PR #416   merge_commit 840e6ad1  parents=2  TRUE MERGE  branch PRESENT   head 8ef10861  is-ancestor 0  PRESERVED
+CONTROLS  dev vs dev -> 0     known orphan c4a3321 -> 1        both arms discriminate
+```
+
+⇒ Same repository, same branch policy, same role, opposite strategies, opposite outcomes. **It is
+almost irresistible to read the squash as the cause.** ⇒ It cannot be read that way: **two variables
+move together.** #162 was squashed _and_ had its branch deleted; #416 was merged _and_ kept its
+branch. Either could account for the head not being on trunk, and a natural experiment does not
+become a controlled one by being tidy.
+
+> _**A comparison in which every variable moves at once is an illustration of the conclusion, not
+> evidence for it.**_
+
+#### 3. The confound broken — ninety-six cases holding one variable fixed
+
+All 210 merged pull requests in the repository, classified by merge shape, branch survival, and
+whether the pull-request head is an ancestor of trunk:
+
+```
+cell                              n    head PRESERVED   head ORPHANED   BLIND(128)
+SQUASH/FF   x branch DELETED     45          0              45              0
+SQUASH/FF   x branch PRESENT     96          0              96              0
+TRUE MERGE  x branch PRESENT     69         68               1              0
+```
+
+⇒ **The critical cell is the middle one: 96 pull requests whose branch was never deleted, and 96 of
+96 heads are still not ancestors of trunk.** Retention rescues nothing. ⇒ **The squash is the entire
+cause; the branch deletion is a bystander in the ancestry question** — it changes whether the object
+can be _fetched_, not whether it is _on the branch_, and those are the two different questions this
+ledger keeps separating.
+
+⇒ Two further quantities fall out, and they belong to different arguments:
+
+- **141 of 210 merged pull requests — 67% — have heads that are not ancestors of trunk.** That is the
+  standing orphan population the citation harness exists for, and it is the majority case.
+- **69 landed as two-parent merges**, on a branch whose protection declares
+  `required_linear_history=true`. **The squashes are consistent with that setting; the 69 are the
+  population that contradicts it** — a sharper statement than the "recent N" framing of run BX, and
+  it supersedes the loose form of it.
+
+#### 4. The one exception indicts the instrument, not the repository
+
+The single `TRUE MERGE` orphan is **#386**, and the first thing I did was assume a lost merge:
+
+```
+#386  merge_commit 1ececa0f  parents=2   second parent == head.sha : TRUE
+      merge commit is-ancestor development : 1      <- the merge is not on trunk
+      base.ref = jpapiez-vasquez-merge-queue-credential      <- NOT development
+      base.sha  9f556f5c  is-ancestor development : 0
+```
+
+⇒ **#386 never targeted trunk.** It was stacked onto another branch. **My sweep asked "is the head on
+trunk?" of a pull request that never claimed to be going there**, and reported the answer in a column
+labelled `ORPHANED` alongside 209 rows where the question was the right one.
+
+> _**The sweep carried an unstated denominator — that every merged pull request targets the default
+> branch — which was false for one row in two hundred and ten and invisible in every row of the
+> output.**_ It is run BX's finding wearing different clothes: there the denominator claimed a
+> population the rows were not drawn from; here it claimed a destination the row was not aimed at.
+
+#### 5. A prior instrument reached the same row, and the verdict has since changed operand
+
+Trunk already carries `52a74e899a12866c77c96c9fca3e68278e9f80e6`, _"assert that a merge reported as
+success actually reached the branch"_, closing #391. Its message records a sweep of the last 20
+merges finding **"19 landed, 1 NOT landed (#386)"**, and states the rule in capitals: **a merge is not
+evidence that a merge happened.** So #386 was flagged before, by a check written for exactly this.
+
+Measured now:
+
+```
+5 of 5 changed paths present on trunk
+blobs identical to #386's head : 0 of 5        (all five have evolved since)
+lines #386 ADDED that are missing from trunk:
+  scripts/check-protection-assumptions.mjs   253 added   0 missing
+  tests/protectionAssumptions.test.ts        189 added   0 missing
+```
+
+⇒ **The head is not on trunk and the work is.** Both prior statements were true and remain true as
+_ancestry_; as a statement about _shipped content_ the "NOT landed" verdict is now false. ⇒ This is
+the operand distinction this ledger has been holding all round, arriving from the far side:
+
+> _**"Did it land" has two operands, and they do not merely risk disagreeing — here they have
+> settled on opposite answers about the same pull request, permanently.**_ The merge commit will
+> never become an ancestor, and the lines will never leave.
+
+⇒ So the standing rule is refined rather than repeated: **ancestry answers _is this object on the
+chain_; content answers _did this work ship_.** A check that reports one under a name that sounds
+like the other is correct and misread, which is the condition #391's commit was written to end and
+the condition my own sweep re-created four hours later in a different column.
+
+#### 6. What I did not do
+
+⇒ **No task raised against #416.** It is merged and terminal; the correspondent has retired it from
+routing, and reopening a merged object to record a process finding would attach the finding to the
+wrong thing. The approval gap — **`reviews 0` on #416, confirmed here — is structural**, it belongs
+to the forge configuration run BW measured, and it is already filed there.
+
+⇒ **No new issue.** The two quantities in §3 that bear on the merge-strategy contradiction were added
+to the issue that already owns it, as a comment, exactly as the previous round's were.
+
+⇒ **#119 untouched**, and now confirmed a third time to be issue-only: `pull_request=null`,
+`pulls/119` → 404. **It cannot be reviewed, merged, or mistaken for work in flight.**
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
