@@ -40,9 +40,10 @@ import { execFileSync } from 'node:child_process';
 
 const REPO = process.env.SQUAD_LABEL_REPO ?? 'OlyForge3D/PrintFarmerDesktop';
 
-// Open issues carrying no squad label, measured 2026-08-05 over 123 open issues. Lower this as
-// triage lands. Raising it requires saying so in a commit message.
-const UNOWNED_BASELINE = 57;
+// Open issues carrying no squad label. This was 57 of 123 when the check landed and the whole
+// backlog was triaged the same day, so the ratchet now sits on the floor: any new unowned issue
+// fails the run. Raising this requires saying so in a commit message.
+const UNOWNED_BASELINE = 0;
 
 const BASE = 'squad';
 const MEMBER = /^squad:.+/;
@@ -143,6 +144,51 @@ if (!issues.length) {
     'enumerated 0 open issues — the query cannot see the board. verdict withheld.',
   );
   process.exit(2);
+}
+
+// Truncation cross-check. `--paginate` is used above, but a client that silently stops at a page
+// boundary returns a successful partial response and no error, so the enumeration is compared
+// against an independently-computed total from the search index.
+//
+// The comparison is deliberately one-sided. Missing issues (REST below the index) is truncation
+// and fails. A surplus (REST above the index) is search-index lag, which is routine for issues
+// filed in the last few seconds and is not a defect in this enumeration. Failing on a surplus
+// would make a complete enumeration red because a weaker instrument had not caught up.
+//
+// It is worth being clear about what this control cannot do: it does not detect staleness. Two
+// counts drawn from the same moment agree whether that moment is now or four hours ago, and a
+// boundary control over the oldest issues agrees in both cases too, since old issues are present
+// in every snapshot. Agreement between instruments bounds error only when they can fail
+// differently, and these share the failure mode of age. Only a wall clock detects that.
+let indexTotal = null;
+try {
+  indexTotal = Number(
+    JSON.parse(
+      execFileSync(
+        'gh',
+        ['api', `search/issues?q=repo:${REPO}+is:issue+is:open&per_page=1`],
+        {
+          encoding: 'utf8',
+          maxBuffer: 1 << 24,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      ),
+    ).total_count,
+  );
+} catch {
+  indexTotal = null;
+}
+if (indexTotal != null) {
+  console.log(
+    `cross-check: enumerated ${issues.length} vs search index ${indexTotal}` +
+      (issues.length >= indexTotal ? '' : '  <- SHORT'),
+  );
+  if (issues.length < indexTotal) {
+    console.error(
+      `enumerated ${issues.length} open issues but the search index reports ${indexTotal} — the enumeration is truncated. verdict withheld.`,
+    );
+    process.exit(2);
+  }
 }
 
 const tally = { OWNED: 0, MISSING_BASE: 0, ORPHAN_BASE: 0, UNOWNED: 0 };
