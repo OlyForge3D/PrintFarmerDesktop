@@ -139,74 +139,53 @@ const EXPECTED_EVIDENCE: Record<string, Record<string, unknown>> = {
 };
 
 /**
- * Whether the current run's filter selected `arm`.
+ * The suite title, used by the `describe` below and named here because the
+ * guard's design note has to live somewhere and this is what it is about.
  *
- * A reviewer of PR #518 measured why any of this exists: `vitest -t <name>` on
- * a clean Windows tree failed, because the completeness check below cannot tell
- * a deliberately narrowed run from a neutered file. A guard that reddens a
- * correct tree is a false-red generator, and this repository has already had
- * one of those redden a correct change.
+ * There is deliberately no way to excuse a missing arm. Four rounds of review
+ * attacked this one decision, and the history is the argument:
  *
- * `process.argv` is not the signal -- measured, not assumed: inside a vitest
- * worker it is `[node, tinypool/dist/entry/process.js]` and carries no CLI
- * flags at all. The run configuration is reachable only through
- * `globalThis.__vitest_worker__`, which is internal API. The fallback is
- * deliberate: if that global is ever missing, no filter is reported, every arm
- * is required, and the completeness check runs. An upstream change then
- * produces a loud false red rather than a silent exemption, and silence is the
- * failure this whole file exists to prevent.
- *
- * Two earlier versions of this asked the wrong question, and the second one was
- * defeated by two independent round-5 reviewers within minutes of each other,
- * which is the useful part of the history:
- *
- *   1. "Was the run narrowed at all?" exempted the whole check whenever a
+ *   1. "Was the run narrowed at all?" -- exempted the check whenever any
  *      pattern was present, so a pattern committed to `vitest.config.ts`
  *      disabled it permanently and silently.
- *   2. "Did the narrowing come from the committed config?" answered that by
- *      substring-searching the config's SOURCE TEXT for `testNamePattern`. Two
- *      reviewers defeated it identically with a computed key
- *      (`['testName' + 'Pattern']`), and a third showed the same instrument
- *      produced a FALSE RED when the word appeared only in a comment. Matching
- *      source text is not reading configuration: it is defeated by any spelling
- *      the author did not anticipate and fooled by any mention that is not code.
+ *   2. "Did the narrowing come from the committed config?" -- answered by
+ *      substring-searching the config's SOURCE TEXT. Two round-5 reviewers
+ *      defeated it identically with a computed key (`['testName' + 'Pattern']`)
+ *      and a third showed the same instrument produced a FALSE RED when the
+ *      word appeared only in a comment. Matching source text is not reading
+ *      configuration.
+ *   3. "Did the run's actual filter select this arm?" -- dropped the origin
+ *      question as unanswerable. Two round-6 reviewers then committed a
+ *      computed-key pattern selecting only the trailing platform test: one test
+ *      ran so this hook fired, every required arm was excused, and with the
+ *      product broken (`EBUSY` added to the fatal set) the file still exited 0
+ *      at `1 passed | 4 skipped`. Confirmed here before repairing, with the
+ *      control that matters: the same product mutation WITHOUT the pattern
+ *      exits 1, so the pattern is what hid it.
  *
- * So this asks the question that has an answer: does the filter this run is
- * ACTUALLY using select this arm? Where the filter came from stops mattering,
- * which is what makes the origin-based bypasses meaningless. An arm the filter
- * excludes is legitimately absent. An arm the filter selects must have run, no
- * matter how the filter was spelled or where it was declared.
+ * Then the question was settled by measurement rather than another guess.
+ * Inside a worker, a CLI `-t` and a committed config pattern are INDISTINGUISH-
+ * ABLE: `__vitest_worker__.config` carries the same 30 keys and the identical
+ * resolved `testNamePattern` in both cases, and `process.argv` is only
+ * `[node, tinypool/dist/entry/process.js]`. Reading the config module instead
+ * fails too -- importing it drags in `@vitejs/plugin-react` and throws under
+ * jsdom, the same way in all three cases, so it cannot discriminate either.
+ *
+ * ORIGIN IS NOT RECOVERABLE FROM IN HERE. So any exemption keyed on the filter
+ * can be switched on by committing a filter, which is precisely the defect that
+ * killed versions 1, 2 and 3. The exemption was never a weak guard needing a
+ * fourth patch -- IT WAS THE DEFECT. It is gone.
+ *
+ * What that costs, stated plainly: `vitest -t <pattern>` matching SOME arms of
+ * this file now fails. That is a true report, not a false red -- the run did
+ * not measure the contract this file exists to assert, and it says so, naming
+ * the arms. `npm test` is `vitest run` with no narrowing and no sharding, so
+ * CI is unaffected; vitest shards by file, so a shard runs this file whole or
+ * not at all. A pattern matching NO test here still costs nothing, because
+ * then no test runs and this hook never fires.
  */
 const DESCRIBE_TITLE =
   'startup sweep against a real filesystem refusal (issue #514)';
-
-function runFilter(): RegExp | undefined {
-  const worker = (globalThis as Record<string, unknown>).__vitest_worker__ as
-    { config?: { testNamePattern?: unknown } } | undefined;
-  const pattern = worker?.config?.testNamePattern;
-  if (pattern instanceof RegExp) {
-    // A `g` flag would make `test()` stateful across arms, so the last arm
-    // checked could be reported absent purely because of where `lastIndex`
-    // happened to land.
-    return new RegExp(pattern.source, pattern.flags.replace(/g/g, ''));
-  }
-  if (typeof pattern === 'string' && pattern.length > 0) {
-    return new RegExp(pattern);
-  }
-  return undefined;
-}
-
-function armWasSelected(arm: string, filter: RegExp | undefined): boolean {
-  if (filter === undefined) return true;
-  // Vitest matches the full name including enclosing describes. Both forms are
-  // tried rather than assuming the separator, so a change to how vitest joins
-  // them widens the required set rather than silently exempting an arm.
-  return (
-    filter.test(arm) ||
-    filter.test(`${DESCRIBE_TITLE} > ${arm}`) ||
-    filter.test(`${DESCRIBE_TITLE} ${arm}`)
-  );
-}
 
 /**
  * What each arm observed, recorded as its last statement and re-asserted below.
@@ -362,113 +341,110 @@ afterEach(async () => {
 // no error at all elsewhere and every arm below would be vacuous. The `afterAll`
 // at the foot of this file is what makes the skip safe: on Windows it fails
 // unless every arm ran to completion, and elsewhere it fails if any of them ran.
-describe.skipIf(!onWindows)(
-  'startup sweep against a real filesystem refusal (issue #514)',
-  () => {
-    it(ARM_CONTROL, async () => {
-      // The negative control for every arm below. "The directory survived"
-      // passes both when removal was refused and when the sweep never targeted
-      // it -- a marker that fails validation, a live pid, a name that fails the
-      // uuid pattern. Without this, a survivor proves nothing.
-      const { root, stale } = await staleInstance();
+describe.skipIf(!onWindows)(DESCRIBE_TITLE, () => {
+  it(ARM_CONTROL, async () => {
+    // The negative control for every arm below. "The directory survived"
+    // passes both when removal was refused and when the sweep never targeted
+    // it -- a marker that fails validation, a live pid, a name that fails the
+    // uuid pattern. Without this, a survivor proves nothing.
+    const { root, stale } = await staleInstance();
 
-      await expect(serviceFor(root).initialize()).resolves.toBeUndefined();
+    await expect(serviceFor(root).initialize()).resolves.toBeUndefined();
 
-      const survivedUnheld = await exists(stale);
-      expect(
-        survivedUnheld,
-        'the fixture was never collectable, so the refusal arms prove nothing',
-      ).toBe(false);
+    const survivedUnheld = await exists(stale);
+    expect(
+      survivedUnheld,
+      'the fixture was never collectable, so the refusal arms prove nothing',
+    ).toBe(false);
 
-      record(ARM_CONTROL, { survivedUnheld });
+    record(ARM_CONTROL, { survivedUnheld });
+  });
+
+  it(ARM_CODE, async () => {
+    const { stale } = await staleInstance();
+    await holdBusy(stale);
+
+    const error = await realRemovalError(stale);
+
+    // Asserted on `code`, never on the message text: the message is a
+    // human-readable string that carries no contract, and matching it is how
+    // a classifier ends up keying on prose.
+    expect(
+      'code' in error,
+      'the real error carries no code property, so a classifier keying on ' +
+        'code would read undefined and tolerate everything',
+    ).toBe(true);
+    expect(error.code).toBe('EBUSY');
+    expect(error.syscall).toBe('rmdir');
+
+    record(ARM_CODE, {
+      hasCode: 'code' in error,
+      code: error.code,
+      syscall: error.syscall,
     });
+  });
 
-    it(ARM_CODE, async () => {
-      const { stale } = await staleInstance();
-      await holdBusy(stale);
+  it(ARM_STARTUP, async () => {
+    const { root, stale } = await staleInstance();
+    await holdBusy(stale);
 
-      const error = await realRemovalError(stale);
+    // The claim: initialize() resolves rather than propagating the refusal.
+    await expect(serviceFor(root).initialize()).resolves.toBeUndefined();
 
-      // Asserted on `code`, never on the message text: the message is a
-      // human-readable string that carries no contract, and matching it is how
-      // a classifier ends up keying on prose.
-      expect(
-        'code' in error,
-        'the real error carries no code property, so a classifier keying on ' +
-          'code would read undefined and tolerate everything',
-      ).toBe(true);
-      expect(error.code).toBe('EBUSY');
-      expect(error.syscall).toBe('rmdir');
+    const survivedRefusal = await exists(stale);
+    expect(
+      survivedRefusal,
+      'the stale root was deleted despite the real refusal, so the arm ' +
+        'exercised no refusal at all',
+    ).toBe(true);
 
-      record(ARM_CODE, {
-        hasCode: 'code' in error,
-        code: error.code,
-        syscall: error.syscall,
-      });
+    // Control: initialize() finished its real work rather than merely not
+    // throwing. A catch placed around too much of the method would swallow
+    // the failure and skip registration, passing every assertion above.
+    const owned = await ownedByThisProcess(root);
+    expect(
+      owned,
+      'initialize() tolerated the failed sweep but never registered this instance',
+    ).toHaveLength(1);
+
+    record(ARM_STARTUP, { survivedRefusal, ownedCount: owned.length });
+  });
+
+  it(ARM_CLASSIFY, async () => {
+    const { stale } = await staleInstance();
+    await holdBusy(stale);
+
+    const real = await realRemovalError(stale);
+    const authored = new Error(AUTHORED_INIT_FAILURE);
+
+    // #514 asks whether the authored string and reality lead to the same
+    // decision. They do: both are tolerated.
+    expect(isBrokenTempRootError(real)).toBe(false);
+    expect(isBrokenTempRootError(authored)).toBe(isBrokenTempRootError(real));
+
+    // They agree for different reasons, and the difference is worth pinning
+    // rather than leaving as a comment. The real error is tolerated because
+    // its code is outside the fatal set. The authored one is tolerated
+    // because it has no code at all -- `new Error('EPERM: ...')` puts the
+    // code in the message and nowhere else, so it would be tolerated by a
+    // classifier that had stopped reading codes entirely. Any change that
+    // starts keying on the presence of a code turns this red, which is the
+    // moment someone needs to look at the authored fixture.
+    expect(
+      'code' in authored,
+      'the authored fixture has gained a code, so this asymmetry is gone ' +
+        'and this assertion should be deleted along with the caveat above',
+    ).toBe(false);
+    expect('code' in real).toBe(true);
+
+    record(ARM_CLASSIFY, {
+      realIsFatal: isBrokenTempRootError(real),
+      authoredIsFatal: isBrokenTempRootError(authored),
+      authoredHasCode: 'code' in authored,
+      realHasCode: 'code' in real,
     });
-
-    it(ARM_STARTUP, async () => {
-      const { root, stale } = await staleInstance();
-      await holdBusy(stale);
-
-      // The claim: initialize() resolves rather than propagating the refusal.
-      await expect(serviceFor(root).initialize()).resolves.toBeUndefined();
-
-      const survivedRefusal = await exists(stale);
-      expect(
-        survivedRefusal,
-        'the stale root was deleted despite the real refusal, so the arm ' +
-          'exercised no refusal at all',
-      ).toBe(true);
-
-      // Control: initialize() finished its real work rather than merely not
-      // throwing. A catch placed around too much of the method would swallow
-      // the failure and skip registration, passing every assertion above.
-      const owned = await ownedByThisProcess(root);
-      expect(
-        owned,
-        'initialize() tolerated the failed sweep but never registered this instance',
-      ).toHaveLength(1);
-
-      record(ARM_STARTUP, { survivedRefusal, ownedCount: owned.length });
-    });
-
-    it(ARM_CLASSIFY, async () => {
-      const { stale } = await staleInstance();
-      await holdBusy(stale);
-
-      const real = await realRemovalError(stale);
-      const authored = new Error(AUTHORED_INIT_FAILURE);
-
-      // #514 asks whether the authored string and reality lead to the same
-      // decision. They do: both are tolerated.
-      expect(isBrokenTempRootError(real)).toBe(false);
-      expect(isBrokenTempRootError(authored)).toBe(isBrokenTempRootError(real));
-
-      // They agree for different reasons, and the difference is worth pinning
-      // rather than leaving as a comment. The real error is tolerated because
-      // its code is outside the fatal set. The authored one is tolerated
-      // because it has no code at all -- `new Error('EPERM: ...')` puts the
-      // code in the message and nowhere else, so it would be tolerated by a
-      // classifier that had stopped reading codes entirely. Any change that
-      // starts keying on the presence of a code turns this red, which is the
-      // moment someone needs to look at the authored fixture.
-      expect(
-        'code' in authored,
-        'the authored fixture has gained a code, so this asymmetry is gone ' +
-          'and this assertion should be deleted along with the caveat above',
-      ).toBe(false);
-      expect('code' in real).toBe(true);
-
-      record(ARM_CLASSIFY, {
-        realIsFatal: isBrokenTempRootError(real),
-        authoredIsFatal: isBrokenTempRootError(authored),
-        authoredHasCode: 'code' in authored,
-        realHasCode: 'code' in real,
-      });
-    });
-  },
-);
+  });
+});
 
 // A wholly skipped file reports as passing, and so does one whose arms were
 // gutted. Two rounds of review shaped this guard, and both rounds are recorded
@@ -499,8 +475,10 @@ describe.skipIf(!onWindows)(
 // Three limits, stated rather than implied, all measured by reviewers or by
 // the experiments above rather than guessed:
 //   - Deleting an arm together with its constant and its `REQUIRED_ON_WINDOWS`
-//     entry passes, as does deleting this `afterAll` or editing the filter it
-//     consults. No guard inside a file survives an edit to that file.
+//     entry passes, as does deleting this `afterAll`. No guard inside a file
+//     survives an edit to that file. Note this no longer extends to config:
+//     since round 6 there is nothing in `vitest.config.ts` that can excuse an
+//     arm, so silencing this file means editing this file.
 //   - Nothing inside a file can notice that the file was deleted.
 //   - If NO test in this file runs, this hook does not run either, so nothing
 //     is checked. Measured: skipping an arm and then narrowing to only that arm
@@ -539,15 +517,11 @@ afterAll(() => {
     return;
   }
 
-  // An arm may be absent only if the filter this run is ACTUALLY using excludes
-  // it. Asking that, rather than "was the run narrowed", is what makes it
-  // irrelevant where the filter was declared or how it was spelled -- the two
-  // bypasses round 5 found both attacked the origin question, which no longer
-  // gets asked.
-  const filter = runFilter();
-  const missing = REQUIRED_ON_WINDOWS.filter(
-    (name) => !observations.has(name) && armWasSelected(name, filter),
-  );
+  // Unconditional. Every earlier version offered some way to excuse a missing
+  // arm, and every one of those was switched on by committing a config change.
+  // See the note above `DESCRIBE_TITLE` for why origin cannot be recovered from
+  // inside a worker, and therefore why no exemption can be made safe here.
+  const missing = REQUIRED_ON_WINDOWS.filter((name) => !observations.has(name));
   if (missing.length > 0) {
     throw new Error(
       `this runner is win32, where the real-refusal arms are the only reason ` +
@@ -556,7 +530,11 @@ afterAll(() => {
         `${missing.join(' | ')}. Skipping an arm reports as a pass, so this ` +
         `file fails rather than claiming a measurement it never made. If an ` +
         `arm above failed, that failure is the cause and this is its ` +
-        `consequence -- read that one first.`,
+        `consequence -- read that one first. If instead you narrowed this run ` +
+        `yourself (-t / --testNamePattern), that is why, and it is not a bug: ` +
+        `this file requires all of its arms unconditionally, because any ` +
+        `exemption for a narrowed run could be switched on for everyone by ` +
+        `committing a pattern. Run the file without a filter.`,
     );
   }
 
