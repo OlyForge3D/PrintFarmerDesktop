@@ -623,18 +623,36 @@ describe('runLegacyBackupPreflight — safety number checks', () => {
 });
 
 describe('runLegacyBackupPreflight — duplicate key detection', () => {
-  it('detects and warns about duplicate JSON keys', async () => {
-    // Manually construct JSON with duplicate key
+  // Replaces the former 'detects and warns about duplicate JSON keys', which
+  // asserted only that preflight returned something. #158 treats a repeated
+  // key as a parser-differential smuggling primitive rather than a cosmetic
+  // defect, so the entry point now fails closed and this asserts the code.
+  it('rejects a JSON object that repeats a key', async () => {
     const jsonWithDup =
       '{"schemaVersion":4,"exportedAt":"' +
       NOW +
       '","projects":[],"schemaVersion":4}';
     const filePath = await writeTmpFile(tmpDir, 'dup-keys.json', jsonWithDup);
-    // JSON.parse ignores duplicate keys (last wins), but we warn
+    await expect(runLegacyBackupPreflight(filePath)).rejects.toMatchObject({
+      code: 'LEGACY_BACKUP_INVALID_JSON',
+    });
+  });
+
+  it('accepts repeated key names that live in different objects', async () => {
+    // The boundary that matters: detection is per object, not per document.
+    // A backup naming `id` in a project and again in a photo is ordinary.
+    const backup = {
+      schemaVersion: 4,
+      exportedAt: NOW,
+      projects: [minimalProjectJson()],
+    };
+    const filePath = await writeTmpFile(
+      tmpDir,
+      'repeated-names.json',
+      JSON.stringify(backup),
+    );
     const result = await runLegacyBackupPreflight(filePath);
-    // The file may still parse due to last-wins behavior
-    // but we should at least not throw, and ideally warn
-    expect(result).toBeDefined();
+    expect(result.warnings.join(' ')).not.toMatch(/repeats the key/);
   });
 });
 

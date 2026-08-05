@@ -1,0 +1,59 @@
+name: Merge landed
+
+# merge-queue: publication
+#
+# This workflow never runs on `pull_request`, which is deliberate and is the
+# whole finding of #391: "per-PR verification at merge time cannot see this —
+# the defect only becomes visible after the *next* merge lands". #386's merge
+# was orphaned twenty-five seconds later by #366. At the moment #386 merged
+# there was nothing to see, so a pull_request-triggered check would have been
+# green and correct and useless.
+#
+# THE UNIT OF ASSERTION IS THE SET OF RECENT MERGES, NOT A PULL REQUEST.
+# That is why this runs on a schedule instead, and why it is classified
+# `publication` rather than `advisory`: check-merge-queue-contexts.mjs rejects
+# an `advisory` workflow that does not run on pull_request, and it is right to.
+# Its context must never be added to a ruleset's required list — a required
+# context that no pull request emits blocks every pull request immediately.
+
+on:
+  schedule:
+    # Hourly. #391's sweep put fifteen merges through in one burst with several
+    # inside the same second, so a daily window would batch a whole incident
+    # into one report and lose which merge orphaned which.
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: How many recent merged pull requests to sweep
+        required: false
+        default: '15'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  merge-landed:
+    name: Merge landed
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: the check asks `merge-base --is-ancestor` about merge
+      # commits that may be far behind the tip, and a shallow clone answers
+      # 128 for them. 128 is "I could not answer", which this check reports as
+      # unverifiable rather than as a pass — but a run that is unverifiable for
+      # a fixable reason is a run that teaches people to ignore it.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # No `npm ci`: the check imports nothing outside node: builtins.
+      - name: Assert every recent merge reached development
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SWEEP_LIMIT: ${{ inputs.limit || '15' }}
+        run: npm run check:merge-landed -- --target origin/development --limit "$SWEEP_LIMIT"

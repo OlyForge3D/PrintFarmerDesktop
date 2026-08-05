@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 4,
+  "exportedAt": "2026-07-01T12:00:00.000Z",
+  "appVersion": "4.0.0",
+  "projects": [
+    {
+      "id": "proj-1",
+      "name": "Flow Rate",
+      "mode": "flowRate",
+      "status": "inProgress",
+      "steps": [
+        {
+          "id": "step-1",
+          "type": "flowRate",
+          "order": 1,
+          "payload_count": 9007199254740993,
+          "attempts": [],
+          "currentAttemptId": null
+        }
+      ]
+    }
+  ]
+}
