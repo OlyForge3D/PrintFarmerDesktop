@@ -29,6 +29,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import type { CalibrationGetQueueStateResponse } from '@shared/ipc';
+
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -715,8 +717,9 @@ export async function applyCalibrationScenario(
             message: 'No queued job for this project.',
             retryable: false,
             retryAfterSeconds: null,
+            reference: null,
           },
-        };
+        } satisfies CalibrationGetQueueStateResponse;
       }
       if (
         queueKind === 'unknownOutcomeRefetchFailure' &&
@@ -730,8 +733,9 @@ export async function applyCalibrationScenario(
             message: 'Network timeout',
             retryable: true,
             retryAfterSeconds: null,
+            reference: null,
           },
-        };
+        } satisfies CalibrationGetQueueStateResponse;
       }
       okServed += 1;
       return {
@@ -755,7 +759,7 @@ export async function applyCalibrationScenario(
           queuePosition: 1,
           updatedAt: ids.now,
         },
-      };
+      } satisfies CalibrationGetQueueStateResponse;
     });
 
     handle('calibration:acknowledgeBedClear', () => ({
