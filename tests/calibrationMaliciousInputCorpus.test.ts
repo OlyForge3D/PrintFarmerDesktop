@@ -1078,6 +1078,16 @@ const CELLS: Cell[] = [
         'profile.json': fixture('orca-control.json'),
       }),
     run: async (ctx) => {
+      // What actually contains this, measured by disabling guards one at a
+      // time rather than assumed from reading the code: it is *not* primarily
+      // the `entry.isSymbolicLink()` skip. A junction's `Dirent.isDirectory()`
+      // is already false, so traversal never descends into it even with every
+      // reparse-point check removed. The containment is the positive type
+      // dispatch (only real directories are descended, only real files are
+      // read) together with `canonicalizeUnderRoot`, which re-derives the real
+      // path and drops anything landing outside the root. The profile below is
+      // only discovered once *both* of those are defeated — so those are the
+      // lines a future refactor must not quietly drop.
       const escapedDir = path.join(ctx.outside, 'orca-escaped');
       await mkdir(escapedDir, { recursive: true });
       await writeFile(
