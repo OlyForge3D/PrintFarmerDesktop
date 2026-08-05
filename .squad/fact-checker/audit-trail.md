@@ -745,6 +745,18 @@ corrected to _two_ before the commit. **A run whose subject is a wrong number pr
 wrong number in the sentence announcing it**, which is the ordinary case rather than an
 irony: the arithmetic sits in prose, where nothing checks it.
 
+**Finding — the declaration block is recursive, and the harness proved it on this run.**
+Declaring the two pre-rebase twins required naming their live counterparts, and the harness
+scans every backticked revision in the file, so **the declaration created two fresh
+unreachable citations and went red again.** The counterparts had died at #162's squash —
+which this trail predicted in advance and which is now measured: both resolve from **zero**
+remote refs. Declaring them closed it at `REACHABLE 48 · TWIN 44 · DECLARED 16 · ORPHAN 0`.
+
+> **A repair that must cite what it repairs extends the thing it is repairing.** The
+> recursion terminates only because a twin's twin is the twin itself, so the second step
+> names nothing new. **A checker that reads its own repair is the only kind that could have
+> noticed** — one that read the ledger as prose would have accepted the first, red, version.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
@@ -809,3 +821,10 @@ These revisions are cited above and are **not** reachable from this branch or fr
 - `65345ba` — ancestor of `refs/pull/76/head`; same route
 - `a08de19` — ancestor of `refs/pull/79/head`; `git fetch origin refs/pull/79/head`
 - `dc034d8` — the tip of `refs/pull/79/head`; same route
+- `af03801` — ancestor of `refs/heads/jpapiez-ripley-decompose-57`; `git fetch origin jpapiez-ripley-decompose-57`
+- `6538bed` — ancestor of the same branch; same route
+- `bb36969` — **the tip of that branch**, verified against the remote rather than against a local remote-tracking ref; same route
+- `a32ecf9` — **a pre-rebase twin whose live counterpart has since been destroyed, as this trail predicted it would be.** Cited in run AT as one of the seven objects whose reachability was published as a clone-local count. Its live counterpart `3057836` was on the branch of PR #162; that PR **squash-merged**, so the counterpart is now reachable from **no remote ref** — measured, not assumed. **There is no fetch route.** The content is on `development` in the merge `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`; re-derive from there rather than from this revision.
+- `0d1215f` — the second of that pair, live counterpart `16fbaa4`, same history and same absence of a route; same repair.
+- `3057836` — **named by the declaration above and therefore cited by it.** This is the live counterpart of `a32ecf9`; it was on the branch of PR #162 and died at that PR's squash-merge, so it is reachable from no remote ref. **Declaring an unreachable revision cites it, so the declaration block is recursive and terminates only when the twins it names are themselves declared.** No fetch route; the content is on `development` in `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`.
+- `16fbaa4` — the counterpart of `0d1215f`, reached by the same argument and unreachable for the same reason; same repair.
