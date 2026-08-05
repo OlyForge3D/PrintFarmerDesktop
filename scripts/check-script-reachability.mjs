@@ -48,6 +48,22 @@ export const UNINVOKED_SCRIPTS = {
 // reason is the deliverable. "It is in package.json" is not enforcement —
 // package.json is a menu, not a schedule.
 export const UNENFORCED_CHECKS = {
+  'check:review-coverage':
+    'Its judgement IS enforced in CI: tests/reviewHeadCoverage.test.ts drives ' +
+    'normalizeSha, reviewCoversHead, classifyCoverage, evaluateControls, ' +
+    'evaluateSweep and formatSweep over plain objects, including both control ' +
+    'arms that can be reached without a live corpus. Its main() is a CENSUS ' +
+    'over the merged population, so running it per-PR would re-scan the whole ' +
+    'history on every push to answer a question that only changes when ' +
+    'something merges. ' +
+    'STATE THE WEAKNESS PLAINLY: it therefore reports only when a human runs ' +
+    'it, which is weaker than a schedule and is not a gate at all. That is ' +
+    'deliberate and it is the point — with required_approving_review_count at ' +
+    '0, one collaborator, and GitHub refusing self-approval, a gate on review ' +
+    'coverage cannot be satisfied by any pull request and would deadlock the ' +
+    'repository permanently. #280 asked for the absence to be made VISIBLE, ' +
+    'not enforced. Discharge path: a scheduled workflow once someone owns the ' +
+    'cadence — it guards a repository-wide property, not any given change.',
   'check:protection-assumptions':
     'Its evaluator IS enforced in CI: tests/protectionAssumptions.test.ts pins ' +
     'every premise as data and fails if one is widened. Its main() reads ' +

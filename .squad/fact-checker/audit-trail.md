@@ -1826,6 +1826,78 @@ The test written to hold this open reads `if (!isEnforced) { expect(claimants).t
 
 **Non-vacuity control, because a case that has only ever passed is unproven:** reintroducing the denial into the policy fails the new case at the expected assertion; reverting restores 10 of 10. **The instrument was shown able to return the other answer before it was trusted.**
 
+#### Addendum — the CI clearance was true, and it was about the wrong object
+
+Immediately after publishing this entry I asserted **11 of 11 distinct checks, 0 pending, every workflow run attempt 1** at `8365e77`, the SHA I had pushed. **Every field was correct.** But the pull request's head was already `c0e566f` — a second writer had merged `development` into the branch in the interval, fast-forward, nothing lost, and this worktree unaware.
+
+Re-measured at the head the pull request is actually gated on: **14 runs / 12 distinct, 0 pending, 0 non-success, every workflow run attempt 1.** The two extra runs are `PR closure scope` and `Stacked base` firing a second time on `pull_request: edited` — this ledger's own run AE finding, so the surplus is explained without invoking a re-run.
+
+> **A commit's check results are immutable, so a clearance pinned to a pushed SHA never decays into a falsehood — it silently stops being about the object under review.** Staleness in a mutable value eventually contradicts something; staleness in a claim about a permanent object cannot, because the object keeps agreeing with it forever.
+
+⇒ **Run BF added the _attempt_ to the claim, because the method could not see which attempt it was reading. This adds the _subject_:** re-read the pull request's head at the moment CI is asserted, not the SHA that was pushed. Reading the branch ref would also have caught it — the remote ref and the pull request agreed with each other and both disagreed with me — which is the same discipline as reading a ref at send, applied to a derived verdict instead of to a value.
+
+⇒ **And the entry recording this was itself stranded by the merge of the pull request carrying it** — the fourth occurrence of that pattern on this issue, and the third consecutive one. **Merged at `2026-08-05T11:07:14Z`, merge commit `c2d932d`, two parents, so no citation was destroyed;** run BI, the three repaired documents and the new test case are all verified present on the mainline. The addendum ships on a branch cut from the mainline instead.
+
+⇒ **Direction: reassuring.** A green about a superseded head reads exactly like a green about the current one, and the party who pushed is the party least likely to suspect the branch moved without them.
+
+### Run BJ — the right mechanism behind the wrong observable, and a control that varied two things at once
+
+**Claim under test**, offered as the explanation for a pull request with zero check runs: _a dirty pull request gets no synthetic merge commit, so nothing is dispatched._ **Offered observable: `refs/pull/N/merge` is ABSENT.** **Offered control: five clean open pull requests, 5 of 5 PRESENT.**
+
+#### The control varied two variables simultaneously
+
+The subject was **closed and dirty**; the control was **open and clean**. ⇒ **so the design cannot separate closure from dirtiness.** Both missing arms, measured across 60 recent pull requests:
+
+```
+open,   dirty        merge ref PRESENT   4 / 4
+open,   behind       merge ref PRESENT   2 / 2
+open,   blocked      merge ref PRESENT   1 / 1
+closed, dirty        merge ref ABSENT    3 / 3
+closed, behind       merge ref ABSENT    1 / 1
+closed, merged       merge ref ABSENT   47 / 47
+```
+
+❌ **Perfect separation on open/closed. Zero separation on mergeable state.** The observable tracks the variable the control held constant.
+
+#### One airtight contemporaneous counterexample
+
+```
+#500  state open   mergeable false   mergeable_state dirty
+      refs/pull/500/merge PRESENT
+      merge-ref parents: 55803ee (base) + 2a3396d (head)   2nd parent == current head
+      check-runs at head: 11        dispatched by pull_request, 47s after branch creation
+```
+
+⇒ **a dirty pull request with a present merge ref that is current with respect to its own head, and eleven dispatched checks.**
+
+#### But the mechanism is right, and the merge ref says so from the other end
+
+**That merge ref's base parent is `55803ee`; the mainline has moved on.** ⇒ **the merge commit was generated while the pull request was still clean and has not been regenerated since.** ⇒ **so "no new synthetic merge while dirty" is supported — and the ref does not disappear when regeneration stops, it freezes.**
+
+> **A cache that stops refreshing does not become empty. It becomes confidently wrong at the last good value** ⇒ **so presence is the wrong probe for a regeneration failure; currency against the _base_ is the right one.**
+
+#### The premise itself was false
+
+The subject was not CI-silent. **Its branch carries nineteen workflow runs.** Only the last two pushes produced none — and the forge's ref-activity endpoint dates them **while the pull request was open**, closing 23 minutes later:
+
+```
+17:46:03Z  push  c299a41 -> 3e8d1c3     0 runs
+17:31:20Z  push  7686c77 -> c299a41     0 runs
+17:03:12Z  push  6c792bd -> 7686c77     runs dispatched
+```
+
+⇒ **"zero check runs at the head" was read as "no CI on this pull request."** ⇒ **and closure is not the cause either: three closed-unmerged pull requests carry 10, 11 and 12 check runs at their heads.**
+
+⇒ **the head commit's own committer date is `17:45:54Z`, nine seconds before the push.** **It happened to agree here, and it is not the same quantity** — a commit date is written by the author's clock at authoring time and survives rebase, cherry-pick and replay. **The ref-activity endpoint is the only instrument here that reports when the server's ref actually moved.**
+
+#### And the instrument both sides built tables on has a third value
+
+`mergeable_state` returned `unknown` for three of these four pull requests in one sweep and `dirty` in seven other reads, six of them consecutive at twelve-second spacing.
+
+> **`unknown` does not mean "neither clean nor dirty" — it means the forge has not computed it yet, and it arrives in the same field, at exit 0, shaped exactly like an answer.** ⇒ **a single read cannot distinguish a measurement from a not-yet-measured.**
+
+⇒ **so a table built from one read per subject — mine above included, and the one it corrects — is only sound where `unknown` was explicitly excluded.** The counts here were re-read until stable before being written down.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
