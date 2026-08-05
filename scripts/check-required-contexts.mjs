@@ -205,8 +205,17 @@ a count cannot detect a required context that never reported at all.
 `;
 
 /**
- * Invoke gh through whichever name actually spawns.
+ * The candidate names, by platform. Separated out so BOTH lists are pinned by
+ * a test on every runner, rather than only the list the runner happens to use.
  *
+ * @param {string} platform
+ * @returns {string[]}
+ */
+export function ghCandidates(platform) {
+  return platform === 'win32' ? ['gh.exe', 'gh', 'gh.cmd'] : ['gh'];
+}
+
+/**
  * MEASURED ON THIS MACHINE, and it is the reverse of what the repo's existing
  * comment says. check-merge-queue-contexts.mjs records that "`gh` is a .cmd
  * shim on Windows, which spawn cannot exec directly" and lists `gh.cmd` first.
@@ -223,11 +232,16 @@ a count cannot detect a required context that never reported at all.
  * @param {typeof spawnSync} run
  * @param {readonly string[]} args
  * @param {NodeJS.ProcessEnv} env
+ * @param {string} [platform] injected so BOTH candidate lists are testable on
+ *   either runner. The first version read process.platform directly, and its
+ *   fall-through test passed on Windows and FAILED on macOS — where the list
+ *   has one entry and there is nothing to fall through to. CI caught it; the
+ *   local run could not. A test whose meaning depends on which runner executes
+ *   it is exactly the defect this file is about, one level up.
  * @returns {{status: number|null, stdout: string, stderr: string, spawned: boolean}}
  */
-export function runGh(run, args, env) {
-  const candidates =
-    process.platform === 'win32' ? ['gh.exe', 'gh', 'gh.cmd'] : ['gh'];
+export function runGh(run, args, env, platform = process.platform) {
+  const candidates = ghCandidates(platform);
   let last = { status: null, stdout: '', stderr: '', spawned: false };
   for (const command of candidates) {
     const r = run(command, [...args], { encoding: 'utf8', env });

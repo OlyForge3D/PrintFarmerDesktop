@@ -72,10 +72,13 @@ export function resolveRepositorySlug(
   run?: GhSpawn,
 ): string | null;
 
+export function ghCandidates(platform: string): string[];
+
 export function runGh(
   run: GhSpawn,
   args: readonly string[],
   env: NodeJS.ProcessEnv,
+  platform?: string,
 ): GhResult;
 
 export function main(

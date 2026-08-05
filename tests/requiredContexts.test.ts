@@ -12,6 +12,7 @@ import {
   runGh,
   resolveRepositorySlug,
   main,
+  ghCandidates,
 } from '../scripts/check-required-contexts.mjs';
 import type { RollupRun } from '../scripts/check-required-contexts.mjs';
 
@@ -292,8 +293,19 @@ describe('parseArgs', () => {
 });
 
 describe('runGh', () => {
+  it('pins BOTH platform candidate lists, on whichever runner executes this', () => {
+    expect(ghCandidates('win32')).toEqual(['gh.exe', 'gh', 'gh.cmd']);
+    expect(ghCandidates('darwin')).toEqual(['gh']);
+    expect(ghCandidates('linux')).toEqual(['gh']);
+  });
+
   it('falls through to the next candidate when one cannot spawn', () => {
-    const tried = [];
+    // platform is injected. On a non-Windows runner the real list has ONE
+    // entry, so this test's subject does not exist there and it fails for a
+    // reason unrelated to the behaviour under test. That is exactly what
+    // happened on macos-latest the first time this file ran in CI, while
+    // passing locally on Windows.
+    const tried: string[] = [];
     const r = runGh(
       (cmd: string) => {
         tried.push(cmd);
@@ -302,14 +314,29 @@ describe('runGh', () => {
       },
       ['x'],
       {},
+      'win32',
     );
     expect(r.spawned).toBe(true);
     expect(r.stdout).toBe('ok');
-    expect(tried.length).toBeGreaterThan(1);
+    expect(tried).toEqual(['gh.exe', 'gh']);
+  });
+
+  it('tries exactly one name on a non-Windows platform', () => {
+    const tried: string[] = [];
+    runGh(
+      (cmd: string) => {
+        tried.push(cmd);
+        return { error: new Error('ENOENT') };
+      },
+      ['x'],
+      {},
+      'darwin',
+    );
+    expect(tried).toEqual(['gh']);
   });
 
   it('reports not-spawned when every candidate fails', () => {
-    const r = runGh(() => ({ error: new Error('ENOENT') }), ['x'], {});
+    const r = runGh(() => ({ error: new Error('ENOENT') }), ['x'], {}, 'win32');
     expect(r.spawned).toBe(false);
   });
 
