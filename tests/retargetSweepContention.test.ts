@@ -47,7 +47,11 @@ import os from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { blocked } = vi.hoisted(() => ({
-  blocked: { path: null as string | null, calls: [] as string[] },
+  blocked: {
+    path: null as string | null,
+    code: 'EPERM',
+    calls: [] as string[],
+  },
 }));
 
 vi.mock('node:fs/promises', async () => {
@@ -66,8 +70,8 @@ vi.mock('node:fs/promises', async () => {
       blocked.calls.push(asString);
       if (blocked.path !== null && asString === blocked.path) {
         const error: NodeJS.ErrnoException = Object.assign(
-          new Error(`EPERM: operation not permitted, rmdir '${asString}'`),
-          { errno: -4048, code: 'EPERM', syscall: 'rmdir', path: asString },
+          new Error(`${blocked.code}: injected failure, rmdir '${asString}'`),
+          { code: blocked.code, syscall: 'rmdir', path: asString },
         );
         throw error;
       }
@@ -167,6 +171,7 @@ async function exists(target: string): Promise<boolean> {
 
 beforeEach(() => {
   blocked.path = null;
+  blocked.code = 'EPERM';
   blocked.calls = [];
 });
 
@@ -225,6 +230,31 @@ describe('startup sweep under deletion refusal (issue #229)', () => {
     ).toHaveLength(1);
   });
 
+  it.each(['EBUSY', 'ENOTEMPTY'])(
+    'also tolerates the pending-handle error %s',
+    async (code) => {
+      const { root, stale } = await staleInstance();
+      blocked.path = stale;
+      blocked.code = code;
+
+      await expect(serviceFor(root).initialize()).resolves.toBeUndefined();
+
+      expect(blocked.calls).toContain(stale);
+      await expect(exists(stale)).resolves.toBe(true);
+    },
+  );
+
+  it('propagates a sweep error outside the pending-handle family', async () => {
+    const { root, stale } = await staleInstance();
+    blocked.path = stale;
+    blocked.code = 'EIO';
+
+    await expect(serviceFor(root).initialize()).rejects.toMatchObject({
+      code: 'EIO',
+    });
+    expect(blocked.calls).toContain(stale);
+  });
+
   it('collects the other stale roots when one of them refuses', async () => {
     // A refusal must not abort the loop and strand the remaining directories.
     //
@@ -262,5 +292,23 @@ describe('startup sweep under deletion refusal (issue #229)', () => {
       await exists(rest),
       'a refusal on the first stale root stopped the sweep collecting the rest',
     ).toBe(false);
+  });
+});
+
+describe("disposing this process's instance root", () => {
+  it('propagates a pending-handle error for its own directory', async () => {
+    const { root } = await staleInstance();
+    const subject = serviceFor(root);
+    await subject.initialize();
+
+    const [ownInstance] = await ownedByThisProcess(root);
+    if (ownInstance === undefined) {
+      throw new Error('the service did not create its own instance root');
+    }
+    const ownRoot = path.join(root, 'PrintFarmer', 'retarget', ownInstance);
+    blocked.path = ownRoot;
+
+    await expect(subject.disposeAll()).rejects.toMatchObject({ code: 'EPERM' });
+    expect(blocked.calls).toContain(ownRoot);
   });
 });
