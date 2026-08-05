@@ -122,6 +122,54 @@ const REQUIRED_ON_WINDOWS = [
 ] as const;
 
 /**
+ * What each arm must have observed. Held here rather than only inside the arms
+ * so the guard below can re-assert it, which is what stops a gutted arm from
+ * reporting a pass.
+ */
+const EXPECTED_EVIDENCE: Record<string, Record<string, unknown>> = {
+  [ARM_CONTROL]: { survivedUnheld: false },
+  [ARM_CODE]: { hasCode: true, code: 'EBUSY', syscall: 'rmdir' },
+  [ARM_STARTUP]: { survivedRefusal: true, ownedCount: 1 },
+  [ARM_CLASSIFY]: {
+    realIsFatal: false,
+    authoredIsFatal: false,
+    authoredHasCode: false,
+    realHasCode: true,
+  },
+};
+
+/**
+ * Whether this run was narrowed, which changes what "an arm did not run" means.
+ *
+ * A reviewer of PR #518 measured the reason this exists: `vitest -t <name>` on
+ * a clean Windows tree failed, because the completeness check below cannot tell
+ * a deliberately narrowed run from a neutered file. A guard that reddens a
+ * correct tree is a false-red generator, and this repository has already had
+ * one of those redden a correct change.
+ *
+ * `process.argv` is not the signal -- measured, not assumed: inside a vitest
+ * worker it is `[node, tinypool/dist/entry/process.js]` and carries no CLI
+ * flags at all. The run configuration is reachable only through
+ * `globalThis.__vitest_worker__`, which is internal API. So the fallback is
+ * deliberate: if that global is ever missing, this reports NOT narrowed and the
+ * completeness check runs. An upstream change then produces a loud false red
+ * rather than a silent exemption, and silence is the failure this whole file
+ * exists to prevent.
+ *
+ * The trade-off is stated rather than hidden: adding `-t` to the workflow would
+ * disable the completeness check. That is a visible edit to `.github/`, a much
+ * louder act than skipping a test, and the evidence assertions still run for
+ * whichever arms did execute.
+ */
+function runWasNarrowed(): boolean {
+  const worker = (globalThis as Record<string, unknown>).__vitest_worker__ as
+    { config?: { testNamePattern?: unknown; shard?: unknown } } | undefined;
+  const config = worker?.config;
+  if (config === undefined) return false;
+  return config.testNamePattern !== undefined || config.shard !== undefined;
+}
+
+/**
  * What each arm observed, recorded as its last statement and re-asserted below.
  *
  * A bare "this arm ran" marker was the first version, and two reviewers killed
@@ -136,14 +184,6 @@ const observations = new Map<string, Record<string, unknown>>();
 
 function record(arm: string, evidence: Record<string, unknown>): void {
   observations.set(arm, evidence);
-}
-
-function evidenceFor(arm: string): Record<string, unknown> {
-  const evidence = observations.get(arm);
-  if (evidence === undefined) {
-    throw new Error(`no evidence recorded for arm: ${arm}`);
-  }
-  return evidence;
 }
 
 function serviceFor(tempPath: string) {
@@ -430,7 +470,7 @@ afterAll(() => {
   }
 
   const missing = REQUIRED_ON_WINDOWS.filter((name) => !observations.has(name));
-  if (missing.length > 0) {
+  if (missing.length > 0 && !runWasNarrowed()) {
     throw new Error(
       `this runner is win32, where the real-refusal arms are the only reason ` +
         `this file exists, but ${missing.length} of ` +
@@ -445,22 +485,15 @@ afterAll(() => {
   // Attendance is not measurement, so the observations are re-asserted here.
   // These duplicate the arms' own assertions deliberately: the duplication is
   // what makes deleting an arm's assertions insufficient to silence the file.
-  expect(evidenceFor(ARM_CONTROL)).toStrictEqual({ survivedUnheld: false });
-  expect(evidenceFor(ARM_CODE)).toStrictEqual({
-    hasCode: true,
-    code: 'EBUSY',
-    syscall: 'rmdir',
-  });
-  expect(evidenceFor(ARM_STARTUP)).toStrictEqual({
-    survivedRefusal: true,
-    ownedCount: 1,
-  });
-  expect(evidenceFor(ARM_CLASSIFY)).toStrictEqual({
-    realIsFatal: false,
-    authoredIsFatal: false,
-    authoredHasCode: false,
-    realHasCode: true,
-  });
+  // Only arms that ran are checked, so a narrowed run still verifies whatever
+  // it did execute rather than being exempted wholesale.
+  for (const arm of REQUIRED_ON_WINDOWS) {
+    const evidence = observations.get(arm);
+    if (evidence === undefined) continue;
+    expect(evidence, `evidence recorded by the arm: ${arm}`).toStrictEqual(
+      EXPECTED_EVIDENCE[arm],
+    );
+  }
 });
 
 it('runs on a platform whose real-refusal behaviour this file has decided', () => {
