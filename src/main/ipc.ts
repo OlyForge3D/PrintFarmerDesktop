@@ -1797,7 +1797,15 @@ export function registerIpcHandlers(
           { code: 'CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE' },
         );
       }
-      return calibrationSidecarAdapter.resolveCalibrationConflict(request);
+      // Parsed on the way out, as the sibling list channel above already does
+      // and as 130-odd handlers in this file do. Without it this channel is the
+      // one place a value that violates CalibrationConflict reaches the renderer
+      // unremarked -- which is how an epoch-seconds `resolvedAt` travelled past
+      // a `.datetime()` declaration (#363). The contract is only a contract
+      // where something reads it.
+      return ipcSchemas[IpcChannel.CalibrationResolveConflict].response.parse(
+        await calibrationSidecarAdapter.resolveCalibrationConflict(request),
+      );
     },
   );
 
