@@ -203,6 +203,17 @@ type Vector = (typeof VECTORS)[number];
  * The two vectors settled by PR #357 as excused-and-enforced. They are listed
  * so the completeness check below can say *why* the matrix is 11 wide and not
  * 13, rather than silently being short by two.
+ *
+ * PROVISIONAL. The excuse is that no decompressor and no image decoder exists
+ * in the entry points' transitive import closure, and #357 enforces that by
+ * walking the closure. #435 records that the walker keys on `from '...'` only,
+ * so a module reached solely through `await import('./x.js')` is scanned by
+ * none of its ban patterns — a closure gap disables every pattern at once.
+ * Measured at this head: following dynamic imports adds zero files and there
+ * are zero non-literal specifiers, so the excuse is *true* and its enforcement
+ * is *evadable*. Exposure is prospective, not live. These two cells stay
+ * provisional until #435 is settled; this file deliberately does not repair
+ * that guard, because a one-issue change belongs in a one-issue pull request.
  */
 const VECTORS_SETTLED_ELSEWHERE: readonly string[] = [
   'archiveDecompressionBomb',
@@ -1896,6 +1907,13 @@ describe('the corpus is complete', () => {
   it('accounts for the two vectors settled outside this file', () => {
     // #158 lists thirteen vectors and this matrix is eleven wide. Without this
     // assertion the shortfall is indistinguishable from having forgotten two.
+    //
+    // What this checks is that the guard carrying the excuse still exists and
+    // still names the two things it must. It deliberately does NOT assert the
+    // shape of that guard's import walker: #435 is open against exactly that,
+    // and a tripwire here would fail the pull request that repairs it. The
+    // provisional status of these two cells is recorded on
+    // VECTORS_SETTLED_ELSEWHERE above, where a reader meets them first.
     expect(VECTORS_SETTLED_ELSEWHERE).toHaveLength(2);
     const guard = path.join(
       repoRoot,
