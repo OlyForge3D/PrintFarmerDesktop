@@ -365,3 +365,73 @@ Where the deciding value is computed elsewhere, the guard cannot precede the wri
 has to publish and then re-read through the gate itself, keeping three values: pass, fail,
 and _no settled answer yet_. Collapsing the third into pass is the multi-valued-status
 collapse recorded elsewhere in this note, and it fails toward reassurance.
+
+## A constant cannot go stale, and a row of constants hides the one measurement among them
+
+A block of gate results read `prettier 0 · eslint 0 · tsc 0 · vitest 1978 passed in 94
+files`. Three of those four are **constants**: the passing value of a pass/fail gate is
+`0` on every commit forever, so a transcribed `0` is indistinguishable from a derived one
+and stays true without anyone maintaining it. The fourth is a **measurement**, and it went
+stale on the next commit and stayed wrong through many refreshes of a block whose heading
+promised it was re-derived each time.
+
+The hazard is the mixture, not the literal. Four figures rendered in one row, in one
+format, read as four results of one kind — and the reader has no way to see that three of
+them carry no information at all. Two earlier repairs in that same statement replaced
+neighbouring literals with derived values and left this one untouched, because the row
+looked uniform and the uniformity was cosmetic.
+
+**Never mix a constant with a count in one published row of results.** A figure that can
+go stale should be derived at publication or withheld; if it is withheld, say so in a
+third value that cannot be read as a pass.
+
+And note the direction: the stale count **understated** the suite by 342 tests. A figure
+that under-claims reads as conservative and embarrasses nobody, so nothing prompts a
+second reading. Detection latency is a function of whom a false report embarrasses, and
+the modest direction survives longest.
+
+## A control over the code path is not a control over the invocation
+
+The replacement for that block was given seven control arms — skipped, could-not-run,
+non-zero exit, unparseable output, parses, parses-but-the-run-failed, hangs — and every
+arm was driven with a stand-in command. All seven passed. **The first live run withheld
+every figure**, because the real invocation used a launcher the arms never touched, and it
+returned a value no arm had produced.
+
+Each arm exercised a distinct branch of the function, and none exercised the thing the
+function is for. This is the shape already recorded here as _a positive control proves the
+data is live; it does not prove the predicate asks what you think it asks_, one layer out:
+a control over the code path proves the branches are reachable and says nothing about what
+was invoked to reach them. **At least one arm must run the real command.**
+
+Worse, the seven-arm run was not merely uninformative — it was **actively reassuring**.
+All seven collapsed onto one output string, so a control that could distinguish nothing
+looked like a control that worked. It collapsed onto the _withheld_ branch, which is the
+safe direction, and a control that always returns the safe answer is not a control.
+
+## Three interpreters in one function, and the repair is removal in all three cases
+
+The same short function was broken three times by a layer re-reading its arguments or its
+output, and each repair was a **removal** of interpretation rather than a correct escape
+of it:
+
+- Arguments passed through a shell were concatenated and re-parsed, destroying them.
+  Repair: do not use a shell.
+- Without a shell, a `.cmd` launcher is refused outright by the runtime with a distinct
+  error. Repair: do not use the launcher — invoke the interpreter against the package's
+  own entry point.
+- The output was parsed with a pattern written against what a terminal **displayed**,
+  while the process emitted colour escapes around the very digits being matched. Repair:
+  strip the escapes before matching, i.e. read the output rather than a rendering of it.
+
+Escaping requires knowing every special sequence of every layer that will touch the value.
+Removing the layer requires knowing none of them. The third case is the general one and
+the easiest to miss, because the rendering is what the author saw with their own eyes.
+
+## A gate with no timeout returns no verdict at all
+
+A gate invoked without a timeout, given a command that does not terminate, produces
+neither a pass nor a failure nor a withheld verdict — it produces nothing, indefinitely,
+and the caller never reaches the code that would have reported the problem. This is worse
+than a wrong answer, and it is invisible to every argument about exit codes, because no
+exit code is ever produced. Set a timeout, and map its expiry onto the withheld value.
