@@ -134,9 +134,32 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     // alone - the likeliest edit, since every step here reads a pull_request
     // context - turns this red instead of silently restoring the blind spot.
     expect(workflow).toMatch(NON_PR_ARMS);
-    expect(workflow).toMatch(
-      /^\s{2}push:\r?\n\s+branches:\s*\[[^\]]*\bdevelopment\b/m,
+
+    // The branch is read out of the list and compared as an element, not
+    // matched as a substring. `\bdevelopment\b` inside the list looked like it
+    // pinned the branch and did not: `\b` matches at the hyphen, so
+    // `[development-typo]` satisfied it while naming a branch that does not
+    // exist, and the arm would never have fired on trunk. Parsing the list is
+    // the form that cannot be satisfied by a longer name.
+    const pushBranches = workflow.match(
+      /^\s{2}push:\r?\n\s+branches:\s*\[([^\]]*)\]/m,
     );
+    expect(pushBranches).not.toBeNull();
+    const branchList = pushBranches?.[1] ?? '';
+    // The extraction produced something. Without this the split below would
+    // yield [] for a workflow whose push arm lost its branch list, and every
+    // assertion after it would be vacuously satisfiable.
+    expect(branchList).not.toEqual('');
+    const branches = branchList
+      .split(',')
+      .map((name) => name.trim().replace(/^['"]|['"]$/g, ''))
+      .filter((name) => name.length > 0);
+    expect(branches).toContain('development');
+    // Control on the extraction, in band: a parser that returned [] for
+    // everything would satisfy nothing above, but one that returned the whole
+    // list as a single string would satisfy `toContain` only by accident. This
+    // pins that the near-miss names are absent as elements.
+    expect(branches).not.toContain('development-typo');
 
     // Control on the matcher, in band. Without it, a pattern that matched
     // everything would assert the arm is present for a workflow that lost it,
@@ -170,6 +193,21 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     // And the fallback is asserted rather than trusted: an empty name refuses
     // instead of building a refspec git will reject on its own terms.
     expect(workflow).toMatch(/if \[ -z "\$\{MAINLINE_REF\}" \]/);
+
+    // The expression pins above cannot see the cheaper form of the same
+    // inertness. A job- or step-level `if:` that excludes push leaves every
+    // trigger armed and every fallback expression intact, and simply never runs
+    // the job on the event the arm exists for -- the workflow is subscribed to
+    // push and does nothing on push. Nothing about the expressions changes, so
+    // asserting on them is green either way.
+    const EVENT_NAME_GUARD = /^\s*if:.*github\.event_name/m;
+    expect(workflow).not.toMatch(EVENT_NAME_GUARD);
+    // Control on the matcher, in band. A pattern that matched nothing would
+    // assert "no guard" for a workflow that has one, which is the failure this
+    // case exists to catch, so the matcher has to be shown finding one.
+    expect(
+      "jobs:\n  x:\n    if: github.event_name == 'pull_request'\n",
+    ).toMatch(EVENT_NAME_GUARD);
   });
 
   it('checks out the graph it needs rather than a depth-1 merge commit', () => {
