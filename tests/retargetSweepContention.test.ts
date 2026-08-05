@@ -281,16 +281,49 @@ describe('startup sweep under deletion refusal (issue #229)', () => {
     },
   );
 
-  it('propagates a sweep error outside the pending-handle family', async () => {
-    const { root, stale } = await staleInstance();
-    blocked.path = stale;
-    blocked.code = 'EIO';
+  it.each(['EACCES', 'ENOTDIR', 'EMFILE', 'UNKNOWN', 'ESOMETHINGNOBODYNAMED'])(
+    'tolerates %s, which no allowlist of tolerated codes anticipated',
+    async (code) => {
+      // The four named codes are the ones #441 measured aborting startup. The
+      // fifth is the load-bearing one: it is not a real libuv code and never
+      // will be, so no list of *tolerated* codes can contain it. It passes only
+      // because the predicate names the fatal codes instead, which is the whole
+      // claim of this change. If someone later reverts to an allowlist, this
+      // case is the one that goes red.
+      const { root, stale } = await staleInstance();
+      blocked.path = stale;
+      blocked.code = code;
 
-    await expect(serviceFor(root).initialize()).rejects.toMatchObject({
-      code: 'EIO',
-    });
-    expect(blocked.calls).toContain(stale);
-  });
+      await expect(serviceFor(root).initialize()).resolves.toBeUndefined();
+
+      expect(
+        blocked.calls,
+        'rm was never called on the stale root, so no refusal was triggered',
+      ).toContain(stale);
+      await expect(exists(stale)).resolves.toBe(true);
+
+      // Control: initialize() completed rather than merely not throwing. Without
+      // it a catch around too much of the method passes every assertion above.
+      expect(
+        await ownedByThisProcess(root),
+        'initialize() tolerated the failed sweep but never registered this instance',
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each(['EIO', 'ENOSPC', 'EROFS'])(
+    'propagates %s, which means the temp root itself is unusable',
+    async (code) => {
+      const { root, stale } = await staleInstance();
+      blocked.path = stale;
+      blocked.code = code;
+
+      await expect(serviceFor(root).initialize()).rejects.toMatchObject({
+        code,
+      });
+      expect(blocked.calls).toContain(stale);
+    },
+  );
 
   it('collects the other stale roots when one of them refuses', async () => {
     // A refusal must not abort the loop and strand the remaining directories.
