@@ -86,6 +86,36 @@ if (git(['rev-parse', '--is-shallow-repository']) === 'true') {
   process.exit(2);
 }
 
+// The corpus is read exactly once, here, and a root that cannot be read is fatal.
+//
+// Both readers below used to `catch { continue }`, which makes "this file is missing" and
+// "this file contains no citations" the same observation. They are not the same: the first is
+// a broken instrument and the second is a clean repository, and the check reported the second
+// for both -- `OK - every cited revision is reachable`, which is true of the empty set. The
+// scan roots are hardcoded literals, so any `.squad/` rename, move or restructure disarms the
+// check silently and nothing in the run says so.
+//
+// It also removes the controls that would have noticed. Two of the six self-controls below are
+// built from the corpus (`twins`), so an unreadable root deletes them from the run: the output
+// drops from six control lines to four and still calls itself green. A control that disappears
+// with the thing it controls for is not a control.
+const SOURCES = new Map();
+for (const f of FILES) {
+  try {
+    SOURCES.set(f, readFileSync(f, 'utf8'));
+  } catch (error) {
+    console.error(
+      `INCONCLUSIVE: the scan root ${f} could not be read (${error.code ?? 'unknown error'}).`,
+    );
+    console.error(
+      'An unreadable root is not an empty one. Refusing to report on a corpus this run',
+    );
+    console.error('never saw. Restore the file, or update FILES if it moved:');
+    for (const known of FILES) console.error(`  ${known}`);
+    process.exit(2);
+  }
+}
+
 // Revisions a reader is assumed to hold. `origin/development` may be absent in a shallow or
 // branch-only checkout; the branch head alone still gives a usable, if stricter, answer.
 const readerRevs = ['HEAD', 'origin/development'].filter((r) =>
@@ -139,12 +169,7 @@ const patchIdOf = (rev) => {
 const readBlock = (heading) => {
   const found = new Map();
   for (const f of FILES) {
-    let text;
-    try {
-      text = readFileSync(f, 'utf8');
-    } catch {
-      continue;
-    }
+    const text = SOURCES.get(f);
     const at = text.indexOf(heading);
     if (at < 0) continue;
     const rest = text.slice(at + heading.length);
@@ -172,12 +197,7 @@ for (const [sha, note] of readBlock(TWIN_HEADING)) {
 // not a citation, and treating it as one manufactures findings.
 const cited = new Map();
 for (const f of FILES) {
-  let text;
-  try {
-    text = readFileSync(f, 'utf8');
-  } catch {
-    continue;
-  }
+  const text = SOURCES.get(f);
   for (const m of text.matchAll(/`([0-9a-f]{7,40})`/g)) {
     if (!cited.has(m[1])) cited.set(m[1], []);
     cited.get(m[1]).push(f);
@@ -300,6 +320,39 @@ if (someTwinned) {
 if (failures.length) {
   for (const f of failures) console.error('CONTROL FAILED - ' + f);
   console.error('verdict withheld.');
+  process.exit(2);
+}
+
+// A corpus that survives the read but arrives nearly empty is the same failure wearing a
+// different mask: the roots exist, so the guard above is silent, and the verdict is again true
+// of a set nobody examined. Measured on this repository at the time of writing: 122 cited SHAs,
+// all 122 of them in audit-trail.md -- policy.md currently contributes none. The audit trail is
+// append-only, so this count only grows; a run that sees fewer than half of it has almost
+// certainly lost a root's contents rather than witnessed a legitimate consolidation. The floor
+// is deliberately far below the live count -- it is a floor, not a target, and it must never
+// fire on honest churn.
+//
+// The two guards are complementary and neither subsumes the other. Because policy.md carries no
+// citations today, losing it would NOT move the count and the floor could not see it; only the
+// readability guard covers that root. Conversely a truncated-but-present audit-trail.md is
+// invisible to the readability guard and only the floor covers it.
+//
+// Same instrument as MAINLINE_FLOOR in #399, applied to the citation corpus.
+const CITATION_FLOOR = 60;
+if (cited.size < CITATION_FLOOR) {
+  console.error(
+    `\nINCONCLUSIVE: only ${cited.size} cited revisions were found, below the floor of ${CITATION_FLOOR}.`,
+  );
+  console.error(
+    'The scan roots were readable, so this is not a missing file -- their contents are',
+  );
+  console.error(
+    'gone, truncated, or no longer written in the form this check reads. A verdict over',
+  );
+  console.error('this corpus would be true of almost nothing. Roots read:');
+  for (const f of FILES) {
+    console.error(`  ${f}  (${SOURCES.get(f).length} bytes)`);
+  }
   process.exit(2);
 }
 

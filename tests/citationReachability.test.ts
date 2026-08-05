@@ -254,4 +254,100 @@ describe('the harness refuses to publish a verdict it cannot support', () => {
     // the revisions it was computed against rather than leaving them implied.
     expect(out).toMatch(/reader revisions: .+\(\d+ commits reachable\)/);
   });
+
+  /**
+   * These three run together on purpose. The first two are the refusals; the
+   * third is the control that makes them mean something. A gate that always
+   * refuses is exactly as useless as one that always passes, and the only way
+   * to tell those apart is to show the same harness, on the same fixture,
+   * still reaching a verdict when the corpus is intact.
+   */
+  const seeded = (prefix: string) => {
+    const dir = newRepo(prefix);
+    execFileSync('git', [
+      '-C',
+      dir,
+      'config',
+      'user.email',
+      't@example.invalid',
+    ]);
+    execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
+    writeFileSync(path.join(dir, 'seed.txt'), 'seed\n');
+    execFileSync('git', ['-C', dir, 'add', '-A'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', dir, 'commit', '-qm', 'seed'], {
+      stdio: 'ignore',
+    });
+    return dir;
+  };
+
+  const corpus = (dir: string, name: string) =>
+    path.join(dir, '.squad', 'fact-checker', name);
+
+  it('refuses a scan root it cannot read, instead of calling the empty set clean', () => {
+    const dir = seeded('rootless-');
+    // The repository is otherwise healthy: seeded, sighted, controls passing.
+    // The only thing wrong is that a hardcoded scan root moved, which is what
+    // any `.squad/` restructure does.
+    rmSync(corpus(dir, 'audit-trail.md'));
+
+    const { status, out } = runHarness(dir);
+
+    expect(status).toBe(2);
+    // Naming the specific refusal, not just `INCONCLUSIVE`. An earlier version
+    // of this test asserted `INCONCLUSIVE` plus the filename and PASSED with
+    // the root guard removed: every citation in this repository lives in
+    // audit-trail.md, so deleting it empties the corpus, the FLOOR fires
+    // instead, and the floor's message lists the roots -- including this
+    // filename. Both assertions were satisfied by the wrong guard. Caught by
+    // the mutation, not by reading.
+    expect(out).toContain('could not be read');
+    expect(out).toContain('ENOENT');
+    expect(out).not.toContain('below the floor');
+    expect(publishedAVerdict(out)).toBe(false);
+
+    // Not the shallow guard and not the control arm: those already existed and
+    // are both silent here, so a pass cannot be borrowed from either.
+    expect(out).not.toContain('INCONCLUSIVE: this is a shallow clone');
+    expect(out).not.toContain('CONTROL FAILED');
+  });
+
+  it('refuses a corpus that survived the read but arrived empty', () => {
+    const dir = seeded('gutted-');
+    // Roots present and readable, so the guard above cannot fire. Only the
+    // citations are gone -- the shape a truncation or a reformat takes.
+    for (const name of ['audit-trail.md', 'policy.md']) {
+      const file = corpus(dir, name);
+      writeFileSync(
+        file,
+        readFileSync(file, 'utf8').replace(/`[0-9a-f]{7,40}`/g, '`SHA`'),
+      );
+    }
+
+    const { status, out } = runHarness(dir);
+
+    expect(status).toBe(2);
+    expect(out).toMatch(/INCONCLUSIVE: only \d+ cited revisions were found/);
+    expect(out).toContain('below the floor');
+    expect(publishedAVerdict(out)).toBe(false);
+    expect(out).not.toContain('CONTROL FAILED');
+  });
+
+  it('still examines and reports on an intact corpus, so the refusals discriminate', () => {
+    const { status, out } = runHarness(seeded('intact-'));
+
+    // Neither new refusal fires, and a verdict is published. In this fixture
+    // the correct verdict is ORPHANED -- the staged ledger cites the real
+    // repository's history, which a one-commit fixture cannot reach -- so the
+    // discriminating facts are that the corpus was SEEN and a verdict was
+    // REACHED, not the exit code. The exit-0 arm is the live checkout, where
+    // this run measures 122 cited and exits 0; a test pinned to the live
+    // checkout would instead fail under the shallow clone this same script
+    // refuses, which is why it is evidenced there rather than here.
+    expect(out).not.toContain('INCONCLUSIVE');
+    expect(publishedAVerdict(out)).toBe(true);
+    expect(status).not.toBe(2);
+
+    const seen = Number(/cited SHAs: (\d+)/.exec(out)?.[1] ?? '0');
+    expect(seen).toBeGreaterThanOrEqual(60);
+  });
 });
