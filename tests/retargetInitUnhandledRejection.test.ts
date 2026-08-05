@@ -107,8 +107,18 @@ const pendingDisposers: Array<() => Promise<void>> = [];
  * the same stale-claim problem one level down. A rejection is enough, because
  * the control below asserts only which envelope must *not* appear.
  */
+/**
+ * Every channel this suite hands out, so a spec can ask whether the disposer
+ * actually closed them. Without this the disposer contract is unguarded: with a
+ * fake channel nothing observable leaks, so "we forgot to dispose" and "we
+ * disposed correctly" produce identical runs.
+ */
+const issuedChannels: Array<{ closed: boolean }> = [];
+
 const testChannelFactory: ChannelFactory = (): SidecarChannel => {
   let onMessage: ((line: string) => void) | undefined;
+  const state = { closed: false };
+  issuedChannels.push(state);
   return {
     send: (line: string) => {
       const id: unknown = (JSON.parse(line) as { id?: unknown }).id;
@@ -125,7 +135,9 @@ const testChannelFactory: ChannelFactory = (): SidecarChannel => {
       onMessage = handler;
     },
     onClose: () => {},
-    close: () => {},
+    close: () => {
+      state.closed = true;
+    },
   };
 };
 
@@ -263,12 +275,16 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
     sceneCacheState.failInit = false;
   });
 
-  afterEach(async () => {
-    // Drained before `resetModules`, or the disposer would run against a module
-    // graph that has already been replaced.
+  async function drainPendingDisposers(): Promise<void> {
     while (pendingDisposers.length > 0) {
       await pendingDisposers.pop()?.();
     }
+  }
+
+  afterEach(async () => {
+    // Drained before `resetModules`, or the disposer would run against a module
+    // graph that has already been replaced.
+    await drainPendingDisposers();
     capture?.stop();
     vi.resetModules();
   });
@@ -466,6 +482,28 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
     // outcome safe to assert, and asserting one is what guards the control.
     expect(response.status).toBe('error');
     expect(response.error?.message).not.toBe(WORKSPACE_FAILURE_MESSAGE);
+  });
+
+  it('closes the sidecar channel when the IPC disposer runs', async () => {
+    // GUARD on the disposer. Two reviewers rejected the head above this one for
+    // discarding the value `registerIpcHandlers()` returns, and with a fake
+    // channel that defect is invisible: nothing observable leaks, so forgetting
+    // to dispose and disposing correctly produce identical runs. The fake
+    // records its own `close()` so the omission has somewhere to show up.
+    retargetState.failInit = false;
+    const before = issuedChannels.length;
+
+    // Drives the sidecar, which is what makes a channel exist at all — the
+    // client constructs it lazily, on first request, not in its constructor.
+    await invokeListProfiles();
+    expect(issuedChannels.length).toBeGreaterThan(before);
+
+    const issued = issuedChannels.slice(before);
+    expect(issued.every((channel) => channel.closed)).toBe(false);
+
+    await drainPendingDisposers();
+
+    expect(issued.every((channel) => channel.closed)).toBe(true);
   });
 });
 
