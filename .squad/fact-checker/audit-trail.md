@@ -1775,6 +1775,57 @@ The restatement was that `docs/security/THREAT_MODEL.md` renders `32,767` once a
 
 ⇒ **the figure is on the mainline as the subject of its own correction, with the correcting apparatus beside it.** ⇒ **a `grep` count cannot distinguish an assertion from a mention, and a mention inside a correction is the strongest possible evidence _against_ the defect being alleged.** The verdict of "a figure known wrong is on trunk" is an artifact of counting renderings instead of reading them — which is this trail's own standing rule, arriving as a correction of a claim made about me.
 
+### Run BI — the move was already made, and the documents that denied it went unchecked because the guard had gone vacuous
+
+**Request under test**, from a correspondent: one item is outstanding across the whole thread — `git mv` the citation-reachability workflow out of `.squad/fact-checker/` into `.github/workflows/` — and it is being handed to a third party to perform.
+
+**Measured at trunk `55803ee`:**
+
+```
+.github/workflows/citation-reachability.yml              present   5372 bytes
+.squad/fact-checker/citation-reachability.workflow.yml   ABSENT
+
+e3a0e98  2026-08-05T01:52:21Z  copied into .github/workflows   (C078)
+4d1937a  2026-08-05T02:55:14Z  armed
+299b33c  2026-08-05T05:54:27Z  staged copy DELETED
+```
+
+❌ **The move was made hours ago and the source file no longer exists**, so the dispatch would have been a no-op against a missing path. The live workflow also demonstrably dispatches — `Citation reachability` returned success on both of this branch's recent heads, which a file parked outside `.github/workflows/` cannot do.
+
+#### But there was a live defect, and it is mine
+
+Three **normative** documents still asserted the opposite, naming the deleted path:
+
+```
+.squad/fact-checker/policy.md
+.squad/decisions/inbox/sha-reporting-rule.md
+.squad/decisions/inbox/fact-checker-symmetric-diff.md
+
+  "Not yet enforced, and this document does not claim it is: the workflow …
+   is staged at .squad/fact-checker/citation-reachability.workflow.yml"
+```
+
+**False since `4d1937a`, and pointing at a path that has not existed since `299b33c`.**
+
+#### Why nothing caught it: the guard went vacuous at the moment it became checkable
+
+The test written to hold this open reads `if (!isEnforced) { expect(claimants).toEqual([]) }`. While enforcement was absent it carried the whole burden. **The moment a maintainer moved the workflow it became `if (false)` — an assertion whose outcome is decided by a condition outside its subject.**
+
+> **A test that guards a claim only while the claim is false stops guarding it exactly when it becomes checkable.** ⇒ **and it reports success while doing so**, which is the quiet form of a constant-valued assertion: the loud form goes permanently red and gets fixed, this one goes permanently green and gets trusted.
+
+**The one-directional design was deliberate and is recorded as such** — _an artifact may say nothing, but an artifact claiming enforcement obliges enforcement._ ⇒ **the direction left open is the one that fired.** Reasoning that an under-claim is harmless is what licensed omitting the check, and it is wrong:
+
+> **A stale over-claim invites the reader to check and be disappointed. A stale denial invites them not to rely on a control that is in fact protecting them** — it decays silently toward _do the work by hand_, and no reader can detect the omission because the document reads as modest rather than wrong.
+
+#### Repairs, and one deliberate non-repair
+
+- The three normative documents now state what is true, anchored to the commits that moved, armed, and deleted.
+- The **second direction** is added: no artifact may deny enforcement while something enforces it.
+- **`isEnforced` is now asserted rather than trusted.** Both branching cases were unfalsifiable if the flag itself were misread, and the staged path is asserted **absent** rather than assumed gone.
+- **The ledger is deliberately excluded from the detector.** This trail's entries at bullets P and the run-X region contain those very sentences as **dated observations that were true when taken**. ⇒ **a present-tense detector run over a historical record demands the record be falsified in order to pass.** A policy asserts what is true now and must track the object; a ledger records what was seen and must not. **The transition is recorded here instead of being edited into the past.**
+
+**Non-vacuity control, because a case that has only ever passed is unproven:** reintroducing the denial into the policy fails the new case at the expected assertion; reverting restores 10 of 10. **The instrument was shown able to return the other answer before it was trusted.**
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.

@@ -2,6 +2,7 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -22,6 +23,15 @@ const read = (...segments: string[]) =>
   readFileSync(path.join(repositoryRoot, ...segments), 'utf8');
 
 const workflowsDir = path.join(repositoryRoot, '.github', 'workflows');
+
+// The path the workflow was parked at while it could not be pushed. Named once
+// so the denial case and the staleness case cannot drift apart, and asserted
+// absent rather than assumed gone.
+const stagedWorkflowPath = path.join(
+  '.squad',
+  'fact-checker',
+  'citation-reachability.workflow.yml',
+);
 const liveWorkflows = readdirSync(workflowsDir)
   .filter((f) => f.endsWith('.yml'))
   .map((f) => ({
@@ -143,6 +153,56 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     if (!isEnforced) {
       expect(claimants).toEqual([]);
     }
+  });
+
+  // The other direction, added after it fired. While `isEnforced` was false the
+  // case above carried the whole burden; the moment a maintainer moved the
+  // workflow it became `if (false)`, an assertion whose outcome is decided by a
+  // condition outside its subject - the same shape as a guard that is constantly
+  // true, only quieter, because a vacuous test reports success.
+  //
+  // What it left uncovered is the reverse claim. Three normative documents went
+  // on stating that the check was *not* enforced, and naming a staged path that
+  // had been deleted, for hours after the live workflow began passing on every
+  // pull request. Nothing failed, because denial was never the modelled failure.
+  //
+  // A stale denial is the more dangerous of the two: an over-claim invites the
+  // reader to check and be disappointed, while an under-claim invites them not
+  // to rely on a control that is in fact protecting them, and it decays silently
+  // toward *do the work by hand*.
+  //
+  // The ledger is deliberately not a subject here, and the asymmetry is the
+  // point rather than an exemption. `audit-trail.md` records dated observations
+  // that were true when taken; a present-tense detector run over a historical
+  // record would demand the record be falsified to pass. A policy asserts what
+  // is true now and must track the object. Only the normative documents are
+  // checked, and the trail records the transition in a new entry instead.
+  it('lets no artifact deny enforcement while something enforces it', () => {
+    const deniers = [
+      '.squad/fact-checker/policy.md',
+      '.squad/decisions/inbox/sha-reporting-rule.md',
+      '.squad/decisions/inbox/fact-checker-symmetric-diff.md',
+    ].filter((f) => {
+      const text = read(...f.split('/')).replace(/_"[^"]*"_/g, '');
+      return (
+        /Not yet enforced/.test(text) ||
+        /citation-reachability\.workflow\.yml/.test(text)
+      );
+    });
+
+    if (isEnforced) {
+      expect(deniers).toEqual([]);
+    }
+  });
+
+  // Neither case above can fail while `isEnforced` is misread, so the flag gets
+  // its own assertion rather than being trusted by the two that branch on it.
+  it('decides enforcement from a workflow that actually invokes the harness', () => {
+    expect(isEnforced).toBe(true);
+    expect(workflowText).toContain('check:citation-reachability');
+    expect(existsSync(path.join(repositoryRoot, stagedWorkflowPath))).toBe(
+      false,
+    );
   });
 });
 
