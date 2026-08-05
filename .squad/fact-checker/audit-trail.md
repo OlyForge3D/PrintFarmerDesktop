@@ -1014,6 +1014,633 @@ conflict existed and none was resolved.**
 > whether anyone checks it**, which makes the reassuring direction the expensive one — the
 > fourth time this ledger has recorded a control failing in the direction nobody audits.
 
+### Run AY — a control that lives in a required check, when the check cannot be required
+
+**Claim under test, received as a correction to an earlier one:** _"Two new **required** checks
+exist that did not exist an hour ago, and one of them is the hold — enforced in CI rather than
+by broadcast,"_ generalised to _"a control that lives in a message can be orphaned; one that
+lives in a required check cannot."_ Measured against live branch protection on `development`
+at mainline `840e6ad`.
+
+**The named checks are not required.** `GET /branches/development/protection` returns exactly
+seven required contexts — `Desktop` and `Sidecar` and `Release package` on two runners each,
+plus `Dependency advisories` — and **`Sequencing hold` and `PR closure scope` are not among
+them.** Neither is `Citation reachability`, which is this ledger's own deliverable.
+
+**And the first half of that measurement, published alone, would have been a false accusation
+supported entirely by true evidence.** Each of those workflows carries a machine-readable
+`# merge-queue: advisory` declaration and a header stating, in the imperative, that it **MUST
+NOT** be added to a required-context list. The non-requiredness is not an oversight to be
+reported; it is a documented decision with a stated reason, and reading one field further is
+the whole difference between an audit and an indictment.
+
+**The reason is the finding.** A hold is applied and released **by adding or removing a label**.
+Labels are carried by `pull_request` events. A `merge_group` event carries no pull request
+number and no labels, so a hold check cannot subscribe to it; and a required context that no
+workflow emits does not fail the queue entry, it **hangs it Pending forever**. So the hold must
+not be required — not because nobody got around to it, but because requiring it would replace a
+control that does nothing with a gate that blocks everything.
+
+> **A control that depends on data the gating event does not carry cannot be enforced at that
+> gate.** The remedy proposed — bind the authority to a required check — is structurally
+> unavailable for precisely the class of control it was proposed for. **The set of things a
+> gate can enforce is bounded by what its triggering event carries, and that bound is not
+> discoverable from the control's own text.**
+
+**The repo side of the constraint is genuinely enforced, and better than its own comment
+claims.** `scripts/check-merge-queue-contexts.mjs` **enumerates the workflow directory**, so a
+newly added workflow fails until somebody classifies it — which is why this ledger's own
+`citation-reachability.yml` is covered despite being added after that script was written. Its
+own header says the constraint was _"documented twice, by two authors, and enforced zero
+times"_; that is now false in the good direction, and the file that says it is the file that
+fixed it.
+
+**The ruleset side is the half that is still manual, and this run exercised it rather than
+describing it.** Run live against branch protection, exit code captured unpiped:
+
+```
+node scripts/check-merge-queue-contexts.mjs
+  All 7 required context(s) on development are emitted by a workflow that
+  reports under merge_group (strict=true).
+  A merge queue can be enabled without deadlocking.                        exit 0
+```
+
+**The invariant holds today.** What is unguarded is the moment it would be broken: making a
+green pull-request check required is **a checkbox in a settings page**, and the only thing
+standing against it is a script a human must remember to run. **The guard is correct, and it is
+not attached to the event it guards against** — which is this ledger's founding defect,
+one level up, in the tooling built to prevent it.
+
+**Correcting myself, since the same measurement lands on this ledger's own deliverable.** A
+previous report from this session stated that `Citation reachability` is _"a required green
+check on trunk."_ **It is not required, and it cannot be**, for the reason above: it does not
+report under `merge_group`. It runs on every pull request and it blocks nothing. The claim was
+wrong when written, and it was wrong in the flattering direction.
+
+**Two of this run's own instruments failed, both silently, both caught before publication.**
+
+**First**, the detector for "does this workflow subscribe to `merge_group`" was a token search
+over the file, and it returned **YES for four workflows that do not subscribe** — because each
+one's header contains the sentence explaining that it does not. **The explanation of an absence
+contains the token that denotes its presence.** Re-measured by parsing the `on:` block only:
+of ten workflows, **exactly one** subscribes. Third occurrence of this shape in this ledger.
+
+**Second, and it is a new result:** the negative control `77,777` — used in earlier runs to
+show that a search term returns zero when it should — **now returns one file.** The hit is this
+ledger, at the line recording _"Control `77,777` → 0 files."_
+
+> **A negative control written down inside the corpus it controls stops being a negative
+> control.** Its published value is the mechanism of its own falsification, it degrades on the
+> next run rather than at some later edit, and **the direction of the drift is always toward
+> the reassuring answer** — the control appears to find something, so the corpus appears
+> searched. **A control must be chosen from outside the corpus, or re-chosen every time it is
+> reported.**
+
+**Companion measurement, same pattern, third consecutive run:** `32,767` at mainline `840e6ad`
+is **13 files and 68 hits**, up from 51 at the previous reading with no new defect introduced.
+Every hit remains an instrument, a record, a fixture comment or a rule; **none is a wrong
+claim.** The count rises monotonically with the diligence applied to it.
+
+**Unrelated to the remedy and not fixed by it:** `required_approving_review_count` on
+`development` is **0**. No pull request in this repository can be blocked for lacking a review.
+The independent-review obligation attached to this ledger's founding decision is therefore not
+merely undischarged — **it has no mechanism to discharge it**, and the pull request carrying
+this ledger merged with `reviews: 0` for that reason rather than by anyone's omission.
+
+### Run AZ — the gate is unsatisfiable, and relabelling the verdict cannot fix it
+
+**Claim under test, and it is a ruling rather than a measurement:** that the
+review gate on this ledger's own pull request _"is satisfied by a `COMMENTED` verdict at the
+current head that names an approval"_, on the reasoning that **a gate whose satisfying
+mechanism returns 422 is unfalsifiable, therefore carries zero bits, therefore should be read
+loosely.** The supporting evidence offered was four pull requests, one `COMMENTED` and three
+with an empty review array.
+
+**The premise is correct, and the stronger measurement supports it rather than undermining it.**
+Every pull request in this repository, most recent hundred by creation:
+
+```
+authors            100 / 100   a single login
+review states       92         (no reviews at all)
+                    12         COMMENTED
+                     0         APPROVED        <- never, not once, in any state
+```
+
+**No pull request in this repository has ever carried an `APPROVED` review.** So the gate is
+not a standard this one fails to meet; it is a standard **nothing has ever met**, and the
+ruling's central observation is confirmed at a hundred times the sample that produced it.
+
+**But the cause is not the 422, and this is where the remedy goes wrong.** The refusal is a
+property of the **author–reviewer pair**, not of the platform: a review is rejected because the
+approver is the author. **The measurement above shows there is only one login.** With one
+account there is no pair, so there is no second party to be rejected — **the 422 is the symptom,
+and the single-account topology is the disease.**
+
+> **Relabelling the verdict cannot manufacture the independence the gate existed to require.**
+> Reading `COMMENTED` as approval changes what the one party's verdict is called; it does not
+> add a second party. A rule requiring _"someone other than the author"_ under a topology with
+> exactly one identity **has no one to name**, and every verdict it accepts will be the author's
+> regardless of which field carries it.
+
+**The founding decision for this ledger attached exactly that obligation** — the remedy must be
+reviewed by someone other than its author — and it is therefore **not undischarged through
+anyone's omission. It has no mechanism to discharge it.** Consistent with this,
+`required_approving_review_count` on the default branch is **0**: nothing here can be blocked
+for lacking a review, which is why merges with an empty review array are the norm at 92 of 100
+rather than an exception at 3 of 4.
+
+**The offered control is one-sided, and completing it is prohibited.** Zero `APPROVED` across a
+hundred pull requests is consistent with _approval is impossible_ and equally consistent with
+_nobody ever attempted one_; the two hypotheses produce an identical record. **The experiment
+that separates them is an attempted self-approval** — and this ledger's author is barred from
+self-review, so running it would violate the rule whose enforceability it is measuring.
+**Declining to run it, and saying so, is the only available honest move.**
+
+> **Fourth defect in a control's constitution, and it completes the set:** a threshold with no
+> single referent; an authority with no single referent; a satisfaction with no mechanism; and
+> now **a control whose two-sided completion requires performing the prohibited act.** Its
+> falsifiability is available only to a party not bound by it — who has no reason to run it.
+> **The people best placed to test a prohibition are exactly the people forbidden to.**
+
+**None of the four is detectable by auditing compliance**, because in every one of them each
+participant behaved correctly and the control still produced nothing. **Audit the control's
+constitution, not the population's behaviour** — and the diagnostic that finds all four is a
+single question: **what result would falsify this, and who is permitted to produce it?**
+
+**Three figures re-derived, because they were asserted again after being corrected.**
+
+- The pull request this ruling governs has been **merged** since `2026-08-04T19:29:29Z`; it has
+  been reported as open in five consecutive messages, the last four of them after the merge.
+- `32,767` is **13 files and 68 hits** at mainline, not 8 files. Every hit is an instrument,
+  record, fixture comment or rule; **none is a wrong claim.**
+- `Sequencing hold` passing is **not** evidence that a base is acceptable. That check is
+  declared `advisory`, does not report under `merge_group`, and **is not a required context**:
+  it reports and gates nothing. A green advisory check is an observation, not a permission.
+
+### Run BA — a false accusation of mine, and the receiver-side twin of every staleness defect in this ledger
+
+**This entry retracts a claim this ledger published twice, in its strongest available form.**
+
+**What was asserted.** That a correspondent had reported a pull request as `OPEN` in five
+consecutive messages, _"the last four of them after the merge"_, and that this was a fabricated
+state. **It is false.** The arithmetic, which was available before the accusation was made and
+was not performed:
+
+```
+merged_at                    2026-08-04T19:29:29Z   =  12:29:29 PDT
+their stated measurements    12:03  12:15  12:16  12:17  12:18  PDT
+                             19:03Z 19:15Z 19:16Z 19:17Z 19:18Z
+```
+
+**Every one of the five readings predates the merge, the closest by eleven minutes.** Each was
+correct when taken. Nothing was fabricated, nothing was stale, and the correspondent's own
+practice — stamping every measurement with the clock time it was taken — is what makes the
+retraction possible at all.
+
+**The mechanism of the error, which is the finding.** The messages _arrived_ after the merge,
+because this channel runs many hours behind. **The arrival time was used as the time of
+measurement.** The value was never stale; the transport was slow, and slowness in transport was
+read as carelessness in the sender.
+
+> **The receiver-side twin of every staleness defect recorded above.** A sender's defect is
+> asserting a value read before the assertion. **A receiver's defect is dating the sender's
+> reading by when it arrived.** Both produce a confident, specific, wrong claim about a
+> timeline; the sender's is caught by re-reading before asserting, and **the receiver's is
+> caught only by using the sender's own timestamp instead of one's own clock.**
+
+**And it fails asymmetrically.** A late message about work that has _not_ moved reads as
+correct and passes silently. A late message about work that _has_ moved reads as fabrication.
+**So the receiver-side error surfaces only as an accusation** — it cannot produce a false
+exoneration, only a false indictment, and it fires hardest against the correspondents who
+report most often.
+
+**This ledger identified the symmetry and then committed the half it had just named.** An
+earlier entry records the conclusion _"a rule binding the sender fixes one direction; only
+re-reading at the moment of assertion fixes both."_ That is correct and it is about the sender.
+**Nothing in it protects the reader, and the reader is where this defect lives.**
+
+**Consequence adopted:** _before asserting that a report was wrong when made, convert the
+reporter's own stated measurement time and compare against the event, never against the local
+clock at reading._ **An accusation of staleness is itself a timing claim and must be pinned
+like any other.**
+
+**Applied immediately to a second claim rather than only to the first.** The same correspondent
+reported a pull request as `isDraft = true` with a merge refused on that ground; it now reads
+`draft=false, merged=true`. **That is not a contradiction and is not asserted as one.** The
+draft flag was cleared and the merge proceeded afterwards, exactly as their report implies. The
+underlying instrument finding — that `mergeStateStatus` reported `CLEAN` for a pull request the
+merge endpoint then refused, because the draft flag is a separate field the status does not fold
+in — **stands, and is the strongest form yet of the status-is-a-cache result**: the field is not
+merely stale, it is **computed over a smaller set of conditions than the operation it names.**
+
+**Two figures re-derived, and both were asserted again after correction.**
+
+- **Required contexts on the default branch: seven.** Re-read from the protection endpoint in
+  the same call as this entry. `Sequencing hold` and `PR closure scope` are **not** among them,
+  and no PR carries nine required contexts. Those workflows remain `advisory` by their own
+  machine-readable declaration and do not report under `merge_group`; **making them required
+  would hang a queue entry rather than fail it.** They pass, and they gate nothing.
+- **`32,767` is 13 files and 68 hits**, not 8 files. Every hit is an instrument, record,
+  fixture comment or rule; **none is a wrong claim.** The rendering repaired on trunk is the
+  repair, and the count is dominated by the records describing it.
+
+**Filed against the retraction-audit problem, as its own case study.** The observation that this
+squad audits assertions and never audits retractions is correct, and **the natural failure is
+that a retraction is accepted without checking its arithmetic, because challenging a correction
+looks like refusing an apology.** This entry therefore carries the arithmetic that forces its
+own retraction, in full, so that the retraction is falsifiable by the same means as the claim it
+withdraws. **A retraction with no reproducible computation in it is an assertion wearing the one
+costume nobody inspects.**
+
+### Run BB — I could not remember what I had asserted, and the counterparty could
+
+**Two statements were attributed to this ledger's author.** Neither was in working memory, and
+the first instinct was that they belonged to a different correspondent — this repository runs
+many concurrent sessions and cross-attribution is cheap. **That instinct was wrong, and the
+check that refuted it was not a recollection.**
+
+Queried against this session's own stored record, the earlier checkpoint reads verbatim:
+
+```
+head b42011d6... · pushed from 4f1683c (fast-forward) · CI 7/7 ·
+22 commits, no merge commits · worktree clean · BEHIND
+```
+
+**Both quoted statements are this author's own words.** The attribution was accurate and the
+accusation that was nearly made would have been false.
+
+> **An agent whose context has been compacted cannot audit its own prior claims from memory,
+> and the failure is silent: absence of recollection is indistinguishable from absence of the
+> statement.** The counterparty holds a more complete record of what was said than the speaker
+> does. **So the speaker is the party least equipped to adjudicate a dispute about their own
+> assertions, and the only one who feels certain.**
+
+**This is the second consecutive run in which the instinct was to accuse and the record said
+otherwise**, and it bears directly on the observation that retractions go unaudited: **part of
+why a retraction is never checked is that the retractor cannot reconstruct the original claim
+to check it against.** A retraction issued from memory is an assertion about a document, made
+by someone who no longer holds the document.
+
+**And both readings of the quoted numbers are defensible, which is the more useful half.** The
+pull request finished with **38 commits and 17 reviews**; the checkpoint recorded **22 commits,
+no merge commits** and ten reviews. Neither figure was ever wrong — **they are measurements of
+an artifact that was still growing, quoted later into a scope they were not taken in.**
+
+> **A count of a growing artifact is a timestamp, not a fact.** Requoting it without its
+> measurement time converts a true observation into a false claim, **and the conversion is
+> performed by the reader, not the writer.** Nothing the original author can do prevents it
+> except stamping the count — which is the same remedy this ledger adopted for heads, and it
+> generalises to every cardinality it publishes.
+
+> **RETRACTED IN RUN BC.** The verdict recorded in the paragraph below is false,
+> and so is the `12:33:16` figure inside it. `3fac5567` was the tip of `development` from
+> **12:29:28 to 12:59:24 PDT**, so it was the tip at the `12:53` cited here. The refutation was
+> produced by counting with `--until`, which filters by **committer date** rather than by branch
+> membership. **The paragraph is left standing because the error, not the verdict, is the
+> finding:** it was offered as proof that the rule is two-sided, and it is instead the same
+> defect the rule was written to prevent, reintroduced through a different clock one round later.
+
+**The receiver-side rule adopted in the previous run was applied again here, and returned the
+opposite verdict — which is the point.** That rule requires converting the reporter's own
+stated measurement time and comparing it to the objects, never to the local clock. Applied to a
+claim that `refs/heads/development` resolved to the squash commit of the merged pull request:
+
+```
+that commit committed        12:29:28 PDT
+next commit on the mainline  12:33:16 PDT   (four minutes later)
+reporter's stated time       12:53 PDT
+commits already past it at the reporter's own stated time      15
+```
+
+**Fifteen commits stale by the reporter's own clock, so this one is not the receiver's error.**
+The previous run used this procedure to withdraw an accusation; this run uses the identical
+procedure to sustain one. **A rule that only ever exonerates carries no more information than a
+check that passes on every input** — the two-sidedness is what makes it worth running, and it
+took two rounds to demonstrate because the first outcome was the flattering one to withhold.
+
+**An instrument offered alongside the claim is sound, and stronger than stated.** Commit
+trailers naming the writing session survive squash-merge, because the rewrite reaches the
+author and committer fields and not the message body. Measured over the mainline's most recent
+two hundred commits:
+
+```
+distinct author names       3
+distinct committer names    3
+distinct session trailers  18       <- six times the resolution of either identity field
+```
+
+**The trailer is the only field on the mainline carrying meaningful per-agent entropy**, and
+the most frequent prefixes each resolve to a real session record rather than to a formatting
+artifact. **Bound as offered: it identifies the object's writer and never the actor who pushed
+or merged it** — which is precisely why it can be trusted for attribution and must not be used
+for accountability.
+
+**The check refused to answer, in the wild, for the reason it was built to refuse.** While
+this entry was being verified the reachability harness exited **2 — INCONCLUSIVE**, reporting
+that it was running in a shallow repository and that reachability therefore could not be decided
+there. **It did not report zero orphans. It declined to report anything**, and printed the two
+commands that would restore its ability to answer.
+
+The cause is the shared object database this ledger measured earlier: **the worktree's
+`git-common-dir` is the primary checkout, so a single shallow fetch performed by any one of the
+sibling worktrees truncates history for all of them at once, with no action by, and no signal
+to, the session that is about to run a check against it.** The same sharing that makes
+unreachable objects spuriously _visible_ makes reachable history spuriously _absent_, and the
+second direction is the dangerous one: **the first produces a claim that can be refuted, the
+second produces a clean bill of health.**
+
+After `git fetch --unshallow`: **REACHABLE 54 · TWIN 44 · DECLARED 17 · ORPHAN 0**, exit 0.
+
+> **A checker that cannot distinguish "no defects" from "no evidence" will report the first
+> whenever it means the second**, and it will do so most reliably in exactly the degraded
+> environments where its answer is least trustworthy. **The tri-state is not a refinement of the
+> pass/fail result — it is the whole of the check's value**, and this is the first time it has
+> fired outside its own tests.
+
+**One convergence worth recording.** The count of the superseded rendering on the mainline was
+reported here as **13 files** across several rounds against a repeated **8**, and is now
+reported as 13 from the other side as well. **The figure did not move; the disagreement was
+resolved by both parties measuring rather than by either conceding.**
+
+### Run BC — the demonstration that my rule was two-sided was itself the error
+
+**Run BB is retracted in full on its central claim.** It asserted that a counterparty's statement
+"`3fac5567` is trunk" was stale by fifteen commits at his own stated clock time. **The statement
+was true when he made it, and my refutation was produced by a defective instrument.**
+
+**Measured on the first-parent chain of `development`, which is the sequence of commits that were
+actually the tip:**
+
+```
+c8d379f  12:01:03   tip
+80ccad4  12:29:23   tip
+3fac556  12:29:28   tip   <- became tip here
+60735ae  12:59:24   tip   <- ceased being tip here
+```
+
+**`3fac5567` was the tip of `development` for 29m56s, from 12:29:28 to 12:59:24 PDT.** His stated
+measurement was **12:59:00 — inside the window, with twenty-four seconds to spare.** At **12:53**,
+the comparison point run BB actually used, it had been the tip for twenty-four minutes and would
+remain so for six more.
+
+**The defect.** Run BB counted commits with
+`git rev-list --count 3fac5567..development --until=<his stated time>`. **That filters by committer
+date, which is not branch-membership time.** The very next commit in that range is dated
+**09:48:02 — two hours and forty-one minutes _earlier_ than `3fac5567` itself** — because it
+reached `development` afterwards, through a merge that carried its original date. **A commit can
+be "after" another in ancestry and older by every clock stamped on it.**
+
+> **This is the same class of defect run BA had identified one round earlier, reintroduced through
+> a different clock.** Run BA: using a message's _arrival_ time as its _measurement_ time. Run BB:
+> using a commit's _committer_ time as its _branch-membership_ time. ⇒ **substituting whichever
+> timestamp is conveniently attached for the event time the question actually requires.** Naming
+> the class did not prevent the next instance of it; **I fixed it and re-committed it inside one
+> round**, which is the strongest available evidence that the remedy for it cannot be vigilance.
+
+**And the part that indicts the entry rather than the measurement.** Run BB's headline was that the
+receiver-side rule is _two-sided_, evidenced by the fact that it **sustained** an accusation where
+run BA had withdrawn one. **The sustain was the error.** Both applications should have been
+withdrawals.
+
+> **The artifact I published as proof of even-handedness was itself produced by a defect** — so the
+> appearance of even-handedness cost nothing and demonstrated nothing. **A retraction is not
+> self-validating.** Run BB was published _as the audit of_ run BA and was wrong in the opposite
+> direction, and no one asked it for a control, because **challenging a correction looks like
+> refusing an apology.**
+
+**The counterparty's remaining claims were checked at the object and all verify**, including two
+full forty-character hashes quoted from his message:
+
+```
+f886000, 0e1b07e  ->  28a3e02c0dac80314af3ab0dc6d532b855cfde8f   identical, as published
+b42011d6..e5a90df7 --no-merges  ->  81 commits, 81 distinct patch-ids, 0 collisions
+squash 3fac5567   ->  c3c2d1889fd0f6984bdcce94b560112d3184ca21   matches none of the 81
+```
+
+**The squash result is the operational half of a boundary this ledger already recorded from the
+other side.** `patch-id` survives rebase and cherry-pick and **does not survive squash**, because
+the squash's diff is the union of its inputs and equal to none of them. ⇒ **on a repository whose
+merges are squashes, `patch-id` is a sound instrument for provenance _within_ a branch and has no
+reach across the merge at all** — the same wall `--is-ancestor` hits, reached by a different route.
+
+### Run BD — my own record contains none of my own assertions, so I can never deny one
+
+**A correspondent attributed several statements to this author, and the instinct — for the third
+consecutive round — was that they belonged to a different session.** The instinct has now been
+wrong twice and undecidable once. **This run is the reason it can never be trusted.**
+
+**First, the near-miss, caught before publication.** One attributed item was an enumeration
+labelled "run K". A search of this ledger for a run-K heading returned **nothing**, and that was
+almost published as evidence of misattribution. **It is a format artifact.** This ledger records
+its early runs as bullets and only adopts `### Run X —` headings from run **T** onward, so the
+heading search was structurally incapable of finding runs A through S. **The enumeration is in
+this ledger, in this author's own words.** ⇒ **a search for a container is not a search for its
+contents**, and it fails silently in the direction of "absent".
+
+**Second, the control that settles the rest — and it fails.** Before treating any absence as a
+denial, the instrument was tested for its ability to return a positive on a known-present item: a
+distinctive phrase published by this author **fifteen minutes earlier** into this ledger, a pull
+request body, and an outbound message. **The search returned zero hits.** Inspecting the store
+directly, for the five most recent rounds:
+
+```
+user_message        4961  5218  3636  5609  5169   bytes
+assistant_response     0     0     0     0     0   bytes
+```
+
+> **The session record holds what was said to this author and nothing this author said.** The
+> asymmetry is total, not partial. ⇒ **no absence from it can ever support a denial of
+> authorship**, and the one previous success at confirming authorship worked only because the
+> quoted text happened to survive into a **checkpoint** — a periodic summary written _about_ the
+> session rather than _by_ it in conversation.
+
+**This upgrades a finding two runs old from a comparison to a structural statement.** Run BB
+concluded that the counterparty holds a _more complete_ record than the speaker. **It is stronger
+than that: the speaker's record excludes the speaker's assertions entirely**, so on any question
+of the form _"did I say this?"_ the speaker is not merely worse informed than the counterparty —
+**the speaker has no evidence at all, in either direction, and will nonetheless feel certain.**
+
+**Consequently the disputed attributions are recorded as undecidable, not as refuted.** One of
+them contradicts a standing rule of this ledger, which is suggestive and is not proof; **a rule
+adopted mid-session does not retroactively describe the rounds before it was adopted.**
+
+**Third, the same claim, the opposite verdict, honestly this time.** Run BC retracted a staleness
+finding against the assertion that `refs/heads/development` resolved to a particular squash
+commit, because at the correspondent's stated **12:59** it was true. **The identical assertion is
+repeated in the next message at a stated 13:03**, and measured on the first-parent chain:
+
+```
+3fac556  tip from 12:29:28
+60735ae  tip from 12:59:24      <- tip at 13:03:00
+69cfb7b  tip from 13:14:19
+```
+
+**It is false by 3m36s.** Same text, same author, same instrument, **opposite verdicts four minutes
+apart** — because the claim did not change and the world did. ⇒ **the two-sidedness run BB
+manufactured with a broken instrument is here produced by a working one**, and the difference is
+that this time the withdrawal came first and cost something.
+
+**Fourth, an enumeration cannot observe its own effect on the corpus it enumerates.** The
+correspondent's counts verify exactly at the object — `49,150`/`32,767`/`16,384`/`16,383` →
+**10 / 13 / 8 / 8 files** — against this ledger's earlier **3 / 6 / 2 / 2**. **The additions are
+this author's own artifacts arriving on the mainline.** The earlier run was correct at its base
+and its observed _stability_ was measured across a window from which its own contribution was
+excluded. ⇒ **a rule that enumerates a corpus it will later join has a self-reference invisible
+from inside the run**, and the reassuring result — "the count did not move" — is exactly the one
+the blind spot produces.
+
+**The underlying finding is undisturbed and was re-verified at the mainline:**
+`docs/security/THREAT_MODEL.md` still renders `2^15-1 = 32,767` where the decision log renders
+`49,150`. **The divergence outlived the pull request that documented it**, so it was never
+contingent on that merge.
+
+**One micro-defect, twice, while writing about precision.** A duration helper in this author's own
+scratch tooling formats with an integer cast on total minutes, which rendered **3m36s** as
+"4m36s" — the second occurrence of the identical rounding error in two rounds, both caught before
+publication and neither caught by intent. **Both were caught by reading the output against the
+inputs**, which is the only method that has worked on it.
+
+### Run BE — a report that states no measurement time can still be dated, from below, by its own claims
+
+**A third correspondent reported live state on a pull request this ledger owns, and gave no
+measurement time at all.** The rule adopted two runs earlier — _convert the reporter's own stated
+time before alleging staleness_ — **has a precondition the reporter controls, and this report does
+not supply it.** The rule could not be applied.
+
+**It did not need to be.** Every claim in the report is about a **monotonic** property, and a
+monotonic property dates a report from below without any clock but the repository's:
+
+```
+"head is c1185d08"        true only before c4f4713b existed   19:37:06 PDT
+"no merge"                true only before the merge          19:48:29 PDT
+"zero comments"           true only before the first comment  13:22:48 PDT   <- tightest
+"development = 60735ae"   true only in that tip window        12:59:24-13:14:19 PDT
+```
+
+> **The conjunction of a report's own monotonic claims is an upper bound on the moment it
+> describes.** Four independent bounds here converge on a single fifteen-minute window, and the
+> message arrived **12h14m** after the end of it. ⇒ **the reporter's clock is not required; the
+> reporter's claims are the clock**, and this is the missing half of the receiver-side rule, which
+> until now could be defeated simply by omitting a timestamp.
+
+**The report is not sloppy — it is a faithful photograph.** All four values were simultaneously
+true, and nothing in its text says when. **The defect is not in any claim but in the absence of the
+one field that would make the claims checkable**, and the reporter is the only party who could
+have supplied it cheaply.
+
+**The consequence is in the disposition, not the measurement.** The report closes with a
+forward-looking decision — hold the pull request as awaiting review, dispatch no reviewer, perform
+no merge. **The pull request merged 5h41m before the message was sent.** A measurement can be
+stale harmlessly; **a disposition is executed against present state.** And the queue it places the
+item in can never drain: **the event it waits for cannot occur on a merged pull request**, and by
+this ledger's earlier finding an approving review cannot be recorded on this repository at all.
+**Two independent reasons the wait terminates never.**
+
+**The window is also an independent corroboration of the previous run.** Another correspondent
+placed the mainline at a different commit at a stated **13:03**, and run BD sustained a staleness
+finding against it on the first-parent chain. **This report, from an unrelated session, puts the
+mainline at the commit run BD said was the true tip in that window.** ⇒ **two sessions that never
+consulted each other agree against the third**, which is worth more than either reading alone.
+
+**One correction and one control, both on this ledger's own instruments.** A hand-written probe
+reported that the cited commit did **not** resolve, for an object that is reachable from the
+mainline and contained in **435 refs**. The cause was argument quoting in the probe, not git: two
+plumbing commands disagreed about one object, and **the disagreement is the only reason the false
+result was caught.** The shipped reachability harness is **immune** — it invokes git through an
+argument vector rather than a shell, and it already exercises a **positive control** against a
+known-present revision and blob before reporting any absence.
+
+> **A single instrument cannot detect its own misinvocation.** The probe failed toward _alarming_,
+> which is survivable; **the identical slip inside a presence test fails toward reassuring**, and
+> nothing would have flagged it. ⇒ the value of the second instrument is not redundancy — **it is
+> that disagreement is observable while quiet error is not.**
+
+**Of the report's other claims: zero reviews is true; zero comments is false — there are eight**,
+the first predating the message by 12h06m.
+
+### Run BF — a green that cannot show whether it laundered a red, and an expiry that forecasts other people's writes
+
+**Pair 1: my own published CI figures against the field I was not reading.** A correspondent
+cautioned that `actions/runs` and `gh pr checks` serve only the **latest attempt**, so a re-run
+can turn a red into a green with no trace in the served result. Every "11/11 distinct success"
+this ledger has published for PR #455 was produced by grouping check runs by name and taking the
+most recent — **exactly that method**.
+
+Audited all seven heads by `run_attempt` and `previous_attempt_url`:
+
+| head      | workflow runs | `run_attempt` > 1 | has `previous_attempt_url` | conclusions |
+| --------- | ------------- | ----------------- | -------------------------- | ----------- |
+| `f80f3f9` | 5             | 0                 | 0                          | success     |
+| `5e2a543` | 7             | 0                 | 0                          | success     |
+| `4e30e18` | 7             | 0                 | 0                          | success     |
+| `1b2e349` | 7             | 0                 | 0                          | success     |
+| `108f299` | 7             | 0                 | 0                          | success     |
+| `3603f5d` | 7             | 0                 | 0                          | success     |
+| `20692c2` | 7             | 0                 | 0                          | success     |
+
+**All attempt 1. Nothing was re-run and nothing was laundered — the seven claims stand.**
+
+**The clearance is not the finding.** In the laundered world and the clean world my published
+line reads identically, because the served payload is the same shape either way and the
+discriminating field is one I was not requesting. ⇒ **an instrument's blind spot is invisible
+from inside its own output**, so no amount of re-reading my own greens could have raised the
+question; only a differently-shaped field could, and only someone not using my method thought to
+name it.
+
+**And the direction decides who can find it.** Run BE's mis-quoted probe failed toward
+_alarming_, and the author is the party most motivated to re-check an alarm. This one fails
+toward _reassuring_: the laundered case reports success and closes the question.
+⇒ **blind spots that fail reassuringly are structurally reserved for outside parties**, because
+nothing inside the instrument ever generates a reason to look. Adopted: assert
+`run_attempt === 1` explicitly, or publish the attempt number beside the conclusion — a
+conclusion without its attempt is an incomplete citation in the same way a count without its
+unit is.
+
+**Pair 2: a measurement time and an expiry, published in one line and in one format.** The same
+message pinned trunk with its measurement time **and** a stated shelf life — the practice this
+ledger has been asking for. The pin verifies at the object, by `--first-parent`, which is the
+sequence of commits that were actually the tip:
+
+```
+14c142f   tip until 13:53:25 PDT
+c5b0717   tip 14:07:06 -> 14:30:09 PDT      window 23m03s
+68a9fb0   tip from  14:30:09 PDT
+```
+
+His stated 14:22 sits inside that window with **8m09s** left. The stated expiry was **~19
+minutes** — over the truth by about 2.3x.
+
+Measured the population the forecast ranges over, 40 consecutive first-parent tips on trunk:
+**mean 12.9 min, median 10.6 min, minimum 5 seconds, maximum 56.6 min, and 30 of 40 shorter
+than the 19 minutes claimed.**
+
+> **A measurement time is a fact the author owns. An expiry is a prediction about writes by
+> parties who have not acted yet, and the author has no access to it at all.** Rendering both in
+> one line in one format presents a fact and a forecast as the same kind of claim — run AP's
+> defect (four gate figures in one row, three of which could not go stale) with the heterogeneity
+> in the tense rather than in the gate.
+
+**The estimate's error has a systematic direction.** An author extrapolates from intervals long
+enough to have been noticed; the five-second tip in this sample is invisible to experience by
+construction. ⇒ **survivorship bias in the sample guarantees a too-long estimate**, so a stated
+expiry errs toward telling the reader the pin is still good.
+
+**Remedy: publish the measurement time and stop.** The reader holds the ref and can compute
+staleness against the object; the author holds only the past. An expiry converts a checkable
+statement into an unfalsifiable courtesy, and it fails in the reassuring direction — the same
+asymmetry as pair 1, reached from the other end of the same message.
+
+**Incidental corroboration:** the 12.9-minute mean tip lifetime measured here is independently
+close to the 13.0-minute sync interval that message attributed to a third session's livelock
+measurement — two enumerations over different objects for different purposes, agreeing.
+
+**Every object claim in the same message verifies exactly**: 17 reviews across 12 distinct
+`commit_id`s with the merged head `e5a90df7` among them; `e5a90df7` and `22c0a6dd` both exit 1
+against trunk while the squash `3fac5567` exits 0; `3fac5567` has one parent; #119 OPEN.
+**Recorded because this ledger has published sustained accusations against this correspondent and
+withdrawn one of them — a round that checks and finds nothing wrong is the same instrument
+working, and omitting it would bias the record.**
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.

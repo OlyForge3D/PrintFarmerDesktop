@@ -59,6 +59,21 @@ vi.mock('node:fs/promises', async () => {
     await vi.importActual<typeof import('node:fs/promises')>(
       'node:fs/promises',
     );
+  const { getSystemErrorMap } =
+    await vi.importActual<typeof import('node:util')>('node:util');
+
+  // `errno` is read from the running platform rather than written as a literal.
+  // A real `NodeJS.ErrnoException` always carries one, and the value is
+  // platform-specific: EPERM is -4048 under libuv on Windows and 1 on macOS, so
+  // a hardcoded number is wrong on one of the two runners this suite executes
+  // on. Nothing in production reads `errno` today; the point is that a future
+  // classifier which does must not read `undefined` here, because that lies in
+  // the permissive direction.
+  const errnoByCode = new Map<string, number>();
+  for (const [errno, [code]] of getSystemErrorMap()) {
+    errnoByCode.set(code, errno);
+  }
+
   return {
     ...actual,
     default: actual,
@@ -69,9 +84,18 @@ vi.mock('node:fs/promises', async () => {
       const asString = String(target);
       blocked.calls.push(asString);
       if (blocked.path !== null && asString === blocked.path) {
+        const errno = errnoByCode.get(blocked.code);
+        if (errno === undefined) {
+          // Refuse to inject an error this platform never raises, rather than
+          // quietly omitting the field and restoring the gap above.
+          throw new Error(
+            `no platform errno for injected code '${blocked.code}', so the ` +
+              'injected error would not resemble one Node raises',
+          );
+        }
         const error: NodeJS.ErrnoException = Object.assign(
           new Error(`${blocked.code}: injected failure, rmdir '${asString}'`),
-          { code: blocked.code, syscall: 'rmdir', path: asString },
+          { errno, code: blocked.code, syscall: 'rmdir', path: asString },
         );
         throw error;
       }
@@ -241,6 +265,19 @@ describe('startup sweep under deletion refusal (issue #229)', () => {
 
       expect(blocked.calls).toContain(stale);
       await expect(exists(stale)).resolves.toBe(true);
+
+      // The same control the EPERM case above carries. Without it these two
+      // assert only that initialize() did not throw and the directory survived,
+      // and both are equally true of a service that quietly did no work at all
+      // -- a catch around the whole method skips `mkdir` and the owner-marker
+      // write and still satisfies everything above. Today that mutant is caught
+      // on the shared path by the EPERM case; that is a property of a
+      // neighbouring test, not of these, and it leaves the moment the EPERM
+      // case is narrowed.
+      expect(
+        await ownedByThisProcess(root),
+        'initialize() tolerated the failed sweep but never registered this instance',
+      ).toHaveLength(1);
     },
   );
 
@@ -293,22 +330,129 @@ describe('startup sweep under deletion refusal (issue #229)', () => {
       'a refusal on the first stale root stopped the sweep collecting the rest',
     ).toBe(false);
   });
+
+  it('collects on a later sweep what a refusal left behind', async () => {
+    // Issue #454. The `catch` above leaves the directory "for a later sweep, by
+    // this process or another one", and that promise is load-bearing outside
+    // this file: `e2e/retarget.spec.ts` relaunches the packaged app and asserts
+    // the closed instance's roots are gone. Every test above stops at "the
+    // refusal was tolerated and the directory survived" -- none of them
+    // exercises the later sweep, so the sentence the E2E depends on was
+    // unproven.
+    //
+    // Stated as the property rather than the mechanism: a refusal must defer a
+    // collection, not cancel it.
+    const { root, stale } = await staleInstance();
+    blocked.path = stale;
+
+    await serviceFor(root).initialize();
+
+    // Control, and the reason this test is not trivial. Without it the whole
+    // test passes when the FIRST sweep already deleted the directory, which
+    // proves nothing about a later one -- the assertion after the second sweep
+    // would be reading the first sweep's success.
+    expect(
+      blocked.calls,
+      'rm was never called on the stale root, so the first sweep never refused',
+    ).toContain(stale);
+    expect(
+      await exists(stale),
+      'the first sweep deleted the stale root, so there is nothing left for a later sweep to collect and this test proves nothing',
+    ).toBe(true);
+
+    // The contention is gone, as it is once the other process releases its
+    // handles. A second startup is a second sweep.
+    blocked.path = null;
+    const callsBeforeLaterSweep = blocked.calls.length;
+
+    await serviceFor(root).initialize();
+
+    expect(
+      blocked.calls
+        .slice(callsBeforeLaterSweep)
+        .some(
+          (call) => call === stale || call.startsWith(`${stale}${path.sep}`),
+        ),
+      'the later sweep never attempted a deletion anywhere under the deferred root, so it was dropped from consideration rather than retried',
+    ).toBe(true);
+    expect(
+      await exists(stale),
+      'the root a refusal deferred was never collected by a later sweep, so the deferral is permanent and e2e/retarget.spec.ts asserts a property the module does not deliver',
+    ).toBe(false);
+  });
 });
 
 describe("disposing this process's instance root", () => {
-  it('propagates a pending-handle error for its own directory', async () => {
-    const { root } = await staleInstance();
-    const subject = serviceFor(root);
+  /**
+   * The instance directory this service registered for itself.
+   *
+   * Throws rather than returning undefined: every assertion below is about what
+   * happens when removing *this* root is refused, so a fixture that never
+   * produced one must fail loudly instead of leaving `blocked.path` null, which
+   * would disarm the injection and pass.
+   */
+  async function ownRootOf(
+    root: string,
+    subject: { initialize: () => Promise<void> },
+  ): Promise<string> {
     await subject.initialize();
-
     const [ownInstance] = await ownedByThisProcess(root);
     if (ownInstance === undefined) {
       throw new Error('the service did not create its own instance root');
     }
-    const ownRoot = path.join(root, 'PrintFarmer', 'retarget', ownInstance);
+    return path.join(root, 'PrintFarmer', 'retarget', ownInstance);
+  }
+
+  it('propagates a pending-handle error for its own directory', async () => {
+    const { root } = await staleInstance();
+    const subject = serviceFor(root);
+    const ownRoot = await ownRootOf(root, subject);
     blocked.path = ownRoot;
 
     await expect(subject.disposeAll()).rejects.toMatchObject({ code: 'EPERM' });
     expect(blocked.calls).toContain(ownRoot);
+  });
+
+  it('propagates a non-pending-handle error for its own directory', async () => {
+    // The counterpart to `propagates a sweep error outside the pending-handle
+    // family`, which covers the sweep only. The asymmetry ran the wrong way:
+    // the sweep operates on *another* process's directory, where giving up
+    // costs a later sweep, while disposeAll() operates on this process's own
+    // root, where giving up strands it on disk with no signal anywhere.
+    //
+    // Without this, disposeAll() could swallow every error outside the
+    // pending-handle family -- keeping the tested case green -- and all 107
+    // test files still passed (issue #442).
+    const { root } = await staleInstance();
+    const subject = serviceFor(root);
+    const ownRoot = await ownRootOf(root, subject);
+    blocked.path = ownRoot;
+    blocked.code = 'EIO';
+
+    // `errno` and `syscall` are asserted, not merely written into the fixture.
+    // A field that is never the reason an assertion passes is documentation
+    // that reads as coverage (#448), which is how the missing `errno` survived
+    // in the first place.
+    const rejection: unknown = await subject.disposeAll().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(
+      rejection,
+      'disposeAll() resolved instead of propagating the injected EIO',
+    ).toBeDefined();
+    expect(rejection).toMatchObject({ code: 'EIO', syscall: 'rmdir' });
+    expect(
+      typeof (rejection as NodeJS.ErrnoException).errno,
+      'the injected error carries no errno, so it does not resemble one Node raises',
+    ).toBe('number');
+
+    // Control: the refusal was reached. `rejects` alone is satisfied by any
+    // rejection, including one raised before `rm` was ever called.
+    expect(
+      blocked.calls,
+      'rm was never called on this process own root, so no refusal was triggered',
+    ).toContain(ownRoot);
   });
 });
