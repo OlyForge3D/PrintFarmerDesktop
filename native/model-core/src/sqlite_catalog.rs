@@ -6974,18 +6974,22 @@ mod tests {
         assert_eq!(resolution, "acceptServer");
     }
 
+    // Renamed: this test claimed to exercise the UPDATE's `resolved_at IS NULL`
+    // predicate and never reaches it. An identical resolution is answered by the
+    // replay branch, which returns before the UPDATE is built at all -- the
+    // assertion below is `replayed`, not a refusal. Deleting the predicate leaves
+    // this test green. The name was the only thing asserting coverage, and a name
+    // is not an assertion. The predicate is covered by the test after this one.
     #[test]
-    fn the_update_refuses_a_conflict_resolved_between_the_read_and_the_write() {
+    fn an_identical_resolution_replays_instead_of_reaching_the_update() {
         let mut store = SqliteCatalog::open_in_memory().unwrap();
         let conflict_id = seed_conflict(
             &mut store,
             Some(CalibrationConflictKind::DeletionVsLocalEdit),
             9,
         );
-        // Simulate the concurrent writer the pre-SELECT branch cannot see: the
-        // row is resolved, but with the resolution this call is about to
-        // request, so the equality branch lets it through and only the
-        // `resolved_at IS NULL` predicate on the UPDATE can catch it.
+        // The row is resolved with the resolution this call is about to request,
+        // so the equality branch answers it as a replay.
         store
             .conn
             .execute(
@@ -7004,6 +7008,101 @@ mod tests {
             .expect("an identical resolution is a replay, not an error");
         assert!(replay.replayed);
         assert_eq!(replay.resolved_at, "2026-07-26T16:00:00.000Z");
+    }
+
+    /// Covers the `resolved_at IS NULL` predicate on the resolve UPDATE.
+    ///
+    /// Removing that predicate left 339 tests green, so it was carried on trunk
+    /// uncovered. The reason nothing reached it is that every state in which the
+    /// UPDATE could match zero rows is answered earlier: a *different* resolution
+    /// is rejected by the equality branch, and an *identical* one is answered as a
+    /// replay. The predicate is only reachable when the row becomes resolved
+    /// AFTER the SELECT has already read it as unresolved -- a genuine interleave.
+    ///
+    /// The seam is in the production path itself. `keepLocalAsNewRevision` writes
+    /// a revision row between the SELECT and the UPDATE, so an `AFTER INSERT`
+    /// trigger on that table fires a competing writer inside exactly the window
+    /// the predicate defends. One connection, no threads, no timing: the write
+    /// lands between the two statements every run.
+    #[test]
+    fn the_update_predicate_refuses_a_writer_that_lands_between_the_read_and_the_write() {
+        // Counterfactual first, on a store with no interloper: this same call
+        // must succeed, or the refusal below is a path that never arrives and
+        // the test proves nothing about the predicate.
+        let mut clean = SqliteCatalog::open_in_memory().unwrap();
+        let clean_conflict = seed_conflict(
+            &mut clean,
+            Some(CalibrationConflictKind::DeletionVsLocalEdit),
+            9,
+        );
+        clean
+            .resolve_calibration_conflict(&resolve_params(
+                &clean_conflict,
+                CalibrationConflictResolutionKind::KeepLocalAsNewRevision,
+            ))
+            .expect("without an interleaving writer this resolution must succeed");
+
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let conflict_id = seed_conflict(
+            &mut store,
+            Some(CalibrationConflictKind::DeletionVsLocalEdit),
+            9,
+        );
+
+        store
+            .conn
+            .execute_batch(&format!(
+                "CREATE TRIGGER resolve_between_the_read_and_the_write
+                 AFTER INSERT ON calibration_profile_revisions
+                 BEGIN
+                     UPDATE calibration_conflicts
+                        SET resolved_at = '2026-07-26T16:00:00.000Z',
+                            resolution = 'acceptServer'
+                      WHERE profile_id = 'profile-1' AND conflict_id = '{conflict_id}';
+                 END;"
+            ))
+            .unwrap();
+
+        let error = store
+            .resolve_calibration_conflict(&resolve_params(
+                &conflict_id,
+                CalibrationConflictResolutionKind::KeepLocalAsNewRevision,
+            ))
+            .expect_err(
+                "a conflict resolved after the SELECT read it as unresolved must be \
+                 refused by the UPDATE predicate, not overwritten",
+            );
+        assert!(
+            error.starts_with(calibration_resolution_error::ALREADY_RESOLVED),
+            "error {error:?} must carry the named code; matching on prose passes \
+             when a different rejection fires"
+        );
+
+        // The interloper's resolution must survive intact. This is the assertion
+        // the predicate exists for: without it the UPDATE matches the row and
+        // silently overwrites a resolution that was already recorded and already
+        // observable to a reader.
+        let (resolved_at, resolution): (Option<String>, Option<String>) = store
+            .conn
+            .query_row(
+                "SELECT resolved_at, resolution FROM calibration_conflicts
+                 WHERE profile_id = 'profile-1' AND conflict_id = ?1",
+                params![conflict_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            resolved_at.as_deref(),
+            Some("2026-07-26T16:00:00.000Z"),
+            "the interleaving writer's resolved_at must be untouched; if this now \
+             reads the current timestamp the UPDATE overwrote a resolved conflict"
+        );
+        assert_eq!(
+            resolution.as_deref(),
+            Some("acceptServer"),
+            "the interleaving writer's resolution must be untouched; reading \
+             keepLocalAsNewRevision here means this call overwrote it"
+        );
     }
 
     #[test]

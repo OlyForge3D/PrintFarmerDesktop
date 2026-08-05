@@ -43,9 +43,76 @@
 
 import process from 'node:process';
 import { readdirSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { resolveRepository } from './check-pr-closure-scope.mjs';
+
+/**
+ * Find a credential for the live half without demanding it be exported.
+ *
+ * The script previously read `GITHUB_TOKEN`/`GH_TOKEN` and nothing else, so on a
+ * developer machine with `gh` logged in it reported "not set" for a credential
+ * that was sitting right there and skipped the ruleset check. `gh auth token` is
+ * the same credential every other squad workflow already uses.
+ *
+ * `run` is injected so the discovery can be tested without a `gh` on PATH, and
+ * `SKIP_CREDENTIAL_DISCOVERY` exists so the offline tests stay offline by
+ * construction rather than by whether the runner happens to be logged in.
+ */
+export function discoverToken(env = process.env, run = spawnSync) {
+  const fromEnv = env.GITHUB_TOKEN ?? env.GH_TOKEN ?? '';
+  if (fromEnv !== '') return fromEnv;
+  if ((env.SKIP_CREDENTIAL_DISCOVERY ?? '') !== '') return null;
+  // `gh` is a .cmd shim on Windows, which spawn cannot exec directly. The
+  // obvious workaround is `shell: true`, and node deprecates that with args
+  // (DEP0190) precisely because the arguments are concatenated rather than
+  // escaped. Naming the shim explicitly keeps the argument vector intact.
+  const candidates =
+    process.platform === 'win32' ? ['gh.cmd', 'gh.exe', 'gh'] : ['gh'];
+  for (const command of candidates) {
+    let result;
+    try {
+      result = run(command, ['auth', 'token'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+    } catch {
+      continue;
+    }
+    if (!result || result.error || result.status !== 0) continue;
+    const token = String(result.stdout ?? '').trim();
+    if (token !== '') return token;
+  }
+  return null;
+}
+
+/**
+ * Resolve which repository to ask about.
+ *
+ * Returns the value to use for `GITHUB_REPOSITORY`, `''` when the environment
+ * already carries enough for `resolveRepository` to work it out on its own, and
+ * `null` when there is genuinely nothing to go on.
+ */
+export function discoverRepository(env = process.env, run = spawnSync) {
+  if ((env.GITHUB_REPOSITORY ?? '') !== '') return env.GITHUB_REPOSITORY;
+  if ((env.GITHUB_REPOSITORY_OWNER ?? '') !== '') return '';
+  if ((env.SKIP_CREDENTIAL_DISCOVERY ?? '') !== '') return null;
+  let result;
+  try {
+    result = run('git', ['remote', 'get-url', 'origin'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return null;
+  }
+  if (!result || result.status !== 0) return null;
+  const url = String(result.stdout ?? '').trim();
+  // Both forms git uses: https://host/owner/name(.git) and git@host:owner/name(.git)
+  const match = /[/:]([^/:]+)\/([^/]+?)(?:\.git)?$/.exec(url);
+  return match ? `${match[1]}/${match[2]}` : null;
+}
 
 export { resolveRepository };
 
@@ -382,15 +449,13 @@ async function main() {
     return;
   }
 
-  const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  const token = discoverToken(process.env);
+  const repositoryName = discoverRepository(process.env);
   const missing = [];
-  if (token === undefined || token === '') {
+  if (token === null) {
     missing.push('GITHUB_TOKEN');
   }
-  if (
-    (process.env.GITHUB_REPOSITORY ?? '') === '' &&
-    (process.env.GITHUB_REPOSITORY_OWNER ?? '') === ''
-  ) {
+  if (repositoryName === null) {
     missing.push('GITHUB_REPOSITORY');
   }
   if (missing.length > 0) {
@@ -400,14 +465,29 @@ async function main() {
     // from disk in CI). Failing here would make `npm run check:merge-queue-
     // contexts` exit 1 on a developer machine for want of an env var, which
     // teaches people to ignore the exit code of the thing guarding the queue.
+    //
+    // That reasoning is sound and is left intact. What it did not account for is
+    // how OFTEN this path was taken: the script asked only for env vars, so on
+    // an ordinary developer machine with `gh` logged in it skipped the live
+    // check and exited 0 — reporting a clean bill for the half it never ran.
+    // Measured: `gh auth token` returned a credential, and with it supplied the
+    // live check ran and passed. The degrade is now the rare genuine case rather
+    // than the default, which shrinks the window in which a green from this
+    // script means less than it appears to.
     process.stdout.write(
       'Workflow classification is consistent.\n' +
-        `Skipped the live ruleset check: ${missing.join(' and ')} not set.\n`,
+        `Skipped the live ruleset check: ${missing.join(' and ')} not set.\n` +
+        'That half is the one that reads branch protection, so this run has NOT ' +
+        'checked whether a required context would deadlock the queue.\n',
     );
     return;
   }
 
-  const repository = resolveRepository(process.env);
+  const repository = resolveRepository(
+    repositoryName === ''
+      ? process.env
+      : { ...process.env, GITHUB_REPOSITORY: repositoryName },
+  );
   const branch = process.env.PROTECTED_BRANCH ?? 'development';
   const { contexts, strict } = await fetchRequiredContexts({
     repository,

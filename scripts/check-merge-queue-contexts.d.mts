@@ -66,3 +66,27 @@ export declare function fetchRequiredContexts(input: {
 }): Promise<RequiredStatusChecks>;
 
 export declare function formatDeadlock(offenders: DeadlockingContext[]): string;
+
+/**
+ * A credential the script never asked for is not a credential it does not have.
+ * `run` is injectable so the discovery can be tested without a real `gh`.
+ */
+export type CredentialProbe = (
+  command: string,
+  args: string[],
+  options: { encoding: string; stdio: unknown },
+) => { status: number | null; stdout?: string; error?: unknown } | undefined;
+
+export declare function discoverToken(
+  env?: NodeJS.ProcessEnv,
+  run?: CredentialProbe,
+): string | null;
+
+/**
+ * Returns `''` when the environment already identifies the repository (owner
+ * alone is enough downstream), `null` when nothing can identify it.
+ */
+export declare function discoverRepository(
+  env?: NodeJS.ProcessEnv,
+  run?: CredentialProbe,
+): string | null;

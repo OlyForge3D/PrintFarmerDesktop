@@ -244,6 +244,13 @@ describe('error classification', () => {
     // The control: the error genuinely carries the secret, so a logger that
     // reached for `message` — as the ad-hoc `console.error(tag, error)` calls
     // did — would have emitted it.
+    //
+    // Since #177 production no longer puts server text in `message`, so this
+    // message is constructed here rather than obtained from `statusError`. That
+    // makes it a synthetic worst case, which is the right shape for this test:
+    // the log module must not read `message` regardless of what a *caller*
+    // manages to put there, and this control stays live even if the upstream
+    // fix is later reverted.
     expect(error.message).toContain(JWT);
     expect(naiveEmit({ message: error.message })).toContain(JWT);
   });

@@ -37,6 +37,7 @@ import {
 } from './CalibrationBedClearDialog';
 import { CalibrationPrintLifecycle } from './CalibrationPrintLifecycle';
 import { CalibrationProvenance } from './CalibrationProvenance';
+import { calibrationErrorText } from './workspaceTypes';
 
 interface CalibrationStepWorkflowProps {
   readonly stageId: CalibrationStageId;
@@ -340,10 +341,10 @@ export function CalibrationStepWorkflow({
         if (statusRes.status === 'ok') {
           setOrchStatus(statusRes.orchestration);
         } else {
-          setOrchError(statusRes.error.message);
+          setOrchError(calibrationErrorText(statusRes.error));
         }
       } else {
-        setOrchError(res.error.message);
+        setOrchError(calibrationErrorText(res.error));
       }
     } catch (err) {
       setOrchError(err instanceof Error ? err.message : String(err));
@@ -497,7 +498,9 @@ export function CalibrationStepWorkflow({
         setBedClearOpen(false);
       } else {
         setBedClearError(
-          res.status === 'error' ? res.error.message : 'Unexpected error.',
+          res.status === 'error'
+            ? calibrationErrorText(res.error)
+            : 'Unexpected error.',
         );
       }
     } catch (err) {

@@ -218,6 +218,29 @@ export function errorMessage(error: unknown, fallback: string): string {
     : fallback;
 }
 
+/**
+ * Renders a calibration IPC error as operator-facing text (#177).
+ *
+ * `message` is catalogued in the main process -- it is chosen from fixed
+ * literals keyed by the error code, never copied from the backend. That closes
+ * the ProblemDetails leak but removes the only actionable string some failures
+ * had. `reference` is what replaces it: an opaque correlation id the operator
+ * can quote, which resolves to the main-process log record where the backend's
+ * raw detail was retained.
+ *
+ * Appended rather than shown separately because every existing calibration
+ * surface renders a single string, and a reference the operator cannot see is
+ * a field that satisfies the ruling in the payload and fails it at the screen.
+ */
+export function calibrationErrorText(error: {
+  readonly message: string;
+  readonly reference: string | null;
+}): string {
+  return error.reference === null
+    ? error.message
+    : `${error.message} Reference ${error.reference}.`;
+}
+
 export function formatTimestamp(value: string): string {
   const time = Date.parse(value);
   return Number.isFinite(time) ? new Date(time).toLocaleString() : value;

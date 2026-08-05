@@ -695,6 +695,7 @@ describe('CalibrationApiError schema (typed HTTP error states)', () => {
         message: `Error: ${code}`,
         retryable: false,
         retryAfterSeconds: null,
+        reference: null,
       });
       expect(result.code).toBe(code);
     });
@@ -707,6 +708,7 @@ describe('CalibrationApiError schema (typed HTTP error states)', () => {
         message: 'Error',
         retryable: false,
         retryAfterSeconds: null,
+        reference: null,
       }),
     ).toThrow();
   });
@@ -964,6 +966,7 @@ describe('generation/queue disabled states parse correctly', () => {
         message: 'Sync required.',
         retryable: false,
         retryAfterSeconds: null,
+        reference: null,
       },
     });
     expect(result.status).toBe('error');
@@ -987,6 +990,7 @@ describe('generation/queue disabled states parse correctly', () => {
         message: 'Printer context is stale.',
         retryable: false,
         retryAfterSeconds: null,
+        reference: null,
       },
     });
     expect(result.status).toBe('error');

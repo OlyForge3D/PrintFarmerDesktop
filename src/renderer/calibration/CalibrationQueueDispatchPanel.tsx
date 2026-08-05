@@ -22,6 +22,7 @@ import type {
   CalibrationQueueEventEnvelope,
 } from '@shared/ipc';
 import type { CalibrationApi } from './api.js';
+import { calibrationErrorText } from './workspaceTypes';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -298,7 +299,7 @@ export const CalibrationQueueDispatchPanel: React.FC<
           onJobInvalidated('Job was cancelled or replaced.');
         }
       } else {
-        setFetchError(result.error.message ?? 'Failed to fetch job state.');
+        setFetchError(calibrationErrorText(result.error));
       }
     } catch (error) {
       setFetchError(

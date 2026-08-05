@@ -2,6 +2,7 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  CLEANUP_FAILURE_DIAGNOSTIC,
   CLEANUP_FAILURE_ANCHOR,
   CLEANUP_WARNING_MARKER,
   NPM_PRODUCTION_TREE_COMMAND,
@@ -11,10 +12,13 @@ import {
   findTreeProblems,
   findUnresolvedPackages,
   hasCleanupFailure,
+  main,
   markCleanupEvidenceOutput,
   npmInvocation,
   retryCleanupRemovals,
   writeCleanupEvidence,
+  type CleanupRecovery,
+  type MainDependencies,
 } from '../scripts/npm-ci-strict.mjs';
 
 /**
@@ -80,6 +84,222 @@ const CLEAN_PRODUCTION_TREE = {
     zod: { version: '3.25.76' },
   },
 };
+
+interface OrchestrationHarnessOptions {
+  install?: { code: number; output: string };
+  recovery?: CleanupRecovery;
+  tree?: unknown;
+}
+
+function createOrchestrationHarness({
+  install = { code: 0, output: CLEAN_INSTALL_OUTPUT },
+  recovery = {
+    attempted: true,
+    recovered: true,
+    directories: ['parse-color'],
+    reason: null,
+  },
+  tree = CLEAN_PRODUCTION_TREE,
+}: OrchestrationHarnessOptions = {}) {
+  const calls: string[] = [];
+  const runNpmCi = vi.fn(() => {
+    calls.push('npm-ci');
+    return Promise.resolve(install);
+  });
+  const retryCleanupRemovalsImpl = vi.fn(() => {
+    calls.push('cleanup-retry');
+    return Promise.resolve(recovery);
+  });
+  const writeCleanupEvidenceImpl = vi.fn(() => {
+    calls.push('write-evidence');
+    return Promise.resolve('C:\\temp\\npm-cleanup-evidence.json');
+  });
+  const markCleanupEvidenceOutputImpl = vi.fn(() => {
+    calls.push('mark-evidence');
+    return Promise.resolve(true);
+  });
+  const readProductionTree = vi.fn(() => {
+    calls.push('production-tree');
+    return tree;
+  });
+  const fail = vi.fn((lines: string[]) => {
+    calls.push('fail');
+    expect(lines).not.toEqual([]);
+  });
+  const exit = vi.fn((code: number) => {
+    calls.push(`exit:${code}`);
+  });
+  const writeStderr = vi.fn(() => {
+    calls.push('stderr');
+  });
+  const dependencies = {
+    runNpmCi,
+    retryCleanupRemovals: retryCleanupRemovalsImpl,
+    writeCleanupEvidence: writeCleanupEvidenceImpl,
+    markCleanupEvidenceOutput: markCleanupEvidenceOutputImpl,
+    readProductionTree,
+    fail,
+    exit,
+    writeStderr,
+  } satisfies Partial<MainDependencies>;
+
+  return {
+    calls,
+    dependencies,
+    exit,
+    fail,
+    markCleanupEvidenceOutput: markCleanupEvidenceOutputImpl,
+    readProductionTree,
+    retryCleanupRemovals: retryCleanupRemovalsImpl,
+    runNpmCi,
+    writeCleanupEvidence: writeCleanupEvidenceImpl,
+    writeStderr,
+  };
+}
+
+describe('npm-ci-strict main orchestration', () => {
+  it('exits immediately with the first npm ci nonzero code', async () => {
+    const harness = createOrchestrationHarness({
+      install: { code: 37, output: RECORDED_CLEANUP_FAILURE },
+    });
+
+    await main(harness.dependencies);
+
+    expect(harness.calls).toEqual(['npm-ci', 'exit:37']);
+    expect(harness.exit).toHaveBeenCalledWith(37);
+    expect(harness.retryCleanupRemovals).not.toHaveBeenCalled();
+    expect(harness.readProductionTree).not.toHaveBeenCalled();
+  });
+
+  it('bypasses cleanup recovery for a clean install and validates the production tree', async () => {
+    const harness = createOrchestrationHarness();
+
+    await main(harness.dependencies);
+
+    expect(harness.calls).toEqual(['npm-ci', 'production-tree']);
+    expect(harness.retryCleanupRemovals).not.toHaveBeenCalled();
+    expect(harness.fail).not.toHaveBeenCalled();
+  });
+
+  it('routes the exact cleanup warning to bounded recovery before tree validation', async () => {
+    const harness = createOrchestrationHarness({
+      install: { code: 0, output: RECORDED_CLEANUP_FAILURE },
+    });
+
+    await main(harness.dependencies);
+
+    expect(harness.calls).toEqual([
+      'npm-ci',
+      'cleanup-retry',
+      'stderr',
+      'production-tree',
+    ]);
+    expect(harness.retryCleanupRemovals).toHaveBeenCalledWith(
+      RECORDED_CLEANUP_FAILURE,
+    );
+    expect(harness.writeStderr).toHaveBeenCalledWith(
+      "npm-ci-strict: retried npm's requested Windows removal for parse-color; validating the resulting tree before continuing.\n",
+    );
+    expect(harness.fail).not.toHaveBeenCalled();
+  });
+
+  it('validates and rejects an unresolved production tree after cleanup recovery', async () => {
+    const harness = createOrchestrationHarness({
+      install: { code: 0, output: RECORDED_CLEANUP_FAILURE },
+      tree: {
+        ...CLEAN_PRODUCTION_TREE,
+        dependencies: {
+          ...CLEAN_PRODUCTION_TREE.dependencies,
+          'parse-color': {},
+        },
+      },
+    });
+
+    await main(harness.dependencies);
+
+    expect(harness.calls).toEqual([
+      'npm-ci',
+      'cleanup-retry',
+      'stderr',
+      'production-tree',
+      'fail',
+    ]);
+    expect(harness.fail).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        'npm-ci-strict: the installed production tree contains packages npm cannot resolve.',
+        'Unresolvable: parse-color',
+      ]),
+    );
+  });
+
+  it('stages and marks evidence before hard-failing unrecovered cleanup', async () => {
+    const recovery = {
+      attempted: true,
+      recovered: false,
+      directories: ['parse-color'],
+      reason: 'retry failed: EPERM still locked',
+    };
+    const harness = createOrchestrationHarness({
+      install: { code: 0, output: RECORDED_CLEANUP_FAILURE },
+      recovery,
+    });
+
+    await main(harness.dependencies);
+
+    expect(harness.calls).toEqual([
+      'npm-ci',
+      'cleanup-retry',
+      'write-evidence',
+      'mark-evidence',
+      'fail',
+    ]);
+    expect(harness.writeCleanupEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cleanupDirectories: recovery.directories,
+        diagnostic: CLEANUP_FAILURE_DIAGNOSTIC,
+        recovery: {
+          attempted: recovery.attempted,
+          recovered: recovery.recovered,
+          reason: recovery.reason,
+        },
+      }),
+    );
+    expect(harness.markCleanupEvidenceOutput).toHaveBeenCalledOnce();
+    expect(harness.fail).toHaveBeenCalledWith([
+      '',
+      CLEANUP_FAILURE_DIAGNOSTIC,
+      '',
+      'The installed tree is therefore neither the lockfile tree nor a clean one,',
+      'and every later step in this job would run against it.',
+      'Directories npm named: parse-color, color-convert',
+      'Automatic recovery: retry failed: EPERM still locked.',
+      'Durable evidence staged at C:\\temp\\npm-cleanup-evidence.json.',
+      '',
+      'Do not rerun this job directly. Follow docs/npm-cleanup-recovery.md;',
+      'the discharge workflow requires a justification, preserves the failed job',
+      'reference on #274, and refuses to rerun mixed or policy failures.',
+      '',
+    ]);
+    expect(harness.readProductionTree).not.toHaveBeenCalled();
+  });
+
+  it('hard-fails when npm reports production-tree problems after a clean install', async () => {
+    const problem = 'extraneous: ghost@9.9.9 D:\\repo\\node_modules\\ghost';
+    const harness = createOrchestrationHarness({
+      tree: { ...CLEAN_PRODUCTION_TREE, problems: [problem] },
+    });
+
+    await main(harness.dependencies);
+
+    expect(harness.calls).toEqual(['npm-ci', 'production-tree', 'fail']);
+    expect(harness.fail).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        'npm-ci-strict: npm itself reported problems with the installed tree.',
+        `  - ${problem}`,
+      ]),
+    );
+  });
+});
 
 describe('the cleanup-failure marker is pinned to npm’s recorded wording', () => {
   it('fires on the exact output npm produced when the wipe failed', () => {
@@ -265,7 +485,7 @@ describe('cleanup failure evidence is staged for durable publication', () => {
     });
 
     expect(evidence.anchor).toBe(CLEANUP_FAILURE_ANCHOR);
-    expect(evidence.diagnostic).toContain(CLEANUP_FAILURE_ANCHOR);
+    expect(evidence.diagnostic).toBe(CLEANUP_FAILURE_DIAGNOSTIC);
     expect(evidence.runUrl).toBe(
       'https://github.com/OlyForge3D/PrintFarmerDesktop/actions/runs/30917030009/attempts/1',
     );

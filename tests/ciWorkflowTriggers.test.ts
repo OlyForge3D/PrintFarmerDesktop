@@ -263,9 +263,86 @@ describe('CI is safe to run under a merge queue', () => {
         .map((line) => `${key}:${line}`),
     );
     expect(jobLevelConditions).toEqual([]);
-    // Belt and braces on the specific deadlock: even outside a job-level
-    // `if:`, branching on the event name reintroduces it.
-    expect(ciWorkflow).not.toContain('github.event_name');
+    // Belt and braces on the specific deadlock: branching on the event name at
+    // job level reintroduces it even without a job-level `if:`.
+    //
+    // Narrowed from a whole-file substring ban on 2026-08-04 (#231). The ban
+    // was over-broad relative to the mechanism it names. The deadlock is
+    // JOB SKIPPING: a skipped job reports its required context as `skipped`,
+    // which branch protection does not accept, and the queue entry hangs. A
+    // STEP-level `if:` cannot skip a job -- the job still runs, still reports,
+    // and still passes or fails -- so it cannot produce that state.
+    //
+    // The residual hazard of a step-level guard is the opposite one: a step
+    // that is skipped under `merge_group` is not enforcing anything there, so
+    // the job can go green without it. That is a false green, not a deadlock,
+    // and it is acceptable only for a check whose subject does not exist under
+    // `merge_group` at all. `github.event.pull_request` is that case: there is
+    // no pull request in a queue entry, so there is nothing to check.
+    //
+    // Enumerating the permitted guards by name would be a count-based
+    // assertion of the kind that has already produced one false red on a
+    // correct change in this repository. The property is asserted instead.
+    const eventNameLines = ciWorkflow
+      .split('\n')
+      .filter((line: string) => line.includes('github.event_name'));
+    const notOnAStepCondition = eventNameLines.filter(
+      (line: string) => !/^ {8}if:/.test(line),
+    );
+    expect(notOnAStepCondition).toEqual([]);
+  });
+
+  it('guards every step that reads PR context, so none can run under a queue entry', () => {
+    // The dual of the assertion above, and the one that actually fails closed.
+    //
+    // Narrowing the `github.event_name` ban to step level opens a gap that the
+    // narrowed assertion cannot see: DELETING a step's guard leaves the file
+    // with no event branching at all, so that test goes green. The step then
+    // runs under `merge_group`, where `github.event.pull_request` expands to
+    // nothing, the step fails, and the job fails -- so a required context
+    // reports failure on every queued entry and the queue never drains. That
+    // is #122's deadlock arriving through the fix for #231.
+    //
+    // Stated as a property over the file rather than as a list of known steps:
+    // a new step added later gets the same treatment without anyone
+    // remembering this test exists. A list would have to be maintained to keep
+    // working, and the failure of an unmaintained list here is a merge queue
+    // that hangs.
+    const steps: string[][] = [];
+    ciWorkflow.split('\n').forEach((line) => {
+      if (/^ {6}- /.test(line)) steps.push([line]);
+      else if (steps.length > 0 && /^ {8}\S/.test(line))
+        steps[steps.length - 1]?.push(line);
+    });
+
+    const unguarded = steps
+      .filter((step) =>
+        step.some((line) => line.includes('github.event.pull_request')),
+      )
+      .filter(
+        (step) =>
+          !step.some(
+            (line) =>
+              /^ {8}if:/.test(line) &&
+              line.includes("github.event_name == 'pull_request'"),
+          ),
+      )
+      .map((step) => step[0]?.trim() ?? '');
+
+    expect(unguarded).toEqual([]);
+
+    // Harness control, and it has already earned its place: the first draft of
+    // the splitter reset on each job header, which discarded every step of
+    // every job but the last. `unguarded` was [] -- not because the steps were
+    // guarded, but because the only PR-context step in the file lives in the
+    // FIRST job and was never collected. An empty result reads identically
+    // whether nothing is wrong or nothing was examined.
+    expect(steps.length).toBeGreaterThan(10);
+    expect(
+      steps.filter((step) =>
+        step.some((line) => line.includes('github.event.pull_request')),
+      ).length,
+    ).toBeGreaterThan(0);
   });
 
   it('emits exactly the seven check-run names ci.yml produces, byte-identical', () => {
@@ -299,9 +376,9 @@ describe('CI is safe to run under a merge queue', () => {
  * the moment anything above the list changes length, and its failure mode is
  * the worst one available: it reports contexts as omitted or fictional while
  * the list is correct and only the reader moved. That is #152's own symptom
- * ("named a job that never existed, omitted `Dependency advisories`") raised
- * against a file that is right, which sends the next maintainer to edit the
- * correct artifact.
+ * ("named a job `ci.yml` no longer emits, omitted `Dependency advisories`")
+ * raised against a file that is right, which sends the next maintainer to edit
+ * the correct artifact.
  *
  * Throws rather than returning `[]` when the anchor is gone, so a renamed
  * heading fails by name instead of by an empty set that reads as agreement.
@@ -329,10 +406,12 @@ function documentedCiContexts(doc: string): string[] {
 }
 
 describe('the testing skill transcribes the contexts ci.yml emits', () => {
-  // #152: this list named a packaging job that has never existed, and omitted
-  // `Dependency advisories`. Nothing read the file, so the correction could
-  // regress without any test going red — three references to SKILL.md exist in
-  // `tests/`, all of them prose inside docblocks, none of them a read.
+  // #152: this list named a packaging job that `ci.yml` had renamed days
+  // earlier, and omitted `Dependency advisories`. The transcription was correct
+  // when written — a rename in an unrelated commit orphaned it, and nothing
+  // read the file, so the correction could regress without any test going red.
+  // Three references to SKILL.md exist in `tests/`, all of them prose inside
+  // docblocks, none of them a read. A rename is the mechanism this guards.
   //
   // This pins the doc against what ci.yml *emits*, which is in turn pinned
   // byte-identically above. Whether those are the *required* contexts lives in

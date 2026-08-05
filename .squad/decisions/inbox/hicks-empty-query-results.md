@@ -91,6 +91,46 @@ wearing the shape of a value, and anyone who reads the field once and records
 what it said has recorded a non-answer as a finding. The same is true of
 `conclusion: null` on a check run, which means in progress and not failed.
 
+**Correction, measured: "ask again" is only half of it, and the remedy that
+sentence implies does not terminate.** `UNKNOWN` carries two meanings that a
+reader cannot tell apart from the token, and they call for opposite responses:
+
+| pull request                 | cold read | read again ~2 min later | what `UNKNOWN` meant |
+| ---------------------------- | --------- | ----------------------- | -------------------- |
+| open (13 of 14 on the board) | `UNKNOWN` | `BEHIND`                | not computed **yet** |
+| merged (8 of 8)              | `UNKNOWN` | `UNKNOWN`               | no answer **exists** |
+
+Mergeability is undefined for a merged pull request, so the second row is not a
+slow computation — it is the permanent value. **A retry loop written from the
+paragraph above terminates on the first row and spins forever on the second**,
+and the advice reads as complete because the first row is the one you meet while
+a PR is in flight. Bound the retry, and treat `state` as the field that says
+whether the question applies at all before treating `UNKNOWN` as transient.
+
+**The first read is also uninformative far more often than "shortly after a base
+update" suggests** — 13 of 14 open pull requests returned `UNKNOWN` on a cold
+read of a board that nobody had touched, because the read is what triggers the
+computation. **An instrument whose first observation is always "I don't know" is
+one that must be read twice by construction**, and a script that reads once and
+proceeds has taken the non-answer.
+
+**And all three values are truthy**, so `if (mergeStateStatus)` and
+`if (mergeable)` admit `UNKNOWN` and `CONFLICTING` alike:
+
+```
+MERGEABLE   truthy=true
+CONFLICTING truthy=true
+UNKNOWN     truthy=true
+```
+
+**One field near this that does not mean what its name suggests:** `baseRefOid`
+is the base branch's tip **as of the last mergeability computation**, not the
+commit the pull request forked from — so it goes stale with the rest of the
+cache and **cannot be used to decide whether a PR is behind.** Comparing it to
+the live tip of `development` produced a confident, wrong "this PR is up to
+date" here. The graph answers that question:
+`git merge-base --is-ancestor <trunk tip> <pr head>`, exit 0 meaning up to date.
+
 `git merge-base --is-ancestor A B` is the same defect with worse consequences,
 because the non-answer is an exit code and exit codes invite arithmetic. It
 returns 0 for ancestor, 1 for not an ancestor, and 128 for cannot determine —

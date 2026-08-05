@@ -472,3 +472,58 @@ After PR creation, merge only when **all CI gates pass**. If completing a PR int
 **Control:** This was a one-off process exception, not a new path. Do not rewrite or remove `8031631`, do not use the Contents API or other direct writes to protected `development`, and do not treat green CI or the presence of the rule as proof that its publication gate was followed. Future append-only decision entries and process changes must use an isolated author branch, unanimous current-head three-way review, original-author rework and re-review after required changes, a PR to `development`, and fresh all-green CI before merge.
 
 **Why:** The direct API path made the rule's publication bypass the very lifecycle it records. Keeping history is the least disruptive correction; the durable control is documenting the exception and requiring all future changes to pass the reviewed PR path.
+
+## 2026-08-04 — A retraction is a claim; and the rate-of-challenge falsifier is not answerable in a single-account log
+
+**Decision:** The five review conventions proposed in #303 are adopted as conventions, not as controls. (1) **A retraction is a claim** — audit it with the instrument you would use on the assertion it withdraws, or say that you cannot. (2) **Do not grade the act**: "unprompted retraction" describes behaviour, not correctness, and praising the form teaches that withdrawal is the safe move. (3) **State a finding as a discriminator where one exists** — _X is ambiguous alone and exact beside Y_ — rather than as distrust of X. (4) **Back-propagate per conclusion with a domain check on each**, not per instrument. (5) **When amplifying another party's finding, measure it first or attribute it unmeasured**; endorsement by the role that maintains the board is a promotion, not a citation.
+
+No tooling is added. Every remedy above is a review convention, and this file already records that a convention which cannot be enforced mechanically should be recorded as a convention rather than dressed as a control.
+
+**What this entry adds is that #303's falsifier was run, and it does not answer the question it was written to answer.** #303 predicts: _"count comments that contest a stated finding, versus comments that contest a stated retraction. The claim here is that the second count is approximately zero across the entire issue history."_ Three instruments were built for it. **Two returned confident numbers and both were artifacts, and the more confident one pointed at a refutation.**
+
+**Corpus, published so the counts can be re-derived.** `repos/OlyForge3D/PrintFarmerDesktop/issues/comments` (766) and `.../pulls/comments` (6), `--paginate`, read 2026-08-04, `development` at `e996623d`. **772 comments across 173 threads.** Retraction set `R` = 61, by the marker `i (was|am) wrong | i retract | retracting | i withdraw | withdrawing | i take (that|it) back | my (claim|finding|figure|reading|analysis|report) (was|is) (wrong|incorrect|stale|false|unmeasured) | correcting myself | i overstated | i over-?claimed | scratch that | disregard (my|that) | i mis(read|measured|stated|attributed) | that was (wrong|my error|my mistake) | my (error|mistake)`, case-insensitive. Assertion set `A` = 561 by a narrower measured-finding marker. The two sets are disjoint by construction and **150 comments match neither**, so the extractors discriminate rather than partitioning everything.
+
+**Instrument 1 asked whether a later comment _by a different author_ contests. It returned 0 for retractions and 0 for findings — and the second zero is what exposed it.** A rule that returns zero on the control it was supposed to contrast against is not measuring its subject. The cause is structural and it is the most important fact in this entry:
+
+```
+distinct GitHub comment authors across all 772 comments:  2
+  jpapiez  769        Copilot  3
+```
+
+> **Every squad persona posts through one account. "A challenge by another party" is a condition that cannot be met in this record, so any instrument keyed on authorship is inert — it returns the predicted answer for a reason unrelated to the prediction.** Persona attribution from the comment body was tried as a substitute and reaches 203 of 772, so it cannot carry the comparison either.
+
+**This is fatal to the falsifier as written, and the reason is worth separating from the finding.** #303's mechanism is social — _a retraction reads as humility, so nobody audits a withdrawal_. That mechanism requires two parties. In a log where the retractor and every possible challenger are the same account, **a zero count is equally well explained by "nobody challenges withdrawals" and by "there is nobody else here."** The prediction and its negation make the same observation. **The falsifier is not merely hard to run; it is not discriminating in this medium.**
+
+**Instrument 2 dropped the author condition and asked whether any later comment in the thread contains contest vocabulary. It produced a clean-looking refutation.**
+
+```
+                     unbounded      N=1      N=2      N=3      N=5
+retractions   R        0.820       0.590    0.672    0.721    0.787
+findings      A        0.701       0.417    0.563    0.627    0.681
+baseline, all comments 0.657       0.392    0.523    0.583    0.635
+```
+
+Retractions are followed by contest language **above** findings and **above** baseline at every window, the gap is widest at `N=1` where the thread-length confound is smallest, and it survives removing #214, which alone carries 29 of the 61 retractions (`N=1`: R 0.531, A 0.378, baseline 0.338). Median following comments R=17 against A=5 was checked precisely because an unbounded rule over a long thread measures thread length rather than the target.
+
+**Every one of those numbers is an artifact.** Six `N=1` pairs were read by hand and **0 of 6 were a challenge to the retraction.** They were adjacent comments in dense argumentative threads whose contest vocabulary was aimed at something else entirely — a new instance being filed, a re-review announcement, an addendum by the same reviewer. **The rule cannot say what a comment contests, and in a corpus where most comments contest something, "was followed by contest language" converges on the base rate no matter what it is applied to.**
+
+> **A proxy with no notion of target, applied where the target is dense, measures density. It failed in the direction of a confident, well-controlled, entirely false refutation — the confound checks were real, they were run, they passed, and they were checking the wrong thing.**
+
+**Instrument 3 required the challenge to name a withdrawal as its target.** Marker: `your (retraction|withdrawal|concession) | the (retraction|withdrawal) (was|is) | (retracted|withdrew|withdrawn|conceded) (too )?(early|prematurely) | premature(ly)? (retract|withdraw|conced)\w* | you were right the first time | re-?earned | the original (claim|figure|finding) (was|is) (sound|right|correct) | over-?correct(ed|ion) | withdrawing the withdrawal`. **15 of 772 comments match, and all 15 were read.**
+
+| classification                                                | n     | comment ids                                                                             |
+| ------------------------------------------------------------- | ----- | --------------------------------------------------------------------------------------- |
+| genuine challenge to a retraction                             | **4** | `5172513166` `5172756294` (#162), `5178937312` `5183762215` (#214)                      |
+| challenge to how a retraction is _recorded_, not to its truth | 2     | `5080433745` `5080459878` (#79)                                                         |
+| the retractor's own assessment of their own withdrawal        | 5     | `5172467695` `5172841593` (#162), `5174257241` (#214), `5184068224` `5184166563` (#303) |
+| false positive — "over-corrected" describing code or prose    | 4     | `5081976318` (#103), `5081739439` (#104), `5080116203` (#78), `5080337506` (#79)        |
+
+**So the answer is four, not zero and not fifty.** #303's prediction of _approximately zero_ is **directionally right and literally wrong**, and the honest statement of the result is that four challenges to a withdrawal exist in 772 comments against 61 retractions — **a rate of 6.6%** — with **two of the four occurring on the same day the issue was filed**, and one of the #162 pair explicitly recording that it happened only because the counterparty insisted (_"You were right to insist. `SKILL.md:65` changed, so the withdrawal had to be re-earned."_).
+
+**Why the four matter more than the rate.** Every one of them found the withdrawal wrong: `5178937312` — _"This makes his retraction an over-correction, and in his favour"_; `5183762215` — _"The withdrawal was over-broad"_; the #162 pair re-ran a test rather than inheriting a withdrawn result and re-earned it on current text. **Four audits of a withdrawal were performed and four found something.** That is a hit rate of 4/4 on an instrument applied 4 times in 772 comments, which is a far stronger argument for convention (1) than the asymmetry it was filed under — and it does not depend on the social mechanism at all, so it survives the single-account finding that kills the falsifier.
+
+**Recorded against this entry's own subject.** The refutation from instrument 2 was written up before the hand audit and would have been published as a measured finding contradicting #303, by a party whose entries this file treats as the board. That is #303's rule (5) — _amplification by the adjudicating role is a promotion, not a citation_ — occurring inside the entry adopting it, and caught only because the sampled pairs were read rather than counted. **This file has committed its own subject inside an entry before**; the pattern is now three deep and the common factor each time is a count published without reading the members.
+
+**No gate covers this file.** `tests/citationReachability.test.ts` passes with `.squad/decisions.md:99999` and a citation to a non-existent file appended to this document — measured, not assumed. The entry above is therefore held by review alone, which is the correct place for a convention and is stated here so no later reader mistakes a green suite for a check on these claims.
+
+**Amendment to the falsifier, since the original cannot run.** Do not measure the rate at which withdrawals are challenged; that number is unavailable here and would be uninterpretable if it were not. **Measure the yield: of the withdrawals that were audited, how many were found wrong.** It needs no authorship signal, it is computable from the record as it stands, and at 4/4 it already carries the decision. A rate whose denominator is "how often someone chose to look" measures attention; a yield measures whether looking was worth it.

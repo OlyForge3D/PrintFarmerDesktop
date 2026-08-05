@@ -171,6 +171,35 @@ filter that felt natural — look at open PRs — excludes the entire population
 construction. **The defect and the failure to measure it have the same cause:
 merging is the moment attention leaves.**
 
+**That example has since become an instance of the defect it was written to
+illustrate, and it is left here for that reason.** Re-run on 4 Aug, both of its
+numbers reproduce exactly — `--state open` still returns zero, `--state all`
+still returns five — while the authoritative endpoint this document names three
+paragraphs later disagrees with the second one:
+
+```
+gh pr list --label hold:sequenced --state all        ->  #175 #174 #172 #169 #154
+gh api repos/OWNER/REPO/issues/<n>/labels   for each ->  []  []  []  []  []
+```
+
+All five were unlabelled between `07:47Z` and `16:59Z`, which the timeline
+records permanently. **The example's numbers did not drift; the population went
+to zero underneath them and the instrument did not move.** A reader re-running it
+today gets the printed result, reads it as confirmation, and concludes five pull
+requests are held when none are.
+
+**Control, so this is not read as "the search index is broken":** the same index
+queried for `squad:ripley` returns #212, which the labels endpoint confirms it
+currently carries. The index is live. **Only the merged-PR-removal cell fails**,
+exactly as the table below predicts — which is what makes this a demonstration of
+that table rather than a separate fault.
+
+The lesson is narrower and more useful than "the index lags": **a worked example
+containing a measurement is itself a transcribed measurement, and it expires on
+the same schedule as any other.** This one was correct when written, is
+reproducible now, and is wrong now — and reproducibility is what makes it
+convincing.
+
 ### The instrument, which is a second lagged copy — and the worked example above uses it
 
 Read the two paragraphs above carefully and they disagree with each other. The
@@ -312,6 +341,39 @@ labelling their own PR — self-reminding, not a control firing.
 
 **So do not read the absence of this label as evidence that a PR is free to
 merge.** Its presence is informative; its absence is not.
+
+### The label currently has no wearers, and that is not a verdict on the check
+
+Every pull request that has ever carried `hold:sequenced` is closed, and none
+carries it now. **A check whose population is empty is easy to mistake for a
+check that does nothing, and the two are different in the way that matters.**
+
+The distinction is between an assertion that **cannot** fail and one that
+**currently has no subject**:
+
+| shape                | example                                                             | evidence value                                  |
+| -------------------- | ------------------------------------------------------------------- | ----------------------------------------------- |
+| cannot fail          | asserting an element is absent from a page that can never render it | none — green is unconditional                   |
+| no subject right now | `Sequencing hold` on a repository with no held PRs                  | full — it is bound, and fires on the next label |
+
+**`Sequencing hold` is the second.** Its decision function is exercised by its
+unit tests against both answers on every run regardless of what is open, it
+re-runs on `labeled` and `unlabeled` with no push, and it produced its red on
+each of the six PRs that carried the label. **It is armed and loaded at a range
+with nobody standing on it.** Nothing about it needs repair, and repairing it
+would consist of applying a label to a pull request that is not held — which is
+the one action this document forbids most directly.
+
+**What an empty population does invalidate is any measurement taken over it.**
+A staleness rate, a false-positive rate, a "does anyone use this" figure — all of
+those are now computed over zero rows and will return a confident number with no
+support. **The check is fine; statistics about the check are not, and the two
+will be reported in the same sentence unless somebody separates them.**
+
+**The genuine finding is upstream and is already recorded above:** the reason the
+population is empty is not that holds stopped happening, it is that arming was
+always discretionary and lifting is now automatic. **A mechanism that only ever
+loses members drains to zero and reports success the whole way down.**
 
 ## Escalation when the owner is unreachable
 

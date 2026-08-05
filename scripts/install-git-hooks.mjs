@@ -167,10 +167,13 @@ if (
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
   // `--verify` is the same check with teeth. `prepare` must not fail a build —
-  // 22 of 27 worktrees on this clone were unarmed when #164 was measured, and
-  // failing their `npm ci` would block work rather than surface a risk — so the
-  // lifecycle path reports and exits 0 while the explicit path exits non-zero
-  // and can be used as a gate.
+  // most worktrees on this clone were unarmed when #164 was measured (22 of 27 at
+  // that reading; the ratio moves within hours as worktrees are created and
+  // deleted, so the decision record carries the timestamped readings and this
+  // comment should not be trusted as a current figure) — and failing their
+  // `npm ci` would block work rather than surface a risk, so the lifecycle path
+  // reports and exits 0 while the explicit path exits non-zero and can be used
+  // as a gate.
   //
   // The verification reads `process.cwd()` rather than this file's own root:
   // the question is whether the worktree the operator is standing in is armed.

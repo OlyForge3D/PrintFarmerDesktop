@@ -127,6 +127,44 @@ git fetch origin development
 git merge-base --is-ancestor $sha origin/development   # exit 0 = actually landed
 ```
 
+**That recipe is correct, and it is load-bearing on a choice it does not state.** `$sha` comes from **`mergeCommit`**. Substitute the branch head — the commit you actually pushed, one field away in the same call — and the same command returns the opposite answer on every merged PR in this repository:
+
+| PR   | `--is-ancestor mergeCommit` | `--is-ancestor headRefOid` |
+| ---- | --------------------------- | -------------------------- |
+| #332 | 0                           | 1                          |
+| #251 | 0                           | 1                          |
+| #309 | 0                           | 1                          |
+| #237 | 0                           | 1                          |
+| #249 | 0                           | 1                          |
+
+**Five for five, no exceptions, all `state=MERGED`.** A squash merge writes a **new commit whose only parent is the base**, so the head you pushed is not an ancestor of anything **by construction** — and every merge in this repository is a squash. The `mergeCommit` column is the positive control proving the command works; the `headRefOid` column is what it does when handed the SHA a person naturally reaches for, because _"did my commit land"_ is the question actually being asked.
+
+**Three instruments fail here in the same way, and a reader would treat them as independent:**
+
+| instrument                           | on a merged PR              | why                                      |
+| ------------------------------------ | --------------------------- | ---------------------------------------- |
+| `--is-ancestor <head> development`   | exit 1                      | squash reparents                         |
+| `git rev-list --merges`              | **0**, across 65 merged PRs | a squash is not a merge commit           |
+| `refs/heads/<branch>` still resolves | reads unmerged              | `--delete-branch` does not always delete |
+
+**They agree, and their agreement carries no information** — one cause, three readings. Do not treat two of them confirming each other as corroboration. (Control: `git rev-list --merges` over all history returns 232, so the flag works; the merge _practice_ changed underneath it.)
+
+**What does separate merged from unmerged**, in decreasing convenience:
+
+```powershell
+gh pr view <N> --json state,mergedAt        # state=MERGED — the gh surface
+gh api repos/OWNER/REPO/pulls/<N> --jq .merged   # true — REST only
+git cat-file -e origin/development:<path>   # 0 = content is on trunk
+```
+
+**Both spellings are given deliberately, because they are not interchangeable and the obvious one does not exist:**
+
+```
+gh pr view <N> --json merged   ->  exit 1: Unknown JSON field: "merged"
+```
+
+`merged` is a **REST** field. On `gh pr view` the separating fields are `state` and `mergedAt`. A remedy naming the wrong surface fails at the moment it is followed, by someone who has no reason to doubt it — so a prescribed command belongs in the same category as a guard's suggested fix: **it has to be run before it is published.**
+
 Never batch or parallelize merges against a shared base.
 
 ## Audit suspicious diffs before merging

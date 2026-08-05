@@ -3420,6 +3420,30 @@ export const CalibrationApiError = z
     /** Whether the operation may be retried. */
     retryable: z.boolean(),
     retryAfterSeconds: z.number().int().nonnegative().max(86_400).nullable(),
+    /**
+     * Opaque correlation reference the operator can quote to support (#177).
+     *
+     * `message` is catalogued: it is chosen from fixed literals keyed by the
+     * error code, never copied from the backend. That alone would convert a
+     * leak into an unrecoverable support case, because on some failures the
+     * backend's `detail` is the only actionable information. This field is what
+     * preserves recoverability without preserving the text: it names the flow,
+     * so the raw detail can be read from the main-process log instead of being
+     * shown to the renderer.
+     *
+     * The guarantee is **structural, not a filter**. The type is a UUID, so
+     * server-supplied prose cannot be carried here even by a caller that tries:
+     * a `detail` string fails `.uuid()` at the boundary. That is deliberately
+     * the same shape of guarantee as `CalibrationLogInput` having no `message`
+     * key — an allowlist over server-chosen content would be a filter, and a
+     * filter over content this repository does not control fails open and
+     * reports nothing when it does.
+     *
+     * Nullable rather than optional so every producer must decide. An optional
+     * field that producers forget is null everywhere and nothing notices, which
+     * is the inert-control shape this codebase keeps filing.
+     */
+    reference: z.string().uuid().nullable(),
   })
   .strict();
 export type CalibrationApiError = z.infer<typeof CalibrationApiError>;
