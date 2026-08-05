@@ -459,6 +459,561 @@ At the head, `.squad/skills/git-workflow/SKILL.md` carries the heading **Do not 
 - **How sixteen merges landed red under `strict=true` with these as required contexts is still not established, and is still not asserted.**
 - **Verdict: ❌ against this ledger's own filed diagnosis, discharged at the object.** The finding that the mainline was red stands and was correct; the mechanism attached to it did not, and the two were published as one claim.
 
+### Run AP — a line of four gate figures, three of which could not go stale
+
+**Pair:** the `Gates at the pushed head` line published in this pull request's Standing
+block, against the object it describes. **Verdict: ❌ against the pair.**
+
+The Standing block is regenerated on every push and its heading reads _"read at the
+moment of writing, not carried from a report."_ Four of its five gate figures were
+**string literals** in the generator. The generator's own comment, thirty lines above the
+statement that rendered them, reads _"a transcribed count is the defect this ledger
+recorded as run AE."_ Measured at this head: `vitest` reports **2320 passed in 106
+files**; the block published **1978 passed in 94 files** — stale by 342 tests and 12
+files, and republished on every refresh since.
+
+**Why it survived two earlier repairs of literals in the same statement.** The other
+three literals were `prettier 0 · eslint 0 · tsc 0`, and all three were still true when
+measured here. **A gate whose passing value is a constant cannot go stale; a gate whose
+passing value is a count goes stale on every commit.** The line read as four figures of
+one kind. Three of them carried no information, and the uniformity was cosmetic.
+
+**Direction.** The stale figure **understated** the suite by 342 tests. A count that
+under-claims reads as conservative and embarrasses nobody, so nothing re-reads it. Round
+AK recorded that detection latency is a function of whom a false report embarrasses; this
+is the same rule with the sign that produces the longest survival.
+
+**The repair's own control could not discriminate.** Seven arms were written for the
+replacement function — skip, cannot-run, non-zero, unparseable, parses, parses-but-failed,
+hangs — and **all seven returned one string.** `shell: true` concatenates argv and lets
+`cmd` re-parse it, so every arm's arguments were eaten. They collapsed onto the
+**withheld** branch, which is the safe direction, so a control that could distinguish
+nothing read as a control that was working. Fixed by removing the shell; the arms then
+returned five distinct outcomes, and **no arm can publish a figure it did not measure** —
+a suite that parses but exits non-zero withholds.
+
+**Two more removals of interpretation in the same function.** `npx.cmd` under
+`shell: false` returns **EINVAL**, because Node refuses to spawn a `.cmd` without a shell;
+the first live run therefore withheld all four figures at once. Repaired by spawning
+`node` against each package's entry point, which needs neither shell nor shim. And the
+summary regex was written against what a terminal **displayed**; the process emits
+`Tests \e[22m \e[1m\e[32m2320 passed`. **A rendering of the output is not the output.**
+
+**The arms covered every branch of the function and none of the actual commands**, which
+is why the first live run was uniformly blind. Recorded with run R's finding, of which it
+is an instance one layer out: a control that proves the code path is reached proves
+nothing about what was invoked on it.
+
+**A gate with no timeout returns no verdict at all** — not even a withheld one. Found by
+the control harness hanging on a watch-mode invocation. `spawnSync` now carries a timeout,
+whose expiry lands on the withheld branch.
+
+**Two smaller notes, recorded because both nearly went the other way.** This entry cites
+run R; a check for `Run R` in this file returned **zero**, and the entry survived only
+because the citation was re-checked against a second pattern — run R is a bullet, not a
+`### Run` heading. **A grep pattern is a rendering**, which this ledger has recorded
+before and which came within one edit of deleting a true citation here. And a zero-byte
+untracked file appeared in the repository root during this round; six candidate commands
+were each run in isolation and **none reproduced it**, so no cause is asserted. It was
+removed, and the control that caught it is `git status --porcelain` before committing —
+which works without knowing the cause.
+
+### Run AQ — a trigger fired correctly, and the enumeration it prompted found nothing wrong
+
+**Pair:** a reviewer's enumeration of the diamond-DAG figures at one mainline commit,
+against the same artifact family at the mainline head **136 commits later**. **Verdict:
+✅ against the pair on the figures; ❌ against the reviewer's second clause.**
+
+The reviewer's report has two clauses. **The first is right and it corrected me:** my own
+enumeration was bounded at an earlier commit, I said so in the sentence that made the
+bound checkable, and the population did grow past it. **A base change touching the
+artifact family is an object condition, and it fired without anyone remembering to look.**
+
+**The second clause does not survive re-measurement.** It reads _"seven files now render
+`32,767`, and `THREAT_MODEL.md` is still the single wrong one."_ At the mainline head,
+**thirteen** files render it, and `docs/security/THREAT_MODEL.md` asserts **`49,150`** as
+the expansion. Its two remaining `32,767` hits are a **quotation of the fixture's doc
+comment** and a **correct component** of the decomposition it now states outright. The
+file named as the last wrong rendering had been repaired before the report reached me and
+after it was taken. **Both readings are true of their own moments.**
+
+**Every hit was read, in all thirteen files, and none asserts the wrong figure.** The
+`32,767` renderings are paths through the `m` chain, quotations of the fixture comment,
+historical notes about pre-fix behaviour, and components of `32,767 + 16,383 = 49,150`.
+The set is closed at this head — and it is closed for a different reason than the one the
+report expects: not because it never reopened, but because the one wrong rendering was
+repaired elsewhere while the population grew around it.
+
+**A trigger that fires and returns nothing is the outcome a useful control should mostly
+produce, and it is the outcome that makes a control look useless.** This one fired on a
+real state change, cost one command, and returned all-correct. The temptation is to read
+that as the trigger being too sensitive. It is not: a control keyed to a schedule fails
+toward green the first time you are busy, and a control keyed to a state fires whether or
+not you were thinking about it. **The null result is the control working.**
+
+**Population and correctness moved in opposite directions again**, and in the growth
+direction this time: **seven files to thirteen**, while the count of wrong renderings went
+from one to zero. Nothing in the growth touched the defect. **Rendering count remains
+uncorrelated with repair status**, and this is the third measurement of that on this
+figure.
+
+**The instrument is now the largest object in its own corpus.** Since this ledger merged,
+`.squad/fact-checker/audit-trail.md` renders `32,767` **nineteen** times and
+`.squad/decisions/inbox/fact-checker-symmetric-diff.md` **eight** — between them more than
+twice the rest of the repository combined, every instance a mention. **A checker that
+counts hits rather than reading them would now grade the fact-checker's own ledger as the
+worst offender in the repository**, and grade it worse the more checking it records. A
+corpus that contains its own counterexamples cannot be graded by counting, and the
+instrument has become the bulk of the corpus.
+
+### Run AR — a bare integer, and an attribution that no artifact can settle
+
+**Pair:** two independent counts of the same pattern against the same tree, and a
+reviewer's disclaimer of material attributed to them in a channel. **Verdict: ✅ on the
+counts — they never disagreed; ❌ on the idea that publishing derivations as files fixes
+attribution.**
+
+**The counts were never in conflict; the unit was missing.** One party reported files and
+the other hits, and neither said which. Measured at the mainline head, whole tree and
+`.squad` + `docs`, in both units at once:
+
+```
+figure    files  hits  |  files  hits      (whole tree | .squad + docs)
+49,150      10    36   |    7     30
+32,767      13    51   |    8     37
+16,384       8    18   |    7     17
+16,383       8    14   |    6     12
+```
+
+For `32,767` the two units differ by a factor of **3.9**. Two careful readers publishing a
+bare integer for one pattern against one tree can disagree by nearly four times and
+neither will see a contradiction, because both numbers are correct. **A count is not a
+number: it is a number, a unit, a filter and a head, and dropping any one of the four
+makes it unfalsifiable rather than wrong.** This ledger already required the head and the
+filter; the unit was assumed and therefore never stated.
+
+**The attribution half is the one worth keeping.** A reviewer disclaimed a convention
+proposal, a measurement harness, two candidates and a sample size, all of which had been
+addressed to them. Checked at the object: **run I of this trail, merged to `development`,
+records every one of those items and attributes the proposal to nobody.** It reads
+_"asked to settle a form … with fenced blocks proposed as the interim convention"_ —
+passive, agentless, because the proposer could not be established when it was written.
+**The artifact is not wrong. The dispute exists only in the channel.**
+
+**A message has an implied author for the whole of its content and no syntax for _this
+half is a relay_.** A file has a blame; a turn in a conversation has a sender, and a sender
+is asserted over everything in the turn including what it forwards.
+
+**And the remedy this ledger has been recommending does not fix it.** _Publish derivations
+as files_ was offered on the grounds that a claim in a file has one canonical location and
+a review history. It does — for the **claim**. It does not for the **claimant**:
+`git log` over the whole `.squad/fact-checker` tree returns **three** author identities for
+work produced by many sessions, and two of the three are the same human's two addresses.
+**Every session authenticates as one account, so the blame resolves content provenance and
+not session provenance.** Publishing to a file makes the assertion auditable and leaves the
+asserter exactly as ambiguous as the channel did.
+
+That is a correction to a rule recorded earlier in this trail, and the correction is the
+finding: **the fix for _which claim_ is not the fix for _whose claim_, and only the first
+one has ever been available here.**
+
+### Run AS — a reopening that reopened nothing, and a grade grounded in a hit count
+
+**Trigger.** A reviewer reported that the figure set had reopened past `99ecae2`, named two
+commits as the cause, and ruled that run E must stay ⚠️ because
+`docs/security/THREAT_MODEL.md` "still renders `32,767` on trunk". Both are object claims.
+Measured at mainline `5baba9420c3762e5ad68fd25baf0cd61fb8e31ce`, read 2026-08-05T04:26Z.
+
+**Claim 1 — two commits reopened the set.** Half true, and the half that fails is the
+attribution.
+
+| commit    | subject                                                                     | figure lines added |
+| --------- | --------------------------------------------------------------------------- | ------------------ |
+| `462c17e` | _repair seven citations that resolve for the author and nobody else_ (#282) | **+2**             |
+| `117d80e` | _a directionless claim about a directional mechanism_ (#217)                | **0**              |
+
+`462c17e` added one rendering to each of `ripley-falsifier-before-publishing.md` and
+`ripley-go-and-look.md`. `117d80e` touched `ripley-go-and-look.md` and added **no figure
+line at all**. The reviewer named two commits; **one did it.** Being named alongside a
+true cause is the cheapest way for a false cause to acquire standing, because the pair is
+checked as a unit and the unit is mostly right.
+
+**Claim 2 — the reopening.** It reopens by counting and does not reopen by reading. Both
+added lines are mentions:
+
+- the first narrates _a repair of `THREAT_MODEL.md`_ — prose about the defect;
+- the second is a quoted table cell, `_"Was 32,767+ rows when the cycle guard was
+path-local"_` — italicised quotation of a source comment.
+
+**Zero new wrong claims were added.** The population grew and the defect count stayed at
+its floor.
+
+**Claim 3 — `THREAT_MODEL.md` still renders `32,767`.** True as a hit count and false as a
+statement about the defect. Read at the live tip, all three hits:
+
+- the assertion reads **`expanded to 49,150 rows`** — the wrong figure is gone;
+- one hit **quotes** the fixture's doc comment, `2^15-1 = 32,767` paths through the `m` chain;
+- one hit is a **correct component**, `32,767` from the `m` chain, which sums with `16,383`
+  to the asserted total.
+
+**The file is repaired. The grade rests on two hits that a reading disqualifies.**
+
+**Finding — the ruling reproduces the error the same reviewer documented.** The rule _a
+corpus that contains its own counterexamples cannot be graded by grep_ was stated by the
+party who then graded by grep. This is not carelessness: **the hit count is the cheap
+measurement and the reading is the expensive one**, so under time pressure every reader
+defaults to the instrument that answers fastest, including the reader who wrote the warning
+against it. A rule about method is obeyed at the moment of leisure and abandoned at the
+moment of decision, which is the only moment it was for.
+
+**Finding — a defect count has a floor that a population count does not.** Renderings can
+only grow, because every repair, every quotation and every note about the figure renders it
+again. **The numerator is bounded below by zero and the denominator is unbounded above**, so
+the ratio improves on its own and the absolute count worsens on its own. Neither moves for
+the reason a reader assumes. **`462c17e` is the proof: a commit whose entire purpose was
+repairing citations is the sole cause of the reopening**, because repairing a citation
+means rendering the figure it cites.
+
+**Refused.** A standing instruction to merge this PR, repeated. `.squad/skills/git-workflow/SKILL.md`,
+section _"Do not merge your own work"_, carries no exception clause, and the PR fails a gate
+it names at the object: **`reviews: 0`**. A rule recorded in a versioned artifact is not
+amended by a message. **Accepting would remove the control and the record of its removal in
+a single act** — and the request arrived attached to a ruling that a reading has just
+falsified, which is precisely when a control earns its cost.
+
+**Also refused: the premise.** The instruction concerns PR #162, which is **MERGED**
+(2026-08-04T19:29:29Z, merge commit `3fac5567`), whose branch is **deleted from the remote**,
+and whose reported head is an ancestor of no mainline commit. There is nothing to merge.
+The reviewer's reported mainline tip `ea39cd3` is **137 commits** behind the tip measured
+here.
+
+### Run AT — a number that varies by observer, published as a property of a commit
+
+**Trigger.** A reviewer authorized a repair to `.squad/decisions/inbox/ripley-go-and-look.md`,
+reporting that its reachability table publishes a clone-local count as an object property,
+and citing four rows. Measured at mainline `5baba9420c3762e5ad68fd25baf0cd61fb8e31ce`,
+read 2026-08-05T04:39Z.
+
+**The table has seven rows, not four.** The citation was bounded again, and the three rows
+past the bound are wrong by a larger margin than the four inside it.
+
+**Claim — the count is observer-dependent.** Confirmed, and this run supplies a **third
+observer**. `git branch -r --contains`, same command, same objects:
+
+| rev          | as published | this clone | reported by the reviewer |
+| ------------ | ------------ | ---------- | ------------------------ |
+| `a32ecf9`    | 0            | 0          | 0                        |
+| `0d1215f`    | 0            | 0          | —                        |
+| `741459de`   | **1**        | **0**      | **3**                    |
+| `1c80bdb381` | 1            | 0          | —                        |
+| `af03801`    | 3            | 1          | —                        |
+| `6538bed`    | 3            | 1          | —                        |
+| `bb36969`    | 3            | 1          | —                        |
+
+**Five of seven rows disagree with this clone, and one object reads 1, 0 and 3 across three
+readers.** Nothing about the commits changed between the readings; only the set of refs each
+clone had fetched. `--contains` answers _which of the refs I hold reach this object_ and is
+read as _how reachable is this object_.
+
+> **A number that varies by observer cannot be published. A command that produces the object
+> can.** The column is now a comment carrying the query, so the reader runs it in their own
+> refspace — where the answer is about them, which is the only thing that answer was ever
+> about.
+
+**And the prose was wrong in the same direction.** The note claimed _"in a fresh clone, two
+of the seven do not exist."_ Occupying the reader's position — `git clone` with no extra
+refspec, `is-shallow false` — **four of the seven do not exist.** Both the table and the
+sentence understated, because both were written from a store where eight worktrees share
+objects and nothing ever disappears.
+
+**Finding — the asymmetry survives the repair, and it is why the fix is a command.**
+Reachability is **provable by exhibiting one containing ref** and is **not disprovable by an
+enumeration of refs the reader cannot see**. The positive claim needs a single witness and
+travels intact; the negative claim quantifies over a set that differs per clone and **does
+not survive being sent to anyone**. `fresh-clone-exists` is published in the column's place
+precisely because it names the position it was measured from.
+
+**Finding — the author's store is the least informative place to audit citations from.** It
+is the one position where every `git show` succeeds, so it cannot distinguish a citation
+that is reachable from one that is merely resident. **A check run where it is cheapest to
+run is run where it can least discriminate**, and no amount of care inside that position
+recovers the distinction.
+
+**Caught in passing, against this run's own text.** The replacement sentence first read
+_"one more than this paragraph originally claimed"_ for a change from two to four. It was
+corrected to _two_ before the commit. **A run whose subject is a wrong number produced a
+wrong number in the sentence announcing it**, which is the ordinary case rather than an
+irony: the arithmetic sits in prose, where nothing checks it.
+
+**Finding — the declaration block is recursive, and the harness proved it on this run.**
+Declaring the two pre-rebase twins required naming their live counterparts, and the harness
+scans every backticked revision in the file, so **the declaration created two fresh
+unreachable citations and went red again.** The counterparts had died at #162's squash —
+which this trail predicted in advance and which is now measured: both resolve from **zero**
+remote refs. Declaring them closed it at `REACHABLE 48 · TWIN 44 · DECLARED 16 · ORPHAN 0`.
+
+> **A repair that must cite what it repairs extends the thing it is repairing.** The
+> recursion terminates only because a twin's twin is the twin itself, so the second step
+> names nothing new. **A checker that reads its own repair is the only kind that could have
+> noticed** — one that read the ledger as prose would have accepted the first, red, version.
+
+### Run AU — the repair manufactured the evidence used to declare it unrepaired
+
+**Trigger.** A dispatch reported this PR's sibling `DIRTY` with conflicts requiring
+resolution, and re-asserted for the third time that `docs/security/THREAT_MODEL.md:542`
+"still renders `32,767` on trunk". Measured at mainline
+`f23364fef80aae2360e0a922d7a99d2dc4211834`, read 2026-08-05T05:05Z.
+
+**Claim 1 — `DIRTY`, conflicts, resolve before merging.** False, and the method matters more
+than the verdict. A status field was not consulted; **the merge was performed**:
+
+```
+git merge-tree --write-tree origin/development HEAD
+  -> exit 0, a merged tree written   (no conflicts)
+```
+
+The PR named is **`MERGED`**, and GitHub reports its `mergeStateStatus` as **`UNKNOWN`**, not
+`DIRTY` — the same `UNKNOWN`-on-merged behaviour the dispatch itself warned about one
+paragraph later. Its recorded head is `e5a90df7`, not the head cited.
+
+> **A status field is a cache; a merge is a computation.** `mergeStateStatus` is derived
+> asynchronously against a base that moves on every merge, so it is stale by construction.
+> **`merge-tree` answers the question the field is a rumour about**, costs one command, and
+> is reproducible by the reader.
+
+**Claim 2 — line 542 renders the wrong figure.** Read at the live tip, that exact line is:
+
+```
+542: ...in #68 a 29-node diamond DAG expanded to 49,150 rows
+```
+
+**The cited line is the repaired assertion.** The file's other two hits are a quotation of
+the fixture's doc comment and a correct component summing with `16,383` to the stated total.
+
+**Finding — and it is the mechanism, not the mistake.** The same dispatch names `c8d379f` as
+the mainline tip. **`c8d379f` is the commit that performed the repair.** Its diff:
+
+```
+- ...expanded to 32,767 rows
++ ...expanded to 49,150 rows
++ (The fixture's doc comment ... reports `2^15-1 = 32,767` paths through the m
++  chain — summed over the chain, not the 16,384 distinct paths to its tail...)
+```
+
+**The repair removed the wrong assertion and, in explaining itself, introduced both of the
+mentions that a counter now reads as the defect.** The commit cited as evidence that the file
+is unrepaired is the commit that repaired it.
+
+> **A repair that explains itself must quote the value it removed, and the quotation is
+> indistinguishable from the defect to any instrument that counts rather than reads.** The
+> better the repair — the more carefully it records what was wrong and why — **the stronger
+> the evidence it manufactures against itself.** A silent repair would have scored perfectly.
+
+This is the fourth instance in this ledger of a remediation raising the metric it discharges,
+and the first in which the remediation supplied the specific text later cited against it.
+
+**Caught by the guard, against its author, in the same round.** Publishing this entry to
+the pull request body inserted it at `indexOf('## Standing')` — which is byte 0 — so the
+generator's Standing block was no longer the first thing in the body. Its next refresh wrote a
+fresh block at the top and failed to remove the old one: **two blocks, both headed _read at the
+moment of writing_, differing only in a timestamp, a head and a harness count (`REACHABLE 50`
+against `REACHABLE 48`).**
+
+> **A deduplicating writer that assumes its own output is at a fixed position is defeated by
+> any insertion above it**, and the failure is silent because both copies are well-formed. The
+> stale copy is not detectably stale from inside the document; only its timestamp says so, and
+> a reader who stops at the first heading never compares them.
+
+It was caught by the generator's own `one Standing block: N` count — a self-check added after
+an earlier duplication in this same body — **not by me, and not by any gate**, all of which
+compare an artifact to a revision or a script rather than to itself.
+
+**Noted, and it is the right shape.** `c8d379f` also added `tests/documentedDiamondDagFigures.test.ts`,
+present at the tip, which walks the fixture and binds documented figures to the measurement
+rather than restating them — and requires each claim to carry an anchor of more than ten
+characters, i.e. **content-stable anchors instead of line numbers.** That is the discipline
+this trail has been arguing for, implemented as an executable check by someone else. **A rule
+adopted by a party that did not argue for it is the only evidence that the rule was legible.**
+
+### Run AV — a phantom cited as a head, and a head cited as a phantom
+
+**Trigger.** A third assertion that this branch's sibling is `DIRTY` at head `8a6676d2` and
+must have conflicts resolved before merging, together with a claim that `32,767` is "live in
+8 files on trunk". Measured at mainline `cf3683911d4474ab4473fd6f8190e138d03566d0`, read
+2026-08-05T05:35Z.
+
+**The cited head is on no ref at all.**
+
+```
+8a6676d2   type                       commit
+           subject                    fix(fact-checker): make the mention-filter
+                                      script announce its own incompleteness
+           remote refs containing it  0
+           ls-remote hits             0
+           is-ancestor of development exit 1
+
+d70d38f    remote refs containing it  107
+           is-ancestor of development exit 0
+```
+
+The same dispatch reports, as a fresh finding, that **nineteen worktrees share one object
+database**, so _existence is free and membership needs `branch -r --contains`_ — and cites
+`d70d38f` as behaving "exactly like a phantom". **The two objects invert perfectly.**
+`d70d38f` is on **107** remote refs and is an ancestor of the mainline. `8a6676d2` is on
+**zero**, and was published three times as a pull request's head.
+
+> **A shared object database makes every session's private commits resolvable to every other
+> session, so `cat-file -t` stops being evidence of anything.** The rule was stated correctly
+> and applied to the object that did not need it. **Knowing the mechanism does not create the
+> habit of running the second command**, because the first command still answers.
+
+**The status field changed its answer while the computation did not.** Within one hour, with
+**no change to this branch**, the pull request reported `MERGEABLE`/`BEHIND` and then
+`UNKNOWN`/`UNKNOWN` — the base had moved twice. Across both readings:
+
+```
+git merge-tree --write-tree origin/development HEAD   ->  exit 0    (both times)
+```
+
+**The cache oscillated across a base move; the computation was stable across the same move.**
+This is the empirical half of the previous entry's claim, and it is stronger than the claim:
+not merely that the field is derived asynchronously, but that **its variation is uncorrelated
+with the property it names.**
+
+**The count claim.** `32,767` at the live tip is **13 files, 51 hits** — not 8, in either
+unit. Control `77,777` → 0 files. The distribution is the finding:
+
+```
+.squad/fact-checker/audit-trail.md              19     this ledger
+.squad/decisions/**                             15     the decision record
+tests/measurementScripts.test.ts                 6     a test of the scripts
+tests/documentedDiamondDagFigures.test.ts        3     the new binding test
+scripts/measure-*.mjs                            3     the measurement scripts
+tests/viewer.partTree.test.tsx                   2     the fixture's own comment
+docs/security/THREAT_MODEL.md                    2     a quotation and a component
+.squad/skills/test-discipline/SKILL.md           1     the rule derived from it
+```
+
+**Every hit is an instrument, a record, a fixture, or a rule — and none is a wrong claim.**
+The population grew because the defect was investigated, documented, tested, and turned into a
+skill. **A count of this figure now measures the remediation almost exclusively.**
+
+> **When the machinery built to detect a defect renders the defect's value, the metric
+> converges on the effort spent rather than the error remaining.** Its floor is not zero and
+> it rises monotonically with diligence. **It cannot be a grade, in either direction**, and
+> the only reading that survives is the one that opens each hit and asks whether it asserts.
+
+### Run AW — the guard read a different file depending on where it ran
+
+**Pair.** `.github/workflows/citation-reachability.yml` against
+`.squad/fact-checker/citation-reachability.workflow.yml`. Neither designated authority — the
+chartered check, on the two artifacts that describe this trail's own enforcement.
+
+**Disagreement.** The staged copy's header asserted, in the present tense, that the check was
+**not active** and that "no artifact in this repository may claim the check is enforced". A
+maintainer had moved it into `.github/workflows/` some hours earlier; the live file runs
+`npm run check:citation-reachability` on every pull request and **passes on this branch**.
+The header was false at the moment it was read, and the two copies had **drifted by twenty
+lines** — the live one having gained a step asserting the checkout holds history and not
+merely refs.
+
+**The defect the pair exposed is in the guard, not the prose.** `tests/citationReachability.test.ts`
+fell back to the staged copy whenever no live workflow was found:
+
+```
+working tree not yet holding the wiring commit   isEnforced = false  -> tests the staged copy
+CI, whose pull_request checkout is a merge       isEnforced = true   -> tests the live copy
+```
+
+**One suite, one commit, two different files under test, one verdict** — and the verdict was
+green in both positions because the only property asserted of both happened to hold for each.
+
+> **A fallback that substitutes a second artifact does not make a check more robust; it makes
+> the check's subject a function of where it runs.** The disjunction that let it survive the
+> transition is exactly what hid the transition having happened.
+
+**Repair.** Staged copy removed — its purpose was discharged the moment the workflow went live,
+and a second source that can drift is the hazard, not the insurance. The guard reads the live
+workflow only, and the presence case is **strengthened** from `isEnforced || staged exists` to
+`isEnforced`. **Negative control run:** removing the live workflow fails the suite; restoring
+it passes. `108` test files green.
+
+**Result.** The check chartered in `.squad/fact-checker/policy.md` is, as of this entry,
+**enforced by a workflow rather than described by one** — the last unwired part of the #121
+deliverable, closed by a maintainer and verified here from the artifacts rather than from the
+report.
+
+### Run AX — ancestry is not useless under squash; it is silent about one pair only
+
+**Trigger.** A dispatch broadcast, to several sessions, that _"ancestry is not a merge test under
+squash"_ on the evidence that `d70d38f` — the squash commit that **landed** #203 — fails the
+ancestry test "identically" to two pre-squash heads, giving _"three convictions and zero
+information"_. Measured at mainline `7c7c2d5f06d3d25f77cb2a7953e4470e84346276`, read
+2026-08-05T06:17Z, exit codes captured unpiped.
+
+**The cited evidence is inverted.** `d70d38f` **is** an ancestor:
+
+```
+git merge-base --is-ancestor d70d38f origin/development    exit 0    (IS an ancestor)
+git branch -r --contains d70d38f                           109 refs
+git log origin/development --grep="(#203)"                 d70d38f, exactly it
+```
+
+Three different values for this one object have now been published in three consecutive
+messages — `ancestor=0`, then `ancestor=1`, then `exit 1`. **The instability is the argument
+for the rule it was cited to support**, just not the rule it was cited for.
+
+**With the correct value the table discriminates rather than collapsing.** Measured on this
+change's own objects:
+
+```
+sha        what it is                   exists   ancestor   landed-by-subject
+e5a90df7   #162's head, squashed away     yes       NO          -
+3fac5567   #162's squash commit           yes      YES         yes
+8a6676d2   a phantom, sibling worktree    yes       NO          -
+d70d38f    #203's squash commit           yes      YES         yes
+```
+
+**Ancestry separates the landed commit from both the discarded head and the phantom, without
+error, in every row.** It answers _did this exact commit land_ — and it answers it correctly
+for squash commits, which are ordinary mainline commits.
+
+> **The one pair ancestry cannot separate is a squashed-away head from a phantom that never
+> belonged to any branch.** Both exist, both are not ancestors, and only content or
+> `git log --grep="(#N)"` on the mainline tells them apart — and the grep takes the **pull
+> request number**, not the object, because a discarded head carries no `(#N)` in its subject.
+
+So the broadcast is right that a head failing ancestry proves nothing about whether the work
+landed, and wrong that the instrument is uninformative. **Two convictions and two acquittals,
+and the acquittals are precisely the commits a reader is trying to find.**
+
+**Converged on independently, by a third party, while this entry was being written.**
+`scripts/merge-survival.mjs` landed on the mainline mid-round — _"answer whether a merge kept
+the change, not whether it kept the commits"_ — and its header states the same correction from
+the other side: `--is-ancestor <head> development` **"detects the merge strategy, not the
+loss"**, because a squash replaces the object for every squashed pull request. That is this
+entry's result about the _head_; this entry adds that the same instrument is **exact** about
+the _landed commit_, which is the row the broadcast got backwards.
+
+It also carries a measurement worth adopting: **blob comparison reported "not shipped" for 35
+of 36 files across eight pull requests that had all merged intact**, because a blob changes if
+any later commit touches the file at all. **Four of the five instruments listed there fail in
+the reassuring direction or the alarming one without announcing which**, and the entry beside
+this one is the fourth such case tonight.
+
+**Second finding, from the same message, and it is the more dangerous one.** The dispatch
+reported the sibling pull request as `8a6676d2`/`DIRTY` at one minute and `e5a90df7`/`BLOCKED`
+at the next, and read the difference as **"the conflict is resolved."** Those are two different
+objects. `8a6676d2` is on **zero** refs anywhere; `e5a90df7` is the real head, and the pull
+request has been `MERGED` since 2026-08-04T19:29:29Z with merge commit `3fac5567`. **No
+conflict existed and none was resolved.**
+
+> **A phantom substituted for a head manufactures a state transition that never occurred, and
+> the manufactured transition reads as progress.** A spurious regression invites scrutiny; a
+> spurious repair closes the question. **The direction of the fabricated change determines
+> whether anyone checks it**, which makes the reassuring direction the expensive one — the
+> fourth time this ledger has recorded a control failing in the direction nobody audits.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
@@ -523,3 +1078,11 @@ These revisions are cited above and are **not** reachable from this branch or fr
 - `65345ba` — ancestor of `refs/pull/76/head`; same route
 - `a08de19` — ancestor of `refs/pull/79/head`; `git fetch origin refs/pull/79/head`
 - `dc034d8` — the tip of `refs/pull/79/head`; same route
+- `af03801` — ancestor of `refs/heads/jpapiez-ripley-decompose-57`; `git fetch origin jpapiez-ripley-decompose-57`
+- `6538bed` — ancestor of the same branch; same route
+- `bb36969` — **the tip of that branch**, verified against the remote rather than against a local remote-tracking ref; same route
+- `a32ecf9` — **a pre-rebase twin whose live counterpart has since been destroyed, as this trail predicted it would be.** Cited in run AT as one of the seven objects whose reachability was published as a clone-local count. Its live counterpart `3057836` was on the branch of PR #162; that PR **squash-merged**, so the counterpart is now reachable from **no remote ref** — measured, not assumed. **There is no fetch route.** The content is on `development` in the merge `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`; re-derive from there rather than from this revision.
+- `0d1215f` — the second of that pair, live counterpart `16fbaa4`, same history and same absence of a route; same repair.
+- `3057836` — **named by the declaration above and therefore cited by it.** This is the live counterpart of `a32ecf9`; it was on the branch of PR #162 and died at that PR's squash-merge, so it is reachable from no remote ref. **Declaring an unreachable revision cites it, so the declaration block is recursive and terminates only when the twins it names are themselves declared.** No fetch route; the content is on `development` in `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`.
+- `16fbaa4` — the counterpart of `0d1215f`, reached by the same argument and unreachable for the same reason; same repair.
+- `8a6676d2` — **on no ref, anywhere.** `git branch -r --contains` returns **0** and `git ls-remote origin` matches it **zero** times; `git merge-base --is-ancestor` against the mainline exits 1. It resolves in this checkout only because nineteen worktrees share one object database, which makes `git cat-file -t` return `commit` for objects no reader can obtain. Cited in run AV as the revision published three times as a pull request's head. **There is no fetch route and this entry does not claim one** — it is listed because the citation's whole subject is its unreachability, and removing it would remove the evidence. Re-derive with `git ls-remote origin` filtered for the prefix.

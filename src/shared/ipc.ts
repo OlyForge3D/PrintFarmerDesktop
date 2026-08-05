@@ -4197,12 +4197,14 @@ export const CalibrationValidateAssetFileResponse = z.discriminatedUnion(
         reason: z.enum([
           'badExtension',
           'badMagicBytes',
+          'contentTypeMismatch',
           'tooSmall',
           'tooLarge',
           'geometryOutOfBounds',
           'checksumMismatch',
           'methodDisabled',
           'approvalExpired',
+          'pathRestricted',
         ]),
         detail: z.string().max(512),
       })

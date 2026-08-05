@@ -1,0 +1,6 @@
+{
+  "type": "filament",
+  "name": "PFD Corpus Parent",
+  "inherits": "PFD Corpus Filament",
+  "filament_type": "ABS"
+}
