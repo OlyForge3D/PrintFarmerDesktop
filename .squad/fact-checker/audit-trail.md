@@ -943,6 +943,63 @@ it passes. `108` test files green.
 deliverable, closed by a maintainer and verified here from the artifacts rather than from the
 report.
 
+### Run AX — ancestry is not useless under squash; it is silent about one pair only
+
+**Trigger.** A dispatch broadcast, to several sessions, that _"ancestry is not a merge test under
+squash"_ on the evidence that `d70d38f` — the squash commit that **landed** #203 — fails the
+ancestry test "identically" to two pre-squash heads, giving _"three convictions and zero
+information"_. Measured at mainline `7c7c2d5f06d3d25f77cb2a7953e4470e84346276`, read
+2026-08-05T06:17Z, exit codes captured unpiped.
+
+**The cited evidence is inverted.** `d70d38f` **is** an ancestor:
+
+```
+git merge-base --is-ancestor d70d38f origin/development    exit 0    (IS an ancestor)
+git branch -r --contains d70d38f                           109 refs
+git log origin/development --grep="(#203)"                 d70d38f, exactly it
+```
+
+Three different values for this one object have now been published in three consecutive
+messages — `ancestor=0`, then `ancestor=1`, then `exit 1`. **The instability is the argument
+for the rule it was cited to support**, just not the rule it was cited for.
+
+**With the correct value the table discriminates rather than collapsing.** Measured on this
+change's own objects:
+
+```
+sha        what it is                   exists   ancestor   landed-by-subject
+e5a90df7   #162's head, squashed away     yes       NO          -
+3fac5567   #162's squash commit           yes      YES         yes
+8a6676d2   a phantom, sibling worktree    yes       NO          -
+d70d38f    #203's squash commit           yes      YES         yes
+```
+
+**Ancestry separates the landed commit from both the discarded head and the phantom, without
+error, in every row.** It answers _did this exact commit land_ — and it answers it correctly
+for squash commits, which are ordinary mainline commits.
+
+> **The one pair ancestry cannot separate is a squashed-away head from a phantom that never
+> belonged to any branch.** Both exist, both are not ancestors, and only content or
+> `git log --grep="(#N)"` on the mainline tells them apart — and the grep takes the **pull
+> request number**, not the object, because a discarded head carries no `(#N)` in its subject.
+
+So the broadcast is right that a head failing ancestry proves nothing about whether the work
+landed, and wrong that the instrument is uninformative. **Two convictions and two acquittals,
+and the acquittals are precisely the commits a reader is trying to find.**
+
+**Second finding, from the same message, and it is the more dangerous one.** The dispatch
+reported the sibling pull request as `8a6676d2`/`DIRTY` at one minute and `e5a90df7`/`BLOCKED`
+at the next, and read the difference as **"the conflict is resolved."** Those are two different
+objects. `8a6676d2` is on **zero** refs anywhere; `e5a90df7` is the real head, and the pull
+request has been `MERGED` since 2026-08-04T19:29:29Z with merge commit `3fac5567`. **No
+conflict existed and none was resolved.**
+
+> **A phantom substituted for a head manufactures a state transition that never occurred, and
+> the manufactured transition reads as progress.** A spurious regression invites scrutiny; a
+> spurious repair closes the question. **The direction of the fabricated change determines
+> whether anyone checks it**, which makes the reassuring direction the expensive one — the
+> fourth time this ledger has recorded a control failing in the direction nobody audits.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
