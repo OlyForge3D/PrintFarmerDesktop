@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   EXIT_INCONCLUSIVE,
@@ -327,4 +328,79 @@ describe("main's own defaults are executed, not just its injected doubles", () =
       'viewer.types.test.ts',
     );
   }, 300_000);
+
+  // The `log` default was the third binding in this signature, and the two
+  // arms above -- written to prove the defaults run -- still stubbed it. A
+  // test for defaults that injects a default measures the injection.
+  // With `log` mutated to a no-op every other test here stays green while
+  // the CLI refuses SILENTLY: exit 1 and not one word saying why.
+  // A console.error spy left installed would silence later arms in this file.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('reports the refusal through the real console.error default', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let ran = false;
+    // `log` is deliberately NOT injected. That is the whole point of the arm.
+    const code = main(['run', ABSENT_TEST_FILE], {
+      run: () => {
+        ran = true;
+        return EXIT_OK;
+      },
+    });
+    expect(code).toBe(EXIT_UNMATCHED);
+    expect(ran).toBe(false);
+    // Assert the CONTENT, not merely that something was logged: a refusal
+    // that prints an empty string is as useless to the caller as silence.
+    expect(spy).toHaveBeenCalled();
+    expect(spy.mock.calls.map((call) => String(call[0])).join('\n')).toContain(
+      ABSENT_TEST_FILE,
+    );
+  }, 180_000);
+
+  it('stays silent on the success path, so the arm above is attributable', () => {
+    // NEGATIVE CONTROL. Without it, a build that wrote to console.error on
+    // EVERY path would satisfy the assertion above while telling the caller
+    // nothing about whether the refusal specifically was reported.
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const code = main(['run', REAL_TEST_FILE], {
+      run: () => EXIT_OK,
+    });
+    expect(code).toBe(EXIT_OK);
+    expect(spy).not.toHaveBeenCalled();
+  }, 180_000);
+});
+
+// The guard is only worth anything if something actually invokes it. Every
+// test above exercises the script; none of them observed that `npm run
+// test:strict` still points AT the script. Rebinding that one line of
+// package.json to plain `vitest` restores the exact silent-pass defect this
+// script exists to prevent, and left all 23 earlier tests green.
+describe('the npm script is still wired to the guard', () => {
+  const invokesGuard = (command: string): boolean =>
+    /(^|\s)node\s/.test(command) &&
+    command.includes('scripts/vitest-strict.mjs');
+
+  it('runs the guard script rather than bare vitest', () => {
+    const pkg = JSON.parse(readFileSync('package.json', 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    const command = pkg.scripts?.['test:strict'];
+
+    // CONTROL on the read itself: an absent key yields undefined, and every
+    // assertion below would then be vacuous rather than failing.
+    expect(typeof command).toBe('string');
+    expect(command).not.toBe('');
+
+    expect(invokesGuard(command as string)).toBe(true);
+  });
+
+  it('would reject the bare-vitest form, so the check above discriminates', () => {
+    // IN-BAND CONTROL. `invokesGuard` returning true for everything would
+    // pass the arm above with the wiring removed.
+    expect(invokesGuard('vitest')).toBe(false);
+    expect(invokesGuard('vitest run')).toBe(false);
+    expect(invokesGuard('node scripts/vitest-strict.mjs')).toBe(true);
+  });
 });
