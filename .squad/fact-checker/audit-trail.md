@@ -360,6 +360,15 @@ At the head, `.squad/skills/git-workflow/SKILL.md` carries the heading **Do not 
   revision, a script, or another file. **Nothing compares a document against itself**, so an internal disagreement is invisible to all of
   them — and a pull request body is exactly the kind of artifact that accretes figures written at different times under one heading.
 
+- **A third instance, in the apparatus, while reporting the first two.** Publishing this run's finding used
+  `gh api -f body=@<file>`. **`-f` never reads a file.** It posted the thirty-nine-byte literal string `@C:\…\c.md` as the
+  comment body and the call returned **201 with a comment URL**. Exit zero, a URL, a comment that exists — **every observable reported
+  success**, and the only instrument that could tell was reading the artifact back, which was not part of the procedure. Repaired in
+  place rather than deleted, so the failure and its repair share one address.
+- **That is the same shape three layers apart in one run:** a count that reported the reassuring answer, a document that disagreed with
+  itself, and a publishing call that reported success for a no-op. **Reading the artifact back is the only check common to all three**,
+  and it is the one routinely skipped because the tool already said it worked.
+
 - **Grade: ❌ against the report, ✅ unavailable for the pair.** The two renderings of the diamond-DAG row total agree at the mainline,
   but they agree because one was repaired to match the other by a commit named in this ledger — a **discharge**, not independent
   convergence, so it resolves without earning ✅.
