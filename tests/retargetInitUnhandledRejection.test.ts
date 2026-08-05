@@ -309,11 +309,13 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
     const ipc = (await import('../src/main/ipc.js')) as unknown as {
       registerIpcHandlers: (...args: unknown[]) => () => Promise<void>;
     };
-    // Resolved AFTER `ipc.ts`, and therefore the instance `ipc.ts` itself
-    // imported: loading `ipc.ts` populates the registry entry for
-    // `calibrationLog.js`, and this import reads that entry rather than
-    // creating another one. Deliberately a second binding instead of reusing
-    // `log` above -- see the probe below for the property that depends on it.
+    // Resolved after `ipc.ts` loads so that it tracks whichever instance
+    // `ipc.ts` ended up with. Note that the registry entry was populated by
+    // the import above, not by loading `ipc.ts` -- in the healthy path all
+    // three are the same object and the placement changes nothing. It is
+    // load-bearing only when something splits the registry between the
+    // capture and the `ipc.ts` load: then `ipc.ts` and this import both see
+    // the new instance while `capture` is left on the old one.
     const ipcLog = await import('../src/main/calibrationLog.js');
     return {
       // Wrapped so the injected channel and the disposer are impossible to
@@ -327,21 +329,28 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
         pendingDisposers.push(dispose);
         return dispose;
       },
-      // Emitted through `ipcLog` -- the instance `ipc.ts` resolved -- while
-      // `capture` above is installed on the instance this function resolved
-      // BEFORE loading `ipc.ts`. While nothing resets the registry between the
-      // two, they are the same object and the probe is visible to the capture.
-      // If anything ever splits them, the probe lands on `ipc.ts`'s copy, the
-      // capture observes the other, and the liveness assertion goes red.
+      // Emitted through `ipcLog`, while `capture` above is installed on the
+      // binding resolved before `ipc.ts` loaded. What this assertion actually
+      // establishes is `log === ipcLog`; `ipcLog` stands in for `ipc.ts`'s
+      // instance because it is resolved immediately after `ipc.ts` with
+      // nothing in between that could split them.
       //
-      // The two bindings are what makes that detectable. Emitting through
-      // `log` -- the same binding `capture` came from -- would assert only
-      // that a module equals itself, which is true however many copies of
+      // The two bindings are what make that detectable at all. Emitting
+      // through `log` -- the binding `capture` itself came from -- asserts
+      // only that a module equals itself, which holds however many copies of
       // `calibrationLog` exist and whichever one `ipc.ts` is talking to.
-      // Verified by mutation, not by reading this comment: inserting
+      // Verified by mutation rather than by reading this comment: inserting
       // `vi.resetModules()` after the capture turns the liveness assertion in
       // 'emits no such record when initialize succeeds' red. Before this
       // change that mutation left it green (#430).
+      //
+      // What it does NOT cover, stated so the next reader does not have to
+      // rediscover it: a split created inside `ipc.ts` itself -- importing
+      // the module under a different specifier or alias -- leaves this
+      // import equal to `capture`, so the probe stays visible and this
+      // assertion stays green while `ipc.ts` talks to another copy. The
+      // named-event assertions in the failure spec are what would notice
+      // that, since they read records `ipc.ts` emits itself.
       emitSinkLivenessProbe: () =>
         ipcLog.emitCalibrationLog({
           level: 'info',
