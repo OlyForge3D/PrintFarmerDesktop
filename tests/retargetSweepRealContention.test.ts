@@ -102,11 +102,17 @@ const ARM_CLASSIFY =
   'classifies the real refusal the same way as the hand-authored fixture';
 
 /**
- * The arms whose absence this file must not report as a pass, listed
- * independently of the `it` calls that satisfy them. Deleting an arm therefore
- * leaves its name here and turns the file red, which is the whole point;
- * deriving this list from the arms themselves would make a deletion consistent
- * with itself and invisible.
+ * The arms whose absence this file must not report as a pass.
+ *
+ * Written out rather than derived from the `it` calls, so that skipping an arm
+ * leaves its name here and turns the file red. The independence is real but
+ * bounded, and the bound is worth stating because a reviewer of PR #518
+ * measured it: deleting an arm *together with* its constant and this entry
+ * still passes. No guard that lives inside a file can survive an edit to that
+ * file. What this defends against is an arm that stops running -- skipped,
+ * filtered, platform-gated, bailed out of -- which is the failure mode that
+ * reports green. Deletion needs a policy test that reads the test directory
+ * from outside, which is deliberately not in this PR.
  */
 const REQUIRED_ON_WINDOWS = [
   ARM_CONTROL,
@@ -115,8 +121,30 @@ const REQUIRED_ON_WINDOWS = [
   ARM_CLASSIFY,
 ] as const;
 
-/** Arm names that ran to completion, recorded by each arm as its last statement. */
-const measuredArms = new Set<string>();
+/**
+ * What each arm observed, recorded as its last statement and re-asserted below.
+ *
+ * A bare "this arm ran" marker was the first version, and two reviewers killed
+ * it with the same mutation: delete an arm's assertions, keep its marker, and
+ * the file still passed. Execution is not measurement. Recording the observed
+ * values instead means a gutted arm registers evidence that the `afterAll`
+ * then rejects, so the cheapest way to make this file lie is no longer to
+ * delete an `expect` -- it is to write a false value into the record, which is
+ * a deliberate act that reads as one in a diff.
+ */
+const observations = new Map<string, Record<string, unknown>>();
+
+function record(arm: string, evidence: Record<string, unknown>): void {
+  observations.set(arm, evidence);
+}
+
+function evidenceFor(arm: string): Record<string, unknown> {
+  const evidence = observations.get(arm);
+  if (evidence === undefined) {
+    throw new Error(`no evidence recorded for arm: ${arm}`);
+  }
+  return evidence;
+}
 
 function serviceFor(tempPath: string) {
   return new RetargetArtifactService({
@@ -251,12 +279,13 @@ describe.skipIf(!onWindows)(
 
       await expect(serviceFor(root).initialize()).resolves.toBeUndefined();
 
+      const survivedUnheld = await exists(stale);
       expect(
-        await exists(stale),
+        survivedUnheld,
         'the fixture was never collectable, so the refusal arms prove nothing',
       ).toBe(false);
 
-      measuredArms.add(ARM_CONTROL);
+      record(ARM_CONTROL, { survivedUnheld });
     });
 
     it(ARM_CODE, async () => {
@@ -276,7 +305,11 @@ describe.skipIf(!onWindows)(
       expect(error.code).toBe('EBUSY');
       expect(error.syscall).toBe('rmdir');
 
-      measuredArms.add(ARM_CODE);
+      record(ARM_CODE, {
+        hasCode: 'code' in error,
+        code: error.code,
+        syscall: error.syscall,
+      });
     });
 
     it(ARM_STARTUP, async () => {
@@ -286,8 +319,9 @@ describe.skipIf(!onWindows)(
       // The claim: initialize() resolves rather than propagating the refusal.
       await expect(serviceFor(root).initialize()).resolves.toBeUndefined();
 
+      const survivedRefusal = await exists(stale);
       expect(
-        await exists(stale),
+        survivedRefusal,
         'the stale root was deleted despite the real refusal, so the arm ' +
           'exercised no refusal at all',
       ).toBe(true);
@@ -295,12 +329,13 @@ describe.skipIf(!onWindows)(
       // Control: initialize() finished its real work rather than merely not
       // throwing. A catch placed around too much of the method would swallow
       // the failure and skip registration, passing every assertion above.
+      const owned = await ownedByThisProcess(root);
       expect(
-        await ownedByThisProcess(root),
+        owned,
         'initialize() tolerated the failed sweep but never registered this instance',
       ).toHaveLength(1);
 
-      measuredArms.add(ARM_STARTUP);
+      record(ARM_STARTUP, { survivedRefusal, ownedCount: owned.length });
     });
 
     it(ARM_CLASSIFY, async () => {
@@ -330,53 +365,93 @@ describe.skipIf(!onWindows)(
       ).toBe(false);
       expect('code' in real).toBe(true);
 
-      measuredArms.add(ARM_CLASSIFY);
+      record(ARM_CLASSIFY, {
+        realIsFatal: isBrokenTempRootError(real),
+        authoredIsFatal: isBrokenTempRootError(authored),
+        authoredHasCode: 'code' in authored,
+        realHasCode: 'code' in real,
+      });
     });
   },
 );
 
 // A wholly skipped file reports as passing, and so does one whose arms were
-// deleted. The previous version of this guard asserted `onWindows === false`
-// when not on Windows, which is reflexive and cannot fail, and it never checked
-// that the arms ran when they were supposed to. Two independent reviewers of
-// PR #518 killed it with the same mutation: hard-skipping the Windows block
-// still reported green.
+// gutted. Two rounds of review shaped this guard, and both rounds are recorded
+// here because the reasoning is the useful part:
+//
+//   Round 1 -- the guard asserted `onWindows === false` on non-Windows, which
+//   is reflexive and cannot fail for any input, and never checked that the
+//   Windows arms ran. Hard-skipping them still reported green.
+//
+//   Round 2 -- the replacement recorded "this arm ran" and checked attendance.
+//   Two reviewers killed that with the same mutation: delete an arm's
+//   assertions, keep its marker, still green. Execution is not measurement.
+//
+// So the arms now record what they OBSERVED, and this re-asserts those
+// observations. Gutting an arm's `expect`s no longer helps: the arm records
+// the real values and this rejects them. The cheapest way to make this file
+// lie is now to write a false literal into a `record(...)` call, which is a
+// deliberate act and reads as one in a diff.
+//
+// Two limits, stated rather than implied, both measured by reviewers rather
+// than guessed:
+//   - Deleting an arm together with its constant and its `REQUIRED_ON_WINDOWS`
+//     entry passes, as does deleting this `afterAll`. No guard inside a file
+//     survives an edit to that file.
+//   - Nothing inside a file can notice that the file was deleted.
+// Both need a policy test that reads the test directory from outside. That is
+// deliberately not in this PR.
 //
 // This runs after every test in the file regardless of declaration order, and
-// checks both directions.
-//
-// The limit, stated rather than implied: nothing inside a file can notice that
-// the file was deleted. That case needs a policy test that reads the test
-// directory, which is deliberately not in this PR's scope.
+// checks both platform directions.
 afterAll(() => {
-  const ran = [...measuredArms].sort();
+  const ran = [...observations.keys()].sort();
 
-  if (onWindows) {
-    const missing = REQUIRED_ON_WINDOWS.filter(
-      (name) => !measuredArms.has(name),
-    );
-    if (missing.length > 0) {
+  if (!onWindows) {
+    // POSIX permits removing a directory that is a live process's cwd, so an
+    // arm that runs here is measuring nothing and would pass by producing no
+    // error at all.
+    if (ran.length > 0) {
       throw new Error(
-        `this runner is win32, where the real-refusal arms are the only reason ` +
-          `this file exists, but ${missing.length} of ` +
-          `${REQUIRED_ON_WINDOWS.length} did not run to completion: ` +
-          `${missing.join(' | ')}. Skipping or deleting an arm reports as a ` +
-          `pass, so this file fails rather than claiming a measurement it ` +
-          `never made.`,
+        `the real-refusal arms ran on ${process.platform}, where the mechanism ` +
+          `produces no error, so their assertions are vacuous: ${ran.join(' | ')}`,
       );
     }
     return;
   }
 
-  // The other direction. POSIX permits removing a directory that is a live
-  // process's cwd, so an arm that starts running here is measuring nothing and
-  // would pass by producing no error at all.
-  if (ran.length > 0) {
+  const missing = REQUIRED_ON_WINDOWS.filter((name) => !observations.has(name));
+  if (missing.length > 0) {
     throw new Error(
-      `the real-refusal arms ran on ${process.platform}, where the mechanism ` +
-        `produces no error, so their assertions are vacuous: ${ran.join(' | ')}`,
+      `this runner is win32, where the real-refusal arms are the only reason ` +
+        `this file exists, but ${missing.length} of ` +
+        `${REQUIRED_ON_WINDOWS.length} recorded no observation: ` +
+        `${missing.join(' | ')}. Skipping an arm reports as a pass, so this ` +
+        `file fails rather than claiming a measurement it never made. If an ` +
+        `arm above failed, that failure is the cause and this is its ` +
+        `consequence -- read that one first.`,
     );
   }
+
+  // Attendance is not measurement, so the observations are re-asserted here.
+  // These duplicate the arms' own assertions deliberately: the duplication is
+  // what makes deleting an arm's assertions insufficient to silence the file.
+  expect(evidenceFor(ARM_CONTROL)).toEqual({ survivedUnheld: false });
+  expect(evidenceFor(ARM_CODE)).toEqual({
+    hasCode: true,
+    code: 'EBUSY',
+    syscall: 'rmdir',
+  });
+  expect(evidenceFor(ARM_STARTUP)).toEqual({
+    survivedRefusal: true,
+    ownedCount: 1,
+  });
+  expect(evidenceFor(ARM_CLASSIFY)).toEqual({
+    realIsFatal: false,
+    authoredIsFatal: false,
+    authoredHasCode: false,
+    realHasCode: true,
+  });
 });
 
 it('runs on a platform whose real-refusal behaviour this file has decided', () => {
