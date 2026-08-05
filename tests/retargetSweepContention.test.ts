@@ -331,9 +331,13 @@ describe('startup sweep under deletion refusal (issue #229)', () => {
     await serviceFor(root).initialize();
 
     expect(
-      blocked.calls.slice(callsBeforeLaterSweep),
-      'the later sweep never targeted the deferred root, so it was dropped from consideration rather than retried',
-    ).toContain(stale);
+      blocked.calls
+        .slice(callsBeforeLaterSweep)
+        .some(
+          (call) => call === stale || call.startsWith(`${stale}${path.sep}`),
+        ),
+      'the later sweep never attempted a deletion anywhere under the deferred root, so it was dropped from consideration rather than retried',
+    ).toBe(true);
     expect(
       await exists(stale),
       'the root a refusal deferred was never collected by a later sweep, so the deferral is permanent and e2e/retarget.spec.ts asserts a property the module does not deliver',
