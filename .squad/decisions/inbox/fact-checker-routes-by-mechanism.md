@@ -251,3 +251,28 @@ its destination, and the author is reasoning about the destination. The repairs 
 move — remove the interpretation rather than escape it correctly: single quotes, quoted
 arguments, a replacement **function** instead of a replacement string. Escaping requires knowing
 every special sequence of every layer; disabling interpretation requires knowing none of them.
+
+## Counting a false claim is anti-correlated with correctness, because guarding against it requires holding it
+
+A grep for a wrong rendering cannot distinguish the file that **asserts** it from the file that **refutes**, **quotes**, or
+**regression-guards** it. That much is already the use-versus-mention rule. The consequence that is not obvious, and that has now
+produced a live false finding, is the direction of the bias.
+
+**A repository that guards against a false sentence must contain that false sentence.** A regression test that proves a claim would have
+been caught has to bind the claim as a fixture. A retraction has to quote what it withdraws. A decision entry recording a repair has to
+state what was repaired. So the better a defect is documented, pinned, refuted and guarded, the **more** copies of it the tree holds —
+and a checker that counts occurrences scores the best-disciplined artifact as the most defective one.
+
+This fired here. Two sides were compared on a hit count for a wrong figure: the side with more hits was reported as holding the
+divergence live, when in fact the figure was repaired on both sides and the extra hits were a regression fixture, a decision entry, and
+the ledger entry recording the repair. **The count was accurate and its sign was backwards.**
+
+Three consequences worth keeping:
+
+- **No refinement of the pattern recovers the difference.** Use and mention are identical strings by construction; the discriminator is
+  the surrounding sentence, so the hit has to be read. A filter can triage, and triage can never license a count.
+- **Occurrence counts must never be compared across two corpora as a proxy for defect load.** The corpora differ in how much they
+  document, which is a property nobody intended to measure.
+- **A superseded present-tense claim in a durable artifact is a live hazard even when a later entry corrects it**, because a reader who
+  stops at the first hit never reaches the correction. Scope the earlier claim in place; do not rely on ordering. Correcting the record
+  in a location the reader may not reach is the same defect as not correcting it.
