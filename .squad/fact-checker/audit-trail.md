@@ -1558,6 +1558,89 @@ known-present revision and blob before reporting any absence.
 **Of the report's other claims: zero reviews is true; zero comments is false — there are eight**,
 the first predating the message by 12h06m.
 
+### Run BF — a green that cannot show whether it laundered a red, and an expiry that forecasts other people's writes
+
+**Pair 1: my own published CI figures against the field I was not reading.** A correspondent
+cautioned that `actions/runs` and `gh pr checks` serve only the **latest attempt**, so a re-run
+can turn a red into a green with no trace in the served result. Every "11/11 distinct success"
+this ledger has published for PR #455 was produced by grouping check runs by name and taking the
+most recent — **exactly that method**.
+
+Audited all seven heads by `run_attempt` and `previous_attempt_url`:
+
+| head      | workflow runs | `run_attempt` > 1 | has `previous_attempt_url` | conclusions |
+| --------- | ------------- | ----------------- | -------------------------- | ----------- |
+| `f80f3f9` | 5             | 0                 | 0                          | success     |
+| `5e2a543` | 7             | 0                 | 0                          | success     |
+| `4e30e18` | 7             | 0                 | 0                          | success     |
+| `1b2e349` | 7             | 0                 | 0                          | success     |
+| `108f299` | 7             | 0                 | 0                          | success     |
+| `3603f5d` | 7             | 0                 | 0                          | success     |
+| `20692c2` | 7             | 0                 | 0                          | success     |
+
+**All attempt 1. Nothing was re-run and nothing was laundered — the seven claims stand.**
+
+**The clearance is not the finding.** In the laundered world and the clean world my published
+line reads identically, because the served payload is the same shape either way and the
+discriminating field is one I was not requesting. ⇒ **an instrument's blind spot is invisible
+from inside its own output**, so no amount of re-reading my own greens could have raised the
+question; only a differently-shaped field could, and only someone not using my method thought to
+name it.
+
+**And the direction decides who can find it.** Run BE's mis-quoted probe failed toward
+_alarming_, and the author is the party most motivated to re-check an alarm. This one fails
+toward _reassuring_: the laundered case reports success and closes the question.
+⇒ **blind spots that fail reassuringly are structurally reserved for outside parties**, because
+nothing inside the instrument ever generates a reason to look. Adopted: assert
+`run_attempt === 1` explicitly, or publish the attempt number beside the conclusion — a
+conclusion without its attempt is an incomplete citation in the same way a count without its
+unit is.
+
+**Pair 2: a measurement time and an expiry, published in one line and in one format.** The same
+message pinned trunk with its measurement time **and** a stated shelf life — the practice this
+ledger has been asking for. The pin verifies at the object, by `--first-parent`, which is the
+sequence of commits that were actually the tip:
+
+```
+14c142f   tip until 13:53:25 PDT
+c5b0717   tip 14:07:06 -> 14:30:09 PDT      window 23m03s
+68a9fb0   tip from  14:30:09 PDT
+```
+
+His stated 14:22 sits inside that window with **8m09s** left. The stated expiry was **~19
+minutes** — over the truth by about 2.3x.
+
+Measured the population the forecast ranges over, 40 consecutive first-parent tips on trunk:
+**mean 12.9 min, median 10.6 min, minimum 5 seconds, maximum 56.6 min, and 30 of 40 shorter
+than the 19 minutes claimed.**
+
+> **A measurement time is a fact the author owns. An expiry is a prediction about writes by
+> parties who have not acted yet, and the author has no access to it at all.** Rendering both in
+> one line in one format presents a fact and a forecast as the same kind of claim — run AP's
+> defect (four gate figures in one row, three of which could not go stale) with the heterogeneity
+> in the tense rather than in the gate.
+
+**The estimate's error has a systematic direction.** An author extrapolates from intervals long
+enough to have been noticed; the five-second tip in this sample is invisible to experience by
+construction. ⇒ **survivorship bias in the sample guarantees a too-long estimate**, so a stated
+expiry errs toward telling the reader the pin is still good.
+
+**Remedy: publish the measurement time and stop.** The reader holds the ref and can compute
+staleness against the object; the author holds only the past. An expiry converts a checkable
+statement into an unfalsifiable courtesy, and it fails in the reassuring direction — the same
+asymmetry as pair 1, reached from the other end of the same message.
+
+**Incidental corroboration:** the 12.9-minute mean tip lifetime measured here is independently
+close to the 13.0-minute sync interval that message attributed to a third session's livelock
+measurement — two enumerations over different objects for different purposes, agreeing.
+
+**Every object claim in the same message verifies exactly**: 17 reviews across 12 distinct
+`commit_id`s with the merged head `e5a90df7` among them; `e5a90df7` and `22c0a6dd` both exit 1
+against trunk while the squash `3fac5567` exits 0; `3fac5567` has one parent; #119 OPEN.
+**Recorded because this ledger has published sustained accusations against this correspondent and
+withdrawn one of them — a round that checks and finds nothing wrong is the same instrument
+working, and omitting it would bias the record.**
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
