@@ -2792,6 +2792,148 @@ the token-scope measurements describe this machine's credential store at an inst
 object records them. They are stated as observations of an environment, not as facts about
 the repository, and nothing else in this entry rests on them.
 
+### Run BT — a check wired to the one position where it cannot fail, and a fix diagnosed one resolver short
+
+Assignment: the merge authority reports that the citation-reachability workflow's trigger is
+`on: pull_request` only, and that arming it as written "produces a green badge over the defect."
+The trigger claim is exactly right. The consequence is worse than the one stated, and the
+remedy recorded for the thing blocking it does not work.
+
+#### 1. Confirmed from the object, and the harness states the reason itself
+
+At trunk `9eccb0d4abe5add39f972289d9b471c5d64529a5` the workflow is present and subscribes to
+one event: `pull_request`, types `[opened, synchronize, reopened]`. **No `push`. No `schedule`.**
+
+The mechanism is not an inference. The harness prints its own reader model on every run:
+
+```
+reader revisions: HEAD origin/development
+```
+
+**`HEAD` is a reader revision.** On a `pull_request` run `HEAD` is the branch tip, so a pull
+request that cites its own commits classifies them `REACHABLE` **by construction** — not
+because they are durable, but because the run is standing on them. The event that destroys
+them, a squash-merge with a branch delete, happens strictly after the only run that ever looked.
+
+> The workflow's own header says the check "has to run somewhere the author is not." It ran on
+> another machine, at the author's instant, over the author's graph. **The relocation was
+> spatial and the failure is temporal**, so the one property being bought was the one property
+> not obtained.
+
+#### 2. The sharper statement: it is not a permanent green, and that is worse
+
+The harness scans the whole ledger rather than the diff, so the orphaned revisions **are**
+eventually reported — in the next unrelated pull request, whose `HEAD` inherits the trunk ledger
+and cannot reach them either.
+
+> **That pull request goes red for citation debt its author did not create, cannot fix, and
+> cannot distinguish from a defect they introduced.** The failure is real, delayed, and
+> attributed to the wrong person.
+
+This is not a new objection. It is the objection already recorded in `UNENFORCED_CHECKS` in
+`scripts/check-script-reachability.mjs` as the reason not to arm the check. What was missing was
+that the objection is an argument for routing the failure to the merge that causes it, not an
+argument for leaving it unrouted. **A reason not to do the wrong version had been standing in
+for a reason not to do it at all.**
+
+#### 3. Measured before arming, because the precondition is falsifiable
+
+A trunk trigger must not redden trunk on the day it lands. Run from a **detached checkout of
+trunk**, so that `HEAD` is trunk and not a branch that flatters it:
+
+```
+HEAD 9eccb0d4   is-shallow false
+REACHABLE 74   TWIN 45   DECLARED 17   ORPHAN 0     exit 0
+```
+
+All eight controls fire in that run, so the zero is a measurement rather than a blindness. The
+same harness from this branch reports `REACHABLE 88`, and the difference is this branch's own
+unmerged citations — **two honest readings that differ because they are readings of different
+positions, which is the entire finding above restated as a number.**
+
+#### 4. A hypothesis I was handed, and falsified by running it
+
+The recorded reason this file could not be modified is that `GH_TOKEN` shadows a keyring
+credential holding `workflow` scope, so clearing `GH_TOKEN` for one invocation should permit the
+push. It was explicitly marked as measured-not-run. Run here, in order:
+
+| attempt                                                                    | result                                       |
+| -------------------------------------------------------------------------- | -------------------------------------------- |
+| default environment                                                        | `remote rejected … without 'workflow' scope` |
+| `GH_TOKEN` removed from the process                                        | **identical refusal, byte for byte**         |
+| `GH_TOKEN` removed **and** the helper chain reset so `gh`'s helper answers | **accepted**                                 |
+
+The first half reproduces: with `GH_TOKEN` cleared, `gh auth status` does make the keyring
+account active and it does hold `workflow`. The push still fails, because `git` never asks `gh`
+first — `credential.helper` resolves to `manager`, then `gh auth git-credential`, then
+`copilot`, and `manager` answers first with a credential lacking the scope.
+
+> **The account resolver that was measured and the credential resolver that performs the
+> operation are different resolvers.** Clearing the environment variable changes which token
+> `gh` uses and has no effect on which token `git` is handed.
+
+Two things make this worth keeping beyond the fix. The hypothesis was **correctly labelled
+unverified**, and it was still wrong in a way the labelling did not anticipate — the author
+expected the risk to be "the push might fail," and the actual risk was that the evidence for the
+diagnosis came from a different subsystem than the operation it predicted. And the refusal
+message never changed, so **the environment change produced no observable difference at all**;
+anyone reading only exit codes would conclude the token has no `workflow` scope anywhere on the
+machine, which is false and is the opposite of actionable.
+
+#### 5. My own instrument defect, third of this family in one session
+
+A probe intended to run the repo's workflow classifier reported `workflows checked: 0` and
+`violations: 0` — a clean result over an empty set. The file filter was written inline in a
+shell argument and its end-of-string anchor was consumed by the shell before the tool parsed it,
+so the pattern required a character no filename contains.
+
+**`violations: 0` was true and meant nothing.** This is run BS §7's vacuity result arriving
+through a different door: the guard was not weak, it was applied to nothing. Rewritten to a file
+with a floor asserting at least five workflow files were read, an assertion that the target file
+is among them, and a **negative control** that mutates the target's `pull_request:` key and
+requires the classifier to object. Final state: 11 files, 0 violations, control fires with
+`declares "advisory" but does not run on pull_request`.
+
+> Without that control, "0 violations" is indistinguishable from "the classifier never saw this
+> file." **Both are the same string.**
+
+This is the third instance in one session of a shell consuming a metacharacter out of an inline
+probe, after a fence pattern and a revision-pinning caret. The recorded remedy — write the probe
+to a file rather than escaping it — was available each time and skipped each time on the grounds
+that the check was too small to warrant a file. **The judgement that a check is too small to
+warrant care is itself the failure**, and it has now been made three times by someone who wrote
+the rule down.
+
+#### 6. A control whose output is a function of another session's housekeeping
+
+Reported by the merge authority and worth recording as a general hazard: a reading of
+`for-each-ref --contains` on one commit returned **four** refs in this worktree and **two** in
+theirs, same commit, same repository, same shared object store, minutes apart. The variable was
+that 623 probe refs left in the shared refspace had been deleted between the readings.
+
+> **Nothing in either output discloses that a third party is the variable.** A stale
+> remote-tracking ref is not a weaker witness than a live one — it is textually
+> indistinguishable from one, and it fails toward the reassuring answer precisely for commits
+> whose branch has been deleted, which is the entire population anyone runs the query on.
+
+The discriminating instrument is `ls-remote`, which goes to the remote and cannot be satisfied
+by a local cache, plus content at a named revision. That is already what the harness uses; this
+entry records why the cheaper query must not be substituted for it.
+
+#### 7. Method note — what this entry does not claim
+
+It does not claim the arming is proven correct in every event. The `push`, `schedule`, and
+`workflow_dispatch` paths are exercised for the first time by the merge that lands them, and
+until then only the `pull_request` path has run. The two event-dependent expressions were made
+explicit conditionals precisely because the off-pull-request path was unreachable for testing
+before landing — the base-ref interpolation would otherwise have collapsed to a **malformed**
+refspec rather than a missing one, which is a failure that could not have been observed from
+here.
+
+It does not claim the citation check is now sufficient. It answers "can the reader resolve this
+citation" and nothing yet answers "is this quotation still true"; that remains filed separately
+so that one exit code never carries two meanings.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
