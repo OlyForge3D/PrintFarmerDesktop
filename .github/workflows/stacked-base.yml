@@ -1,0 +1,53 @@
+name: Stacked base
+
+# merge-queue: advisory
+#
+# This workflow does not subscribe to merge_group and MUST NOT be added to a
+# ruleset's required contexts while that remains true: a required context that
+# no workflow emits stays Pending forever and blocks the entry rather than
+# failing it. tests/mergeQueueReadiness.test.ts checks this declaration against
+# the trigger list, so the classification above is read by a machine rather
+# than trusted.
+
+# Separate from ci.yml for the same reason pr-closure-scope.yml is: the check
+# needs a pull request number, and neither `push` nor `merge_group` carries
+# one. Adding it to ci.yml would need a job-level `if:` or a
+# `github.event_name` branch, both banned by tests/ciWorkflowTriggers.test.ts —
+# a job skipped by a conditional reports `skipped`, which counts as success, so
+# a required context would be satisfied by a job that never ran.
+
+# `edited` is in the type list because the base branch of a pull request can be
+# retargeted with no commit and no push. The default type set (opened,
+# synchronize, reopened) is commit-shaped, so without `edited` a pull request
+# could pass this check against `development`, be retargeted at a spent branch
+# afterwards, and merge green having never been re-checked. Retargeting is the
+# single action this check exists to adjudicate, so omitting the event that
+# reports it would leave the guard blind to its own subject.
+#
+# `types:` REPLACES the default set rather than extending it, so the three
+# defaults are listed explicitly.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  stacked-base:
+    name: Stacked base
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # No `npm ci`: the check imports nothing outside node: builtins, so it
+      # runs against the checkout alone.
+      - name: Verify the base branch has not already landed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run check:stacked-base
