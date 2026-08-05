@@ -510,7 +510,17 @@ describe('witnessContradiction', () => {
     // Deliberately one-directional. Firing here would assert that
     // parseBoundClosures reproduces GitHub's grammar; it does not, and a
     // guard that claims someone else's parser goes stale toward the false
-    // red. The cost of being wrong stays bounded to a retry.
+    // red. The measured counter-examples are in check-closing-references.mjs.
+    //
+    // The residual risk is NOT bounded to a retry, and an earlier version of
+    // this comment claimed it was. That claim is retracted at the witness's
+    // own docblock and refuted by an executable test below. Nothing is
+    // retried when THIS direction is wrong: a stale non-empty snapshot taken
+    // after an unintended closure was added is reported clean, and the
+    // closure ships silently. A retry is what a false POSITIVE costs, and
+    // this is the branch where the false NEGATIVE lives. Accepted anyway,
+    // because the alternative reds correct PRs with no way to clear it --
+    // but it is a gap, not a bound, and it is the residual risk of the fix.
     expect(witnessContradiction('prose that binds nothing', [231])).toEqual([]);
     expect(witnessContradiction(`${KEYWORD} #999`, [231])).toEqual([]);
   });
