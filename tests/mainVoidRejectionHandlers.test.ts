@@ -107,23 +107,52 @@ function readExpression(code: string, start: number): string {
   return code.slice(start);
 }
 
-/** True when `name(` appears with a comma at the top level of its arguments. */
-function hasTwoArgumentCall(expression: string, name: string): boolean {
-  let from = 0;
-  for (;;) {
-    const at = expression.indexOf(name, from);
-    if (at === -1) return false;
-    let depth = 0;
-    for (let k = at + name.length - 1; k < expression.length; k += 1) {
-      const ch = expression[k]!;
-      if (ch === '(' || ch === '[' || ch === '{') depth += 1;
-      else if (ch === ')' || ch === ']' || ch === '}') {
-        depth -= 1;
-        if (depth === 0) break;
-      } else if (ch === ',' && depth === 1) return true;
-    }
-    from = at + name.length;
+/** Offsets of `name` that are not nested inside brackets of `expression`. */
+function topLevelOccurrences(expression: string, name: string): number[] {
+  const found: number[] = [];
+  let depth = 0;
+  for (let k = 0; k < expression.length; k += 1) {
+    if (depth === 0 && expression.startsWith(name, k)) found.push(k);
+    const ch = expression[k]!;
+    if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+    else if (ch === ')' || ch === ']' || ch === '}') depth -= 1;
   }
+  return found;
+}
+
+/** True when the argument list opening at `parenIndex` has a top-level comma. */
+function callHasTopLevelComma(expression: string, parenIndex: number): boolean {
+  let depth = 0;
+  for (let k = parenIndex; k < expression.length; k += 1) {
+    const ch = expression[k]!;
+    if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      depth -= 1;
+      if (depth === 0) return false;
+    } else if (ch === ',' && depth === 1) return true;
+  }
+  return false;
+}
+
+/**
+ * True when the *outer* chain ends in a rejection handler.
+ *
+ * The depth check is the whole point and it was not here first. A substring
+ * test for `.catch(` reports `void app.whenReady().then(() => { ... })` as
+ * handled, because the bootstrap body it wraps contains two `.catch(...)`
+ * calls of its own. That version of this guard passed on the exact site it was
+ * written for: a mutation deleting the outer `.catch` survived it.
+ *
+ * A handler nested inside a callback protects that callback, not the chain the
+ * `void` is applied to. Matching by text alone cannot tell those apart.
+ */
+function hasRejectionHandler(expression: string): boolean {
+  if (topLevelOccurrences(expression, '.catch(').length > 0) return true;
+  // `.then(onFulfilled, onRejected)` is the other form the lint rule accepts.
+  // `.finally` is not one: it observes settlement without consuming rejection.
+  return topLevelOccurrences(expression, '.then(').some((at) =>
+    callHasTopLevelComma(expression, at + '.then'.length),
+  );
 }
 
 interface VoidStatement {
@@ -150,12 +179,7 @@ function scanVoidStatements(source: string, file: string): VoidStatement[] {
       expression,
       isCall: expression.includes('('),
       isImmediatelyInvoked: expression.startsWith('('),
-      // `.catch(handler)` and `.then(onFulfilled, onRejected)` are the two
-      // forms the rule itself accepts. `.finally` is not one: it observes
-      // settlement without consuming rejection.
-      hasRejectionHandler:
-        expression.includes('.catch(') ||
-        hasTwoArgumentCall(expression, '.then('),
+      hasRejectionHandler: hasRejectionHandler(expression),
     });
   }
   return found;
@@ -217,6 +241,39 @@ describe('void-suppressed promises in src/main carry a rejection handler', () =>
       'control-two-arg-then.ts',
     );
     expect(twoArgThen[0]?.hasRejectionHandler).toBe(true);
+
+    // A handler nested inside a callback protects that callback, not the
+    // chain the `void` applies to. This is the shape of `app.whenReady()`,
+    // whose bootstrap body contains two `.catch(...)` calls of its own — a
+    // substring test reports it handled with its own `.catch` deleted.
+    const nestedOnly = scanVoidStatements(
+      [
+        'function f() {',
+        '  void app.whenReady().then(() => {',
+        '    void syncEngine.start().catch(() => undefined);',
+        '  });',
+        '}',
+      ].join('\n'),
+      'control-nested-catch.ts',
+    );
+    const outer = nestedOnly.find((s) => s.expression.startsWith('app.'));
+    expect(outer, 'the outer void statement must be found').toBeDefined();
+    expect(outer?.hasRejectionHandler).toBe(false);
+    // ...while the same text with a handler on the outer chain is accepted.
+    const nestedAndOuter = scanVoidStatements(
+      [
+        'function f() {',
+        '  void app.whenReady().then(() => {',
+        '    void syncEngine.start().catch(() => undefined);',
+        '  }).catch(() => undefined);',
+        '}',
+      ].join('\n'),
+      'control-nested-and-outer.ts',
+    );
+    expect(
+      nestedAndOuter.find((s) => s.expression.startsWith('app.'))
+        ?.hasRejectionHandler,
+    ).toBe(true);
   });
 
   it('does not read types, prose or string contents as statements', () => {
@@ -242,6 +299,27 @@ describe('void-suppressed promises in src/main carry a rejection handler', () =>
     );
     expect(unusedValue).toHaveLength(1);
     expect(unusedValue[0]?.isCall).toBe(false);
+
+    // The cases above are all rejected by the statement-position rule alone,
+    // because a `void` inside prose is preceded by `/`, `*` or a quote. These
+    // are not: the character before `void` is `{` or `;`, exactly as in real
+    // code, so only the blanking pass separates them. Without this control,
+    // deleting `blankCommentsAndStrings` leaves every assertion green.
+    const quotedStatement = scanVoidStatements(
+      "function f() {\n  const s = '{ void shell.openExternal(url); }';\n}\n",
+      'control-quoted-statement.ts',
+    );
+    expect(quotedStatement).toEqual([]);
+    const commentedStatement = scanVoidStatements(
+      [
+        'function f() {',
+        '  /* nothing here;',
+        '     void shell.openExternal(url); */',
+        '}',
+      ].join('\n'),
+      'control-commented-statement.ts',
+    );
+    expect(commentedStatement).toEqual([]);
   });
 
   it('leaves no void-suppressed call without a rejection handler', () => {
