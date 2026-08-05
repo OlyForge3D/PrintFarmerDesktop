@@ -42,11 +42,92 @@
  *
  * @module retargetInitUnhandledRejection.test
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 
 import type { captureCalibrationLogs } from '../src/main/calibrationLog.js';
+import type { ChannelFactory, SidecarChannel } from '../src/main/sidecar.js';
 
 const INIT_FAILURE = 'EPERM: operation not permitted, rmdir';
+
+/**
+ * Real, per-run, and removed afterwards.
+ *
+ * The resolving control for claim 4 runs past the `retargetReady` await into
+ * the real `refreshTargetProfiles()`, whose `initialize()` calls `mkdir` under
+ * `app.getPath('userData')`. With the literal `/test/userData` this file used
+ * before, that put five directories on the developer's filesystem outside the
+ * repository, at a fixed absolute path shared with every other suite stubbing
+ * the same value — so one suite's leftovers become another's starting state.
+ *
+ * Exercising the real service is the point of the control, so this contains the
+ * writes rather than mocking the service away: `mkdtempSync` gives each run its
+ * own root, which makes the writes both harmless and non-transferable.
+ */
+const userDataRoot = mkdtempSync(join(tmpdir(), 'retarget-init-'));
+
+/**
+ * Registered disposers, drained after every test.
+ *
+ * `registerIpcHandlers()` returns a disposer that calls `sidecar.dispose()`
+ * whenever it constructed the sidecar itself, which is the case here. Every
+ * spec in this file used to discard it.
+ */
+const pendingDisposers: Array<() => Promise<void>> = [];
+
+/**
+ * A channel that answers instead of spawning.
+ *
+ * `registerIpcHandlers()` builds `new SidecarClient(channelFactory ?? spawnSidecarChannel)`,
+ * so with no factory supplied the suite spawned the real `model-core` binary:
+ * `TargetProfileService.initialize()` reaches `loadBundled()`, which calls
+ * `sidecar.listRetargetProfiles()`. Measured before this seam was used —
+ * `model-core` peaked at one process above baseline during the run, on a
+ * machine where `resources/sidecar/` exists.
+ *
+ * This injects the factory rather than mocking `targetProfiles`, because the
+ * factory is a typed four-method seam the module already exposes: if
+ * `SidecarChannel` changes, `tsc` fails here. A `vi.mock` factory for
+ * `targetProfiles.js` would be an untyped claim about another module's export
+ * surface and would go stale silently — the failure mode that put PR #146 red.
+ *
+ * It answers `ok: false` rather than a synthetic success: returning a result
+ * would hard-code the response schema `listRetargetProfiles()` parses, which is
+ * the same stale-claim problem one level down. A rejection is enough, because
+ * the control below asserts only which envelope must *not* appear.
+ */
+const testChannelFactory: ChannelFactory = (): SidecarChannel => {
+  let onMessage: ((line: string) => void) | undefined;
+  return {
+    send: (line: string) => {
+      const id: unknown = (JSON.parse(line) as { id?: unknown }).id;
+      // Replying asynchronously: SidecarClient registers the pending request
+      // after `send` returns, so a synchronous reply would arrive before there
+      // is anything to resolve and the request would hang to its timeout.
+      queueMicrotask(() =>
+        onMessage?.(
+          JSON.stringify({ id, ok: false, error: 'test channel: no sidecar' }),
+        ),
+      );
+    },
+    onMessage: (handler: (line: string) => void) => {
+      onMessage = handler;
+    },
+    onClose: () => {},
+    close: () => {},
+  };
+};
 
 const LIST_CHANNEL = 'retarget:listProfiles';
 
@@ -84,7 +165,7 @@ const SINK_LIVENESS_SENTINEL = 'test.sinkLivenessProbe';
 
 vi.mock('electron', () => ({
   app: {
-    getPath: () => '/test/userData',
+    getPath: () => userDataRoot,
     getVersion: () => '0.0.0-test',
     getAppPath: () => '/test/userData',
     on: () => undefined,
@@ -182,9 +263,18 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
     sceneCacheState.failInit = false;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    // Drained before `resetModules`, or the disposer would run against a module
+    // graph that has already been replaced.
+    while (pendingDisposers.length > 0) {
+      await pendingDisposers.pop()?.();
+    }
     capture?.stop();
     vi.resetModules();
+  });
+
+  afterAll(() => {
+    rmSync(userDataRoot, { recursive: true, force: true });
   });
 
   /**
@@ -204,7 +294,17 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
       registerIpcHandlers: (...args: unknown[]) => () => Promise<void>;
     };
     return {
-      registerIpcHandlers: ipc.registerIpcHandlers,
+      // Wrapped so the injected channel and the disposer are impossible to
+      // forget at a call site: every spec goes through this one function, and
+      // adding a spec that spawns a real sidecar now requires bypassing it
+      // deliberately rather than merely omitting an argument.
+      registerIpcHandlers: (...args: unknown[]) => {
+        const dispose = ipc.registerIpcHandlers(
+          ...(args.length > 0 ? args : [testChannelFactory]),
+        );
+        pendingDisposers.push(dispose);
+        return dispose;
+      },
       // Emitted through the same module instance `ipc.ts` imports, so if the
       // capture were installed on a different copy this probe would go missing
       // and the liveness assertion would fail rather than pass vacuously.
@@ -339,11 +439,18 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
 
     const response = await invokeListProfiles();
 
-    // Deliberately not asserting `status === 'ok'`. Past the await, the handler
-    // calls the real `refreshTargetProfiles()`, whose outcome depends on what
-    // is on disk — and a control whose result depends on the environment is
-    // exactly the defect #267 filed against this suite. This assertion holds in
-    // both environments because it names the one envelope that must not appear.
+    // Deterministic *because* the channel is injected. Measured with the
+    // injection removed, this same call returns `status: 'ok'` and a catalog of
+    // bundled profiles read off disk — so asserting `'error'` here is also the
+    // guard on the injection itself: delete the factory and this spec fails.
+    //
+    // The previous version asserted only `message !== WORKSPACE_FAILURE_MESSAGE`
+    // and was deliberately environment-independent, since the real
+    // `refreshTargetProfiles()` returned different things on different machines.
+    // That property is exactly what made it blind: it passed whether or not a
+    // sidecar was spawned. Controlling the environment is what makes a specific
+    // outcome safe to assert, and asserting one is what guards the control.
+    expect(response.status).toBe('error');
     expect(response.error?.message).not.toBe(WORKSPACE_FAILURE_MESSAGE);
   });
 });
