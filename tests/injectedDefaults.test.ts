@@ -437,6 +437,13 @@ describe('THE POINT: injecting a collaborator relocates the seam rather than clo
   // These read the real files. If npm-ci-strict is repaired, these tests change
   // — which is correct: the claim is about trunk, and a claim about trunk that
   // survives its repair was never reading trunk.
+  //
+  // What must NOT change them is an unrelated edit to a file this suite does
+  // not own. b9b16d6 ("read npm ls's exit status") added call sites and turned
+  // these red at 6-vs-9 without touching a single thing asserted here. So the
+  // COUNT is derived, never transcribed: a number pinned against a foreign file
+  // is a transcription, and a transcription reports its own staleness as a
+  // finding about the subject.
   const result = analyse({
     moduleFile: NPM_CI_STRICT,
     suiteFile: NPM_CI_STRICT_SUITE,
@@ -444,7 +451,11 @@ describe('THE POINT: injecting a collaborator relocates the seam rather than clo
   });
 
   it('resolves every one of the real call sites, so the result is a proof and not an over-report', () => {
-    expect(result.sites).toHaveLength(6);
+    // The vacuity guard is load-bearing: `every` on an empty list is true, so
+    // without it a resolver that found NOTHING would satisfy this test — the
+    // "guard scanning almost nothing is green like a guard scanning everything"
+    // shape, one level up.
+    expect(result.sites.length).toBeGreaterThan(0);
     expect(result.sites.every((site) => site.resolution !== 'unresolved')).toBe(
       true,
     );
@@ -659,7 +670,44 @@ describe('the report names the remedy, and the remedy is the one that closes it'
   const text = formatResult(result);
 
   it('states how many call sites were resolved, so the reader can see it was proven', () => {
-    expect(text).toContain('6 call site(s), 6 resolved.');
+    // Both numbers are derived SEPARATELY, so this still fails if the formatter
+    // ever prints "n of n" while some site is unresolved. Deriving `resolved`
+    // from `sites.length` instead would make the report agree with itself by
+    // construction and assert nothing.
+    const total = result.sites.length;
+    const resolved = result.sites.filter(
+      (site) => site.resolution !== 'unresolved',
+    ).length;
+    expect(total).toBeGreaterThan(0);
+    expect(text).toContain(`${total} call site(s), ${resolved} resolved.`);
+  });
+
+  it('DISCRIMINATES: prints the two numbers separately when they differ', () => {
+    // Without this arm the previous test is satisfied by a formatter that
+    // prints the total TWICE, because every real call site on trunk resolves
+    // and so total === resolved for the only input the suite reads. That is an
+    // equivalent mutant, and an equivalent mutant is not a passing grade — it
+    // is a sign the assertion is reading one number where it claims two.
+    // Verified: mutating `resolvedCount` to `sites.length` SURVIVED the whole
+    // file until this case existed, and is killed by this case alone.
+    const mixed = analyse({
+      moduleFile: 'm.mjs',
+      suiteFile: 'm.test.ts',
+      rootName: 'main',
+      readFile: sourcesOf({
+        'm.mjs': 'export function main({ a = impl } = {}) {}',
+        'm.test.ts':
+          "import { main } from './m.mjs';\nmain({});\nmain(whateverThisIs);",
+      }),
+    });
+    const total = mixed.sites.length;
+    const resolved = mixed.sites.filter(
+      (site) => site.resolution !== 'unresolved',
+    ).length;
+    expect(total).toBeGreaterThan(resolved);
+    expect(formatResult(mixed)).toContain(
+      `${total} call site(s), ${resolved} resolved.`,
+    );
   });
 
   it('offers running the root with no substitutes, not merely "add a test"', () => {
