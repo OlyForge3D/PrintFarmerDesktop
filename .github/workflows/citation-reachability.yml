@@ -1,0 +1,102 @@
+name: Citation reachability
+
+# merge-queue: advisory
+#
+# Runs on pull_request, emits a check run, and does NOT report for a queued
+# entry, so this context MUST NOT be added to a branch ruleset's required
+# contexts. scripts/check-merge-queue-contexts.mjs enforces that against live
+# branch protection rather than leaving it to this comment.
+
+# Deliberately a separate workflow rather than a job in ci.yml.
+#
+# The check needs the full commit graph and a mainline ref: it classifies each
+# cited revision as reachable from what a reader holds, twinned to a live commit
+# by `git patch-id --stable`, declared with a fetch route, or orphaned. All three
+# of the passing classes need history that a depth-1 checkout does not have, and
+# ci.yml's jobs are depth-limited because nothing else in them reads the graph.
+#
+# Why this exists at all, stated here because the failure is invisible from the
+# position that creates it. Several worktrees can share one object database, so a
+# revision orphaned by a rebase keeps resolving for whoever wrote the citation
+# and resolves for nobody else. `git show` does not error, hesitate, or warn. The
+# author is therefore the one party who cannot detect that their own pin has
+# died, which makes "check it before you push" the one control that cannot work.
+# It has to run somewhere the author is not.
+#
+# The harness withholds its verdict unless both of its controls fire - a
+# known-present revision must classify REACHABLE and a synthetic one must
+# classify ORPHAN - and exits 2 if either fails. That distinguishes "no orphans"
+# from "cannot see orphans", which are the same output on an unwired instrument
+# and the reason this workflow exists rather than a note asking people to run it.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  citation-reachability:
+    name: Citation reachability
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 for the graph; `ref:` because the default pull_request
+      # checkout is the merge commit, whose ancestry is not the branch's. The
+      # twin index is built over the branch's own commits, so measuring it
+      # against a synthetic merge would index the wrong set.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      # The mainline is half of the reader model. Fetched by name and pinned to
+      # a local ref the harness looks for: without it the run silently narrows to
+      # HEAD alone, which is stricter and would report orphans that a reader can
+      # in fact reach. A check that fails for the wrong reason teaches people to
+      # ignore it.
+      - name: Fetch the mainline the reader is assumed to hold
+        run: |
+          git fetch --no-tags origin \
+            +refs/heads/${{ github.event.pull_request.base.ref }}:refs/remotes/origin/development
+          git rev-parse --verify refs/remotes/origin/development^{commit}
+
+      # Condition 4 of the discharge path stated in UNENFORCED_CHECKS
+      # (scripts/check-script-reachability.mjs): assert the reachable-commit
+      # count. The step above proves the ref is present. Presence is not depth,
+      # and every class this harness assigns - REACHABLE, TWIN, DECLARED - is
+      # defined over history rather than over a ref, so a checkout that resolves
+      # every name and holds almost no commits answers the question wrongly
+      # while looking correct.
+      #
+      # The harness already refuses a shallow clone on its own (exit 2,
+      # INCONCLUSIVE - measured), so that arm is covered and this step does not
+      # claim it. What is not covered is a checkout that is not flagged shallow
+      # and is still narrow: `git rev-parse --is-shallow-repository` reports how
+      # the repository was created, not how much of the graph a later step left
+      # behind. This asserts the quantity directly and prints it, so a run that
+      # passes says how much it looked at instead of only that it looked.
+      - name: Assert the checkout holds history, not just the refs
+        env:
+          MAINLINE_FLOOR: '250'
+        run: |
+          shallow="$(git rev-parse --is-shallow-repository)"
+          mainline="$(git rev-list --count refs/remotes/origin/development)"
+          head="$(git rev-list --count HEAD)"
+          echo "shallow=${shallow} mainline=${mainline} head=${head} floor=${MAINLINE_FLOOR}"
+          if [ "${shallow}" != "false" ]; then
+            echo "::error::Shallow checkout: reachability is undecidable here, and the count below is not a measurement of this repository's history."
+            exit 1
+          fi
+          if [ "${mainline}" -lt "${MAINLINE_FLOOR}" ] || [ "${head}" -lt "${MAINLINE_FLOOR}" ]; then
+            echo "::error::Checkout holds ${mainline} mainline / ${head} head commits, under the floor of ${MAINLINE_FLOOR}. The graph narrowed; a green from this run would mean 'found no orphans in the part I still have'."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # No `npm ci`: the harness imports nothing outside node: builtins and
+      # shells out to git, so it runs against the checkout alone.
+      - name: Verify every cited revision is reachable, twinned, or declared
+        run: npm run check:citation-reachability
