@@ -1,0 +1,11 @@
+{
+  "type": "filament",
+  "name": "PFD Corpus Filament",
+  "filament_type": "PLA",
+  "nozzle_temperature": [
+    1e999
+  ],
+  "filament_flow_ratio": [
+    -1
+  ]
+}

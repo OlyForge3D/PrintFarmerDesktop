@@ -309,6 +309,18 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
     const ipc = (await import('../src/main/ipc.js')) as unknown as {
       registerIpcHandlers: (...args: unknown[]) => () => Promise<void>;
     };
+    // Re-resolved *after* `ipc.js`, so this binding is the instance `ipc.ts`
+    // itself received: importing a module that is already in the registry
+    // returns that entry, and if the registry was reset between the capture
+    // above and the `ipc.js` import, this resolves the new instance while
+    // `capture` remains installed on the old one.
+    //
+    // The probe is emitted through this binding rather than through `log`.
+    // Through `log` it cannot detect the divergence it exists to detect: both
+    // the capture and the probe would come from the same closed-over binding,
+    // the probe would land in whichever sink `capture` installed, and the
+    // liveness assertion would establish only that `log === log` (#430).
+    const ipcLog = await import('../src/main/calibrationLog.js');
     return {
       // Wrapped so the injected channel and the disposer are impossible to
       // forget at a call site: every spec goes through this one function, and
@@ -322,10 +334,13 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
         return dispose;
       },
       // Emitted through the same module instance `ipc.ts` imports, so if the
-      // capture were installed on a different copy this probe would go missing
-      // and the liveness assertion would fail rather than pass vacuously.
+      // capture were installed on a different copy this probe goes missing and
+      // the liveness assertion fails rather than passing vacuously. Measured,
+      // not asserted: inserting `vi.resetModules()` after the capture turns the
+      // liveness assertion in `emits no such record when initialize succeeds`
+      // red. Before this binding existed it stayed green under that mutation.
       emitSinkLivenessProbe: () =>
-        log.emitCalibrationLog({
+        ipcLog.emitCalibrationLog({
           level: 'info',
           component: 'calibration.sidecar',
           event: SINK_LIVENESS_SENTINEL,
