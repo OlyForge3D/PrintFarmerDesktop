@@ -4405,6 +4405,104 @@ error one round earlier: **not a wrong value, a value whose applicability was ne
 reproduce, and an unexplained three-character gap on an issue about citation integrity is precisely
 the kind of thing that should not be discovered by the recipient.
 
+### Run CF — a generalisation that was true because its counterexamples were absent
+
+Ralph reported that section 3 of `issues/comments/5197330240` repeats a target-scope defect: it
+reports one-parent cells over all 210 merged pull requests while the same comment's section 2 had
+already established that two of them do not target `development`. He asked for a re-derivation, for
+the withdrawal of a universal sentence, and for a predicate to be renamed.
+
+All three are right. **The most useful thing measured was none of them.** Pinned to development
+`9eccb0d4abe5add39f972289d9b471c5d64529a5`, `measured_at 2026-08-05T22:25:58Z`.
+
+#### 1. The correction was already in the document, one section above the error
+
+Section 2 names #59 as one of exactly two merged pull requests not based on `development` and
+computes **140 of 208** from that fact. Section 3, four paragraphs below, reports **141 of 141**.
+
+⇒ I restricted the population, wrote the restriction down, and then published the unrestricted cells
+under it. ⇒ _The correction and the defect are in one document, one section apart, and the correction
+came first._ This is the third instance of the adjacency shape in three rounds — run CA under its own
+table, run CC one sentence below its counterexample, and now one section below its own restriction.
+**Proximity is not doing the work I keep assuming it does**: a restriction established earlier in the
+same document is something remembered rather than read, and the later section is written from memory
+of having handled it.
+
+#### 2. Re-derived rather than adjusted, and the adjustment would have been wrong
+
+```
+ALL merged PRs                     n     head NOT ancestor of pin   head IS ancestor
+  one-parent x branch PRESENT     96              96                      0
+  one-parent x branch DELETED     45              45                      0
+  two-parent x branch PRESENT     69               1                     68
+  CONTROL cells sum to n         210 == 210  PASS      blind rows: 0
+
+base = development ONLY            n     head NOT ancestor of pin   head IS ancestor
+  one-parent x branch PRESENT     96              96                      0
+  one-parent x branch DELETED     44              44                      0
+  two-parent x branch PRESENT     68               0                     68
+  CONTROL cells sum to n         208 == 208  PASS
+CONTROL pin is an ancestor of itself : true    CONTROL this head is : false
+```
+
+⇒ One-parent landings targeting `development`: **140, not 141** — the figure Ralph predicted, and it
+re-derives.
+
+⇒ **But #59 sits in the branch-DELETED cell, not the retained one.** The request was to recompute
+96/96 after removing #59 from whichever branch-state cell held it; the cell that held it is the other
+one, so **96/96 is untouched and 45 becomes 44**. ⇒ _A correction aimed at the cell where an excluded
+row would do the most damage still has to check where the row actually is._ Subtracting would have
+produced 95/96 and retracted a result that never moved.
+
+⇒ And the restriction **sharpens** the finding rather than blunting it: within the governed set the
+separation is total — **140 of 140 one-parent landings left the head off trunk, 68 of 68 two-parent
+landings put it on.** The lone two-parent exception in the all-210 table was #386, never governed by
+the policy in the first place.
+
+#### 3. The sentence was not merely over-general — it was true for a reason it never stated
+
+Withdrawn: _a one-parent landing does not place the pull request head on the branch._ A true
+fast-forward is a one-parent landing that places the head on the branch by definition; it creates no
+object at all.
+
+```
+base=development one-parent landings                    140
+  merge_commit_sha === head.sha  (a true fast-forward)    0
+  merge_commit_sha !== head.sha  (a new object was made) 140
+CONTROL identity comparison fires on all 140 rows      : true
+CONTROL a deliberately mismatched pair compares false  : true
+```
+
+⇒ **No fast-forward occurs anywhere in the population.** So the counterexample class was empty, and
+⇒ _an empty counterexample class reads exactly like a law._ The data could not have contradicted the
+sentence, which is precisely the condition under which agreement between a claim and its evidence
+carries no information — the same rule this file records for two artifacts that could not have
+disagreed, arriving this time between a generalisation and its own population.
+
+⇒ The repair is not "hedge more". It is **name the mechanism**: once the sentence says _no
+fast-forward occurs here_, it is checkable, it is falsifiable by one row, and it stops claiming
+anything about repositories where fast-forwards do occur.
+
+#### 4. A predicate named after its expected conclusion
+
+The all-210 column was called `orphaned`. Renamed to **`head not ancestor of pinned development`**.
+#386 and #59 landed on other branches, so their heads' absence from `development` is the ordinary
+consequence of having landed elsewhere and is not a defect at all. ⇒ _Naming a predicate after the
+conclusion you expect to draw from it imports that conclusion into every row the predicate is true
+of_, including the rows where the same measurement means something entirely ordinary.
+
+#### 5. Volatility, per clause
+
+The **cell counts** are current at `measured_at` and move as pull requests merge. The **ancestry
+relations** are fixed for all time at the named pin and at no other revision. The **branch-live
+column** was read with `ls-remote` against the remote rather than from a remote-tracking cache — this
+ledger's own finding that a stale cache is textually indistinguishable from a live ref — and is the
+most perishable value in the table.
+
+Posted as a superseding comment on #428; sections 1, 2, 4, 5 and 6 of the superseded comment stand.
+Round-trip verified by **equality**, with size reported in **UTF-8 bytes** per run CE rather than in
+a parser-dependent character count.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
