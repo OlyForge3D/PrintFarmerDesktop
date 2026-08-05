@@ -1500,6 +1500,64 @@ scratch tooling formats with an integer cast on total minutes, which rendered **
 publication and neither caught by intent. **Both were caught by reading the output against the
 inputs**, which is the only method that has worked on it.
 
+### Run BE — a report that states no measurement time can still be dated, from below, by its own claims
+
+**A third correspondent reported live state on a pull request this ledger owns, and gave no
+measurement time at all.** The rule adopted two runs earlier — _convert the reporter's own stated
+time before alleging staleness_ — **has a precondition the reporter controls, and this report does
+not supply it.** The rule could not be applied.
+
+**It did not need to be.** Every claim in the report is about a **monotonic** property, and a
+monotonic property dates a report from below without any clock but the repository's:
+
+```
+"head is c1185d08"        true only before c4f4713b existed   19:37:06 PDT
+"no merge"                true only before the merge          19:48:29 PDT
+"zero comments"           true only before the first comment  13:22:48 PDT   <- tightest
+"development = 60735ae"   true only in that tip window        12:59:24-13:14:19 PDT
+```
+
+> **The conjunction of a report's own monotonic claims is an upper bound on the moment it
+> describes.** Four independent bounds here converge on a single fifteen-minute window, and the
+> message arrived **12h14m** after the end of it. ⇒ **the reporter's clock is not required; the
+> reporter's claims are the clock**, and this is the missing half of the receiver-side rule, which
+> until now could be defeated simply by omitting a timestamp.
+
+**The report is not sloppy — it is a faithful photograph.** All four values were simultaneously
+true, and nothing in its text says when. **The defect is not in any claim but in the absence of the
+one field that would make the claims checkable**, and the reporter is the only party who could
+have supplied it cheaply.
+
+**The consequence is in the disposition, not the measurement.** The report closes with a
+forward-looking decision — hold the pull request as awaiting review, dispatch no reviewer, perform
+no merge. **The pull request merged 5h41m before the message was sent.** A measurement can be
+stale harmlessly; **a disposition is executed against present state.** And the queue it places the
+item in can never drain: **the event it waits for cannot occur on a merged pull request**, and by
+this ledger's earlier finding an approving review cannot be recorded on this repository at all.
+**Two independent reasons the wait terminates never.**
+
+**The window is also an independent corroboration of the previous run.** Another correspondent
+placed the mainline at a different commit at a stated **13:03**, and run BD sustained a staleness
+finding against it on the first-parent chain. **This report, from an unrelated session, puts the
+mainline at the commit run BD said was the true tip in that window.** ⇒ **two sessions that never
+consulted each other agree against the third**, which is worth more than either reading alone.
+
+**One correction and one control, both on this ledger's own instruments.** A hand-written probe
+reported that the cited commit did **not** resolve, for an object that is reachable from the
+mainline and contained in **435 refs**. The cause was argument quoting in the probe, not git: two
+plumbing commands disagreed about one object, and **the disagreement is the only reason the false
+result was caught.** The shipped reachability harness is **immune** — it invokes git through an
+argument vector rather than a shell, and it already exercises a **positive control** against a
+known-present revision and blob before reporting any absence.
+
+> **A single instrument cannot detect its own misinvocation.** The probe failed toward _alarming_,
+> which is survivable; **the identical slip inside a presence test fails toward reassuring**, and
+> nothing would have flagged it. ⇒ the value of the second instrument is not redundancy — **it is
+> that disagreement is observable while quiet error is not.**
+
+**Of the report's other claims: zero reviews is true; zero comments is false — there are eight**,
+the first predating the message by 12h06m.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
