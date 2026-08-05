@@ -562,6 +562,13 @@ test('@a11y calibration announces stale, conflict, generation and dispatch recov
     // which names the fetch it retries and is the opposite of blind — so the
     // old /^Retry/ prefix would fail on the fix for the very hazard it guards.
     // What must never exist is a control that reads as retrying the print.
+    //
+    // issue #224: the two assertions below are absence assertions, and in this
+    // scenario they hold against ZERO candidate elements — `unknownOutcome`'s
+    // fetch succeeds, so `fetchError` is null, the panel's retry block never
+    // mounts, and they cannot distinguish "no blind retry" from "no retry
+    // region". They would keep passing if the rule were deleted. The
+    // `unknownOutcomeRefetchFailure` pass below supplies the missing domain.
     await expect(
       page.getByRole('button', { name: /^retry$/i }),
       'an uncertain start offered an unqualified Retry, which reads as retrying the print',
@@ -569,6 +576,38 @@ test('@a11y calibration announces stale, conflict, generation and dispatch recov
     await expect(
       page.getByRole('button', { name: /retry.*(print|dispatch|job)/i }),
       'an uncertain start offered a control naming a print/dispatch retry, which risks a duplicate print',
+    ).toHaveCount(0);
+
+    // issue #224: the same rule, asserted where a retry affordance actually
+    // renders. The three positive controls below are what make the two
+    // absence assertions after them mean anything.
+    await applyCalibrationScenario(app, page, {
+      withAttempt: true,
+      queue: 'unknownOutcomeRefetchFailure',
+    });
+    await openTemperatureStage(page);
+    const dispatchPanel = page.getByRole('region', {
+      name: 'Queue and dispatch status',
+    });
+    await expect(
+      dispatchPanel.getByRole('button', { name: 'Retry loading status' }),
+      'POSITIVE CONTROL: the failed-refetch co-render did not occur, so the absence assertions below would hold vacuously',
+    ).toHaveCount(1);
+    await expect(
+      dispatchPanel.getByText('Network timeout'),
+      'POSITIVE CONTROL: the fetch error is not rendered, so this is not the co-render state',
+    ).toHaveCount(1);
+    await expect(
+      page.getByText(/Do not retry/).first(),
+      'POSITIVE CONTROL: the unresolved-outcome guidance was cleared, so this is no longer a co-render',
+    ).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: /^retry$/i }),
+      'a failed refetch beside an unresolved outcome offered an unqualified Retry',
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole('button', { name: /retry.*(print|dispatch|job)/i }),
+      'a failed refetch beside an unresolved outcome offered a print/dispatch retry',
     ).toHaveCount(0);
 
     // Negative control for all four.
