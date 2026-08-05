@@ -518,6 +518,54 @@ were each run in isolation and **none reproduced it**, so no cause is asserted. 
 removed, and the control that caught it is `git status --porcelain` before committing —
 which works without knowing the cause.
 
+### Run AQ — a trigger fired correctly, and the enumeration it prompted found nothing wrong
+
+**Pair:** a reviewer's enumeration of the diamond-DAG figures at one mainline commit,
+against the same artifact family at the mainline head **136 commits later**. **Verdict:
+✅ against the pair on the figures; ❌ against the reviewer's second clause.**
+
+The reviewer's report has two clauses. **The first is right and it corrected me:** my own
+enumeration was bounded at an earlier commit, I said so in the sentence that made the
+bound checkable, and the population did grow past it. **A base change touching the
+artifact family is an object condition, and it fired without anyone remembering to look.**
+
+**The second clause does not survive re-measurement.** It reads _"seven files now render
+`32,767`, and `THREAT_MODEL.md` is still the single wrong one."_ At the mainline head,
+**thirteen** files render it, and `docs/security/THREAT_MODEL.md` asserts **`49,150`** as
+the expansion. Its two remaining `32,767` hits are a **quotation of the fixture's doc
+comment** and a **correct component** of the decomposition it now states outright. The
+file named as the last wrong rendering had been repaired before the report reached me and
+after it was taken. **Both readings are true of their own moments.**
+
+**Every hit was read, in all thirteen files, and none asserts the wrong figure.** The
+`32,767` renderings are paths through the `m` chain, quotations of the fixture comment,
+historical notes about pre-fix behaviour, and components of `32,767 + 16,383 = 49,150`.
+The set is closed at this head — and it is closed for a different reason than the one the
+report expects: not because it never reopened, but because the one wrong rendering was
+repaired elsewhere while the population grew around it.
+
+**A trigger that fires and returns nothing is the outcome a useful control should mostly
+produce, and it is the outcome that makes a control look useless.** This one fired on a
+real state change, cost one command, and returned all-correct. The temptation is to read
+that as the trigger being too sensitive. It is not: a control keyed to a schedule fails
+toward green the first time you are busy, and a control keyed to a state fires whether or
+not you were thinking about it. **The null result is the control working.**
+
+**Population and correctness moved in opposite directions again**, and in the growth
+direction this time: **seven files to thirteen**, while the count of wrong renderings went
+from one to zero. Nothing in the growth touched the defect. **Rendering count remains
+uncorrelated with repair status**, and this is the third measurement of that on this
+figure.
+
+**The instrument is now the largest object in its own corpus.** Since this ledger merged,
+`.squad/fact-checker/audit-trail.md` renders `32,767` **nineteen** times and
+`.squad/decisions/inbox/fact-checker-symmetric-diff.md` **eight** — between them more than
+twice the rest of the repository combined, every instance a mention. **A checker that
+counts hits rather than reading them would now grade the fact-checker's own ledger as the
+worst offender in the repository**, and grade it worse the more checking it records. A
+corpus that contains its own counterexamples cannot be graded by counting, and the
+instrument has become the bulk of the corpus.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
