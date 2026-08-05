@@ -3905,6 +3905,169 @@ as **19 + 16 = 35**, with the sum stated so a reader can check the addition rath
 absence of a retraction here is not evidence the claim was harmless, only evidence it was never
 exposed.**
 
+### Run CB — six objections, four of them fatal to claims I published, and one arithmetic slip against my own table
+
+**Trigger.** Ralph verified #428 comment `issues/comments/5196532748`, independently confirmed #386's base,
+and returned six objections requiring an explicit superseding correction: (1) the 69-PR cell cannot stand
+while it includes #386 — recompute, do not assume 68; (2) the table sums to 142 orphan rows while the prose
+says 141/210, and excluding #386 must move the denominator too; (3) a one-parent `merge_commit_sha` does not
+distinguish squash from rebase or fast-forward, so "squash is the whole cause" is unsupported without
+independent discrimination; (4) branch deletion removes a branch ref and does not prove the object is
+unfetchable; (5) "neither will ever change" is unsupported against a moving branch; (6) presence of every
+added line is line-overlap evidence, not proof the patch or behaviour shipped.
+
+**Read** `observed_at=2026-08-05T21:12Z`, pinned trunk `9eccb0d4abe5add39f972289d9b471c5d64529a5`. All
+figures recomputed from a fresh enumeration of 222 closed / 210 merged pull requests; nothing carried over.
+
+#### 1. The 69 cell is 68, and the excluded row is the one I had just corrected
+
+```
+two-parent landings among 210 merged PRs                69
+  base = development                                    68
+  base = jpapiez-vasquez-merge-queue-credential          1   <- #386, sole exclusion
+```
+
+Recomputed rather than assumed, as he asked. **68** is right — but the shape of the error is what matters:
+**#386 is the pull request whose base I had corrected in that very comment**, and I left it inside a
+population defined by a policy its base was never subject to.
+
+⇒ **Correcting a row does not remove it from the totals computed over that row.** A correction that fixes
+the sentence and not the arithmetic downstream of the sentence leaves the artifact _more_ internally
+consistent-looking than before, because the corrected prose now vouches for the uncorrected number.
+
+#### 2. 141 was the count of a different set, printed in a sentence about this one
+
+```
+cell                                n    PRESERVED   ORPHANED   BLIND
+one-parent  x branch DELETED       45        0          45        0
+one-parent  x branch PRESENT       96        0          96        0
+two-parent  x branch PRESENT       69       68           1        0
+two-parent  x branch DELETED        0        0           0        0
+CONTROL  cells sum to n            210 == 210 merged             PASS
+CONTROL  preserved+orphaned+blind  210 == 210                    PASS
+
+orphaned = 142 of 210 ; one-parent landings = 141 ; they differ by #386
+base=development only: 208 merged, 140 orphaned
+non-development bases: #386, #59
+```
+
+⇒ **`141` is the count of one-parent landings and I printed it in a sentence about orphaned heads.** The
+two sets differ by exactly one element — **the single two-parent orphan, which is the row immediately above
+the sentence.** My prose dropped the row I had just finished writing.
+
+⇒ Three figures now exist with three referents — **142/210**, **140/208**, **68 two-parent landings under
+the policy** — and the sentence I published named a fourth number belonging to none of them. **A number
+that is close to three correct numbers is harder to catch than one that is close to none.**
+
+#### 3. What I measured was parent count; what I claimed was merge method
+
+The column was labelled `SQUASH/FF` and the prose said _"the squash is the whole cause."_ Parent count
+cannot separate squash from rebase from fast-forward. Discriminating as far as the objects allow, with a
+**subject-form proxy** — GitHub's squash default appends `(#N)` to the PR title, a rebase preserves the
+final subject verbatim:
+
+```
+one-parent landings                                       141
+  subject ends "(#N)" and differs from head subject       134   squash-form
+  subject identical to head subject                         1   rebase-form
+  neither test fires - undiscriminated                      6
+CONTROL  one-parent heads orphaned                     141 / 141
+```
+
+⇒ **The proxy is not merge-method metadata and 6 cases resist it**, so the method claim is withdrawn and
+replaced by an effect claim the objects do support: **a one-parent landing does not place the head on the
+branch, 141 of 141, no exceptions, no blind rows.** Squash and rebase both rewrite the object, so the
+citation check is defeated identically by either — **the distinction I drew was not load-bearing for the
+finding and I asserted it anyway.**
+
+⇒ The confound-breaker survives untouched because it never depended on the method: **96 branches retained,
+96 of 96 heads still not ancestors.**
+
+#### 4. "Deletion changes whether the object can be fetched" is false, not merely unproven
+
+He objected that deletion does not _prove_ unfetchability. Measured, it does not even correlate:
+
+```
+deleted-branch orphans                            45
+  served at refs/pull/<N>/head                    45
+  served with SHA != the PR head                   0
+  NOT served                                       0
+NEG CONTROL  ls-remote refs/pull/999999/head  -> exit 2
+spot check   GET commits/<sha>                -> exit 0 for 3/3 sampled
+NEG CONTROL  GET commits/<40 zeros>           -> exit 1
+```
+
+⇒ **Every deleted-branch orphan in this repository is still served at its exact head SHA through the pull
+ref.** Withdrawn without qualification. Branch deletion removes **one route among several**.
+
+⇒ The error is worth naming precisely: I reasoned from _what deletion means_ rather than measuring _what
+the remote serves_. **A ref is a name, and removing a name does not remove what it named** — the forge keeps
+`refs/pull/<N>/head` pointing at the same object for exactly this reason.
+
+#### 5. A negative ancestry result is revocable, and here it is reversing
+
+```
+specimen #502   head 5eadd99983b8   merge 070fbf220210
+T_old = first parent of that merge = cc12ebd88d5a
+CONTROL  is-ancestor(T_old, pinned trunk)   -> 0     T_old genuinely earlier trunk
+         is-ancestor(head,  T_old)          -> 1     NOT an ancestor
+         is-ancestor(head,  pinned trunk)   -> 0     IS an ancestor
+```
+
+⇒ **The same head returns both verdicts at two revisions of the same branch.** "Neither will ever change"
+was unsupported, and its negative half is not merely uncertain but routinely reversed — **that is what
+merging is.** Only the relation at the pinned revision is fixed.
+
+⇒ This is the same lesson as the sliding-window census in run BX arriving through a different door: **I had
+written the moving-ref hazard into an entry about the moving-ref hazard, and then asserted permanence two
+paragraphs later.**
+
+#### 6. Line overlap is not patch equivalence, and the divergence is measurable in the other direction
+
+```
+scripts/check-protection-assumptions.mjs
+   lines at #386 head absent from trunk     0 / 234
+   lines on trunk absent from #386 head    37 / 271
+tests/protectionAssumptions.test.ts
+   lines at #386 head absent from trunk     0 / 148
+   lines on trunk absent from #386 head    25 / 173
+   blobs identical                          0 of 5
+```
+
+⇒ Trunk carries **62 lines across two files that #386's head never had**, and no blob matches. The
+supportable statement is _"every line #386 added is present on trunk at `9eccb0d4…`"_; **"the work is on
+trunk" asserts a patch or a behaviour I did not test.** Withdrawn.
+
+⇒ Note the asymmetry I had not stated: **the zero I published was one-directional.** I measured lines
+missing _from trunk_ and reported it as a claim about equivalence, when the reverse direction was never
+measured and is non-zero. ⇒ **A one-directional comparison reported as agreement is the exact defect #121
+was filed for**, committed by the author of the fix, in evidence about the fix.
+
+#### 7. An instrument note: the caret is eaten, and `rev-parse` echoes the wreckage
+
+```
+git rev-parse <40-hex>^1   through cmd  ->  exit 128
+stdout: "070fbf2202107585229d1ed24603a6eed9d8b37d1"     <- 41 chars, looks like a SHA
+```
+
+`cmd` consumes `^` as its escape character, so `<sha>^1` arrives as `<sha>1`; **`git rev-parse` prints an
+unresolvable argument back to stdout before failing.** My probe captured stdout, sliced it to 12 characters,
+and printed a plausible commit prefix — after which two ancestry calls returned `128` and I nearly filed
+"the ancestry instrument is blind here" instead of "my shell ate a caret."
+
+⇒ **A command that echoes its bad input on failure manufactures output shaped like success.** The exit code
+was there and my helper had it; the value looked right, so I read the value. Caught only because `128`
+appeared where the control demanded `0` — **the positive control again catching what the return path did
+not.**
+
+#### 8. Disposition
+
+Posted `issues/comments/5197330240` to #428 at `21:04:18Z`, round-tripped at **7753 chars**, 7 sections,
+**0 closing keywords**, **0 bare backticked all-digit tokens** (the run CA trap, now gated before posting).
+The superseded comment `issues/comments/5196532748` is **left unedited** — `updated_at` still
+`19:42:23Z` — because a superseding comment and a rewritten one make different claims about what was
+believed when. #428 `state=open`, comments 8 → 9.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
