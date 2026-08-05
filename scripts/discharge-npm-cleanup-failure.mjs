@@ -9,6 +9,13 @@ import { resolveRepository } from './check-pr-closure-scope.mjs';
 
 export const MINIMUM_JUSTIFICATION_LENGTH = 20;
 
+/**
+ * The only ref this script may run from. Named rather than inlined so the guard
+ * and the tests that exercise it cannot disagree about the value while both
+ * still passing.
+ */
+export const DISCHARGE_REF = 'refs/heads/development';
+
 function headers(token, json = false) {
   return {
     authorization: `bearer ${token}`,
@@ -284,12 +291,38 @@ export async function dischargeCleanupFailure({
   };
 }
 
-async function main() {
-  if (process.env.GITHUB_REF !== 'refs/heads/development') {
+/**
+ * Refuse to run anywhere but `development`.
+ *
+ * This is the only thing standing between an `actions: write` + `issues: write`
+ * token and this script's logic as it exists on an unreviewed branch:
+ * `workflow_dispatch` can be aimed at an arbitrary ref.
+ *
+ * It is exported so it can be tested by CALLING it. The previous protection was
+ * an assertion that the source file contained the string
+ * `GITHUB_REF !== 'refs/heads/development'`, which goes red if the guard is
+ * DELETED and stays green if it is DISABLED — and disabling is the failure mode
+ * that actually happens, because deletions get noticed in review. Inserting two
+ * tokens (`if (false && …)`) satisfied that assertion and removed the control,
+ * with 2001 tests passing.
+ *
+ * Ordering is part of the contract, not an accident of layout: this must refuse
+ * before the token is read, so a wrong ref can never reach a code path that
+ * holds a credential. The tests assert that ordering by observing WHICH error a
+ * subprocess reports when both conditions are wrong at once.
+ *
+ * @param {NodeJS.ProcessEnv} env
+ */
+export function assertDischargeRef(env) {
+  if (env.GITHUB_REF !== DISCHARGE_REF) {
     throw new Error(
-      'discharge must run from refs/heads/development so the write-capable workflow uses reviewed code',
+      `discharge must run from ${DISCHARGE_REF} so the write-capable workflow uses reviewed code`,
     );
   }
+}
+
+async function main() {
+  assertDischargeRef(process.env);
   const token = process.env.GITHUB_TOKEN;
   if (!token) throw new Error('GITHUB_TOKEN is not set');
   const { owner, repo } = resolveRepository(process.env);

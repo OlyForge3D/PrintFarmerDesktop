@@ -48,6 +48,21 @@ export const UNINVOKED_SCRIPTS = {
 // reason is the deliverable. "It is in package.json" is not enforcement —
 // package.json is a menu, not a schedule.
 export const UNENFORCED_CHECKS = {
+  'check:protection-assumptions':
+    'Its evaluator IS enforced in CI: tests/protectionAssumptions.test.ts pins ' +
+    'every premise as data and fails if one is widened. Its main() reads ' +
+    'branch protection, rulesets, protected branches and the collaborator set, ' +
+    'and every one of those endpoints needs admin scope that the default ' +
+    'GITHUB_TOKEN does not carry — the same constraint recorded for ' +
+    'check:merge-queue-contexts above. Running it in CI would degrade to the ' +
+    'half the tests already cover, and would do it silently. ' +
+    'STATE THE WEAKNESS PLAINLY: this makes it a tripwire that only fires when ' +
+    'a human runs it, so #151 revisit trigger is faster to check but still not ' +
+    'automatic. That is weaker than intended and better than the paragraph it ' +
+    'replaces, which nothing re-read at all. Discharge path: wire it into a ' +
+    'scheduled workflow the moment a privileged token exists as a repository ' +
+    'secret — at which point it should run on a schedule rather than per-PR, ' +
+    'because it guards repository configuration and not any given change.',
   'check:merge-queue-contexts':
     'Its classification half IS enforced in CI: tests/mergeQueueReadiness.test.ts ' +
     'exercises every exported rule under `npm run test`. Its main() additionally ' +
@@ -55,25 +70,40 @@ export const UNENFORCED_CHECKS = {
     'that the default GITHUB_TOKEN does not carry, so running it in CI would ' +
     'degrade to the half the tests already cover. Invoked by hand with a ' +
     'privileged token when the queue configuration changes.',
-  'check:citation-reachability':
-    'Cannot be armed under the current checkout, and the reason is the defect it ' +
-    'was written to find. Its verdict is a function of how much history the ' +
-    'runner has: on this branch with `origin/development` present (247 commits) ' +
-    'it reports 36 ORPHAN / 22 REACHABLE, and on a depth-1 clone — which is what ' +
-    '`actions/checkout@v4` produces, no job here sets fetch-depth — it reports ' +
-    '58 ORPHAN / 0 REACHABLE. Twenty-two citations change class from checkout ' +
-    'configuration alone. All six of its self-controls pass in BOTH runs, ' +
-    'because a one-commit clone still satisfies "a known-present SHA classifies ' +
-    'REACHABLE" and "a known-absent SHA classifies ORPHAN" — so the controls ' +
-    'cannot separate "these citations are orphaned" from "this runner cannot ' +
-    'see". Arming it here would ship a confident wrong verdict, which is the ' +
-    'precise failure its own header describes. It also exits 1 today against ' +
-    'the ledger on trunk, so arming it reddens every PR for citation debt that ' +
-    'predates any given branch. Discharge path: repair or declare the 36 ' +
-    'orphans, then wire it in with `fetch-depth: 0` and an explicit ' +
-    '`origin/development` fetch, and assert the reachable-commit count so a ' +
-    'silently shallow runner fails loudly instead of reporting ORPHAN.',
 };
+
+// `check:citation-reachability` was here, with a four-condition discharge path.
+// All four are now met and it is invoked by .github/workflows/citation-reachability.yml,
+// so it classifies as `enforced` and this entry would never be read again:
+//
+//   1. repair or declare the orphans — #328, merged. Re-measured afterwards in a
+//      clean 144-ref clone of `development`, not in a worktree: REACHABLE 43,
+//      TWIN 44, DECLARED 9, ORPHAN 0, exit 0. The earlier 36/22 was true when
+//      written; the clean clone matters because this machine holds 4018 refs
+//      including `refs/copilot/checkpoints/…` that no clone has, and the harness
+//      names one citation that survives here and nowhere else.
+//   2. fetch-depth: 0                    — workflow, checkout step
+//   3. explicit origin/development fetch — workflow, "Fetch the mainline" step
+//   4. assert the reachable-commit count — workflow, "Assert the checkout holds
+//      history" step. Narrowed from its original wording on measurement: the
+//      shallow arm it describes is already covered by the harness itself, which
+//      exits 2 INCONCLUSIVE on a depth-1 clone rather than reporting ORPHAN.
+//
+// Note the removal itself, because until this commit nothing would have forced
+// it. `evaluateCheckEnforcement` classifies a wired check as `enforced` before
+// it ever consults this object, so a stale justification is not an error and not
+// a warning — it is unreachable text that still reads as a current statement of
+// policy.
+//
+// The test suite looked like it covered this and did not. `tests/scriptReachability.test.ts`
+// has a describe block named "the allowlists cannot rot quietly" — plural —
+// containing `holds no entry that is in fact invoked, so a stale exemption is
+// caught`. That test iterates UNINVOKED_SCRIPTS only. UNENFORCED_CHECKS is
+// checked for presence in package.json and never for whether a workflow now runs
+// it. Measured, not read: re-adding a stale `check:citation-reachability` entry
+// while this workflow invokes it left all 28 tests green. The plural in the
+// block name is the whole defect — one allowlist is protected and the name
+// covers both. The missing case is added in that file alongside this commit.
 
 const IGNORED_SUFFIXES = ['.d.mts'];
 

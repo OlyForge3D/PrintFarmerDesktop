@@ -1,7 +1,9 @@
 // @vitest-environment node
 
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import process from 'node:process';
 import { describe, expect, it, vi } from 'vitest';
 import {
   CLEANUP_FAILURE_ANCHOR,
@@ -16,7 +18,9 @@ import {
   validateCleanupEvidence,
 } from '../scripts/publish-npm-cleanup-evidence.mjs';
 import {
+  DISCHARGE_REF,
   MINIMUM_JUSTIFICATION_LENGTH,
+  assertDischargeRef,
   dischargeCleanupFailure,
   validateDischargeRequest,
 } from '../scripts/discharge-npm-cleanup-failure.mjs';
@@ -614,11 +618,74 @@ describe('workflow enforcement', () => {
     expect(recoveryWorkflow).not.toContain('npm ci');
   });
 
-  it('pins the write-capable discharge implementation to development', () => {
-    const script = readFileSync(
-      path.join(repositoryRoot, 'scripts', 'discharge-npm-cleanup-failure.mjs'),
-      'utf8',
+  // The previous test here read this script as TEXT and asserted it contained
+  // `GITHUB_REF !== 'refs/heads/development'`. That assertion goes red if the
+  // guard is DELETED and stays green if it is DISABLED: `if (false && …)`
+  // preserves the substring, removes the control, and leaves the whole suite
+  // passing. Deletion is the failure mode review catches; disablement is the
+  // one it does not.
+  //
+  // These replace it rather than joining it, and they strictly dominate it —
+  // each goes red on deletion AND on disablement, because each runs the guard
+  // instead of reading it.
+  it('refuses to run from any ref but development', () => {
+    expect(() =>
+      assertDischargeRef({ GITHUB_REF: 'refs/heads/anything-else' }),
+    ).toThrow(/must run from refs\/heads\/development/);
+    expect(() => assertDischargeRef({})).toThrow(
+      /must run from refs\/heads\/development/,
     );
-    expect(script).toContain("GITHUB_REF !== 'refs/heads/development'");
+    expect(() =>
+      assertDischargeRef({ GITHUB_REF: DISCHARGE_REF }),
+    ).not.toThrow();
+  });
+
+  // The unit test above binds the exported function. It cannot see whether
+  // `main` still CALLS it, which is exactly the gap that let the source-text
+  // assertion pass: the defect was never in the predicate, it was in whether
+  // the entry point reaches it. So these two spawn the real script.
+  //
+  // Both arms are hermetic. The wrong-ref arm exits before any credential is
+  // read, and the development arm is given no token, so it stops at the token
+  // check — one line later, and still before any network call.
+  const runDischarge = (env: Record<string, string>) =>
+    spawnSync(
+      process.execPath,
+      [
+        path.join(
+          repositoryRoot,
+          'scripts',
+          'discharge-npm-cleanup-failure.mjs',
+        ),
+      ],
+      {
+        encoding: 'utf8',
+        cwd: repositoryRoot,
+        env: { PATH: process.env.PATH ?? '', ...env },
+      },
+    );
+
+  it('exits non-zero from the wrong ref, naming the ref and not the token', () => {
+    // GITHUB_TOKEN is deliberately absent AND the ref is wrong, so the two
+    // failures race. Which message wins is the ordering assertion: the ref must
+    // be refused before anything reads a credential. Under `if (false && …)`
+    // this arm reports 'GITHUB_TOKEN is not set' and fails here.
+    const result = runDischarge({ GITHUB_REF: 'refs/heads/attacker-branch' });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('must run from refs/heads/development');
+    expect(result.stderr).not.toContain('GITHUB_TOKEN');
+  });
+
+  it('gets past the ref check on development, proving the refusal is the ref', () => {
+    // The negative control for the test above. Without this, an arm asserting
+    // "wrong ref is refused" would still pass if the script refused every ref
+    // for some unrelated reason. Stopping at the NEXT check is what shows the
+    // guard admitted this ref.
+    const result = runDischarge({ GITHUB_REF: DISCHARGE_REF });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('GITHUB_TOKEN is not set');
+    expect(result.stderr).not.toContain('must run from');
   });
 });
