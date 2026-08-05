@@ -163,26 +163,57 @@ const EXPECTED_EVIDENCE: Record<string, Record<string, unknown>> = {
  *      control that matters: the same product mutation WITHOUT the pattern
  *      exits 1, so the pattern is what hid it.
  *
- * Then the question was settled by measurement rather than another guess.
- * Inside a worker, a CLI `-t` and a committed config pattern are INDISTINGUISH-
- * ABLE: `__vitest_worker__.config` carries the same 30 keys and the identical
- * resolved `testNamePattern` in both cases, and `process.argv` is only
- * `[node, tinypool/dist/entry/process.js]`. Reading the config module instead
- * fails too -- importing it drags in `@vitejs/plugin-react` and throws under
- * jsdom, the same way in all three cases, so it cannot discriminate either.
+ * Then the question was settled by measurement rather than another guess --
+ * and the first version of this note got that measurement's SCOPE wrong. What
+ * is true: inside a worker, a CLI `-t` and a committed config pattern are
+ * INDISTINGUISHABLE. `__vitest_worker__.config` carries the same 30 keys and
+ * the identical resolved `testNamePattern` in both cases, and `process.argv` is
+ * only `[node, tinypool/dist/entry/process.js]`.
  *
- * ORIGIN IS NOT RECOVERABLE FROM IN HERE. So any exemption keyed on the filter
- * can be switched on by committing a filter, which is precisely the defect that
- * killed versions 1, 2 and 3. The exemption was never a weak guard needing a
- * fourth patch -- IT WAS THE DEFECT. It is gone.
+ * What this note previously concluded from that -- "origin is not recoverable
+ * from in here" -- IS FALSE, and two round-7 reviewers refuted it by different
+ * routes. The measurement behind it was an import of `../vitest.config.ts`
+ * throwing under jsdom; this file is `@vitest-environment node`, and from node
+ * that import resolves. Measured, same probe, only the origin varying:
  *
- * What that costs, stated plainly: `vitest -t <pattern>` matching SOME arms of
- * this file now fails. That is a true report, not a false red -- the run did
- * not measure the contract this file exists to assert, and it says so, naming
- * the arms. `npm test` is `vitest run` with no narrowing and no sharding, so
- * CI is unaffected; vitest shards by file, so a shard runs this file whole or
- * not at all. A pattern matching NO test here still costs nothing, because
- * then no test runs and this hook never fires.
+ *   CLI `-t <p>`          imported testNamePattern = undefined   worker = /<p>/
+ *   committed computed key imported testNamePattern = "<p>"       worker = /<p>/
+ *
+ * A gate outside vitest sees it too: `loadConfigFromFile` from `vite` resolves
+ * the committed config and reports the computed key, `undefined` on a clean one.
+ * A false claim stated confidently is worse than no claim, because it stops the
+ * next reader checking, so it is corrected here rather than quietly dropped.
+ *
+ * THE CONCLUSION SURVIVES, FOR A DIFFERENT AND WEAKER REASON: a committed
+ * narrowing has more than one home, and both of those instruments only watch
+ * one. Measured -- `"test": "vitest run -t <p>"` in `package.json`, config
+ * untouched:
+ *
+ *   worker testNamePattern = /<p>/     <- the narrowing is in force
+ *   imported config        = undefined <- and both origin instruments
+ *   external config gate   = undefined    report a clean config
+ *
+ * So an exemption reading "the config did not do this" is switched on by
+ * putting the narrowing in `package.json` instead, and the next spelling after
+ * that is a workflow. Enumerating the homes is the same losing game that killed
+ * versions 1, 2 and 3, which is why there is no exemption here at all.
+ *
+ * THAT IS A CHOICE, NOT A NECESSITY, and the alternative is real: a gate
+ * OUTSIDE vitest that resolves every place a narrowing can be committed and
+ * rejects one, which would let this file exempt narrowed runs again and keep
+ * single-test workflows cheap. That is a repository-wide policy about committed
+ * test narrowing, not a property of this file, so it belongs in its own change
+ * and is filed as one. Until it exists, this file pays the cost below.
+ *
+ * What that costs, stated plainly: narrowing this file to some of its arms now
+ * fails -- `vitest -t <pattern>`, a temporary `it.only`/`describe.only`, or an
+ * editor's run-this-one-test button, which passes `-t` for you. That is a true
+ * report, not a false red: the run did not measure the contract this file
+ * exists to assert, and the failure says so and names the arms. `npm test` is
+ * `vitest run` with no narrowing and no sharding, so CI is unaffected; vitest
+ * shards by file, so a shard runs this file whole or not at all. A pattern
+ * matching NO test here still costs nothing, because then no test runs and this
+ * hook never fires.
  */
 const DESCRIBE_TITLE =
   'startup sweep against a real filesystem refusal (issue #514)';
@@ -201,7 +232,23 @@ const DESCRIBE_TITLE =
  */
 const observations = new Map<string, Record<string, unknown>>();
 
+// `record` is bound to the arm that is actually executing. A round-7 reviewer
+// found the previous version was not: with the run narrowed to one arm, that
+// arm could call `record(...)` on behalf of the other three and the file passed
+// at `1 passed | 4 skipped` while the product was broken. Attendance was not
+// forgeable, but ATTRIBUTION was. The evidence map is only worth anything if an
+// entry means "this arm observed this", so the identity is checked rather than
+// trusted: vitest reports the running test's full name, and an arm may only
+// record under its own.
 function record(arm: string, evidence: Record<string, unknown>): void {
+  const current = expect.getState().currentTestName;
+  if (current === undefined || !current.endsWith(arm)) {
+    throw new Error(
+      `${arm} was recorded from ${current ?? 'outside any test'}, so this ` +
+        `evidence is not an observation by the arm it claims. An arm may only ` +
+        `record under its own name.`,
+    );
+  }
   observations.set(arm, evidence);
 }
 
@@ -500,9 +547,44 @@ afterAll(() => {
   // (`===` to `!==`) skipped every arm AND flipped this guard to the branch
   // that expects nothing, so a Windows runner reported `1 passed | 4 skipped`
   // and exit 0. A guard that reads the same flag it is auditing is checking
-  // the flag's self-consistency, not the platform. This re-derives from
-  // `process.platform`, which is what the skip is ultimately claiming about.
+  // the flag's self-consistency, not the platform.
+  //
+  // Re-deriving from `process.platform` was not enough either, and two round-7
+  // reviewers found the same reason: `process.platform` is a writable property,
+  // so a committed `setupFiles` entry containing
+  // `Object.defineProperty(process, 'platform', { value: 'linux' })` makes the
+  // skip skip everything AND makes this guard take the branch that expects
+  // nothing. Measured on a real Windows runner: with that setup file committed
+  // and `EBUSY` added to the fatal set, the file exited 0 at
+  // `1 passed | 4 skipped`; the same product break without it exited 1. That is
+  // the same class as the committed-config attacks this file already defends
+  // against -- repository configuration, not an edit to this file.
+  //
+  // So the claim is cross-examined instead of re-read. These three signals are
+  // not computed from `process.platform`: `execPath` is the real path to the
+  // running binary, and `path.sep`/`os.EOL` are fixed when those modules load,
+  // which is long before any setup file runs. Measured under the spoof above:
+  // `process.platform` and `os.platform()` both returned `linux` (so `os` is
+  // NOT an independent witness and is not used here) while all three of these
+  // still reported Windows.
+  const machineLooksWindows =
+    process.execPath.includes('\\') || path.sep === '\\' || os.EOL === '\r\n';
   const runnerIsWindows = process.platform === 'win32';
+
+  if (!runnerIsWindows && machineLooksWindows) {
+    throw new Error(
+      `process.platform says ${process.platform}, but this machine reports ` +
+        `execPath=${JSON.stringify(process.execPath)}, ` +
+        `path.sep=${JSON.stringify(path.sep)}, ` +
+        `os.EOL=${JSON.stringify(os.EOL)}. Those are not derived from ` +
+        `process.platform, so they disagree with it, and the only ways that ` +
+        `happens are a spoofed process.platform or a runtime this file has ` +
+        `never been measured on. Either way the skip above cannot be trusted ` +
+        `and this file refuses to report a pass. This check exists because a ` +
+        `single committed setup file redefining process.platform silenced ` +
+        `every arm and this guard at once.`,
+    );
+  }
 
   if (!runnerIsWindows) {
     // POSIX permits removing a directory that is a live process's cwd, so an
@@ -519,8 +601,9 @@ afterAll(() => {
 
   // Unconditional. Every earlier version offered some way to excuse a missing
   // arm, and every one of those was switched on by committing a config change.
-  // See the note above `DESCRIBE_TITLE` for why origin cannot be recovered from
-  // inside a worker, and therefore why no exemption can be made safe here.
+  // See the note above `DESCRIBE_TITLE` for why every exemption keyed on the
+  // run's narrowing has died, and for the cheaper alternative a round-7
+  // reviewer measured, which belongs in its own change rather than this one.
   const missing = REQUIRED_ON_WINDOWS.filter((name) => !observations.has(name));
   if (missing.length > 0) {
     throw new Error(
@@ -531,10 +614,12 @@ afterAll(() => {
         `file fails rather than claiming a measurement it never made. If an ` +
         `arm above failed, that failure is the cause and this is its ` +
         `consequence -- read that one first. If instead you narrowed this run ` +
-        `yourself (-t / --testNamePattern), that is why, and it is not a bug: ` +
-        `this file requires all of its arms unconditionally, because any ` +
-        `exemption for a narrowed run could be switched on for everyone by ` +
-        `committing a pattern. Run the file without a filter.`,
+        `yourself -- \`-t\` / \`--testNamePattern\`, a temporary \`it.only\`/` +
+        `\`describe.only\`, or your editor's run-this-one-test button, which ` +
+        `passes \`-t\` for you -- that is why, and it is not a bug: this file ` +
+        `requires all of its arms unconditionally, because any exemption for ` +
+        `a narrowed run could be switched on for everyone by committing a ` +
+        `pattern. Run the file without a filter.`,
     );
   }
 
