@@ -22,6 +22,73 @@ const repositoryRoot = path.resolve(
 const read = (...segments: string[]) =>
   readFileSync(path.join(repositoryRoot, ...segments), 'utf8');
 
+/**
+ * The branch list under a trigger arm, read in either YAML sequence form.
+ *
+ * An earlier form matched only the flow sequence (`branches: [development]`).
+ * The block form
+ *
+ *   push:
+ *     branches:
+ *       - development
+ *
+ * is equally valid and means the same thing, and it failed the extraction
+ * outright -- so the assertion reddened a correct workflow over a formatting
+ * choice while reading as a claim about which branch the arm is subscribed to.
+ * That is the false red this suite exists to avoid, inside this suite.
+ */
+const branchesOf = (workflow: string, event: string): string[] => {
+  const lines = workflow.split(/\r?\n/);
+  const start = lines.findIndex((line) =>
+    new RegExp(`^ {2}${event}:\\s*$`).test(line),
+  );
+  if (start < 0) return [];
+  const arm: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^ {0,2}\S/.test(line)) break;
+    arm.push(line);
+  }
+  const at = arm.findIndex((line) => /^\s+branches:/.test(line));
+  if (at < 0) return [];
+  const inline = /^\s+branches:\s*\[([^\]]*)\]\s*$/.exec(arm[at] ?? '');
+  const raw =
+    inline === null
+      ? arm.slice(at + 1).reduce<string[]>((names, line) => {
+          const item = /^\s+-\s*(.+?)\s*$/.exec(line);
+          if (item?.[1] !== undefined) names.push(item[1]);
+          return names;
+        }, [])
+      : (inline[1] ?? '').split(',');
+  return raw
+    .map((name) => name.trim().replace(/^['"]|['"]$/g, ''))
+    .filter((name) => name.length > 0);
+};
+
+/**
+ * Every `if:` in the workflow, job-level and step-level alike.
+ *
+ * An earlier form asserted the absence of the single token
+ * `github.event_name`. The property it meant to pin is "nothing here is
+ * disabled on push", and there are several ways to write that which never
+ * mention the event by name -- `github.event.pull_request != null`,
+ * `startsWith(github.ref, 'refs/pull/')`, or the same guard on the one step
+ * that invokes the harness. Each leaves every trigger armed and every
+ * fallback expression intact and simply does nothing on push, and each passed.
+ * The comment stated a property; the matcher tested a vocabulary.
+ *
+ * Collecting the conditions instead cannot be dodged by rephrasing. Its cost
+ * is stated rather than hidden: it refuses a legitimate condition too. That is
+ * the deliberate direction -- a condition added here should have to be
+ * justified out loud, because the failure it guards against is a required
+ * context that reports on push and never runs.
+ */
+const conditionsOf = (workflow: string): string[] =>
+  workflow.split(/\r?\n/).reduce<string[]>((found, line) => {
+    const match = /^\s+if:\s*(\S.*?)\s*$/.exec(line);
+    if (match?.[1] !== undefined) found.push(match[1]);
+    return found;
+  }, []);
+
 const workflowsDir = path.join(repositoryRoot, '.github', 'workflows');
 
 // The path the workflow was parked at while it could not be pushed. Named once
@@ -139,27 +206,27 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     // matched as a substring. `\bdevelopment\b` inside the list looked like it
     // pinned the branch and did not: `\b` matches at the hyphen, so
     // `[development-typo]` satisfied it while naming a branch that does not
-    // exist, and the arm would never have fired on trunk. Parsing the list is
-    // the form that cannot be satisfied by a longer name.
-    const pushBranches = workflow.match(
-      /^\s{2}push:\r?\n\s+branches:\s*\[([^\]]*)\]/m,
-    );
-    expect(pushBranches).not.toBeNull();
-    const branchList = pushBranches?.[1] ?? '';
-    // The extraction produced something. Without this the split below would
-    // yield [] for a workflow whose push arm lost its branch list, and every
-    // assertion after it would be vacuously satisfiable.
-    expect(branchList).not.toEqual('');
-    const branches = branchList
-      .split(',')
-      .map((name) => name.trim().replace(/^['"]|['"]$/g, ''))
-      .filter((name) => name.length > 0);
+    // exist, and the arm would never have fired on trunk.
+    const branches = branchesOf(workflow, 'push');
     expect(branches).toContain('development');
     // Control on the extraction, in band: a parser that returned [] for
     // everything would satisfy nothing above, but one that returned the whole
     // list as a single string would satisfy `toContain` only by accident. This
     // pins that the near-miss names are absent as elements.
     expect(branches).not.toContain('development-typo');
+    // And the reader is shown reading BOTH YAML sequence forms. Without these
+    // the extraction could be satisfied by the shape this workflow happens to
+    // be written in today, and reformatting it -- a change that alters nothing
+    // about which branch is subscribed -- would turn this red.
+    expect(
+      branchesOf('on:\n  push:\n    branches: [development]\n', 'push'),
+    ).toEqual(['development']);
+    expect(
+      branchesOf('on:\n  push:\n    branches:\n      - development\n', 'push'),
+    ).toEqual(['development']);
+    // Negative control: an arm carrying no branch list must read as empty
+    // rather than as a pass, so a workflow that lost the list fails here.
+    expect(branchesOf('on:\n  push:\n    tags: [v1]\n', 'push')).toEqual([]);
 
     // Control on the matcher, in band. Without it, a pattern that matched
     // everything would assert the arm is present for a workflow that lost it,
@@ -194,20 +261,63 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     // instead of building a refspec git will reject on its own terms.
     expect(workflow).toMatch(/if \[ -z "\$\{MAINLINE_REF\}" \]/);
 
+    // Every refusal names the check that is refusing. The workflow's own header
+    // argues that a red naming the wrong thing "would be read as this check
+    // being broken rather than as the trigger being wrong" -- and the messages
+    // named the event and the condition while never naming the check, so the
+    // one attribution the argument turns on was the one missing.
+    //
+    // The name is derived from the job rather than written here twice. The job's
+    // `name:` is the check-run display name, which is the string a branch
+    // ruleset would name and the string scripts/check-merge-queue-contexts.mjs
+    // matches against live branch protection - so it is load-bearing outside
+    // this file, and it was unguarded: changing it broke nothing. Deriving the
+    // expected text from it means the refusals cannot drift away from the check
+    // they claim to be, and renaming the job cannot silently detach the
+    // advisory reasoning from the context it reasons about.
+    const jobName = /^\s{4}name:\s*(\S.*?)\s*$/m.exec(workflow)?.[1];
+    expect(jobName).toBe('Citation reachability');
+    const refusals = workflow
+      .split(/\r?\n/)
+      .filter((line) => line.includes('::error::'));
+    // The collector found refusals at all; without this the loop below is
+    // vacuously satisfied by a workflow that refuses nowhere.
+    expect(refusals.length).toBeGreaterThan(0);
+    for (const refusal of refusals) {
+      expect(refusal).toContain(jobName);
+    }
+
     // The expression pins above cannot see the cheaper form of the same
     // inertness. A job- or step-level `if:` that excludes push leaves every
     // trigger armed and every fallback expression intact, and simply never runs
     // the job on the event the arm exists for -- the workflow is subscribed to
     // push and does nothing on push. Nothing about the expressions changes, so
     // asserting on them is green either way.
-    const EVENT_NAME_GUARD = /^\s*if:.*github\.event_name/m;
-    expect(workflow).not.toMatch(EVENT_NAME_GUARD);
-    // Control on the matcher, in band. A pattern that matched nothing would
-    // assert "no guard" for a workflow that has one, which is the failure this
-    // case exists to catch, so the matcher has to be shown finding one.
+    expect(conditionsOf(workflow)).toEqual([]);
+    // Controls on the collector, in band, one per way of writing the guard.
+    // The form this replaced keyed on the token `github.event_name` and so was
+    // blind to the other three, each of which disables the push arm just as
+    // completely. A collector that found nothing would assert "no condition"
+    // for a workflow that has one -- the failure this case exists to catch --
+    // so it is shown finding every shape before its emptiness is trusted.
     expect(
-      "jobs:\n  x:\n    if: github.event_name == 'pull_request'\n",
-    ).toMatch(EVENT_NAME_GUARD);
+      conditionsOf(
+        "jobs:\n  x:\n    if: github.event_name == 'pull_request'\n",
+      ),
+    ).toEqual(["github.event_name == 'pull_request'"]);
+    expect(
+      conditionsOf('jobs:\n  x:\n    if: github.event.pull_request != null\n'),
+    ).toEqual(['github.event.pull_request != null']);
+    expect(
+      conditionsOf(
+        "jobs:\n  x:\n    if: startsWith(github.ref, 'refs/pull/')\n",
+      ),
+    ).toEqual(["startsWith(github.ref, 'refs/pull/')"]);
+    expect(
+      conditionsOf(
+        'jobs:\n  x:\n    steps:\n      - run: node x.mjs\n        if: github.event.pull_request != null\n',
+      ),
+    ).toEqual(['github.event.pull_request != null']);
   });
 
   it('checks out the graph it needs rather than a depth-1 merge commit', () => {

@@ -86,7 +86,7 @@ jobs:
           MAINLINE_REF: ${{ github.event.pull_request.base.ref || github.ref_name }}
         run: |
           if [ -z "${MAINLINE_REF}" ]; then
-            echo "::error::No mainline ref for event '${GITHUB_EVENT_NAME}'. The reader model needs a branch name; refusing rather than fetching a malformed refspec."
+            echo "::error::Citation reachability: no mainline ref for event '${GITHUB_EVENT_NAME}'. The reader model needs a branch name; refusing rather than fetching a malformed refspec."
             exit 1
           fi
           echo "event=${GITHUB_EVENT_NAME} mainline_ref=${MAINLINE_REF}"
@@ -118,11 +118,11 @@ jobs:
           head="$(git rev-list --count HEAD)"
           echo "shallow=${shallow} mainline=${mainline} head=${head} floor=${MAINLINE_FLOOR}"
           if [ "${shallow}" != "false" ]; then
-            echo "::error::Shallow checkout: reachability is undecidable here, and the count below is not a measurement of this repository's history."
+            echo "::error::Citation reachability: shallow checkout, reachability is undecidable here, and the count below is not a measurement of this repository's history."
             exit 1
           fi
           if [ "${mainline}" -lt "${MAINLINE_FLOOR}" ] || [ "${head}" -lt "${MAINLINE_FLOOR}" ]; then
-            echo "::error::Checkout holds ${mainline} mainline / ${head} head commits, under the floor of ${MAINLINE_FLOOR}. The graph narrowed; a green from this run would mean 'found no orphans in the part I still have'."
+            echo "::error::Citation reachability: checkout holds ${mainline} mainline / ${head} head commits, under the floor of ${MAINLINE_FLOOR}. The graph narrowed; a green from this run would mean 'found no orphans in the part I still have'."
             exit 1
           fi
 
