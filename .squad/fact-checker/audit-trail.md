@@ -4339,6 +4339,72 @@ long-carried **23/23** was narration that appears in no artifact; the true figur
 ⇒ _A number that is never written down cannot be found wrong by reading anything_, which is why it
 survived so many rounds of checking the artifacts.
 
+### Run CE — one immutable string, three honest counters, three answers
+
+Housekeeping produced this, not an assignment. After landing run CD I read the length of issue #538's
+body twice, minutes apart, with no write in between, and got **9761** and **9758**. A three-character
+disagreement about an object whose `updated_at` had not moved.
+
+Measured at `e5c4a97f0628bb01631a621b5f0e47cc2f5b33fd`, `observed_at 2026-08-05T22:10:12Z`.
+
+#### 1. The disagreement is real and neither reading is wrong
+
+```
+same object, updated_at 2026-08-05T21:55:26Z, unchanged across both reads, zero CR characters
+
+UTF-16 code units   (node, String.length)  : 9761
+Unicode codepoints  (gh --jq '.body|length'): 9758
+UTF-8 bytes         (Buffer.byteLength)     : 9816
+
+utf16 - codepoints = 3
+astral characters  = 3   ->  U+1F50D  U+1F3D7  U+1F3D7
+CONTROL ascii-only string agrees across all three counters : true
+CONTROL a one-astral string differs by exactly one         : true
+```
+
+⇒ The three counters answer three different questions and all three answer correctly. The emoji that
+mark the two roles in this squad's own prose — 🔍 and 🏗 — are outside the Basic Multilingual Plane,
+so each costs two UTF-16 units and one codepoint. **The gap is exactly the number of role markers in
+the document.**
+
+#### 2. Why this is a finding and not a curiosity
+
+I have published a character count as round-trip evidence in **every** correction this session:
+_3475 → 7223_, _7304 → 9761_. The intended meaning is _the write landed and nothing else moved_. But
+
+⇒ **the figure is parser-dependent, and the parser is never named.** A counterparty verifying `9761`
+with `gh --jq` gets `9758` and has no way to tell a counting-unit difference from a silent edit. ⇒
+_Two honest readings of one immutable object disagree, and the disagreement is textually identical to
+tampering_ — which is the exact confusion the whole ledger exists to prevent, arriving through the
+evidence rather than through the claim.
+
+⇒ And it is **worse than a stale read**, because staleness at least has a direction and a clock. Here
+both readings are current, both are right, and there is no ordering between them that would let a
+reader prefer one.
+
+#### 3. What was actually sound, and the distinction that matters
+
+The round-trip check itself is unaffected: it compares the string I sent against the string the API
+returns, **by equality**, in one process with one representation. That test never crossed a parser
+boundary and remains valid.
+
+⇒ So the defect is not in the verification; it is in **the number chosen to report the verification
+to someone else.** ⇒ _An internally sound check can be published through a summary statistic that is
+not portable across the tools a reader will use_, and the summary is the only part the reader sees.
+The check was right, the evidence for it was ambiguous, and only the evidence travelled.
+
+#### 4. Repair
+
+Report round-trips by the thing that is actually invariant — **equality**, stated as such — and where
+a magnitude is useful, name the unit and prefer **UTF-8 bytes**, which is what the wire carries and
+what `curl | wc -c` will reproduce. A count with a named unit is a measurement; a count without one is
+a number that happens to be true for whoever typed it. ⇒ This is the same shape as run CD's namespace
+error one round earlier: **not a wrong value, a value whose applicability was never stated.**
+
+⇒ Relayed to Ralph immediately, because the figure `9761` had already left in a message he may try to
+reproduce, and an unexplained three-character gap on an issue about citation integrity is precisely
+the kind of thing that should not be discovered by the recipient.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
