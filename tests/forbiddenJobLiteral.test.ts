@@ -10,12 +10,30 @@ const repositoryRoot = path.resolve(
 );
 
 /**
- * #152's acceptance criterion was `git grep -i "<name>"` returns zero, for a
- * packaging job that has never existed. Until #265 that criterion was enforced
- * by a manual grep at review time, which is indistinguishable from no criterion
- * at all once the reviewer moves on -- and it had already regressed once, in
- * #246, and been fixed once, in #258, without anything being added to stop the
- * third occurrence.
+ * #152's acceptance criterion was `git grep -i "<name>"` returns zero. Until
+ * #265 that criterion was enforced by a manual grep at review time, which is
+ * indistinguishable from no criterion at all once the reviewer moves on -- and
+ * it had already regressed once, in #246, and been fixed once, in #258, without
+ * anything being added to stop the third occurrence.
+ *
+ * What the name is matters, because it decides what this guard is for. It is
+ * not a fabrication. `7f31829` establishes that the job was real in `ci.yml`
+ * from `97518ce` until `d20aa73` renamed it -- to `Release package`, which
+ * supplies two of the seven required contexts today. The citations that named
+ * it were accurate the day they were written; the rename landed in an unrelated
+ * 24-file commit and orphaned them.
+ *
+ * #152 recorded the cause as fabrication, and that framing propagated into the
+ * durable artefacts before being corrected. It is worth resisting here for a
+ * concrete reason: fabrication implies "check your facts", which is advice to a
+ * careless author, and there is no careless author in this story. A rename
+ * implies a join between an emitting artefact and everything that cites it,
+ * which is a mechanism -- and it is also why the string keeps coming back.
+ * People write it because it was once true, which no amount of care prevents.
+ *
+ * So this scanner is not guarding against invention. It is the missing half of
+ * that join, standing in for the one nobody has built: a citation does not have
+ * to be wrong when written to be wrong now.
  *
  * The regression is not carelessness, which is why vigilance is the wrong
  * instrument. The string is most likely to be written by someone documenting
