@@ -835,6 +835,74 @@ characters, i.e. **content-stable anchors instead of line numbers.** That is the
 this trail has been arguing for, implemented as an executable check by someone else. **A rule
 adopted by a party that did not argue for it is the only evidence that the rule was legible.**
 
+### Run AV — a phantom cited as a head, and a head cited as a phantom
+
+**Trigger.** A third assertion that this branch's sibling is `DIRTY` at head `8a6676d2` and
+must have conflicts resolved before merging, together with a claim that `32,767` is "live in
+8 files on trunk". Measured at mainline `cf3683911d4474ab4473fd6f8190e138d03566d0`, read
+2026-08-05T05:35Z.
+
+**The cited head is on no ref at all.**
+
+```
+8a6676d2   type                       commit
+           subject                    fix(fact-checker): make the mention-filter
+                                      script announce its own incompleteness
+           remote refs containing it  0
+           ls-remote hits             0
+           is-ancestor of development exit 1
+
+d70d38f    remote refs containing it  107
+           is-ancestor of development exit 0
+```
+
+The same dispatch reports, as a fresh finding, that **nineteen worktrees share one object
+database**, so _existence is free and membership needs `branch -r --contains`_ — and cites
+`d70d38f` as behaving "exactly like a phantom". **The two objects invert perfectly.**
+`d70d38f` is on **107** remote refs and is an ancestor of the mainline. `8a6676d2` is on
+**zero**, and was published three times as a pull request's head.
+
+> **A shared object database makes every session's private commits resolvable to every other
+> session, so `cat-file -t` stops being evidence of anything.** The rule was stated correctly
+> and applied to the object that did not need it. **Knowing the mechanism does not create the
+> habit of running the second command**, because the first command still answers.
+
+**The status field changed its answer while the computation did not.** Within one hour, with
+**no change to this branch**, the pull request reported `MERGEABLE`/`BEHIND` and then
+`UNKNOWN`/`UNKNOWN` — the base had moved twice. Across both readings:
+
+```
+git merge-tree --write-tree origin/development HEAD   ->  exit 0    (both times)
+```
+
+**The cache oscillated across a base move; the computation was stable across the same move.**
+This is the empirical half of the previous entry's claim, and it is stronger than the claim:
+not merely that the field is derived asynchronously, but that **its variation is uncorrelated
+with the property it names.**
+
+**The count claim.** `32,767` at the live tip is **13 files, 51 hits** — not 8, in either
+unit. Control `77,777` → 0 files. The distribution is the finding:
+
+```
+.squad/fact-checker/audit-trail.md              19     this ledger
+.squad/decisions/**                             15     the decision record
+tests/measurementScripts.test.ts                 6     a test of the scripts
+tests/documentedDiamondDagFigures.test.ts        3     the new binding test
+scripts/measure-*.mjs                            3     the measurement scripts
+tests/viewer.partTree.test.tsx                   2     the fixture's own comment
+docs/security/THREAT_MODEL.md                    2     a quotation and a component
+.squad/skills/test-discipline/SKILL.md           1     the rule derived from it
+```
+
+**Every hit is an instrument, a record, a fixture, or a rule — and none is a wrong claim.**
+The population grew because the defect was investigated, documented, tested, and turned into a
+skill. **A count of this figure now measures the remediation almost exclusively.**
+
+> **When the machinery built to detect a defect renders the defect's value, the metric
+> converges on the effort spent rather than the error remaining.** Its floor is not zero and
+> it rises monotonically with diligence. **It cannot be a grade, in either direction**, and
+> the only reading that survives is the one that opens each hit and asks whether it asserts.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
@@ -906,3 +974,4 @@ These revisions are cited above and are **not** reachable from this branch or fr
 - `0d1215f` — the second of that pair, live counterpart `16fbaa4`, same history and same absence of a route; same repair.
 - `3057836` — **named by the declaration above and therefore cited by it.** This is the live counterpart of `a32ecf9`; it was on the branch of PR #162 and died at that PR's squash-merge, so it is reachable from no remote ref. **Declaring an unreachable revision cites it, so the declaration block is recursive and terminates only when the twins it names are themselves declared.** No fetch route; the content is on `development` in `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`.
 - `16fbaa4` — the counterpart of `0d1215f`, reached by the same argument and unreachable for the same reason; same repair.
+- `8a6676d2` — **on no ref, anywhere.** `git branch -r --contains` returns **0** and `git ls-remote origin` matches it **zero** times; `git merge-base --is-ancestor` against the mainline exits 1. It resolves in this checkout only because nineteen worktrees share one object database, which makes `git cat-file -t` return `commit` for objects no reader can obtain. Cited in run AV as the revision published three times as a pull request's head. **There is no fetch route and this entry does not claim one** — it is listed because the citation's whole subject is its unreachability, and removing it would remove the evidence. Re-derive with `git ls-remote origin` filtered for the prefix.
