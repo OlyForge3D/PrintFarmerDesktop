@@ -2963,6 +2963,154 @@ string means one thing here," and it turned out to also detect "this document no
 own measurement." **A constraint written for ambiguity caught self-reference, and neither the
 guard nor its author knew that was in scope.**
 
+### Run BU — a report whose fields corroborate each other because they were captured together
+
+Assignment: a third session reported live state on a pull request of mine — open, non-draft,
+mergeable, all checks green, no reviews — and proposed to escalate the missing review. Every
+field was true. The pull request had merged about eleven hours earlier. All readings below taken
+`2026-08-05T17:40Z` to `2026-08-05T17:42Z`.
+
+#### 1. The state, and the reported head
+
+```
+#416  state=closed  merged=true  merged_at=2026-08-05T06:37:18Z
+      head=8ef108611748136c011944ab4d0a48add2369697
+      merge_commit=840e6ad133340dc7bcf9dd0ae85eab4e5cdb409b   reviews (ever): 0
+```
+
+The head reported to me was `d25cafe21182c2ca042c77ad4c6baf49423cab3e`. It is not a typo and it
+was not invented:
+
+```
+subject   docs(fact-checker): record run AR, a missing unit and an attribution no artifact can settle
+authored  2026-08-05T04:06:34Z
+d25cafe2 --is-ancestor 8ef10861   exit 0    ancestor of the head that merged
+8ef10861 --is-ancestor d25cafe2   exit 1    negative control fires
+forge: commits/d25cafe2/pulls -> [ #416, state=closed, merged=true, head=8ef10861 ]
+```
+
+It was genuinely that pull request's head. It ceased to be the head at `06:21:32Z`, and the merge
+followed sixteen minutes later. The reading was of the right object at the wrong time.
+
+#### 2. The finding — corroboration is what a stale snapshot has most of
+
+Five fields were reported together and all five cohere: open, non-draft, mergeable-and-behind,
+every check green, no reviews. They cohere **because they were one true snapshot**, not because
+they were current.
+
+> **Cross-field consistency tests simultaneity, not currency.** A stale snapshot is internally
+> indistinguishable from a fresh one, and the more fields are corroborated against each other,
+> the more convincing a stale reading becomes — because mutual corroboration is exactly what it
+> has and exactly what it is not short of.
+
+This is the inverse of every staleness finding already in this ledger. Those turned on a reading
+whose fields disagreed with each other or with a later object, and the disagreement is what
+exposed them. Here nothing disagrees. The report cannot be impeached from the inside at all; the
+only instrument that reaches it is a fresh read of the same object.
+
+#### 3. The strongest-looking evidence is the evidence of imminent departure
+
+The clause that made the report read as live was that every check was green and the branch was
+mergeable.
+
+> **Green-and-mergeable is not a steady state. It is the last frame before the object leaves.**
+
+A pull request spends most of its life with checks pending, failing, or absent, and it can only be
+merged from the state described. So the observation offered as proof that the reading was current
+is, in expectation, evidence that the merge was about to occur. The condition that makes a report
+persuasive and the condition that makes it perishable are the same condition.
+
+#### 4. Why this one had to be corrected rather than noted
+
+The proposed action was to escalate the missing review, naming the pull request.
+
+> **A merged pull request cannot be reviewed, so a review request against one is undischargeable
+> — and its permanent non-completion then corroborates the very gap it falsely reports.**
+
+The true finding (this repository has recorded no approving review on any pull request: 229 pull
+requests, 54 review submissions, 54 of them `COMMENTED`, 0 `APPROVED`) and the false operational
+one produce the same downstream evidence — an item that never closes. The false version is
+self-reinforcing, and it consumes the credibility of the true version by attaching it to an object
+that can never satisfy it.
+
+The referent that survives is the process, not any individual pull request. Filed that way already,
+and undischargeable-as-configured rather than pending.
+
+#### 5. What the reporter did right, recorded because grading only errors biases the record
+
+The report was a faithful photograph, its head resolved to a real commit on the correct branch, its
+reading of the historical squash-merged pull request was correct, and its author declined to
+self-review. Nothing was fabricated and no instrument was misused. The defect is entirely in the
+interval between the reading and its use, which is the one quantity the report did not carry.
+
+> **Stamp every forge state with the instant it was read.** Not because reports go stale — that is
+> known — but because **staleness leaves no trace in the report**, and the fields a reader would
+> use to detect it are the fields that were captured together.
+
+#### 6. A correction to run BS §9, found by the formatter while publishing this entry
+
+Run BS §9 reported that this ledger carried mixed line endings and that `prettier --check` passed
+anyway, and gave the reason: the formatter normalises prose but **preserves fenced-block content
+verbatim**, so the carriage returns that survive are exactly the lines the structural detectors
+police. Splicing run BU falsified that mechanism directly.
+
+The spliced file, before any formatting, measured against the run BU region alone:
+
+```
+CRLF 82   LF 3123   bytes 386428     every CR-terminated line at or after the run BU heading
+  CR lines inside fenced blocks :  8
+  CR lines outside fenced blocks: 74
+  fence markers seen            : 140      (non-vacuity floor: the scanner did see fences)
+
+after prettier --write:
+CRLF 0    LF 3123   bytes 386346     byte delta -82     content lines differing: 0
+```
+
+**Prettier normalised the eight in-fence carriage returns along with the seventy-four outside**,
+and `--check` had refused the file while any were present. Fenced content is not exempt from line-
+ending normalisation, so the stated reason for the survival is wrong.
+
+What cannot be recovered is whether the observation itself was ever true. Run BS §9's reading
+carried no instant, and by run BP's own rule an untimed state-dependent reading can only be re-run,
+which answers a different question. So the correct disposition is three-part, and only the middle
+part is a retraction:
+
+- the **mechanism** — fenced content escapes normalisation — is **refuted by measurement**;
+- the **observation** — fifty-two carriage returns coexisting with a clean formatter — is
+  **unadjudicable**, and is neither sustained nor withdrawn here;
+- the **repair** — normalise at read time and compare with a stripping comparison rather than a
+  tolerant match — **stands on its own grounds**, because a tolerant match would also accept a
+  heading that genuinely landed wrong.
+
+> **A wrong explanation for a real observation is more durable than a wrong observation, because
+> nothing re-runs an explanation.** The figure in run BS §9 was checkable and would have been
+> checked by anyone who doubted it; the sentence explaining why it was harmless was not a
+> measurement at all, and it is the half that propagated into how the splicer was reasoned about.
+
+The practical consequence narrows the hazard rather than removing it: a carriage return introduced
+by a splice survives only in the window between the splice and the next format, which is precisely
+the window in which the placement assertions run. **The detector and the defect share a window that
+the formatter closes afterwards**, so the formatter can never be the instrument that reports it.
+
+Incidental, and the fourth occurrence in this session: the first version of the audit above was an
+inline probe whose fence pattern was consumed by the shell before the runtime saw it, producing a
+parser error under the name of a program that never ran. The standing remedy — **remove the
+interpretation rather than escape it** — was applied only after the failure, again.
+
+And this section was itself misplaced on its first insertion, by the tool built after run BQ to
+prevent exactly that. Anchored on the closing sentence of the preceding subsection, it landed
+**before** that sentence, so the previous subsection's conclusion was left standing as this one's.
+All seven placement assertions passed, correctly: the heading occurred once, at line start, outside
+a fence, before the anchor, under the right owning entry, with the run count unchanged and the byte
+delta exact.
+
+> **Every one of those assertions is relative to the anchor, and none of them can evaluate whether
+> the anchor was the right place to stand.** Run BL established that a splice can only be verified
+> by asserting where the text landed rather than how much of it arrived; this is the next layer —
+> **an assertion about position is only as good as the semantics of the point it measures from**,
+> and a well-chosen anchor and a badly-chosen one produce identical output. It was caught by
+> reading the rendered result, which remains the only check with no anchor of its own.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
