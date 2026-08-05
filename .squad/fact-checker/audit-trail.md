@@ -2847,7 +2847,7 @@ REACHABLE 74   TWIN 45   DECLARED 17   ORPHAN 0     exit 0
 ```
 
 All eight controls fire in that run, so the zero is a measurement rather than a blindness. The
-same harness from this branch reports `REACHABLE 88`, and the difference is this branch's own
+same harness from this branch reports a strictly higher count, and the difference is this branch's own
 unmerged citations — **two honest readings that differ because they are readings of different
 positions, which is the entire finding above restated as a number.**
 
@@ -2933,6 +2933,35 @@ here.
 It does not claim the citation check is now sufficient. It answers "can the reader resolve this
 citation" and nothing yet answers "is this quotation still true"; that remains filed separately
 so that one exit code never carries two meanings.
+
+#### 8. Correction, made before this entry was published: a figure that invalidated itself by being written down
+
+The paragraph above originally rendered this branch's reachable-citation count as a literal
+number, measured minutes earlier and correct when taken. **Splicing this entry into the ledger
+raised it by one**, because this entry cites a revision the ledger had not previously cited. The
+figure was therefore false in the artifact that contained it, and false _because_ of that
+artifact.
+
+The publisher caught it, and not by checking the arithmetic. Its guard requires the gates figure
+it is asked to update to occur **exactly once** in the pull request body; after this entry was
+appended the string occurred twice, and it refused to write.
+
+> **A count of a corpus, published into that corpus, is inside its own scope.** It does not go
+> stale later through anyone's neglect — it is wrong at the instant of publication, and the act
+> of publishing is what makes it wrong.
+
+This is the ledger's recorded remedy for closing keywords and for structural markers arriving at
+a third referent: **describe the relationship, do not render the value.** The sentence now states
+that this branch's count is strictly higher and names the reason, which stays true through any
+number of further appends. The two figures that remain rendered nearby are readings of _trunk_,
+a position this branch cannot alter, and they are safe for exactly that reason.
+
+What makes this instance worth an entry rather than a silent edit is that **the guard that
+caught it was built for a different defect**. It exists because a figure once had two referents
+in one document and an update changed the wrong one. Uniqueness was chosen as a proxy for "this
+string means one thing here," and it turned out to also detect "this document now contains its
+own measurement." **A constraint written for ambiguity caught self-reference, and neither the
+guard nor its author knew that was in scope.**
 
 ## Superseded citations and their live twins
 
