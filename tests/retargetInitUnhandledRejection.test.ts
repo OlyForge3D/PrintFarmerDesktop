@@ -42,7 +42,7 @@
  *
  * @module retargetInitUnhandledRejection.test
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -329,6 +329,20 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
 
     expect(seen).toHaveLength(1);
     expect(String(seen[0])).toContain('control: nothing handles this');
+  });
+
+  it('directs every userData write into a disposable temp root', async () => {
+    // GUARD on the containment, not a restatement of it. The specs below drive
+    // the real TargetProfileService, which mkdirs under `app.getPath('userData')`
+    // — so whatever that mock returns is where this suite writes. Point it at a
+    // fixed absolute path again (this file used `/test/userData` until now, as
+    // six sibling suites still do) and this fails, where every other assertion
+    // in the file stays green because the writes succeed either way.
+    const { app } = await import('electron');
+    const resolved = app.getPath('userData');
+
+    expect(resolved.startsWith(tmpdir())).toBe(true);
+    expect(existsSync(resolved)).toBe(true);
   });
 
   it('survives a rejecting initialize and says so, without swallowing it', async () => {
