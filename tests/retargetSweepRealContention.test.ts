@@ -407,7 +407,16 @@ describe.skipIf(!onWindows)(
 afterAll(() => {
   const ran = [...observations.keys()].sort();
 
-  if (!onWindows) {
+  // Deliberately NOT `onWindows`. A round-3 reviewer defeated the previous
+  // version with a single token: flipping `onWindows` at its definition
+  // (`===` to `!==`) skipped every arm AND flipped this guard to the branch
+  // that expects nothing, so a Windows runner reported `1 passed | 4 skipped`
+  // and exit 0. A guard that reads the same flag it is auditing is checking
+  // the flag's self-consistency, not the platform. This re-derives from
+  // `process.platform`, which is what the skip is ultimately claiming about.
+  const runnerIsWindows = process.platform === 'win32';
+
+  if (!runnerIsWindows) {
     // POSIX permits removing a directory that is a live process's cwd, so an
     // arm that runs here is measuring nothing and would pass by producing no
     // error at all.
@@ -436,17 +445,17 @@ afterAll(() => {
   // Attendance is not measurement, so the observations are re-asserted here.
   // These duplicate the arms' own assertions deliberately: the duplication is
   // what makes deleting an arm's assertions insufficient to silence the file.
-  expect(evidenceFor(ARM_CONTROL)).toEqual({ survivedUnheld: false });
-  expect(evidenceFor(ARM_CODE)).toEqual({
+  expect(evidenceFor(ARM_CONTROL)).toStrictEqual({ survivedUnheld: false });
+  expect(evidenceFor(ARM_CODE)).toStrictEqual({
     hasCode: true,
     code: 'EBUSY',
     syscall: 'rmdir',
   });
-  expect(evidenceFor(ARM_STARTUP)).toEqual({
+  expect(evidenceFor(ARM_STARTUP)).toStrictEqual({
     survivedRefusal: true,
     ownedCount: 1,
   });
-  expect(evidenceFor(ARM_CLASSIFY)).toEqual({
+  expect(evidenceFor(ARM_CLASSIFY)).toStrictEqual({
     realIsFatal: false,
     authoredIsFatal: false,
     authoredHasCode: false,
