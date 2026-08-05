@@ -1934,11 +1934,87 @@ PRECONDITION: N of M declared twins are reachable only from this branch,
   branch-local citations. Merge, do not rebase.
 ```
 
+**Annotation (run BL):** the final sentence was revised after this entry shipped. `development` sets `required_linear_history`, so it forbids the merge shape this line recommends, and the shape lands only through `enforce_admins: false`. The quotation is left as recorded; the measurement and the replacement text are in run BL.
+
 **Reported, not gated.** ⇒ **it describes a rewrite nobody has performed, so it can neither grant nor withhold a pass** — the same asymmetry already applied to the patch-id hint. **Exit status is untouched.**
 
 **Positive control, because at the current head the count is legitimately zero and a report that has only ever printed nothing is indistinguishable from one that cannot print:** a throwaway branch-local commit declared as a twin produced `PRECONDITION: 1 of 46`, naming the pair, at exit 0; reverting restored silence.
 
 ⇒ **and the control cost something worth recording.** Tearing it down with `git reset --hard` **destroyed the uncommitted harness edit the control was built to exercise** — the subject of the experiment lived in the same working tree as the fixture, and the teardown could not tell them apart. ⇒ _**a fixture torn down by a command that operates on the whole working tree will take the instrument with it.**_ The edit was reapplied and re-verified; nothing was lost but the round.
+
+### Run BL — the squash was discharged before the alarm was raised, and my own advice is forbidden by the branch it advises about
+
+**Pair:** an urgent report that #162's squash merge had put 33 orphaned citations on `development` and that running this harness against the mainline would return red — against the harness itself, run at the mainline.
+
+**Verdict: ❌ against the report, at the object.** A worktree checked out at `origin/development` (`070fbf2202107585229d1ed24603a6eed9d8b37d`, the merge of #502), running the harness exactly as merged there:
+
+```
+reader revisions: HEAD origin/development  (534 commits reachable)
+cited SHAs: 136   declared: 17
+REACHABLE 74   TWIN 45   DECLARED 17   ORPHAN 0
+OK - every cited revision is reachable, twinned, or declared.        exit 0
+```
+
+All six controls fired. **The forecast of a red mainline was correct about the mechanism and three merges late about the state:** the 36 revisions #162's squash destroyed were declared against `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` in run Z, at the time it happened, and the declarations have carried through every merge since.
+
+⇒ **a repair that lands before the alarm makes the alarm unfalsifiable from the outside.** The reporter's prediction and the ledger's discharge are indistinguishable to anyone reading only the prediction, because both forecast the same red and only one of them ran the command. **The instrument was already answering the question; nothing about the report said whether it had been consulted.** This is the value of a check that is cheap to run and prints its own verdict — the report cost an exchange, and reproducing it cost one command.
+
+**The declared-twin requirement is what earned this.** A twin declaration is only accepted when the twin is itself reachable, so the mechanism that survives a squash is not the citation but the pointer installed beside it at the moment the citation stopped resolving.
+
+#### The `refs/pull/N/head` reconciliation — two opposite rulings, both true, of different failure modes
+
+The same route was **withdrawn** two rounds ago on force-push evidence and **re-prescribed** now on squash evidence. Measured, rather than choosing between them:
+
+| event                                       | branch ref | `refs/pull/N/head`                                 |
+| ------------------------------------------- | ---------- | -------------------------------------------------- |
+| #162 squash-merged, branch deleted          | gone       | still resolves to `e5a90df7`, the head that merged |
+| #483 merged as a two-parent merge           | gone       | still resolves to `c0e566f`, the head that merged  |
+| a force-push while the pull request is open | moves      | **moves with it** — it tracks the branch           |
+
+228 pull-head refs are advertised on this remote.
+
+⇒ **`refs/pull/N/head` is pinned by the close, not by the citation.** It is frozen at the head the pull request last had, so it survives every merge strategy and survives deletion — and while the pull request is still open it is exactly as mutable as the branch. **Both rulings are correct and neither is a rule about the route; they are rules about when the citation was taken relative to the close.** A citation to a still-open pull request's head has no more durability than the branch; the identical citation after the close is permanent.
+
+⇒ and this is why the route is **printed and not taken**. It is a forge endpoint, so consulting it would make a network outage indistinguishable from a defect and would fail in a clone with no remote. The check gates pull requests; a gate that turns an outage red is worse than one that says less.
+
+#### The scope statement — adopted, because `ORPHAN n` was readable as a claim it never made
+
+`ORPHAN` has always meant _no route from the reader's revisions_, and the reader's revisions have always been `refs/heads` only, deliberately. **Nothing in the output said so**, so the count was free to be read as _these commits do not exist_ — which is false of every orphan measured on this branch, all of which the forge still serves. The scope, and the two routes it deliberately excludes, now print beside the reader revisions on every run.
+
+⇒ **this ledger's own rule** — _a count decides nothing until its scope is stated_, recorded in run S after a positive control returned 6 against a remembered 3 — **was written about someone else's counts and never applied to the one this check emits.**
+
+#### The finding against me: my shipped advice names a merge shape the branch forbids
+
+Run BK shipped the precondition block with the sentence **`Merge, do not rebase.`** as literal output. Measured on `development` at `070fbf2202107585229d1ed24603a6eed9d8b37d`:
+
+```
+required_linear_history   TRUE
+allow merge / squash / rebase   TRUE / TRUE / TRUE
+enforce_admins            FALSE
+last 60 first-parent commits, two-parent:   41
+```
+
+**Linear history is required and 41 of the last 60 commits are merges.** The setting forbids precisely the shape the repository overwhelmingly uses, and `enforce_admins: false` is the mechanism — the exception is granted per-merge by whoever presses the button.
+
+⇒ **a setting contradicted by 41 of 60 commits is not a policy, it is a label** — and a control routinely bypassed cannot be cited as a guarantee in either direction. My advice was not merely unenforceable; **it instructed the reader to rely on an exception, in the output of a check whose subject is unreliable citations.**
+
+⇒ and it convicts my own two merges. `c2d932d` (#483) and `070fbf2` (#502) are both two-parent. **Every green landing this ledger has recorded for itself arrived through the same exception it was quietly recommending.**
+
+Revised: the block now states the ancestry consequence — a two-parent merge preserves the twins, squash and rebase do not — names the contradiction, and prescribes **declaring the twins** and **citing blobs** instead of betting on a strategy the repository does not actually constrain. A blob is immune to every merge strategy, which is the property run S found and this round finally makes the recommendation.
+
+⇒ _**the ancestry-based half of this instrument was never a property of the repository; it was a property of what maintainers happened to click.**_ The declaration half never depended on that and is the reason the mainline is green.
+
+#### The splice that published this entry was itself defective, and the size control passed
+
+The script writing this run annotates the run BK quotation in place and then splices the new entry before a named heading. It computed the heading's offset **before** performing the annotation, so the offset was stale by the 332 bytes the annotation had just inserted, and the entry landed **332 bytes early — mid-paragraph, inside run BK's closing sentence.**
+
+Everything reported success. `prettier --write` reformatted it without complaint. The run-heading count was unchanged at 43 and read as _no heading added yet_ rather than _a heading was added and is not a heading_. And the byte-delta control — the instrument run AG adopted after a `$`-in-replacement bug silently duplicated 150 KB — reported **6574 bytes for an annotation of 332 and an entry of 6242, which is exactly correct.**
+
+⇒ **a size control verifies how much was written and can say nothing about where.** Run AD established that a content check and a structural check are blind to each other's defects; the size check is blind to both, and it is the one this ledger adopted as the cheap catch-all. **A splice at the wrong offset is byte-perfect by construction** — nothing was lost, nothing was duplicated, and the document was wrong.
+
+⇒ and the defect is this ledger's own subject in miniature: **an offset is a pin, the annotation is a mutation, and the pin was read before the mutation and used after it.** Every staleness finding here concerns a revision or a ref; this one is a string offset with a lifetime of four statements, and it failed the same way.
+
+Caught by grepping for the heading rather than trusting the exit status. Repaired at the cause — the offset is now computed after every edit — and the script asserts three structural properties it previously only assumed: the anchor is unique, the anchor begins a line, and the run-heading count increments by exactly one.
 
 ## Superseded citations and their live twins
 

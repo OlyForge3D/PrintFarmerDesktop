@@ -433,6 +433,18 @@ if (failures.length) {
 console.log(
   `\nreader revisions: ${readerRevs.join(' ')}  (${reachable.size} commits reachable)`,
 );
+console.log(
+  'scope: refs/heads only. ORPHAN means "no route from these revisions", never "does not exist" -',
+);
+console.log(
+  '  refs/pull/N/head still resolves after a squash merge deletes the branch, and the forge serves',
+);
+console.log(
+  '  single commits by SHA from a store that outlives every ref. Neither is consulted here: this',
+);
+console.log(
+  '  check gates pull requests and must not turn a network outage into a red.',
+);
 console.log(`cited SHAs: ${cited.size}   declared: ${declared.size}\n`);
 
 const tally = { REACHABLE: 0, TWIN: 0, DECLARED: 0, ORPHAN: 0 };
@@ -461,6 +473,17 @@ console.log(
 // Reported, not gated. It describes a rewrite nobody has performed, so it can neither grant nor
 // withhold a pass; the operator about to rewrite is the one who needs the number, and the party
 // who rewrites history is never the party who can see what it broke.
+//
+// And the advice this block used to give - "merge, do not rebase" - is forbidden by the branch it
+// gives it about. Measured on `development`: `required_linear_history` is TRUE, all three merge
+// strategies are enabled, `enforce_admins` is FALSE, and 41 of the last 60 commits on that branch
+// are two-parent. So the setting forbids the shape the repository overwhelmingly uses, and the
+// exception that permits it is granted per-merge by whoever presses the button.
+//
+// ⇒ a setting contradicted by 41 of 60 commits is not a policy, it is a label - and a control
+// routinely bypassed cannot be cited as a guarantee in either direction. An ancestry-based repair
+// is therefore betting on a human's choice at the merge button. Declare the twins; and where the
+// claim is about the contents of a file, cite the blob, which no merge strategy can rewrite.
 const baseRev = git(['rev-parse', '--verify', 'origin/development^{commit}'])
   ? 'origin/development'
   : null;
@@ -483,7 +506,16 @@ if (baseRev && twins.size) {
       `  not from ${baseRev}. Rewriting this branch destroys the citation and its repair together,`,
     );
     console.log(
-      '  so the resulting orphan count exceeds the number of branch-local citations. Merge, do not rebase.',
+      '  so the resulting orphan count exceeds the number of branch-local citations. A two-parent',
+    );
+    console.log(
+      '  merge preserves them; squash and rebase do not - but see the note on required_linear_history',
+    );
+    console.log(
+      '  in this file: the branch setting forbids the only strategy that works, so declare the twins',
+    );
+    console.log(
+      '  and do not rely on the merge shape you get. Blob citations survive every strategy.',
     );
     for (const f of fragile.slice(0, 8)) console.log(`    ${f}`);
     if (fragile.length > 8) {
