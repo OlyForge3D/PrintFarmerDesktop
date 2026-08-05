@@ -276,3 +276,52 @@ Three consequences worth keeping:
 - **A superseded present-tense claim in a durable artifact is a live hazard even when a later entry corrects it**, because a reader who
   stops at the first hit never reaches the correction. Scope the earlier claim in place; do not rely on ordering. Correcting the record
   in a location the reader may not reach is the same defect as not correcting it.
+
+## A derived claim cannot go stale; a true claim has no mechanism that keeps it true
+
+A status sentence in a durable artifact — _"all four failing checks are inherited from the
+base"_ — is a measurement with a timestamp, and nothing in the artifact records the
+timestamp or re-takes the measurement. It was true when written. Within the hour two of
+the four had been repaired upstream and had become the branch's own, and the sentence had
+become false **in the direction that exonerates its author**, which is the direction
+nobody rechecks.
+
+The repair is not to write the sentence more carefully. It is to **compute it at read
+time**: read the failing check names here, read them on the mainline, and render the
+comparison. A computed claim has no interval during which it can be wrong. **The two are
+indistinguishable in the output** — both render as the same English sentence — so the
+choice cannot be audited by reading the artifact, only by reading what produced it.
+
+This is the same rule as _publish derivations as files_, arriving on status rather than on
+figures, and it is why a generator is worth more than a well-written paragraph: the
+paragraph's accuracy is a property of the moment it was typed.
+
+## A fix aimed at the instance leaves the same defect in the mirror position
+
+An instrument compared two sides. Its failure filter counted any run whose conclusion was
+not `success` as failed — which scores a **pending** run, whose conclusion is `null`, as a
+failure. The defect was found on the near side and repaired there.
+
+**The identical defect remained on the far side, and it fails in the opposite direction.**
+An incomplete comparand yields an _empty_ failure set, which does not read as "unknown" —
+it reads as **"the other side is clean"**, and therefore attributes every shared failure to
+the side being measured. It then did exactly that.
+
+> The mirror position is the least-watched place in an instrument, precisely _because_ the
+> bug was just fixed. A repair creates confidence whose scope is the instance and whose
+> felt scope is the class.
+
+The general rule: **when a defect is found in how one operand is handled, the repair must
+be applied to every operand of the same kind in the same expression, and the reviewer's
+question is "where else does this value appear", not "is it fixed here".** A defect in a
+_comparison_ has at least two sites by construction.
+
+## Confirming a repair requires the failing step, not the check's colour
+
+A commit that fixes a defect may still be red for an unrelated reason — here, a type error
+was repaired and the same contexts still concluded `failure` on formatting, going green
+only at the _following_ commit. **Same check name, same colour, different step.**
+
+Verifying a fix by reading the fix commit's status returns _not fixed_, with no signal that
+the question was answered about something else. Read the step, and read the commit after
+the one carrying the fix.
