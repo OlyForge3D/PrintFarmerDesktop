@@ -61,6 +61,7 @@
     "merge:survival": "node scripts/merge-survival.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:strict": "node scripts/vitest-strict.mjs",
     "test:watch": "vitest",
     "verify:gpu-qualification": "node scripts/release-gpu-qualification.mjs verify",
     "test:e2e": "playwright test",
