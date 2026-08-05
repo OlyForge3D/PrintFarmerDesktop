@@ -519,14 +519,21 @@ describe.skipIf(!onWindows)(DESCRIBE_TITLE, () => {
 // them. The cheapest way to make this file lie is to write a false literal into
 // a `record(...)` call, which is a deliberate act and reads as one in a diff.
 //
-// Three limits, stated rather than implied, all measured by reviewers or by
+// Four limits, stated rather than implied, all measured by reviewers or by
 // the experiments above rather than guessed:
 //   - Deleting an arm together with its constant and its `REQUIRED_ON_WINDOWS`
 //     entry passes, as does deleting this `afterAll`. No guard inside a file
-//     survives an edit to that file. Note this no longer extends to config:
-//     since round 6 there is nothing in `vitest.config.ts` that can excuse an
-//     arm, so silencing this file means editing this file.
+//     survives an edit to that file.
 //   - Nothing inside a file can notice that the file was deleted.
+//   - A committed `setupFiles` entry can redefine every platform witness this
+//     file has (`process.platform`, `process.execPath`, `path.sep`, `os.EOL`
+//     are all `configurable: true`), which skips every arm AND satisfies the
+//     cross-examination below. Measured: with the product broken, exit 0 at
+//     `1 passed | 4 skipped`; the same break without the spoof exits 1. So the
+//     round-6 claim that once stood here -- "silencing this file means editing
+//     this file" -- is FALSE and has been removed. Config can still silence it.
+//     Filed as #539; see the long note in the hook for why adding more
+//     witnesses does not fix it.
 //   - If NO test in this file runs, this hook does not run either, so nothing
 //     is checked. Measured: skipping an arm and then narrowing to only that arm
 //     (`-t 'starts up when a real refusal'`) reports `1 skipped | 5 skipped`,
@@ -534,8 +541,10 @@ describe.skipIf(!onWindows)(DESCRIBE_TITLE, () => {
 //     run that executes none of the file's tests -- and it is visible, because
 //     a run that measured nothing says so in its counts. CI narrows nothing, so
 //     every arm is required there.
-// The first two need a policy test that reads the test directory from outside.
-// That is deliberately not in this PR.
+// All but the last need a gate that reads the test directory and the committed
+// config from outside the worker: #539 here, #537 for committed narrowing.
+// That is deliberately not in this PR -- it is a repo-policy instrument, not a
+// property of this test, and it wants its own review.
 //
 // This runs after every test in the file regardless of declaration order, and
 // checks both platform directions.
@@ -556,17 +565,43 @@ afterAll(() => {
   // skip skip everything AND makes this guard take the branch that expects
   // nothing. Measured on a real Windows runner: with that setup file committed
   // and `EBUSY` added to the fatal set, the file exited 0 at
-  // `1 passed | 4 skipped`; the same product break without it exited 1. That is
-  // the same class as the committed-config attacks this file already defends
-  // against -- repository configuration, not an edit to this file.
+  // `1 passed | 4 skipped`; the same product break without it exited 1. Note the
+  // shape: repository configuration, not an edit to this file. That is a class
+  // this file takes seriously but -- as round 8 then showed -- does not close.
   //
-  // So the claim is cross-examined instead of re-read. These three signals are
-  // not computed from `process.platform`: `execPath` is the real path to the
-  // running binary, and `path.sep`/`os.EOL` are fixed when those modules load,
-  // which is long before any setup file runs. Measured under the spoof above:
-  // `process.platform` and `os.platform()` both returned `linux` (so `os` is
-  // NOT an independent witness and is not used here) while all three of these
-  // still reported Windows.
+  // Cross-examining the claim raises the cost but DOES NOT close the hole, and
+  // the round-7 wording here -- that these are "fixed when those modules load,
+  // long before any setup file runs" -- was wrong. That conflates
+  // value-set-at-load with property-immutability. A round-8 reviewer extended
+  // the round-7 attack by four lines and defeated it. Measured descriptors on a
+  // real Windows runner:
+  //
+  //   process.platform  configurable=true  writable=false  SPOOFABLE=true
+  //   process.execPath  configurable=true  writable=true   SPOOFABLE=true
+  //   path.sep          configurable=true  writable=true   SPOOFABLE=true
+  //   os.EOL            configurable=true  writable=false  SPOOFABLE=true
+  //
+  // `writable: false` does not protect them: `configurable: true` lets a setup
+  // file replace the value outright with `Object.defineProperty`. Measured with
+  // all four spoofed and `EBUSY` added to the fatal set: exit 0 at
+  // `1 passed | 4 skipped`, while the SAME product break without the spoof
+  // exited 1. That A/B pair is the control -- the spoof is the only difference,
+  // so this is a real surviving mutant and not an equivalent one.
+  //
+  // Adding a fifth witness is NOT the fix. `process.arch`, `os.tmpdir()`,
+  // `process.env`, an `fs` probe -- every one is an in-process value the same
+  // setup file can redefine or stub, so each addition only lengthens the
+  // attacker's list by a line. That is the enumerate-every-home game that
+  // already killed three earlier versions of this guard. You cannot verify the
+  // runtime from inside the runtime against an attacker who controls committed
+  // configuration; it needs a gate that reads the committed config from
+  // OUTSIDE the worker. Filed as #539 (and #537 for the narrowing case).
+  //
+  // What is kept below is therefore deliberately modest, and is described as
+  // what it is: it still catches the single-property spoof that two round-7
+  // reviewers actually found, and it raises the cheapest attack from one line
+  // to six. `os.platform()` is excluded because it is not independent at all --
+  // it returned `linux` under the round-7 spoof.
   const machineLooksWindows =
     process.execPath.includes('\\') || path.sep === '\\' || os.EOL === '\r\n';
   const runnerIsWindows = process.platform === 'win32';
