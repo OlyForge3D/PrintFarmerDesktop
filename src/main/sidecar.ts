@@ -1318,7 +1318,21 @@ export class SidecarClient {
       this.consecutiveFailures = 0;
       pending.resolve(envelope.result);
     } else {
-      this.recordFailure();
+      // Deliberately does not call recordFailure(). `consecutiveFailures` gates
+      // ensureChannel(), whose ceiling refuses to create a channel and reports
+      // "sidecar unavailable after N consecutive failures" — but a well-formed
+      // error envelope is positive evidence that the sidecar is running,
+      // connected and parsing requests. Counting it meant five rejected
+      // requests in a row (five unopenable models, say) stopped a healthy
+      // sidecar from being contacted at all, under a message that could only
+      // ever be false: the counter reached the ceiling because the sidecar
+      // answered.
+      //
+      // The streak is left untouched rather than reset. Reaching the sidecar
+      // proves it is alive now, so resetting is arguable — but a flapping
+      // sidecar that answers once between transport faults should still be
+      // able to trip the ceiling, and there is no evidence here for the more
+      // permissive rule. The four transport call sites are unchanged.
       pending.reject(new SidecarRespondedError(envelope.error));
     }
   }
