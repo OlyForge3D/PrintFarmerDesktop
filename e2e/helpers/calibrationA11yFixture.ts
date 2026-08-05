@@ -715,6 +715,7 @@ export async function applyCalibrationScenario(
             message: 'No queued job for this project.',
             retryable: false,
             retryAfterSeconds: null,
+            reference: null,
           },
         };
       }
@@ -730,6 +731,7 @@ export async function applyCalibrationScenario(
             message: 'Network timeout',
             retryable: true,
             retryAfterSeconds: null,
+            reference: null,
           },
         };
       }
