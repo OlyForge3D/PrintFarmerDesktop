@@ -32,11 +32,39 @@
 // the commits about to be destroyed carried a session id the pusher had never
 // seen.
 //
-// Commits destroyed by a DIFFERENT session — identified by the
-// `Copilot-Session` trailer, which `.squad/decisions.md` establishes as the only
-// reliable discriminator between concurrent writers (committer and author
-// identity are per-worktree config and prove nothing) — are refused separately,
-// and the override has to name the foreign session id.
+// Commits destroyed by a DIFFERENT session are refused separately, and the
+// override has to name the foreign session id. Two questions are at work in
+// that sentence and they do not take the same evidence:
+//
+//   * "Are these commits mine?" is answered by `ownCommits` — the sha set this
+//     worktree actually created, read from the reflog by `readOwnedCommits`.
+//     Ownership is a question about objects, not about what those objects say
+//     about themselves.
+//   * "Is a second writer present?" is answered by the `Copilot-Session`
+//     trailer, which `.squad/decisions.md` (2026-07-25) establishes as the
+//     discriminator AGAINST COMMITTER AND AUTHOR IDENTITY — those are
+//     per-worktree config and prove nothing.
+//
+// That record calls the trailer "the discriminator" and ranks it against
+// identity fields only. It makes no claim of exclusivity, and it could not
+// have ranked the trailer against sha evidence, which did not exist when it
+// was written. The earlier wording here promoted it to a claim its own cited
+// source does not make.
+//
+// The trailer cannot carry the first question, and this header says so in the
+// same place it states the mechanism, because the body measures it: the value
+// reaches a committer through its PROMPT, not its environment, so two sessions
+// handed one brief emit the same id — one value on `development` carries 74
+// commits spanning 37 hours, which no single session runs for. A shared
+// trailer launders a foreign commit into the pusher's own set. That is why the
+// sha check exists.
+//
+// Neither instrument is "secondary". The id remains the one that carries the
+// strong `foreign-session` claim, because a sha set cannot survive a rewrite
+// performed on another machine and the trailer can; the sha set only ever ADDS
+// refusals underneath it — see the `unowned-discard` arm, reachable solely for
+// commits an id check has already let through. Each is primary for its own
+// question, and neither answers the other's.
 //
 // Limits, stated plainly: `--no-verify` bypasses any hook, and a hook only binds
 // clones where `npm install` has run. This raises a silent accident to a
@@ -67,13 +95,55 @@ function sessionsOf(commits) {
   return seen;
 }
 
-function describe(commits) {
+/**
+ * Label one commit with where it came from, for display.
+ *
+ * The session trailer cannot carry this. It names the BRIEF a session was
+ * handed, not the session: measured on this repository, 249 commits carry the
+ * trailer under 48 distinct values, one of them spanning 74 commits over 37
+ * hours. Two sessions working the same brief emit the same id, so a trailer
+ * label prints the PUSHER'S OWN id against ANOTHER WRITER'S work — on the list
+ * the operator is told to read before answering "are these genuinely obsolete".
+ * A wrong attribution is worse than none: silence prompts the question, and a
+ * familiar id settles it.
+ *
+ * So the label comes from the reflog, which records what THIS worktree did
+ * rather than what a commit says about itself — the same source `decide` uses
+ * for `ownCommits`, so the list the operator reads and the verdict they are
+ * reading it for cannot disagree.
+ *
+ * Three states, and the third is the point:
+ *
+ *   created here         this worktree's reflog shows it authoring that sha.
+ *   NOT created here     the reflog is readable and the sha is absent from it.
+ *   origin unverifiable  there was no reflog to read (`logAllRefUpdates=false`,
+ *                        or expiry). NOT the same as "not yours".
+ *
+ * Collapsing the third into the second restates the original defect with the
+ * sign flipped: an unreadable reflog would accuse every commit, including the
+ * operator's own, and a refusal that fires on everything teaches the override.
+ *
+ * @param {string} sha
+ * @param {Set<string>} owned commits this worktree's reflog shows it creating
+ * @param {boolean} attributable whether that reflog was readable at all
+ * @returns {string}
+ */
+export function originLabel(sha, owned, attributable) {
+  if (owned.has(sha)) return '[created here]';
+  if (!attributable) return '[origin unverifiable]';
+  return '[NOT created here]';
+}
+
+function describe(commits, owned, attributable) {
   return commits
-    .map((commit) => {
-      const sessions = (commit.sessions ?? []).join(', ');
-      const suffix = sessions ? `   [session ${sessions}]` : '';
-      return `    ${commit.sha.slice(0, 12)}  ${commit.subject ?? ''}${suffix}`;
-    })
+    .map(
+      (commit) =>
+        `    ${commit.sha.slice(0, 12)}  ${commit.subject ?? ''}   ${originLabel(
+          commit.sha,
+          owned,
+          attributable,
+        )}`,
+    )
     .join('\n');
 }
 
@@ -113,6 +183,12 @@ export function evaluateRefUpdate(update, facts) {
   const { liveRemoteSha, discarded = [], preserved = [] } = facts;
   const ack = (facts.ack ?? '').trim();
   const ackForeign = facts.ackForeign ?? '';
+  // Hoisted above the first refusal that renders a commit list. Every message
+  // this function emits describes the same commits from the same evidence the
+  // verdict was reached on; computing the label anywhere else would let the
+  // list and the verdict drift.
+  const ownCommits = new Set(facts.ownCommits ?? []);
+  const attributable = facts.ownershipEvidence === true;
 
   if (PROTECTED_REFS.includes(remoteRef)) {
     return {
@@ -202,7 +278,7 @@ export function evaluateRefUpdate(update, facts) {
       message: [
         `This deletes ${remoteRef}, discarding everything at ${live}.`,
         '',
-        describe(discarded),
+        describe(discarded, ownCommits, attributable),
         '',
         `If that is intended:  ${ACK_ENV}=${live} git push ...`,
       ].join('\n'),
@@ -278,7 +354,6 @@ export function evaluateRefUpdate(update, facts) {
   }
 
   const ownSessions = new Set(facts.ownSessions ?? []);
-  const ownCommits = new Set(facts.ownCommits ?? []);
   // Ownership is a question about objects, not about what those objects say
   // about themselves. A discarded commit is this worktree's only if this
   // worktree created that exact commit — see `readOwnedCommits` for why the
@@ -329,7 +404,7 @@ export function evaluateRefUpdate(update, facts) {
           'this worktree has never authored a commit under.',
           `Session id(s) never authored here: ${foreign.join(', ')}`,
           '',
-          describe(discarded),
+          describe(discarded, ownCommits, attributable),
           '',
           'Two sessions are writing this branch. Read that work and rebase onto it',
           'rather than over it. If you have read it and it is genuinely obsolete:',
@@ -348,7 +423,7 @@ export function evaluateRefUpdate(update, facts) {
         'establish whether they are yours.',
         `Session id(s) never authored here: ${foreign.join(', ')}`,
         '',
-        describe(discarded),
+        describe(discarded, ownCommits, attributable),
         '',
         'That is an absence, not a finding: this worktree has recorded no authorship',
         "of its own, so the same absence is produced by another session's work",
@@ -413,7 +488,7 @@ export function evaluateRefUpdate(update, facts) {
           'id alone cannot tell your work apart from a second writer handed the',
           'same brief.',
           '',
-          describe(unacknowledged),
+          describe(unacknowledged, ownCommits, attributable),
           '',
           'That is an absence, not a finding: no creation of these commits is',
           'recorded here, which is equally what a second writer and an expired',
@@ -433,7 +508,7 @@ export function evaluateRefUpdate(update, facts) {
       message: [
         `This push destroys ${discarded.length} commit(s) currently on the remote:`,
         '',
-        describe(discarded),
+        describe(discarded, ownCommits, attributable),
         '',
         'Read them, then acknowledge the tip you are overwriting:',
         `  npm run push:force`,

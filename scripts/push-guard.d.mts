@@ -117,6 +117,21 @@ export function readEquivalentCommits(
 export function readReflogSessions(): Set<string>;
 export function readOwnedCommits(): Set<string>;
 export function authoredHere(): boolean;
+
+/**
+ * Canonical home of the origin label. `safe-force-push.mjs` re-exports this
+ * rather than keeping its own copy: the pre-push refusal and the force-push
+ * preview describe the same commits to the same operator, and two copies of the
+ * rule are two things that can disagree.
+ *
+ * `attributable` is required rather than defaulted so no caller can silently
+ * pick a side on the question the third state exists to keep open.
+ */
+export function originLabel(
+  sha: string,
+  owned: Set<string>,
+  attributable: boolean,
+): string;
 export function readReflogEntries(
   ref: string,
 ): { sha: string; reflogSubject: string; sessions: string[] }[];

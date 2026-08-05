@@ -382,6 +382,22 @@ describe('CI is safe to run under a merge queue', () => {
  *
  * Throws rather than returning `[]` when the anchor is gone, so a renamed
  * heading fails by name instead of by an empty set that reads as agreement.
+ *
+ * The same applies one level down, and #266 is the case: the terminator used to
+ * be guarded on `bullets.length > 0`, so an EMPTY list under a present heading
+ * never ended the run and the loop scanned to EOF, harvesting bullets from
+ * unrelated sections. `.squad/skills/testing/SKILL.md` has carried a second
+ * bullet list since #149, so the extractor returned SBOM fixture guidance as CI
+ * contexts — and, worse, that harvest DISARMED the non-vacuity guard below,
+ * which passed on three bullets it should never have seen. The failure was red,
+ * but named the wrong section and sent the reader to a file that is correct.
+ *
+ * The gate could not simply be dropped: prose sits between this heading and its
+ * list, so an ungated terminator ends the run before it starts. The bound is
+ * the SECTION — heading to the next `## ` — and the first contiguous run within
+ * it. An empty section then throws by name, because the distinction that
+ * matters is "the run ended" versus "the run never started", and only the first
+ * has an empty-set-shaped answer.
  */
 function documentedCiContexts(doc: string): string[] {
   const lines = doc.split(/\r?\n/);
@@ -392,7 +408,21 @@ function documentedCiContexts(doc: string): string[] {
     );
   }
   const bullets: string[] = [];
-  for (const line of lines.slice(heading + 1)) {
+  // Bound the search to the CI gate SECTION -- heading to the next `## ` -- and
+  // only then take the first contiguous bullet run inside it. #266 was that the
+  // run had no outer bound: the terminator was gated on `bullets.length > 0`,
+  // which is necessary because prose sits between this heading and its list
+  // ("Seven required checks must pass:"), but with an EMPTY list nothing ever
+  // sets that gate, so the scan left the section and ran to EOF. Removing the
+  // gate breaks the prose case; bounding the section fixes both.
+  const nextHeading = lines.findIndex(
+    (line, index) => index > heading && /^##\s/.test(line),
+  );
+  const section = lines.slice(
+    heading + 1,
+    nextHeading < 0 ? lines.length : nextHeading,
+  );
+  for (const line of section) {
     const match = /^-\s+(.+?)\s*$/.exec(line);
     if (match?.[1] !== undefined) {
       bullets.push(match[1]);
@@ -401,6 +431,13 @@ function documentedCiContexts(doc: string): string[] {
     // Blank lines inside the run are tolerated; the first prose line after a
     // bullet has been seen ends it.
     if (bullets.length > 0 && line.trim() !== '') break;
+  }
+  if (bullets.length === 0) {
+    throw new Error(
+      'the "## CI gate" section of SKILL.md contains no bullet list. ' +
+        'Reported by name because the alternative -- an empty array -- is ' +
+        'indistinguishable from a list that was read and found to disagree',
+    );
   }
   return bullets.sort();
 }
@@ -425,6 +462,85 @@ describe('the testing skill transcribes the contexts ci.yml emits', () => {
     expect(documentedCiContexts(skillDoc)).toEqual(
       renderedContexts(ciWorkflow),
     );
+  });
+
+  // Both assertions above read one real document, and that is why #266 survived
+  // them for as long as it did: the defect only becomes visible when the file
+  // carries a SECOND bullet list, and whether SKILL.md does is not a property
+  // this suite controls -- #149 added one, silently arming the bug, and #234's
+  // subject is that a mutation table is evidence about the code only at the
+  // fixture it ran on. These build the document instead.
+  const withTrailingList = (ciGateBody: string): string =>
+    [
+      '# Testing',
+      '',
+      '## CI gate',
+      ciGateBody,
+      '## Fixtures',
+      '',
+      '- Pad with incompressible bytes (a seeded PRNG)',
+      '- Size the fixture to the named constant',
+      '- Assert the violating part name alongside the diagnostic code',
+    ].join('\n');
+
+  it('ends the run at the first prose line and never reaches a later list', () => {
+    expect(
+      documentedCiContexts(
+        withTrailingList(
+          [
+            '',
+            'Seven required checks must pass:',
+            '',
+            '- Desktop (windows-latest)',
+            '- Dependency advisories',
+            '',
+            'Re-verify these against branch protection before relying on them.',
+            '',
+          ].join('\n'),
+        ),
+      ),
+    ).toEqual(['Dependency advisories', 'Desktop (windows-latest)']);
+  });
+
+  // The discriminating case. Before #266 this returned the three `## Fixtures`
+  // bullets: a non-empty answer, so the non-vacuity assertion above PASSED, and
+  // the equality assertion failed naming SBOM guidance as a CI context. Red for
+  // a false cause is worse than green, because it is acted on.
+  it('throws when the section holds no list, instead of filling from further down', () => {
+    expect(() =>
+      documentedCiContexts(
+        withTrailingList(
+          ['', 'Seven required checks must pass:', ''].join('\n'),
+        ),
+      ),
+    ).toThrow(/contains no bullet list/);
+  });
+
+  // Regression pin for the first attempt at this fix, which dropped the
+  // `bullets.length > 0` gate outright. That terminates an empty run correctly
+  // and breaks the real document, where prose separates the heading from its
+  // list -- both real-file assertions above went red at once. The repair has to
+  // keep the gate and bound the section instead.
+  it('reaches a list that prose separates from the heading', () => {
+    expect(
+      documentedCiContexts(
+        withTrailingList(
+          [
+            '',
+            'Seven required checks must pass:',
+            '',
+            '- Dependency advisories',
+            '',
+          ].join('\n'),
+        ),
+      ),
+    ).toEqual(['Dependency advisories']);
+  });
+
+  it('still reports a missing heading by name, not as an empty run', () => {
+    expect(() =>
+      documentedCiContexts('# Testing\n\n- Desktop (macos-latest)'),
+    ).toThrow(/no "## CI gate" heading/);
   });
 });
 
