@@ -987,6 +987,20 @@ So the broadcast is right that a head failing ancestry proves nothing about whet
 landed, and wrong that the instrument is uninformative. **Two convictions and two acquittals,
 and the acquittals are precisely the commits a reader is trying to find.**
 
+**Converged on independently, by a third party, while this entry was being written.**
+`scripts/merge-survival.mjs` landed on the mainline mid-round — _"answer whether a merge kept
+the change, not whether it kept the commits"_ — and its header states the same correction from
+the other side: `--is-ancestor <head> development` **"detects the merge strategy, not the
+loss"**, because a squash replaces the object for every squashed pull request. That is this
+entry's result about the _head_; this entry adds that the same instrument is **exact** about
+the _landed commit_, which is the row the broadcast got backwards.
+
+It also carries a measurement worth adopting: **blob comparison reported "not shipped" for 35
+of 36 files across eight pull requests that had all merged intact**, because a blob changes if
+any later commit touches the file at all. **Four of the five instruments listed there fail in
+the reassuring direction or the alarming one without announcing which**, and the entry beside
+this one is the fourth such case tonight.
+
 **Second finding, from the same message, and it is the more dangerous one.** The dispatch
 reported the sibling pull request as `8a6676d2`/`DIRTY` at one minute and `e5a90df7`/`BLOCKED`
 at the next, and read the difference as **"the conflict is resolved."** Those are two different
