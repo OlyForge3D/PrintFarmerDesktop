@@ -7105,6 +7105,202 @@ mod tests {
         );
     }
 
+    /// R2. The per-kind policy must reject *before* anything is written.
+    ///
+    /// The existing rejection tests assert only that an error came back with the
+    /// right code. That is satisfied by a policy consulted after the write: the
+    /// caller still sees `NOT_PERMITTED`, and the forbidden resolution is sitting
+    /// in the table. Moving the policy check below the UPDATE was killed only by
+    /// a *counterfactual* in a different test, whose diagnostic spoke about
+    /// `ALREADY_RESOLVED` on a later `manualFieldMerge` -- the forbidden write's
+    /// only trace was a phrase inside an unrelated error string.
+    ///
+    /// A red that names the wrong mechanism sends the next reader to the wrong
+    /// subsystem carrying evidence, so this asserts the property directly: after
+    /// a refusal, the row is as it was.
+    #[test]
+    fn a_refused_resolution_writes_nothing() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let conflict_id = seed_conflict(
+            &mut store,
+            Some(CalibrationConflictKind::DeletionVsLocalEdit),
+            9,
+        );
+
+        let revisions_before: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM calibration_profile_revisions WHERE profile_id = 'profile-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        // Merged fields are supplied so the required-fields guard cannot be the
+        // thing that rejects; otherwise this passes with the per-kind policy
+        // deleted, which is the defect it is meant to detect.
+        let error = store
+            .resolve_calibration_conflict(&ResolveCalibrationConflictParams {
+                merged_fields: Some(serde_json::json!({ "flow_ratio": 0.98 })),
+                ..resolve_params(
+                    &conflict_id,
+                    CalibrationConflictResolutionKind::ManualFieldMerge,
+                )
+            })
+            .expect_err("manualFieldMerge is not permitted for a deletionVsLocalEdit conflict");
+        assert!(
+            error.starts_with(calibration_resolution_error::NOT_PERMITTED),
+            "error {error:?} must carry the named code"
+        );
+
+        let (resolved_at, resolution, payload): (Option<String>, Option<String>, Option<String>) =
+            store
+                .conn
+                .query_row(
+                    "SELECT resolved_at, resolution, resolution_payload
+                     FROM calibration_conflicts
+                     WHERE profile_id = 'profile-1' AND conflict_id = ?1",
+                    params![conflict_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+        assert_eq!(
+            resolved_at, None,
+            "the policy refused this resolution, so no resolved_at may exist; a \
+             value here means the write happened and the policy was consulted \
+             afterwards"
+        );
+        assert_eq!(
+            resolution, None,
+            "the refused resolution must not be recorded; reading manualFieldMerge \
+             here means the forbidden resolution was persisted and then reported \
+             as rejected"
+        );
+        assert_eq!(
+            payload, None,
+            "the merged fields of a refused merge must not be stored"
+        );
+
+        let revisions_after: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM calibration_profile_revisions WHERE profile_id = 'profile-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            revisions_before, revisions_after,
+            "a refused resolution must mint no revision"
+        );
+
+        // Positive control. Without it every assertion above is satisfied by a
+        // query that can never observe a write at all -- a misnamed column or a
+        // predicate matching no row reads `None` forever and the test passes
+        // against a policy that does nothing.
+        store
+            .resolve_calibration_conflict(&resolve_params(
+                &conflict_id,
+                CalibrationConflictResolutionKind::AcceptServer,
+            ))
+            .expect("a permitted resolution must succeed through the same path");
+        let observed: Option<String> = store
+            .conn
+            .query_row(
+                "SELECT resolved_at FROM calibration_conflicts
+                 WHERE profile_id = 'profile-1' AND conflict_id = ?1",
+                params![conflict_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            observed.is_some(),
+            "control failed: this query cannot see a resolution even after one \
+             succeeded, so the `None` assertions above proved nothing"
+        );
+    }
+
+    /// R7. The UPDATE must reach the named conflict and no other.
+    ///
+    /// Dropping `conflict_id = ?2` (`... OR 1=1`, which by SQL precedence makes
+    /// the whole predicate true) is currently caught only by the `updated != 1`
+    /// arm, which reports that the conflict "was resolved concurrently". Nothing
+    /// is concurrent. The defect is a missing predicate, and a reader given that
+    /// message goes looking for a lock.
+    ///
+    /// Nothing here runs in a transaction -- there is no `transaction()` or
+    /// savepoint anywhere in this path -- so the collateral rows stay written
+    /// after the call returns its error. The scoping property is therefore
+    /// observable, and it is asserted before the outcome of the call is
+    /// unwrapped so that it, rather than the concurrency message, is what fails.
+    #[test]
+    fn resolving_one_conflict_leaves_every_other_conflict_untouched() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let target = seed_conflict_for(
+            &mut store,
+            "project-1",
+            "operation-1",
+            Some(CalibrationConflictKind::ProjectMetadata),
+            9,
+        );
+        let bystander = seed_conflict_for(
+            &mut store,
+            "project-2",
+            "operation-2",
+            Some(CalibrationConflictKind::ProjectMetadata),
+            9,
+        );
+
+        let outcome = store.resolve_calibration_conflict(&ResolveCalibrationConflictParams {
+            merged_fields: Some(serde_json::json!({ "flow_ratio": 0.98 })),
+            ..resolve_params(&target, CalibrationConflictResolutionKind::ManualFieldMerge)
+        });
+
+        // Asserted first, and deliberately. If the predicate is missing the call
+        // above returns an `ALREADY_RESOLVED` error blaming concurrency; letting
+        // that surface first would hand the next reader the wrong mechanism.
+        let (resolved_at, resolution): (Option<String>, Option<String>) = store
+            .conn
+            .query_row(
+                "SELECT resolved_at, resolution FROM calibration_conflicts
+                 WHERE profile_id = 'profile-1' AND conflict_id = ?1",
+                params![bystander],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            resolved_at, None,
+            "resolving {target} also wrote conflict {bystander}: the UPDATE is not \
+             scoped to the conflict it names. This is a missing predicate, not a \
+             concurrent writer"
+        );
+        assert_eq!(
+            resolution, None,
+            "a bystander conflict must carry no resolution after an unrelated \
+             conflict was resolved"
+        );
+
+        outcome.expect("resolving a permitted conflict must succeed");
+
+        // Positive control for the query above: the same SELECT, against the row
+        // that was resolved, must observe the write. Without this, `None` for the
+        // bystander is equally consistent with a SELECT that can never see one.
+        let observed: Option<String> = store
+            .conn
+            .query_row(
+                "SELECT resolved_at FROM calibration_conflicts
+                 WHERE profile_id = 'profile-1' AND conflict_id = ?1",
+                params![target],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            observed.is_some(),
+            "control failed: the resolved conflict reads as unresolved, so the \
+             bystander assertions above proved nothing"
+        );
+    }
+
     #[test]
     fn a_resolution_the_kind_does_not_permit_is_rejected_by_name() {
         let mut store = SqliteCatalog::open_in_memory().unwrap();
