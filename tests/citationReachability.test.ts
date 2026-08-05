@@ -2,7 +2,6 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   copyFileSync,
-  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -32,13 +31,20 @@ const liveWorkflows = readdirSync(workflowsDir)
 
 const HARNESS = 'scripts/check-citation-reachability.mjs';
 const SCRIPT_NAME = 'check:citation-reachability';
-const STAGED = ['.squad', 'fact-checker', 'citation-reachability.workflow.yml'];
 
 const invokers = liveWorkflows.filter((w) =>
   w.text.includes(`npm run ${SCRIPT_NAME}`),
 );
 const enforcingWorkflow = invokers[0];
 const isEnforced = enforcingWorkflow !== undefined;
+// Read from the live workflow only. While the workflow was staged in `.squad/`,
+// every case below fell back to the staged copy, so `isEnforced` was false in a
+// working tree that had not yet merged the wiring commit and true in CI, whose
+// `pull_request` checkout is a merge with the base - the same suite testing two
+// different files at one commit and reporting one verdict. The two copies had
+// already drifted by twenty lines when this was measured. An empty string here
+// fails every matcher loudly rather than silently substituting another file.
+const workflowText = enforcingWorkflow?.text ?? '';
 
 /**
  * #121. The harness that checks citation reachability was landed complete,
@@ -55,14 +61,16 @@ const isEnforced = enforcingWorkflow !== undefined;
  * check passed or was never invoked. The harness was correct, and correctness
  * is what made the omission invisible.
  *
- * The workflow cannot be pushed from this branch - the authoring token lacks the
- * `workflow` OAuth scope, and the Contents API refuses the same path - so it is
- * staged in `.squad/` for a maintainer to move. That makes the honesty of the
- * prose the thing under test, and the final case here is the load-bearing one:
- * it is satisfied while nothing claims enforcement, and again once enforcement
- * exists, and never in between. Moving the file into `.github/workflows/` is
- * what licenses the word "enforced", and removing it revokes that licence
- * automatically rather than leaving the claim to drift.
+ * The workflow could not be pushed from the branch that wrote the harness - that
+ * token lacks the `workflow` OAuth scope, and the Contents API refuses the same
+ * path - so it was staged in `.squad/` for a maintainer to move. A maintainer
+ * has since moved it: `.github/workflows/citation-reachability.yml` is live and
+ * runs `npm run check:citation-reachability` on every pull request, and the
+ * live copy has since gained a step the staged one never had. The staged copy
+ * is therefore removed rather than kept as a second source that can drift, and
+ * its header - which asserted in the present tense that nothing enforced the
+ * check - is removed with it. The final case below still revokes the licence to
+ * claim enforcement automatically if the live workflow ever disappears.
  */
 describe('the citation-reachability harness is invoked, not merely present', () => {
   it('is exposed as an npm script pointing at the harness', () => {
@@ -73,16 +81,12 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     expect(pkg.scripts[SCRIPT_NAME]).toBe(`node ${HARNESS}`);
   });
 
-  it('keeps the workflow that runs it reachable, whether staged or live', () => {
-    expect(isEnforced || existsSync(path.join(repositoryRoot, ...STAGED))).toBe(
-      true,
-    );
+  it('is enforced by a live workflow rather than a staged copy', () => {
+    expect(isEnforced).toBe(true);
   });
 
   it('subscribes to pull_request, the only event carrying the branch to check', () => {
-    const workflow = enforcingWorkflow
-      ? enforcingWorkflow.text
-      : read(...STAGED);
+    const workflow = workflowText;
 
     // `\r?` because the working tree is CRLF on Windows checkouts and LF in CI;
     // a regex that passes on one and fails on the other reports the platform
@@ -95,9 +99,7 @@ describe('the citation-reachability harness is invoked, not merely present', () 
   });
 
   it('checks out the graph it needs rather than a depth-1 merge commit', () => {
-    const workflow = enforcingWorkflow
-      ? enforcingWorkflow.text
-      : read(...STAGED);
+    const workflow = workflowText;
 
     // Reachability, the patch-id twin index and the declared-route probes all
     // read history. A shallow checkout would report orphans a reader can in
@@ -108,9 +110,7 @@ describe('the citation-reachability harness is invoked, not merely present', () 
   });
 
   it('declares a merge-queue class, and does not claim to report for a queued entry', () => {
-    const workflow = enforcingWorkflow
-      ? enforcingWorkflow.text
-      : read(...STAGED);
+    const workflow = workflowText;
 
     // advisory: emits a check run on pull_request, does not report under
     // merge_group, and therefore must never become a required context - a

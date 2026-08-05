@@ -614,7 +614,22 @@ export function registerIpcHandlers(
         retargetOwnerCleanup.add(event.sender);
         const ownerId = event.sender.id;
         event.sender.once('destroyed', () => {
-          void retargetArtifacts.disposeOwner(ownerId);
+          // `disposeOwner()` is the same reaper as `initialize()` (#178) and
+          // fails the same way on filesystem contention. It is invoked from a
+          // `'destroyed'` listener, so unlike `retargetReady` there is never a
+          // later awaiter to receive the rejection — the handler here is the
+          // only one this call can ever get.
+          void retargetArtifacts
+            .disposeOwner(ownerId)
+            .catch((error: unknown) => {
+              emitCalibrationLog({
+                level: 'error',
+                component: 'calibration.sidecar',
+                event: 'retargetArtifacts.ownerDisposalFailed',
+                ...describeCalibrationFailure(error),
+                outcome: 'failed',
+              });
+            });
         });
       }
       const response = await retargetArtifacts.preflight(

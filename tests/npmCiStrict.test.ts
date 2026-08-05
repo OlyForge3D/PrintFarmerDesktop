@@ -679,13 +679,52 @@ describe('npm’s own verdict on the tree is read, not just the tree', () => {
     // An unparseable `package.json` yields valid JSON with no `dependencies`
     // key. A structural walk finds nothing to walk and reports success, so this
     // is the case the walk structurally cannot see.
+    //
+    // This fixture used to carry `invalid: true` as well. It was removed for two
+    // reasons: npm emits root `invalid` as a *string* or as boolean `false`, never
+    // as `true`, so the field was a shape npm cannot produce; and because the
+    // assertion below is satisfied by `problems` and by `error` independently, the
+    // field was never the reason this test passed. Its only effect was to make the
+    // root-`invalid` branch look covered. See the isolated spec below.
     const tree = {
-      invalid: true,
       problems: ['error in /repo/package.json'],
       error: { code: 'EJSONPARSE', summary: 'Unexpected token' },
     };
-    expect(findTreeProblems(tree).length).toBeGreaterThan(0);
+    // Pinned exactly rather than by length: `length > 0` here is satisfied three
+    // ways over, which is what let a whole branch of `findTreeProblems` be deleted
+    // without this file noticing.
+    expect(findTreeProblems(tree)).toEqual([
+      'error in /repo/package.json',
+      'npm reported EJSONPARSE: Unexpected token',
+    ]);
     expect(findUnresolvedPackages(tree)).toEqual([]);
+  });
+
+  it('reports a root npm marked invalid, with nothing else set', () => {
+    // ISOLATED DELIBERATELY. Every other fixture that carries root `invalid` also
+    // carries `problems` or `error`, either of which satisfies the assertion on its
+    // own. Measured: deleting the root-`invalid` branch from `findTreeProblems`
+    // left this entire file green, while deleting the adjacent `error` push in the
+    // same function turned it red -- so the survival was a coverage gap and not a
+    // harness that cannot detect deletions.
+    //
+    // The value is the real shape: npm names the mismatch in a string rather than
+    // setting a boolean.
+    const tree = {
+      ...CLEAN_PRODUCTION_TREE,
+      invalid: '"^7.0.0" from the root project',
+    };
+    expect(findTreeProblems(tree)).toEqual([
+      'npm marked the root project invalid: "^7.0.0" from the root project',
+    ]);
+  });
+
+  it('stays silent on the root `invalid: false` that npm emits for a sound tree', () => {
+    // The negative control for the spec above, and the only thing pinning the
+    // `!== false` clause: npm writes `invalid: false` on nodes it checked and found
+    // sound, so a truthiness-only test would report every healthy install.
+    const tree = { ...CLEAN_PRODUCTION_TREE, invalid: false };
+    expect(findTreeProblems(tree)).toEqual([]);
   });
 
   it('reports a root that is not an object, rather than passing it', () => {
