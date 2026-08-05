@@ -95,7 +95,7 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     expect(isEnforced).toBe(true);
   });
 
-  it('subscribes to pull_request, the only event carrying the branch to check', () => {
+  it('subscribes to pull_request, which carries the branch under review', () => {
     const workflow = workflowText;
 
     // `\r?` because the working tree is CRLF on Windows checkouts and LF in CI;
@@ -106,6 +106,70 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     // first commit and never again, so a citation orphaned by a later rebase -
     // the exact mechanism in scope - would never be examined.
     expect(workflow).toMatch(/types:\s*\[[^\]]*\bsynchronize\b[^\]]*\]/);
+  });
+
+  /**
+   * #428, and the reason the case above no longer calls pull_request "the only
+   * event carrying the branch to check". It is not the only one, and believing
+   * it was is what left this check aimed away from its own defect.
+   *
+   * A pull_request run examines a head whose branch still exists, so a
+   * self-citation is reachable and the harness exits 0. Squash-merging that
+   * pull request and deleting the branch is the operation that orphans the
+   * citation. So the check passed, the merge then falsified what it had passed,
+   * and no event in the trigger set could ever observe the result. The failure
+   * existed only on trunk, and the instrument only ever looked at branches.
+   *
+   * That is a stronger statement than "coverage was incomplete": a trigger set
+   * confined to the side where the failure cannot exist is not a weak
+   * instrument for this defect, it is a non-instrument, and its green is
+   * uninformative rather than reassuring.
+   */
+  it('also fires after the merge, the operation that creates the failure', () => {
+    const workflow = workflowText;
+
+    const NON_PR_ARMS = /^\s{2}(?:push|schedule):/m;
+
+    // The binding assertion. Narrowing the trigger set back to pull_request
+    // alone - the likeliest edit, since every step here reads a pull_request
+    // context - turns this red instead of silently restoring the blind spot.
+    expect(workflow).toMatch(NON_PR_ARMS);
+    expect(workflow).toMatch(
+      /^\s{2}push:\r?\n\s+branches:\s*\[[^\]]*\bdevelopment\b/m,
+    );
+
+    // Control on the matcher, in band. Without it, a pattern that matched
+    // everything would assert the arm is present for a workflow that lost it,
+    // and this case would be the thing it is guarding against.
+    expect('name: X\non:\n  pull_request:\n    types: [opened]\n').not.toMatch(
+      NON_PR_ARMS,
+    );
+
+    // The push arm must not drag the check into a ruleset. It runs on the
+    // branch a queue would gate, and a required context that reports on push
+    // but not for a queued entry sits Pending forever - #122's deadlock.
+    expect(workflow).toMatch(/^#\s*merge-queue:\s*advisory$/m);
+    expect(workflow).not.toMatch(/^\s+merge_group:/m);
+  });
+
+  it('resolves its inputs on events that carry no pull_request object', () => {
+    const workflow = workflowText;
+
+    // A push arm whose steps only read `github.event.pull_request.*` is armed
+    // in the trigger block and inert in the job: the expressions resolve to the
+    // empty string, `ref:` quietly becomes the default, and the mainline
+    // refspec becomes `+refs/heads/:refs/...`, which git rejects for a reason
+    // that names neither this check nor the trigger. A red that misattributes
+    // is worse here than no arm at all, because it gets the arm removed.
+    expect(workflow).toContain(
+      'github.event.pull_request.head.sha || github.sha',
+    );
+    expect(workflow).toContain(
+      'github.event.pull_request.base.ref || github.ref_name',
+    );
+    // And the fallback is asserted rather than trusted: an empty name refuses
+    // instead of building a refspec git will reject on its own terms.
+    expect(workflow).toMatch(/if \[ -z "\$\{MAINLINE_REF\}" \]/);
   });
 
   it('checks out the graph it needs rather than a depth-1 merge commit', () => {

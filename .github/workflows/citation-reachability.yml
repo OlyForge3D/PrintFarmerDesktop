@@ -2,10 +2,13 @@ name: Citation reachability
 
 # merge-queue: advisory
 #
-# Runs on pull_request, emits a check run, and does NOT report for a queued
-# entry, so this context MUST NOT be added to a branch ruleset's required
-# contexts. scripts/check-merge-queue-contexts.mjs enforces that against live
-# branch protection rather than leaving it to this comment.
+# Runs on pull_request and on push to development, emits a check run, and does
+# NOT report for a queued entry, so this context MUST NOT be added to a branch
+# ruleset's required contexts. scripts/check-merge-queue-contexts.mjs enforces
+# that against live branch protection rather than leaving it to this comment.
+# Advisory is load-bearing here rather than incidental: the push arm below runs
+# on the branch a queue would gate, and a required context that reports on push
+# but not for a queued entry is the deadlock #122 describes.
 
 # Deliberately a separate workflow rather than a job in ci.yml.
 #
@@ -31,6 +34,16 @@ name: Citation reachability
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  # #428. The pull_request arm alone is a non-instrument for this defect, and
+  # not because it is weak: it is on the side where the failure cannot exist.
+  # A PR head still has its branch, so a self-citation is reachable there and
+  # the harness exits 0. Squash-merging that PR and deleting the branch is the
+  # operation that orphans the citation -- so the check passed, then the merge
+  # falsified what it had passed, and the trigger set contained no event that
+  # could ever observe the result. The push arm runs after the destroying
+  # operation, which is the only position from which this is visible.
+  push:
+    branches: [development]
 
 permissions:
   contents: read
@@ -44,20 +57,41 @@ jobs:
       # checkout is the merge commit, whose ancestry is not the branch's. The
       # twin index is built over the branch's own commits, so measuring it
       # against a synthetic merge would index the wrong set.
+      #
+      # The fallback is what makes the push arm real rather than nominal. On
+      # push there is no `pull_request` object, so the expression on the left is
+      # the empty string and `ref:` would silently mean "the default", which for
+      # a push happens to be right and for a schedule would not be. Naming
+      # `github.sha` says which commit is under test on every event instead of
+      # relying on a default that differs per event.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       # The mainline is half of the reader model. Fetched by name and pinned to
       # a local ref the harness looks for: without it the run silently narrows to
       # HEAD alone, which is stricter and would report orphans that a reader can
       # in fact reach. A check that fails for the wrong reason teaches people to
       # ignore it.
+      #
+      # The name is resolved into an env var and asserted non-empty rather than
+      # interpolated straight into the refspec. On push there is no
+      # `pull_request` object, and an empty expression would build
+      # `+refs/heads/:refs/...`, which git rejects with a message about a
+      # malformed refspec -- a red that names the wrong thing and would be read
+      # as this check being broken rather than as the trigger being wrong.
       - name: Fetch the mainline the reader is assumed to hold
+        env:
+          MAINLINE_REF: ${{ github.event.pull_request.base.ref || github.ref_name }}
         run: |
+          if [ -z "${MAINLINE_REF}" ]; then
+            echo "::error::No mainline ref for event '${GITHUB_EVENT_NAME}'. The reader model needs a branch name; refusing rather than fetching a malformed refspec."
+            exit 1
+          fi
+          echo "event=${GITHUB_EVENT_NAME} mainline_ref=${MAINLINE_REF}"
           git fetch --no-tags origin \
-            +refs/heads/${{ github.event.pull_request.base.ref }}:refs/remotes/origin/development
+            "+refs/heads/${MAINLINE_REF}:refs/remotes/origin/development"
           git rev-parse --verify refs/remotes/origin/development^{commit}
 
       # Condition 4 of the discharge path stated in UNENFORCED_CHECKS
