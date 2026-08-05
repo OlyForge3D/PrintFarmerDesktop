@@ -1292,6 +1292,14 @@ an artifact that was still growing, quoted later into a scope they were not take
 > except stamping the count — which is the same remedy this ledger adopted for heads, and it
 > generalises to every cardinality it publishes.
 
+> **RETRACTED IN RUN BC.** The verdict recorded in the paragraph below is false,
+> and so is the `12:33:16` figure inside it. `3fac5567` was the tip of `development` from
+> **12:29:28 to 12:59:24 PDT**, so it was the tip at the `12:53` cited here. The refutation was
+> produced by counting with `--until`, which filters by **committer date** rather than by branch
+> membership. **The paragraph is left standing because the error, not the verdict, is the
+> finding:** it was offered as proof that the rule is two-sided, and it is instead the same
+> defect the rule was written to prevent, reintroduced through a different clock one round later.
+
 **The receiver-side rule adopted in the previous run was applied again here, and returned the
 opposite verdict — which is the point.** That rule requires converting the reporter's own
 stated measurement time and comparing it to the objects, never to the local clock. Applied to a
@@ -1353,6 +1361,67 @@ After `git fetch --unshallow`: **REACHABLE 54 · TWIN 44 · DECLARED 17 · ORPHA
 reported here as **13 files** across several rounds against a repeated **8**, and is now
 reported as 13 from the other side as well. **The figure did not move; the disagreement was
 resolved by both parties measuring rather than by either conceding.**
+
+### Run BC — the demonstration that my rule was two-sided was itself the error
+
+**Run BB is retracted in full on its central claim.** It asserted that a counterparty's statement
+"`3fac5567` is trunk" was stale by fifteen commits at his own stated clock time. **The statement
+was true when he made it, and my refutation was produced by a defective instrument.**
+
+**Measured on the first-parent chain of `development`, which is the sequence of commits that were
+actually the tip:**
+
+```
+c8d379f  12:01:03   tip
+80ccad4  12:29:23   tip
+3fac556  12:29:28   tip   <- became tip here
+60735ae  12:59:24   tip   <- ceased being tip here
+```
+
+**`3fac5567` was the tip of `development` for 29m56s, from 12:29:28 to 12:59:24 PDT.** His stated
+measurement was **12:59:00 — inside the window, with twenty-four seconds to spare.** At **12:53**,
+the comparison point run BB actually used, it had been the tip for twenty-four minutes and would
+remain so for six more.
+
+**The defect.** Run BB counted commits with
+`git rev-list --count 3fac5567..development --until=<his stated time>`. **That filters by committer
+date, which is not branch-membership time.** The very next commit in that range is dated
+**09:48:02 — two hours and forty-one minutes _earlier_ than `3fac5567` itself** — because it
+reached `development` afterwards, through a merge that carried its original date. **A commit can
+be "after" another in ancestry and older by every clock stamped on it.**
+
+> **This is the same class of defect run BA had identified one round earlier, reintroduced through
+> a different clock.** Run BA: using a message's _arrival_ time as its _measurement_ time. Run BB:
+> using a commit's _committer_ time as its _branch-membership_ time. ⇒ **substituting whichever
+> timestamp is conveniently attached for the event time the question actually requires.** Naming
+> the class did not prevent the next instance of it; **I fixed it and re-committed it inside one
+> round**, which is the strongest available evidence that the remedy for it cannot be vigilance.
+
+**And the part that indicts the entry rather than the measurement.** Run BB's headline was that the
+receiver-side rule is _two-sided_, evidenced by the fact that it **sustained** an accusation where
+run BA had withdrawn one. **The sustain was the error.** Both applications should have been
+withdrawals.
+
+> **The artifact I published as proof of even-handedness was itself produced by a defect** — so the
+> appearance of even-handedness cost nothing and demonstrated nothing. **A retraction is not
+> self-validating.** Run BB was published _as the audit of_ run BA and was wrong in the opposite
+> direction, and no one asked it for a control, because **challenging a correction looks like
+> refusing an apology.**
+
+**The counterparty's remaining claims were checked at the object and all verify**, including two
+full forty-character hashes quoted from his message:
+
+```
+f886000, 0e1b07e  ->  28a3e02c0dac80314af3ab0dc6d532b855cfde8f   identical, as published
+b42011d6..e5a90df7 --no-merges  ->  81 commits, 81 distinct patch-ids, 0 collisions
+squash 3fac5567   ->  c3c2d1889fd0f6984bdcce94b560112d3184ca21   matches none of the 81
+```
+
+**The squash result is the operational half of a boundary this ledger already recorded from the
+other side.** `patch-id` survives rebase and cherry-pick and **does not survive squash**, because
+the squash's diff is the union of its inputs and equal to none of them. ⇒ **on a repository whose
+merges are squashes, `patch-id` is a sound instrument for provenance _within_ a branch and has no
+reach across the merge at all** — the same wall `--is-ancestor` hits, reached by a different route.
 
 ## Superseded citations and their live twins
 
