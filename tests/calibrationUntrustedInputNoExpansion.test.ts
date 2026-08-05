@@ -47,6 +47,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(
@@ -96,6 +97,51 @@ const EXPANDING_APIS: { pattern: RegExp; why: string }[] = [
 const EXPANDING_PACKAGES =
   /^(?:adm-zip|yauzl|unzipper|node-stream-zip|decompress|tar|tar-stream|tar-fs|sharp|jimp|canvas|pngjs|jpeg-js|image-size)$/;
 
+interface ImportScan {
+  specifiers: string[];
+  unresolvable: string[];
+}
+
+function scanImportSpecifiers(file: string, source: string): ImportScan {
+  const specifiers = [...source.matchAll(/\bfrom\s+['"]([^'"]+)['"]/g)].map(
+    (match) => match[1]!,
+  );
+  const unresolvable: string[] = [];
+  const sourceFile = ts.createSourceFile(
+    file,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+
+  function visit(node: ts.Node): void {
+    if (ts.isCallExpression(node)) {
+      const isDynamicImport =
+        node.expression.kind === ts.SyntaxKind.ImportKeyword;
+      const isRequire =
+        ts.isIdentifier(node.expression) && node.expression.text === 'require';
+      if (isDynamicImport || isRequire) {
+        const [specifier] = node.arguments;
+        if (specifier !== undefined && ts.isStringLiteralLike(specifier)) {
+          specifiers.push(specifier.text);
+        } else {
+          const { line, character } = sourceFile.getLineAndCharacterOfPosition(
+            node.getStart(sourceFile),
+          );
+          unresolvable.push(
+            `${relative(file)}:${line + 1}:${character + 1} ${node.getText(sourceFile)}`,
+          );
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return { specifiers, unresolvable };
+}
+
 function resolveLocalImport(
   fromFile: string,
   specifier: string,
@@ -116,6 +162,7 @@ function resolveLocalImport(
 /** Transitive closure of local imports reachable from the entry points. */
 function reachableFromEntryPoints(): Map<string, string> {
   const seen = new Map<string, string>();
+  unresolvableSpecifiers.length = 0;
   const queue = ENTRY_POINTS.map((name) => path.join(mainDir, name));
   while (queue.length > 0) {
     const file = queue.pop()!;
@@ -123,9 +170,8 @@ function reachableFromEntryPoints(): Map<string, string> {
     if (!existsSync(file)) continue;
     const source = readFileSync(file, 'utf8');
     seen.set(file, source);
-    const specifiers = [...source.matchAll(/\bfrom\s+['"]([^'"]+)['"]/g)].map(
-      (match) => match[1]!,
-    );
+    const { specifiers, unresolvable } = scanImportSpecifiers(file, source);
+    unresolvableSpecifiers.push(...unresolvable);
     for (const specifier of specifiers) {
       const resolved = resolveLocalImport(file, specifier);
       if (resolved !== null && !seen.has(resolved)) queue.push(resolved);
@@ -137,6 +183,8 @@ function reachableFromEntryPoints(): Map<string, string> {
 function relative(file: string): string {
   return path.relative(repoRoot, file).split(path.sep).join('/');
 }
+
+const unresolvableSpecifiers: string[] = [];
 
 describe('the untrusted calibration input path expands nothing', () => {
   const closure = reachableFromEntryPoints();
@@ -157,6 +205,14 @@ describe('the untrusted calibration input path expands nothing', () => {
     // A closure of exactly four files means import resolution failed and the
     // guard silently degraded to checking only the files it was handed.
     expect(closure.size).toBeGreaterThan(ENTRY_POINTS.length);
+  });
+
+  it('fails closed on non-literal dynamic import and require specifiers', () => {
+    expect(
+      unresolvableSpecifiers,
+      'Every dynamic import and require reachable from an untrusted calibration ' +
+        'entry point must use a literal specifier so the closure can be resolved.',
+    ).toEqual([]);
   });
 
   it.each(EXPANDING_APIS)(
@@ -188,6 +244,41 @@ describe('the untrusted calibration input path expands nothing', () => {
     // path, and banning it would make this guard fire on something that cannot
     // receive untrusted calibration content.
     expect(offenders).toEqual([]);
+  });
+});
+
+describe('the import closure scanner', () => {
+  const fixtureFile = path.join(mainDir, 'closureScannerFixture.ts');
+
+  it('follows literal dynamic import and require specifiers', () => {
+    const scan = scanImportSpecifiers(
+      fixtureFile,
+      `
+        await import('./dynamic.js');
+        require('./required.js');
+      `,
+    );
+
+    expect(scan).toEqual({
+      specifiers: ['./dynamic.js', './required.js'],
+      unresolvable: [],
+    });
+  });
+
+  it('reports non-literal dynamic import and require specifiers by location', () => {
+    const scan = scanImportSpecifiers(
+      fixtureFile,
+      `await import(dynamicSpecifier);
+require(requiredSpecifier);`,
+    );
+
+    expect(scan).toEqual({
+      specifiers: [],
+      unresolvable: [
+        'src/main/closureScannerFixture.ts:1:7 import(dynamicSpecifier)',
+        'src/main/closureScannerFixture.ts:2:1 require(requiredSpecifier)',
+      ],
+    });
   });
 });
 
