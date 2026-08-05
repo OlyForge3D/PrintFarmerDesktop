@@ -301,14 +301,42 @@ const classify = (sha, { twinMap = twins } = {}) => {
   // suggest a twin to declare. This never turns an ORPHAN into a pass.
   let hint = 'unreachable, no declared twin, undeclared';
   if (full) {
+    const candidates = (git(['rev-list', 'HEAD', '--no-merges']) ?? '')
+      .split('\n')
+      .filter(Boolean);
+
     const q = patchIdOf(full);
     if (q) {
-      for (const c of (git(['rev-list', 'HEAD', '--no-merges']) ?? '')
-        .split('\n')
-        .filter(Boolean)) {
+      for (const c of candidates) {
         if (patchIdOf(c) === q) {
-          hint = `unreachable; candidate twin ${c.slice(0, 8)} - declare it under "${TWIN_HEADING}"`;
+          hint = `unreachable; candidate twin ${c.slice(0, 8)} (identical patch-id) - declare it under "${TWIN_HEADING}"`;
           break;
+        }
+      }
+    }
+
+    // #413: `git patch-id --stable` hashes context lines, so a true twin that landed after
+    // somebody else appended has a different id. Measured on a purpose-built fixture: an
+    // identical twelve-line block appended to a ledger at two different offsets produces two
+    // patch-ids, while every added line is still present. The verdict never depended on this -
+    // it uses the containment test above, which is why ARM B has been exercising this hazard
+    // since before it was filed - but the *hint* did, and it degrades on exactly the
+    // append-only ledger every citation here points at.
+    //
+    // The failure is not a false ORPHAN. The revision is an orphan either way: undeclared and
+    // unreachable. What is lost is the one line that tells the author which commit to declare,
+    // and a bare orphan carrying no candidate reads as "there is no twin" - the opposite of the
+    // truth. So the fallback restores the remedy, not the verdict, and says which instrument
+    // found it so the two grades of evidence are never confused.
+    if (!hint.includes('candidate twin')) {
+      const cited = addedLinesOf(full);
+      if (cited) {
+        for (const c of candidates) {
+          const candidate = addedLinesOf(c);
+          if (candidate && [...cited].every((l) => candidate.has(l))) {
+            hint = `unreachable; candidate twin ${c.slice(0, 8)} (every added line present; patch-id differs, which an append-only ledger causes) - declare it under "${TWIN_HEADING}"`;
+            break;
+          }
         }
       }
     }

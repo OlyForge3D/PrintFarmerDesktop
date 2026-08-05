@@ -409,6 +409,97 @@ describe('a declared twin is checked for being a twin', () => {
   });
 
   /**
+   * The hint path, which is where #413 actually bites this harness.
+   *
+   * `git patch-id --stable` hashes context lines, so a true twin that landed after somebody
+   * else appended carries a different id. The *verdict* never depended on that - it uses the
+   * containment test, which is why ARM B has been exercising this hazard since before the
+   * issue was filed - but the authoring hint did, and it degraded on exactly the append-only
+   * ledger every citation here points at.
+   *
+   * The failure this guards is not a false ORPHAN. The revision is an orphan either way. What
+   * was lost is the line naming the commit to declare, and a bare orphan carrying no candidate
+   * reads as "there is no twin", which is the opposite of the truth.
+   */
+  it('ARM F: names a candidate twin the patch-id cannot see, without rescuing the verdict', () => {
+    const { dir, cited, genuineTwin } = fixture();
+    ledger(dir, cited, null);
+
+    // Premise, asserted rather than assumed: unless patch-id genuinely fails on this pair the
+    // arm passes without exercising the hazard, and a green would mean nothing.
+    const patchId = (rev: string) =>
+      execFileSync('git', ['patch-id', '--stable'], {
+        input: execFileSync('git', ['-C', dir, 'show', rev], {
+          encoding: 'utf8',
+          maxBuffer: 1 << 28,
+        }),
+        encoding: 'utf8',
+      }).split(' ')[0];
+    expect(patchId(cited)).not.toBe(patchId(genuineTwin));
+
+    const { status, out } = runHarness(dir);
+
+    expect(out).toContain(`candidate twin ${genuineTwin.slice(0, 8)}`);
+    expect(out).toContain('patch-id differs');
+
+    // The hint is a remedy, never a verdict. An undeclared orphan stays an orphan and the
+    // harness still exits non-zero, or the aid would have become the pass it must never be.
+    expect(out).toContain('ORPHAN');
+    expect(status).toBe(1);
+  });
+
+  it('ARM G: offers no candidate when nothing in reach contains the cited lines', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'nocand-'));
+    made.push(dir);
+    execFileSync('git', ['-C', dir, 'init', '-q'], { stdio: 'ignore' });
+    execFileSync('git', [
+      '-C',
+      dir,
+      'config',
+      'user.email',
+      't@example.invalid',
+    ]);
+    execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
+    mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+    mkdirSync(path.join(dir, '.squad', 'fact-checker'), { recursive: true });
+    copyFileSync(
+      path.join(repositoryRoot, HARNESS),
+      path.join(dir, 'scripts', 'check-citation-reachability.mjs'),
+    );
+    writeFileSync(path.join(dir, '.squad', 'fact-checker', 'policy.md'), '');
+
+    const notes = path.join(dir, 'notes.md');
+    writeFileSync(notes, 'opening line\n');
+    ledger(dir, '0'.repeat(40), null);
+    commit(dir, 'seed');
+
+    writeFileSync(notes, 'opening line\na finding that is never re-added\n');
+    const orphan = commit(dir, 'the finding');
+    execFileSync('git', ['-C', dir, 'reset', '-q', '--hard', 'HEAD~1'], {
+      stdio: 'ignore',
+    });
+
+    writeFileSync(path.join(dir, 'other.md'), 'entirely unrelated\n');
+    commit(dir, 'unrelated work');
+    ledger(dir, orphan, null);
+
+    const { status, out } = runHarness(dir);
+
+    // Without this arm, "ARM F found a candidate" is equally consistent with a fallback that
+    // matches anything it is shown - the containment test runs over every commit in reach, and
+    // a rule loose enough to always match would look identical on ARM F alone.
+    //
+    // Stated plainly because an unmarked always-green test is its own defect: this arm passes
+    // against the pre-fix harness as well, and is meant to. Measured by replaying the harness
+    // at the parent commit with both arms present - ARM F fails there, ARM G passes. It is a
+    // bound on the fallback's looseness, not a detector of the defect, and only ARM F carries
+    // the claim that the repair does anything.
+    expect(out).toContain('no declared twin, undeclared');
+    expect(out).not.toContain('candidate twin');
+    expect(status).toBe(1);
+  });
+
+  /**
    * The regression guard for the fix that was nearly shipped instead of this one.
    *
    * Every twin declaration in this repository names a squash - 41 commits of #162 collapsed

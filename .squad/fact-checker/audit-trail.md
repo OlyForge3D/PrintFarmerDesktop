@@ -2366,6 +2366,97 @@ placement audit:
 
 ⇒ **retired:** `git branch -a --contains` as an attribution instrument. Asked which branches contain two revisions attributed to me, it named **more than a hundred**, because both are old trunk commits every branch descends from. ⇒ **a containment query whose answer is _almost every ref_ has not identified anything**; it has measured the shape of the repository. **Same subtraction as the store-versus-refs error in run BP, one level up: a true answer to a question with no discriminating power.**
 
+### Run BR — a hazard filed against my instrument that is real, reproduced, and cannot change a verdict
+
+**Pair:** issue #413, against `scripts/check-citation-reachability.mjs` at the head of PR #505; and a dispatch reporting it as _"the live hazard in it, filed tonight and open."_ _All readings taken between `15:20Z` and `15:40Z` on 2026-08-05, trunk `070fbf2`, PR #505 head `aa5ac700`._
+
+#### 1. The mechanism is true, and it reproduces on a purpose-built fixture
+
+An append-only ledger, an identical twelve-line block appended by two commits at different offsets:
+
+```
+cited 97f58737   twin 724e2461
+patch-id --stable  cited  89f69697dbf6d3bf7a56a344baa75db22153f659
+patch-id --stable  twin   95d60b683fbe671ff7c3550f7052c4fa6a2a92d0
+=> EQUAL false                                <- the reported mechanism
+addedLines cited 12 · twin 12 · containment    true
+CONTROL A (self):      patch-id equal true  · containment true
+CONTROL B (unrelated): patch-id equal false · containment FALSE
+```
+
+⇒ **`git patch-id --stable` hashes context, so a true twin that landed after somebody else appended carries a different id.** Control B is the one that makes the row mean anything: **containment refuses an unrelated commit**, so its agreement on the twin is not the agreement of a predicate that accepts everything.
+
+#### 2. It cannot change a verdict here, and the reason is not foresight
+
+The harness computes twinship with line containment and confines `patch-id` to the authoring hint. The verdict path never consults it.
+
+⇒ **and the test suite has been exercising this exact hazard since before the issue was filed.** `ARM B — recognises a real twin whose context moved under it` is preceded by a premise assertion that the fixture's two patch-ids **differ**, so the arm cannot pass without the hazard being present.
+
+⇒ **The exclusion was not made for this reason.** The comment records why `patch-id` was kept out of the verdict: it **cannot be computed by a reader who does not hold the orphaned commit**, which is a _reachability_ argument about the reader's position. That it also immunises the verdict against a _content_ defect nobody had named is a consequence, not a prediction. ⇒ _**a design can be correct for a reason that does not cover the case it survives**_, and nothing in the green distinguishes the two — the dual of the finding that nothing in a red distinguishes luck from detection.
+
+#### 3. Where it does bite, and the direction is the reverse of the filing
+
+The report says the class _"fails toward ORPHAN, whose natural remedy is restoring a revision already on trunk."_ Measured against this harness, that is not available: the classification is fixed **before** `patch-id` is consulted, and the revision is an orphan on its own terms — undeclared and unreachable.
+
+⇒ **What the defect destroys is the hint**, the one line naming which commit to declare. ⇒ **and a bare orphan carrying no candidate does not read as _"the search failed"_; it reads as _"there is no twin"_** — so the hazard is not a false verdict prompting a needless restore, it is **a true verdict stripped of its remedy**, pointing the author at the opposite conclusion. **On this repository that lands on `.squad/decisions.md`, the append-only file every citation points at, which is the worst possible case and the reason the filing is worth acting on even though the verdict is safe.**
+
+#### 4. Repaired, with the control that makes the repair legible
+
+Containment now runs as a fallback when `patch-id` finds nothing, and **the two grades of evidence are labelled differently** so a reader is never shown one and told the other:
+
+```
+identical patch-id
+every added line present; patch-id differs, which an append-only ledger causes
+```
+
+⇒ **The hint stays a hint.** `ARM F` asserts that the candidate is named **and** that the verdict is still `ORPHAN` at exit 1, because an authoring aid that rescued a pass would be the defect this whole class exists to prevent.
+
+⇒ **Replayed against the harness at the parent commit, both arms present:**
+
+```
+ARM F   FAIL   expected '...' to contain 'candidate twin 00c34f2a'    <- detects the defect
+ARM G   PASS                                                          <- passes either way
+```
+
+⇒ **`ARM G` is recorded in the file as not a detector.** It bounds the fallback against matching anything it is shown — without it, _ARM F found a candidate_ is equally consistent with a rule that always matches. ⇒ _**a test that passes before and after the repair is a constraint, not evidence**_, and leaving it unmarked among green siblings is how run BF's class is manufactured rather than found.
+
+#### 5. Three claims in the same dispatch, re-derived rather than accepted
+
+**The three-way `ls-remote` control — confirmed, and I ran it myself rather than relay it:**
+
+```
+refs/heads/development                          exit 0  lines 1   <- live, positive control
+refs/heads/squad/fact-checker-twin-precondition exit 0  lines 1   <- live, positive control
+refs/heads/jpapiez-fact-checker-symmetric-diff  exit 0  lines 0   <- deleted
+refs/heads/this-ref-never-existed-zzq           exit 0  lines 0   <- never existed
+```
+
+⇒ **The sharpened form is right and is the one to keep:** _a deleted ref and a ref that never existed are indistinguishable by every part of the output, not merely by exit status._ ⇒ **and the natural reading of an empty result is _"cleaned up after merge"_, which is the wrong one exactly when the name was mistyped.**
+
+**#413 is CLOSED**, and labelled `squad:hicks`, not `squad:fact-checker` — reported as _"filed tonight and open"_ and _"yours by subject matter."_ The subject-matter claim is correct; the state and the label are not. **The work above stands regardless of who holds it**, which is why it was done before the state was checked.
+
+**A figure attributed to me that I have not held for many rounds:**
+
+```
+quoted as mine:  REACHABLE 25 · TWIN 41 · DECLARED  8
+measured now  :  REACHABLE 83 · TWIN 45 · DECLARED 17 · ORPHAN 0   exit 0
+```
+
+⇒ **This is run BQ's defect arriving in the message that ratifies run BQ's neighbours.** ⇒ _**the correspondent's stale figure and my own are the same defect and are not the same event**_, and the trail has recorded my side of it twice in three rounds; recording only the incoming half would make the entry an accusation rather than a measurement.
+
+#### 6. The local-versus-CI concern is now testable, and was tested
+
+The dispatch's strongest point is that **a local exit 0 does not predict a CI exit 0**, because a private checkout holds refs no runner has.
+
+```
+refs in this worktree            4660
+of which refs/copilot/**         4126
+harness reader model             HEAD origin/development   scope: refs/heads only
+Citation reachability @ aa5ac700 SUCCESS                   <- CI, which holds none of the 4126
+```
+
+⇒ **Both positions answer exit 0 on the same head.** ⇒ **The concern was correct and is now discharged by measurement rather than by argument, and it is discharged _because the check runs in CI at all_** — which was the correspondent's own PR. ⇒ _**an unfalsifiable worry became a settled one the moment a second position was made to answer**_, and that is the whole of what #121 asked for: not a better claim, a second reading that can disagree.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
