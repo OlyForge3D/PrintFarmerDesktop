@@ -29,7 +29,52 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { CalibrationGetQueueStateResponse } from '@shared/ipc';
+import type { CalibrationGetQueueStateResponse, IpcSchemas } from '@shared/ipc';
+import type { z } from 'zod';
+
+/**
+ * Channels this fixture is allowed to stub, and the response each one owes.
+ *
+ * Derived from the live `ipcSchemas` registry rather than restated here, so a
+ * channel whose contract changes cannot leave a stub behind that still
+ * compiles. The previous signature took `channel: string` and returned
+ * `unknown`, which meant the compiler checked no response shape at all: a stub
+ * could return `{}` for every channel and typecheck stayed green while every
+ * surface under test rendered its error state. That is the failure this
+ * annotation exists to make impossible, and it is not hypothetical -- it is
+ * how a fixture regression reached trunk.
+ */
+type StubbedChannel = keyof IpcSchemas;
+type StubResponse<C extends StubbedChannel> = z.infer<
+  IpcSchemas[C]['response']
+>;
+
+/**
+ * The workspace-state record the fixture hands to the renderer.
+ *
+ * Derived from the list channel's response rather than restated, so the record
+ * builder below cannot drift from the contract the renderer actually consumes.
+ */
+type CalibrationWorkspaceRecord =
+  StubResponse<'calibration:listWorkspaceStates'>['states'][number];
+
+/**
+ * Sub-shapes of the record, each derived from the contract above rather than
+ * restated. Every one of these was `Record<string, unknown>` before, which is
+ * assignable to nothing and checked against nothing -- a fixture could omit a
+ * required field and the only thing that noticed was the surface failing to
+ * render, at which point the axe scan reports zero violations against an empty
+ * container.
+ */
+type WorkspaceState = CalibrationWorkspaceRecord['workspaceState'];
+type DomainState = WorkspaceState['domainState'];
+type SnapshotFixture = DomainState['snapshotHistory'][number];
+type WorkspaceStages = DomainState['stages'];
+type WorkspaceAttempt = DomainState['attempts'][number];
+type WorkspaceHistoryEvent = DomainState['history'][number];
+type WorkflowDrafts = WorkspaceState['workflowDrafts'];
+type CalibrationStage = WorkspaceStages[keyof WorkspaceStages];
+type WorkflowDraft = WorkflowDrafts[keyof WorkflowDrafts];
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -114,16 +159,16 @@ export interface CalibrationScenario {
 
 interface FixtureArgs {
   readonly scenario: CalibrationScenario;
-  readonly record: Record<string, unknown>;
+  readonly record: CalibrationWorkspaceRecord;
   readonly ids: typeof CAL;
   readonly expiry: string;
 }
 
-function emptyStage(stageId: string): Record<string, unknown> {
+function emptyStage(stageId: CalibrationStage['stageId']): CalibrationStage {
   return { stageId, status: 'notStarted', attemptIds: [] };
 }
 
-function emptyObservation(): Record<string, unknown> {
+function emptyObservation(): WorkflowDraft['observation'] {
   return {
     primary: '',
     quality: '',
@@ -138,7 +183,7 @@ function emptyObservation(): Record<string, unknown> {
   };
 }
 
-function emptyDraft(): Record<string, unknown> {
+function emptyDraft(): WorkflowDraft {
   return {
     method: null,
     observation: emptyObservation(),
@@ -150,7 +195,7 @@ function emptyDraft(): Record<string, unknown> {
   };
 }
 
-function snapshotFixture(): Record<string, unknown> {
+function snapshotFixture(): SnapshotFixture {
   return {
     snapshotId: CAL.snapshotId,
     snapshotRevision: CAL.configurationRevision,
@@ -187,7 +232,7 @@ function snapshotFixture(): Record<string, unknown> {
  */
 export function buildCalibrationRecord(
   scenario: CalibrationScenario,
-): Record<string, unknown> {
+): CalibrationWorkspaceRecord {
   const snapshot = snapshotFixture();
   const binding = {
     printer: {
@@ -226,7 +271,7 @@ export function buildCalibrationRecord(
     filamentSku: 'A11Y-PLA',
     spoolId: 'spool-a11y-1',
   };
-  const stages: Record<string, unknown> = {
+  const stages: WorkspaceStages = {
     temperature: withAttempt
       ? {
           stageId: 'temperature',
@@ -250,7 +295,7 @@ export function buildCalibrationRecord(
         }
       : emptyStage('finalVerification'),
   };
-  const attempts: Record<string, unknown>[] = [];
+  const attempts: WorkspaceAttempt[] = [];
   if (withAttempt) {
     attempts.push({
       attemptId: CAL.attemptId,
@@ -296,7 +341,7 @@ export function buildCalibrationRecord(
       diagnostics: [],
     });
   }
-  const history: Record<string, unknown>[] = [];
+  const history: WorkspaceHistoryEvent[] = [];
   if (withAttempt) {
     history.push({
       eventId: CAL.eventId,
@@ -318,7 +363,7 @@ export function buildCalibrationRecord(
     });
   }
 
-  const workflowDrafts: Record<string, unknown> = {
+  const workflowDrafts: WorkflowDrafts = {
     temperature: { ...emptyDraft(), method: 'temperatureTower' },
     flowPass1: emptyDraft(),
     flowPass2: emptyDraft(),
@@ -456,7 +501,10 @@ export async function applyCalibrationScenario(
   };
 
   await app.evaluate(({ ipcMain }, { scenario, record, ids, expiry }) => {
-    const handle = (channel: string, handler: (...a: never[]) => unknown) => {
+    const handle = <C extends StubbedChannel>(
+      channel: C,
+      handler: (...a: never[]) => StubResponse<C> | Promise<StubResponse<C>>,
+    ) => {
       ipcMain.removeHandler(channel);
       ipcMain.handle(channel, handler as never);
     };
@@ -474,6 +522,7 @@ export async function applyCalibrationScenario(
             commit: null,
             environment: 'test',
             runtime: 'node',
+            timestamp: ids.now,
           },
           capabilities: {
             architecture: 'test',
@@ -484,12 +533,18 @@ export async function applyCalibrationScenario(
             clientThumbnailUploadEnabled: false,
             idempotentModelUploadEnabled: true,
             modelThumbnailReplacementEnabled: false,
+            platformNote: null,
           },
           availability: {
-            modelUpload: { available: true, reason: null },
-            librarySync: { available: true, reason: null },
-            clientThumbnailUpload: { available: false, reason: null },
+            modelUpload: { mode: 'modern', available: true, reason: null },
+            librarySync: { mode: 'modern', available: true, reason: null },
+            clientThumbnailUpload: {
+              mode: 'unavailable',
+              available: false,
+              reason: null,
+            },
             serverThumbnailFallback: {
+              mode: 'unavailable',
               available: false,
               reason: 'Not required',
             },
