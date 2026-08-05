@@ -1666,6 +1666,64 @@ writable after the pull request stops reading it**, so the push succeeds, the re
 nothing dispatches or merges. **The push report is truthful and the work is not delivered** —
 which is why delivery must be verified against trunk rather than against the push.
 
+### Run BG — an instrument that cannot report the absence of what it reads, and a medium that carries no attribution
+
+**Claim under test**, from a correspondent: `git ls-remote` on a ref deleted by merge returns nothing, at exit 0, silently — so a read-at-send performed with it reports a live-looking result for a branch that is gone.
+
+**Measured, this repository, at `7791258e`:**
+
+```
+ls-remote refs/heads/jpapiez-fact-checker-symmetric-diff   exit 0   rows 0
+ls-remote refs/heads/this-ref-never-existed-at-all         exit 0   rows 0
+ls-remote refs/heads/squad/fact-checker-bf-addendumX       exit 0   rows 0
+ls-remote refs/heads/squad/fact-checker-bf-addendum        exit 0   rows 1
+```
+
+✅ **Sustained, and stronger than claimed.** The instrument does not merely fail to report deletion: **deleted, never-existed, and misspelled return the identical observation.** A typo in the query and a merged-and-deleted branch are indistinguishable at the call site.
+
+> **Read-at-send fixes staleness in the value. It cannot fix an instrument with no channel for the absence of the thing being read.**
+
+#### The pairing remedy fails through the pipe, and it convicts this run's own verification
+
+The proposed remedy is to pair the silent instrument with a loud one — `git fetch`, which is fatal and prints. Measured:
+
+```
+primed with a SUCCESS, then failing fetch | Select-Object -First 1   ->  exit code reads 0
+primed with a FAILURE, then failing fetch | Select-Object -First 1   ->  exit code reads 128
+bare, or captured to a variable, or piped to Out-Null                ->  exit code reads 128
+```
+
+⇒ **the exit status after `native | Select-Object -First N` reports the _previous_ native command.** This run first read 0 for a fetch that exited 128, announced the hypothesis refuted on a second reading of 128 — **and that 128 was also inherited**, from the failing fetch immediately preceding it. **Neither reading measured the fetch. The refutation was correct and its instrument was not.**
+
+> **A control that returns the right answer for the wrong reason is not a control** — and agreement with the truth is not evidence that it measured anything.
+
+Note what did **not** fail here: the discipline. The wrong hypothesis was flagged by its own author and re-run before publication. **The re-run used the same broken instrument**, so the second reading inherited its way to the correct answer. ⇒ **repeating a measurement tests the reading, never the instrument.**
+
+And it lands on the pairing rule directly: `fetch` is loud in **two** places — stderr text and exit status — and truncating the pipe destroys the status while leaving the text, which nothing was parsing. ⇒ **a noisy instrument read through a truncating pipe is a silent one.** The pairing rule must name the channel, not the command.
+
+#### The medium carries no attribution
+
+The same correspondent attributed to this session a status report on a merged pull request, and separately conceded misattributing a table of revisions to it. Measured:
+
+```
+commits on this branch carrying the Copilot-Session trailer :  2 of 2
+comments on #162 carrying any session identifier            :  0 of 35
+distinct comment authors on #162                            :  jpapiez        (one)
+distinct commit authors on trunk, last 100                  :  two names
+```
+
+Two of those 35 comments contain the string BEHIND and one contains the revision c98182e6 — stated here without backticks because that object, and the head e5a90df7, exist locally but are **not reachable** from any surviving ref: they were the branch deleted on merge. The ledger's twin table already maps **both** of those revisions to the merge commit, so backticking them would in fact have been safe — **the prose form was a repair applied without checking whether it was needed**, and the check was one command away. It is left in place, and this sentence is the correction: an unverified precaution is an unverified claim wearing the clothes of caution.
+
+⇒ **Commits are attributable — trailer plus author. Comments are not attributable at all:** one login for every session, no trailer, no identifier in any of the 35 bodies. So the attribution can be neither confirmed nor denied from the objects, and this session's own transcript holds zero bytes of assistant output, so absence there supports nothing either.
+
+> **A revision identifies an object, not the party citing it. An author field identifies an account, not the session.** Both channels a reader reaches for are non-discriminating; the only one that works, the commit trailer, exists on commits alone.
+
+⇒ **The dispute was conducted entirely in the medium that carries no attribution, about work in the medium that does.** Recorded without adjudication, because the record cannot settle it.
+
+#### Standing
+
+`3fac5567` is a merge commit and is permanent; the branch that produced it is not. **Verify by the merge commit, never by the branch.** Nothing is owed on it and it is not being guarded.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
