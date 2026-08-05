@@ -296,7 +296,7 @@ describe('main', () => {
         }),
     });
 
-    expect(result).toEqual({ ok: false, settled: false });
+    expect(result).toEqual({ ok: false, settled: false, stale: false });
     expect(process.exitCode).toBe(1);
     const printed = spies.error.mock.calls
       .map((call) => String(call[0]))
@@ -321,7 +321,7 @@ describe('main', () => {
         }),
     });
 
-    expect(result).toEqual({ ok: true, settled: true });
+    expect(result).toEqual({ ok: true, settled: true, stale: false });
     expect(process.exitCode).toBeUndefined();
     expect(
       spies.log.mock.calls.map((call) => String(call[0])).join('\n'),
@@ -344,7 +344,7 @@ describe('main', () => {
         }),
     });
 
-    expect(result).toEqual({ ok: false, settled: true });
+    expect(result).toEqual({ ok: false, settled: true, stale: false });
     expect(process.exitCode).toBe(1);
     const printed = spies.error.mock.calls
       .map((call) => String(call[0]))
@@ -552,7 +552,7 @@ describe('main staleness witness', () => {
     };
   }
 
-  it('fails a settled empty read that the body of the same response contradicts', async () => {
+  it('reports, but does not fail, a settled empty read the body contradicts', async () => {
     const spies = silenced();
     // Declares nothing and arms nothing: on the settled value alone this is a
     // clean pass, and that is exactly the shape a stale read takes.
@@ -570,14 +570,46 @@ describe('main staleness witness', () => {
       },
     });
 
-    expect(result).toEqual({ ok: false, settled: true, stale: true });
-    expect(process.exitCode).toBe(1);
+    // The witness is observable in the result and in the output, and changes
+    // no verdict. It fires identically on a stale field and on a body that
+    // closes a PR number, a nonexistent issue, or a `~~~` fence -- and it
+    // cannot tell those apart, so the exit code must not depend on it.
+    expect(result).toEqual({ ok: true, settled: true, stale: true });
+    expect(process.exitCode).toBeUndefined();
     const printed = spies.error.mock.calls
       .map((call) => String(call[0]))
       .join('\n');
-    expect(printed).toContain('stale');
-    // It must not read as an authoring mistake. Nothing is wrong with the PR.
+    expect(printed).toContain('#231');
+    // It must not read as an authoring mistake. Nothing is known to be wrong.
     expect(printed).not.toContain('do not match its declaration');
+  });
+
+  it('does not fail again on a re-run, because the body cannot change it', async () => {
+    // The bound the previous design claimed -- "the cost of being wrong is
+    // bounded to a retry" -- was false: the input is the PR body, so the
+    // verdict is deterministic and a retry reproduces it exactly. This is
+    // that claim as a test. Two identical runs, both green.
+    const attempt = async () => {
+      const spies = silenced();
+      const result = await main(['231'], {
+        run: ghStub('no declaration here', PROSE, []),
+        readClosures: async (read) => {
+          await read();
+          return {
+            value: [],
+            reads: 13,
+            settled: true,
+            elapsedMs: 60000,
+            stableMs: 60000,
+          };
+        },
+      });
+      spies.error.mockRestore?.();
+      return { result, exitCode: process.exitCode };
+    };
+
+    expect(await attempt()).toEqual(await attempt());
+    expect(process.exitCode).toBeUndefined();
   });
 
   it('passes the same settled empty read when the body really closes nothing', async () => {
@@ -603,7 +635,7 @@ describe('main staleness witness', () => {
       },
     });
 
-    expect(result).toEqual({ ok: true, settled: true });
+    expect(result).toEqual({ ok: true, settled: true, stale: false });
     expect(process.exitCode).toBeUndefined();
     expect(spies.error).not.toHaveBeenCalled();
   });
@@ -627,11 +659,11 @@ describe('main staleness witness', () => {
 
     // Declared #231, armed nothing, and the body does not contradict the read.
     // That is a genuine finding and must still be reported as one.
-    expect(result).toEqual({ ok: false, settled: true });
+    expect(result).toEqual({ ok: false, settled: true, stale: false });
     const printed = spies.error.mock.calls
       .map((call) => String(call[0]))
       .join('\n');
     expect(printed).toContain('do not match its declaration');
-    expect(printed).not.toContain('field is stale');
+    expect(printed).not.toContain('the derived field settled on');
   });
 });

@@ -87,4 +87,4 @@ export interface MainDeps {
 export function main(
   argv: string[],
   deps?: MainDeps,
-): Promise<{ ok: boolean; settled: boolean; stale?: boolean }>;
+): Promise<{ ok: boolean; settled: boolean; stale: boolean }>;

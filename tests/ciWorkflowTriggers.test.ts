@@ -462,14 +462,24 @@ describe('publication workflows stay outside the merge queue', () => {
  * The gate watched every event except the one it is about.
  */
 describe('ci.yml reruns when the PR body changes', () => {
-  /** Event types listed under a subscribed event, sorted. */
+  /**
+   * Event types listed under a subscribed event, sorted.
+   *
+   * The forward scan stops at the next sibling key. An earlier version sliced
+   * to the end of the `on:` section, so an event with no `types:` of its own
+   * silently reported the NEXT event's list: adding a `pull_request_target:`
+   * carrying the standard types, then dropping `types:` from `pull_request:`,
+   * left both tests below green with the fix entirely absent. Anchoring on
+   * `  ${event}:` rather than `.trim()` likewise stops a nested key matching.
+   */
   function typesOf(workflow: string, event: string): string[] {
     const section = topLevelSection(workflow, 'on');
-    const start = section.findIndex((line) => line.trim() === `${event}:`);
+    const start = section.findIndex((line) => line === `  ${event}:`);
     if (start < 0) throw new Error(`workflow does not subscribe to ${event}`);
-    const line = section
-      .slice(start + 1)
-      .find((entry) => /^ {4}types:/.test(entry));
+    const body = section.slice(start + 1);
+    const end = body.findIndex((entry) => /^ {2}\S/.test(entry));
+    const block = end < 0 ? body : body.slice(0, end);
+    const line = block.find((entry) => /^ {4}types:/.test(entry));
     if (line === undefined) return [];
     return [...line.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)]
       .map((match) => match[0])
@@ -494,5 +504,37 @@ describe('ci.yml reruns when the PR body changes', () => {
     expect(typesOf(ciWorkflow, 'pull_request')).toEqual(
       ['opened', 'synchronize', 'reopened', 'edited'].sort(),
     );
+  });
+
+  /**
+   * The control the two tests above cannot supply for themselves.
+   *
+   * Both run against the real ci.yml, where `pull_request:` does carry
+   * `types:`. Neither can therefore distinguish "read the right block" from
+   * "read a block that happened to hold the right answer". This one asserts
+   * the absence directly, on a workflow built so the wrong answer is
+   * available and attributable: only `pull_request_target:` carries `types:`,
+   * so an unbounded scan returns its list and a bounded scan returns [].
+   *
+   * Guarding an extractor against returning NOTHING is not the same as
+   * guarding it against returning SOMEONE ELSE'S ANSWER, and the second is
+   * the failure mode that stays green.
+   */
+  it('does not read types from a sibling event block', () => {
+    const crafted = [
+      'name: CI',
+      'on:',
+      '  pull_request:',
+      '  pull_request_target:',
+      '    types: [opened, synchronize, reopened, edited]',
+      'jobs:',
+      '  desktop:',
+    ].join('\n');
+
+    expect(typesOf(crafted, 'pull_request')).toEqual([]);
+    // The wrong answer really is reachable in this fixture -- without this,
+    // the assertion above would also hold for a workflow with no `types:`
+    // anywhere, and would prove nothing about the bound.
+    expect(typesOf(crafted, 'pull_request_target')).toContain('edited');
   });
 });

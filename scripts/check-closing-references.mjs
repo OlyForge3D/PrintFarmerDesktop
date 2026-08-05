@@ -90,13 +90,32 @@ const INLINE_CODE = /`[^`\n]*`/g;
  * cannot work, but by reading the thing it is computed FROM. A derived field
  * and its source, read together, are a freshness witness; either alone is not.
  *
- * Deliberately used in one direction only. A witness that fires when the
- * derived field is NON-empty would be asserting that this function reproduces
- * GitHub's parser, which it does not and should not try to: that is a
- * hard-coded claim about someone else's grammar, and it goes stale toward the
- * FALSE RED -- GitHub adds a keyword, a correct PR goes red. Compare #146.
- * Firing only on `derived is empty but the body plainly says otherwise` keeps
- * the cost of being wrong bounded to a retry.
+ * Deliberately used in one direction only, and deliberately NOT fatal.
+ *
+ * A witness that fires when the derived field is NON-empty would be asserting
+ * that this function reproduces GitHub's parser, which it does not and should
+ * not try to: that is a hard-coded claim about someone else's grammar, and it
+ * goes stale toward the FALSE RED -- GitHub adds a keyword, a correct PR goes
+ * red. Compare #146.
+ *
+ * An earlier revision kept the `derived is empty` direction on the grounds
+ * that it left "the cost of being wrong bounded to a retry". Three reviewers
+ * refuted that, and the argument above is why: this direction encodes the
+ * claim `GitHub WOULD have bound this number`, which is the same kind of
+ * claim about the same grammar. Measured cases where it is false, all with
+ * the correct derived value of []:
+ *
+ *   ~~~ fences, indented fences, 4-space indented blocks, inline code
+ *   spanning a newline   -- code to GitHub, prose to the regexes above
+ *   `closes #349` where #349 is a PULL REQUEST -- closingIssuesReferences
+ *   holds issues only, and this repo cross-references PRs routinely
+ *   a nonexistent, cross-repo, or `owner/repo#n` number
+ *
+ * And the bound was not real. The input is the PR body, which is
+ * deterministic, so every re-run reproduces the verdict: the failure told the
+ * author nothing was wrong and to retry, and retrying could never clear it.
+ * A false red an author cannot clear is worse than the missed detection it
+ * was bought with, so the caller reports this and does not fail on it.
  */
 export function parseBoundClosures(body) {
   const source = typeof body === 'string' ? body.replace(/\r\n/g, '\n') : '';
@@ -364,33 +383,33 @@ export async function main(argv, deps = {}) {
     );
     console.error(`\n  ${summary}`);
     process.exitCode = 1;
-    return { ok: false, settled: false };
+    return { ok: false, settled: false, stale: contradiction.length > 0 };
   }
 
-  // Settled and self-contradictory. `settled` is a statement about stability,
-  // and this is the case that proves stability was never the question: the
-  // value held still for the whole floor while the field it is computed from
-  // said something else the entire time.
+  // Settled and self-contradictory. Reported, never fatal: the witness cannot
+  // tell a stale derived field from a reference GitHub was never going to
+  // bind, and the body is deterministic, so failing here is a red the author
+  // cannot clear by any action the message names. The verdict below belongs
+  // to the comparison; this only tells a human where to look.
   if (contradiction.length > 0) {
     console.error(
-      `The closing-reference field is stale: it settled on [] while the body ` +
-        `of the same response closes ${contradiction.map((n) => `#${n}`).join(', ')}.\n` +
-        `  Nothing is wrong with the pull request. Re-run the check.`,
+      `Note: the body closes ${contradiction.map((n) => `#${n}`).join(', ')} ` +
+        `while the derived field settled on []. Either the field is stale, or ` +
+        `those references are not issues this repository can close (a pull ` +
+        `request number, another repository, or a code block). Not failing on ` +
+        `it: re-reading cannot distinguish the two.`,
     );
-    console.error(`\n  ${summary}`);
-    process.exitCode = 1;
-    return { ok: false, settled: true, stale: true };
   }
 
   if (!result.ok) {
     console.error(formatFailure({ ...result, hasBlock, prNumber }));
     console.error(`\n  ${summary}`);
     process.exitCode = 1;
-    return { ok: false, settled: true };
+    return { ok: false, settled: true, stale: contradiction.length > 0 };
   }
 
   console.log(`Closing references match the declaration. ${summary}`);
-  return { ok: true, settled: true };
+  return { ok: true, settled: true, stale: contradiction.length > 0 };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
