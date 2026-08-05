@@ -687,6 +687,64 @@ and whose reported head is an ancestor of no mainline commit. There is nothing t
 The reviewer's reported mainline tip `ea39cd3` is **137 commits** behind the tip measured
 here.
 
+### Run AT — a number that varies by observer, published as a property of a commit
+
+**Trigger.** A reviewer authorized a repair to `.squad/decisions/inbox/ripley-go-and-look.md`,
+reporting that its reachability table publishes a clone-local count as an object property,
+and citing four rows. Measured at mainline `5baba9420c3762e5ad68fd25baf0cd61fb8e31ce`,
+read 2026-08-05T04:39Z.
+
+**The table has seven rows, not four.** The citation was bounded again, and the three rows
+past the bound are wrong by a larger margin than the four inside it.
+
+**Claim — the count is observer-dependent.** Confirmed, and this run supplies a **third
+observer**. `git branch -r --contains`, same command, same objects:
+
+| rev          | as published | this clone | reported by the reviewer |
+| ------------ | ------------ | ---------- | ------------------------ |
+| `a32ecf9`    | 0            | 0          | 0                        |
+| `0d1215f`    | 0            | 0          | —                        |
+| `741459de`   | **1**        | **0**      | **3**                    |
+| `1c80bdb381` | 1            | 0          | —                        |
+| `af03801`    | 3            | 1          | —                        |
+| `6538bed`    | 3            | 1          | —                        |
+| `bb36969`    | 3            | 1          | —                        |
+
+**Five of seven rows disagree with this clone, and one object reads 1, 0 and 3 across three
+readers.** Nothing about the commits changed between the readings; only the set of refs each
+clone had fetched. `--contains` answers _which of the refs I hold reach this object_ and is
+read as _how reachable is this object_.
+
+> **A number that varies by observer cannot be published. A command that produces the object
+> can.** The column is now a comment carrying the query, so the reader runs it in their own
+> refspace — where the answer is about them, which is the only thing that answer was ever
+> about.
+
+**And the prose was wrong in the same direction.** The note claimed _"in a fresh clone, two
+of the seven do not exist."_ Occupying the reader's position — `git clone` with no extra
+refspec, `is-shallow false` — **four of the seven do not exist.** Both the table and the
+sentence understated, because both were written from a store where eight worktrees share
+objects and nothing ever disappears.
+
+**Finding — the asymmetry survives the repair, and it is why the fix is a command.**
+Reachability is **provable by exhibiting one containing ref** and is **not disprovable by an
+enumeration of refs the reader cannot see**. The positive claim needs a single witness and
+travels intact; the negative claim quantifies over a set that differs per clone and **does
+not survive being sent to anyone**. `fresh-clone-exists` is published in the column's place
+precisely because it names the position it was measured from.
+
+**Finding — the author's store is the least informative place to audit citations from.** It
+is the one position where every `git show` succeeds, so it cannot distinguish a citation
+that is reachable from one that is merely resident. **A check run where it is cheapest to
+run is run where it can least discriminate**, and no amount of care inside that position
+recovers the distinction.
+
+**Caught in passing, against this run's own text.** The replacement sentence first read
+_"one more than this paragraph originally claimed"_ for a change from two to four. It was
+corrected to _two_ before the commit. **A run whose subject is a wrong number produced a
+wrong number in the sentence announcing it**, which is the ordinary case rather than an
+irony: the arithmetic sits in prose, where nothing checks it.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.

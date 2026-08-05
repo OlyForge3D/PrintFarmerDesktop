@@ -18,21 +18,55 @@
 
 **None of it required being right in advance. All of it required going to look, and the going-to-look was about four minutes each time.**
 
-**Correction, and it refutes this note's own title.** Every SHA cited above and below was audited against the remote on 2026-08-04. **Not one of them is on `development`, and two are reachable from no remote ref at all:**
+**Correction, and it refutes this note's own title.** Every SHA cited above and below was audited against the remote on 2026-08-04 and re-audited on 2026-08-05 from a fresh full clone. **Not one of them is on `development`, and four of the seven do not exist for a reader at all:**
 
 ```
-a32ecf9     on-development=NO   reachable-from-remote-refs: 0
-0d1215f     on-development=NO   reachable-from-remote-refs: 0
-741459de    on-development=NO   reachable-from-remote-refs: 1
-1c80bdb381  on-development=NO   reachable-from-remote-refs: 1
-af03801     on-development=NO   reachable-from-remote-refs: 3
-6538bed     on-development=NO   reachable-from-remote-refs: 3
-bb36969     on-development=NO   reachable-from-remote-refs: 3
+# Reachability is a property of the refspace you happen to have fetched, not of the
+# commit. Do not take these rows on trust -- reproduce them:
+#
+#   git fetch origin development
+#   git cat-file -e <sha>^{commit}                         # does the object exist for you?
+#   git merge-base --is-ancestor <sha> origin/development  # exit 0 = on trunk
+#
+# Audited 2026-08-05 in a clone made with `git clone` and no extra refspec.
+a32ecf9     on-development=NO   fresh-clone-exists=NO
+0d1215f     on-development=NO   fresh-clone-exists=NO
+741459de    on-development=NO   fresh-clone-exists=NO
+1c80bdb381  on-development=NO   fresh-clone-exists=NO
+af03801     on-development=NO   fresh-clone-exists=YES
+6538bed     on-development=NO   fresh-clone-exists=YES
+bb36969     on-development=NO   fresh-clone-exists=YES
 ```
+
+**A column was removed from that table, and the removal is the point.** It reported
+`git branch -r --contains` counts, published as though they were properties of the commits.
+They are not. The same command, against the same object, in three different clones:
+
+| observer                       | `741459de` |
+| ------------------------------ | ---------- |
+| this table, as first published | `1`        |
+| a second clone                 | `3`        |
+| a third clone                  | `0`        |
+
+**Nothing about the commit changed between those readings; only the set of refs each clone
+had fetched.** `--contains` answers _"which of the refs I hold reach this object"_ and is
+read as _"how reachable is this object"_. Five of the seven rows were wrong for the author
+of this repair, and all seven would read `0` for someone who had fetched only `development`.
+
+> **A number that varies by observer cannot be published. A command that produces the object
+> can.** That is why the column is a comment now: the reader runs the query in their own
+> refspace, where the answer is about them, which is the only thing that answer was ever
+> about.
+
+**And the asymmetry survives the repair.** Reachability is provable by exhibiting one
+containing ref and is _not_ disprovable by an enumeration of refs the reader cannot see.
+**The positive claim needs a single witness and travels; the negative claim quantifies over
+a set that differs per clone and does not survive being sent to anyone.** `fresh-clone-exists`
+is published instead because it names the position it was measured from.
 
 `a32ecf9` and `0d1215f` are **pre-rebase twins** — superseded generations of commits that were later rewritten. Their live counterparts, located by `git patch-id --stable` rather than by subject, are `3057836` and `16fbaa4` on the branch of PR #162, and those will themselves be destroyed when that PR squash-merges.
 
-So a note titled _"the artifact was in the repository the whole time"_ cites seven artifacts, **none of which is in the repository** in the only sense that matters to a reader — reachable from a ref they can fetch. Every one of them resolves in this machine's object store, because eight worktrees share one store and superseded heads never leave it. **In a fresh clone, two of the seven do not exist.**
+So a note titled _"the artifact was in the repository the whole time"_ cites seven artifacts, **none of which is in the repository** in the only sense that matters to a reader — reachable from a ref they can fetch. Every one of them resolves in this machine's object store, because eight worktrees share one store and superseded heads never leave it. **In a fresh clone, four of the seven do not exist** — measured from such a clone, not estimated, and two more than this paragraph originally claimed.
 
 **Nothing above is retracted.** The readings were taken from those objects and were correct. What is false is the implicit promise that a reader can repeat them.
 
