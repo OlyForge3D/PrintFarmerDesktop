@@ -37,6 +37,10 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { OrcaProfileEntry, type OrcaProfileSource } from '@shared/ipc';
 import type { RemoteCalibrationPrinterContext } from './calibrationWire.js';
+import {
+  findDuplicateJsonObjectKey,
+  findUnsafeJsonNumber,
+} from './untrustedJson.js';
 
 // ---------------------------------------------------------------------------
 // Traversal / security limits
@@ -306,6 +310,17 @@ async function parseProfileFile(
 
   // Reject excessively deep JSON structures.
   if (jsonDepth(parsed) > MAX_JSON_DEPTH) {
+    return null;
+  }
+
+  // Discovery never throws — a bad profile is dropped, not reported. Both of
+  // these are dropped for the same reason: the file has no single unambiguous
+  // reading. An unsafe number cannot survive a round trip intact, and colliding
+  // object keys leave the intended value undecidable.
+  if (findUnsafeJsonNumber(parsed) !== null) {
+    return null;
+  }
+  if (findDuplicateJsonObjectKey(buf.toString('utf8')) !== null) {
     return null;
   }
 

@@ -29,6 +29,10 @@ import { lstat, open } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { z } from 'zod';
 import {
+  findDuplicateJsonObjectKey,
+  findUnsafeJsonNumber,
+} from './untrustedJson.js';
+import {
   LegacyCalibrationBackupSummary,
   LegacyBackupProjectOutcome,
   LegacyBackupProjectResult,
@@ -441,58 +445,6 @@ function measureJsonDepth(value: unknown, depth = 0): number {
 }
 
 // ---------------------------------------------------------------------------
-// Duplicate key detection in JSON text
-// ---------------------------------------------------------------------------
-
-/**
- * Light-weight duplicate-key detector that works on the raw JSON text.
- * Returns the first duplicate key found, or null if none.
- */
-function findFirstDuplicateKey(jsonText: string): string | null {
-  const keyPattern = /"([^"\\]*(\\.[^"\\]*)*)"\s*:/g;
-  const objectStack: Set<string>[] = [];
-  const braceOrBracketPattern = /[{}[\]"]/g;
-  let inString = false;
-  let escapeNext = false;
-
-  // Simple structural scan: track when we enter/exit objects.
-  for (let i = 0; i < jsonText.length; i++) {
-    const ch = jsonText[i];
-    if (escapeNext) {
-      escapeNext = false;
-      continue;
-    }
-    if (ch === '\\' && inString) {
-      escapeNext = true;
-      continue;
-    }
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-    if (ch === '{') {
-      objectStack.push(new Set<string>());
-    } else if (ch === '}') {
-      objectStack.pop();
-    }
-    // ignore braceOrBracket noise — structural scan only
-    void braceOrBracketPattern;
-  }
-
-  // Second pass: use regex to find all keys and check for duplicates per object.
-  // Since full structural parsing is expensive, we just scan all keys globally.
-  const seenKeys = new Set<string>();
-  let match: RegExpExecArray | null;
-  while ((match = keyPattern.exec(jsonText)) !== null) {
-    const key = match[1]!;
-    if (seenKeys.has(key)) return key;
-    seenKeys.add(key);
-  }
-  return null;
-}
-
-// ---------------------------------------------------------------------------
 // Photo validation
 // ---------------------------------------------------------------------------
 
@@ -754,14 +706,39 @@ export async function runLegacyBackupPreflight(
     );
   }
 
-  // --- 7. Duplicate key detection ---
-  const dupKey = findFirstDuplicateKey(jsonText);
+  // --- 7. Unsafe numerics ---
+  //
+  // Measured before this existed: a backup declaring `payload_count:
+  // 9007199254740993` or `payload_size: -1` was ACCEPTED and reported as
+  // importable. Only non-finite values were refused, and only because
+  // `JSON.parse` cannot produce them. An integer past 2^53 silently loses
+  // identity on every subsequent comparison, and a negative size is a
+  // length that no allocation or bound can honour, so both are refused here
+  // rather than carried into the import.
+  const unsafeNumber = findUnsafeJsonNumber(rawJson);
+  if (unsafeNumber !== null) {
+    throw Object.assign(
+      new Error(
+        `Backup JSON contains ${unsafeNumber.reason} number at ${unsafeNumber.path}.`,
+      ),
+      { code: 'LEGACY_BACKUP_UNSAFE_NUMBER' },
+    );
+  }
+
+  // --- 8. Duplicate key detection ---
+  //
+  // Per *object*, not globally. The previous detector collected every key
+  // name in the document into one set, so a backup holding both a project
+  // and a photo repeated `id` and earned a duplicate-key warning with
+  // nothing duplicated — a false positive that a real regression could have
+  // hidden behind.
+  const dupKey = findDuplicateJsonObjectKey(jsonText);
   const warnings: string[] = [];
   if (dupKey !== null) {
     warnings.push(`Duplicate JSON key detected: "${dupKey}" (last value wins)`);
   }
 
-  // --- 8. Top-level schema validation ---
+  // --- 9. Top-level schema validation ---
   const backupResult = LegacyBackupV4.safeParse(rawJson);
   if (!backupResult.success) {
     const issues = backupResult.error.issues.slice(0, 5).map((i) => i.message);
@@ -772,7 +749,7 @@ export async function runLegacyBackupPreflight(
   }
   const backup = backupResult.data;
 
-  // --- 9. Count totals ---
+  // --- 10. Count totals ---
   let totalAttempts = 0;
   let totalPhotos = 0;
   for (const project of backup.projects) {
@@ -1193,7 +1170,8 @@ export function mapImportError(
       code === 'LEGACY_BACKUP_INVALID_MARKER' ||
       code === 'LEGACY_BACKUP_INVALID_JSON' ||
       code === 'LEGACY_BACKUP_INVALID_SCHEMA' ||
-      code === 'LEGACY_BACKUP_TOO_DEEP'
+      code === 'LEGACY_BACKUP_TOO_DEEP' ||
+      code === 'LEGACY_BACKUP_UNSAFE_NUMBER'
     ) {
       return {
         code: 'invalidData',

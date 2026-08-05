@@ -45,6 +45,103 @@ import type { OrcaProfileOperationError } from '@shared/ipc';
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Hard cap on the bytes install will write.
+ *
+ * Measured before this was added: `installOrcaProfileWindows` accepted and
+ * wrote a 2 MB profile as long as the caller supplied the matching hash. The
+ * content-hash gate pins *which* bytes are written but says nothing about how
+ * many, so it is not a size bound. #158 requires bounded allocation on every
+ * untrusted path, and a generator defect or a compromised caller reaches this
+ * one, so the bound is stated here rather than assumed upstream.
+ */
+export const ORCA_INSTALL_MAX_BYTES = 1_048_576;
+
+function isErrno(error: unknown, code: string): boolean {
+  return (
+    error !== null &&
+    typeof error === 'object' &&
+    'code' in error &&
+    error.code === code
+  );
+}
+
+function isUnderRoot(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === '' ||
+    (!relative.startsWith(`..${path.sep}`) &&
+      relative !== '..' &&
+      !path.isAbsolute(relative))
+  );
+}
+
+/**
+ * Create the install root one segment at a time, refusing any component that
+ * is a reparse point or that canonicalizes outside APPDATA.
+ *
+ * This replaces `mkdir(installRoot, { recursive: true })`, which follows an
+ * existing junction silently. Measured against the pre-fix code: with
+ * `%APPDATA%\OrcaSlicer\user\default\filament` made a junction to an unrelated
+ * directory, install reported success and the profile landed in that
+ * directory — a write outside the install root, which is exactly the escape
+ * #158 asks about and which the destination-file symlink check does not cover,
+ * because the destination file itself was never a link.
+ */
+async function ensureInstallRootSafe(installRoot: string): Promise<void> {
+  const appData = process.env['APPDATA'];
+  if (!appData || !isUnderRoot(installRoot, appData)) {
+    throw makeError('pathRestricted', 'Install root is outside APPDATA.');
+  }
+
+  let canonicalAppData: string;
+  try {
+    canonicalAppData = await realpath(appData);
+  } catch {
+    throw makeError('pathRestricted', 'APPDATA is inaccessible.');
+  }
+
+  let current = appData;
+  for (const segment of path
+    .relative(appData, installRoot)
+    .split(path.sep)
+    .filter(Boolean)) {
+    current = path.join(current, segment);
+    try {
+      const info = await lstat(current);
+      if (info.isSymbolicLink()) {
+        throw makeError(
+          'pathRestricted',
+          'Install root contains a symlink or junction.',
+        );
+      }
+      if (!info.isDirectory()) {
+        throw makeError(
+          'pathRestricted',
+          'Install root contains a non-directory component.',
+        );
+      }
+    } catch (error) {
+      if (!isErrno(error, 'ENOENT')) throw error;
+      await mkdir(current);
+      const created = await lstat(current);
+      if (created.isSymbolicLink() || !created.isDirectory()) {
+        throw makeError(
+          'pathRestricted',
+          'Install directory creation was redirected.',
+        );
+      }
+    }
+
+    if (!isUnderRoot(await realpath(current), canonicalAppData)) {
+      throw makeError(
+        'pathRestricted',
+        'Install root escapes canonical APPDATA.',
+      );
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Canonical Windows OrcaSlicer user-data roots
 // ---------------------------------------------------------------------------
@@ -206,7 +303,14 @@ export async function installOrcaProfileWindows(
     );
   }
 
-  // 2. Verify the generated JSON hash matches what the caller provided.
+  // 2. Verify the generated JSON hash matches what the caller provided, and
+  //    that there are not more bytes than install will ever write.
+  if (Buffer.byteLength(generatedJson, 'utf8') > ORCA_INSTALL_MAX_BYTES) {
+    throw makeError(
+      'verificationFailed',
+      `Generated profile exceeds ${ORCA_INSTALL_MAX_BYTES} bytes.`,
+    );
+  }
   const actualHash = sha256(generatedJson);
   if (actualHash !== expectedHash) {
     throw makeError(
@@ -218,8 +322,8 @@ export async function installOrcaProfileWindows(
   const installRoot = getWindowsOrcaInstallRoot();
   const destPath = computeInstallPath(safeFilename, installRoot);
 
-  // 3. Ensure destination directory exists.
-  await mkdir(installRoot, { recursive: true });
+  // 3. Ensure destination directory exists, without following a reparse point.
+  await ensureInstallRootSafe(installRoot);
 
   // 4. Canonicalize destination (may not exist yet — in that case just verify
   //    the parent is safe).
@@ -366,6 +470,7 @@ export async function restoreOrcaProfileWindows(
 
   const installRoot = getWindowsOrcaInstallRoot();
   const destPath = computeInstallPath(safeFilename, installRoot);
+  await ensureInstallRootSafe(installRoot);
 
   // Reject if destination is a symlink.
   try {

@@ -454,23 +454,19 @@ async function v4ThrownCode(filePath: string): Promise<Disposition> {
 }
 
 /**
- * Warnings a control fixture is allowed to carry.
+ * Preflight must accept the control fixture and classify it importable.
  *
- * `findFirstDuplicateKey` in calibrationImportV4 scans key names *globally*
- * rather than per object (see the comment at its second pass), so any backup
- * that contains both a project and a photo repeats the key name `id` and earns
- * a duplicate-key warning even though no single object has a duplicate. That is
- * a false positive in a warning-only detector, not a rejection, so the control
- * still proves arrival — but it has to be named here rather than silently
- * tolerated, otherwise a real duplicate-key regression would hide behind it.
+ * `warnings` is required to be empty, with no allowance for a known false
+ * positive. There used to be one: `findFirstDuplicateKey` scanned key names
+ * globally rather than per object, so any backup holding both a project and a
+ * photo repeated `id` and earned a duplicate-key warning with nothing
+ * duplicated. That detector has been replaced by `findDuplicateJsonObjectKey`,
+ * which scans per object, so a warning on a control fixture is now a real
+ * finding and this assertion is allowed to be strict again.
  */
-const V4_CONTROL_KNOWN_WARNINGS = /^Duplicate JSON key detected: "id"/;
-
-/** Preflight must accept the control fixture and classify it importable. */
 async function v4ControlAccepted(
   ctx: CellContext,
   name: string,
-  options: { readonly allowsGlobalIdKeyWarning?: boolean } = {},
 ): Promise<void> {
   const file = await writeBackup(ctx, `control-${name}`, fixture(name));
   const result = await runLegacyBackupPreflight(file);
@@ -478,12 +474,7 @@ async function v4ControlAccepted(
     result.importableCount,
     `control fixture ${name} did not reach the code under test as importable`,
   ).toBe(1);
-  if (options.allowsGlobalIdKeyWarning) {
-    expect(result.warnings).toHaveLength(1);
-    expect(result.warnings[0]).toMatch(V4_CONTROL_KNOWN_WARNINGS);
-  } else {
-    expect(result.warnings).toEqual([]);
-  }
+  expect(result.warnings).toEqual([]);
 }
 
 // ---------------------------------------------------------------------------
@@ -623,12 +614,14 @@ const ASSET_METHOD = 'CorpusMethod';
 const ASSET_INVALID_REASONS = [
   'badExtension',
   'badMagicBytes',
+  'contentTypeMismatch',
   'tooSmall',
   'tooLarge',
   'geometryOutOfBounds',
   'checksumMismatch',
   'methodDisabled',
   'approvalExpired',
+  'pathRestricted',
 ] as const;
 
 async function assetService(
@@ -862,10 +855,7 @@ const CELLS: Cell[] = [
       kind: 'classifiedContained',
       note: 'photo MIME/magic mismatch classified requiresAction',
     },
-    control: (ctx) =>
-      v4ControlAccepted(ctx, 'v4-photo-control.json', {
-        allowsGlobalIdKeyWarning: true,
-      }),
+    control: (ctx) => v4ControlAccepted(ctx, 'v4-photo-control.json'),
     run: async (ctx) => {
       const file = await writeBackup(
         ctx,
@@ -887,19 +877,35 @@ const CELLS: Cell[] = [
   {
     vector: 'unsafeNumerics',
     entryPoint: 'calibrationImportV4',
-    expect: { kind: 'threwTypedCode', code: 'LEGACY_BACKUP_INVALID_SCHEMA' },
-    control: (ctx) =>
-      v4ControlAccepted(ctx, 'v4-control-number.json', {
-        allowsGlobalIdKeyWarning: true,
-      }),
-    run: async (ctx) =>
-      v4ThrownCode(
+    expect: { kind: 'threwTypedCode', code: 'LEGACY_BACKUP_UNSAFE_NUMBER' },
+    control: (ctx) => v4ControlAccepted(ctx, 'v4-control-number.json'),
+    run: async (ctx) => {
+      // Three shapes, not one. Measured before the guard existed: only the
+      // non-finite value was refused. `9007199254740993` parses without error
+      // to ...992, and `-1` in a size-shaped field was accepted as importable,
+      // so a cell that tested non-finite alone reported this vector covered
+      // while two thirds of it walked through.
+      const first = await v4ThrownCode(
         await writeBackup(
           ctx,
           'numeric.json',
           fixture('v4-nonfinite-number.json'),
         ),
-      ),
+      );
+      for (const name of ['v4-unsafe-integer.json', 'v4-negative-size.json']) {
+        const also = await v4ThrownCode(
+          await writeBackup(ctx, `numeric-${name}`, fixture(name)),
+        );
+        expect(
+          also,
+          `${name} was not refused; the unsafe-number guard does not cover this shape`,
+        ).toEqual({
+          kind: 'threwTypedCode',
+          code: 'LEGACY_BACKUP_UNSAFE_NUMBER',
+        });
+      }
+      return first;
+    },
   },
   {
     vector: 'malformedBase64',
@@ -908,10 +914,7 @@ const CELLS: Cell[] = [
       kind: 'classifiedContained',
       note: 'malformed data URL classified requiresAction',
     },
-    control: (ctx) =>
-      v4ControlAccepted(ctx, 'v4-photo-control.json', {
-        allowsGlobalIdKeyWarning: true,
-      }),
+    control: (ctx) => v4ControlAccepted(ctx, 'v4-photo-control.json'),
     run: async (ctx) => {
       const file = await writeBackup(
         ctx,
@@ -1011,28 +1014,22 @@ const CELLS: Cell[] = [
   {
     vector: 'duplicateKeys',
     entryPoint: 'orcaProfileDiscovery',
-    expect: {
-      kind: 'classifiedContained',
-      note: 'duplicate key resolved last-wins, deterministically',
-    },
+    expect: { kind: 'excludedFromResults' },
     control: (ctx) =>
       discoveryControlFound(ctx, {
         'profile.json': fixture('orca-control.json'),
       }),
     run: async (ctx) => {
+      // This cell used to assert last-value-wins, which was a description of
+      // what `JSON.parse` happens to do rather than a decision anyone made. A
+      // profile whose keys collide has no single unambiguous reading, so
+      // discovery now drops it; the control above proves an otherwise
+      // identical profile is still found.
       await seedOrcaRoot(ctx, {
         'profile.json': fixture('orca-duplicate-keys.json'),
       });
-      const entries = await discoverLocalOrcaFilamentProfiles(
-        corpusPrinterContext(),
-      );
-      expect(entries).toHaveLength(1);
-      // Deterministic, not merged and not doubled: the later key wins.
-      expect(entries[0]!.material).toBe('ABS');
-      return {
-        kind: 'classifiedContained',
-        note: 'duplicate key resolved last-wins, deterministically',
-      };
+      expect(await discoverNames()).toEqual([]);
+      return { kind: 'excludedFromResults' };
     },
   },
   {
@@ -1131,32 +1128,30 @@ const CELLS: Cell[] = [
   {
     vector: 'unsafeNumerics',
     entryPoint: 'orcaProfileDiscovery',
-    expect: {
-      kind: 'classifiedContained',
-      note: 'non-finite profile numbers never reach the emitted entry',
-    },
+    expect: { kind: 'excludedFromResults' },
     control: (ctx) =>
       discoveryControlFound(ctx, {
         'profile.json': fixture('orca-control.json'),
       }),
     run: async (ctx) => {
-      await seedOrcaRoot(ctx, {
-        'profile.json': fixture('orca-nonfinite-number.json'),
-      });
-      const entries = await discoverLocalOrcaFilamentProfiles(
-        corpusPrinterContext(),
-      );
-      expect(entries).toHaveLength(1);
-      // The emitted entry is built from the printer context, not from the
-      // profile's numbers, and `OrcaProfileEntry` is finite-checked. A
-      // non-finite value in the file cannot become a non-finite value here.
-      expect(Number.isFinite(entries[0]!.nozzleDiameterMm)).toBe(true);
-      expect(entries[0]!.nozzleDiameterMm).toBe(0.4);
-      expect(JSON.stringify(entries)).not.toContain('null,null');
-      return {
-        kind: 'classifiedContained',
-        note: 'non-finite profile numbers never reach the emitted entry',
-      };
+      // This cell previously asserted only that the *printer context* stayed
+      // finite, which was true no matter what the profile contained — it
+      // described the code instead of constraining it. Discovery now drops a
+      // profile carrying an unsafe number, and the control above proves an
+      // otherwise-identical profile is still found, so exclusion here is a
+      // refusal rather than a failure to arrive.
+      for (const name of [
+        'orca-nonfinite-number.json',
+        'orca-unsafe-integer.json',
+        'orca-negative-size.json',
+      ]) {
+        await seedOrcaRoot(ctx, { 'profile.json': fixture(name) });
+        expect(
+          await discoverNames(),
+          `${name} was still emitted; the unsafe-number guard does not cover this shape`,
+        ).toEqual([]);
+      }
+      return { kind: 'excludedFromResults' };
     },
   },
   {
@@ -1173,8 +1168,13 @@ const CELLS: Cell[] = [
       // can reach in this repository's own source.
       expect(relativeImportsOf('orcaProfileDiscovery')).toEqual([
         './calibrationWire.js',
+        './untrustedJson.js',
       ]);
-      for (const file of ['orcaProfileDiscovery', 'calibrationWire']) {
+      for (const file of [
+        'orcaProfileDiscovery',
+        'calibrationWire',
+        'untrustedJson',
+      ]) {
         expect(mainSource(file)).not.toMatch(/base64|atob\(|data:[a-z]+\//i);
       }
       return EXCUSE_HOLDS;
@@ -1210,10 +1210,12 @@ const CELLS: Cell[] = [
     control: installControlAccepted,
     run: async (ctx) => {
       await installRoot(ctx);
-      // Measured and stated plainly: install applies no size cap of its own.
-      // The bound on what it will write is the content-hash gate — the caller
-      // must already hold the hash of exactly these bytes — and that gate runs
-      // before anything is created on disk.
+      // The hash is the hash of *these* bytes, deliberately. Passing a stale
+      // hash would earn the same `verificationFailed` from the content gate
+      // and the cell would bank as size coverage it does not have — the
+      // measured pre-fix behaviour was that a 2 MB profile with a matching
+      // hash was accepted and written. Supplying the correct hash means only
+      // the size cap can refuse this.
       const oversized = JSON.stringify({
         type: 'filament',
         name: 'PFD Corpus Oversized',
@@ -1222,7 +1224,7 @@ const CELLS: Cell[] = [
       return installThrownCode(() =>
         installOrcaProfileWindows(
           oversized,
-          sha256(INSTALL_CONTROL_JSON),
+          sha256(oversized),
           'pfd-corpus-oversized.json',
         ),
       );
@@ -1321,14 +1323,46 @@ const CELLS: Cell[] = [
       );
     },
     run: async (ctx) => {
-      const root = await installRoot(ctx);
       const target = path.join(ctx.outside, 'escaped-profile.json');
       await writeFile(target, INSTALL_CONTROL_JSON, 'utf8');
 
       if (process.platform === 'win32') {
-        // The Windows case #158 singles out: the destination the installer is
-        // about to write is a reparse point aimed outside the sandbox. This is
-        // where install writes actually happen, so it is the one that matters.
+        // (a) The install root *itself* is a junction aimed outside the
+        // sandbox, with an ordinary destination filename. Measured against
+        // the pre-fix code, this escaped: `mkdir(root, {recursive:true})`
+        // followed the junction, install reported success, and the profile
+        // landed outside. The destination-file check below does not cover it,
+        // because the destination file was never a link. Run first, so a
+        // regression here cannot be masked by (b) throwing for its own reason.
+        const junctionRoot = getWindowsOrcaInstallRoot();
+        const escapeDir = path.join(ctx.outside, 'root-escape');
+        await mkdir(escapeDir, { recursive: true });
+        await mkdir(path.dirname(junctionRoot), { recursive: true });
+        // The control already created the real install root; replace it, so
+        // the junction is what install finds at that path.
+        await rm(junctionRoot, { recursive: true, force: true });
+        await makeDirReparsePoint(escapeDir, junctionRoot);
+        await ctx.armTreeGuard();
+        const viaRoot = await installThrownCode(() =>
+          installOrcaProfileWindows(
+            INSTALL_CONTROL_JSON,
+            sha256(INSTALL_CONTROL_JSON),
+            'pfd-corpus-root-escape.json',
+          ),
+        );
+        expect(viaRoot).toEqual({
+          kind: 'threwTypedCode',
+          code: 'pathRestricted',
+        });
+        expect(
+          await readdir(escapeDir),
+          'install wrote through a junctioned install root',
+        ).toEqual([]);
+        await rm(junctionRoot, { recursive: true, force: true });
+
+        // (b) The Windows case #158 singles out: the destination the installer
+        // is about to write is a reparse point aimed outside the sandbox.
+        const root = await installRoot(ctx);
         const dest = path.join(root, 'pfd-corpus-escape.json');
         await makeReparsePoint(target, dest);
         await ctx.armTreeGuard();
@@ -1485,8 +1519,11 @@ const CELLS: Cell[] = [
     entryPoint: 'calibrationAssetManifest',
     // Note what the reason is: a *structural STL* rejection, not a JSON one.
     // This entry point never parses the asset as JSON, which is exactly why a
-    // nesting depth cannot be reached.
-    expect: { kind: 'typedInvalidResult', reason: 'geometryOutOfBounds' },
+    // nesting depth cannot be reached. It used to survive as far as the
+    // geometry bounds check; now the content-type discriminator requires the
+    // file to actually be STL-structured, so a JSON document wearing a .stl
+    // extension is refused one step earlier, before any geometry is read.
+    expect: { kind: 'typedInvalidResult', reason: 'badMagicBytes' },
     control: assetControlAccepted,
     run: async (ctx) => {
       const service = await assetService(ctx);
@@ -1578,16 +1615,20 @@ const CELLS: Cell[] = [
   {
     vector: 'symlinkJunctionEscape',
     entryPoint: 'calibrationAssetManifest',
-    // Measured and stated plainly: this entry point does NOT reject reparse
-    // points. It is a read-only validator over a file the user chose in the OS
-    // picker, so following a link the user themselves selected is not an
-    // escape. What has to hold instead is that it writes nothing anywhere and
-    // discloses no path back across the IPC boundary — which is what this cell
-    // asserts, and what the tree comparison around it enforces.
-    expect: {
-      kind: 'classifiedContained',
-      note: 'read-only through the reparse point, no write and no path disclosed',
-    },
+    // Two shapes, deliberately kept apart because they are not the same claim.
+    //
+    // (a) The staged file *itself* is a symlink pointing outside. This is now
+    //     a typed refusal. Measured before the fix, the validator called
+    //     `readFile` on the path and read straight through the link without
+    //     comment.
+    //
+    // (b) The staged file is an ordinary file inside a *linked directory* the
+    //     user picked. That is still allowed and is not an escape: this is a
+    //     read-only validator over a path the user themselves chose in the OS
+    //     picker. What has to hold there is that it writes nothing and
+    //     discloses no path back across the IPC boundary, which is asserted
+    //     inline and enforced by the tree comparison around the cell.
+    expect: { kind: 'typedInvalidResult', reason: 'pathRestricted' },
     control: assetControlAccepted,
     run: async (ctx) => {
       const service = await assetService(ctx);
@@ -1602,21 +1643,26 @@ const CELLS: Cell[] = [
       expect(['symlink', 'junction']).toContain(kind);
       await ctx.armTreeGuard();
 
-      const approvalId = await assetStageExisting(
+      // (b) first, because it must still be accepted — that is what proves
+      // the refusal in (a) is about the link and not about the fixture.
+      const viaDir = await assetStageExisting(
         service,
         path.join(link, 'escaped.stl'),
       );
-      const result = await service.validateFile(approvalId, ASSET_METHOD);
-      expect(result.status).toBe('ok');
-      // No path, absolute or otherwise, crosses back to the renderer.
-      const serialised = JSON.stringify(result);
+      const dirResult = await service.validateFile(viaDir, ASSET_METHOD);
+      expect(dirResult.status).toBe('ok');
+      const serialised = JSON.stringify(dirResult);
       expect(serialised).not.toContain('escaped.stl');
       expect(serialised).not.toContain(ctx.outside.split('\\').join('\\\\'));
-      expect(Object.keys(result)).not.toContain('filePath');
-      return {
-        kind: 'classifiedContained',
-        note: 'read-only through the reparse point, no write and no path disclosed',
-      };
+      expect(Object.keys(dirResult)).not.toContain('filePath');
+
+      // (a) the file symlink.
+      const fileLink = path.join(ctx.sandbox, 'linked-file.stl');
+      await makeReparsePoint(path.join(escapedDir, 'escaped.stl'), fileLink);
+      const viaFile = await assetStageExisting(service, fileLink);
+      return assetInvalidReason(
+        await service.validateFile(viaFile, ASSET_METHOD),
+      );
     },
   },
   {
@@ -1662,12 +1708,16 @@ const CELLS: Cell[] = [
   {
     vector: 'unsafeNumerics',
     entryPoint: 'calibrationAssetManifest',
-    expect: { kind: 'typedInvalidResult', reason: 'geometryOutOfBounds' },
+    expect: { kind: 'typedInvalidResult', reason: 'badMagicBytes' },
     control: assetControlAccepted,
     run: async (ctx) => {
       const service = await assetService(ctx);
       // Header declares 0xFFFFFFFF triangles in a 134-byte file. The declared
       // count is attacker-controlled and is never trusted to size anything.
+      // It is now refused by the content-type discriminator, which requires
+      // the declared count to account for exactly the bytes present, rather
+      // than surviving to the geometry bounds check as it did when any file
+      // of 84 bytes or more counted as STL.
       const approvalId = await assetStage(
         ctx,
         service,
