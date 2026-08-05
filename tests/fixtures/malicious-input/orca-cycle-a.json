@@ -1,0 +1,6 @@
+{
+  "type": "filament",
+  "name": "PFD Corpus Filament",
+  "filament_type": "PLA",
+  "inherits": "PFD Corpus Parent"
+}

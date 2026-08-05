@@ -20,3 +20,11 @@ resources/target-profiles/**/profiles/** -text -whitespace
 .squad/orchestration-log/** merge=union
 .squad/rai/audit-trail.md merge=union
 .squad/fact-checker/audit-trail.md merge=union
+
+# Malicious-input corpus fixtures (#158) are byte-exact by construction: magic
+# bytes, declared-vs-actual lengths, and offsets are the thing under test, so
+# no normalization may touch them.
+tests/fixtures/malicious-input/** -text
+# The generator is ordinary repository source, not a fixture, so it keeps
+# normal end-of-line handling.
+tests/fixtures/malicious-input/generate.mjs text eol=lf

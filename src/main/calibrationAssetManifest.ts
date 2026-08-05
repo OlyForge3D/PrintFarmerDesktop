@@ -29,6 +29,9 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
+import { constants as fsConstants, lstat, open } from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dialog, app } from 'electron';
 import { z } from 'zod';
@@ -98,11 +101,17 @@ function detectContentType(
     ) {
       return 'model/stl';
     }
-    // Binary STL: 80-byte header + 4-byte count — valid if size matches
-    // 80 + 4 + triangles * 50 bytes. We accept any STL with correct size
-    // heuristic (checked separately in bounds validation).
+    // Binary STL has no fixed magic marker. Its type discriminator is the
+    // exact 80-byte header + uint32 count + count*50-byte record structure,
+    // so the declared triangle count must account for every remaining byte.
+    // Accepting any >= 84-byte file (the previous rule) meant the "magic
+    // bytes" check passed on arbitrary binary content and on a header whose
+    // count disagreed with the payload.
     if (buffer.length >= 84) {
-      return 'model/stl';
+      const triangleCount = buffer.readUInt32LE(80);
+      if (buffer.length === 84 + triangleCount * 50) {
+        return 'model/stl';
+      }
     }
     return null;
   }
@@ -121,6 +130,96 @@ interface StagedFile {
   extension: string;
   byteSize: number;
   stagedAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// Bounded, link-refusing asset read
+// ---------------------------------------------------------------------------
+
+type AssetReadFailure = {
+  readonly status: 'invalid';
+  readonly reason: 'pathRestricted' | 'tooLarge';
+  readonly detail: string;
+};
+
+/**
+ * Read a staged asset with the size bound applied *before* the allocation.
+ *
+ * The previous code called `readFile` on the staged path and checked the
+ * length afterwards, so a multi-gigabyte selection was fully materialised in
+ * the main process before being refused, and a symlinked selection was read
+ * through without comment. #158 requires bounded allocation and asks about
+ * reparse points at every entry point, so both are decided here, up front.
+ *
+ * The descriptor is reused for the size check, the read and the re-check, and
+ * `O_NOFOLLOW` is requested where the platform offers it, so a path swapped
+ * between the `lstat` and the open cannot be what actually gets read.
+ */
+async function readBoundedRegularAsset(
+  filePath: string,
+  maximumBytes: number,
+): Promise<
+  { readonly status: 'ok'; readonly content: Buffer } | AssetReadFailure
+> {
+  const restricted = (detail: string): AssetReadFailure => ({
+    status: 'invalid',
+    reason: 'pathRestricted',
+    detail,
+  });
+  const tooLarge = (size: number): AssetReadFailure => ({
+    status: 'invalid',
+    reason: 'tooLarge',
+    detail: `File is ${size} bytes, maximum is ${maximumBytes} bytes.`,
+  });
+
+  let selectedInfo: Stats;
+  try {
+    selectedInfo = await lstat(filePath);
+  } catch {
+    return restricted('Selected asset is inaccessible.');
+  }
+  if (selectedInfo.isSymbolicLink() || !selectedInfo.isFile()) {
+    return restricted('Selected asset must be a regular, non-symlink file.');
+  }
+  if (selectedInfo.size > maximumBytes) {
+    return tooLarge(selectedInfo.size);
+  }
+
+  let file: FileHandle;
+  try {
+    file = await open(
+      filePath,
+      fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+    );
+  } catch {
+    return restricted(
+      'Selected asset could not be opened without following links.',
+    );
+  }
+  try {
+    const before = await file.stat();
+    if (!before.isFile()) {
+      return restricted('Selected asset is not a regular file.');
+    }
+    if (before.size > maximumBytes) {
+      return tooLarge(before.size);
+    }
+    const content = await file.readFile();
+    const after = await file.stat();
+    if (
+      before.size !== after.size ||
+      before.mtimeMs !== after.mtimeMs ||
+      (before.ino !== 0 && before.ino !== after.ino)
+    ) {
+      return restricted('Selected asset changed while it was read.');
+    }
+    if (content.byteLength > maximumBytes) {
+      return tooLarge(content.byteLength);
+    }
+    return { status: 'ok', content };
+  } finally {
+    await file.close();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -261,12 +360,14 @@ export class CalibrationAssetManifestService {
         reason:
           | 'badExtension'
           | 'badMagicBytes'
+          | 'contentTypeMismatch'
           | 'tooSmall'
           | 'tooLarge'
           | 'geometryOutOfBounds'
           | 'checksumMismatch'
           | 'methodDisabled'
-          | 'approvalExpired';
+          | 'approvalExpired'
+          | 'pathRestricted';
         detail: string;
       }
     | { status: 'error'; message: string }
@@ -323,30 +424,31 @@ export class CalibrationAssetManifestService {
       };
     }
 
-    // Read the file for content checks
-    let content: Buffer;
-    try {
-      content = await readFile(staged.filePath);
-    } catch (error) {
-      return {
-        status: 'error',
-        message:
-          error instanceof Error
-            ? error.message
-            : 'Could not read selected file.',
-      };
-    }
-
-    // 2. Magic bytes check
-    const detectedType = detectContentType(
-      content.slice(0, 512),
-      entry.expectedExtension,
+    // Bound and verify the selection before allocating its contents.
+    const readResult = await readBoundedRegularAsset(
+      staged.filePath,
+      entry.maxSizeBytes,
     );
+    if (readResult.status === 'invalid') return readResult;
+    const content = readResult.content;
+
+    // 2. Magic bytes check. The whole buffer is passed, not the first 512
+    //    bytes, because binary STL's discriminator is a whole-file structural
+    //    relationship (header + declared count * record size) that a prefix
+    //    cannot express.
+    const detectedType = detectContentType(content, entry.expectedExtension);
     if (detectedType === null) {
       return {
         status: 'invalid',
         reason: 'badMagicBytes',
         detail: `File does not have the expected signature for ".${expectedExt}" content.`,
+      };
+    }
+    if (detectedType !== entry.contentType) {
+      return {
+        status: 'invalid',
+        reason: 'contentTypeMismatch',
+        detail: `Detected ${detectedType}, but the manifest declares ${entry.contentType}.`,
       };
     }
 
