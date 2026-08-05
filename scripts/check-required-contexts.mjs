@@ -276,6 +276,14 @@ export function runGh(run, args, env, platform = process.platform) {
  * purpose is to keep those apart. main() is wrapped for the same reason: an
  * exception is not evidence about the subject.
  *
+ * THAT WRAPPER HAS A BOUNDARY AND IT IS WORTH STATING, because I later walked
+ * across it. It covers exceptions thrown from inside main(). It cannot cover a
+ * failure to LOAD this module — ESM resolves the static import graph before
+ * evaluating the file, so a missing sibling exits 1 with ERR_MODULE_NOT_FOUND
+ * while main does not yet exist. Same laundering, one phase earlier, and no
+ * in-process handler can reach it. tests/requiredContexts.test.ts asserts the
+ * only decidable half: every sibling named below is on disk.
+ *
  * @param {NodeJS.ProcessEnv} env
  * @param {typeof spawnSync} run
  * @returns {string | null}
