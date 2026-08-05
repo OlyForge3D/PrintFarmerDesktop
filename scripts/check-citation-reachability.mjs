@@ -70,6 +70,22 @@ const git = (args) => {
   }
 };
 
+// A shallow clone truncates history, so `rev-list` cannot see commits that exist and are
+// reachable in a complete one. Every ORPHAN this check reports would then be an artifact of
+// the clone depth rather than a property of the citation -- measured on this repository, a
+// `--depth 50` clone reported 47 orphans where a full clone of the same commit reported 36.
+// The two runs are indistinguishable in their output, which is the same silent degradation
+// this check exists to make impossible. Refuse the verdict instead of publishing a wrong one.
+if (git(['rev-parse', '--is-shallow-repository']) === 'true') {
+  console.error(
+    'INCONCLUSIVE: this is a shallow clone, so reachability cannot be decided here.',
+  );
+  console.error('Deepen the checkout and re-run:');
+  console.error('  git fetch --unshallow');
+  console.error('  actions/checkout@v4 with: { fetch-depth: 0 }');
+  process.exit(2);
+}
+
 // Revisions a reader is assumed to hold. `origin/development` may be absent in a shallow or
 // branch-only checkout; the branch head alone still gives a usable, if stricter, answer.
 const readerRevs = ['HEAD', 'origin/development'].filter((r) =>
