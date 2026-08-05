@@ -4,8 +4,10 @@ import {
   formatFailure,
   formatUnsettled,
   main,
+  parseBoundClosures,
   parseDeclaredClosures,
   readSettled,
+  witnessContradiction,
 } from '../scripts/check-closing-references.mjs';
 
 /**
@@ -136,13 +138,25 @@ describe('readSettled', () => {
     // implementation guaranteed to report the stale value.
     const readings = [[], [], [231], [231]];
     let index = 0;
-    const result = await readSettled(() => readings[index++] as number[], {
-      ...fakeClock(),
-      delayMs: 20_000,
-      minElapsedMs: 60_000,
-    });
+    const result = await readSettled(
+      // Holds at the final value once the script is exhausted, because that
+      // is what GitHub does: a settled field keeps returning the same answer.
+      // A fixture that runs off its end instead throws deep inside the
+      // function, which reads as a code fault rather than as "this scenario
+      // needs more time than the budget allows" -- and that distinction is
+      // the whole subject here.
+      () => (readings[Math.min(index++, readings.length - 1)] as number[]),
+      {
+        ...fakeClock(),
+        delayMs: 20_000,
+        minElapsedMs: 60_000,
+      },
+    );
     expect(result.value).toEqual([231]);
     expect(result.settled).toBe(true);
+    // It settled on the value that ARRIVED, having held still for the floor --
+    // not merely because polling had been running that long.
+    expect(result.stableMs).toBeGreaterThanOrEqual(60_000);
   });
 
   it('would settle on the stale value without the wall-clock floor', async () => {
@@ -242,9 +256,16 @@ describe('main', () => {
   const BODY = ['```' + KEYWORD, '#231', '```'].join('\n');
 
   /** `gh` stub: body on the first call shape, closures on the other. */
-  function ghStub(closures: number[]) {
-    return (args: string[]) =>
-      args.includes('body') ? BODY : JSON.stringify(closures);
+  function ghStub(closures: number[], witnessBody: string = BODY) {
+    return (args: string[]) => {
+      // The witness read asks for both fields at once. Checked before the
+      // bare-`body` shape because the combined selector is a single argument
+      // and would not match it.
+      if (args.includes('body,closingIssuesReferences')) {
+        return JSON.stringify({ body: witnessBody, refs: closures });
+      }
+      return args.includes('body') ? BODY : JSON.stringify(closures);
+    };
   }
 
   function silenced() {
@@ -335,5 +356,237 @@ describe('main', () => {
     });
     expect(message).toContain('It is not reported as a result');
     expect(message).toContain('reading too early');
+  });
+});
+
+/**
+ * The wall-clock floor is the load-bearing half of `readSettled`, and these
+ * pin WHICH interval it measures. Anchored to the start of polling it answers
+ * "have we been asking for a minute"; the claim being made is "has the value
+ * held still for a minute". A run that churns and then agrees twice satisfies
+ * the first and not the second, and it is the arrangement a slow, noisy field
+ * produces naturally.
+ */
+describe('readSettled wall-clock floor', () => {
+  /** Virtual clock: advances only on sleep, so elapsed figures are exact. */
+  function clock() {
+    let t = 0;
+    return { sleep: async (ms: number) => void (t += ms), now: () => t };
+  }
+
+  it('refuses a value that agreed only briefly, however long polling ran', async () => {
+    const { sleep, now } = clock();
+    let i = 0;
+    // Twelve different values, then agreement. Total elapsed clears 60s only
+    // because of the churn -- the returned value is five seconds old.
+    //
+    // `maxReads` is pinned rather than left to the default on purpose. The
+    // property under test is WHICH interval the floor measures, and the run
+    // has to end while the agreement is still young for that to be visible.
+    // Given enough reads this value does eventually hold still for a real
+    // sixty seconds and settling becomes correct -- so a version of this spec
+    // that relied on the default budget would pass today and go green the
+    // moment the budget widened, which is exactly what happened to it once.
+    const result = await readSettled(
+      async () => {
+        i += 1;
+        return i <= 12 ? [i] : [999];
+      },
+      { sleep, now, maxReads: 14 },
+    );
+
+    expect(result.settled).toBe(false);
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(60000);
+    expect(result.stableMs).toBeLessThan(60000);
+  });
+
+  it('can still settle a value that arrives as late as the measurement allows', async () => {
+    const { sleep, now } = clock();
+    // The budget and the floor are one design, not two knobs. With the floor
+    // anchored to the agreement run, the defaults must cover worst measured
+    // arrival (45s) PLUS the floor (60s). They did not when the floor was
+    // first tightened: the earliest reachable settle became 98s against a 95s
+    // budget, so this check would have reported unsettled on every pull
+    // request that armed a closure, and gone red on all of them.
+    //
+    // Nothing else in this file fails when that happens, because every other
+    // spec passes its own budget. This one runs on the shipped defaults on
+    // purpose.
+    const result = await readSettled(
+      async () => (now() < 45_000 ? [] : [231]),
+      { sleep, now },
+    );
+
+    expect(result.settled).toBe(true);
+    expect(result.value).toEqual([231]);
+  });
+
+  it('settles a value that has actually held still for the floor', async () => {
+    const { sleep, now } = clock();
+    const result = await readSettled(async () => [231], { sleep, now });
+
+    // The control for the spec above: same instrument, same floor, and the
+    // only difference is that this value really did hold still. Without it,
+    // "settled: false" above could just mean the function never settles.
+    expect(result.settled).toBe(true);
+    expect(result.value).toEqual([231]);
+    expect(result.stableMs).toBeGreaterThanOrEqual(60000);
+  });
+
+  it('measures stability from the last change, not from the first read', async () => {
+    const { sleep, now } = clock();
+    let i = 0;
+    const result = await readSettled(
+      async () => {
+        i += 1;
+        return i <= 2 ? [1] : [2];
+      },
+      { sleep, now },
+    );
+
+    // elapsedMs and stableMs are different quantities and a caller cannot
+    // derive one from the other. The value changed once, ten seconds in.
+    expect(result.value).toEqual([2]);
+    expect(result.settled).toBe(true);
+    expect(result.elapsedMs).toBeGreaterThan(result.stableMs);
+    expect(result.elapsedMs - result.stableMs).toBe(10000);
+  });
+});
+
+describe('parseBoundClosures', () => {
+  it('finds a reference GitHub would bind', () => {
+    expect(parseBoundClosures(`This ${KEYWORD} #231 and nothing else.`)).toEqual([231]);
+  });
+
+  it('ignores the regions measured to be inert', () => {
+    const body = [
+      '```' + KEYWORD,
+      '#111',
+      '```',
+      '',
+      '```',
+      `${KEYWORD} #222`,
+      '```',
+      '',
+      `an inline \`${KEYWORD} #333\` span`,
+      `<!-- ${KEYWORD} #444 -->`,
+    ].join('\n');
+
+    // All four suppressions were measured live on PR #352, not assumed. The
+    // declaration block is inert for the same reason as any other fence,
+    // which is the fact the whole declaration-site design rests on.
+    expect(parseBoundClosures(body)).toEqual([]);
+  });
+
+  it('reads every documented keyword form', () => {
+    const body = ['fixes #1', 'resolved #2', 'close #3'].join('\n\n');
+    expect(parseBoundClosures(body)).toEqual([1, 2, 3]);
+  });
+});
+
+describe('witnessContradiction', () => {
+  it('reports a derived field its own source contradicts', () => {
+    expect(witnessContradiction(`${KEYWORD} #231`, [])).toEqual([231]);
+  });
+
+  it('says nothing when the derived field is non-empty', () => {
+    // Deliberately one-directional. Firing here would assert that
+    // parseBoundClosures reproduces GitHub's grammar; it does not, and a
+    // guard that claims someone else's parser goes stale toward the false
+    // red. The cost of being wrong stays bounded to a retry.
+    expect(witnessContradiction('prose that binds nothing', [231])).toEqual([]);
+    expect(witnessContradiction(`${KEYWORD} #999`, [231])).toEqual([]);
+  });
+
+  it('says nothing when the body genuinely closes nothing', () => {
+    expect(witnessContradiction('a body that mentions #231 only', [])).toEqual([]);
+  });
+});
+
+/**
+ * The composition. `main` is where the two reads meet, and the stale case is
+ * invisible in either one alone: the derived field settles on [], which is
+ * the correct answer for most pull requests, so it fails toward passing.
+ */
+describe('main staleness witness', () => {
+  const PROSE = `This one ${KEYWORD} #231.`;
+
+  function silenced() {
+    return {
+      log: vi.spyOn(console, 'log').mockImplementation(() => undefined),
+      error: vi.spyOn(console, 'error').mockImplementation(() => undefined),
+    };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    process.exitCode = undefined;
+  });
+
+  /** Serves both call shapes; `witness` is the body the combined read returns. */
+  function ghStub(declBody: string, witness: string, refs: number[]) {
+    return (args: string[]) => {
+      if (args.includes('body,closingIssuesReferences')) {
+        return JSON.stringify({ body: witness, refs });
+      }
+      return args.includes('body') ? declBody : JSON.stringify(refs);
+    };
+  }
+
+  it('fails a settled empty read that the body of the same response contradicts', async () => {
+    const spies = silenced();
+    // Declares nothing and arms nothing: on the settled value alone this is a
+    // clean pass, and that is exactly the shape a stale read takes.
+    const result = await main(['231'], {
+      run: ghStub('no declaration here', PROSE, []),
+      readClosures: async (read) => {
+        await read();
+        return { value: [], reads: 13, settled: true, elapsedMs: 60000, stableMs: 60000 };
+      },
+    });
+
+    expect(result).toEqual({ ok: false, settled: true, stale: true });
+    expect(process.exitCode).toBe(1);
+    const printed = spies.error.mock.calls.map((call) => call[0]).join('\n');
+    expect(printed).toContain('stale');
+    // It must not read as an authoring mistake. Nothing is wrong with the PR.
+    expect(printed).not.toContain('do not match its declaration');
+  });
+
+  it('passes the same settled empty read when the body really closes nothing', async () => {
+    const spies = silenced();
+    // The control. Identical in every respect the check can see except the
+    // one the witness reads, so a pass here is attributable to the witness
+    // and not to the scenario being easy.
+    const result = await main(['231'], {
+      run: ghStub('no declaration here', 'a body that merely mentions #231', []),
+      readClosures: async (read) => {
+        await read();
+        return { value: [], reads: 13, settled: true, elapsedMs: 60000, stableMs: 60000 };
+      },
+    });
+
+    expect(result).toEqual({ ok: true, settled: true });
+    expect(process.exitCode).toBeUndefined();
+    expect(spies.error).not.toHaveBeenCalled();
+  });
+
+  it('does not let the witness override a real declaration mismatch', async () => {
+    const spies = silenced();
+    const declared = ['```' + KEYWORD, '#231', '```'].join('\n');
+    const result = await main(['231'], {
+      run: ghStub(declared, 'body closing nothing in prose', []),
+      readClosures: async (read) => {
+        await read();
+        return { value: [], reads: 13, settled: true, elapsedMs: 60000, stableMs: 60000 };
+      },
+    });
+
+    // Declared #231, armed nothing, and the body does not contradict the read.
+    // That is a genuine finding and must still be reported as one.
+    expect(result).toEqual({ ok: false, settled: true });
+    const printed = spies.error.mock.calls.map((call) => call[0]).join('\n');
+    expect(printed).toContain('do not match its declaration');
+    expect(printed).not.toContain('field is stale');
   });
 });

@@ -20,6 +20,8 @@ export interface SettledRead {
   reads: number;
   settled: boolean;
   elapsedMs: number;
+  /** Time the returned value has held still. The floor is measured on this. */
+  stableMs: number;
 }
 
 export interface SettleOptions {
@@ -32,6 +34,10 @@ export interface SettleOptions {
 }
 
 export function parseDeclaredClosures(body: string): DeclaredClosures;
+
+export function parseBoundClosures(body: string): number[];
+
+export function witnessContradiction(body: string, derived: number[]): number[];
 
 export function compareClosures(
   declared: number[],
@@ -68,4 +74,4 @@ export interface MainDeps {
 export function main(
   argv: string[],
   deps?: MainDeps,
-): Promise<{ ok: boolean; settled: boolean }>;
+): Promise<{ ok: boolean; settled: boolean; stale?: boolean }>;

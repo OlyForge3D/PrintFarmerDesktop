@@ -69,6 +69,63 @@ export function parseDeclaredClosures(body) {
   return { hasBlock, declared: [...declared].sort((a, b) => a - b) };
 }
 
+/** GitHub's closing keywords, as documented and as measured on this repo. */
+const CLOSING_KEYWORD = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
+
+/** Regions GitHub does not read closing references out of. Measured on PR #352. */
+const HTML_COMMENT = /<!--[\s\S]*?-->/g;
+const FENCED_BLOCK = /^```[\s\S]*?^```[^\S\n]*$/gm;
+const INLINE_CODE = /`[^`\n]*`/g;
+
+/**
+ * The references a body would bind, used ONLY as a staleness witness.
+ *
+ * `closingIssuesReferences` is DERIVED from the body. Read the two together
+ * and they become mutually checkable: if the body in a response carries a
+ * live closing reference while the derived field in that SAME response is
+ * empty, the response is internally inconsistent, and the derived half is the
+ * stale one. That is the only way found to detect the failure this module's
+ * header calls undecidable -- not by watching the value, which is exactly what
+ * cannot work, but by reading the thing it is computed FROM. A derived field
+ * and its source, read together, are a freshness witness; either alone is not.
+ *
+ * Deliberately used in one direction only. A witness that fires when the
+ * derived field is NON-empty would be asserting that this function reproduces
+ * GitHub's parser, which it does not and should not try to: that is a
+ * hard-coded claim about someone else's grammar, and it goes stale toward the
+ * FALSE RED -- GitHub adds a keyword, a correct PR goes red. Compare #146.
+ * Firing only on `derived is empty but the body plainly says otherwise` keeps
+ * the cost of being wrong bounded to a retry.
+ */
+export function parseBoundClosures(body) {
+  const source = typeof body === 'string' ? body.replace(/\r\n/g, '\n') : '';
+  const prose = source
+    .replace(HTML_COMMENT, '')
+    .replace(FENCED_BLOCK, '')
+    .replace(INLINE_CODE, '');
+  const bound = new Set();
+  for (const match of prose.matchAll(CLOSING_KEYWORD)) {
+    bound.add(Number(match[1]));
+  }
+  return [...bound].sort((a, b) => a - b);
+}
+
+/**
+ * A settled read that its own source contradicts.
+ *
+ * Returns the references the body implies and the derived field lacks. Empty
+ * means no contradiction -- which is NOT the same as "the read is fresh", and
+ * the caller must not read it that way. This detects one stale case: the one
+ * where staleness is invisible precisely because the stale value, `[]`, is
+ * also the correct answer for most pull requests, so it fails toward passing.
+ */
+export function witnessContradiction(body, derived) {
+  if (derived.length > 0) {
+    return [];
+  }
+  return parseBoundClosures(body);
+}
+
 /** Set comparison, reported as the two directions rather than a boolean. */
 export function compareClosures(declared, actual) {
   const declaredSet = new Set(declared);
@@ -103,11 +160,33 @@ export function compareClosures(declared, actual) {
  * The only thing that separates them is elapsed time against a measured
  * settling interval, so this requires BOTH a wall-clock floor and agreement.
  * The floor is the load-bearing half; agreement alone is decoration.
+ *
+ * The floor is therefore measured from the start of the CURRENT AGREEMENT RUN,
+ * not from the start of polling. Those are different quantities and only the
+ * first one is the claim being made. Anchored to the start of polling, the
+ * floor answers "have we been asking for a minute", when what makes a value
+ * trustworthy is "has it held still for a minute" -- so a value that churned
+ * for a minute and then agreed twice five seconds apart cleared a
+ * sixty-second floor. Worse, that arrangement is perverse in the direction
+ * that matters: the longer the field was unstable, the more elapsed time
+ * accrued toward the threshold, so instability made the guard EASIER to
+ * satisfy rather than harder.
+ *
+ * `stableMs` is reported alongside `elapsedMs` because a caller cannot derive
+ * one from the other, and it is the one the verdict rests on.
  */
 export async function readSettled(read, options = {}) {
   const {
     requiredAgreements = 2,
-    maxReads = 20,
+    // The budget is COUPLED to the floor and cannot be tuned apart from it.
+    // Tightening the floor to the agreement run means the value must arrive
+    // AND then hold still, so the budget has to cover both: worst measured
+    // arrival (45s) + floor (60s) = 105s. At the previous 20 reads the budget
+    // was 95s, and the earliest possible settle became 98s -- unreachable, so
+    // every armed pull request would have reported unsettled and gone red.
+    // A stricter floor without a wider budget does not make the check safer,
+    // it converts a false pass into a false red on every subject.
+    maxReads = 40,
     delayMs = 5000,
     minElapsedMs = 60000,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -118,6 +197,7 @@ export async function readSettled(read, options = {}) {
   let previous;
   let agreements = 0;
   let reads = 0;
+  let agreementStart = start;
 
   for (let i = 0; i < maxReads; i += 1) {
     if (i > 0) {
@@ -131,10 +211,12 @@ export async function readSettled(read, options = {}) {
     } else {
       agreements = 1;
       previous = key;
+      agreementStart = now();
     }
     const elapsedMs = now() - start;
-    if (agreements >= requiredAgreements && elapsedMs >= minElapsedMs) {
-      return { value: JSON.parse(previous), reads, settled: true, elapsedMs };
+    const stableMs = now() - agreementStart;
+    if (agreements >= requiredAgreements && stableMs >= minElapsedMs) {
+      return { value: JSON.parse(previous), reads, settled: true, elapsedMs, stableMs };
     }
   }
 
@@ -143,6 +225,7 @@ export async function readSettled(read, options = {}) {
     reads,
     settled: false,
     elapsedMs: now() - start,
+    stableMs: now() - agreementStart,
   };
 }
 
@@ -234,28 +317,36 @@ export async function main(argv, deps = {}) {
   const body = run(['pr', 'view', prNumber, '--json', 'body', '--jq', '.body']);
   const { declared, hasBlock } = parseDeclaredClosures(body);
 
+  // Both fields out of ONE response. Fetched separately they cannot witness
+  // each other: two calls can straddle the propagation, so a fresh body and a
+  // stale derived field would be an ordinary result rather than a contradiction.
+  let witnessBody = '';
   const {
     value: actual,
     reads,
     settled,
     elapsedMs = 0,
+    stableMs = 0,
   } = await readClosures(() => {
     const raw = run([
       'pr',
       'view',
       prNumber,
       '--json',
-      'closingIssuesReferences',
+      'body,closingIssuesReferences',
       '--jq',
-      '[.closingIssuesReferences[].number]',
+      '{body: .body, refs: [.closingIssuesReferences[].number]}',
     ]);
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    witnessBody = typeof parsed.body === 'string' ? parsed.body : '';
+    return parsed.refs;
   });
 
+  const contradiction = witnessContradiction(witnessBody, actual);
   const result = compareClosures(declared, actual);
   const summary =
     `declared=[${declared.join(', ')}] armed=[${actual.join(', ')}] ` +
-    `reads=${reads} settled=${settled}`;
+    `reads=${reads} settled=${settled} stableMs=${stableMs}`;
 
   // Before the comparison, not after. An unsettled read that happens to match
   // is not a pass: `compareClosures` is being handed a value that may still
@@ -265,6 +356,21 @@ export async function main(argv, deps = {}) {
     console.error(`\n  ${summary}`);
     process.exitCode = 1;
     return { ok: false, settled: false };
+  }
+
+  // Settled and self-contradictory. `settled` is a statement about stability,
+  // and this is the case that proves stability was never the question: the
+  // value held still for the whole floor while the field it is computed from
+  // said something else the entire time.
+  if (contradiction.length > 0) {
+    console.error(
+      `The closing-reference field is stale: it settled on [] while the body ` +
+        `of the same response closes ${contradiction.map((n) => `#${n}`).join(', ')}.\n` +
+        `  Nothing is wrong with the pull request. Re-run the check.`,
+    );
+    console.error(`\n  ${summary}`);
+    process.exitCode = 1;
+    return { ok: false, settled: true, stale: true };
   }
 
   if (!result.ok) {
