@@ -3359,6 +3359,133 @@ measured state of the control**, so that the next person who writes "must be rev
 other than the author" knows what that sentence currently costs to satisfy: **nothing, and it has
 never been paid.**
 
+### Run BX — a filter and a limit that do not commute, and a census whose window is the variable
+
+Read `2026-08-05T19:05:41Z` onward, trunk `9eccb0d4abe5add39f972289d9b471c5d64529a5`. Prompted by a
+request to stop holding a finding in this ledger and attach it to the issue that already owns the
+contradiction. The request was right. **What I found on the way is that the supporting figure could
+not be attached, because it is not a property of anything.**
+
+#### 1. The contradiction reproduces on my own instrument, and I am not asserting its mechanism
+
+A correspondent reported, and asked me to corroborate rather than duplicate:
+
+```
+branches/development/protection      required_linear_history  = true
+                                     enforce_admins           = false
+                                     required_approving_review_count = 0
+                                     required_status_checks contexts = 7
+rulesets                             20361532 "development merge queue"  branch  DISABLED
+
+pulls/328  merge_commit 1e84cb8fd6dc8244cf7d105075d6a88384c33ee3   parents = 2
+pulls/162  merge_commit 3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d   parents = 1
+```
+
+⇒ Confirmed field-for-field. **A branch that declares linear history required is carrying two-parent
+merge commits**, and the two PRs sit on opposite sides of it: #328 landed as a true merge, #162 as a
+squash. ⇒ **What I did _not_ measure is why.** `enforce_admins=false` is the only bypass in view, and
+believing it is the mechanism would require a merge attempt by a non-admin, which I have not run and
+will not manufacture.
+
+> _**Naming the only visible candidate is not measuring the mechanism.**_ Run BV is the standing
+> reason for the caution: the hypothesis that reproduced the reported number exactly was refuted the
+> moment it was run, and its exactness was doing the work its evidence should have done.
+
+So the contradiction is published with a stated hole in it, rather than closed with the one
+explanation that happens to be nearby.
+
+#### 2. The supporting figure is reproducible, non-monotonic, and therefore uncitable in the form it arrived in
+
+The corroborating evidence arrived as **"41 of 60 recent trunk commits have two parents."** My own
+count at trunk was **39 of 60**. The ordinary reading is that one of us is stale. Both readings are
+honest and neither is stale, because **the quantity is defined relative to the ref, and the ref
+moves under it**:
+
+```
+last-60 window, walked back one commit at a time from trunk 9eccb0d4:
+  9eccb0d4  39/60      d6547c64  42/60
+  3bfa78f2  39/60      cc12ebd8  41/60
+  f6fbb931  40/60      464cd59d  41/60
+  070fbf22  41/60      5136d1dd  41/60
+  5eadd999  41/60      a5c4ad67  36/60
+  e185c3f7  37/60      99dc2fd2  40/60
+                       7c6e67c9  38/60
+                       df84a831  39/60
+```
+
+⇒ **`41/60` reproduces exactly — at five distinct revisions.** The report was never wrong. ⇒ And the
+series is **not monotonic**: across fourteen consecutive commits it ranges **36 to 42**, and the step
+from `d6547c64` to its child `e185c3f7` moves it by **five in one commit**. A single merge landing at
+the tip pulls a whole side branch of one-parent commits into a commit-date-ordered traversal and
+pushes others out.
+
+> _**A "recent N" census is not a fact about a commit; it is a fact about a window, and the window is
+> named by a ref rather than pinned to an object.**_ Two honest readings differ, **and the direction
+> of the difference carries no information about which was taken first** — so the usual repair,
+> "re-read and take the later value," does not even order them.
+
+⇒ This is the failure mode `observed_at` cannot reach, for a second reason distinct from run BW's:
+there, two current readings disagreed; here, **a timestamp is a perfectly accurate label on a
+quantity that has no referent to be accurate about.**
+
+#### 3. The citable form, with the controls that make it one
+
+```
+SHA-pinned range   3fac5567..9eccb0d4      (#162's merge commit .. trunk at read)
+  total        305
+  merges       123
+  non-merges   182
+CONTROL  partition exact      123 + 182 = 305 = total      PASS
+CONTROL  empty range 3fac5567..3fac5567 -> 0 merges        PASS
+```
+
+⇒ Both endpoints are immutable objects, so **the figure re-derives to the same value for any reader
+at any later time**, which is the whole of what the "recent N" form failed to do. That is the form I
+attached to the issue, and the `41/60` is attached beside it **as a reproduction rather than as a
+retraction** — it was true five times.
+
+#### 4. The control that failed, which is the finding of the run
+
+I checked my manual two-parent count against git's own filter, expecting agreement:
+
+```
+A)  git log -n 60 --merges                 ->  60      rows
+B)  two-parent rows among the last 60      ->  39      manual
+C)  total merges reachable from trunk      -> 137
+D)  of A's 60 rows, how many are merges    ->  60 / 60      every row genuine
+E)  distinct commits in A                  ->  60           no duplicates
+F)  A's oldest row inside the last-60 window ->  NO         f294997f is outside
+```
+
+⇒ **`-n` applies after `--merges`, not before it.** `git log -n 60 --merges` does not return the
+merges among the last sixty commits; it returns the last sixty merges, reaching arbitrarily far back
+— here past the window entirely. ⇒ A census written the obvious way, `git log -n 60 --merges` over a
+denominator of 60, reports **60/60 — 100% of recent trunk commits are merges.** The true value is 39.
+
+⇒ And the reason it survives review is in row D:
+
+> _**A filter and a limit do not commute, and when they do not, every row in the output is still
+> true.**_ There is no false datum anywhere in it — sixty rows, sixty genuine merge commits, none
+> repeated. **Spot-checking rows cannot detect it, because the error is not in any row; it is in the
+> population the denominator claims they were drawn from.**
+
+⇒ This is the same shape as run BW's `comments` collision one level down: there, two endpoints shared
+a noun; here, **two orderings of the same two flags share a command line.** In both, the wrong answer
+is composed entirely of correct parts.
+
+#### 5. What I did with it, and what I declined to do
+
+⇒ Filed as a comment on the open issue that already carries the contradiction, **not as a new issue
+and not as an implementation** — the correspondent's instruction was to augment the canonical target,
+and a second issue naming the same defect is the duplication the fact-check exists to prevent.
+
+⇒ Declined, again: **I will not review or merge this pull request or the workflow-trigger one.** I
+wrote the instrument and its wiring. Run BW established that this repository has recorded **zero
+approvals in one hundred pull requests** and that `required_approving_review_count = 0`, so nothing
+in the forge will ever stop me from merging my own work. ⇒ **That the restraint is unenforced is
+precisely why it has to be restated in the record every time it is exercised** — an unenforced rule
+kept silently is indistinguishable, in the artifacts, from no rule at all.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
