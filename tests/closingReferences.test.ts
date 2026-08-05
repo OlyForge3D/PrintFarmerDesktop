@@ -231,6 +231,26 @@ const EXPECTED_KEYWORDS = [
   'resolved',
 ] as const;
 
+/**
+ * The second real instance, and the harder one. Found by sweeping all 534
+ * commits on `development` with this parser: exactly two carry a wrapped
+ * closing reference, a line-wise scan misses both, and BOTH were real
+ * unintended closures. That is a base rate of 100% -- every wrapped occurrence
+ * in this repository's history has been a defect, not a false alarm.
+ *
+ * This one is `daeab1f1`, the commit that ADDED the closing-references guard.
+ * It is known to have closed #267; it also closed #173 at the same second, by
+ * the wrapped-AND-negated form below, and that second closure went unrecorded.
+ * #418's body states the population is one. Measured, it is two.
+ */
+const WRAPPED_NEGATED_COMMIT_MESSAGE = [
+  "test(ci): assert a PR's closing references match its declared intent",
+  '',
+  'GitHub reads a closing keyword inside a negation. "This does not resolve',
+  '#173" registers a closing link, and the link is actioned on merge --',
+  'silently, closing an issue nobody agreed to close.',
+].join('\n');
+
 describe('parseCommitClosures', () => {
   it('flags the real wrapped message of 0ab96610', () => {
     // Criterion 2, and the one assertion in this file that pins a real event.
@@ -241,15 +261,33 @@ describe('parseCommitClosures', () => {
     ]);
   });
 
-  it('would find nothing if scanned line by line', () => {
-    // The positive control for the control. Without this, the test above is
-    // just "the parser works" and gives no reason for the whole-string scan --
-    // and the next person to simplify it has no evidence they broke anything.
-    const perLine = WRAPPED_COMMIT_MESSAGE.split('\n').flatMap((line) =>
-      parseCommitClosures(line),
-    );
-    expect(perLine).toEqual([]);
-    expect(parseCommitClosures(WRAPPED_COMMIT_MESSAGE)).toHaveLength(1);
+  it('flags the real wrapped-and-negated message of daeab1f1', () => {
+    // The harder real instance: wrapped AND negated at once, in the commit that
+    // added this guard. It closed #173 at the same second it closed #267, and
+    // only the #267 closure was ever recorded -- because the #173 one is
+    // invisible to both a line-wise scan and a reader who trusts the sentence.
+    expect(parseCommitClosures(WRAPPED_NEGATED_COMMIT_MESSAGE)).toEqual([
+      { keyword: 'resolve', issue: 173 },
+    ]);
+  });
+
+  it('would find neither real instance if scanned line by line', () => {
+    // The positive control for the control, over both real instances. Without
+    // it the tests above are just "the parser works", and the next person to
+    // simplify the scan has no evidence they broke anything.
+    //
+    // Swept across all 534 commits on development: 61 carry a closing
+    // reference, exactly 2 are wrapped, and a line-wise scan misses both.
+    for (const message of [
+      WRAPPED_COMMIT_MESSAGE,
+      WRAPPED_NEGATED_COMMIT_MESSAGE,
+    ]) {
+      const perLine = message
+        .split('\n')
+        .flatMap((line) => parseCommitClosures(line));
+      expect(perLine).toEqual([]);
+      expect(parseCommitClosures(message)).toHaveLength(1);
+    }
   });
 
   it('flags a plain single-line reference', () => {
