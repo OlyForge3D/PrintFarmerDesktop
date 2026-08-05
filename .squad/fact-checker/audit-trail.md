@@ -757,6 +757,68 @@ remote refs. Declaring them closed it at `REACHABLE 48 · TWIN 44 · DECLARED 16
 > names nothing new. **A checker that reads its own repair is the only kind that could have
 > noticed** — one that read the ledger as prose would have accepted the first, red, version.
 
+### Run AU — the repair manufactured the evidence used to declare it unrepaired
+
+**Trigger.** A dispatch reported this PR's sibling `DIRTY` with conflicts requiring
+resolution, and re-asserted for the third time that `docs/security/THREAT_MODEL.md:542`
+"still renders `32,767` on trunk". Measured at mainline
+`f23364fef80aae2360e0a922d7a99d2dc4211834`, read 2026-08-05T05:05Z.
+
+**Claim 1 — `DIRTY`, conflicts, resolve before merging.** False, and the method matters more
+than the verdict. A status field was not consulted; **the merge was performed**:
+
+```
+git merge-tree --write-tree origin/development HEAD
+  -> exit 0, a merged tree written   (no conflicts)
+```
+
+The PR named is **`MERGED`**, and GitHub reports its `mergeStateStatus` as **`UNKNOWN`**, not
+`DIRTY` — the same `UNKNOWN`-on-merged behaviour the dispatch itself warned about one
+paragraph later. Its recorded head is `e5a90df7`, not the head cited.
+
+> **A status field is a cache; a merge is a computation.** `mergeStateStatus` is derived
+> asynchronously against a base that moves on every merge, so it is stale by construction.
+> **`merge-tree` answers the question the field is a rumour about**, costs one command, and
+> is reproducible by the reader.
+
+**Claim 2 — line 542 renders the wrong figure.** Read at the live tip, that exact line is:
+
+```
+542: ...in #68 a 29-node diamond DAG expanded to 49,150 rows
+```
+
+**The cited line is the repaired assertion.** The file's other two hits are a quotation of
+the fixture's doc comment and a correct component summing with `16,383` to the stated total.
+
+**Finding — and it is the mechanism, not the mistake.** The same dispatch names `c8d379f` as
+the mainline tip. **`c8d379f` is the commit that performed the repair.** Its diff:
+
+```
+- ...expanded to 32,767 rows
++ ...expanded to 49,150 rows
++ (The fixture's doc comment ... reports `2^15-1 = 32,767` paths through the m
++  chain — summed over the chain, not the 16,384 distinct paths to its tail...)
+```
+
+**The repair removed the wrong assertion and, in explaining itself, introduced both of the
+mentions that a counter now reads as the defect.** The commit cited as evidence that the file
+is unrepaired is the commit that repaired it.
+
+> **A repair that explains itself must quote the value it removed, and the quotation is
+> indistinguishable from the defect to any instrument that counts rather than reads.** The
+> better the repair — the more carefully it records what was wrong and why — **the stronger
+> the evidence it manufactures against itself.** A silent repair would have scored perfectly.
+
+This is the fourth instance in this ledger of a remediation raising the metric it discharges,
+and the first in which the remediation supplied the specific text later cited against it.
+
+**Noted, and it is the right shape.** `c8d379f` also added `tests/documentedDiamondDagFigures.test.ts`,
+present at the tip, which walks the fixture and binds documented figures to the measurement
+rather than restating them — and requires each claim to carry an anchor of more than ten
+characters, i.e. **content-stable anchors instead of line numbers.** That is the discipline
+this trail has been arguing for, implemented as an executable check by someone else. **A rule
+adopted by a party that did not argue for it is the only evidence that the rule was legible.**
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
