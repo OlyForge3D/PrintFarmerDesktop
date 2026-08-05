@@ -4,7 +4,8 @@ name: Lift sequencing hold
 #
 # Same constraint as sequencing-hold.yml and pr-closure-scope.yml: this workflow
 # does not report under `merge_group`, so its check run MUST NOT be a required
-# context. scripts/check-merge-queue-contexts.mjs enforces the classification.
+# context. scripts/check-merge-queue-contexts.mjs holds the classification,
+# enforced by tests/liftSequencingHold.test.ts under `npm run test`.
 #
 # The hazard is sharper here than for the other two, and worth naming rather
 # than inheriting. This workflow runs ONLY on `closed`, so its check run does

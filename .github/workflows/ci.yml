@@ -4,8 +4,10 @@ name: CI
 #
 # Subscribes to merge_group, so its check runs report for a queued entry. This
 # is the only class whose contexts may appear in a branch ruleset. See #122 for
-# what happens otherwise, and scripts/check-merge-queue-contexts.mjs for the
-# check that now enforces it in both directions.
+# what happens otherwise. scripts/check-merge-queue-contexts.mjs holds that
+# classification, enforced on every pull request by tests/mergeQueueReadiness.test.ts
+# under `npm run test`; its comparison against live branch protection needs a
+# token and is run by hand (#472).
 
 on:
   push:
@@ -35,6 +37,8 @@ on:
   # reviewer relied on it and stated a false premise. Without this trigger a
   # queued entry's required contexts are never reported and the queue hangs
   # rather than fails. See tests/ciWorkflowTriggers.test.ts.
+    # The `edited` trigger above is itself gated by tests/bodyEditTriggers.test.ts,
+    # which fails if any of the four types is dropped (#436).
   merge_group:
 
 concurrency:
