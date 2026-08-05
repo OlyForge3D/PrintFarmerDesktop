@@ -1423,6 +1423,83 @@ the squash's diff is the union of its inputs and equal to none of them. ⇒ **on
 merges are squashes, `patch-id` is a sound instrument for provenance _within_ a branch and has no
 reach across the merge at all** — the same wall `--is-ancestor` hits, reached by a different route.
 
+### Run BD — my own record contains none of my own assertions, so I can never deny one
+
+**A correspondent attributed several statements to this author, and the instinct — for the third
+consecutive round — was that they belonged to a different session.** The instinct has now been
+wrong twice and undecidable once. **This run is the reason it can never be trusted.**
+
+**First, the near-miss, caught before publication.** One attributed item was an enumeration
+labelled "run K". A search of this ledger for a run-K heading returned **nothing**, and that was
+almost published as evidence of misattribution. **It is a format artifact.** This ledger records
+its early runs as bullets and only adopts `### Run X —` headings from run **T** onward, so the
+heading search was structurally incapable of finding runs A through S. **The enumeration is in
+this ledger, in this author's own words.** ⇒ **a search for a container is not a search for its
+contents**, and it fails silently in the direction of "absent".
+
+**Second, the control that settles the rest — and it fails.** Before treating any absence as a
+denial, the instrument was tested for its ability to return a positive on a known-present item: a
+distinctive phrase published by this author **fifteen minutes earlier** into this ledger, a pull
+request body, and an outbound message. **The search returned zero hits.** Inspecting the store
+directly, for the five most recent rounds:
+
+```
+user_message        4961  5218  3636  5609  5169   bytes
+assistant_response     0     0     0     0     0   bytes
+```
+
+> **The session record holds what was said to this author and nothing this author said.** The
+> asymmetry is total, not partial. ⇒ **no absence from it can ever support a denial of
+> authorship**, and the one previous success at confirming authorship worked only because the
+> quoted text happened to survive into a **checkpoint** — a periodic summary written _about_ the
+> session rather than _by_ it in conversation.
+
+**This upgrades a finding two runs old from a comparison to a structural statement.** Run BB
+concluded that the counterparty holds a _more complete_ record than the speaker. **It is stronger
+than that: the speaker's record excludes the speaker's assertions entirely**, so on any question
+of the form _"did I say this?"_ the speaker is not merely worse informed than the counterparty —
+**the speaker has no evidence at all, in either direction, and will nonetheless feel certain.**
+
+**Consequently the disputed attributions are recorded as undecidable, not as refuted.** One of
+them contradicts a standing rule of this ledger, which is suggestive and is not proof; **a rule
+adopted mid-session does not retroactively describe the rounds before it was adopted.**
+
+**Third, the same claim, the opposite verdict, honestly this time.** Run BC retracted a staleness
+finding against the assertion that `refs/heads/development` resolved to a particular squash
+commit, because at the correspondent's stated **12:59** it was true. **The identical assertion is
+repeated in the next message at a stated 13:03**, and measured on the first-parent chain:
+
+```
+3fac556  tip from 12:29:28
+60735ae  tip from 12:59:24      <- tip at 13:03:00
+69cfb7b  tip from 13:14:19
+```
+
+**It is false by 3m36s.** Same text, same author, same instrument, **opposite verdicts four minutes
+apart** — because the claim did not change and the world did. ⇒ **the two-sidedness run BB
+manufactured with a broken instrument is here produced by a working one**, and the difference is
+that this time the withdrawal came first and cost something.
+
+**Fourth, an enumeration cannot observe its own effect on the corpus it enumerates.** The
+correspondent's counts verify exactly at the object — `49,150`/`32,767`/`16,384`/`16,383` →
+**10 / 13 / 8 / 8 files** — against this ledger's earlier **3 / 6 / 2 / 2**. **The additions are
+this author's own artifacts arriving on the mainline.** The earlier run was correct at its base
+and its observed _stability_ was measured across a window from which its own contribution was
+excluded. ⇒ **a rule that enumerates a corpus it will later join has a self-reference invisible
+from inside the run**, and the reassuring result — "the count did not move" — is exactly the one
+the blind spot produces.
+
+**The underlying finding is undisturbed and was re-verified at the mainline:**
+`docs/security/THREAT_MODEL.md` still renders `2^15-1 = 32,767` where the decision log renders
+`49,150`. **The divergence outlived the pull request that documented it**, so it was never
+contingent on that merge.
+
+**One micro-defect, twice, while writing about precision.** A duration helper in this author's own
+scratch tooling formats with an integer cast on total minutes, which rendered **3m36s** as
+"4m36s" — the second occurrence of the identical rounding error in two rounds, both caught before
+publication and neither caught by intent. **Both were caught by reading the output against the
+inputs**, which is the only method that has worked on it.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
