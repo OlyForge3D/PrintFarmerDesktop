@@ -71,7 +71,7 @@ import {
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   RetargetArtifactService,
@@ -93,6 +93,30 @@ const onWindows = process.platform === 'win32';
 
 const temporaryDirectories: string[] = [];
 const children: ChildProcess[] = [];
+
+const ARM_CONTROL = 'the fixture is collectable when nothing holds it';
+const ARM_CODE =
+  'the real filesystem refuses the removal with a code, not just a message';
+const ARM_STARTUP = 'starts up when a real refusal blocks a stale root';
+const ARM_CLASSIFY =
+  'classifies the real refusal the same way as the hand-authored fixture';
+
+/**
+ * The arms whose absence this file must not report as a pass, listed
+ * independently of the `it` calls that satisfy them. Deleting an arm therefore
+ * leaves its name here and turns the file red, which is the whole point;
+ * deriving this list from the arms themselves would make a deletion consistent
+ * with itself and invisible.
+ */
+const REQUIRED_ON_WINDOWS = [
+  ARM_CONTROL,
+  ARM_CODE,
+  ARM_STARTUP,
+  ARM_CLASSIFY,
+] as const;
+
+/** Arm names that ran to completion, recorded by each arm as its last statement. */
+const measuredArms = new Set<string>();
 
 function serviceFor(tempPath: string) {
   return new RetargetArtifactService({
@@ -212,13 +236,13 @@ afterEach(async () => {
 
 // The contention behaviour under test is Windows-specific: POSIX permits
 // removing a directory that is a live process's cwd, so the mechanism produces
-// no error at all elsewhere and every arm below would be vacuous. Skipped
-// rather than silently green, and the guard below asserts the skip is a
-// platform decision rather than an empty file.
+// no error at all elsewhere and every arm below would be vacuous. The `afterAll`
+// at the foot of this file is what makes the skip safe: on Windows it fails
+// unless every arm ran to completion, and elsewhere it fails if any of them ran.
 describe.skipIf(!onWindows)(
   'startup sweep against a real filesystem refusal (issue #514)',
   () => {
-    it('the fixture is collectable when nothing holds it', async () => {
+    it(ARM_CONTROL, async () => {
       // The negative control for every arm below. "The directory survived"
       // passes both when removal was refused and when the sweep never targeted
       // it -- a marker that fails validation, a live pid, a name that fails the
@@ -231,9 +255,11 @@ describe.skipIf(!onWindows)(
         await exists(stale),
         'the fixture was never collectable, so the refusal arms prove nothing',
       ).toBe(false);
+
+      measuredArms.add(ARM_CONTROL);
     });
 
-    it('the real filesystem refuses the removal with a code, not just a message', async () => {
+    it(ARM_CODE, async () => {
       const { stale } = await staleInstance();
       await holdBusy(stale);
 
@@ -249,9 +275,11 @@ describe.skipIf(!onWindows)(
       ).toBe(true);
       expect(error.code).toBe('EBUSY');
       expect(error.syscall).toBe('rmdir');
+
+      measuredArms.add(ARM_CODE);
     });
 
-    it('starts up when a real refusal blocks a stale root', async () => {
+    it(ARM_STARTUP, async () => {
       const { root, stale } = await staleInstance();
       await holdBusy(stale);
 
@@ -271,9 +299,11 @@ describe.skipIf(!onWindows)(
         await ownedByThisProcess(root),
         'initialize() tolerated the failed sweep but never registered this instance',
       ).toHaveLength(1);
+
+      measuredArms.add(ARM_STARTUP);
     });
 
-    it('classifies the real refusal the same way as the hand-authored fixture', async () => {
+    it(ARM_CLASSIFY, async () => {
       const { stale } = await staleInstance();
       await holdBusy(stale);
 
@@ -299,20 +329,59 @@ describe.skipIf(!onWindows)(
           'and this assertion should be deleted along with the caveat above',
       ).toBe(false);
       expect('code' in real).toBe(true);
+
+      measuredArms.add(ARM_CLASSIFY);
     });
   },
 );
 
-// Outside the skipIf, so it runs on every platform. A file that is entirely
-// skipped reports as passing and is indistinguishable from one whose tests were
-// deleted; this states which platform was in play and why nothing ran.
-it('names the platform it can measure on', () => {
-  expect(['win32', 'darwin', 'linux']).toContain(process.platform);
-  if (!onWindows) {
-    expect(
-      onWindows,
-      `real deletion refusal is Windows-specific and this runner is ` +
-        `${process.platform}, so the arms above were skipped deliberately`,
-    ).toBe(false);
+// A wholly skipped file reports as passing, and so does one whose arms were
+// deleted. The previous version of this guard asserted `onWindows === false`
+// when not on Windows, which is reflexive and cannot fail, and it never checked
+// that the arms ran when they were supposed to. Two independent reviewers of
+// PR #518 killed it with the same mutation: hard-skipping the Windows block
+// still reported green.
+//
+// This runs after every test in the file regardless of declaration order, and
+// checks both directions.
+//
+// The limit, stated rather than implied: nothing inside a file can notice that
+// the file was deleted. That case needs a policy test that reads the test
+// directory, which is deliberately not in this PR's scope.
+afterAll(() => {
+  const ran = [...measuredArms].sort();
+
+  if (onWindows) {
+    const missing = REQUIRED_ON_WINDOWS.filter(
+      (name) => !measuredArms.has(name),
+    );
+    if (missing.length > 0) {
+      throw new Error(
+        `this runner is win32, where the real-refusal arms are the only reason ` +
+          `this file exists, but ${missing.length} of ` +
+          `${REQUIRED_ON_WINDOWS.length} did not run to completion: ` +
+          `${missing.join(' | ')}. Skipping or deleting an arm reports as a ` +
+          `pass, so this file fails rather than claiming a measurement it ` +
+          `never made.`,
+      );
+    }
+    return;
   }
+
+  // The other direction. POSIX permits removing a directory that is a live
+  // process's cwd, so an arm that starts running here is measuring nothing and
+  // would pass by producing no error at all.
+  if (ran.length > 0) {
+    throw new Error(
+      `the real-refusal arms ran on ${process.platform}, where the mechanism ` +
+        `produces no error, so their assertions are vacuous: ${ran.join(' | ')}`,
+    );
+  }
+});
+
+it('runs on a platform whose real-refusal behaviour this file has decided', () => {
+  // Not a restatement of `onWindows`. A runner this file has never been
+  // reasoned about lands here and forces the decision to be made explicitly,
+  // instead of being absorbed by `!onWindows` and skipped in silence.
+  expect(['win32', 'darwin', 'linux']).toContain(process.platform);
 });
