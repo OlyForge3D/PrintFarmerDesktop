@@ -269,7 +269,7 @@ describe('#381 the range itself is unchanged: out-of-range dates are still refus
 });
 
 describe('#381 the frame guard itself', () => {
-  it('reports a different offset in each pinned zone, so the pin is doing work', async () => {
+  it('reports a different offset in each pinned zone, so the pin is doing work', () => {
     // A control on the control. If `process.env.TZ` stopped reaching V8 — a
     // runtime change, a different engine, a worker that pins its own frame —
     // every spec above would degenerate into the UTC case and pass against the
