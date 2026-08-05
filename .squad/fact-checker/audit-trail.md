@@ -2137,6 +2137,71 @@ The fix belongs at the citation, not the detector. **Excluding all-decimal token
 
 ⇒ **fourth consecutive round in which this instrument has caught its author before any reader did**, and the second in which the defect was in a citation that reading the prose would have passed without a flicker.
 
+### Run BO — the measurement that nearly accused a colleague of tampering, and a repair whose author does not know it worked
+
+**Pair:** a report claiming (§1) that `check:citation-reachability` is wired to no workflow, (§5) that its author edited a pull-request body of mine, and (§6) that #328 "is not merged yet" — against the repository.
+
+#### 1. The near-accusation, and the instrument that produced it was mine
+
+§5 disclosed a body edit plainly and invited a revert. The first thing to check was whether my own open pull request had been altered, since run BN had been published to it minutes earlier. Read through the accessor this ledger has used for rounds:
+
+```
+PowerShell   (gh api ... --jq '.body') -join "`n"       ->  14263
+published, per the writer's own read-back              ->  14413
+                                                            delta -150
+```
+
+**A body 150 bytes shorter than published, on a pull request a colleague had just announced editing.** The next sentence would have been an accusation.
+
+It was false. Re-measured in the runtime that does not reshape the value:
+
+```
+node, JSON.parse(gh api ...).body.length   ->  14413      IDENTICAL to published
+  CR count 150   LF count 203
+  timeline rename/edit events: 0
+  every published heading present; no closing keyword
+```
+
+⇒ **the deficit is the carriage returns, one per line, exactly 150.** `gh --jq` hands PowerShell a **line array**; this ledger adopted `-join "` + "`" + `n"` in run AG precisely to repair that. ⇒ _**the remedy for the line-array defect silently changed the quantity being measured.**_ The joined string is a correct length **of a different object** — the body with its CRs discarded — and it renders identically to the number it replaced.
+
+⇒ _**a repair that restores the shape of a value without restoring the value is worse than the defect it replaced**_, because the original failed loudly, at `.Length` returning a line count, and this one returns a plausible byte count that is wrong by a fixed, invisible margin.
+
+⇒ **and the cost was nearly not mine to pay.** Every prior finding in this ledger has been a false claim about an artifact. **This one would have been a false claim about a person**, sourced entirely from an accessor I introduced to make my measurements more correct. ⇒ _**the blast radius of a measurement defect is set by what you were about to do with the number, not by the size of the error.**_ 150 bytes and an allegation of tampering.
+
+**Standing correction: every byte count this ledger has taken of a forge body through PowerShell is short by its line count.** No published claim is known to turn on one; the accessor is retired in favour of reading the value in the runtime that holds it.
+
+#### 2. §1 is false at the tip, true at the pin — the fourth round on one commit
+
+```
+origin/development (070fbf2202107585229d1ed24603a6eed9d8b37d):
+  .github/workflows/citation-reachability.yml  contains  "run: npm run check:citation-reachability"
+  the reporter's own grep, reproduced          ->  names that file, exit 0
+```
+
+The workflow was armed by `4d1937a`, which post-dates every revision this reporter has pinned. **Run BN named that exact transition and this is the fourth consecutive round the same commit has produced the same disagreement.**
+
+⇒ _**naming a transition in your own ledger does nothing for a party who does not read your ledger.**_ Run BN's remedy was correct in form and mis-delivered: it was written where the finding lives rather than where the reader is. **A correction reaches the person who was wrong only if it is sent to them**, and three of the four rounds ended with the correction filed rather than delivered.
+
+⇒ **and the reporter's positive control was sound and could not have saved them.** Five workflows do invoke npm scripts; the sixth did not exist at their revision. **A control proves the search works; it cannot report that the corpus moved.**
+
+#### 3. §5's repair worked, and §6 does not know it
+
+```
+#328  MERGED 2026-08-05T02:48:29Z   merge_commit 1e84cb8f, TWO parents
+      head that merged c4f4713b — every check run success
+body: "closed #121"  ABSENT      "closed `#121`"  PRESENT      closing keywords: 0
+```
+
+⇒ **the edit is in the merged object and it did what it was for.** The past-tense narration _"which merged and closed #121"_ was arming a closing reference on a second pull request; backticking it disarmed exactly that and nothing else. **#121 was not re-closed.**
+
+⇒ **and the mechanism is real and under-documented**: a closing keyword is matched without regard to tense or subject, so **a sentence reporting that another pull request closed an issue arms this one to close it again.** The check's error text anticipates negation and not narration.
+
+⇒ _**the report reads as a plan and the object records it as history.**_ §6 sets out conditions for a merge that had already happened four hours earlier, including a commitment to use a merge commit rather than a squash — **which is what was used.** ⇒ **an intention stated after the fact it describes is indistinguishable in the record from one that caused it**, and here it was neither wrong nor influential: **the outcome matches the commitment and the commitment post-dates the outcome.**
+
+⇒ same shape across the rest of the board: **#390, #349 and #350 are all merged** — at `2026-08-05T05:05:33Z`, `04:43:23Z` and `03:25:54Z` — and all three are carried as open items. **#398, #397 and #271 are genuinely open issues**, and #173 is closed, as stated.
+
+⇒ **the verdict that matters is not the staleness.** Every mechanical claim in the report is correct: the two closure checks are distinct scripts (`check:closure-scope` in the required context, `check:closing-references` inside `ci.yml`), the baseline split is right, and the diagnosis and repair held through the merge. ⇒ _**a report can be right about every mechanism it describes and wrong about every state it asserts, and the two failure modes have no bearing on each other.**_
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
