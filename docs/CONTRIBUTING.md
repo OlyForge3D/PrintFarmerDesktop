@@ -35,12 +35,33 @@ Renderer/main/preload (run from the repo root):
 
 Rust sidecar (run from `native/`):
 
-| Command                       | Purpose                   |
-| ----------------------------- | ------------------------- |
-| `cargo build`                 | Build the sidecar         |
-| `cargo test`                  | Run sidecar tests         |
-| `cargo clippy -- -D warnings` | Lint with warnings denied |
-| `cargo fmt --check`           | Formatting check          |
+| Command                                         | Purpose                            |
+| ----------------------------------------------- | ---------------------------------- |
+| `cargo build`                                   | Build the sidecar                  |
+| `cargo test`                                    | Run the default-feature tests only |
+| `cargo test --features sqlite`                  | Add the SQLite catalog tests       |
+| `cargo test --features step`                    | Add the STEP importer tests        |
+| `cargo clippy -- -D warnings`                   | Lint with warnings denied          |
+| `cargo clippy --features sqlite -- -D warnings` | Lint the SQLite catalog too        |
+| `cargo fmt --check`                             | Formatting check                   |
+
+`cargo test` on its own is **not** the sidecar suite. `sqlite_catalog` and `step`
+are optional modules (`lib.rs`), so without their feature flags the compiler
+drops those files and every test inside them. Measured on `model-core`:
+
+```
+cargo test --lib                   ->  265 passed; 0 filtered out
+cargo test --lib --features step   ->  267 passed; 0 filtered out
+cargo test --lib --features sqlite ->  339 passed; 0 filtered out
+```
+
+The 74-test difference includes every calibration conflict-resolution test. Note
+`0 filtered out` on all three: the bare command does not skip those tests or
+report them as filtered, because they were never compiled. It reports `ok` for a
+suite that does not exist in that build, which is why it reads as a complete
+pass. CI runs each feature separately (`ci.yml`), so this is a local-check
+hazard: a change to a feature-gated module can look tested locally and only be
+exercised in CI.
 
 ## Conventions
 
