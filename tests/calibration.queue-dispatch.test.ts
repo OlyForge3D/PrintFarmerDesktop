@@ -165,13 +165,17 @@ function makeClient(
 // ==========================================================================
 
 describe('ROUTES constant — dead routes absent (issue #54)', () => {
-  it('does not export a "generation" route constant', async () => {
-    // Import the module and check that none of its exports contain the dead
-    // /calibration-projects/{id}/generation path.
+  it('does not export a dead project-scoped generation route (/calibration-projects/{id}/generation)', async () => {
+    // Import the module and check that no export contains the dead
+    // /calibration-projects/{id}/generation path (not to be confused with
+    // the legitimate per-attempt /generate-job route, which IS exported in
+    // CALIBRATION_QUEUE_ROUTE_TEMPLATES).
     const mod = await import('../src/main/calibrationHttp.js');
     const exported = JSON.stringify(mod);
-    expect(exported).not.toContain('/generation');
-    expect(exported).not.toContain('calibration-projects');
+    // Match the project-scoped dead route but not the per-attempt /generate-job
+    expect(exported).not.toMatch(
+      /calibration-projects[^"]+\/generation(?!-job)/,
+    );
   });
 
   it('does not export a dead queue route (/calibration-projects/{id}/queue)', async () => {

@@ -96,6 +96,47 @@ import { calibrationDiagnostics } from './calibrationDiagnostics.js';
 
 declare const __PRINTFARMER_E2E_BUILD__: boolean;
 
+/**
+ * Detects sequence gaps in a queue-change-feed event page.
+ *
+ * The server allocates `sequence` values monotonically in the same database
+ * transaction as each outbox-event write (`QueueDispatchOutbox.Sequence`).
+ * A gap means the server has events the client did not receive; the caller
+ * must discard any cached change-feed state and refetch job state over REST.
+ *
+ * Three distinct cases:
+ *
+ * - **Cursor gap** — `events[0].sequence !== afterSequence + 1`: at least one
+ *   event between the poll cursor and the first returned event is absent.
+ * - **Internal gap** — any `events[i].sequence !== events[i-1].sequence + 1`:
+ *   non-contiguous events within the page.
+ * - **Contiguous** (no gap) — the page begins immediately after the cursor and
+ *   every adjacent pair differs by exactly 1.
+ *
+ * Exported for direct testing; the IPC handler delegates to this function.
+ */
+export function detectQueueChangeFeedGap(
+  events: readonly { sequence: number }[],
+  afterSequence: number,
+): boolean {
+  const firstEvent = events[0];
+  if (firstEvent !== undefined && firstEvent.sequence !== afterSequence + 1) {
+    return true;
+  }
+  for (let i = 1; i < events.length; i++) {
+    const cur = events[i];
+    const prev = events[i - 1];
+    if (
+      cur !== undefined &&
+      prev !== undefined &&
+      cur.sequence !== prev.sequence + 1
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const automatedSaveDialogs = z
   .array(
     z
@@ -2499,30 +2540,10 @@ export function registerIpcHandlers(
           request.limit ?? 200,
           signal,
         );
-        // Detect gaps: if any event.sequence is not contiguous the caller must
-        // refetch job state over REST.
-        let gapDetected = false;
-        const events = page.events;
-        for (let i = 1; i < events.length; i++) {
-          const cur = events[i];
-          const prev = events[i - 1];
-          if (
-            cur !== undefined &&
-            prev !== undefined &&
-            cur.sequence !== prev.sequence + 1
-          ) {
-            gapDetected = true;
-            break;
-          }
-        }
-        // Also detect gap between cursor and first event
-        const firstEvent = events[0];
-        if (
-          firstEvent !== undefined &&
-          firstEvent.sequence !== page.afterSequence + 1
-        ) {
-          gapDetected = true;
-        }
+        const gapDetected = detectQueueChangeFeedGap(
+          page.events,
+          page.afterSequence,
+        );
         return ipcSchemas[
           IpcChannel.CalibrationPollQueueChanges
         ].response.parse({

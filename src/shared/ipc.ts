@@ -3565,7 +3565,7 @@ export const CalibrationOrchestrationStatus = z
     operationId: z.string(),
     /** Free-form status from the saga — e.g. "Running", "Completed". NOT an enum. */
     status: z.string(),
-    /** Free-form current step — e.g. "Slicing". NOT an enum. */
+    /** Free-form current step — e.g. "submitting-slice-job", "awaiting-worker". NOT an enum. */
     currentStep: z.string(),
     revision: z.number().int(),
     retryCount: z.number().int(),

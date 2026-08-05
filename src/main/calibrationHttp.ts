@@ -99,6 +99,44 @@ const ROUTES = {
     `/api/job-queue/${encodeURIComponent(jobId)}/acknowledge-bed-clear-and-start`,
 } as const;
 
+/**
+ * Normalized route templates for the four documented queue contract paths.
+ * Parameters use `{name}` placeholders. The CalibrationHttpClient methods
+ * use ROUTES (above) which URI-encodes concrete IDs; these templates are the
+ * stable, human-readable form exported for documentation-parity testing.
+ * Source: OlyForge3D/PrintFarmer JobQueueController + CalibrationGenerationController,
+ * verified at 167a3b134a678a0d9a8c10371da8333d03ddc636 and 9c1d7e4b97c5f0fee0f0c702aa864374b3e21cf0.
+ */
+export const CALIBRATION_QUEUE_ROUTE_TEMPLATES = {
+  /** POST — create a FilamentCalibration queue job. */
+  jobQueue: '/api/job-queue',
+  /** GET — fetch a specific queue job by its ID. */
+  jobQueueJob: '/api/job-queue/{jobId}',
+  /** POST — start generation for one immutable attempt; both IDs required. */
+  generateJob:
+    '/api/calibration-projects/{projectId}/attempts/{attemptId}/generate-job',
+  /** POST — acknowledge bed clear and start dispatch for an exact job. */
+  acknowledgeBedClear: '/api/job-queue/{jobId}/acknowledge-bed-clear-and-start',
+} as const;
+
+/**
+ * The three semantic precondition header names enforced by the server
+ * `AcknowledgeBedClearAndStartAsync` action (JobQueueController.cs).
+ * This constant is the production authority used to build the headers in
+ * `acknowledgeBedClearAndStart`; it is also exported so documentation-parity
+ * tests can compare the same values against the maintained admin guide §10.3
+ * table without duplicating constants in the test.
+ *
+ * If-Match and X-Dispatch-State-If-Match have no body fallback and return 428
+ * when absent. Idempotency-Key has a body fallback; 428 requires both header
+ * and body to be blank (see admin guide §10.3).
+ */
+export const BED_CLEAR_PRECONDITION_HEADER_NAMES = [
+  'idempotency-key',
+  'if-match',
+  'x-dispatch-state-if-match',
+] as const satisfies readonly string[];
+
 // --- Error types -----------------------------------------------------------
 
 export type CalibrationHttpErrorCode =
@@ -1029,11 +1067,13 @@ export class CalibrationHttpClient {
     expectedPrinterConfigRevision: number | null | undefined,
     signal: AbortSignal,
   ): Promise<AcknowledgeBedClearResult> {
+    const [ikHeader, ifMatchHeader, dispatchIfMatchHeader] =
+      BED_CLEAR_PRECONDITION_HEADER_NAMES;
     const headers: Record<string, string> = {
       'content-type': 'application/json',
-      'idempotency-key': operationId,
-      'if-match': rowVersion,
-      'x-dispatch-state-if-match': dispatchStateRowVersion,
+      [ikHeader]: operationId,
+      [ifMatchHeader]: rowVersion,
+      [dispatchIfMatchHeader]: dispatchStateRowVersion,
     };
     const bodyObj: Record<string, unknown> = {
       printerId,
