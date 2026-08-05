@@ -29,13 +29,17 @@ export function hardenWindow(window: BrowserWindow): void {
   window.webContents.on('will-navigate', (event, url) => {
     if (!isInternalUrl(url)) {
       event.preventDefault();
-      void shell.openExternal(url);
+      shell.openExternal(url).catch((error: unknown) => {
+        console.error('[security] failed to open external URL', error);
+      });
     }
   });
 
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//.test(url)) {
-      void shell.openExternal(url);
+      shell.openExternal(url).catch((error: unknown) => {
+        console.error('[security] failed to open external window URL', error);
+      });
     }
     return { action: 'deny' };
   });

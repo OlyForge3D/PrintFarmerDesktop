@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const electronState = vi.hoisted(() => ({
   openedExternally: [] as string[],
   singleInstanceLock: true,
+  openExternalRejection: null as Error | null,
 }));
 
 vi.mock('electron', () => ({
@@ -21,7 +22,9 @@ vi.mock('electron', () => ({
   shell: {
     openExternal: (url: string) => {
       electronState.openedExternally.push(url);
-      return Promise.resolve();
+      return electronState.openExternalRejection
+        ? Promise.reject(electronState.openExternalRejection)
+        : Promise.resolve();
     },
   },
 }));
@@ -124,7 +127,95 @@ function directive(csp: string, name: string): string {
 beforeEach(() => {
   electronState.openedExternally = [];
   electronState.singleInstanceLock = true;
+  electronState.openExternalRejection = null;
   delete process.env['ELECTRON_RENDERER_URL'];
+});
+
+/**
+ * Run `body`, capturing `console.error` calls for the duration.
+ *
+ * `shell.openExternal` rejects for ordinary reasons — no registered handler for
+ * the scheme, no browser on a headless box, a user cancelling the OS prompt.
+ * Both call sites used to be `void shell.openExternal(url)`, which silences
+ * `no-floating-promises` and leaves the rejection to crash the main process
+ * (issue #314).
+ *
+ * These tests assert the handler *runs*, which is a different claim from the
+ * source containing a `.catch` — `tests/mainVoidRejectionHandlers.test.ts`
+ * makes the textual claim, and text is not behaviour.
+ */
+async function captureConsoleErrors(body: () => void): Promise<unknown[][]> {
+  const calls: unknown[][] = [];
+  const spy = vi.spyOn(console, 'error').mockImplementation((...args) => {
+    calls.push(args);
+  });
+  try {
+    body();
+    // The handler is attached synchronously but runs on the microtask queue.
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    spy.mockRestore();
+  }
+  return calls;
+}
+
+describe('a failed external open is reported, not floated (#314)', () => {
+  it('reports a rejected will-navigate open', async () => {
+    const failure = new Error('no handler registered for this scheme');
+    electronState.openExternalRejection = failure;
+    const window = fakeWindow();
+    hardenWindow(window as never);
+
+    const errors = await captureConsoleErrors(() => {
+      navigate(window, 'https://evil.example/steal');
+    });
+
+    // Non-vacuity: the path under test actually ran. Without this, a listener
+    // that was never registered would produce the same empty-handed pass as a
+    // rejection that was correctly handled.
+    expect(electronState.openedExternally).toEqual([
+      'https://evil.example/steal',
+    ]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.[0]).toBe('[security] failed to open external URL');
+    expect(errors[0]?.[1]).toBe(failure);
+  });
+
+  it('reports a rejected window-open', async () => {
+    const failure = new Error('no browser available');
+    electronState.openExternalRejection = failure;
+    const window = fakeWindow();
+    hardenWindow(window as never);
+
+    const errors = await captureConsoleErrors(() => {
+      window.windowOpenHandler?.({ url: 'https://evil.example/popup' });
+    });
+
+    expect(electronState.openedExternally).toEqual([
+      'https://evil.example/popup',
+    ]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.[0]).toBe(
+      '[security] failed to open external window URL',
+    );
+    expect(errors[0]?.[1]).toBe(failure);
+  });
+
+  it('stays silent when the open succeeds', async () => {
+    // Control for both assertions above. They are of the form "console.error
+    // was called", which a handler that logs unconditionally would also
+    // satisfy. This pins the log to the rejection rather than to the call.
+    const window = fakeWindow();
+    hardenWindow(window as never);
+
+    const errors = await captureConsoleErrors(() => {
+      navigate(window, 'https://evil.example/steal');
+      window.windowOpenHandler?.({ url: 'https://evil.example/popup' });
+    });
+
+    expect(electronState.openedExternally).toHaveLength(2);
+    expect(errors).toEqual([]);
+  });
 });
 
 describe('hardenWindow', () => {

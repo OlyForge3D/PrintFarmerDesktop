@@ -614,7 +614,21 @@ export function registerIpcHandlers(
         retargetOwnerCleanup.add(event.sender);
         const ownerId = event.sender.id;
         event.sender.once('destroyed', () => {
-          void retargetArtifacts.disposeOwner(ownerId);
+          // `disposeOwner` is the same temp-root reaper whose rejection caused
+          // #178, and this call site is strictly worse: it runs from a
+          // `'destroyed'` handler, so unlike `initialize()` there is never an
+          // awaiter to attach later. A bare `void` here satisfies
+          // `no-floating-promises` and still crashes the main process when the
+          // reaper loses a race with the filesystem (issue #314).
+          retargetArtifacts.disposeOwner(ownerId).catch((error: unknown) => {
+            emitCalibrationLog({
+              level: 'error',
+              component: 'calibration.sidecar',
+              event: 'retargetArtifacts.ownerDisposalFailed',
+              ...describeCalibrationFailure(error),
+              outcome: 'failed',
+            });
+          });
         });
       }
       const response = await retargetArtifacts.preflight(

@@ -631,7 +631,9 @@ async function readBoundedBody(
         signal: AbortSignal,
       ): Promise<ReadableStreamReadResult<Uint8Array>> {
         if (signal.aborted) {
-          void reader.cancel();
+          reader.cancel().catch((error: unknown) => {
+            console.error('[sync] failed to cancel response reader', error);
+          });
           return Promise.reject(
             new SyncHttpError(
               'cancelled',
@@ -641,7 +643,9 @@ async function readBoundedBody(
         }
         return new Promise((resolve, reject) => {
           const onAbort = (): void => {
-            void reader.cancel();
+            reader.cancel().catch((error: unknown) => {
+              console.error('[sync] failed to cancel response reader', error);
+            });
             reject(
               new SyncHttpError(
                 'cancelled',

@@ -183,68 +183,77 @@ function installApplicationMenu(): void {
 if (!enforceSingleInstance()) {
   app.quit();
 } else {
-  void app.whenReady().then(() => {
-    if (process.platform === 'darwin' && !app.isPackaged) {
-      app.dock.setIcon(
-        resolveAppIconPath(app.getAppPath(), process.resourcesPath, false),
-      );
-    }
-    installApplicationMenu();
-    applyContentSecurityPolicy(
-      session.defaultSession,
-      MAIN_WINDOW_VITE_DEV_SERVER_URL,
-    );
-    // Persist the model catalog under the per-user data directory so it
-    // survives restarts. The sidecar reads this via PRINTFARMER_CATALOG_DB.
-    if (!process.env.PRINTFARMER_CATALOG_DB) {
-      process.env.PRINTFARMER_CATALOG_DB = path.join(
-        app.getPath('userData'),
-        'catalog.sqlite3',
-      );
-    }
-    sharedSidecar = new SidecarClient(spawnSidecarChannel, {
-      requireProtocolHandshake: true,
-    });
-    sharedRetargetSidecar = new SidecarClient(spawnSidecarChannel, {
-      serializeRequests: true,
-      requireProtocolHandshake: true,
-    });
-    sharedProfiles = new ServerProfileService({
-      userDataPath: app.getPath('userData'),
-      secretStorage: safeStorage,
-    });
-    disposeIpcResources = registerIpcHandlers(
-      undefined,
-      sharedProfiles,
-      sharedSidecar,
-      sharedRetargetSidecar,
-    );
-    syncEngine = new PrintFarmerSyncEngine(
-      sharedProfiles,
-      sharedSidecar,
-      new SyncHttpClient(sharedProfiles),
-    );
-    void syncEngine.start().catch(() => {
-      console.error('[sync] scheduler startup failed');
-    });
-    if (app.isPackaged && __PRINTFARMER_UPDATE_PUBLIC_KEY__) {
-      updateManager = new UpdateManager({
-        app,
-        publicKeyPem: __PRINTFARMER_UPDATE_PUBLIC_KEY__,
-        metadataUrl: __PRINTFARMER_UPDATE_METADATA_URL__,
-      });
-      void updateManager.initialize().catch((error: unknown) => {
-        console.error('[updates] initialization failed', error);
-      });
-    }
-    createMainWindow();
-
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        createMainWindow();
+  // The bootstrap body below — dock icon, application menu, CSP installation,
+  // model catalog persistence, sidecar and sync-engine construction — runs
+  // inside this fulfilment callback, so a `.then(onFulfilled, onRejected)` pair
+  // would not observe anything it throws. The trailing `.catch` does (#314).
+  void app
+    .whenReady()
+    .then(() => {
+      if (process.platform === 'darwin' && !app.isPackaged) {
+        app.dock.setIcon(
+          resolveAppIconPath(app.getAppPath(), process.resourcesPath, false),
+        );
       }
+      installApplicationMenu();
+      applyContentSecurityPolicy(
+        session.defaultSession,
+        MAIN_WINDOW_VITE_DEV_SERVER_URL,
+      );
+      // Persist the model catalog under the per-user data directory so it
+      // survives restarts. The sidecar reads this via PRINTFARMER_CATALOG_DB.
+      if (!process.env.PRINTFARMER_CATALOG_DB) {
+        process.env.PRINTFARMER_CATALOG_DB = path.join(
+          app.getPath('userData'),
+          'catalog.sqlite3',
+        );
+      }
+      sharedSidecar = new SidecarClient(spawnSidecarChannel, {
+        requireProtocolHandshake: true,
+      });
+      sharedRetargetSidecar = new SidecarClient(spawnSidecarChannel, {
+        serializeRequests: true,
+        requireProtocolHandshake: true,
+      });
+      sharedProfiles = new ServerProfileService({
+        userDataPath: app.getPath('userData'),
+        secretStorage: safeStorage,
+      });
+      disposeIpcResources = registerIpcHandlers(
+        undefined,
+        sharedProfiles,
+        sharedSidecar,
+        sharedRetargetSidecar,
+      );
+      syncEngine = new PrintFarmerSyncEngine(
+        sharedProfiles,
+        sharedSidecar,
+        new SyncHttpClient(sharedProfiles),
+      );
+      void syncEngine.start().catch(() => {
+        console.error('[sync] scheduler startup failed');
+      });
+      if (app.isPackaged && __PRINTFARMER_UPDATE_PUBLIC_KEY__) {
+        updateManager = new UpdateManager({
+          app,
+          publicKeyPem: __PRINTFARMER_UPDATE_PUBLIC_KEY__,
+          metadataUrl: __PRINTFARMER_UPDATE_METADATA_URL__,
+        });
+        void updateManager.initialize().catch((error: unknown) => {
+          console.error('[updates] initialization failed', error);
+        });
+      }
+      createMainWindow();
+
+      app.on('activate', () => {
+        if (BrowserWindow.getAllWindows().length === 0) {
+          createMainWindow();
+        }
+      });
+    })
+    .catch((error: unknown) => {
+      console.error('[startup] application bootstrap failed', error);
     });
-  });
 
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
