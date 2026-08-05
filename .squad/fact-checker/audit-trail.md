@@ -373,6 +373,29 @@ At the head, `.squad/skills/git-workflow/SKILL.md` carries the heading **Do not 
   but they agree because one was repaired to match the other by a commit named in this ledger — a **discharge**, not independent
   convergence, so it resolves without earning ✅.
 
+### Run AJ — the symmetric check firing on code, and finding the mainline red
+
+- **Found by the discipline, not by the assignment.** A push carrying nine lines of Markdown turned two required contexts red. The
+  hypothesis _"a Markdown commit cannot break a type-check"_ is the reassuring one, so it was measured instead of assumed:
+  `tsc --noEmit` on this branch exits **0**, the failing file is **absent** from this branch and **present** on the mainline, and the
+  mainline's own head is red on **the same two contexts at the same step**. The red is inherited from the base.
+- **Two renderings of one interface, each correct where it was written.** `tests/bedClearConflictClassification.test.ts` calls
+  `.toApiError()` with no argument; `src/main/calibrationHttp.ts` declares `toApiError(reference: string | null)`. At
+  `62e8808` the method took **no parameter** and the test was right — and `Desktop` passed on both platforms there. At `eb68310`
+  the parameter became required and every call site that commit could see was updated. **`62e8808` is not an ancestor of
+  `eb68310`**, so neither branch ever held the other's rendering.
+- **This is the check's own subject matter, on source instead of prose.** Neither file is the authority. There is no textual conflict,
+  no commit is red in isolation, and every gate is a function of one tree — so the disagreement exists only in the union, which is the
+  one artifact nobody's CI evaluated until a third party's merge produced it. **A one-directional check would ask whether the test
+  matches the implementation and get an answer; the symmetric form asks whether the pair agrees and gets the same answer without having
+  to choose a side first** — which matters here precisely because the correct side is a judgement the checker is not entitled to make.
+- **Reported, not repaired, and the mechanism left open.** Branch protection measures `strict=true` with both failing contexts
+  required, which is the control that should make this impossible. **That the two commits are unordered and that the mainline is red are
+  established; how the second one merged is not, and is not guessed at.** A stated open question is falsifiable by whoever holds the
+  merge history; an invented mechanism attached to a correct outcome is still a fabrication, which this ledger has recorded before.
+- **Grade: ❌ against the pair, at the mainline.** Resolution: filed against the artifacts, with the repair belonging to the owner of
+  the two commits rather than to the checker.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
