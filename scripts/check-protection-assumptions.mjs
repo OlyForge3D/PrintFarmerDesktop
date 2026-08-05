@@ -239,6 +239,55 @@ export function evaluateProtectionAssumptions({
 }
 
 /**
+ * What `required_status_checks.strict` actually guarantees here, which is not what
+ * its presence suggests.
+ *
+ * `strict` requires a pull request to be up to date with its base before it may
+ * merge. `enforce_admins: false` exempts administrators from every branch
+ * protection rule, `strict` included — and in this repository the sole
+ * collaborator is an administrator, so the exemption covers every merge anyone can
+ * perform. The setting is present, correct, and binds nobody.
+ *
+ * The assumption check above asserts `strict === true` and names the consequence of
+ * its absence as "a PR can merge against a trunk it was never tested against."
+ * Measured over the thirty most recently merged pull requests, that consequence
+ * occurs anyway:
+ *
+ *   up to date at merge   15 / 30
+ *   merged behind base    15 / 30      worst: #366, seventy commits behind
+ *
+ * So the assertion passes while the harm it names happens in half of all merges.
+ * That is not an argument for turning `enforce_admins` on — #111 declined it
+ * correctly, because the only admin is the only merger and enforcing it would
+ * deadlock the repository. It is an argument for saying out loud which of these
+ * settings is load-bearing, so that no other control is written on the assumption
+ * that a merged PR was tested against the trunk it landed on.
+ *
+ * This is reported rather than failed. The state below is the permanent and correct
+ * one, and a check that fails on the correct state teaches its reader to ignore it.
+ * What binds it is the test suite: if the pair ever changes, this reading changes
+ * with it, so the claim cannot quietly outlive the facts it rests on.
+ */
+export function statusCheckEnforcement(protection) {
+  if (protection?.required_status_checks?.strict !== true) {
+    return {
+      state: 'absent',
+      why: 'strict is not set, so a pull request may merge against a base it was never tested against',
+    };
+  }
+  if (protection?.enforce_admins?.enabled === true) {
+    return {
+      state: 'binding',
+      why: 'strict is set and administrators are not exempt, so up-to-date-ness is enforced for every merger',
+    };
+  }
+  return {
+    state: 'bypassable',
+    why: 'strict is set but administrators are exempt, and the only account that can merge is an administrator — do not rely on a merged PR having been tested against the trunk it landed on',
+  };
+}
+
+/**
  * A ruleset matters here only if it is ENABLED and reaches something other than
  * `development`. `enforcement: 'disabled'` and `evaluate` (dry-run) grant nothing.
  */
@@ -332,6 +381,14 @@ async function main() {
 
   const facts = await fetchRepositoryFacts({ repository, token });
   const violations = evaluateProtectionAssumptions(facts);
+
+  // Printed on every run, pass or fail. A reader who sees `strict: true` in the
+  // settings concludes that a merged PR was tested against the trunk it landed on,
+  // and here that is false for half of them.
+  const enforcement = statusCheckEnforcement(facts.protection);
+  console.log(
+    `Up-to-date-with-base enforcement: ${enforcement.state} — ${enforcement.why}`,
+  );
 
   if (violations.length === 0) {
     console.log(

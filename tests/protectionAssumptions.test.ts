@@ -5,6 +5,7 @@ import {
   evaluateProtectionAssumptions,
   formatViolations,
   rulesetCoversFeatureBranches,
+  statusCheckEnforcement,
 } from '../scripts/check-protection-assumptions.mjs';
 
 // The baseline is the repository as measured on 2026-08-04T17:23 local, at the
@@ -178,6 +179,45 @@ describe('the two decisions #111 took deliberately, and the trigger to revisit t
     facts.protectedBranches = ['development', 'release/1.0'];
 
     expect(assumptionsOf(facts)).toEqual(['protected branches']);
+  });
+});
+
+describe('strict status checks are present and bind nobody', () => {
+  // Measured over the thirty most recently merged pull requests, by recency:
+  //   up to date at merge  15 / 30
+  //   merged behind base   15 / 30    worst #366, seventy commits behind
+  // `strict: true` is live throughout. The assumption check above asserts it and
+  // passes, and the consequence it names -- merging against an untested trunk --
+  // happens in half of all merges regardless.
+  it('reads the live pair as bypassable, not as protection', () => {
+    const reading = statusCheckEnforcement(baseline().protection);
+    expect(reading.state).toBe('bypassable');
+    expect(reading.why).toMatch(/do not rely on/);
+  });
+
+  it('reads as binding only when administrators are not exempt', () => {
+    const facts = baseline();
+    facts.protection.enforce_admins = { enabled: true };
+    expect(statusCheckEnforcement(facts.protection).state).toBe('binding');
+  });
+
+  it('separates "exempt from it" from "does not exist"', () => {
+    // Both leave a PR able to merge against an untested base, and they have
+    // different remedies -- one is a setting to turn on, the other is a person to
+    // stop being an admin. Collapsing them would hide which.
+    const facts = baseline();
+    facts.protection.required_status_checks.strict = false;
+    expect(statusCheckEnforcement(facts.protection).state).toBe('absent');
+    expect(statusCheckEnforcement(undefined).state).toBe('absent');
+  });
+
+  it('is not satisfied by the assumption check, which passes on the same facts', () => {
+    // The binding fact: these two disagree about the same repository. If someone
+    // later decides `strict: true` is sufficient and deletes the reading above,
+    // this fails rather than the suite silently agreeing with them.
+    const facts = baseline();
+    expect(evaluateProtectionAssumptions(facts)).toEqual([]);
+    expect(statusCheckEnforcement(facts.protection).state).not.toBe('binding');
   });
 });
 

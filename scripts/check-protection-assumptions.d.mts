@@ -39,3 +39,12 @@ export declare function fetchRepositoryFacts(input: {
   token: string;
   fetchImpl?: typeof fetch;
 }): Promise<Required<RepositoryFacts>>;
+
+export interface StatusCheckEnforcement {
+  /** 'bypassable' means the setting is present and exempts the only merger. */
+  state: 'binding' | 'bypassable' | 'absent';
+  why: string;
+}
+export function statusCheckEnforcement(
+  protection: unknown,
+): StatusCheckEnforcement;
