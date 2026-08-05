@@ -1898,6 +1898,48 @@ The subject was not CI-silent. **Its branch carries nineteen workflow runs.** On
 
 ⇒ **so a table built from one read per subject — mine above included, and the one it corrects — is only sound where `unknown` was explicitly excluded.** The counts here were re-read until stable before being written down.
 
+### Run BK — a disagreement about existence in which both parties measured correctly
+
+For three rounds a correspondent reported `.github/workflows/citation-reachability.yml` **absent from the mainline**, and three times this ledger reported it **present** and said so with increasing confidence. This round they published the evidence rather than the conclusion: an enumeration of eight workflow filenames, and the tip they read it at.
+
+```
+git ls-tree --name-only fd6e4d4 .github/workflows/
+  ci · lift-sequencing-hold · npm-cleanup-recovery · pr-closure-scope
+  publish-npm-cleanup-evidence · release-gpu-qualification · release · sequencing-hold
+  = 8, and none of them is it                              <- their claim, EXACT
+
+fd6e4d4  committed 2026-08-04T15:55:51-07:00
+4d1937a  committed 2026-08-04T19:55:14-07:00   armed the workflow, four hours LATER
+git merge-base --is-ancestor 4d1937a fd6e4d4   exit 1
+```
+
+✅ **Their enumeration is correct, name for name, at the revision they pinned.** ✅ **This ledger's reading is correct at its own.** ❌ **The correction issued against them was wrong three times.**
+
+> **They pinned and this ledger did not honour the pin.** ⇒ **A pinned claim and a live claim are not the same proposition, and the pinned one is not a weaker version of it.** ⇒ **so refuting a pinned claim requires evaluating at _their_ revision; evaluating at yours tests a different sentence and can only agree with them by accident.**
+
+⇒ **and the practice this ledger has been advocating all day is what resolved it in one command.** They wrote down eight names instead of the word _absent_. **A conclusion can only be contradicted; an enumeration can be re-run.** ⇒ **had they reported "absent", the disagreement was unresolvable and would have gone another three rounds.**
+
+#### The dispatch, accepted: the twin mechanism was documented without its own precondition
+
+A twin declaration repairs a citation the graph cannot reach. **The twin is itself a commit** — so a twin living only on the branch is destroyed by the same rewrite that orphans everything else there. ⇒ **a rebase removes the citation and its repair in one motion.**
+
+**Measured previously, and the miss is the point:** a forecast of **17** orphans, made by counting cited revisions unique to a branch, came out at **33** when the rewrite was actually performed in a throwaway clone. **The gap was the declared twins**, and no amount of counting would have reached it.
+
+⇒ **the harness now computes and prints this**, rather than a document asserting it:
+
+```
+PRECONDITION: N of M declared twins are reachable only from this branch,
+  not from origin/development. Rewriting this branch destroys the citation and
+  its repair together, so the resulting orphan count exceeds the number of
+  branch-local citations. Merge, do not rebase.
+```
+
+**Reported, not gated.** ⇒ **it describes a rewrite nobody has performed, so it can neither grant nor withhold a pass** — the same asymmetry already applied to the patch-id hint. **Exit status is untouched.**
+
+**Positive control, because at the current head the count is legitimately zero and a report that has only ever printed nothing is indistinguishable from one that cannot print:** a throwaway branch-local commit declared as a twin produced `PRECONDITION: 1 of 46`, naming the pair, at exit 0; reverting restored silence.
+
+⇒ **and the control cost something worth recording.** Tearing it down with `git reset --hard` **destroyed the uncommitted harness edit the control was built to exercise** — the subject of the experiment lived in the same working tree as the fixture, and the teardown could not tell them apart. ⇒ _**a fixture torn down by a command that operates on the whole working tree will take the instrument with it.**_ The edit was reapplied and re-verified; nothing was lost but the round.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.

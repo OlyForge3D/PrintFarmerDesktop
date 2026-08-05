@@ -450,6 +450,48 @@ console.log(
   `\nREACHABLE ${tally.REACHABLE}   TWIN ${tally.TWIN}   DECLARED ${tally.DECLARED}   ORPHAN ${tally.ORPHAN}`,
 );
 
+// A twin declaration repairs a citation the graph can no longer reach - but the twin is itself a
+// commit, and a twin that exists only on this branch is destroyed by the same rewrite that would
+// orphan anything else here. So a rebase or squash removes the citation *and* the repair in one
+// motion, and the number of orphans it produces exceeds the number of branch-local citations by
+// exactly the number of branch-local twins. That was measured the hard way: a forecast of 17
+// orphans, made by counting cited revisions unique to a branch, came out at 33 when the rewrite
+// was actually performed in a throwaway clone, and the gap was the declared twins.
+//
+// Reported, not gated. It describes a rewrite nobody has performed, so it can neither grant nor
+// withhold a pass; the operator about to rewrite is the one who needs the number, and the party
+// who rewrites history is never the party who can see what it broke.
+const baseRev = git(['rev-parse', '--verify', 'origin/development^{commit}'])
+  ? 'origin/development'
+  : null;
+if (baseRev && twins.size) {
+  const baseReachable = new Set(
+    (git(['rev-list', baseRev]) ?? '').split('\n').filter(Boolean),
+  );
+  const fragile = [];
+  for (const [sha, twin] of twins) {
+    const full = git(['rev-parse', '--verify', `${twin}^{commit}`]);
+    if (full && reachable.has(full) && !baseReachable.has(full)) {
+      fragile.push(`${sha.slice(0, 8)} -> ${twin.slice(0, 8)}`);
+    }
+  }
+  if (fragile.length) {
+    console.log(
+      `\nPRECONDITION: ${fragile.length} of ${twins.size} declared twins are reachable only from this branch,`,
+    );
+    console.log(
+      `  not from ${baseRev}. Rewriting this branch destroys the citation and its repair together,`,
+    );
+    console.log(
+      '  so the resulting orphan count exceeds the number of branch-local citations. Merge, do not rebase.',
+    );
+    for (const f of fragile.slice(0, 8)) console.log(`    ${f}`);
+    if (fragile.length > 8) {
+      console.log(`    ... and ${fragile.length - 8} more`);
+    }
+  }
+}
+
 if (orphans.length) {
   console.error(
     '\nORPHANED CITATIONS - unreachable to a reader, and not accounted for:',
