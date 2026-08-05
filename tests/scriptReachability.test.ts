@@ -355,4 +355,46 @@ describe('the allowlists cannot rot quietly', () => {
       ).toBe(false);
     }
   });
+
+  // The block above is the same guarantee for UNINVOKED_SCRIPTS, and it was the
+  // only one. This block's name is plural and one of the two allowlists had no
+  // rot guard at all: UNENFORCED_CHECKS was checked for a reason and for
+  // existence in package.json, never for whether a workflow had since started
+  // running it. Measured before this test was written — a stale
+  // `check:citation-reachability` entry, present while
+  // .github/workflows/citation-reachability.yml invokes it, left all 28 tests
+  // green.
+  //
+  // It is not caught downstream either. `evaluateCheckEnforcement` sorts a wired
+  // check into `enforced` before it consults the allowlist, so the entry is
+  // never read and the checker exits 0. A dead justification is worse than a
+  // missing one: it is the only account of policy a reader will find, and it
+  // states the opposite of what CI now does.
+  it('holds no check that a workflow now runs, so a stale exemption is caught', () => {
+    const report = evaluateCheckEnforcement({
+      packageScripts: definedScripts(),
+      workflows,
+      allowlist: UNENFORCED_CHECKS,
+    });
+    const enforced = new Set(report.enforced.map(({ key }) => key));
+
+    // Positive control on the loop below: an empty allowlist would satisfy the
+    // assertion by having nothing to assert about, and would read identically.
+    expect(
+      Object.keys(UNENFORCED_CHECKS).length,
+      'UNENFORCED_CHECKS is empty, so the loop below cannot fail — delete this test or restore the allowlist',
+    ).toBeGreaterThan(0);
+
+    for (const key of Object.keys(UNENFORCED_CHECKS)) {
+      expect(
+        enforced.has(key),
+        `${key} is allowlisted as unenforced but ${report.enforced
+          .filter(({ key: enforcedKey }) => enforcedKey === key)
+          .flatMap(({ workflows: paths }) => paths)
+          .join(
+            ', ',
+          )} now runs it — remove the entry, its reason is no longer true`,
+      ).toBe(false);
+    }
+  });
 });
