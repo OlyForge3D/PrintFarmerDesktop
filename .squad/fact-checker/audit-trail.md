@@ -2016,6 +2016,51 @@ Everything reported success. `prettier --write` reformatted it without complaint
 
 Caught by grepping for the heading rather than trusting the exit status. Repaired at the cause — the offset is now computed after every edit — and the script asserts three structural properties it previously only assumed: the anchor is unique, the anchor begins a line, and the run-heading count increments by exactly one.
 
+### Run BM — a prohibition that worked, and the only mechanism that could honour it is the one the branch forbids
+
+**Pair:** a report that PR #328 is _"currently OPEN at `f4028d257cfcc10ae57bfeb218125b83d93beb44`, non-draft, MERGEABLE/BEHIND with 9/9 checks green but no formal review decision"_ — against the pull request.
+
+**Verdict: ❌ on state, ✅ on the two component readings.** Read at `2026-08-05T12:56Z`:
+
+```
+#328  state=closed  merged=true  merged_at=2026-08-05T02:48:29Z
+      merge_commit_sha=1e84cb8fd6dc8244cf7d105075d6a88384c33ee3   parents: 2 (two-parent merge)
+      head that merged = c4f4713b1d655c089e39f4851b943575208a775d
+      reviews = 0
+f4028d257cfcc10ae57bfeb218125b83d93beb44   in #328's commit list (27 commits)   YES
+                                           check-runs 10, distinct 9, not-success 0
+c4f4713b1d655c089e39f4851b943575208a775d   check-runs 15, distinct 10, not-success 0
+```
+
+⇒ **the pin is real and the state around it is not.** `f4028d25` is a genuine commit on the branch — run AF — and _9 distinct green checks_ is exactly right **at that revision**. **The composite sentence is false because one clause aged and the others did not.**
+
+⇒ _**a report is only as fresh as its most perishable clause, and nothing in its grammar marks which one that is.**_ _open_, _at `f4028d25`_, _9/9 green_ and _no review decision_ are four claims with four different half-lives, asserted in one breath at one confidence. **Two of them are still true; one was true 3h35m before the report; one had been false for three hours when it was sent.** ⇒ **the durable and the perishable must be labelled where they are written, because the reader cannot recover the distinction afterwards.**
+
+⇒ **and `MERGEABLE/BEHIND` is the third value from run BJ arriving from the other direction.** The field now reads `unknown`: **the forge stops computing mergeability once a pull request closes**, so a live read of that field is not a durable observation about the pull request at all — it is a reading of a cache that is switched off by the very event that most needs recording.
+
+#### The claim that held, and what it produced
+
+_No formal review decision_ was **correct when written and is still correct at the merge**: `reviews = 0`, and #328 merged anyway. That is the eighth consecutive landing in this workstream with zero reviews. ⇒ **an unreviewed merge is not a review that failed; it is a review that was never solicited, and nothing in the record distinguishes the two after the fact.**
+
+#### The finding: the prohibition worked, through the one act the branch forbids
+
+#328's body states, as its item 2, **"This PR must not be squash-merged."** Measured against the two landings it concerns, both merged by the same account:
+
+| pull request | prohibition in body | merged at              | shape                                                               | outcome                |
+| ------------ | ------------------- | ---------------------- | ------------------------------------------------------------------- | ---------------------- |
+| #162         | **absent**          | `2026-08-04T19:29:29Z` | `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d`, **one parent** — squash | 36 citations destroyed |
+| #328         | **present**         | `2026-08-05T02:48:29Z` | `1e84cb8fd6dc8244cf7d105075d6a88384c33ee3`, **two parents** — merge | citations preserved    |
+
+⇒ **same maintainer, seven hours apart, opposite strategies, and the difference tracks whether the pull request asked.** One trial on each arm is not a demonstration that prose binds — but it is the only evidence available, and **it moved in the direction the prose requested.** ⇒ _**the strongest control this workstream has is a sentence in a pull-request body honoured by a person, and it has never been tested against a maintainer disinclined to honour it.**_
+
+⇒ **and here is the part that closes on run BL.** `development` sets `required_linear_history`. **A two-parent merge is the only shape that preserves the citations, and it is the shape the branch protection forbids.** So honouring #328's prohibition **required** the `enforce_admins: false` exception:
+
+> **Compliance with the pull request required non-compliance with the branch protection.**
+
+⇒ run BL found my own harness recommending a shape the branch forbids and called the advice defective. **This is the same contradiction seen from the other end, and it inverts the grading:** the recommendation was not wrong about what preserves citations — it was correct, and **the repository is configured to forbid the only correct answer**. ⇒ _**the defect is not in the advice; it is that the branch's stated policy and its citation-integrity requirement cannot both be satisfied.**_ The revision shipped in run BL — declare twins, cite blobs — is right precisely because it is the only route that does not depend on resolving that conflict.
+
+⇒ **recorded as a live contradiction, not a repair.** It is a branch setting, so it is not mine to change; and a finding that names the conflict is worth more than a workaround that hides it.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
