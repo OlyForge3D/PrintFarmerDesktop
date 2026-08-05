@@ -135,6 +135,40 @@ const patchIdOf = (rev) => {
   }
 };
 
+// The lines a revision contributed, keyed by path, with everything a rebase may legitimately
+// change discarded: hunk offsets and context. Content is only collected after a `@@`, so a
+// removed line that itself begins with `--` is never mistaken for a file header.
+//
+// `null` for a merge, deliberately. `git show` renders a merge as a *combined* diff whose rows
+// carry one column per parent, so every line reads as doubly-prefixed and a single-column
+// parser silently returns nonsense. Measured on `e5a90df7`, a merge declared in this ledger: it
+// scored 0 of 41 lines against its own declared twin, which is the signature of an unrelated
+// commit. A merge contributes no lines of its own; saying so is better than scoring it.
+const addedLinesOf = (rev) => {
+  const parents = git(['rev-list', '--parents', '-n', '1', rev]);
+  if (parents === null) return null;
+  if (parents.trim().split(/\s+/).length > 2) return null;
+
+  const show = git(['show', rev, '--format=', '--unified=0', '--no-color']);
+  if (show === null) return null;
+  const lines = new Set();
+  let file = null;
+  let inHunks = false;
+  for (const line of show.split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      file = line;
+      inHunks = false;
+      continue;
+    }
+    if (line.startsWith('@@')) {
+      inHunks = true;
+      continue;
+    }
+    if (inHunks && line.startsWith('+')) lines.add(`${file}\u0000${line}`);
+  }
+  return lines.size ? lines : null;
+};
+
 // Reads a `- `sha` — text` list under a heading, from any of the artifacts.
 const readBlock = (heading) => {
   const found = new Map();
@@ -209,7 +243,39 @@ const classify = (sha, { twinMap = twins } = {}) => {
   if (twin) {
     const twinFull = git(['rev-parse', '--verify', `${twin}^{commit}`]);
     if (twinFull && reachable.has(twinFull)) {
-      return { k: 'TWIN', d: `${twin.slice(0, 8)} (declared, reachable)` };
+      // What this may and may not do is the whole of the design.
+      //
+      // It may not *require* a content match. The reader this check speaks for does not hold
+      // the orphaned object and never can, so requiring one would put the verdict back under
+      // the local object store, which the rule above forbids.
+      //
+      // It may not *refute* on a content mismatch either, and that is the part measurement
+      // settled rather than judgement. Every declaration in this repository's ledger names a
+      // squash: 41 commits of #162 collapsed into one, so the twin's content is the union of
+      // its inputs and equal to none of them. Requiring equality refused 34 of 44 correct
+      // rows. Requiring containment still refused 30, because a 41-commit squash legitimately
+      // loses the intermediate states -- rows measured at 155 of 196, 55 of 66, 48 of 50 lines
+      // surviving. Any rule strict enough to refuse an arbitrary commit refuses those too, so
+      // a refutation here buys a little safety by reddening correct work, which is #146 again.
+      //
+      // What is left is sound and worth having: containment can only ever be *evidence for*
+      // twinship, so it upgrades the label and never withdraws the pass. A reader is told
+      // which of these two things they are looking at instead of being told neither.
+      const cited = full ? addedLinesOf(full) : null;
+      const claimed = cited ? addedLinesOf(twinFull) : null;
+      if (cited && claimed && [...cited].every((l) => claimed.has(l))) {
+        return {
+          k: 'TWIN',
+          d: `${twin.slice(0, 8)} (declared, reachable, content verified: every line the cited revision added is present)`,
+        };
+      }
+      // Said plainly rather than implied. The previous wording named its own two properties -
+      // "declared, reachable" - and twinship was not among them, so the single thing the
+      // verdict asserted was the single thing nothing had checked.
+      return {
+        k: 'TWIN',
+        d: `${twin.slice(0, 8)} (declared, reachable; TWINSHIP UNVERIFIED - accepted on the declaration alone)`,
+      };
     }
     return {
       k: 'ORPHAN',
@@ -295,6 +361,54 @@ if (someTwinned) {
   if (unreachableTwin.k !== 'ORPHAN') {
     failures.push('an unreachable declared twin was accepted');
   }
+}
+
+// The upgrade above is only worth having if the comparison behind it can tell two revisions
+// apart, and can recognise a revision as containing itself. Neither is safe to assume: a
+// comparison that always matched would stamp "content verified" on every declaration, which is
+// the same false reassurance in a new costume, and one that never matched would silently
+// downgrade every correct row. Both arms run against revisions this reader demonstrably holds.
+// The revisions are chosen with --no-merges rather than as HEAD and HEAD~1. `git show` renders a
+// merge as a combined diff, one column per parent, so every line arrives `++`-prefixed and
+// addedLinesOf reports null for it. HEAD is a merge commit in any checkout of a branch that was
+// updated from its base - which is the ordinary case here - so the earlier HEAD/HEAD~1 form
+// skipped this whole block in silence, printed nothing, and let the run pass. A control that
+// cannot run in the repository it ships in is not a weaker control; it is an absent one, and its
+// silence is indistinguishable from success.
+// The `?? ''` is load-bearing: `git()` returns null when the command fails, and on a repository
+// whose HEAD is unborn `rev-list` fails. Splitting null throws, which exits 1 - and 1 is the
+// code for "orphans found", not for "the instrument broke". The pre-existing unborn-HEAD test
+// caught exactly that: crashing here would have replaced a withheld verdict with a wrong one.
+const [controlRevA, controlRevB] = (
+  git(['rev-list', '--no-merges', '-n', '2', 'HEAD']) ?? ''
+).split('\n');
+const linesA = controlRevA ? addedLinesOf(controlRevA) : null;
+const linesB = controlRevB ? addedLinesOf(controlRevB) : null;
+if (linesA && linesB) {
+  const contains = (a, b) => [...a].every((l) => b.has(l));
+  console.log(
+    'control: the twin comparison separates two distinct revisions',
+    !contains(linesA, linesB),
+  );
+  console.log(
+    'control: the twin comparison recognises a revision as containing itself',
+    contains(linesA, linesA),
+  );
+  if (contains(linesA, linesB))
+    failures.push(
+      'the twin content comparison cannot separate two distinct revisions',
+    );
+  if (!contains(linesA, linesA))
+    failures.push(
+      'the twin content comparison does not recognise a revision as containing itself',
+    );
+} else {
+  // Reported rather than failed. A reader holding fewer than two measurable revisions is a
+  // narrow checkout, not a broken instrument, and reddening it would be the false red this
+  // whole change exists to avoid. But the run must not read as though the arm had passed.
+  console.log(
+    'control: the twin comparison was NOT EXERCISED - this reader holds fewer than two non-merge revisions',
+  );
 }
 
 if (failures.length) {

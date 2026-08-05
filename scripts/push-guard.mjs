@@ -32,11 +32,39 @@
 // the commits about to be destroyed carried a session id the pusher had never
 // seen.
 //
-// Commits destroyed by a DIFFERENT session — identified by the
-// `Copilot-Session` trailer, which `.squad/decisions.md` establishes as the only
-// reliable discriminator between concurrent writers (committer and author
-// identity are per-worktree config and prove nothing) — are refused separately,
-// and the override has to name the foreign session id.
+// Commits destroyed by a DIFFERENT session are refused separately, and the
+// override has to name the foreign session id. Two questions are at work in
+// that sentence and they do not take the same evidence:
+//
+//   * "Are these commits mine?" is answered by `ownCommits` — the sha set this
+//     worktree actually created, read from the reflog by `readOwnedCommits`.
+//     Ownership is a question about objects, not about what those objects say
+//     about themselves.
+//   * "Is a second writer present?" is answered by the `Copilot-Session`
+//     trailer, which `.squad/decisions.md` (2026-07-25) establishes as the
+//     discriminator AGAINST COMMITTER AND AUTHOR IDENTITY — those are
+//     per-worktree config and prove nothing.
+//
+// That record calls the trailer "the discriminator" and ranks it against
+// identity fields only. It makes no claim of exclusivity, and it could not
+// have ranked the trailer against sha evidence, which did not exist when it
+// was written. The earlier wording here promoted it to a claim its own cited
+// source does not make.
+//
+// The trailer cannot carry the first question, and this header says so in the
+// same place it states the mechanism, because the body measures it: the value
+// reaches a committer through its PROMPT, not its environment, so two sessions
+// handed one brief emit the same id — one value on `development` carries 74
+// commits spanning 37 hours, which no single session runs for. A shared
+// trailer launders a foreign commit into the pusher's own set. That is why the
+// sha check exists.
+//
+// Neither instrument is "secondary". The id remains the one that carries the
+// strong `foreign-session` claim, because a sha set cannot survive a rewrite
+// performed on another machine and the trailer can; the sha set only ever ADDS
+// refusals underneath it — see the `unowned-discard` arm, reachable solely for
+// commits an id check has already let through. Each is primary for its own
+// question, and neither answers the other's.
 //
 // Limits, stated plainly: `--no-verify` bypasses any hook, and a hook only binds
 // clones where `npm install` has run. This raises a silent accident to a

@@ -480,4 +480,81 @@ describe('RetargetArtifactService', () => {
     await expect(access(unowned)).resolves.toBeUndefined();
     await expect(access(active)).resolves.toBeUndefined();
   });
+
+  /**
+   * Sweep a temp root owned by a pid whose liveness probe raises `code`.
+   *
+   * `isProcessRunning` is module-local and never exported, so the branch can
+   * only be reached through `initialize()`. The pid is identical in both arms
+   * and the only difference is what `process.kill(pid, 0)` throws, which is
+   * what makes the pair a control rather than two unrelated scenarios.
+   *
+   * Returns whether the probe was actually consulted, because a directory that
+   * survives because it was never a sweep candidate is indistinguishable from
+   * one the guard deliberately spared.
+   */
+  async function sweepForeignOwnedRoot(code: string) {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'u1-foreign-'));
+    temporaryDirectories.push(root);
+    const parent = path.join(root, 'PrintFarmer', 'retarget');
+    const foreignId = randomUUID();
+    const foreign = path.join(parent, foreignId);
+    const foreignPid = 424242;
+    await mkdir(foreign, { recursive: true });
+    await writeFile(path.join(foreign, 'artifact.3mf'), 'foreign instance');
+    await writeFile(
+      path.join(foreign, '.printfarmer-retarget-owner.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        instanceId: foreignId,
+        pid: foreignPid,
+      }),
+    );
+
+    const realKill = process.kill.bind(process);
+    const probed: number[] = [];
+    const spy = vi
+      .spyOn(process, 'kill')
+      .mockImplementation((pid: number, signal?: string | number) => {
+        if (pid !== foreignPid) return realKill(pid, signal);
+        probed.push(pid);
+        const error: NodeJS.ErrnoException = new Error(`kill ${code}`);
+        error.code = code;
+        throw error;
+      });
+
+    try {
+      const { service } = await fixture({ tempPath: root });
+      await service.disposeAll();
+    } finally {
+      spy.mockRestore();
+    }
+
+    const survived = await access(foreign).then(
+      () => true,
+      () => false,
+    );
+    return { survived, consulted: probed.length };
+  }
+
+  it('spares a temp root whose owner is live but owned by another user', async () => {
+    // `process.kill(pid, 0)` raising EPERM means the process EXISTS and belongs
+    // to someone else. Treating that as dead reclaims a live instance's temp
+    // root — the #229/#330/#349 hazard through the one branch those issues
+    // never covered. Origin: #459.
+    const result = await sweepForeignOwnedRoot('EPERM');
+
+    expect(result.consulted).toBeGreaterThan(0);
+    expect(result.survived).toBe(true);
+  });
+
+  it('reclaims the same root when the owner is genuinely gone — the control', async () => {
+    // Identical layout and pid; only the raised code differs. Without this the
+    // assertion above would also pass if the sweep never considered the
+    // directory at all, and absence of deletion would prove nothing.
+    const result = await sweepForeignOwnedRoot('ESRCH');
+
+    expect(result.consulted).toBeGreaterThan(0);
+    expect(result.survived).toBe(false);
+  });
 });
