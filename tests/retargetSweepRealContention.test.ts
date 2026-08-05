@@ -61,17 +61,28 @@
 
 import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import {
   mkdir,
   mkdtemp,
   readdir,
   readFile,
   rm,
+  stat,
   writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 
 import {
   RetargetArtifactService,
@@ -156,17 +167,47 @@ const EXPECTED_EVIDENCE: Record<string, Record<string, unknown>> = {
  * rather than a silent exemption, and silence is the failure this whole file
  * exists to prevent.
  *
+ * Two narrowings that look equivalent here are not, and a round-4 reviewer
+ * measured the difference: skipping an arm while `vitest.config.ts` declares a
+ * `testNamePattern` reported `1 passed | 4 skipped` and exit 0. A pattern typed
+ * at a terminal is one person's one run. A pattern committed to the config is
+ * every run on every machine including CI, for as long as it stays there -- so
+ * treating the two the same turns a transient exemption into a permanent one,
+ * and this file would go quiet in the only place its silence matters. So the
+ * exemption is granted only when the narrowing is NOT in the committed config.
+ *
+ * `shard` no longer exempts at all. Vitest shards by file: if this file's
+ * `afterAll` is running then this file was in the shard, and every arm in it
+ * should have run. Exempting on `shard` gave away a case that cannot occur.
+ *
  * The trade-off is stated rather than hidden: adding `-t` to the workflow would
- * disable the completeness check. That is a visible edit to `.github/`, a much
- * louder act than skipping a test, and the evidence assertions still run for
- * whichever arms did execute.
+ * still disable the completeness check. That is a visible edit to `.github/`, a
+ * much louder act than skipping a test, and the evidence assertions still run
+ * for whichever arms did execute.
  */
+function narrowingIsCommitted(): boolean {
+  // Fails towards enforcing: if the config cannot be read, the narrowing is
+  // treated as committed and the completeness check runs. An unreadable config
+  // must not buy an exemption.
+  try {
+    const configPath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      'vitest.config.ts',
+    );
+    return readFileSync(configPath, 'utf8').includes('testNamePattern');
+  } catch {
+    return true;
+  }
+}
+
 function runWasNarrowed(): boolean {
   const worker = (globalThis as Record<string, unknown>).__vitest_worker__ as
-    { config?: { testNamePattern?: unknown; shard?: unknown } } | undefined;
+    { config?: { testNamePattern?: unknown } } | undefined;
   const config = worker?.config;
   if (config === undefined) return false;
-  return config.testNamePattern !== undefined || config.shard !== undefined;
+  if (config.testNamePattern === undefined) return false;
+  return !narrowingIsCommitted();
 }
 
 /**
@@ -178,7 +219,8 @@ function runWasNarrowed(): boolean {
  * values instead means a gutted arm registers evidence that the `afterAll`
  * then rejects, so the cheapest way to make this file lie is no longer to
  * delete an `expect` -- it is to write a false value into the record, which is
- * a deliberate act that reads as one in a diff.
+ * a deliberate act that reads as one in a diff. The protection extends exactly
+ * as far as the recorded keys: see the note above the `afterAll`.
  */
 const observations = new Map<string, Record<string, unknown>>();
 
@@ -208,7 +250,7 @@ function serviceFor(tempPath: string) {
 
 /** A directory the sweep should consider collectable: well-formed marker, dead pid. */
 async function staleInstance(): Promise<{ root: string; stale: string }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'u1-real-sweep-'));
+  const root = await mkdtemp(path.join(os.tmpdir(), TEMP_ROOT_PREFIX));
   temporaryDirectories.push(root);
   const parent = path.join(root, 'PrintFarmer', 'retarget');
   const staleId = randomUUID();
@@ -286,6 +328,43 @@ async function realRemovalError(
       'every assertion drawn from one would be vacuous',
   );
 }
+
+const TEMP_ROOT_PREFIX = 'u1-real-sweep-';
+
+/**
+ * Collect temp roots abandoned by an earlier interrupted run.
+ *
+ * A round-4 reviewer measured the hole: cleanup lives in `afterEach`, and a run
+ * killed mid-arm never reaches it, so a root and a live holding process are left
+ * in `os.tmpdir()`. Nothing can be added to this file that runs after a SIGKILL,
+ * so the leak is closed on the next run in rather than at the moment it happens.
+ *
+ * Only roots older than an hour are touched. A concurrent run of this file on
+ * the same machine -- two CI jobs, another agent's worktree -- owns roots that
+ * are seconds old, and deleting those would make this file the flake it exists
+ * to avoid. Every failure here is swallowed: this is hygiene, and it must never
+ * be the reason a correct tree goes red.
+ */
+beforeAll(async () => {
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  let entries: string[];
+  try {
+    entries = await readdir(os.tmpdir());
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith(TEMP_ROOT_PREFIX)) continue;
+    const candidate = path.join(os.tmpdir(), entry);
+    try {
+      if ((await stat(candidate)).mtimeMs > cutoff) continue;
+      await rm(candidate, { recursive: true, force: true, maxRetries: 5 });
+    } catch {
+      // Another run owns it, or it is already gone. Neither is this file's
+      // business, and neither is a reason to fail.
+    }
+  }
+});
 
 afterEach(async () => {
   for (const child of children.splice(0)) child.kill();
@@ -428,10 +507,18 @@ describe.skipIf(!onWindows)(
 //   assertions, keep its marker, still green. Execution is not measurement.
 //
 // So the arms now record what they OBSERVED, and this re-asserts those
-// observations. Gutting an arm's `expect`s no longer helps: the arm records
-// the real values and this rejects them. The cheapest way to make this file
-// lie is now to write a false literal into a `record(...)` call, which is a
-// deliberate act and reads as one in a diff.
+// observations. Gutting an arm's `expect`s over a value it records no longer
+// helps: the arm records the real value and this rejects it. A round-4 reviewer
+// deleted ARM_CONTROL's only `expect` and saw the file still pass, which is
+// worth being exact about -- that mutation is equivalent, because it was run
+// against a CORRECT tree, where passing is the right answer. Deleting the same
+// `expect` AND breaking the product was measured too, and this caught it:
+// `expected { survivedUnheld: true } to strictly equal { survivedUnheld: false }`,
+// exit 1. The claim is therefore about values that reach a `record(...)` call.
+// An assertion over something no arm records is protected by nothing but
+// itself, which is why the evidence maps mirror the arms rather than sampling
+// them. The cheapest way to make this file lie is to write a false literal into
+// a `record(...)` call, which is a deliberate act and reads as one in a diff.
 //
 // Two limits, stated rather than implied, both measured by reviewers rather
 // than guessed:
