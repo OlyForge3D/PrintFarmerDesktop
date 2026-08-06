@@ -247,6 +247,46 @@ describe('justified cleanup discharge', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses a run that has not completed with failure', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        response({ ...run, status: 'in_progress', conclusion: null }),
+      );
+
+    await expect(
+      dischargeCleanupFailure({ ...request, fetchImpl }),
+    ).rejects.toThrow(
+      'workflow run 12345 must be completed with conclusion failure',
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a run for a different head SHA', async () => {
+    const differentSha = 'b'.repeat(40);
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(response({ ...run, head_sha: differentSha }));
+
+    await expect(
+      dischargeCleanupFailure({ ...request, fetchImpl }),
+    ).rejects.toThrow(
+      `workflow run 12345 head ${differentSha} does not match requested ${sha}`,
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a run without a positive integer attempt', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(response({ ...run, run_attempt: 0 }));
+
+    await expect(
+      dischargeCleanupFailure({ ...request, fetchImpl }),
+    ).rejects.toThrow('workflow run 12345 has no valid run_attempt');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('records authorization before rerunning verified cleanup failures', async () => {
     const operations: string[] = [];
     const fetchImpl = vi.fn((url: string | URL, init?: RequestInit) => {

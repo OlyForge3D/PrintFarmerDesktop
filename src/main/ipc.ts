@@ -170,12 +170,17 @@ function retargetDialogs(): Dialogs {
  * The envelope for a `retargetReady` rejection, which is the temp-root reaper
  * failing — a workspace fault, not a profile fault.
  *
- * `RetargetPreflight` already isolates this await and names the workspace in
- * its message; the two profile channels shared one `catch` with the profile
- * load and so inherited the profile diagnosis instead. The code is
- * `internalError` rather than `sidecarUnavailable` because the sidecar is not
- * implicated: the message carries the cause, and the code declines to claim a
- * classification the enum does not have.
+ * `RetargetPreflight` isolates this await and named the workspace in its
+ * message, and on that basis was recorded as already correct; the two profile
+ * channels shared one `catch` with the profile load and so inherited the
+ * profile diagnosis instead. But the message was only half the envelope:
+ * `RetargetPreflight` went on returning `code: 'sidecarUnavailable'` for the
+ * same fault until #404. Checking the human-readable half certified the site,
+ * because that half was right — the machine-readable half was never compared.
+ *
+ * The code is `internalError` rather than `sidecarUnavailable` because the
+ * sidecar is not implicated: the message carries the cause, and the code
+ * declines to claim a classification the enum does not have.
  */
 function retargetWorkspaceFailure() {
   return {
@@ -598,14 +603,7 @@ export function registerIpcHandlers(
       } catch {
         return ipcSchemas[IpcChannel.RetargetPreflight].response.parse({
           status: 'error',
-          error: {
-            domain: 'electron',
-            code: 'sidecarUnavailable',
-            message: 'The retarget workspace could not be prepared.',
-            action: 'Restart the application and try again.',
-            part: null,
-            setting: null,
-          },
+          error: retargetWorkspaceFailure(),
         });
       }
       const request =
@@ -1797,7 +1795,15 @@ export function registerIpcHandlers(
           { code: 'CALIBRATION_CONFLICT_RESOLUTION_UNAVAILABLE' },
         );
       }
-      return calibrationSidecarAdapter.resolveCalibrationConflict(request);
+      // Parsed on the way out, as the sibling list channel above already does
+      // and as 130-odd handlers in this file do. Without it this channel is the
+      // one place a value that violates CalibrationConflict reaches the renderer
+      // unremarked -- which is how an epoch-seconds `resolvedAt` travelled past
+      // a `.datetime()` declaration (#363). The contract is only a contract
+      // where something reads it.
+      return ipcSchemas[IpcChannel.CalibrationResolveConflict].response.parse(
+        await calibrationSidecarAdapter.resolveCalibrationConflict(request),
+      );
     },
   );
 
@@ -2530,11 +2536,19 @@ export function registerIpcHandlers(
             break;
           }
         }
-        // Also detect gap between cursor and first event
+        // Also detect a gap between the cursor and the first event. The
+        // comparison is against `request.afterSequence` — the cursor THIS
+        // process sent — and never against `page.afterSequence`, which the
+        // server supplies in its own response and nothing ties to the request.
+        // A server echoing `events[0].sequence - 1` would otherwise make this
+        // condition false however many events it skipped, so the one check that
+        // exists to catch a skipped page could never fire (#429). The same
+        // signature is produced by a merely truncated or mis-paginated
+        // response, so this is not only a hostile-server concern.
         const firstEvent = events[0];
         if (
           firstEvent !== undefined &&
-          firstEvent.sequence !== page.afterSequence + 1
+          firstEvent.sequence !== request.afterSequence + 1
         ) {
           gapDetected = true;
         }

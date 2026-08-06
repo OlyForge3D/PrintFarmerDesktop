@@ -31,6 +31,18 @@
 //              see the defect. Found by a reviewer who ran it in a fresh clone rather than
 //              reading it. A twin is therefore evidence only when it is written down, because
 //              only then can the reader check the same thing the author checked.
+//
+//              THOSE FOUR NUMBERS DESCRIBE THE SUPERSEDED VERSION AND DO NOT REPRODUCE HERE.
+//              They are retained because they are the evidence for the design, and they have
+//              since been quoted back at this file's author as a measurement of the shipped
+//              version - so the current figure is stated beside them rather than left to be
+//              inferred. Measured by cloning the mainline into an empty directory, confirming
+//              `git cat-file -e` fails for a known orphan, and running this file unmodified:
+//              REACHABLE 61 / TWIN 44 / DECLARED 17 / ORPHAN 0, exit 0, both controls firing.
+//              The reader position and the author position now agree, which is the property the
+//              rewrite was for. An undated number in a design note is read as a present-tense
+//              measurement, and this file exists because pins decay - so its own prose must
+//              carry the same anchor it demands of the ledger.
 //   DECLARED   listed in the ledger's declaration block with a reason. Two reasons are valid:
 //              the object's *absence* is the finding being recorded (run F is entirely about
 //              commits that are not in this PR - demanding they be reachable would delete the
@@ -46,7 +58,13 @@
 //
 // Run:  node scripts/check-citation-reachability.mjs
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import {
+  collectCitations,
+  loadCorpus,
+  refuse,
+  requireCorpusFloor,
+  requireScanRoots,
+} from './citation-corpus.mjs';
 
 const FILES = [
   '.squad/fact-checker/audit-trail.md',
@@ -85,6 +103,20 @@ if (git(['rev-parse', '--is-shallow-repository']) === 'true') {
   console.error('  actions/checkout@v4 with: { fetch-depth: 0 }');
   process.exit(2);
 }
+
+// A scan root that is absent or unreadable yields an empty corpus, and an empty corpus satisfies
+// "every cited revision is reachable" vacuously. Measured on the shipping script: renaming
+// `.squad/fact-checker/audit-trail.md` printed `OK` and exited 0 with REACHABLE 0 / TWIN 0 /
+// DECLARED 0 / ORPHAN 0 -- while all four self-controls still passed, because the controls
+// certify the classifier and never the corpus. That is this file's own subject again: a check
+// that reports clean because it cannot see, in a second blind arm the shallow guard above does
+// not cover. The roots below are hardcoded paths, so any `.squad/` rename, move or restructure
+// disarms the check silently and nothing reports it. Read them once, here, and refuse the
+// verdict rather than publish one about the empty set.
+//
+// The mechanism lives in citation-corpus.mjs so #421's cross-repository arm imports it rather
+// than reimplementing it. The number stays here: that corpus is disjoint from this one.
+const sources = requireScanRoots(loadCorpus(FILES));
 
 // Revisions a reader is assumed to hold. `origin/development` may be absent in a shallow or
 // branch-only checkout; the branch head alone still gives a usable, if stricter, answer.
@@ -135,16 +167,46 @@ const patchIdOf = (rev) => {
   }
 };
 
-// Reads a `- `sha` — text` list under a heading, from any of the artifacts.
-const readBlock = (heading) => {
-  const found = new Map();
-  for (const f of FILES) {
-    let text;
-    try {
-      text = readFileSync(f, 'utf8');
-    } catch {
+// The lines a revision contributed, keyed by path, with everything a rebase may legitimately
+// change discarded: hunk offsets and context. Content is only collected after a `@@`, so a
+// removed line that itself begins with `--` is never mistaken for a file header.
+//
+// `null` for a merge, deliberately. `git show` renders a merge as a *combined* diff whose rows
+// carry one column per parent, so every line reads as doubly-prefixed and a single-column
+// parser silently returns nonsense. Measured on `e5a90df7`, a merge declared in this ledger: it
+// scored 0 of 41 lines against its own declared twin, which is the signature of an unrelated
+// commit. A merge contributes no lines of its own; saying so is better than scoring it.
+const addedLinesOf = (rev) => {
+  const parents = git(['rev-list', '--parents', '-n', '1', rev]);
+  if (parents === null) return null;
+  if (parents.trim().split(/\s+/).length > 2) return null;
+
+  const show = git(['show', rev, '--format=', '--unified=0', '--no-color']);
+  if (show === null) return null;
+  const lines = new Set();
+  let file = null;
+  let inHunks = false;
+  for (const line of show.split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      file = line;
+      inHunks = false;
       continue;
     }
+    if (line.startsWith('@@')) {
+      inHunks = true;
+      continue;
+    }
+    if (inHunks && line.startsWith('+')) lines.add(`${file}\u0000${line}`);
+  }
+  return lines.size ? lines : null;
+};
+
+// Reads a `- `sha` — text` list under a heading, from any of the artifacts. The text comes from
+// the preflight map rather than a fresh read, so a root that disappears mid-run cannot be
+// swallowed here: there is exactly one place a scan root can fail, and it refuses.
+const readBlock = (heading) => {
+  const found = new Map();
+  for (const text of sources.values()) {
     const at = text.indexOf(heading);
     if (at < 0) continue;
     const rest = text.slice(at + heading.length);
@@ -170,24 +232,15 @@ for (const [sha, note] of readBlock(TWIN_HEADING)) {
 
 // Cited SHAs. Only backticked tokens count: prose that happens to contain a hex-looking word is
 // not a citation, and treating it as one manufactures findings.
-const cited = new Map();
-for (const f of FILES) {
-  let text;
-  try {
-    text = readFileSync(f, 'utf8');
-  } catch {
-    continue;
-  }
-  for (const m of text.matchAll(/`([0-9a-f]{7,40})`/g)) {
-    if (!cited.has(m[1])) cited.set(m[1], []);
-    cited.get(m[1]).push(f);
-  }
-}
+const cited = collectCitations(sources);
 
 // The verdict is computed from exactly two things a reader also has: what is reachable from the
 // reader's revisions, and what the artifacts say. Local object presence is never consulted for a
 // pass, so the author and the reader get the same answer.
-const classify = (sha, { twinMap = twins } = {}) => {
+const classify = (
+  sha,
+  { twinMap = twins, includeAuthoringHint = true } = {},
+) => {
   const full = git(['rev-parse', '--verify', `${sha}^{commit}`]);
   if (full && reachable.has(full)) return { k: 'REACHABLE', d: '' };
 
@@ -209,7 +262,39 @@ const classify = (sha, { twinMap = twins } = {}) => {
   if (twin) {
     const twinFull = git(['rev-parse', '--verify', `${twin}^{commit}`]);
     if (twinFull && reachable.has(twinFull)) {
-      return { k: 'TWIN', d: `${twin.slice(0, 8)} (declared, reachable)` };
+      // What this may and may not do is the whole of the design.
+      //
+      // It may not *require* a content match. The reader this check speaks for does not hold
+      // the orphaned object and never can, so requiring one would put the verdict back under
+      // the local object store, which the rule above forbids.
+      //
+      // It may not *refute* on a content mismatch either, and that is the part measurement
+      // settled rather than judgement. Every declaration in this repository's ledger names a
+      // squash: 41 commits of #162 collapsed into one, so the twin's content is the union of
+      // its inputs and equal to none of them. Requiring equality refused 34 of 44 correct
+      // rows. Requiring containment still refused 30, because a 41-commit squash legitimately
+      // loses the intermediate states -- rows measured at 155 of 196, 55 of 66, 48 of 50 lines
+      // surviving. Any rule strict enough to refuse an arbitrary commit refuses those too, so
+      // a refutation here buys a little safety by reddening correct work, which is #146 again.
+      //
+      // What is left is sound and worth having: containment can only ever be *evidence for*
+      // twinship, so it upgrades the label and never withdraws the pass. A reader is told
+      // which of these two things they are looking at instead of being told neither.
+      const cited = full ? addedLinesOf(full) : null;
+      const claimed = cited ? addedLinesOf(twinFull) : null;
+      if (cited && claimed && [...cited].every((l) => claimed.has(l))) {
+        return {
+          k: 'TWIN',
+          d: `${twin.slice(0, 8)} (declared, reachable, content verified: every line the cited revision added is present)`,
+        };
+      }
+      // Said plainly rather than implied. The previous wording named its own two properties -
+      // "declared, reachable" - and twinship was not among them, so the single thing the
+      // verdict asserted was the single thing nothing had checked.
+      return {
+        k: 'TWIN',
+        d: `${twin.slice(0, 8)} (declared, reachable; TWINSHIP UNVERIFIED - accepted on the declaration alone)`,
+      };
     }
     return {
       k: 'ORPHAN',
@@ -222,15 +307,43 @@ const classify = (sha, { twinMap = twins } = {}) => {
   // Authoring aid only, and clearly labelled as such: if the author happens to hold the object,
   // suggest a twin to declare. This never turns an ORPHAN into a pass.
   let hint = 'unreachable, no declared twin, undeclared';
-  if (full) {
+  if (full && includeAuthoringHint) {
+    const candidates = (git(['rev-list', 'HEAD', '--no-merges']) ?? '')
+      .split('\n')
+      .filter(Boolean);
+
     const q = patchIdOf(full);
     if (q) {
-      for (const c of (git(['rev-list', 'HEAD', '--no-merges']) ?? '')
-        .split('\n')
-        .filter(Boolean)) {
+      for (const c of candidates) {
         if (patchIdOf(c) === q) {
-          hint = `unreachable; candidate twin ${c.slice(0, 8)} - declare it under "${TWIN_HEADING}"`;
+          hint = `unreachable; candidate twin ${c.slice(0, 8)} (identical patch-id) - declare it under "${TWIN_HEADING}"`;
           break;
+        }
+      }
+    }
+
+    // #413: `git patch-id --stable` hashes context lines, so a true twin that landed after
+    // somebody else appended has a different id. Measured on a purpose-built fixture: an
+    // identical twelve-line block appended to a ledger at two different offsets produces two
+    // patch-ids, while every added line is still present. The verdict never depended on this -
+    // it uses the containment test above, which is why ARM B has been exercising this hazard
+    // since before it was filed - but the *hint* did, and it degrades on exactly the
+    // append-only ledger every citation here points at.
+    //
+    // The failure is not a false ORPHAN. The revision is an orphan either way: undeclared and
+    // unreachable. What is lost is the one line that tells the author which commit to declare,
+    // and a bare orphan carrying no candidate reads as "there is no twin" - the opposite of the
+    // truth. So the fallback restores the remedy, not the verdict, and says which instrument
+    // found it so the two grades of evidence are never confused.
+    if (!hint.includes('candidate twin')) {
+      const cited = addedLinesOf(full);
+      if (cited) {
+        for (const c of candidates) {
+          const candidate = addedLinesOf(c);
+          if (candidate && [...cited].every((l) => candidate.has(l))) {
+            hint = `unreachable; candidate twin ${c.slice(0, 8)} (every added line present; patch-id differs, which an append-only ledger causes) - declare it under "${TWIN_HEADING}"`;
+            break;
+          }
         }
       }
     }
@@ -274,7 +387,10 @@ if (cbAbsent.k !== 'ORPHAN')
 const [someTwinned] = [...twins.keys()];
 if (someTwinned) {
   // Withdrawing the declaration must withdraw the pass: TWIN has to come from the text.
-  const withoutDeclaration = classify(someTwinned, { twinMap: new Map() });
+  const withoutDeclaration = classify(someTwinned, {
+    twinMap: new Map(),
+    includeAuthoringHint: false,
+  });
   console.log(
     'control: a twinned SHA with its declaration removed classifies',
     withoutDeclaration.k,
@@ -297,15 +413,127 @@ if (someTwinned) {
   }
 }
 
+// The upgrade above is only worth having if the comparison behind it can tell two revisions
+// apart, and can recognise a revision as containing itself. Neither is safe to assume: a
+// comparison that always matched would stamp "content verified" on every declaration, which is
+// the same false reassurance in a new costume, and one that never matched would silently
+// downgrade every correct row. Both arms run against revisions this reader demonstrably holds.
+// The revisions are chosen with --no-merges rather than as HEAD and HEAD~1. `git show` renders a
+// merge as a combined diff, one column per parent, so every line arrives `++`-prefixed and
+// addedLinesOf reports null for it. HEAD is a merge commit in any checkout of a branch that was
+// updated from its base - which is the ordinary case here - so the earlier HEAD/HEAD~1 form
+// skipped this whole block in silence, printed nothing, and let the run pass. A control that
+// cannot run in the repository it ships in is not a weaker control; it is an absent one, and its
+// silence is indistinguishable from success.
+// The `?? ''` is load-bearing: `git()` returns null when the command fails, and on a repository
+// whose HEAD is unborn `rev-list` fails. Splitting null throws, which exits 1 - and 1 is the
+// code for "orphans found", not for "the instrument broke". The pre-existing unborn-HEAD test
+// caught exactly that: crashing here would have replaced a withheld verdict with a wrong one.
+const [controlRevA, controlRevB] = (
+  git(['rev-list', '--no-merges', '-n', '2', 'HEAD']) ?? ''
+).split('\n');
+const linesA = controlRevA ? addedLinesOf(controlRevA) : null;
+const linesB = controlRevB ? addedLinesOf(controlRevB) : null;
+if (linesA && linesB) {
+  const contains = (a, b) => [...a].every((l) => b.has(l));
+  console.log(
+    'control: the twin comparison separates two distinct revisions',
+    !contains(linesA, linesB),
+  );
+  console.log(
+    'control: the twin comparison recognises a revision as containing itself',
+    contains(linesA, linesA),
+  );
+  if (contains(linesA, linesB))
+    failures.push(
+      'the twin content comparison cannot separate two distinct revisions',
+    );
+  if (!contains(linesA, linesA))
+    failures.push(
+      'the twin content comparison does not recognise a revision as containing itself',
+    );
+} else {
+  // Reported rather than failed. A reader holding fewer than two measurable revisions is a
+  // narrow checkout, not a broken instrument, and reddening it would be the false red this
+  // whole change exists to avoid. But the run must not read as though the arm had passed.
+  console.log(
+    'control: the twin comparison was NOT EXERCISED - this reader holds fewer than two non-merge revisions',
+  );
+}
+
 if (failures.length) {
   for (const f of failures) console.error('CONTROL FAILED - ' + f);
   console.error('verdict withheld.');
   process.exit(2);
 }
 
+// --- corpus floor ------------------------------------------------------------------------
+// The preflight above catches a scan root that vanished. It cannot catch a root that still
+// exists and no longer carries citations: a truncation, a botched merge, or an edit that strips
+// the backticked pins leaves both files readable and the corpus empty or nearly so, and the
+// verdict is vacuous in exactly the same way. Same shape as `MAINLINE_FLOOR: 250` in #399.
+//
+// The floor is a number and therefore expires, so it is justified against a series rather than
+// a single reading. Unique cited SHAs across the two roots, measured over all 46 commits that
+// have touched audit-trail.md:
+//
+//   2026-07-23  0  (file created)      2026-08-04 17:51   89
+//   2026-08-04 12:29   65               2026-08-04 19:37   96
+//   2026-08-04 14:23   74               2026-08-04 21:28  101
+//   2026-08-04 15:59   86               2026-08-05 01:33  115
+//                                       2026-08-05 01:51  122   <- 6a8bc7a0
+//
+// The series is monotonically non-decreasing across all 46 commits: this corpus only ever
+// grows. That matters more than the endpoint, because it fixes the direction a fixed floor
+// drifts. It drifts toward *under*-protection - a floor of 90 guards 26% of today's corpus and
+// proportionally less every day - and never toward false alarms. Given the choice, that is the
+// correct direction for a gate to age in: an advisory check that quietly protects less is worth
+// more than one that fires on routine work and gets deleted in a week.
+//
+// 90 is chosen to sit below every reading from 2026-08-04 17:51 onward while remaining far
+// above the failure mode this exists to catch, which lands at or near zero. Re-derive it if the
+// corpus is ever legitimately pruned; do not raise it to track growth, which would reintroduce
+// exactly the false-alarm risk the margin buys off.
+const CITATION_FLOOR = 90;
+
+// The floor is calibrated against *this* repository's corpus, so a synthetic fixture with a
+// hand-built ledger of two citations trips it legitimately. `--floor=N` lets such a fixture say
+// so explicitly. It is a flag and not an environment variable on purpose: a flag cannot arrive
+// ambiently from CI configuration, it appears in the diff of whatever invokes the check, and
+// `states a guarantee its own guards actually deliver` asserts that neither the npm script nor
+// the workflow passes one. An override is also announced on stdout, so a run that lowered its
+// own bar cannot look like a run that cleared it.
+const floorArg = process.argv.find((a) => a.startsWith('--floor='));
+const floor = floorArg
+  ? Number(floorArg.slice('--floor='.length))
+  : CITATION_FLOOR;
+if (!Number.isInteger(floor) || floor < 0) {
+  refuse(
+    `--floor expects a non-negative integer, got ${JSON.stringify(floorArg)}.`,
+  );
+}
+if (floor !== CITATION_FLOOR) {
+  console.log(
+    `citation floor overridden: ${floor} (calibrated floor is ${CITATION_FLOOR})`,
+  );
+}
+requireCorpusFloor({ count: cited.size, floor });
+
 // --- the run -----------------------------------------------------------------------------
 console.log(
   `\nreader revisions: ${readerRevs.join(' ')}  (${reachable.size} commits reachable)`,
+);
+console.log(
+  'scope: refs/heads only. ORPHAN means "no route from these revisions", never "does not exist" -',
+);
+console.log(
+  '  refs/pull/N/head still resolves after a squash merge deletes the branch, and the forge serves',
+);
+console.log(
+  '  single commits by SHA from a store that outlives every ref. Neither is consulted here: this',
+);
+console.log(
+  '  check gates pull requests and must not turn a network outage into a red.',
 );
 console.log(`cited SHAs: ${cited.size}   declared: ${declared.size}\n`);
 
@@ -324,6 +552,68 @@ console.log(
   `\nREACHABLE ${tally.REACHABLE}   TWIN ${tally.TWIN}   DECLARED ${tally.DECLARED}   ORPHAN ${tally.ORPHAN}`,
 );
 
+// A twin declaration repairs a citation the graph can no longer reach - but the twin is itself a
+// commit, and a twin that exists only on this branch is destroyed by the same rewrite that would
+// orphan anything else here. So a rebase or squash removes the citation *and* the repair in one
+// motion, and the number of orphans it produces exceeds the number of branch-local citations by
+// exactly the number of branch-local twins. That was measured the hard way: a forecast of 17
+// orphans, made by counting cited revisions unique to a branch, came out at 33 when the rewrite
+// was actually performed in a throwaway clone, and the gap was the declared twins.
+//
+// Reported, not gated. It describes a rewrite nobody has performed, so it can neither grant nor
+// withhold a pass; the operator about to rewrite is the one who needs the number, and the party
+// who rewrites history is never the party who can see what it broke.
+//
+// And the advice this block used to give - "merge, do not rebase" - is forbidden by the branch it
+// gives it about. Measured on `development`: `required_linear_history` is TRUE, all three merge
+// strategies are enabled, `enforce_admins` is FALSE, and 41 of the last 60 commits on that branch
+// are two-parent. So the setting forbids the shape the repository overwhelmingly uses, and the
+// exception that permits it is granted per-merge by whoever presses the button.
+//
+// ⇒ a setting contradicted by 41 of 60 commits is not a policy, it is a label - and a control
+// routinely bypassed cannot be cited as a guarantee in either direction. An ancestry-based repair
+// is therefore betting on a human's choice at the merge button. Declare the twins; and where the
+// claim is about the contents of a file, cite the blob, which no merge strategy can rewrite.
+const baseRev = git(['rev-parse', '--verify', 'origin/development^{commit}'])
+  ? 'origin/development'
+  : null;
+if (baseRev && twins.size) {
+  const baseReachable = new Set(
+    (git(['rev-list', baseRev]) ?? '').split('\n').filter(Boolean),
+  );
+  const fragile = [];
+  for (const [sha, twin] of twins) {
+    const full = git(['rev-parse', '--verify', `${twin}^{commit}`]);
+    if (full && reachable.has(full) && !baseReachable.has(full)) {
+      fragile.push(`${sha.slice(0, 8)} -> ${twin.slice(0, 8)}`);
+    }
+  }
+  if (fragile.length) {
+    console.log(
+      `\nPRECONDITION: ${fragile.length} of ${twins.size} declared twins are reachable only from this branch,`,
+    );
+    console.log(
+      `  not from ${baseRev}. Rewriting this branch destroys the citation and its repair together,`,
+    );
+    console.log(
+      '  so the resulting orphan count exceeds the number of branch-local citations. A two-parent',
+    );
+    console.log(
+      '  merge preserves them; squash and rebase do not - but see the note on required_linear_history',
+    );
+    console.log(
+      '  in this file: the branch setting forbids the only strategy that works, so declare the twins',
+    );
+    console.log(
+      '  and do not rely on the merge shape you get. Blob citations survive every strategy.',
+    );
+    for (const f of fragile.slice(0, 8)) console.log(`    ${f}`);
+    if (fragile.length > 8) {
+      console.log(`    ... and ${fragile.length - 8} more`);
+    }
+  }
+}
+
 if (orphans.length) {
   console.error(
     '\nORPHANED CITATIONS - unreachable to a reader, and not accounted for:',
@@ -333,6 +623,20 @@ if (orphans.length) {
     '\nRepair by naming the live twin, documenting a fetch route, or declaring the absence under:',
   );
   console.error(`  ${DECLARATION_HEADING}`);
+  // ORPHAN means "no route through the commit graph", which is narrower than "gone". The forge
+  // serves single commits by SHA from a content-addressed store that outlives every ref, so an
+  // object no branch reaches and no `git fetch` route recovers is often still retrievable -
+  // measured on this repository against three revisions whose branch was deleted on merge, all
+  // three served, with a synthetic SHA rejected as the negative control. That route is printed
+  // rather than taken: this check gates pull requests, and a verdict that depends on the network
+  // would turn an outage into a red and could not run in a clone with no remote. The instrument
+  // stays hermetic; the operator gets told where else to look.
+  console.error(
+    '\nA graph route is not the only route. To test whether the forge still serves one:',
+  );
+  console.error(
+    '  gh api repos/<owner>/<repo>/commits/<sha> --jq .sha   # non-zero exit means genuinely gone',
+  );
   process.exit(1);
 }
 
