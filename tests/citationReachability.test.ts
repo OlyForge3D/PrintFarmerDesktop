@@ -776,15 +776,20 @@ describe('the harness refuses to publish a verdict it cannot support', () => {
     return dir;
   };
 
-  const runHarness = (dir: string) => {
+  const spawnHarness = (dir: string) => {
     const r = spawnSync('node', ['scripts/check-citation-reachability.mjs'], {
       cwd: dir,
       encoding: 'utf8',
       maxBuffer: 1 << 28,
     });
-    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+  };
+
+  const runHarness = (dir: string) => {
+    const result = spawnHarness(dir);
+    const { out } = result;
     assertHarnessStarted(out);
-    return { status: r.status, out };
+    return result;
   };
 
   const publishedAVerdict = (out: string) =>
@@ -792,6 +797,27 @@ describe('the harness refuses to publish a verdict it cannot support', () => {
 
   afterAll(() => {
     for (const d of made) rmSync(d, { recursive: true, force: true });
+  });
+
+  it('rejects an exit 1 from a fixture whose imported corpus module was never staged', () => {
+    const starved = newRepo('startup-starved-');
+    rmSync(path.join(starved, CORPUS_MODULE));
+
+    const startupFailure = spawnHarness(starved);
+    expect(startupFailure.status).toBe(1);
+    expect(startupFailure.out).toMatch(
+      /ERR_MODULE_NOT_FOUND|Cannot find module/,
+    );
+    expect(() => runHarness(starved)).toThrow(
+      /the harness never loaded, so this arm tested nothing/,
+    );
+
+    const complete = runHarness(newRepo('startup-complete-'));
+    expect(complete.status).toBe(2);
+    expect(complete.out).toContain(
+      'control: known-present SHA classifies ORPHAN',
+    );
+    expect(complete.out).toContain('CONTROL FAILED');
   });
 
   it('withholds the verdict where no reader revision resolves at all', () => {
