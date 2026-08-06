@@ -237,7 +237,10 @@ const cited = collectCitations(sources);
 // The verdict is computed from exactly two things a reader also has: what is reachable from the
 // reader's revisions, and what the artifacts say. Local object presence is never consulted for a
 // pass, so the author and the reader get the same answer.
-const classify = (sha, { twinMap = twins } = {}) => {
+const classify = (
+  sha,
+  { twinMap = twins, includeAuthoringHint = true } = {},
+) => {
   const full = git(['rev-parse', '--verify', `${sha}^{commit}`]);
   if (full && reachable.has(full)) return { k: 'REACHABLE', d: '' };
 
@@ -304,15 +307,43 @@ const classify = (sha, { twinMap = twins } = {}) => {
   // Authoring aid only, and clearly labelled as such: if the author happens to hold the object,
   // suggest a twin to declare. This never turns an ORPHAN into a pass.
   let hint = 'unreachable, no declared twin, undeclared';
-  if (full) {
+  if (full && includeAuthoringHint) {
+    const candidates = (git(['rev-list', 'HEAD', '--no-merges']) ?? '')
+      .split('\n')
+      .filter(Boolean);
+
     const q = patchIdOf(full);
     if (q) {
-      for (const c of (git(['rev-list', 'HEAD', '--no-merges']) ?? '')
-        .split('\n')
-        .filter(Boolean)) {
+      for (const c of candidates) {
         if (patchIdOf(c) === q) {
-          hint = `unreachable; candidate twin ${c.slice(0, 8)} - declare it under "${TWIN_HEADING}"`;
+          hint = `unreachable; candidate twin ${c.slice(0, 8)} (identical patch-id) - declare it under "${TWIN_HEADING}"`;
           break;
+        }
+      }
+    }
+
+    // #413: `git patch-id --stable` hashes context lines, so a true twin that landed after
+    // somebody else appended has a different id. Measured on a purpose-built fixture: an
+    // identical twelve-line block appended to a ledger at two different offsets produces two
+    // patch-ids, while every added line is still present. The verdict never depended on this -
+    // it uses the containment test above, which is why ARM B has been exercising this hazard
+    // since before it was filed - but the *hint* did, and it degrades on exactly the
+    // append-only ledger every citation here points at.
+    //
+    // The failure is not a false ORPHAN. The revision is an orphan either way: undeclared and
+    // unreachable. What is lost is the one line that tells the author which commit to declare,
+    // and a bare orphan carrying no candidate reads as "there is no twin" - the opposite of the
+    // truth. So the fallback restores the remedy, not the verdict, and says which instrument
+    // found it so the two grades of evidence are never confused.
+    if (!hint.includes('candidate twin')) {
+      const cited = addedLinesOf(full);
+      if (cited) {
+        for (const c of candidates) {
+          const candidate = addedLinesOf(c);
+          if (candidate && [...cited].every((l) => candidate.has(l))) {
+            hint = `unreachable; candidate twin ${c.slice(0, 8)} (every added line present; patch-id differs, which an append-only ledger causes) - declare it under "${TWIN_HEADING}"`;
+            break;
+          }
         }
       }
     }
@@ -356,7 +387,10 @@ if (cbAbsent.k !== 'ORPHAN')
 const [someTwinned] = [...twins.keys()];
 if (someTwinned) {
   // Withdrawing the declaration must withdraw the pass: TWIN has to come from the text.
-  const withoutDeclaration = classify(someTwinned, { twinMap: new Map() });
+  const withoutDeclaration = classify(someTwinned, {
+    twinMap: new Map(),
+    includeAuthoringHint: false,
+  });
   console.log(
     'control: a twinned SHA with its declaration removed classifies',
     withoutDeclaration.k,
@@ -489,6 +523,18 @@ requireCorpusFloor({ count: cited.size, floor });
 console.log(
   `\nreader revisions: ${readerRevs.join(' ')}  (${reachable.size} commits reachable)`,
 );
+console.log(
+  'scope: refs/heads only. ORPHAN means "no route from these revisions", never "does not exist" -',
+);
+console.log(
+  '  refs/pull/N/head still resolves after a squash merge deletes the branch, and the forge serves',
+);
+console.log(
+  '  single commits by SHA from a store that outlives every ref. Neither is consulted here: this',
+);
+console.log(
+  '  check gates pull requests and must not turn a network outage into a red.',
+);
 console.log(`cited SHAs: ${cited.size}   declared: ${declared.size}\n`);
 
 const tally = { REACHABLE: 0, TWIN: 0, DECLARED: 0, ORPHAN: 0 };
@@ -505,6 +551,68 @@ for (const sha of [...cited.keys()].sort()) {
 console.log(
   `\nREACHABLE ${tally.REACHABLE}   TWIN ${tally.TWIN}   DECLARED ${tally.DECLARED}   ORPHAN ${tally.ORPHAN}`,
 );
+
+// A twin declaration repairs a citation the graph can no longer reach - but the twin is itself a
+// commit, and a twin that exists only on this branch is destroyed by the same rewrite that would
+// orphan anything else here. So a rebase or squash removes the citation *and* the repair in one
+// motion, and the number of orphans it produces exceeds the number of branch-local citations by
+// exactly the number of branch-local twins. That was measured the hard way: a forecast of 17
+// orphans, made by counting cited revisions unique to a branch, came out at 33 when the rewrite
+// was actually performed in a throwaway clone, and the gap was the declared twins.
+//
+// Reported, not gated. It describes a rewrite nobody has performed, so it can neither grant nor
+// withhold a pass; the operator about to rewrite is the one who needs the number, and the party
+// who rewrites history is never the party who can see what it broke.
+//
+// And the advice this block used to give - "merge, do not rebase" - is forbidden by the branch it
+// gives it about. Measured on `development`: `required_linear_history` is TRUE, all three merge
+// strategies are enabled, `enforce_admins` is FALSE, and 41 of the last 60 commits on that branch
+// are two-parent. So the setting forbids the shape the repository overwhelmingly uses, and the
+// exception that permits it is granted per-merge by whoever presses the button.
+//
+// ⇒ a setting contradicted by 41 of 60 commits is not a policy, it is a label - and a control
+// routinely bypassed cannot be cited as a guarantee in either direction. An ancestry-based repair
+// is therefore betting on a human's choice at the merge button. Declare the twins; and where the
+// claim is about the contents of a file, cite the blob, which no merge strategy can rewrite.
+const baseRev = git(['rev-parse', '--verify', 'origin/development^{commit}'])
+  ? 'origin/development'
+  : null;
+if (baseRev && twins.size) {
+  const baseReachable = new Set(
+    (git(['rev-list', baseRev]) ?? '').split('\n').filter(Boolean),
+  );
+  const fragile = [];
+  for (const [sha, twin] of twins) {
+    const full = git(['rev-parse', '--verify', `${twin}^{commit}`]);
+    if (full && reachable.has(full) && !baseReachable.has(full)) {
+      fragile.push(`${sha.slice(0, 8)} -> ${twin.slice(0, 8)}`);
+    }
+  }
+  if (fragile.length) {
+    console.log(
+      `\nPRECONDITION: ${fragile.length} of ${twins.size} declared twins are reachable only from this branch,`,
+    );
+    console.log(
+      `  not from ${baseRev}. Rewriting this branch destroys the citation and its repair together,`,
+    );
+    console.log(
+      '  so the resulting orphan count exceeds the number of branch-local citations. A two-parent',
+    );
+    console.log(
+      '  merge preserves them; squash and rebase do not - but see the note on required_linear_history',
+    );
+    console.log(
+      '  in this file: the branch setting forbids the only strategy that works, so declare the twins',
+    );
+    console.log(
+      '  and do not rely on the merge shape you get. Blob citations survive every strategy.',
+    );
+    for (const f of fragile.slice(0, 8)) console.log(`    ${f}`);
+    if (fragile.length > 8) {
+      console.log(`    ... and ${fragile.length - 8} more`);
+    }
+  }
+}
 
 if (orphans.length) {
   console.error(
