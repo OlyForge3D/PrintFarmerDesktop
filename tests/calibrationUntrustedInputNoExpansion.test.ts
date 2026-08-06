@@ -37,12 +37,13 @@
  *
  * ## Scope
  *
- * The closure is computed transitively from the four source entry files through
- * relative imports, rather than checking the four named files, because the
- * property has to hold for everything they can reach. `nativeImage` is included
- * in the banned set: it decodes images, and it is legitimate elsewhere in the
- * main process, which is exactly why the ban is scoped to this closure instead
- * of the whole tree.
+ * The runtime closure is computed transitively from the four source entry files
+ * through relative imports, rather than checking the four named files, because
+ * the property has to hold for everything they can execute. Whole type-only
+ * declarations are erased and excluded; inline type specifiers retain their
+ * runtime module side effects. `nativeImage` is included in the banned set: it
+ * decodes images, and it is legitimate elsewhere in the main process, which is
+ * exactly why the ban is scoped to this closure instead of the whole tree.
  */
 
 import {
