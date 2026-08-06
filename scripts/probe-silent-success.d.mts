@@ -115,4 +115,6 @@ export function readSuccessfulOutput(
   mode: 'trim' | 'raw',
 ): { reading: string | null; error?: string };
 export function readArm(dir: string, id: string): ProbeCase[];
-export function main(): number;
+export function main(options?: {
+  readPreconditions?: typeof readPreconditions;
+}): number;

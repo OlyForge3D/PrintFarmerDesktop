@@ -583,7 +583,11 @@ and the substitutes it prescribes, in a throwaway repository.
   2  the experiment did not run
 `;
 
-export function main() {
+/**
+ * @param {{readPreconditions?: typeof readPreconditions}} [options]
+ * @returns {number}
+ */
+export function main(options = {}) {
   if (process.argv.includes('--help') || process.argv.includes('-h')) {
     process.stdout.write(USAGE);
     return EXIT_HOLDS;
@@ -602,7 +606,19 @@ export function main() {
   }
 
   try {
-    const preconditions = readPreconditions(fixture.dir);
+    let preconditions;
+    try {
+      preconditions = (options.readPreconditions ?? readPreconditions)(
+        fixture.dir,
+      );
+    } catch (error) {
+      process.stdout.write(
+        `exit ${EXIT_UNDETERMINED}: preconditions could not be read (${
+          error instanceof Error ? error.message : String(error)
+        }); nothing was measured\n`,
+      );
+      return EXIT_UNDETERMINED;
+    }
     const judged = [];
     if (preconditions.every((p) => p.satisfied)) {
       for (const arm of ARMS) {

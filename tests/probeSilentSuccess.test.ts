@@ -591,6 +591,16 @@ describe('the probe end to end', () => {
     }
   });
 
+  it('returns exit 2 when preconditions cannot be read, never exit 1 as if a claim changed', () => {
+    expect(
+      main({
+        readPreconditions: () => {
+          throw new Error('simulated precondition failure');
+        },
+      }),
+    ).toBe(EXIT_UNDETERMINED);
+  });
+
   it('cleans up its fixture, so repeated runs cannot accumulate temp repositories', () => {
     const before = mkdtempSync(join(tmpdir(), 'probe-silent-count-'));
     writeFileSync(join(before, 'marker'), 'x');
