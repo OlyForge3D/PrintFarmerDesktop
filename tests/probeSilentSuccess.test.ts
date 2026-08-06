@@ -648,7 +648,7 @@ describe('the probe end to end', () => {
   it('returns exit 2 and reports malformed non-array preconditions', () => {
     expect(
       main({
-        readPreconditions: () => ({ not: 'an array' } as never),
+        readPreconditions: () => ({ not: 'an array' }) as never,
       }),
     ).toBe(EXIT_UNDETERMINED);
     expect(
