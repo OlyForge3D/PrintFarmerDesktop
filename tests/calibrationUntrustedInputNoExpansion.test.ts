@@ -336,7 +336,7 @@ function expansionOffenders(
 }
 
 function sourceForExpansionScan(source: string): string {
-  const masked = [...source];
+  const masked = source.split('');
   const mask = (start: number, end: number): void => {
     for (let index = start; index < end; index += 1) {
       if (masked[index] !== '\n' && masked[index] !== '\r') masked[index] = ' ';
@@ -662,6 +662,23 @@ describe('the closure walker follows every module-reference form in scope', () =
 
     expect(sourceForExpansionScan(source)).not.toContain('node:zlib');
     expect(expansionMatches(closure)).toEqual([]);
+  });
+
+  it('keeps scanner positions aligned after astral characters', () => {
+    const source = [
+      '// status: \u{1f600}\u{1f680}\u{1f9ea}',
+      'nativeImage.createFromBuffer(bytes);',
+    ].join('\n');
+    const scanned = sourceForExpansionScan(source);
+
+    expect(scanned).not.toContain('status');
+    expect(scanned).toContain('nativeImage.createFromBuffer');
+    expect(expansionMatches(new Map([['entry.ts', source]]))).toEqual([
+      {
+        file: 'entry.ts',
+        why: 'electron nativeImage (decodes images)',
+      },
+    ]);
   });
 });
 
