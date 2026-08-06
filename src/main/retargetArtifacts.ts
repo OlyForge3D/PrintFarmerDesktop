@@ -22,6 +22,7 @@ import type {
   SaveDialogOptions,
 } from 'electron';
 import type { SidecarClient } from './sidecar.js';
+import { SidecarRespondedError } from './sidecar.js';
 import { TargetProfileService } from './targetProfiles.js';
 
 const TTL_MS = 30 * 60 * 1000;
@@ -355,8 +356,8 @@ export class RetargetArtifactService {
         status: 'ok',
         value: await this.options.sidecar.loadRetargetScene(file),
       };
-    } catch {
-      return error('sidecarUnavailable');
+    } catch (cause) {
+      return sceneLoadFailure(cause);
     } finally {
       record.busy = false;
     }
@@ -519,6 +520,40 @@ function electronFailure(
     action,
     part: null,
     setting: null,
+  };
+}
+/**
+ * Splits the two populations that shared `loadScene`'s `catch`.
+ *
+ * The `try` awaits exactly one thing — `sidecar.loadRetargetScene` — so the
+ * arm looked single-caused and was not. That call rejects both when the
+ * sidecar could not be *asked* (disposed client, unreachable channel, timeout,
+ * restart mid-request) and when it *was* asked and answered with an error,
+ * which is the ordinary outcome for a source file the sidecar cannot parse.
+ * Both arrived as a bare `Error`, so the only way to report the first
+ * correctly was to report it for the second as well.
+ *
+ * `sidecarUnavailable` tells the operator the sidecar is not running and to
+ * restart. For an answered error that is not merely unhelpful, it is
+ * contradicted by the evidence in hand: the answer proves the sidecar ran.
+ * The unclassified arm therefore reports `internalError` and says the cause
+ * was not identified, which is the treatment #316 established for exactly this
+ * shape and which loses nothing the old envelope carried.
+ *
+ * `internalError` rather than a new code because `RetargetErrorCode` is a zod
+ * enum parsed at the IPC boundary; widening it is a contract change and is not
+ * in scope here.
+ */
+function sceneLoadFailure(cause: unknown): { status: 'error'; error: unknown } {
+  if (!(cause instanceof SidecarRespondedError))
+    return error('sidecarUnavailable');
+  return {
+    status: 'error',
+    error: electronFailure(
+      'internalError',
+      'The scene could not be loaded.',
+      'Try again. The sidecar answered, so it is running and restarting the application is unlikely to help; collect the application logs if this recurs.',
+    ),
   };
 }
 function nativeFailure(value: {
