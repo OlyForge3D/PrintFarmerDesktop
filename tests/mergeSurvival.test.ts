@@ -1,11 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
+  changedPaths,
   classify,
   controlsFrom,
   diffIsEmpty,
@@ -57,6 +58,7 @@ describe('merge survival: the change, not the graph', () => {
   let squashLanding: string;
   let mergeLanding: string;
   let partialLanding: string;
+  let unrelatedHead: string;
 
   beforeAll(() => {
     root = mkdtempSync(path.join(os.tmpdir(), 'merge-survival-'));
@@ -103,6 +105,11 @@ describe('merge survival: the change, not the graph', () => {
     git(['checkout', '-q', '-b', 'partial-lane', trunkAhead], root);
     write(root, 'a.txt', ['PREPENDED BY TRUNK', ...filler('a'), 'BRANCH A']);
     partialLanding = commitAll(root, 'feat: change a and b (#1)');
+
+    git(['checkout', '-q', '--orphan', 'unrelated'], root);
+    git(['rm', '-q', '-r', '-f', '.'], root);
+    write(root, 'unrelated.txt', ['separate root']);
+    unrelatedHead = commitAll(root, 'unrelated root');
 
     expect(base).toMatch(/^[0-9a-f]{40}$/);
   });
@@ -220,6 +227,13 @@ describe('merge survival: the change, not the graph', () => {
     expect(firstParent(mergeLanding, root)).toBe(trunkAhead);
     expect(firstParent(squashLanding, root)).toBe(trunkAhead);
   });
+
+  it('retains the no-common-ancestor reason when complete histories are unrelated', () => {
+    const outcome = evaluateMergeSurvival(unrelatedHead, squashLanding, root);
+    expect(outcome.verdict).toBe('INDETERMINATE');
+    expect(outcome.reason).toBe('head and merge share no common ancestor');
+    expect(outcome.facts.repositoryShallow).toBe(false);
+  });
 });
 
 describe('a verdict this instrument has not earned', () => {
@@ -228,6 +242,7 @@ describe('a verdict this instrument has not earned', () => {
     mergeKnown: true,
     parent: 'p'.padEnd(40, '0'),
     base: 'b'.padEnd(40, '0'),
+    repositoryShallow: null,
     branchEmpty: false,
     mergeEmpty: false,
     branchPatchId: 'a'.repeat(40),
@@ -303,5 +318,107 @@ describe('a verdict this instrument has not earned', () => {
     expect(
       controlsFrom('a'.repeat(40), 'a'.repeat(40), 'b'.repeat(40)),
     ).toBeNull();
+  });
+});
+
+describe('merge survival with incomplete history', () => {
+  let root: string;
+  let source: string;
+  let shallowVerdict: string;
+  let shallowDiff: string;
+  let branchHead: string;
+  let mergeParent: string;
+  let squashLanding: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(os.tmpdir(), 'merge-survival-shallow-'));
+    source = path.join(root, 'source');
+    shallowVerdict = path.join(root, 'shallow-verdict');
+    shallowDiff = path.join(root, 'shallow-diff');
+    mkdirSync(source);
+
+    git(['init', '-q', '--initial-branch=development', source], root);
+    git(['config', 'user.email', 'squad@example.test'], source);
+    git(['config', 'user.name', 'Squad'], source);
+    git(['config', 'commit.gpgsign', 'false'], source);
+
+    write(source, 'base.txt', ['base']);
+    commitAll(source, 'base');
+
+    git(['checkout', '-q', '-b', 'feature'], source);
+    write(source, 'feature.txt', ['feature']);
+    branchHead = commitAll(source, 'feature');
+
+    git(['checkout', '-q', 'development'], source);
+    write(source, 'trunk.txt', ['trunk']);
+    mergeParent = commitAll(source, 'trunk advances');
+    write(source, 'feature.txt', ['feature']);
+    squashLanding = commitAll(source, 'feature lands');
+
+    for (const destination of [shallowVerdict, shallowDiff]) {
+      git(
+        [
+          'clone',
+          '-q',
+          '--depth',
+          '2',
+          '--branch',
+          'development',
+          pathToFileURL(source).href,
+          destination,
+        ],
+        root,
+      );
+      git(
+        [
+          'fetch',
+          '-q',
+          '--depth',
+          '1',
+          'origin',
+          'feature:refs/remotes/origin/feature',
+        ],
+        destination,
+      );
+    }
+  });
+
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it('names incomplete clone history and the full-history remedy', () => {
+    const outcome = evaluateMergeSurvival(
+      branchHead,
+      squashLanding,
+      shallowVerdict,
+    );
+    expect(outcome.verdict).toBe('INDETERMINATE');
+    expect(outcome.code).toBe(2);
+    expect(outcome.facts.repositoryShallow).toBe(true);
+    expect(outcome.reason).toContain('shallow clone');
+    expect(outcome.reason).toContain('git fetch --unshallow');
+    expect(outcome.reason).not.toContain('no common ancestor');
+
+    git(['fetch', '-q', '--unshallow', 'origin'], shallowVerdict);
+    expect(
+      evaluateMergeSurvival(branchHead, squashLanding, shallowVerdict).verdict,
+    ).toBe('INTACT');
+  });
+
+  it('surfaces a failing path-scoped three-dot diff instead of returning clean', () => {
+    let failure: unknown;
+    try {
+      changedPaths(mergeParent, branchHead, ['feature.txt'], shallowDiff);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({ status: 128 });
+    expect(String((failure as { stderr?: string }).stderr)).toContain(
+      'no merge base',
+    );
+
+    git(['fetch', '-q', '--unshallow', 'origin'], shallowDiff);
+    expect(
+      changedPaths(mergeParent, branchHead, ['feature.txt'], shallowDiff),
+    ).toEqual(['feature.txt']);
   });
 });
