@@ -331,9 +331,28 @@ export function parseDeclaredClosures(body) {
   return { hasBlock, declared: [...declared].sort((a, b) => a - b) };
 }
 
-/** GitHub's closing keywords, as documented and as measured on this repo. */
+/**
+ * GitHub's closing keywords, as documented.
+ *
+ * The separator is `[\s:]+`, not `\s+`. Both accepted forms are individually
+ * measured, and only those two:
+ *
+ *   whitespace  `${keyword} #231`  -- documented, and armed on PR #231
+ *   colon       `${keyword}: #436` -- armed on PR #554, where the ordinary
+ *   prose phrase "regardless of that fix: #436" held #436 in
+ *   closingIssuesReferences across 13 guard reads (settled=true,
+ *   stableMs=65120), and deleting that phrase alone retracted it on read 1.
+ *   Nothing else in that body armed 436. See #558.
+ *
+ * No other separator is claimed. The comment this replaces said "as measured
+ * on this repo" of a pattern the colon measurement above falsifies, which is
+ * the unbacked-prose failure this module exists to eliminate. Widening past
+ * these two would repeat it: each addition needs its own live measurement, and
+ * the module's standing objection to reproducing GitHub's grammar (below)
+ * still forbids guessing at the rest of it.
+ */
 const CLOSING_KEYWORD =
-  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
+  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[\s:]+#(\d+)/gi;
 
 /** Regions GitHub does not read closing references out of. Measured on PR #352. */
 const HTML_COMMENT = /<!--[\s\S]*?-->/g;
