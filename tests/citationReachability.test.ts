@@ -799,7 +799,7 @@ describe('the harness refuses to publish a verdict it cannot support', () => {
     for (const d of made) rmSync(d, { recursive: true, force: true });
   });
 
-  it('rejects an exit 1 from a fixture whose imported corpus module was never staged', () => {
+  it('rejects a startup exit 1 but accepts a citation-verdict exit 1', () => {
     const starved = newRepo('startup-starved-');
     rmSync(path.join(starved, CORPUS_MODULE));
 
@@ -812,12 +812,15 @@ describe('the harness refuses to publish a verdict it cannot support', () => {
       /the harness never loaded, so this arm tested nothing/,
     );
 
-    const complete = runHarness(newRepo('startup-complete-'));
-    expect(complete.status).toBe(2);
-    expect(complete.out).toContain(
-      'control: known-present SHA classifies ORPHAN',
+    const complete = seeded('startup-complete-');
+    const citationVerdict = spawnHarness(complete);
+    expect(citationVerdict.status).toBe(1);
+    expect(citationVerdict.out).toContain(
+      'control: known-present SHA classifies REACHABLE',
     );
-    expect(complete.out).toContain('CONTROL FAILED');
+    expect(citationVerdict.out).toContain('ORPHANED CITATIONS');
+    expect(citationVerdict.out).not.toContain('CONTROL FAILED');
+    expect(runHarness(complete)).toEqual(citationVerdict);
   });
 
   it('withholds the verdict where no reader revision resolves at all', () => {
