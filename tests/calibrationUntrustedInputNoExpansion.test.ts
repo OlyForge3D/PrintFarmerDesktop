@@ -3,7 +3,7 @@
 /**
  * Nothing on the untrusted calibration input path expands its input (#158).
  *
- * #158 asks for one malicious-input corpus across the three untrusted
+ * #158 asks for one malicious-input corpus across the four untrusted
  * calibration entry points, and lists thirteen vectors. Two of them —
  * `zip / archive decompression bomb` and `decompression-bomb image in a staged
  * photo` — are **not applicable to any entry point**, and the issue's own
@@ -12,7 +12,7 @@
  * Measured, the reason is an **absence**:
  *
  *   - no `node:zlib`, `gunzip`, `inflate`, `brotli` or archive reader is
- *     reachable from any of the three entry points;
+ *     reachable from any of the four entry points;
  *   - no image decoder is a runtime dependency at all, and nothing decodes
  *     pixels. `calibrationImportV4` base64-decodes photo bytes, bounds them by
  *     `MAX_PHOTO_DECODED_BYTES`, and compares magic bytes. Bytes in, bytes
@@ -36,7 +36,7 @@
  *
  * ## Scope
  *
- * The closure is computed transitively from the three entry points through
+ * The closure is computed transitively from the four entry points through
  * relative imports, rather than checking the four named files, because the
  * property has to hold for everything they can reach. `nativeImage` is included
  * in the banned set: it decodes images, and it is legitimate elsewhere in the
@@ -76,28 +76,79 @@ const ENTRY_POINTS = [
  * bytes to a decoder. Each is the enabling step for one of the two vectors
  * #158 lists and this repository currently cannot receive.
  */
-const EXPANDING_APIS: { pattern: RegExp; why: string }[] = [
-  { pattern: /\bfrom\s+['"]node:zlib['"]/, why: 'node:zlib (decompression)' },
+const EXPANDING_APIS: {
+  pattern: RegExp;
+  why: string;
+  samples: readonly string[];
+}[] = [
+  {
+    pattern:
+      /(?:\bfrom\s+['"](?:node:)?zlib['"]|\bimport\(\s*['"](?:node:)?zlib['"]\s*\))/,
+    why: 'node:zlib (decompression)',
+    samples: [
+      "import { unzipSync } from 'node:zlib';",
+      "const zlib = await import('node:zlib');",
+      "const zlib = await import('zlib');",
+    ],
+  },
   {
     pattern: /\brequire\(\s*['"](?:node:)?zlib['"]\s*\)/,
     why: 'zlib via require',
+    samples: ["const zlib = require('node:zlib');"],
   },
-  { pattern: /\bcreateGunzip\b/, why: 'createGunzip' },
-  { pattern: /\bcreateInflate(?:Raw)?\b/, why: 'createInflate' },
-  { pattern: /\bcreateBrotliDecompress\b/, why: 'createBrotliDecompress' },
-  { pattern: /\bgunzipSync\b/, why: 'gunzipSync' },
-  { pattern: /\binflateSync\b/, why: 'inflateSync' },
-  { pattern: /\bbrotliDecompressSync\b/, why: 'brotliDecompressSync' },
+  {
+    pattern: /\bcreateGunzip\b/,
+    why: 'createGunzip',
+    samples: ['zlib.createGunzip();'],
+  },
+  {
+    pattern: /\bcreateInflate(?:Raw)?\b/,
+    why: 'createInflate',
+    samples: ['zlib.createInflateRaw();'],
+  },
+  {
+    pattern: /\bcreateBrotliDecompress\b/,
+    why: 'createBrotliDecompress',
+    samples: ['zlib.createBrotliDecompress();'],
+  },
+  {
+    pattern: /\bgunzipSync\b/,
+    why: 'gunzipSync',
+    samples: ['zlib.gunzipSync(bytes);'],
+  },
+  {
+    pattern: /\binflateSync\b/,
+    why: 'inflateSync',
+    samples: ['zlib.inflateSync(bytes);'],
+  },
+  {
+    pattern: /\bbrotliDecompressSync\b/,
+    why: 'brotliDecompressSync',
+    samples: ['zlib.brotliDecompressSync(bytes);'],
+  },
   {
     pattern:
-      /\bfrom\s+['"](?:adm-zip|yauzl|unzipper|node-stream-zip|decompress|tar|tar-stream|tar-fs)['"]/,
+      /(?:\bfrom\s+['"](?:adm-zip|yauzl|unzipper|node-stream-zip|decompress|tar|tar-stream|tar-fs)['"]|\bimport\(\s*['"](?:adm-zip|yauzl|unzipper|node-stream-zip|decompress|tar|tar-stream|tar-fs)['"]\s*\))/,
     why: 'archive reader package',
+    samples: [
+      "import archive from 'adm-zip';",
+      "const archive = await import('adm-zip');",
+    ],
   },
   {
-    pattern: /\bfrom\s+['"](?:sharp|jimp|canvas|pngjs|jpeg-js|image-size)['"]/,
+    pattern:
+      /(?:\bfrom\s+['"](?:sharp|jimp|canvas|pngjs|jpeg-js|image-size)['"]|\bimport\(\s*['"](?:sharp|jimp|canvas|pngjs|jpeg-js|image-size)['"]\s*\))/,
     why: 'image decoder package',
+    samples: [
+      "import sharp from 'sharp';",
+      "const sharp = await import('sharp');",
+    ],
   },
-  { pattern: /\bnativeImage\b/, why: 'electron nativeImage (decodes images)' },
+  {
+    pattern: /\bnativeImage\b/,
+    why: 'electron nativeImage (decodes images)',
+    samples: ['nativeImage.createFromBuffer(bytes);'],
+  },
 ];
 
 /** Runtime dependencies that would make the above reachable at all. */
@@ -305,6 +356,45 @@ describe('the closure walker follows every supported module-reference form', () 
     );
   });
 
+  it('scans literal module specifiers directly without matching prose', () => {
+    expect(
+      moduleSpecifiers(
+        'entry.ts',
+        [
+          "import './static.js';",
+          "export { value } from './exported.js';",
+          "const dynamic = import('./dynamic.js');",
+          "const required = require('./required.js');",
+          '/** import (issue #56). */',
+        ].join('\n'),
+      ),
+    ).toEqual([
+      './static.js',
+      './exported.js',
+      './dynamic.js',
+      './required.js',
+    ]);
+  });
+
+  it('reports non-literal scanner expressions at exact source positions', () => {
+    expect(() =>
+      moduleSpecifiers(
+        'entry.ts',
+        "const target = './hidden.js';\nexport const loaded = import(target);",
+      ),
+    ).toThrowError(
+      /entry\.ts:2:23: dynamic import uses a non-literal specifier: import\(target\)/,
+    );
+    expect(() =>
+      moduleSpecifiers(
+        'entry.ts',
+        "const target = './hidden.js';\nexport const loaded = require(target);",
+      ),
+    ).toThrowError(
+      /entry\.ts:2:23: require uses a non-literal specifier: require\(target\)/,
+    );
+  });
+
   it('detects a banned API reached only through a literal dynamic import', () => {
     withSourceFixture(
       {
@@ -322,6 +412,17 @@ describe('the closure walker follows every supported module-reference form', () 
         ]);
       },
     );
+  });
+
+  it.each([
+    ['node:zlib', "const zlib = await import('node:zlib');"],
+    ['archive reader', "const archive = await import('adm-zip');"],
+    ['image decoder', "const image = await import('sharp');"],
+  ])('detects a banned %s dynamic package specifier', (_name, source) => {
+    withSourceFixture({ 'entry.ts': `${source}\n` }, (directory) => {
+      const closure = reachableFromEntryPoints(directory, ['entry.ts']);
+      expect(expansionMatches(closure)).toHaveLength(1);
+    });
   });
 
   it('follows a literal require specifier', () => {
@@ -363,7 +464,7 @@ describe('the closure walker follows every supported module-reference form', () 
         expect(() =>
           reachableFromEntryPoints(directory, ['entry.ts']),
         ).toThrowError(
-          /dynamic import uses a non-literal specifier: import\(target\)/,
+          /entry\.ts:2:45: dynamic import uses a non-literal specifier: import\(target\)/,
         );
       },
     );
@@ -380,7 +481,7 @@ describe('the closure walker follows every supported module-reference form', () 
         expect(() =>
           reachableFromEntryPoints(directory, ['entry.ts']),
         ).toThrowError(
-          /require uses a non-literal specifier: require\(target\)/,
+          /entry\.ts:2:23: require uses a non-literal specifier: require\(target\)/,
         );
       },
     );
@@ -444,6 +545,18 @@ describe('the untrusted calibration input path expands nothing', () => {
     },
   );
 
+  it.each(EXPANDING_APIS)(
+    'pins every $why detector and each supported module form',
+    ({ pattern, samples }) => {
+      for (const sample of samples) {
+        expect(pattern.test(sample), `did not detect: ${sample}`).toBe(true);
+      }
+      expect(pattern.test("const safe = await import('node:path');")).toBe(
+        false,
+      );
+    },
+  );
+
   it('declares no decompression or image-decoding runtime dependency', () => {
     const manifest = JSON.parse(
       readFileSync(path.join(repoRoot, 'package.json'), 'utf8'),
@@ -455,6 +568,9 @@ describe('the untrusted calibration input path expands nothing', () => {
     // path, and banning it would make this guard fire on something that cannot
     // receive untrusted calibration content.
     expect(offenders).toEqual([]);
+    expect(EXPANDING_PACKAGES.test('sharp')).toBe(true);
+    expect(EXPANDING_PACKAGES.test('adm-zip')).toBe(true);
+    expect(EXPANDING_PACKAGES.test('react')).toBe(false);
   });
 });
 
