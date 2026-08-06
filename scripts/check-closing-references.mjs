@@ -30,7 +30,269 @@
  */
 
 import { pathToFileURL } from 'node:url';
+import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
+
+const RETRYABLE_TRANSPORT_CODES = new Set([
+  'EAI_AGAIN',
+  'ECONNABORTED',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EHOSTUNREACH',
+  'ENETDOWN',
+  'ENETRESET',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+]);
+
+const AUTHENTICATION_FAILURE =
+  /\b(?:HTTP\s+401|bad credentials|authentication (?:failed|required)|not logged into any github hosts|gh auth login|invalid (?:oauth )?token|token (?:has )?(?:expired|invalid))\b/i;
+const RATE_LIMIT_FAILURE =
+  /\bHTTP(?:\/\d(?:\.\d)?)?\s+429\b|\b(?:api |secondary )?rate limit(?:ed| exceeded)?\b|\babuse detection\b/i;
+const RETRYABLE_SERVER_FAILURE =
+  /\bHTTP(?:\/\d(?:\.\d)?)?\s+(?:408|425|500|502|503|504)\b/i;
+const RETRYABLE_TRANSPORT_FAILURE =
+  /\b(?:EAI_AGAIN|ECONNABORTED|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETDOWN|ENETRESET|ENETUNREACH|ENOTFOUND|ETIMEDOUT)\b|error connecting to (?:api\.)?github\.com|connection (?:closed|refused|reset|timed out)|TLS handshake timeout|client\.timeout exceeded|context deadline exceeded|temporary failure in name resolution|could not resolve host|no such host|dial tcp|forcibly closed by the remote host/i;
+
+function asRecord(value) {
+  return typeof value === 'object' && value !== null ? value : undefined;
+}
+
+function outputText(value) {
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+  if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
+    return Buffer.from(value).toString('utf8').trim();
+  }
+  return '';
+}
+
+function errorMessage(value) {
+  if (value instanceof Error) {
+    return value.message;
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  const record = asRecord(value);
+  return typeof record?.message === 'string' ? record.message : '';
+}
+
+function errorCode(record) {
+  const direct = record?.code;
+  if (typeof direct === 'string' || typeof direct === 'number') {
+    return direct;
+  }
+  const nested = asRecord(record?.cause)?.code;
+  return typeof nested === 'string' || typeof nested === 'number'
+    ? nested
+    : null;
+}
+
+/**
+ * Typed boundary around `execFileSync`'s platform-dependent thrown object.
+ *
+ * The original object remains the cause. The fields used for classification
+ * are copied so a later layer never has to guess them back out of a rendered
+ * message, and fields not recognized here remain available through `cause`.
+ */
+export class GitHubCliError extends Error {
+  constructor({ args, status, stderr, stdout, code, signal, cause }) {
+    const metadata = [
+      status === null ? '' : `status=${status}`,
+      code === null ? '' : `code=${code}`,
+      signal === null ? '' : `signal=${signal}`,
+    ].filter(Boolean);
+    const detail = stderr || errorMessage(cause) || 'no diagnostic output';
+    super(
+      `gh ${args.join(' ')} failed${
+        metadata.length === 0 ? '' : ` (${metadata.join(', ')})`
+      }: ${detail}`,
+      { cause },
+    );
+    this.name = 'GitHubCliError';
+    this.args = [...args];
+    this.status = status;
+    this.stderr = stderr;
+    this.stdout = stdout;
+    this.code = code;
+    this.signal = signal;
+  }
+}
+
+export function toGitHubCliError(args, cause) {
+  if (cause instanceof GitHubCliError) {
+    return cause;
+  }
+  const record = asRecord(cause);
+  const status =
+    typeof record?.status === 'number' && Number.isInteger(record.status)
+      ? record.status
+      : null;
+  const signal = typeof record?.signal === 'string' ? record.signal : null;
+  return new GitHubCliError({
+    args,
+    status,
+    stderr: outputText(record?.stderr),
+    stdout: outputText(record?.stdout),
+    code: errorCode(record),
+    signal,
+    cause,
+  });
+}
+
+export class MalformedClosingReferenceResponseError extends Error {
+  constructor(reason, responseLength, cause) {
+    const detail = errorMessage(cause);
+    super(
+      `gh returned a malformed closing-reference response (${reason}, ${responseLength} bytes)${
+        detail === '' ? '' : `: ${detail}`
+      }`,
+      { cause },
+    );
+    this.name = 'MalformedClosingReferenceResponseError';
+    this.reason = reason;
+    this.responseLength = responseLength;
+  }
+}
+
+/**
+ * Parses only the response shape emitted by `main`'s combined-field query.
+ * Invalid JSON and schema drift are wrapped separately so only truncation-like
+ * JSON failures are retryable; a valid response with the wrong shape aborts.
+ */
+export function parseClosingReferenceResponse(raw) {
+  if (typeof raw !== 'string') {
+    throw new MalformedClosingReferenceResponseError(
+      'invalid-shape',
+      0,
+      new TypeError('expected a string response'),
+    );
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (cause) {
+    throw new MalformedClosingReferenceResponseError(
+      'invalid-json',
+      raw.length,
+      cause,
+    );
+  }
+
+  const record = asRecord(parsed);
+  if (
+    typeof record?.body !== 'string' ||
+    !Array.isArray(record.refs) ||
+    !record.refs.every(
+      (value) =>
+        typeof value === 'number' && Number.isSafeInteger(value) && value > 0,
+    )
+  ) {
+    throw new MalformedClosingReferenceResponseError(
+      'invalid-shape',
+      raw.length,
+      new TypeError('expected { body: string, refs: positive integer[] }'),
+    );
+  }
+
+  return { body: record.body, refs: [...record.refs] };
+}
+
+/**
+ * Closed classification: only errors produced by the two boundaries above can
+ * be retried. Authentication and every unrecognized `gh` failure abort; an
+ * arbitrary Error (including an unrelated SyntaxError) also aborts.
+ */
+export function classifyClosingReferenceReadError(error) {
+  if (error instanceof MalformedClosingReferenceResponseError) {
+    if (error.reason === 'invalid-shape') {
+      return {
+        disposition: 'abort',
+        reason: 'invalid-response-shape',
+        error,
+      };
+    }
+    return {
+      disposition: 'retry',
+      reason: 'malformed-response',
+      error,
+    };
+  }
+
+  if (!(error instanceof GitHubCliError)) {
+    return { disposition: 'abort', reason: 'unknown', error };
+  }
+
+  const text = [
+    error.stderr,
+    error.message,
+    error.code === null ? '' : String(error.code),
+    errorMessage(error.cause),
+  ].join('\n');
+
+  if (AUTHENTICATION_FAILURE.test(text)) {
+    return { disposition: 'abort', reason: 'authentication', error };
+  }
+  if (RATE_LIMIT_FAILURE.test(text)) {
+    return { disposition: 'retry', reason: 'rate-limit', error };
+  }
+  if (RETRYABLE_SERVER_FAILURE.test(text)) {
+    return { disposition: 'retry', reason: 'server', error };
+  }
+
+  const code =
+    typeof error.code === 'string' ? error.code.toUpperCase() : error.code;
+  if (
+    (typeof code === 'string' && RETRYABLE_TRANSPORT_CODES.has(code)) ||
+    RETRYABLE_TRANSPORT_FAILURE.test(text)
+  ) {
+    return { disposition: 'retry', reason: 'transport', error };
+  }
+
+  return { disposition: 'abort', reason: 'terminal-gh', error };
+}
+
+export class ClosingReferenceReadBudgetError extends Error {
+  constructor({
+    attempts,
+    successfulReads,
+    retryableFailures,
+    elapsedMs,
+    lastFailure,
+    lastFailureReason,
+    lastValue,
+  }) {
+    const seconds = Math.round(elapsedMs / 1000);
+    const attemptNoun = attempts === 1 ? 'attempt' : 'attempts';
+    const readNoun = successfulReads === 1 ? 'read' : 'reads';
+    const failureNoun = retryableFailures === 1 ? 'failure' : 'failures';
+    const lastValueLine =
+      lastValue === null
+        ? 'No read succeeded, so there is no closing-reference value to report.'
+        : `Last successful value: [${lastValue.join(', ')}]. It is not trusted because the read never settled.`;
+    super(
+      [
+        `Closing-reference read retry budget exhausted after ${attempts} ${attemptNoun} over ${seconds}s ` +
+          `(${successfulReads} successful ${readNoun}, ${retryableFailures} retryable ${failureNoun}).`,
+        `Last retryable failure (${lastFailureReason}): ${lastFailure.message}`,
+        lastValueLine,
+        'Re-run this required check. If it persists, inspect gh/API connectivity and the response diagnostics above.',
+      ].join('\n'),
+      { cause: lastFailure },
+    );
+    this.name = 'ClosingReferenceReadBudgetError';
+    this.attempts = attempts;
+    this.successfulReads = successfulReads;
+    this.retryableFailures = retryableFailures;
+    this.elapsedMs = elapsedMs;
+    this.lastFailureReason = lastFailureReason;
+    this.lastValue = lastValue === null ? null : [...lastValue];
+  }
+}
 
 /** Fenced block whose info string is exactly `closes`. */
 const DECLARATION_FENCE = /^```closes[^\S\n]*$([\s\S]*?)^```[^\S\n]*$/gm;
@@ -229,6 +491,12 @@ export function compareClosures(declared, actual) {
  *
  * `stableMs` is reported alongside `elapsedMs` because a caller cannot derive
  * one from the other, and it is the one the verdict rests on.
+ *
+ * A retryable failed probe resets the agreement run. It did not observe a
+ * contradictory value, but it also cannot support the claim that the value
+ * held still through that point. Preserving continuity would let a failure one
+ * read before the normal settle point disappear into a passing result on the
+ * next read. Resetting costs another floor but stays within the coupled budget.
  */
 export async function readSettled(read, options = {}) {
   const {
@@ -252,15 +520,37 @@ export async function readSettled(read, options = {}) {
   let previous;
   let agreements = 0;
   let reads = 0;
+  let successfulReads = 0;
+  let retryableFailures = 0;
+  let lastRetryableFailure;
+  let lastValue = [];
   let agreementStart = start;
 
   for (let i = 0; i < maxReads; i += 1) {
     if (i > 0) {
       await sleep(delayMs);
     }
-    const value = await read();
     reads += 1;
-    const key = JSON.stringify([...value].sort((a, b) => a - b));
+    let value;
+    try {
+      value = await read();
+    } catch (error) {
+      const classification = classifyClosingReferenceReadError(error);
+      if (classification.disposition === 'abort') {
+        throw classification.error;
+      }
+
+      retryableFailures += 1;
+      lastRetryableFailure = classification;
+      previous = undefined;
+      agreements = 0;
+      agreementStart = now();
+      continue;
+    }
+
+    successfulReads += 1;
+    lastValue = [...value].sort((a, b) => a - b);
+    const key = JSON.stringify(lastValue);
     if (key === previous) {
       agreements += 1;
     } else {
@@ -272,21 +562,35 @@ export async function readSettled(read, options = {}) {
     const stableMs = now() - agreementStart;
     if (agreements >= requiredAgreements && stableMs >= minElapsedMs) {
       return {
-        value: JSON.parse(previous),
+        value: lastValue,
         reads,
         settled: true,
         elapsedMs,
         stableMs,
+        retryableFailures,
       };
     }
   }
 
+  if (lastRetryableFailure !== undefined && successfulReads === 0) {
+    throw new ClosingReferenceReadBudgetError({
+      attempts: reads,
+      successfulReads,
+      retryableFailures,
+      elapsedMs: now() - start,
+      lastFailure: lastRetryableFailure.error,
+      lastFailureReason: lastRetryableFailure.reason,
+      lastValue: null,
+    });
+  }
+
   return {
-    value: previous === undefined ? [] : JSON.parse(previous),
+    value: lastValue,
     reads,
     settled: false,
     elapsedMs: now() - start,
     stableMs: now() - agreementStart,
+    retryableFailures,
   };
 }
 
@@ -339,14 +643,31 @@ export function formatFailure({ unexpected, missing, hasBlock, prNumber }) {
  * references are" are different findings, and reporting the second as the
  * first would be a false accusation as easily as a false pass.
  */
-export function formatUnsettled({ prNumber, reads, elapsedMs, value }) {
-  return [
+export function formatUnsettled({
+  prNumber,
+  reads,
+  elapsedMs,
+  value,
+  retryableFailures = 0,
+}) {
+  const lines = [
     `Could not read the closing references for PR #${prNumber} reliably.`,
     '',
-    `  ${reads} reads over ${Math.round(elapsedMs / 1000)}s never produced a`,
-    '  stable value for the required interval. The field is eventually',
-    '  consistent, so an unstable read means the answer is still arriving --',
-    '  not that it is empty.',
+    `  ${reads} read attempts over ${Math.round(elapsedMs / 1000)}s never produced`,
+    '  a stable value for the required interval. A missing stable interval means',
+    '  the answer may still be arriving -- not that the field is empty.',
+  ];
+  if (retryableFailures > 0) {
+    const attemptNoun = retryableFailures === 1 ? 'attempt' : 'attempts';
+    lines.push(
+      '',
+      `  ${retryableFailures} ${attemptNoun} failed with explicitly retryable read errors.`,
+      '  Each failed attempt reset the stability interval; the last successful',
+      '  value below was retained only for diagnostics, never as a replacement',
+      '  for an error or as evidence of a settled result.',
+    );
+  }
+  lines.push(
     '',
     `  Last value seen: [${value.join(', ')}]. It is not reported as a result,`,
     '  because a value that may still change cannot support either verdict:',
@@ -355,11 +676,16 @@ export function formatUnsettled({ prNumber, reads, elapsedMs, value }) {
     '',
     '  Re-run this check. If it persists, GitHub is not converging and the',
     '  declaration must be confirmed by hand before merging.',
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 function gh(args) {
-  return execFileSync('gh', args, { encoding: 'utf8' }).trim();
+  try {
+    return execFileSync('gh', args, { encoding: 'utf8' }).trim();
+  } catch (error) {
+    throw toGitHubCliError(args, error);
+  }
 }
 
 /**
@@ -394,6 +720,7 @@ export async function main(argv, deps = {}) {
     settled,
     elapsedMs = 0,
     stableMs = 0,
+    retryableFailures = 0,
   } = await readClosures(() => {
     const raw = run([
       'pr',
@@ -404,8 +731,8 @@ export async function main(argv, deps = {}) {
       '--jq',
       '{body: .body, refs: [.closingIssuesReferences[].number]}',
     ]);
-    const parsed = JSON.parse(raw);
-    witnessBody = typeof parsed.body === 'string' ? parsed.body : '';
+    const parsed = parseClosingReferenceResponse(raw);
+    witnessBody = parsed.body;
     witnessSeen = true;
     return parsed.refs;
   });
@@ -418,14 +745,21 @@ export async function main(argv, deps = {}) {
   const result = compareClosures(declared, actual);
   const summary =
     `declared=[${declared.join(', ')}] armed=[${actual.join(', ')}] ` +
-    `reads=${reads} settled=${settled} stableMs=${stableMs}`;
+    `reads=${reads} retryableFailures=${retryableFailures} ` +
+    `settled=${settled} stableMs=${stableMs}`;
 
   // Before the comparison, not after. An unsettled read that happens to match
   // is not a pass: `compareClosures` is being handed a value that may still
   // change, so its `ok` says nothing about the merged state.
   if (!settled) {
     console.error(
-      formatUnsettled({ prNumber, reads, elapsedMs, value: actual }),
+      formatUnsettled({
+        prNumber,
+        reads,
+        elapsedMs,
+        value: actual,
+        retryableFailures,
+      }),
     );
     console.error(`\n  ${summary}`);
     process.exitCode = 1;
@@ -476,7 +810,7 @@ export async function main(argv, deps = {}) {
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   main(process.argv.slice(2)).catch((error) => {
-    console.error(error.message);
+    console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   });
 }
