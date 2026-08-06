@@ -237,7 +237,10 @@ const cited = collectCitations(sources);
 // The verdict is computed from exactly two things a reader also has: what is reachable from the
 // reader's revisions, and what the artifacts say. Local object presence is never consulted for a
 // pass, so the author and the reader get the same answer.
-const classify = (sha, { twinMap = twins } = {}) => {
+const classify = (
+  sha,
+  { twinMap = twins, includeAuthoringHint = true } = {},
+) => {
   const full = git(['rev-parse', '--verify', `${sha}^{commit}`]);
   if (full && reachable.has(full)) return { k: 'REACHABLE', d: '' };
 
@@ -304,7 +307,7 @@ const classify = (sha, { twinMap = twins } = {}) => {
   // Authoring aid only, and clearly labelled as such: if the author happens to hold the object,
   // suggest a twin to declare. This never turns an ORPHAN into a pass.
   let hint = 'unreachable, no declared twin, undeclared';
-  if (full) {
+  if (full && includeAuthoringHint) {
     const candidates = (git(['rev-list', 'HEAD', '--no-merges']) ?? '')
       .split('\n')
       .filter(Boolean);
@@ -384,7 +387,10 @@ if (cbAbsent.k !== 'ORPHAN')
 const [someTwinned] = [...twins.keys()];
 if (someTwinned) {
   // Withdrawing the declaration must withdraw the pass: TWIN has to come from the text.
-  const withoutDeclaration = classify(someTwinned, { twinMap: new Map() });
+  const withoutDeclaration = classify(someTwinned, {
+    twinMap: new Map(),
+    includeAuthoringHint: false,
+  });
   console.log(
     'control: a twinned SHA with its declaration removed classifies',
     withoutDeclaration.k,
