@@ -248,6 +248,31 @@ describe('overallVerdict', () => {
     expect(verdict.summary).toContain('the experiment did not run');
   });
 
+  it('REJECTS A P1-ONLY SET instead of treating the missing P2 as success', () => {
+    const verdict = overallVerdict(
+      [{ id: 'P1-fixture-is-a-repository', satisfied: true, detail: '' }],
+      holding(7),
+    );
+    expect(verdict.exitCode).toBe(EXIT_UNDETERMINED);
+    expect(verdict.summary).toContain('missing P2-mutation-reaches-the-disk');
+  });
+
+  it.each([
+    undefined,
+    null,
+    [{ id: 'P1-fixture-is-a-repository', satisfied: true }],
+    [
+      { id: 'P1-fixture-is-a-repository', satisfied: true, detail: '' },
+      { id: 'P1-fixture-is-a-repository', satisfied: true, detail: '' },
+    ],
+  ])(
+    'REJECTS malformed preconditions (%j) before judging arms',
+    (preconditions) => {
+      const verdict = overallVerdict(preconditions, holding(7));
+      expect(verdict.exitCode).toBe(EXIT_UNDETERMINED);
+    },
+  );
+
   it('THE EXACT FABRICATED REPORT: a broken fixture makes every defect arm BLIND, which is what they expect', () => {
     // Three defects HOLD and three substitutes CHANGE — a detailed, plausible,
     // entirely invented result. It must not reach exit 1.
@@ -269,7 +294,10 @@ describe('overallVerdict', () => {
 
   it('names which precondition failed, so the reader is not sent to look at the arms', () => {
     const verdict = overallVerdict(
-      [{ id: 'P2-mutation-reaches-the-disk', satisfied: false, detail: '' }],
+      [
+        { id: 'P1-fixture-is-a-repository', satisfied: true, detail: '' },
+        { id: 'P2-mutation-reaches-the-disk', satisfied: false, detail: '' },
+      ],
       holding(7),
     );
     expect(verdict.summary).toContain('P2-mutation-reaches-the-disk');
@@ -599,6 +627,22 @@ describe('the probe end to end', () => {
         },
       }),
     ).toBe(EXIT_UNDETERMINED);
+  });
+
+  it('INJECTED P1-ONLY CONTROL: returns exit 2 without running any arm', () => {
+    let armCalls = 0;
+    expect(
+      main({
+        readPreconditions: () => [
+          { id: 'P1-fixture-is-a-repository', satisfied: true, detail: '' },
+        ],
+        readArm: () => {
+          armCalls += 1;
+          return [];
+        },
+      }),
+    ).toBe(EXIT_UNDETERMINED);
+    expect(armCalls).toBe(0);
   });
 
   it('cleans up its fixture, so repeated runs cannot accumulate temp repositories', () => {

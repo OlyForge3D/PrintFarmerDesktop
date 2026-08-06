@@ -86,7 +86,7 @@ export function judgeArm(
 ): JudgedArm;
 
 export function overallVerdict(
-  preconditions: readonly Precondition[],
+  preconditions: unknown,
   judged: readonly { readonly status: string }[],
 ): Verdict;
 
@@ -117,4 +117,5 @@ export function readSuccessfulOutput(
 export function readArm(dir: string, id: string): ProbeCase[];
 export function main(options?: {
   readPreconditions?: typeof readPreconditions;
+  readArm?: typeof readArm;
 }): number;
