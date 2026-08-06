@@ -101,6 +101,10 @@ export const CALIBRATION_LOG_ERROR_CODES = [
   // distinct from every diagnosed 409 so an unclassified refusal is visible as
   // one in the logs rather than borrowing a diagnosed code's meaning (#326).
   'unclassifiedConflict',
+  // The same treatment for a 422 (#508). Without this member the honest code
+  // would be coerced to 'unknownErrorCode' at the logging boundary and no
+  // runbook could name it.
+  'unclassifiedValidationFailure',
   // CalibrationEngineErrorCode
   'NOT_FOUND',
   'UNAVAILABLE',
@@ -283,6 +287,8 @@ const ERROR_MESSAGES: Record<CalibrationLogErrorCode, string> = {
   filamentCheckFailed: 'The printer filament check failed.',
   unclassifiedConflict:
     'The server refused the operation as a conflict but gave a reason this build does not recognise; the cause is not established.',
+  unclassifiedValidationFailure:
+    'The server rejected the request as unprocessable but gave a reason this build does not recognise; the payload has not been shown to be invalid.',
   NOT_FOUND: 'The requested calibration resource was not found locally.',
   UNAVAILABLE: 'Calibration is unavailable for the selected server profile.',
   CAPABILITIES_MISMATCH:

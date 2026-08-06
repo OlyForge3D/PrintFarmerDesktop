@@ -405,3 +405,95 @@ describe('Calibration conflict resolution negotiates on one capability', () => {
     });
   });
 });
+
+/**
+ * #363 -- the resolve channel validates its own response.
+ *
+ * Its sibling `CalibrationListConflicts` has parsed its response against
+ * `ipcSchemas` since it was written; this channel returned the adapter's value
+ * unchecked, which is why the epoch-seconds `createdAt` broke the *list* channel
+ * loudly and passed through this one in silence.
+ *
+ * The variable is deliberately NOT a timestamp. `sidecarTimestampToIso` already
+ * converts those, so a timestamp could not reach the parse and a spec built on
+ * one would pass whether or not the parse existed. A non-UUID `profileId` is a
+ * field the adapter does not touch, so it reaches the boundary intact and only
+ * the parse can reject it.
+ */
+describe('#363 the resolve channel parses its response against the contract', () => {
+  type ResolveCapable = { resolveCalibrationConflict?: unknown };
+  const prototype = SidecarCalibrationAdapter.prototype as ResolveCapable;
+  let original: unknown;
+
+  beforeEach(() => {
+    original = prototype.resolveCalibrationConflict;
+  });
+
+  afterEach(() => {
+    if (original === undefined) {
+      delete prototype.resolveCalibrationConflict;
+    } else {
+      prototype.resolveCalibrationConflict = original;
+    }
+  });
+
+  function resolveReturning(conflictOverrides: Record<string, unknown>) {
+    prototype.resolveCalibrationConflict = function () {
+      return Promise.resolve({
+        conflict: {
+          conflictId: '66666666-6666-4666-8666-666666666666',
+          profileId: PROFILE_ID,
+          projectId: '22222222-2222-4222-8222-222222222222',
+          entityId: '44444444-4444-4444-8444-444444444444',
+          kind: 'projectMetadata' as const,
+          availableResolutions: ['acceptServer' as const],
+          localPayloadSummary: 'local',
+          serverPayloadSummary: 'server',
+          serverRevision: 4,
+          resolution: 'acceptServer',
+          resolvedAt: '2026-08-05T00:00:00.000Z',
+          createdAt: '2026-08-05T00:00:00.000Z',
+          ...conflictOverrides,
+        },
+        supersededObservations: [],
+      });
+    };
+    return registeredHandler(IpcChannel.CalibrationResolveConflict);
+  }
+
+  const request = {
+    profileId: PROFILE_ID,
+    conflictId: '66666666-6666-4666-8666-666666666666',
+    resolution: 'acceptServer',
+  };
+
+  it('POSITIVE CONTROL: a contract-satisfying response is returned, so the spec below is not measuring a handler that rejects everything', async () => {
+    const handler = resolveReturning({});
+
+    const outcome = await (handler({}, request) as Promise<unknown>).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+
+    expect(
+      'value' in outcome,
+      'the handler rejected a response that satisfies its own contract, so a ' +
+        'rejection below would prove nothing about validation',
+    ).toBe(true);
+  });
+
+  it('rejects a response the contract forbids instead of forwarding it to the renderer', async () => {
+    const handler = resolveReturning({ profileId: 'not-a-uuid' });
+
+    const outcome = await (handler({}, request) as Promise<unknown>).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+
+    expect(
+      'error' in outcome,
+      'the resolve channel forwarded a payload its own response schema ' +
+        'rejects; the renderer receives data the contract says cannot occur',
+    ).toBe(true);
+  });
+});

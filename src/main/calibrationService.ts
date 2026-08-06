@@ -128,6 +128,52 @@ const CalibrationConflictWire = z
   .passthrough();
 
 /**
+ * The exact predicate `CalibrationConflict` enforces on its timestamp fields.
+ * Declared once so the pass-through branch below cannot drift away from the
+ * contract it is standing in for.
+ */
+const IsoTimestamp = z.string().datetime();
+
+/**
+ * Convert a sidecar `*_at` value into the ISO-8601 the IPC contract declares.
+ *
+ * The store writes those columns as whole seconds since the Unix epoch, as text
+ * (`sqlite_catalog.rs: now_ts`), and says so in that function's own docstring.
+ * The IPC contract declares them `z.string().datetime()`. Both are internally
+ * consistent; nothing converted between them, so `calibration_conflicts.created_at`
+ * reached a `.datetime()` parse as `"1785881744"` and was rejected.
+ *
+ * The conversion belongs at this boundary and not in the store. `now_ts` has
+ * eleven call sites across the catalog, so changing it would rewrite the on-disk
+ * format of every `*_at` column at once and leave every already-persisted row in
+ * the old format — a strictly larger blast radius than the defect, and one no
+ * evidence here supports.
+ *
+ * A value already in ISO-8601 passes through unchanged, gated on `IsoTimestamp`
+ * rather than on a looser check, so "accepted here" and "accepted by the
+ * contract" cannot diverge. Anything that is neither form throws and names the
+ * field, because returning it unchanged is precisely the behaviour that let an
+ * epoch timestamp travel to the renderer unremarked.
+ */
+function sidecarTimestampToIso(value: string, field: string): string {
+  if (/^\d+$/.test(value)) {
+    const seconds = Number(value);
+    if (!Number.isSafeInteger(seconds)) {
+      throw new Error(
+        `${field}: sidecar epoch seconds outside the safe integer range: ${value}`,
+      );
+    }
+    return new Date(seconds * 1000).toISOString();
+  }
+  if (IsoTimestamp.safeParse(value).success) {
+    return value;
+  }
+  throw new Error(
+    `${field}: sidecar timestamp is neither epoch seconds nor ISO-8601: ${value}`,
+  );
+}
+
+/**
  * The store's resolution result.
  *
  * `supersededObservations` has no `.default([])`. The store always emits the
@@ -385,6 +431,10 @@ export class SidecarCalibrationAdapter implements CalibrationSidecar {
       mergedFields: request.mergedFields,
     });
     const parsed = CalibrationConflictResolutionWire.parse(raw);
+    const resolvedAtIso = sidecarTimestampToIso(
+      parsed.resolvedAt,
+      'resolvedAt',
+    );
     return {
       conflict: {
         conflictId: parsed.conflictId,
@@ -396,9 +446,16 @@ export class SidecarCalibrationAdapter implements CalibrationSidecar {
         serverPayloadSummary: null,
         serverRevision: 0,
         availableResolutions: conflictResolutionsFor(this, parsed.kind),
-        resolvedAt: parsed.resolvedAt,
+        resolvedAt: resolvedAtIso,
         resolution: parsed.resolution,
-        createdAt: parsed.resolvedAt,
+        // NOT the creation instant: the resolution DTO carries no `created_at`,
+        // so no honest value is available at this boundary and this one is
+        // fabricated from the resolution instant. Converting the format does not
+        // repair it — a well-formed ISO string is exactly what makes the
+        // fabrication survive the response parse added for this issue. Filed
+        // separately; fixing it needs a field added to the sidecar DTO, which is
+        // a change to the store's contract rather than to this adapter.
+        createdAt: resolvedAtIso,
       },
       supersededObservations: parsed.supersededObservations,
     };
@@ -554,7 +611,7 @@ export class SidecarCalibrationAdapter implements CalibrationSidecar {
         availableResolutions: classified
           ? conflictResolutionsFor(this, kind)
           : [],
-        createdAt: parsed.createdAt,
+        createdAt: sidecarTimestampToIso(parsed.createdAt, 'createdAt'),
         resolution: null,
         resolvedAt: null,
       };
