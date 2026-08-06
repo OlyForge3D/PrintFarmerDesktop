@@ -40,6 +40,7 @@ import {
   VERDICT_SOUND,
   VERDICT_UNUSABLE,
   VERDICT_VACUOUS,
+  classifyDiscrimination,
 } from '../scripts/instrument-probe.mjs';
 
 /** Throws rather than returning undefined: a silent undefined here would be the
@@ -203,7 +204,7 @@ describe('readSuccessfulOutput', () => {
     expect(
       readSuccessfulOutput(
         { status: 1, stdout: '', stderr: 'fatal: failed' },
-        'bytes',
+        'raw',
       ),
     ).toEqual({
       reading: null,
@@ -214,7 +215,23 @@ describe('readSuccessfulOutput', () => {
   it('reads output only after git succeeds', () => {
     const result = { status: 0, stdout: 'abc\n', stderr: '' };
     expect(readSuccessfulOutput(result, 'trim')).toEqual({ reading: 'abc' });
-    expect(readSuccessfulOutput(result, 'bytes')).toEqual({ reading: '4' });
+    expect(readSuccessfulOutput(result, 'raw')).toEqual({ reading: 'abc\n' });
+  });
+
+  it('preserves same-length output differences so they cannot be called BLIND', () => {
+    const first = readSuccessfulOutput(
+      { status: 0, stdout: 'abc', stderr: '' },
+      'raw',
+    );
+    const second = readSuccessfulOutput(
+      { status: 0, stdout: 'xyz', stderr: '' },
+      'raw',
+    );
+    const classified = classifyDiscrimination([
+      { label: 'first', reading: first.reading },
+      { label: 'second', reading: second.reading },
+    ]);
+    expect(classified.verdict).toBe(VERDICT_SOUND);
   });
 });
 
@@ -505,10 +522,10 @@ describe('#367 instance 2: a typo`d pathspec renders as clean', () => {
     return dir;
   };
 
-  it('produces zero bytes for a path that matches AND for a path that does not exist', () => {
+  it('produces identical empty output for a path that matches AND for a path that does not exist', () => {
     const cases = readArm(fresh(), 'diff-pathspec');
-    expect(at(cases, 0).reading).toBe('0');
-    expect(at(cases, 1).reading).toBe('0');
+    expect(at(cases, 0).reading).toBe('');
+    expect(at(cases, 1).reading).toBe('');
   });
 
   it('POSITIVE CONTROL: --error-unmatch separates the same two paths', () => {

@@ -345,7 +345,7 @@ function runGit(args, cwd) {
 
 /**
  * @param {{status: number, stdout: string, stderr: string}} result
- * @param {'trim'|'bytes'} mode
+ * @param {'trim'|'raw'} mode
  * @returns {{reading: string|null, error?: string}}
  */
 export function readSuccessfulOutput(result, mode) {
@@ -357,7 +357,7 @@ export function readSuccessfulOutput(result, mode) {
     };
   }
   if (mode === 'trim') return { reading: result.stdout.trim() };
-  if (mode === 'bytes') return { reading: String(result.stdout.length) };
+  if (mode === 'raw') return { reading: result.stdout };
   throw new Error(`unknown output reading mode: ${mode}`);
 }
 
@@ -482,7 +482,7 @@ export function readPreconditions(dir) {
 export function readArm(dir, id) {
   const exit = (args) => String(runGit(args, dir).status);
   const out = (args) => readSuccessfulOutput(runGit(args, dir), 'trim');
-  const bytes = (args) => readSuccessfulOutput(runGit(args, dir), 'bytes');
+  const raw = (args) => readSuccessfulOutput(runGit(args, dir), 'raw');
   const url = pathToFileURL(dir).href;
 
   if (id === 'ls-remote-bare') {
@@ -516,11 +516,11 @@ export function readArm(dir, id) {
     return [
       {
         label: 'path exists and matches',
-        ...bytes(['diff', 'HEAD', '--', STABLE_FILE]),
+        ...raw(['diff', 'HEAD', '--', STABLE_FILE]),
       },
       {
         label: 'path does not exist',
-        ...bytes(['diff', 'HEAD', '--', ABSENT_PATH]),
+        ...raw(['diff', 'HEAD', '--', ABSENT_PATH]),
       },
     ];
   }
