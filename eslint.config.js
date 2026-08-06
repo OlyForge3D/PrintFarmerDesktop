@@ -18,6 +18,7 @@ export default tseslint.config(
             'eslint.config.js',
             'scripts/*.mjs',
             'tests/fixtures/malicious-input/generate.mjs',
+            'tests/fixtures/playwrightDiagnosticsStdoutNoise.mjs',
           ],
         },
         tsconfigRootDir: import.meta.dirname,
