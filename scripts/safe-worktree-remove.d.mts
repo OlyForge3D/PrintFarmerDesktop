@@ -38,6 +38,9 @@ export interface SafeWorktreeRemoveDependencies {
 
 export function parseWorktreeList(output: string): string[];
 export function listLinkedWorktrees(cwd?: string): string[];
+export function filesystemRealpath(
+  platform?: NodeJS.Platform,
+): (path: string) => string;
 export function findReparsePoints(worktreePath: string): string[];
 export function validateCallerLocation(
   cwd: string,

@@ -71,7 +71,15 @@ export function listLinkedWorktrees(cwd = process.cwd()) {
   return parseWorktreeList(output);
 }
 
-function resolveNativePath(value, realpathImpl = realpathSync.native) {
+export function filesystemRealpath(platform = process.platform) {
+  return platform === 'win32' ? realpathSync.native : realpathSync;
+}
+
+function resolveFilesystemPath(
+  value,
+  platform,
+  realpathImpl = filesystemRealpath(platform),
+) {
   try {
     return realpathImpl(value);
   } catch (error) {
@@ -85,12 +93,10 @@ export function validateCallerLocation(
   cwd,
   target,
   platform = process.platform,
-  realpathImpl = realpathSync.native,
+  realpathImpl = filesystemRealpath(platform),
 ) {
-  const resolvedCwd =
-    platform === 'win32' ? resolveNativePath(cwd, realpathImpl) : cwd;
-  const resolvedTarget =
-    platform === 'win32' ? resolveNativePath(target, realpathImpl) : target;
+  const resolvedCwd = resolveFilesystemPath(cwd, platform, realpathImpl);
+  const resolvedTarget = resolveFilesystemPath(target, platform, realpathImpl);
   if (
     normalizedPath(resolvedCwd, platform) ===
       normalizedPath(resolvedTarget, platform) ||
@@ -129,11 +135,12 @@ export function createRecoveryReceipt(
     realpathImpl = realpathSync.native,
   } = {},
 ) {
-  const resolvedCommonDirectory = resolveNativePath(
+  const resolvedCommonDirectory = resolveFilesystemPath(
     commonDirectory,
+    'win32',
     realpathImpl,
   );
-  const resolvedTarget = resolveNativePath(target, realpathImpl);
+  const resolvedTarget = resolveFilesystemPath(target, 'win32', realpathImpl);
   const targetStats = lstatSync(resolvedTarget, { bigint: true });
   if (!targetStats.isDirectory() || targetStats.isSymbolicLink()) {
     throw new Error(
@@ -187,11 +194,12 @@ export function removeRecoveryReceipt(receiptPath) {
 }
 
 function readRecoveryReceipt(repository, target, realpathImpl) {
-  const commonDirectory = resolveNativePath(
+  const commonDirectory = resolveFilesystemPath(
     gitCommonDirectory(repository),
+    'win32',
     realpathImpl,
   );
-  const resolvedTarget = resolveNativePath(target, realpathImpl);
+  const resolvedTarget = resolveFilesystemPath(target, 'win32', realpathImpl);
   const receiptPath = recoveryReceiptPath(commonDirectory, resolvedTarget);
   let receipt;
   try {
@@ -224,7 +232,7 @@ export function validateStaleRecoveryTarget(
   worktrees,
   realpathImpl = realpathSync.native,
 ) {
-  const resolvedTarget = resolveNativePath(target, realpathImpl);
+  const resolvedTarget = resolveFilesystemPath(target, 'win32', realpathImpl);
   for (const worktree of worktrees) {
     let resolvedWorktree;
     try {
@@ -415,27 +423,9 @@ export function validateRemovalTarget(
   target,
   worktrees,
   platform = process.platform,
-  realpathImpl = realpathSync.native,
+  realpathImpl = filesystemRealpath(platform),
 ) {
-  if (platform !== 'win32') {
-    const targetKey = normalizedPath(target, platform);
-    const index = worktrees.findIndex(
-      (worktree) => normalizedPath(worktree, platform) === targetKey,
-    );
-    if (index < 0) {
-      throw new Error(
-        `${DIAGNOSTIC_PREFIX}: refusing because this is not a registered linked worktree: ${target}`,
-      );
-    }
-    if (index === 0) {
-      throw new Error(
-        `${DIAGNOSTIC_PREFIX}: refusing to remove the repository's main worktree: ${target}`,
-      );
-    }
-    return worktrees[index];
-  }
-
-  const resolvedTarget = resolveNativePath(target, realpathImpl);
+  const resolvedTarget = resolveFilesystemPath(target, platform, realpathImpl);
   const matches = [];
   for (const [index, worktree] of worktrees.entries()) {
     let resolvedWorktree;
@@ -496,7 +486,7 @@ export function main(
     removeReceipt = removeRecoveryReceipt,
     readReceipt = readRecoveryReceipt,
     removeStale = removeStaleDirectory,
-    realpathImpl = realpathSync.native,
+    realpathImpl = filesystemRealpath(platform),
     runGit = (repository, target) =>
       spawnSync('git', ['worktree', 'remove', '--force', target], {
         cwd: repository,

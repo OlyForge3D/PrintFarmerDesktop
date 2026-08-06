@@ -8,7 +8,10 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import os from 'node:os';
@@ -19,6 +22,7 @@ import {
   DIAGNOSTIC_PREFIX,
   RECOVERY_FLAG,
   createRecoveryReceipt,
+  filesystemRealpath,
   listLinkedWorktrees,
   main,
   prepareWindowsWorktreeForRemoval,
@@ -188,6 +192,12 @@ function windowsShortPath(target: string) {
 }
 
 describe('safe worktree removal validation', () => {
+  it('selects native Windows and POSIX filesystem resolvers explicitly', () => {
+    expect(filesystemRealpath('win32')).toBe(realpathSync.native);
+    expect(filesystemRealpath('darwin')).toBe(realpathSync);
+    expect(filesystemRealpath('linux')).toBe(realpathSync);
+  });
+
   const completeRawState = {
     gitVersion: 'git version fixture',
     status: 0,
@@ -393,6 +403,7 @@ describe('safe worktree removal validation', () => {
       platform: 'linux',
       listWorktrees: () => ['/repo', '/linked'],
       prepareWindows,
+      realpathImpl: (value) => value,
       runGit,
       writeStdout: () => undefined,
       writeStderr: () => undefined,
@@ -510,9 +521,70 @@ describe('linked-worktree registry contract', () => {
       git(['worktree', 'add', '-b', 'linked', linked], repository);
 
       expect(
-        listLinkedWorktrees(linked).map((entry) => path.resolve(entry)),
-      ).toEqual([repository, linked]);
+        listLinkedWorktrees(linked).map((entry) => realpathSync(entry)),
+      ).toEqual([realpathSync(repository), realpathSync(linked)]);
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe.skipIf(onWindows)('POSIX canonical worktree aliases', () => {
+  it('matches a symlink target spelling to the canonical registered worktree', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'pfd-posix-target-alias-'));
+    const repository = path.join(root, 'repo');
+    const linked = path.join(root, 'linked');
+    const alias = path.join(root, 'linked-alias');
+    try {
+      mkdirSync(repository);
+      git(['init', '--initial-branch=development'], repository);
+      git(['config', 'user.name', 'Worktree fixture'], repository);
+      git(['config', 'user.email', 'fixture@example.invalid'], repository);
+      writeFileSync(path.join(repository, 'tracked.txt'), 'fixture\n');
+      git(['add', 'tracked.txt'], repository);
+      git(['commit', '-m', 'fixture'], repository);
+      git(['worktree', 'add', '-b', 'linked', linked], repository);
+      symlinkSync(linked, alias, 'dir');
+
+      const removal = spawnSync(process.execPath, [scriptPath, alias], {
+        cwd: repository,
+        encoding: 'utf8',
+      });
+
+      expect(removal.error).toBeUndefined();
+      expect(removal.signal).toBeNull();
+      expect(removal.status, removal.stderr).toBe(0);
+      expect(removal.stderr).not.toContain('not a registered linked worktree');
+      expect(pathIsAbsent(linked)).toBe(true);
+      expect(
+        listLinkedWorktrees(repository).map((entry) => realpathSync(entry)),
+      ).toEqual([realpathSync(repository)]);
+    } finally {
+      rmSync(alias, { force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses equal and descendant caller aliases by resolved identity', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'pfd-posix-caller-alias-'));
+    const target = path.join(root, 'target');
+    const nested = path.join(target, 'nested');
+    const alias = path.join(root, 'target-alias');
+    mkdirSync(nested, { recursive: true });
+    symlinkSync(target, alias, 'dir');
+    try {
+      expect(() =>
+        validateCallerLocation(alias, target, process.platform),
+      ).toThrow('current directory is inside the worktree being removed');
+      expect(() =>
+        validateCallerLocation(
+          path.join(alias, 'nested'),
+          target,
+          process.platform,
+        ),
+      ).toThrow('current directory is inside the worktree being removed');
+    } finally {
+      unlinkSync(alias);
       rmSync(root, { recursive: true, force: true });
     }
   });
