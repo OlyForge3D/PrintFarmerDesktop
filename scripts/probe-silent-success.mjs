@@ -117,6 +117,11 @@ export const MUTATED_FILE = 'tracked.txt';
 export const COMMITTED_BYTES = 'committed contents\n';
 export const MUTATED_BYTES = 'working tree contents, never committed\n';
 
+const EXPECTED_PRECONDITION_IDS = Object.freeze([
+  'P1-fixture-is-a-repository',
+  'P2-mutation-reaches-the-disk',
+]);
+
 /**
  * Each arm is a PAIR, because discrimination is undefined for one subject.
  *
@@ -245,6 +250,39 @@ export function judgeArm(arm, classified) {
 }
 
 /**
+ * The arms are evidence only when every expected precondition was read in the
+ * shape this probe promises. In particular, `.every()` alone treats a
+ * missing precondition as success.
+ *
+ * @param {unknown} preconditions
+ * @returns {string | null}
+ */
+function validatePreconditions(preconditions) {
+  if (!Array.isArray(preconditions)) return 'expected an array';
+
+  const ids = new Set();
+  for (const precondition of preconditions) {
+    if (
+      precondition === null ||
+      typeof precondition !== 'object' ||
+      typeof precondition.id !== 'string' ||
+      typeof precondition.satisfied !== 'boolean' ||
+      typeof precondition.detail !== 'string'
+    ) {
+      return 'each record must contain string id/detail and boolean satisfied';
+    }
+    if (ids.has(precondition.id)) return `duplicate id ${precondition.id}`;
+    ids.add(precondition.id);
+  }
+
+  const missing = EXPECTED_PRECONDITION_IDS.filter((id) => !ids.has(id));
+  if (missing.length > 0) return `missing ${missing.join(', ')}`;
+  return preconditions.length === EXPECTED_PRECONDITION_IDS.length
+    ? null
+    : `expected ${EXPECTED_PRECONDITION_IDS.length} records`;
+}
+
+/**
  * Preconditions outrank every arm, and they are read first.
  *
  * The ordering is the entire point. A broken fixture makes half the arms come
@@ -257,6 +295,13 @@ export function judgeArm(arm, classified) {
  * @returns {{exitCode: number, summary: string}}
  */
 export function overallVerdict(preconditions, judged) {
+  const preconditionError = validatePreconditions(preconditions);
+  if (preconditionError) {
+    return {
+      exitCode: EXIT_UNDETERMINED,
+      summary: `invalid preconditions (${preconditionError}): the experiment did not run, so no arm below is evidence`,
+    };
+  }
   const failed = (preconditions ?? []).filter((p) => !p.satisfied);
   if (failed.length > 0) {
     return {
@@ -266,6 +311,7 @@ export function overallVerdict(preconditions, judged) {
         .join(', ')}): the experiment did not run, so no arm below is evidence`,
     };
   }
+
   if (!Array.isArray(judged) || judged.length === 0) {
     return {
       exitCode: EXIT_UNDETERMINED,
@@ -584,7 +630,7 @@ and the substitutes it prescribes, in a throwaway repository.
 `;
 
 /**
- * @param {{readPreconditions?: typeof readPreconditions}} [options]
+ * @param {{readPreconditions?: typeof readPreconditions, readArm?: typeof readArm}} [options]
  * @returns {number}
  */
 export function main(options = {}) {
@@ -620,11 +666,12 @@ export function main(options = {}) {
       return EXIT_UNDETERMINED;
     }
     const judged = [];
-    if (preconditions.every((p) => p.satisfied)) {
+    const preconditionError = validatePreconditions(preconditions);
+    if (!preconditionError && preconditions.every((p) => p.satisfied)) {
       for (const arm of ARMS) {
         let cases;
         try {
-          cases = readArm(fixture.dir, arm.id);
+          cases = (options.readArm ?? readArm)(fixture.dir, arm.id);
         } catch (error) {
           cases = [
             {
