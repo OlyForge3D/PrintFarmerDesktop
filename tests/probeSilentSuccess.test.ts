@@ -164,6 +164,16 @@ describe('judgeArm', () => {
     expect(judged.status).toBe(STATUS_UNDETERMINED);
   });
 
+  it('VACUOUS OUTRANKS BLIND when failed commands return the same non-answer', () => {
+    const judged = judgeArm(armOf('ls-remote-bare'), {
+      ...classification(VERDICT_BLIND),
+      vacuous: true,
+    });
+    expect(judged.status).toBe(STATUS_UNDETERMINED);
+    expect(judged.status).not.toBe(STATUS_HOLDS);
+    expect(judged.direction).toContain('vacuous');
+  });
+
   it('carries the readings through, so the report can show the numbers rather than assert them', () => {
     const judged = judgeArm(armOf('ls-remote-bare'), {
       verdict: VERDICT_BLIND,

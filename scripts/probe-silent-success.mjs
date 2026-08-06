@@ -198,7 +198,7 @@ export const ARMS = Object.freeze([
  * sentence.
  *
  * @param {{id: string, role: string, expect: string, cites: string, claim: string}} arm
- * @param {{verdict: string, findings: string[], readings: {label: string, reading: string|null}[]}} classified
+ * @param {{verdict: string, vacuous?: boolean, findings: string[], readings: {label: string, reading: string|null}[]}} classified
  * @returns {{id: string, role: string, cites: string, claim: string, expect: string, observed: string, status: string, direction: string, findings: string[], readings: {label: string, reading: string|null}[]}}
  */
 export function judgeArm(arm, classified) {
@@ -214,7 +214,10 @@ export function judgeArm(arm, classified) {
 
   let status;
   let direction = '';
-  if (observed === arm.expect) {
+  if (classified.vacuous === true) {
+    status = STATUS_UNDETERMINED;
+    direction = 'no reading about git\'s behaviour: the case pair is vacuous';
+  } else if (observed === arm.expect) {
     status = STATUS_HOLDS;
   } else if (observed === VERDICT_SOUND || observed === VERDICT_BLIND) {
     status = STATUS_CHANGED;
