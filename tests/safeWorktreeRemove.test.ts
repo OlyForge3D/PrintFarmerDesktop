@@ -28,12 +28,13 @@ import {
 } from '../scripts/safe-worktree-remove.mjs';
 
 const SENTINEL_COUNT = 12;
-const AFFECTED_GIT_VERSION = 'git version 2.53.0.windows.3';
 const onWindows = process.platform === 'win32';
 const gitVersion = onWindows
   ? spawnSync('git', ['--version'], { encoding: 'utf8' }).stdout.trim()
   : '';
-const onAffectedGit = onWindows && gitVersion === AFFECTED_GIT_VERSION;
+const unitRepository = path.resolve('unit-repository');
+const unitLinkedWorktree = path.resolve('unit-linked-worktree');
+const unitStaleWorktree = path.resolve('unit-stale-worktree');
 const scriptPath = path.resolve(
   import.meta.dirname,
   '..',
@@ -97,6 +98,16 @@ function registeredWorktree(repository: string, worktree: string) {
   );
 }
 
+function pathIsAbsent(target: string) {
+  try {
+    lstatSync(target);
+    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    throw error;
+  }
+}
+
 function removeFixtureWorktreeAdmin(worktree: string) {
   const pointer = readFileSync(path.join(worktree, '.git'), 'utf8').trim();
   expect(pointer.startsWith('gitdir: ')).toBe(true);
@@ -114,13 +125,21 @@ function availableSubstDrive() {
 describe('safe worktree removal validation', () => {
   it('refuses a path absent from the linked-worktree registry', () => {
     expect(() =>
-      validateRemovalTarget('C:\\outside', ['C:\\repo'], 'win32'),
+      validateRemovalTarget(
+        path.resolve('unit-outside'),
+        [unitRepository],
+        'win32',
+      ),
     ).toThrow('not a registered linked worktree');
   });
 
   it('refuses the main worktree instead of treating it as removable', () => {
     expect(() =>
-      validateRemovalTarget('C:\\repo', ['C:\\repo', 'C:\\linked'], 'win32'),
+      validateRemovalTarget(
+        unitRepository,
+        [unitRepository, unitLinkedWorktree],
+        'win32',
+      ),
     ).toThrow("repository's main worktree");
   });
 
@@ -128,14 +147,14 @@ describe('safe worktree removal validation', () => {
     const runGit = vi.fn(() => ({ stdout: '', stderr: '', status: 0 }));
     const removeReceipt = vi.fn();
     const stderr: string[] = [];
-    const status = main(['C:\\linked'], {
-      cwd: 'C:\\repo',
+    const status = main([unitLinkedWorktree], {
+      cwd: unitRepository,
       platform: 'win32',
-      listWorktrees: () => ['C:\\repo', 'C:\\linked'],
+      listWorktrees: () => [unitRepository, unitLinkedWorktree],
       prepareWindows: () => {
         throw new Error(`${DIAGNOSTIC_PREFIX}: unresolved reparse point`);
       },
-      createReceipt: () => 'C:\\receipt.json',
+      createReceipt: () => path.resolve('unit-receipt.json'),
       removeReceipt,
       realpathImpl: (value) => value,
       runGit,
@@ -145,20 +164,22 @@ describe('safe worktree removal validation', () => {
 
     expect(status).toBe(1);
     expect(runGit).not.toHaveBeenCalled();
-    expect(removeReceipt).toHaveBeenCalledWith('C:\\receipt.json');
+    expect(removeReceipt).toHaveBeenCalledWith(
+      path.resolve('unit-receipt.json'),
+    );
     expect(stderr.join('')).toContain('unresolved reparse point');
   });
 
-  it.each(['C:\\linked', 'C:\\linked\\nested'])(
+  it.each([unitLinkedWorktree, path.join(unitLinkedWorktree, 'nested')])(
     'refuses caller location %s before Windows preflight',
     (cwd) => {
       const prepareWindows = vi.fn();
       const runGit = vi.fn(() => ({ stdout: '', stderr: '', status: 0 }));
       const stderr: string[] = [];
-      const status = main(['C:\\linked'], {
+      const status = main([unitLinkedWorktree], {
         cwd,
         platform: 'win32',
-        listWorktrees: () => ['C:\\repo', 'C:\\linked'],
+        listWorktrees: () => [unitRepository, unitLinkedWorktree],
         prepareWindows,
         realpathImpl: (value) => value,
         runGit,
@@ -232,12 +253,13 @@ describe('safe worktree removal validation', () => {
 
   it('keeps a successful removal status when receipt cleanup fails visibly', () => {
     const stderr: string[] = [];
-    const status = main(['C:\\linked'], {
-      cwd: 'C:\\repo',
+    const receiptPath = path.resolve('unit-receipt.json');
+    const status = main([unitLinkedWorktree], {
+      cwd: unitRepository,
       platform: 'win32',
-      listWorktrees: () => ['C:\\repo', 'C:\\linked'],
+      listWorktrees: () => [unitRepository, unitLinkedWorktree],
       prepareWindows: () => ({ unlinked: [], externalTargets: [] }),
-      createReceipt: () => 'C:\\receipt.json',
+      createReceipt: () => receiptPath,
       removeReceipt: () => {
         throw new Error('receipt locked');
       },
@@ -256,14 +278,15 @@ describe('safe worktree removal validation', () => {
   it('keeps a successful recovery status when receipt cleanup fails visibly', () => {
     const stderr: string[] = [];
     const removeStale = vi.fn();
-    const status = main([RECOVERY_FLAG, 'C:\\stale'], {
-      cwd: 'C:\\repo',
+    const receiptPath = path.resolve('unit-receipt.json');
+    const status = main([RECOVERY_FLAG, unitStaleWorktree], {
+      cwd: unitRepository,
       platform: 'win32',
-      listWorktrees: () => ['C:\\repo'],
+      listWorktrees: () => [unitRepository],
       prepareWindows: () => ({ unlinked: [], externalTargets: [] }),
       readReceipt: () => ({
-        receiptPath: 'C:\\receipt.json',
-        resolvedTarget: 'C:\\stale',
+        receiptPath,
+        resolvedTarget: unitStaleWorktree,
       }),
       removeReceipt: () => {
         throw new Error('receipt locked');
@@ -275,7 +298,7 @@ describe('safe worktree removal validation', () => {
     });
 
     expect(status).toBe(0);
-    expect(removeStale).toHaveBeenCalledWith('C:\\stale');
+    expect(removeStale).toHaveBeenCalledWith(unitStaleWorktree);
     expect(stderr.join('')).toContain(
       'WARNING: recovery receipt cleanup failed after removal completed',
     );
@@ -306,24 +329,50 @@ describe('linked-worktree registry contract', () => {
   });
 });
 
-describe.skipIf(!onAffectedGit)(
-  `git-for-windows ${AFFECTED_GIT_VERSION} junction teardown regression (#546)`,
+describe.skipIf(!onWindows)(
+  'Windows Git junction teardown observed-behavior regression (#546)',
   () => {
-    it('reproduces target loss in the raw arm and preserves all 12 sentinels through the guarded arm', () => {
+    it('classifies raw Git as vulnerable or fixed and always verifies guarded 12-sentinel survival', () => {
       const root = mkdtempSync(
         path.join(os.tmpdir(), 'pfd-junction-teardown-'),
       );
+      let raw: ReturnType<typeof makeArm> | null = null;
+      let guarded: ReturnType<typeof makeArm> | null = null;
       try {
-        const raw = makeArm(root, 'raw');
-        const guarded = makeArm(root, 'guarded');
+        raw = makeArm(root, 'raw');
+        guarded = makeArm(root, 'guarded');
 
         const rawRemoval = spawnSync(
           'git',
           ['worktree', 'remove', '--force', raw.worktree],
           { cwd: raw.repository, encoding: 'utf8' },
         );
-        expect(rawRemoval.status).toBe(0);
-        expect(readdirSync(raw.target)).toHaveLength(0);
+        const rawTargetCount = readdirSync(raw.target).length;
+        const rawOutcome =
+          rawTargetCount === 0
+            ? 'vulnerable: external target emptied'
+            : rawTargetCount === SENTINEL_COUNT
+              ? 'fixed: external target preserved'
+              : `ambiguous: ${rawTargetCount}/${SENTINEL_COUNT} sentinels remain`;
+        const rawContext = `${gitVersion}; ${rawOutcome}; exit=${String(rawRemoval.status)}; stderr=${rawRemoval.stderr.trim() || '<empty>'}`;
+        console.info(`[junction-teardown raw outcome] ${rawContext}`);
+
+        expect(rawRemoval.error, rawContext).toBeUndefined();
+        expect(rawRemoval.status, rawContext).toBe(0);
+        expect([0, SENTINEL_COUNT], rawContext).toContain(rawTargetCount);
+        expect(pathIsAbsent(raw.junction), rawContext).toBe(true);
+        expect(pathIsAbsent(raw.worktree), rawContext).toBe(true);
+        expect(
+          registeredWorktree(raw.repository, raw.worktree),
+          rawContext,
+        ).toBe(false);
+
+        if (rawTargetCount === 0) {
+          expect(rawOutcome).toBe('vulnerable: external target emptied');
+        } else {
+          expect(rawTargetCount).toBe(SENTINEL_COUNT);
+          expect(rawOutcome).toBe('fixed: external target preserved');
+        }
 
         const guardedRemoval = spawnSync(
           process.execPath,
@@ -337,7 +386,20 @@ describe.skipIf(!onAffectedGit)(
         expect(existsSync(guarded.junction)).toBe(false);
         expect(existsSync(guarded.worktree)).toBe(false);
         expect(readdirSync(guarded.target)).toHaveLength(SENTINEL_COUNT);
+        expect(registeredWorktree(guarded.repository, guarded.worktree)).toBe(
+          false,
+        );
       } finally {
+        for (const arm of [raw, guarded]) {
+          if (!arm) continue;
+          unlinkJunction(arm.junction);
+          if (registeredWorktree(arm.repository, arm.worktree)) {
+            git(
+              ['worktree', 'remove', '--force', arm.worktree],
+              arm.repository,
+            );
+          }
+        }
         rmSync(root, { recursive: true, force: true });
       }
     });
