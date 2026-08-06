@@ -68,7 +68,8 @@ export function validateRemovalTarget(
   target: string,
   worktrees: string[],
   platform?: NodeJS.Platform,
-): void;
+  realpathImpl?: (path: string) => string,
+): string;
 export function main(
   argv: string[],
   dependencies?: SafeWorktreeRemoveDependencies,

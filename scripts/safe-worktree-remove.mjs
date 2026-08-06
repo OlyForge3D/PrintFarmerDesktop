@@ -415,23 +415,64 @@ export function validateRemovalTarget(
   target,
   worktrees,
   platform = process.platform,
+  realpathImpl = realpathSync.native,
 ) {
-  const targetKey = normalizedPath(target, platform);
-  const index = worktrees.findIndex(
-    (worktree) => normalizedPath(worktree, platform) === targetKey,
-  );
-  if (index < 0) {
+  if (platform !== 'win32') {
+    const targetKey = normalizedPath(target, platform);
+    const index = worktrees.findIndex(
+      (worktree) => normalizedPath(worktree, platform) === targetKey,
+    );
+    if (index < 0) {
+      throw new Error(
+        `${DIAGNOSTIC_PREFIX}: refusing because this is not a registered linked worktree: ${target}`,
+      );
+    }
+    if (index === 0) {
+      throw new Error(
+        `${DIAGNOSTIC_PREFIX}: refusing to remove the repository's main worktree: ${target}`,
+      );
+    }
+    return worktrees[index];
+  }
+
+  const resolvedTarget = resolveNativePath(target, realpathImpl);
+  const matches = [];
+  for (const [index, worktree] of worktrees.entries()) {
+    let resolvedWorktree;
+    try {
+      resolvedWorktree = realpathImpl(worktree);
+    } catch (error) {
+      if (error?.code === 'ENOENT') continue;
+      throw new Error(
+        `${DIAGNOSTIC_PREFIX}: refusing because registered worktree identity cannot be resolved for ${worktree}\n${String(error)}`,
+      );
+    }
+    if (
+      normalizedPath(resolvedWorktree, platform) ===
+      normalizedPath(resolvedTarget, platform)
+    ) {
+      matches.push({ index, resolvedWorktree });
+    }
+  }
+  if (matches.length === 0) {
     throw new Error(
       `${DIAGNOSTIC_PREFIX}: refusing because this is not a registered linked worktree: ${target}`,
     );
   }
-  if (index === 0) {
+  if (matches.length > 1) {
+    throw new Error(
+      `${DIAGNOSTIC_PREFIX}: refusing because multiple registered worktrees resolve to the same filesystem identity: ${target}`,
+    );
+  }
+  const [match] = matches;
+  if (match.index === 0) {
     // git-worktree(1) defines the main worktree as the first list entry, followed
     // by linked worktrees. The integration test pins that ordering against Git.
     throw new Error(
       `${DIAGNOSTIC_PREFIX}: refusing to remove the repository's main worktree: ${target}`,
     );
   }
+  return match.resolvedWorktree;
 }
 
 function parseArgs(argv) {
@@ -478,7 +519,7 @@ export function main(
     return 2;
   }
 
-  const target = path.resolve(cwd, options.target);
+  const requestedTarget = path.resolve(cwd, options.target);
   let receiptPath = null;
   let gitStarted = false;
   try {
@@ -490,9 +531,9 @@ export function main(
           `${DIAGNOSTIC_PREFIX}: ${RECOVERY_FLAG} is restricted to Windows`,
         );
       }
-      validateCallerLocation(cwd, target, platform, realpathImpl);
-      validateStaleRecoveryTarget(target, worktrees, realpathImpl);
-      const receipt = readReceipt(cwd, target, realpathImpl);
+      validateCallerLocation(cwd, requestedTarget, platform, realpathImpl);
+      validateStaleRecoveryTarget(requestedTarget, worktrees, realpathImpl);
+      const receipt = readReceipt(cwd, requestedTarget, realpathImpl);
       const prepared = prepareWindows(receipt.resolvedTarget);
       removeStale(receipt.resolvedTarget);
       cleanupReceipt(receipt.receiptPath, removeReceipt, writeStderr, true);
@@ -502,7 +543,12 @@ export function main(
       return 0;
     }
 
-    validateRemovalTarget(target, worktrees, platform);
+    const target = validateRemovalTarget(
+      requestedTarget,
+      worktrees,
+      platform,
+      realpathImpl,
+    );
     validateCallerLocation(cwd, target, platform, realpathImpl);
     if (platform === 'win32') {
       receiptPath = createReceipt(cwd, target, { realpathImpl });

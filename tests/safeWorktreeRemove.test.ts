@@ -133,20 +133,29 @@ function rawRemovalContext(state: RawRemovalState) {
 }
 
 function classifyRawRemoval(state: RawRemovalState) {
+  const successfulProcess =
+    state.status === 0 && state.signal === null && state.error === null;
+  const deregistered = !state.registered;
   const completeRemoval =
-    state.status === 0 &&
-    state.signal === null &&
-    state.error === null &&
+    successfulProcess &&
+    deregistered &&
     state.junctionAbsent &&
-    state.worktreeAbsent &&
-    !state.registered;
-  if (!completeRemoval) {
-    throw new Error(
-      `unknown raw Git removal state: ${rawRemovalContext(state)}`,
-    );
+    state.worktreeAbsent;
+  if (completeRemoval && state.targetCount === 0) {
+    return 'vulnerable-complete' as const;
   }
-  if (state.targetCount === 0) return 'vulnerable' as const;
-  if (state.targetCount === SENTINEL_COUNT) return 'fixed' as const;
+  if (completeRemoval && state.targetCount === SENTINEL_COUNT) {
+    return 'target-safe-complete' as const;
+  }
+  if (
+    successfulProcess &&
+    deregistered &&
+    !state.junctionAbsent &&
+    !state.worktreeAbsent &&
+    state.targetCount === SENTINEL_COUNT
+  ) {
+    return 'target-safe-incomplete' as const;
+  }
   throw new Error(`unknown raw Git removal state: ${rawRemovalContext(state)}`);
 }
 
@@ -164,6 +173,20 @@ function availableSubstDrive() {
   throw new Error('no free drive letter is available for the subst fixture');
 }
 
+function windowsShortPath(target: string) {
+  const script = path.join(path.dirname(target), '.short-path.cmd');
+  writeFileSync(script, '@for %%I in ("%~1") do @echo %%~sI\r\n');
+  try {
+    return execFileSync(
+      process.env.ComSpec ?? 'cmd.exe',
+      ['/d', '/c', script, target],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim();
+  } finally {
+    rmSync(script, { force: true });
+  }
+}
+
 describe('safe worktree removal validation', () => {
   const completeRawState = {
     gitVersion: 'git version fixture',
@@ -175,16 +198,24 @@ describe('safe worktree removal validation', () => {
     registered: false,
   } satisfies Omit<RawRemovalState, 'targetCount'>;
 
-  it('classifies both supported complete raw Git outcomes', () => {
+  it('classifies the supported complete and CI-measured incomplete raw Git outcomes', () => {
     expect(classifyRawRemoval({ ...completeRawState, targetCount: 0 })).toBe(
-      'vulnerable',
+      'vulnerable-complete',
     );
     expect(
       classifyRawRemoval({
         ...completeRawState,
         targetCount: SENTINEL_COUNT,
       }),
-    ).toBe('fixed');
+    ).toBe('target-safe-complete');
+    expect(
+      classifyRawRemoval({
+        ...completeRawState,
+        targetCount: SENTINEL_COUNT,
+        junctionAbsent: false,
+        worktreeAbsent: false,
+      }),
+    ).toBe('target-safe-incomplete');
   });
 
   it('rejects partial counts and inconsistent raw Git removal states', () => {
@@ -210,6 +241,7 @@ describe('safe worktree removal validation', () => {
         path.resolve('unit-outside'),
         [unitRepository],
         'win32',
+        (value) => value,
       ),
     ).toThrow('not a registered linked worktree');
   });
@@ -220,8 +252,84 @@ describe('safe worktree removal validation', () => {
         unitRepository,
         [unitRepository, unitLinkedWorktree],
         'win32',
+        (value) => value,
       ),
     ).toThrow("repository's main worktree");
+  });
+
+  it('matches registered and main worktrees by native identity and returns the canonical target', () => {
+    const aliases = new Map([
+      ['C:\\SHORT\\main', 'C:\\Users\\runneradmin\\main'],
+      ['C:\\SHORT\\linked', 'C:\\Users\\runneradmin\\linked'],
+      ['C:\\Users\\runneradmin\\main', 'C:\\Users\\runneradmin\\main'],
+      ['C:\\Users\\runneradmin\\linked', 'C:\\Users\\runneradmin\\linked'],
+    ]);
+    const realpathImpl = (value: string) => {
+      const resolved = aliases.get(value);
+      if (!resolved)
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      return resolved;
+    };
+
+    expect(
+      validateRemovalTarget(
+        'C:\\SHORT\\linked',
+        ['C:\\Users\\runneradmin\\main', 'C:\\Users\\runneradmin\\linked'],
+        'win32',
+        realpathImpl,
+      ),
+    ).toBe('C:\\Users\\runneradmin\\linked');
+    expect(() =>
+      validateRemovalTarget(
+        'C:\\SHORT\\main',
+        ['C:\\Users\\runneradmin\\main', 'C:\\Users\\runneradmin\\linked'],
+        'win32',
+        realpathImpl,
+      ),
+    ).toThrow("repository's main worktree");
+  });
+
+  it('skips only missing unrelated registry entries and refuses ambiguous identities', () => {
+    const missing = Object.assign(new Error('missing'), { code: 'ENOENT' });
+    expect(
+      validateRemovalTarget(
+        unitLinkedWorktree,
+        [unitRepository, path.resolve('missing-worktree'), unitLinkedWorktree],
+        'win32',
+        (value) => {
+          if (value.includes('missing-worktree')) throw missing;
+          return value;
+        },
+      ),
+    ).toBe(unitLinkedWorktree);
+
+    expect(() =>
+      validateRemovalTarget(
+        unitLinkedWorktree,
+        [unitRepository, unitLinkedWorktree, path.resolve('alias-linked')],
+        'win32',
+        (value) =>
+          value.includes('alias-linked') ? unitLinkedWorktree : value,
+      ),
+    ).toThrow('multiple registered worktrees resolve to the same');
+
+    expect(() =>
+      validateRemovalTarget(
+        unitLinkedWorktree,
+        [
+          unitRepository,
+          path.resolve('unreadable-worktree'),
+          unitLinkedWorktree,
+        ],
+        'win32',
+        (value) => {
+          if (value.includes('unreadable-worktree')) {
+            throw Object.assign(new Error('denied'), { code: 'EACCES' });
+          }
+          return value;
+        },
+      ),
+    ).toThrow('registered worktree identity cannot be resolved');
   });
 
   it('does not invoke git when Windows preflight refuses', () => {
@@ -292,7 +400,7 @@ describe('safe worktree removal validation', () => {
 
     expect(status).toBe(0);
     expect(prepareWindows).not.toHaveBeenCalled();
-    expect(runGit).toHaveBeenCalledWith('/', path.resolve('/linked'));
+    expect(runGit).toHaveBeenCalledWith('/', '/linked');
   });
 
   it('fails closed when native identity resolution fails', () => {
@@ -413,7 +521,7 @@ describe('linked-worktree registry contract', () => {
 describe.skipIf(!onWindows)(
   'Windows Git junction teardown observed-behavior regression (#546)',
   () => {
-    it('classifies the complete raw Git result as vulnerable or fixed', () => {
+    it('classifies the full raw Git result without equating target survival with complete teardown', () => {
       const root = mkdtempSync(
         path.join(os.tmpdir(), 'pfd-junction-teardown-'),
       );
@@ -660,6 +768,74 @@ describe.skipIf(!onWindows)('Windows junction removal guard', () => {
     } finally {
       if (mapped) execFileSync('subst', [`${drive}:`, '/d']);
       expect(existsSync(`${drive}:\\`)).toBe(false);
+      if (arm) {
+        unlinkJunction(arm.junction);
+        if (registeredWorktree(arm.repository, arm.worktree)) {
+          git(['worktree', 'remove', '--force', arm.worktree], arm.repository);
+        }
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts a registered target alias and removes the canonical worktree', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'pfd-target-alias-'));
+    let alias = '';
+    let arm: ReturnType<typeof makeArm> | null = null;
+    try {
+      arm = makeArm(root, 'target-alias');
+      alias = path.join(root, 'short-target');
+      execFileSync(
+        process.env.ComSpec ?? 'cmd.exe',
+        ['/d', '/s', '/c', 'mklink', '/J', alias, arm.worktree],
+        { stdio: 'ignore' },
+      );
+
+      const removal = spawnSync(process.execPath, [scriptPath, alias], {
+        cwd: arm.repository,
+        encoding: 'utf8',
+      });
+
+      expect(removal.error).toBeUndefined();
+      expect(removal.signal).toBeNull();
+      expect(removal.status, removal.stderr).toBe(0);
+      expect(removal.stderr).not.toContain('not a registered linked worktree');
+      expect(pathIsAbsent(arm.worktree)).toBe(true);
+      expect(registeredWorktree(arm.repository, arm.worktree)).toBe(false);
+      expect(readdirSync(arm.target)).toHaveLength(SENTINEL_COUNT);
+    } finally {
+      unlinkJunction(alias);
+      if (arm) {
+        unlinkJunction(arm.junction);
+        if (registeredWorktree(arm.repository, arm.worktree)) {
+          git(['worktree', 'remove', '--force', arm.worktree], arm.repository);
+        }
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts a distinct 8.3 target spelling and removes the canonical worktree', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'pfd-short-target-'));
+    let arm: ReturnType<typeof makeArm> | null = null;
+    try {
+      arm = makeArm(root, 'short-target');
+      const shortTarget = windowsShortPath(arm.worktree);
+      expect(shortTarget.toLowerCase()).not.toBe(arm.worktree.toLowerCase());
+
+      const removal = spawnSync(process.execPath, [scriptPath, shortTarget], {
+        cwd: arm.repository,
+        encoding: 'utf8',
+      });
+
+      expect(removal.error).toBeUndefined();
+      expect(removal.signal).toBeNull();
+      expect(removal.status, removal.stderr).toBe(0);
+      expect(removal.stderr).not.toContain('not a registered linked worktree');
+      expect(pathIsAbsent(arm.worktree)).toBe(true);
+      expect(registeredWorktree(arm.repository, arm.worktree)).toBe(false);
+      expect(readdirSync(arm.target)).toHaveLength(SENTINEL_COUNT);
+    } finally {
       if (arm) {
         unlinkJunction(arm.junction);
         if (registeredWorktree(arm.repository, arm.worktree)) {
