@@ -520,6 +520,80 @@ describe('retargetArtifacts.initialize() startup rejection', () => {
 
     expect(issued.every((channel) => channel.closed)).toBe(true);
   });
+
+  /**
+   * #404, channel 2. `RetargetPreflight` awaits the same `retargetReady` and
+   * reported the same workspace fault as `code: 'sidecarUnavailable'`.
+   *
+   * The note above `retargetWorkspaceFailure()` in `ipc.ts` recorded this
+   * channel as already correct because it "names the workspace in its
+   * message" -- and it did. The message was right and the code was wrong, so
+   * a check on the human-readable half certified a site whose
+   * machine-readable half was fabricating a cause. Hence this spec asserts the
+   * code, and the constant above deliberately does not: between them the two
+   * halves are pinned, which is what the earlier note could not claim.
+   */
+  const PREFLIGHT_CHANNEL = 'retarget:preflight';
+
+  async function invokePreflight(): Promise<{
+    status: string;
+    error?: { code?: string; message?: string };
+  }> {
+    const { registerIpcHandlers } = await loadIpcWithCapture();
+    registerIpcHandlers();
+
+    expect(electronState.handlers.size).toBeGreaterThan(0);
+    const handler = electronState.handlers.get(PREFLIGHT_CHANNEL);
+    expect(handler).toBeDefined();
+
+    return (await handler?.(
+      { sender: { id: 7, once: () => undefined } },
+      {
+        modelHash: 'a'.repeat(64),
+        rootId: 'root-1',
+        profileId: 'bundled:profile',
+        objectExclusion: false,
+      },
+    )) as { status: string; error?: { code?: string; message?: string } };
+  }
+
+  it('does not blame the sidecar for a workspace fault on preflight', async () => {
+    const response = await invokePreflight();
+
+    expect(response.status).toBe('error');
+    expect(response.error?.message).toBe(WORKSPACE_FAILURE_MESSAGE);
+    // The fabrication this spec exists for. The reaper failing on filesystem
+    // contention does not implicate the sidecar, which may never have been
+    // started -- and "restart, then reinstall" cannot clear a stale temp root.
+    expect(response.error?.code).not.toBe('sidecarUnavailable');
+    expect(response.error?.code).toBe('internalError');
+  });
+
+  it('CONTROL: preflight reports the workspace only when initialize rejects', async () => {
+    // Without this, "preflight reports the workspace failure" is satisfied by
+    // a handler that reports it unconditionally, and would survive deleting
+    // the `await retargetReady` entirely.
+    retargetState.failInit = false;
+
+    // The stubbed service resolves `{ status: 'canceled' }`, which
+    // `RetargetPreflightResponse` rejects -- so the observable here is a throw
+    // from the *response* parse. That is stronger evidence than a quiet
+    // envelope: it can only be reached by running past the `retargetReady`
+    // await, through request parsing, and into the service call. A handler
+    // that short-circuited on the workspace fault could not produce it.
+    const outcome = await invokePreflight().then(
+      (response) => ({ threw: false as const, response }),
+      (error: unknown) => ({ threw: true as const, error }),
+    );
+
+    if (!outcome.threw) {
+      expect(outcome.response.error?.message).not.toBe(
+        WORKSPACE_FAILURE_MESSAGE,
+      );
+      return;
+    }
+    expect(String(outcome.error)).toContain('Invalid discriminator value');
+  });
 });
 
 /*
