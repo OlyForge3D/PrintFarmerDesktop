@@ -126,84 +126,235 @@ function renderedContexts(workflow: string): string[] {
  * Textual for the same reason as everything else here: the repository ships no
  * YAML parser and this change does not add one.
  */
-function concurrencyDeclarations(
-  workflow: string,
-): Array<{ line: string; group: string | undefined; cancels: boolean }> {
+function concurrencyDeclarations(workflow: string): Array<{
+  line: string;
+  group: string | undefined;
+  cancel: string | undefined;
+  cancels: boolean;
+}> {
   const lines = workflow.split(/\r?\n/);
   return lines.flatMap((line, index) => {
     if (!/^\s*concurrency:/.test(line)) return [];
-    const block = lines.slice(index + 1, index + 6);
+    // The block runs to the first line indented no deeper than the key itself.
+    //
+    // This replaced a fixed `slice(index + 1, index + 6)` window, which read a
+    // block's safety off its comment density: six comment lines pushed `group:`
+    // and `cancel-in-progress:` out of the window, and a block carrying
+    // `group: ci-${{ github.workflow }}` (constant across merge-group entries)
+    // with a literal `cancel-in-progress: true` -- the exact configuration the
+    // test below exists to reject -- extracted as `group: undefined,
+    // cancels: false`, which is the signature of a safe one. Taken, not
+    // assumed: the same block with the comments deleted extracted as
+    // `cancels: true`. That was harmless only while the assertion was
+    // `toEqual([])` and every shape failed alike; it becomes load-bearing the
+    // moment a specific safe shape is allowed through, which is what this
+    // change does.
+    const indent = /^(\s*)/.exec(line)?.[1]?.length ?? 0;
+    const block: string[] = [];
+    for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+      const entry = lines[cursor] ?? '';
+      if (entry.trim() === '') continue;
+      const entryIndent = /^(\s*)/.exec(entry)?.[1]?.length ?? 0;
+      if (entryIndent <= indent) break;
+      if (/^\s*#/.test(entry)) continue;
+      block.push(entry);
+    }
     const group = block
       .flatMap((entry) => {
         const match = /^\s*group:\s*(.+)$/.exec(entry);
         return match?.[1] === undefined ? [] : [match[1].trim()];
       })
       .at(0);
-    const cancels = block.some((entry) =>
-      /^\s*cancel-in-progress:\s*true\s*$/.test(entry),
-    );
-    return [{ line: line.trim(), group, cancels }];
+    // Captured raw as well as reduced to a boolean: `cancels` answers "is this
+    // unconditionally cancelling", which an expression form always answers
+    // `false`, so on its own it cannot distinguish the event-scoped expression
+    // below from `${{ true }}`. The assertion reads `cancel`.
+    const cancel = block
+      .flatMap((entry) => {
+        const match = /^\s*cancel-in-progress:\s*(.+)$/.exec(entry);
+        return match?.[1] === undefined ? [] : [match[1].trim()];
+      })
+      .at(0);
+    return [{ line: line.trim(), group, cancel, cancels: cancel === 'true' }];
   });
 }
 
 describe('CI is safe to run under a merge queue', () => {
-  it('declares no `concurrency:` group, which could cancel a queued entry’s required contexts', () => {
-    // Third way to break a merge queue from this file, and the only one not
-    // already guarded above. The other two are a workflow that never runs
-    // (Pending forever, #122) and a job that is skipped (`skipped` counts as
-    // success, so a false green). This one is a third outcome again:
+  it('keys `concurrency:` per merge-group entry and cancels only pull requests', () => {
+    // This test used to assert `toEqual([])` -- no `concurrency:` at all. That
+    // ban was a tripwire rather than a policy, and said so: "a legitimate
+    // `concurrency:` is not forbidden; it just has to arrive with this question
+    // answered, and failing here is how it gets asked." #405 and #540 are the
+    // two halves of the reason to answer it, and this is the answer.
+    //
+    // The danger the ban existed for is unchanged and is what the shape below
+    // rules out:
     //
     //   A `concurrency:` group whose key is not unique per merge group, with
     //   `cancel-in-progress: true`, cancels the in-flight run for an earlier
     //   queued entry when a later one is dispatched. A cancelled check run has
-    //   conclusion `cancelled`, which is not a success conclusion, so the
-    //   entry is removed from the queue — for a reason that has nothing to do
-    //   with its own changes, and that reads on the pull request as a CI
-    //   failure rather than as a configuration problem.
+    //   conclusion `cancelled`, which is not a success conclusion, so the entry
+    //   is removed from the queue -- for a reason that has nothing to do with
+    //   its own changes.
     //
-    // The queue dispatches one `merge_group` build per entry and does not
-    // combine them ("Merge limits do not combine merge_group builds" —
-    // GitHub, "Managing a merge queue"), so concurrent in-flight runs of this
-    // workflow for the same base branch are the normal steady state under a
-    // queue, not an edge case.
+    // Two independent properties make that unreachable here, and the assertion
+    // pins both because either alone would be enough to make the other look
+    // unnecessary:
     //
-    // Banning the key outright rather than trying to validate it, for the same
-    // reason the job-level `if:` test bans the category: deciding which keys
-    // are unique per merge group is harder to get right than requiring the
-    // question be asked. A safe form does exist and this repository already
-    // uses it — see the positive control below. A legitimate `concurrency:` in
-    // ci.yml is therefore not forbidden by policy; it just has to arrive with
-    // this question answered, and failing here is how it gets asked.
+    //   group  `github.ref` is `refs/pull/N/merge` under pull_request and
+    //          `refs/heads/gh-readonly-queue/<base>/pr-N-<sha>` under
+    //          merge_group. It is distinct per queued entry, so no two entries
+    //          ever share a group and the cancellation cannot be expressed.
+    //   cancel scoped to `pull_request` by event name, so a merge_group or
+    //          push run is not a candidate for cancellation regardless.
     //
-    // Not verified: no merge queue has run on this repository, so the
-    // cancellation behaviour above is from documentation, not observation.
+    // Asserted as an exact string rather than via the `cancels` boolean: every
+    // expression form reduces to `cancels: false`, so the boolean cannot tell
+    // this apart from `${{ true }}`, which would be unsafe. See the extractor.
     //
-    // The three mutations were taken rather than assumed. Adding
-    // `group: ci-${{ github.workflow }}` with `cancel-in-progress: true`
-    // fails this test and nothing else; deleting the block below fails the
-    // positive control and nothing else; and adding a *safe*
-    // `group: ci-${{ github.sha }}` with `cancel-in-progress: false` also
-    // fails here — deliberately — with `"cancels": false` in the diagnostic.
-    // So the failure hands the reviewer the evidence needed to answer the
-    // question it asks, rather than only telling them to look.
-    expect(concurrencyDeclarations(ciWorkflow)).toEqual([]);
+    // Still not verified: no merge queue has run on this repository, so the
+    // cancellation behaviour above remains documentation, not observation.
+    // What changed is that the configuration no longer depends on it.
+    expect(concurrencyDeclarations(ciWorkflow)).toEqual([
+      {
+        line: 'concurrency:',
+        group: 'ci-${{ github.ref }}',
+        cancel: "${{ github.event_name == 'pull_request' }}",
+        cancels: false,
+      },
+    ]);
+  });
+
+  it('cancels no run that a merge queue or a trunk push dispatched', () => {
+    // Stated honestly: for DETECTION this test is subsumed. The assertion above
+    // is an exact `toEqual`, so every mutation that fails this one fails that
+    // one too -- taken, not assumed: four mutations of the block (group made
+    // constant, cancel made unconditional, cancel rescoped to merge_group, and
+    // the block deleted) each reddened both, and none reddened this alone.
+    //
+    // It is kept for the case the exact assertion cannot cover: that assertion
+    // has to be edited for any legitimate change to the block -- a group rename,
+    // a comment reflow that moves nothing semantic -- and the editor's easiest
+    // correct-looking move is to paste in whatever the extractor now reports.
+    // That is a shape assertion re-derived from the artifact it checks. These
+    // four properties are the ones that must survive such an edit, so they are
+    // written as properties and not as a string.
+    const [declaration] = concurrencyDeclarations(ciWorkflow);
+    expect(declaration).toBeDefined();
+    // Unconditional cancellation is the banned form outright.
+    expect(declaration?.cancels).toBe(false);
+    // And the condition names the one event for which cancellation is correct.
+    expect(declaration?.cancel).toContain('pull_request');
+    expect(declaration?.cancel).not.toContain('merge_group');
+    // A group that does not vary with the ref is shared across queue entries.
+    expect(declaration?.group).toContain('github.ref');
   });
 
   it('finds a `concurrency:` block when one is present, so the guard above is not vacuous', () => {
-    // Positive control on the extractor. Without it, `toEqual([])` above would
+    // Positive control on the extractor. Without it, the assertion above would
     // pass just as well against a matcher that can never match anything, and
     // the guard would be green for the wrong reason for as long as it lived.
     //
-    // release-gpu-qualification.yml carries the only `concurrency:` block in
-    // the repository, and it is in the shape that would be safe under a queue:
-    // keyed on github.sha, so unique per merge group, and not cancelling.
+    // release-gpu-qualification.yml carries the repository's other
+    // `concurrency:` block, and it is in the shape that would be safe under a
+    // queue: keyed on github.sha, so unique per merge group, and not cancelling.
     expect(concurrencyDeclarations(gpuQualificationWorkflow)).toEqual([
       {
         line: 'concurrency:',
         group: 'release-gpu-qualification-${{ github.sha }}',
+        cancel: 'false',
         cancels: false,
       },
     ]);
+  });
+
+  it('gives the two merge_group refs this repository actually produced distinct groups', () => {
+    // Not a constructed fixture. These are the `head_branch` values of the only
+    // two `merge_group` runs in this repository's history, both of workflow CI,
+    // both conclusion `cancelled`, 54 seconds apart:
+    //
+    //   30889162530  pr-227-db03fbf1...  2026-08-04T07:46:33Z  cancelled
+    //   30889221719  pr-221-db03fbf1...  2026-08-04T07:47:27Z  cancelled
+    //
+    // They share a base SHA and differ only in the PR number, which is the
+    // collision case the ban was written about: two entries queued against the
+    // same base, close enough in time to overlap.
+    //
+    // What cancelled those two runs is NOT established -- ci.yml declared no
+    // `concurrency:` then and declares one now that cannot cancel them, so it
+    // was some other route (a dequeue, or the queue being disabled with entries
+    // in flight; `required_merge_queue` is absent from branch protection
+    // today). The runs are cited for the ref SHAPE, which is all this test
+    // reads, and because they establish that `merge_group` dispatch here is
+    // observed rather than hypothetical.
+    const observedQueueRefs = [
+      'refs/heads/gh-readonly-queue/development/pr-227-db03fbf1f5555dd0419c58ceb39615b7e89d946d',
+      'refs/heads/gh-readonly-queue/development/pr-221-db03fbf1f5555dd0419c58ceb39615b7e89d946d',
+    ];
+    const [declaration] = concurrencyDeclarations(ciWorkflow);
+    const group = declaration?.group ?? '';
+    // Substitute each real ref into the real group expression.
+    const resolved = observedQueueRefs.map((ref) =>
+      group.replace('${{ github.ref }}', ref),
+    );
+    expect(new Set(resolved).size).toBe(observedQueueRefs.length);
+    // Counterfactual on the same two refs: the key the ban names -- constant
+    // across entries -- collapses them onto one group, which is the eviction.
+    const banned = observedQueueRefs.map(() => 'ci-CI');
+    expect(new Set(banned).size).toBe(1);
+  });
+
+  it('reads a block whose keys sit behind comments, not just a tight one', () => {
+    // Both real blocks in this repository would extract correctly under a fixed
+    // five-line window: the gpu one is tight, and ci.yml's would fail the
+    // assertion above on any reading. So neither is a control on the window,
+    // and the defect it hides is specifically a *dangerous* block presenting as
+    // a safe one.
+    //
+    // Constructed rather than reasoned about: this is the banned configuration
+    // exactly -- a group constant across merge-group entries, cancelling
+    // unconditionally -- with its keys pushed past the old window by comments.
+    const padded = [
+      'concurrency:',
+      '  # one',
+      '  # two',
+      '  # three',
+      '  # four',
+      '  # five',
+      '  # six',
+      '  group: ci-${{ github.workflow }}',
+      '  cancel-in-progress: true',
+      '',
+      'jobs:',
+      '  build:',
+      '    concurrency: not-a-block',
+    ].join('\n');
+    const [declaration] = concurrencyDeclarations(padded);
+    // The old window returned `group: undefined, cancels: false` here, which is
+    // indistinguishable from a safe declaration.
+    expect(declaration?.group).toBe('ci-${{ github.workflow }}');
+    expect(declaration?.cancels).toBe(true);
+  });
+
+  it('ends a block at the first line that dedents, rather than running on', () => {
+    // The other direction of the same boundary: widening the window must not
+    // let a block absorb keys that belong to a later top-level section, which
+    // would let an unrelated `cancel-in-progress: true` elsewhere in the file
+    // be attributed to a safe block.
+    const bounded = [
+      'concurrency:',
+      '  group: safe-${{ github.sha }}',
+      '  cancel-in-progress: false',
+      '',
+      '# a top-level comment does not continue the block',
+      'jobs:',
+      '  build:',
+      '    cancel-in-progress: true',
+    ].join('\n');
+    const [declaration] = concurrencyDeclarations(bounded);
+    expect(declaration?.group).toBe('safe-${{ github.sha }}');
+    expect(declaration?.cancel).toBe('false');
+    expect(declaration?.cancels).toBe(false);
   });
 
   it('subscribes to merge_group alongside the existing push and pull_request triggers', () => {
@@ -283,13 +434,52 @@ describe('CI is safe to run under a merge queue', () => {
     // Enumerating the permitted guards by name would be a count-based
     // assertion of the kind that has already produced one false red on a
     // correct change in this repository. The property is asserted instead.
+    // Narrowed a second time on the same principle, for `concurrency:` (#405,
+    // #540). A top-level `cancel-in-progress:` cannot skip a job either: it
+    // decides whether an already-dispatched run is CANCELLED, which is a
+    // different conclusion from `skipped` and arrives by a different mechanism.
+    // The hazard it does carry -- cancelling a queued entry's in-flight run --
+    // is real, and is not left to this test: it is asserted directly, by shape
+    // and by property, in 'keys `concurrency:` per merge-group entry and
+    // cancels only pull requests' above. Widening the exemption to the whole
+    // block, or to any line mentioning the key, would swallow a job-level
+    // guard, so it is pinned to the top-level key at two spaces.
     const eventNameLines = ciWorkflow
       .split('\n')
       .filter((line: string) => line.includes('github.event_name'));
     const notOnAStepCondition = eventNameLines.filter(
-      (line: string) => !/^ {8}if:/.test(line),
+      (line: string) =>
+        !/^ {8}if:/.test(line) && !/^ {2}cancel-in-progress:/.test(line),
     );
     expect(notOnAStepCondition).toEqual([]);
+  });
+
+  it('still rejects event-name branching at job level, so the exemption above is narrow', () => {
+    // Control on the two exemptions. Without it, the filter above would pass
+    // just as well if it exempted every line, and the ban would be green for
+    // the wrong reason -- the failure mode that made the #231 narrowing worth
+    // asserting rather than trusting.
+    const withJobLevelBranch = [
+      'jobs:',
+      '  desktop:',
+      "    if: ${{ github.event_name != 'merge_group' }}",
+      '    steps:',
+      '      - name: permitted step-level guard',
+      "        if: github.event_name == 'pull_request'",
+      '        run: echo step-level, permitted',
+      'concurrency:',
+      "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+    ];
+    const offenders = withJobLevelBranch.filter(
+      (line) =>
+        line.includes('github.event_name') &&
+        !/^ {8}if:/.test(line) &&
+        !/^ {2}cancel-in-progress:/.test(line),
+    );
+    // Exactly the job-level one, and neither exempted form.
+    expect(offenders).toEqual([
+      "    if: ${{ github.event_name != 'merge_group' }}",
+    ]);
   });
 
   it('guards every step that reads PR context, so none can run under a queue entry', () => {

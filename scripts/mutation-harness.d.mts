@@ -89,3 +89,25 @@ export function runArm(input: {
   label?: string;
   cwd?: string;
 }): ArmResult;
+
+export interface VitestArgvSplit {
+  readonly argv: string[] | null;
+  readonly index: number;
+}
+
+export interface SelectorGateResult {
+  readonly refuse: boolean;
+  readonly message: string | null;
+}
+
+export function isVitestToken(token: unknown): boolean;
+
+export function vitestArgvOf(command?: readonly string[]): VitestArgvSplit;
+
+export function selectorGate(
+  command?: readonly string[],
+  options?: {
+    check?: typeof import('./vitest-strict.mjs').checkSelectors;
+    format?: typeof import('./vitest-strict.mjs').formatRefusal;
+  },
+): SelectorGateResult;
