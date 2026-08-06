@@ -744,7 +744,13 @@ async function removeOwnedInstance(
 // EACCES, ENOTDIR, EMFILE and libuv's UNKNOWN, which is by construction the code
 // nobody thought of — costs one leftover directory that a later sweep collects,
 // which is strictly cheaper than a process that will not start.
-function isBrokenTempRootError(error: unknown): boolean {
+// Exported for tests/retargetSweepRealContention.test.ts, which compares this
+// decision for an error Windows actually raised against the decision for the
+// hand-authored fixture string the rest of the suite is built on (#514). That
+// comparison is the point of the test, and it cannot be made through
+// initialize() alone: only one of the two errors can be produced by a real
+// filesystem, so there is no path that feeds both to the classifier.
+export function isBrokenTempRootError(error: unknown): boolean {
   return (
     error instanceof Error &&
     'code' in error &&
