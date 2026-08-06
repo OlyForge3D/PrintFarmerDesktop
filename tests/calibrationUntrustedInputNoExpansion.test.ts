@@ -196,6 +196,7 @@ function isRuntimeImport(node: ts.ImportDeclaration): boolean {
   if (clause.namedBindings === undefined) return false;
   return (
     !ts.isNamedImports(clause.namedBindings) ||
+    clause.namedBindings.elements.length === 0 ||
     clause.namedBindings.elements.some((element) => !element.isTypeOnly)
   );
 }
@@ -205,6 +206,7 @@ function isRuntimeExport(node: ts.ExportDeclaration): boolean {
   return (
     node.exportClause === undefined ||
     !ts.isNamedExports(node.exportClause) ||
+    node.exportClause.elements.length === 0 ||
     node.exportClause.elements.some((element) => !element.isTypeOnly)
   );
 }
@@ -477,6 +479,8 @@ describe('the closure walker follows every module-reference form in scope', () =
           "import importedEquals = require('./import-equals.js');",
           "import type { Hidden } from './type-only.js';",
           "export { type Hidden } from './export-type-only.js';",
+          "import {} from './empty-import.js';",
+          "export {} from './empty-export.js';",
           '/** import (issue #56). */',
         ].join('\n'),
       ),
@@ -486,6 +490,8 @@ describe('the closure walker follows every module-reference form in scope', () =
       './dynamic.js',
       './required.js',
       './import-equals.js',
+      './empty-import.js',
+      './empty-export.js',
     ]);
   });
 
@@ -523,6 +529,27 @@ describe('the closure walker follows every module-reference form in scope', () =
           { file: 'expanding.ts', why: 'node:zlib (decompression)' },
           { file: 'expanding.ts', why: 'gunzipSync' },
         ]);
+      },
+    );
+  });
+
+  it.each([
+    ['empty import clause', "import {} from './expanding.js';"],
+    ['empty export clause', "export {} from './expanding.js';"],
+  ])('does not mistake an %s for a type-only edge', (_name, edge) => {
+    withSourceFixture(
+      {
+        'entry.ts': `${edge}\n`,
+        'expanding.ts':
+          "import { gunzipSync } from 'node:zlib';\nexport const expand = gunzipSync;\n",
+      },
+      (directory) => {
+        const closure = reachableFromEntryPoints(directory, ['entry.ts']);
+        expect(scannedFileNames(closure)).toEqual(['entry.ts', 'expanding.ts']);
+        expect(expansionMatches(closure)).toContainEqual({
+          file: 'expanding.ts',
+          why: 'gunzipSync',
+        });
       },
     );
   });
