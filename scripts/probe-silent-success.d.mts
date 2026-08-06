@@ -34,6 +34,7 @@ export interface Precondition {
 
 export interface Classification {
   readonly verdict: string;
+  readonly vacuous?: boolean;
   readonly findings?: readonly string[] | undefined;
   readonly readings?: readonly ProbeCase[] | undefined;
 }
