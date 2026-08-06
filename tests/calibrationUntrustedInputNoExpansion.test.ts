@@ -190,25 +190,11 @@ type NonLiteralReferenceKind = 'dynamic import' | 'require';
 
 function isRuntimeImport(node: ts.ImportDeclaration): boolean {
   const clause = node.importClause;
-  if (clause === undefined) return true;
-  if (clause.isTypeOnly) return false;
-  if (clause.name !== undefined) return true;
-  if (clause.namedBindings === undefined) return false;
-  return (
-    !ts.isNamedImports(clause.namedBindings) ||
-    clause.namedBindings.elements.length === 0 ||
-    clause.namedBindings.elements.some((element) => !element.isTypeOnly)
-  );
+  return clause === undefined || !clause.isTypeOnly;
 }
 
 function isRuntimeExport(node: ts.ExportDeclaration): boolean {
-  if (node.isTypeOnly) return false;
-  return (
-    node.exportClause === undefined ||
-    !ts.isNamedExports(node.exportClause) ||
-    node.exportClause.elements.length === 0 ||
-    node.exportClause.elements.some((element) => !element.isTypeOnly)
-  );
+  return !node.isTypeOnly;
 }
 
 function literalSpecifier(
@@ -478,7 +464,9 @@ describe('the closure walker follows every module-reference form in scope', () =
           "const required = require('./required.js');",
           "import importedEquals = require('./import-equals.js');",
           "import type { Hidden } from './type-only.js';",
-          "export { type Hidden } from './export-type-only.js';",
+          "export type { Hidden } from './whole-export-type-only.js';",
+          "import { type Hidden } from './inline-type-import.js';",
+          "export { type Hidden } from './inline-type-export.js';",
           "import {} from './empty-import.js';",
           "export {} from './empty-export.js';",
           '/** import (issue #56). */',
@@ -490,6 +478,8 @@ describe('the closure walker follows every module-reference form in scope', () =
       './dynamic.js',
       './required.js',
       './import-equals.js',
+      './inline-type-import.js',
+      './inline-type-export.js',
       './empty-import.js',
       './empty-export.js',
     ]);
@@ -536,6 +526,14 @@ describe('the closure walker follows every module-reference form in scope', () =
   it.each([
     ['empty import clause', "import {} from './expanding.js';"],
     ['empty export clause', "export {} from './expanding.js';"],
+    [
+      'inline type-only import clause',
+      "import { type Hidden } from './expanding.js';",
+    ],
+    [
+      'inline type-only export clause',
+      "export { type Hidden } from './expanding.js';",
+    ],
   ])('does not mistake an %s for a type-only edge', (_name, edge) => {
     withSourceFixture(
       {
