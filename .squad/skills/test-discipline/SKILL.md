@@ -98,6 +98,26 @@ On PR #169, mutating the _initial_ correlation lookup in `src/main/ipc.ts` to mi
 
 **The mitigation is not "look twice" — it is "cheap enough to look twice."** That one was caught only because the loop was a sub-second single-file vitest run. Mutation testing degrades silently as the feedback loop slows, and it degrades _toward producing findings_: a slow loop does not stop emitting mutation reports, it emits surviving-mutation reports, which are the ones that get acted on. Treat iteration cost as part of the practice, not a convenience. See #188.
 
+### Pin both the mutation and the tested population
+
+A blob SHA is sufficient only for a local claim whose complete scope is that blob's content. If the current blob equals the recorded blob, that local analysis can be reused. If it differs, re-verify; inequality says only that the input changed, not whether the conclusion is now true or false.
+
+A universal claim such as _"this mutation survives the full relevant suite"_ also depends on which tests were eligible to run. **Pinning members does not pin membership.** Record the Git tree SHA for every search or test root, plus the exact enumeration predicate or command. For example, `git rev-parse <commit>:tests` pins the complete `tests/` population. Its tree identity changes when any descendant is added, deleted, renamed, or modified. A different tree makes the survival claim stale and requires a rerun.
+
+Also record the observed commit and the mutation target's blob SHA. A survival claim is current only while both the target identity and every population-tree identity still match. Either mismatch triggers re-verification; neither is evidence for or against survival.
+
+Use this compact record:
+
+```text
+Observed: <commit> at <UTC time>
+Mutation target: <path> at <commit>; blob <blob SHA>
+Population (repeat per root): <root>; tree <tree SHA> (`git rev-parse <commit>:<root>`)
+Enumeration: <exact predicate/command> => <count> tests
+Test command: <exact command>
+Application/non-vacuity: <proof the mutation applied and changed observable behaviour>
+Outcome: <killed | survived | ineffective, with the observed result>
+```
+
 ## When a fix removes a symptom, verify the mechanism, not the symptom
 
 Some failures produce a clean-looking result _as their symptom_. When the fault is in the mock, the query, or the identifier, and it renders as an ordinary empty or passing result, **there is no independent detector** — the bad input and the misread output are one event, so nothing disagrees with anything.
