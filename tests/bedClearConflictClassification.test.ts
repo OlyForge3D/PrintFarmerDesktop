@@ -188,13 +188,20 @@ describe('#326 — the four diagnosed 409 codes are unchanged', () => {
     expect(new Set(observed).size).toBe(DIAGNOSED.length);
   });
 
-  it('the 422 sibling is untouched by this change', async () => {
+  it('the 422 sibling maps its diagnosed code, and its fallback moved under #508', async () => {
     const named = await bedClearError('filament_check_failed', 422);
     const unknown = await bedClearError('no_such_422_code', 422);
 
     expect(named.code).toBe('filamentCheckFailed');
-    expect(unknown.code).toBe('invalidData');
+    // This assertion read `'invalidData'` when #326 shipped. It was a scope
+    // guard — "fixing 409 did not disturb 422" — and it was true then. #508
+    // disturbs 422 deliberately, for the reason #326 gave for 409: the old
+    // fallback was a diagnosed code with ten producers elsewhere, so an
+    // unrecognised rejection was indistinguishable from a validated one.
+    expect(unknown.code).toBe('unclassifiedValidationFailure');
     expect(unknown.code).not.toBe(named.code);
+    // The two unclassified codes stay distinct, so 409 and 422 remain separable.
+    expect(unknown.code).not.toBe('unclassifiedConflict');
   });
 });
 

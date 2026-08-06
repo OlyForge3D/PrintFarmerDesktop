@@ -22,6 +22,7 @@ import type {
   SaveDialogOptions,
 } from 'electron';
 import type { SidecarClient } from './sidecar.js';
+import { SidecarRespondedError } from './sidecar.js';
 import { TargetProfileService } from './targetProfiles.js';
 
 const TTL_MS = 30 * 60 * 1000;
@@ -155,13 +156,13 @@ export class RetargetArtifactService {
       const candidate = path.join(this.parentRoot, entry.name);
       const marker = await readOwnerMarker(candidate);
       if (!marker || isProcessRunning(marker.pid)) continue;
-      // Reaping another instance's leftovers is opportunistic. Pending handles
-      // may outlive that process, but unrelated failures still indicate a
-      // broken temp root and must abort startup.
+      // Reaping another instance's leftovers is opportunistic. A directory that
+      // is merely busy is left for a later sweep; only a temp root the
+      // filesystem cannot serve at all aborts startup.
       try {
         await removeOwnedInstance(candidate, marker.instanceId);
       } catch (error) {
-        if (!isPendingHandleError(error)) throw error;
+        if (isBrokenTempRootError(error)) throw error;
         // Left for a later sweep, by this process or another one.
       }
     }
@@ -355,8 +356,8 @@ export class RetargetArtifactService {
         status: 'ok',
         value: await this.options.sidecar.loadRetargetScene(file),
       };
-    } catch {
-      return error('sidecarUnavailable');
+    } catch (cause) {
+      return sceneLoadFailure(cause);
     } finally {
       record.busy = false;
     }
@@ -519,6 +520,40 @@ function electronFailure(
     action,
     part: null,
     setting: null,
+  };
+}
+/**
+ * Splits the two populations that shared `loadScene`'s `catch`.
+ *
+ * The `try` awaits exactly one thing — `sidecar.loadRetargetScene` — so the
+ * arm looked single-caused and was not. That call rejects both when the
+ * sidecar could not be *asked* (disposed client, unreachable channel, timeout,
+ * restart mid-request) and when it *was* asked and answered with an error,
+ * which is the ordinary outcome for a source file the sidecar cannot parse.
+ * Both arrived as a bare `Error`, so the only way to report the first
+ * correctly was to report it for the second as well.
+ *
+ * `sidecarUnavailable` tells the operator the sidecar is not running and to
+ * restart. For an answered error that is not merely unhelpful, it is
+ * contradicted by the evidence in hand: the answer proves the sidecar ran.
+ * The unclassified arm therefore reports `internalError` and says the cause
+ * was not identified, which is the treatment #316 established for exactly this
+ * shape and which loses nothing the old envelope carried.
+ *
+ * `internalError` rather than a new code because `RetargetErrorCode` is a zod
+ * enum parsed at the IPC boundary; widening it is a contract change and is not
+ * in scope here.
+ */
+function sceneLoadFailure(cause: unknown): { status: 'error'; error: unknown } {
+  if (!(cause instanceof SidecarRespondedError))
+    return error('sidecarUnavailable');
+  return {
+    status: 'error',
+    error: electronFailure(
+      'internalError',
+      'The scene could not be loaded.',
+      'Try again. The sidecar answered, so it is running and restarting the application is unlikely to help; collect the application logs if this recurs.',
+    ),
   };
 }
 function nativeFailure(value: {
@@ -695,11 +730,31 @@ async function removeOwnedInstance(
   if (!marker || marker.instanceId !== expectedInstanceId) return;
   await rm(directory, { recursive: true, force: true });
 }
-function isPendingHandleError(error: unknown): boolean {
+// The list is written on the fatal side because that is the side that is safe
+// to get wrong. #330 established that the codes Windows can raise for a
+// contended delete are an open set, so an allowlist of *tolerated* codes aborts
+// startup on the first code nobody thought of — the #229 crash, reintroduced.
+// #349 then established that a genuinely broken temp root must not be swallowed
+// silently, which is a real requirement and the reason the allowlist was added.
+//
+// Naming the fatal codes satisfies both. The discriminator is not "did anyone
+// predict this code" but "is this a property of the filesystem or of this one
+// directory right now": EIO, ENOSPC and EROFS mean the temp root cannot be
+// served at all, and no later sweep will do better. Everything else — including
+// EACCES, ENOTDIR, EMFILE and libuv's UNKNOWN, which is by construction the code
+// nobody thought of — costs one leftover directory that a later sweep collects,
+// which is strictly cheaper than a process that will not start.
+// Exported for tests/retargetSweepRealContention.test.ts, which compares this
+// decision for an error Windows actually raised against the decision for the
+// hand-authored fixture string the rest of the suite is built on (#514). That
+// comparison is the point of the test, and it cannot be made through
+// initialize() alone: only one of the two errors can be produced by a real
+// filesystem, so there is no path that feeds both to the classifier.
+export function isBrokenTempRootError(error: unknown): boolean {
   return (
     error instanceof Error &&
     'code' in error &&
-    ['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(String(error.code))
+    ['EIO', 'ENOSPC', 'EROFS'].includes(String(error.code))
   );
 }
 function isProcessRunning(pid: number): boolean {

@@ -9,12 +9,22 @@ export interface ShaFacts {
   onPr: boolean | null;
   /** Whether this IS the PR head. `onPr` is true for the head too; see `classify`. */
   isPrHead?: boolean | null;
+  /**
+   * Whether this IS the base tip. `onBase` is true for the tip and for every
+   * commit behind it, which is what ancestry is for, so only equality can tell
+   * a head from its predecessors. `null` means equality could not be resolved,
+   * which the verdict reports rather than substituting `behind` for.
+   */
+  isBaseTip?: boolean | null;
+  /** Commits the base has that this one does not. `null` when unmeasured. */
+  behind?: number | null;
   /** The base commit carrying the same subject, `''` for none, `null` for unasked. */
   shipped: string | null;
 }
 
 export type ShaVerdict =
   | 'absent'
+  | 'tip'
   | 'live'
   | 'pr-head'
   | 'stale'
