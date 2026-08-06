@@ -216,7 +216,7 @@ export function judgeArm(arm, classified) {
   let direction = '';
   if (classified.vacuous === true) {
     status = STATUS_UNDETERMINED;
-    direction = 'no reading about git\'s behaviour: the case pair is vacuous';
+    direction = "no reading about git's behaviour: the case pair is vacuous";
   } else if (observed === arm.expect) {
     status = STATUS_HOLDS;
   } else if (observed === VERDICT_SOUND || observed === VERDICT_BLIND) {
@@ -344,6 +344,24 @@ function runGit(args, cwd) {
 }
 
 /**
+ * @param {{status: number, stdout: string, stderr: string}} result
+ * @param {'trim'|'bytes'} mode
+ * @returns {{reading: string|null, error?: string}}
+ */
+export function readSuccessfulOutput(result, mode) {
+  if (result.status !== 0) {
+    const detail = result.stderr.trim() || 'no stderr';
+    return {
+      reading: null,
+      error: `git exited ${result.status}: ${detail}`,
+    };
+  }
+  if (mode === 'trim') return { reading: result.stdout.trim() };
+  if (mode === 'bytes') return { reading: String(result.stdout.length) };
+  throw new Error(`unknown output reading mode: ${mode}`);
+}
+
+/**
  * Build a throwaway repository with a committed baseline and a working-tree
  * mutation. Identity and signing are pinned on the command line rather than
  * read from the environment, so the probe cannot fail because the machine
@@ -463,8 +481,8 @@ export function readPreconditions(dir) {
  */
 export function readArm(dir, id) {
   const exit = (args) => String(runGit(args, dir).status);
-  const out = (args) => runGit(args, dir).stdout.trim();
-  const bytes = (args) => String(runGit(args, dir).stdout.length);
+  const out = (args) => readSuccessfulOutput(runGit(args, dir), 'trim');
+  const bytes = (args) => readSuccessfulOutput(runGit(args, dir), 'bytes');
   const url = pathToFileURL(dir).href;
 
   if (id === 'ls-remote-bare') {
@@ -498,11 +516,11 @@ export function readArm(dir, id) {
     return [
       {
         label: 'path exists and matches',
-        reading: bytes(['diff', 'HEAD', '--', STABLE_FILE]),
+        ...bytes(['diff', 'HEAD', '--', STABLE_FILE]),
       },
       {
         label: 'path does not exist',
-        reading: bytes(['diff', 'HEAD', '--', ABSENT_PATH]),
+        ...bytes(['diff', 'HEAD', '--', ABSENT_PATH]),
       },
     ];
   }
@@ -525,8 +543,8 @@ export function readArm(dir, id) {
     const damaged = out(['rev-parse', `HEAD:${MUTATED_FILE}`]);
     setWorkingTree(dir, false);
     return [
-      { label: 'working tree clean', reading: clean },
-      { label: 'working tree damaged', reading: damaged },
+      { label: 'working tree clean', ...clean },
+      { label: 'working tree damaged', ...damaged },
     ];
   }
   if (id === 'hash-object-working-tree') {
@@ -536,8 +554,8 @@ export function readArm(dir, id) {
     const damaged = out(['hash-object', MUTATED_FILE]);
     setWorkingTree(dir, false);
     return [
-      { label: 'working tree clean', reading: clean },
-      { label: 'working tree damaged', reading: damaged },
+      { label: 'working tree clean', ...clean },
+      { label: 'working tree damaged', ...damaged },
     ];
   }
   if (id === 'status-porcelain') {
@@ -547,8 +565,8 @@ export function readArm(dir, id) {
     const damaged = out(['status', '--porcelain']);
     setWorkingTree(dir, false);
     return [
-      { label: 'working tree clean', reading: clean },
-      { label: 'working tree damaged', reading: damaged },
+      { label: 'working tree clean', ...clean },
+      { label: 'working tree damaged', ...damaged },
     ];
   }
   throw new Error(`unknown arm: ${id}`);

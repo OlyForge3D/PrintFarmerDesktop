@@ -32,6 +32,7 @@ import {
   overallVerdict,
   readArm,
   readPreconditions,
+  readSuccessfulOutput,
   setWorkingTree,
 } from '../scripts/probe-silent-success.mjs';
 import {
@@ -194,6 +195,26 @@ describe('judgeArm', () => {
     expect(() => judgeArm(armOf('ls-remote-bare'), undefined)).toThrow(
       /requires a classification/,
     );
+  });
+});
+
+describe('readSuccessfulOutput', () => {
+  it('refuses stdout from a failed git command instead of treating emptiness as evidence', () => {
+    expect(
+      readSuccessfulOutput(
+        { status: 1, stdout: '', stderr: 'fatal: failed' },
+        'bytes',
+      ),
+    ).toEqual({
+      reading: null,
+      error: 'git exited 1: fatal: failed',
+    });
+  });
+
+  it('reads output only after git succeeds', () => {
+    const result = { status: 0, stdout: 'abc\n', stderr: '' };
+    expect(readSuccessfulOutput(result, 'trim')).toEqual({ reading: 'abc' });
+    expect(readSuccessfulOutput(result, 'bytes')).toEqual({ reading: '4' });
   });
 });
 

@@ -110,5 +110,9 @@ export function judgeMutationReached(readings: {
 export function buildFixture(): { dir: string };
 export function setWorkingTree(dir: string, mutated: boolean): void;
 export function readPreconditions(dir: string): Precondition[];
+export function readSuccessfulOutput(
+  result: { status: number; stdout: string; stderr: string },
+  mode: 'trim' | 'bytes',
+): { reading: string | null; error?: string };
 export function readArm(dir: string, id: string): ProbeCase[];
 export function main(): number;
