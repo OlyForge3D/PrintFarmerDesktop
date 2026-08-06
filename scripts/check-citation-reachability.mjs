@@ -58,7 +58,13 @@
 //
 // Run:  node scripts/check-citation-reachability.mjs
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import {
+  collectCitations,
+  loadCorpus,
+  refuse,
+  requireCorpusFloor,
+  requireScanRoots,
+} from './citation-corpus.mjs';
 
 const FILES = [
   '.squad/fact-checker/audit-trail.md',
@@ -97,6 +103,20 @@ if (git(['rev-parse', '--is-shallow-repository']) === 'true') {
   console.error('  actions/checkout@v4 with: { fetch-depth: 0 }');
   process.exit(2);
 }
+
+// A scan root that is absent or unreadable yields an empty corpus, and an empty corpus satisfies
+// "every cited revision is reachable" vacuously. Measured on the shipping script: renaming
+// `.squad/fact-checker/audit-trail.md` printed `OK` and exited 0 with REACHABLE 0 / TWIN 0 /
+// DECLARED 0 / ORPHAN 0 -- while all four self-controls still passed, because the controls
+// certify the classifier and never the corpus. That is this file's own subject again: a check
+// that reports clean because it cannot see, in a second blind arm the shallow guard above does
+// not cover. The roots below are hardcoded paths, so any `.squad/` rename, move or restructure
+// disarms the check silently and nothing reports it. Read them once, here, and refuse the
+// verdict rather than publish one about the empty set.
+//
+// The mechanism lives in citation-corpus.mjs so #421's cross-repository arm imports it rather
+// than reimplementing it. The number stays here: that corpus is disjoint from this one.
+const sources = requireScanRoots(loadCorpus(FILES));
 
 // Revisions a reader is assumed to hold. `origin/development` may be absent in a shallow or
 // branch-only checkout; the branch head alone still gives a usable, if stricter, answer.
@@ -181,16 +201,12 @@ const addedLinesOf = (rev) => {
   return lines.size ? lines : null;
 };
 
-// Reads a `- `sha` — text` list under a heading, from any of the artifacts.
+// Reads a `- `sha` — text` list under a heading, from any of the artifacts. The text comes from
+// the preflight map rather than a fresh read, so a root that disappears mid-run cannot be
+// swallowed here: there is exactly one place a scan root can fail, and it refuses.
 const readBlock = (heading) => {
   const found = new Map();
-  for (const f of FILES) {
-    let text;
-    try {
-      text = readFileSync(f, 'utf8');
-    } catch {
-      continue;
-    }
+  for (const text of sources.values()) {
     const at = text.indexOf(heading);
     if (at < 0) continue;
     const rest = text.slice(at + heading.length);
@@ -216,19 +232,7 @@ for (const [sha, note] of readBlock(TWIN_HEADING)) {
 
 // Cited SHAs. Only backticked tokens count: prose that happens to contain a hex-looking word is
 // not a citation, and treating it as one manufactures findings.
-const cited = new Map();
-for (const f of FILES) {
-  let text;
-  try {
-    text = readFileSync(f, 'utf8');
-  } catch {
-    continue;
-  }
-  for (const m of text.matchAll(/`([0-9a-f]{7,40})`/g)) {
-    if (!cited.has(m[1])) cited.set(m[1], []);
-    cited.get(m[1]).push(f);
-  }
-}
+const cited = collectCitations(sources);
 
 // The verdict is computed from exactly two things a reader also has: what is reachable from the
 // reader's revisions, and what the artifacts say. Local object presence is never consulted for a
@@ -428,6 +432,58 @@ if (failures.length) {
   console.error('verdict withheld.');
   process.exit(2);
 }
+
+// --- corpus floor ------------------------------------------------------------------------
+// The preflight above catches a scan root that vanished. It cannot catch a root that still
+// exists and no longer carries citations: a truncation, a botched merge, or an edit that strips
+// the backticked pins leaves both files readable and the corpus empty or nearly so, and the
+// verdict is vacuous in exactly the same way. Same shape as `MAINLINE_FLOOR: 250` in #399.
+//
+// The floor is a number and therefore expires, so it is justified against a series rather than
+// a single reading. Unique cited SHAs across the two roots, measured over all 46 commits that
+// have touched audit-trail.md:
+//
+//   2026-07-23  0  (file created)      2026-08-04 17:51   89
+//   2026-08-04 12:29   65               2026-08-04 19:37   96
+//   2026-08-04 14:23   74               2026-08-04 21:28  101
+//   2026-08-04 15:59   86               2026-08-05 01:33  115
+//                                       2026-08-05 01:51  122   <- 6a8bc7a0
+//
+// The series is monotonically non-decreasing across all 46 commits: this corpus only ever
+// grows. That matters more than the endpoint, because it fixes the direction a fixed floor
+// drifts. It drifts toward *under*-protection - a floor of 90 guards 26% of today's corpus and
+// proportionally less every day - and never toward false alarms. Given the choice, that is the
+// correct direction for a gate to age in: an advisory check that quietly protects less is worth
+// more than one that fires on routine work and gets deleted in a week.
+//
+// 90 is chosen to sit below every reading from 2026-08-04 17:51 onward while remaining far
+// above the failure mode this exists to catch, which lands at or near zero. Re-derive it if the
+// corpus is ever legitimately pruned; do not raise it to track growth, which would reintroduce
+// exactly the false-alarm risk the margin buys off.
+const CITATION_FLOOR = 90;
+
+// The floor is calibrated against *this* repository's corpus, so a synthetic fixture with a
+// hand-built ledger of two citations trips it legitimately. `--floor=N` lets such a fixture say
+// so explicitly. It is a flag and not an environment variable on purpose: a flag cannot arrive
+// ambiently from CI configuration, it appears in the diff of whatever invokes the check, and
+// `states a guarantee its own guards actually deliver` asserts that neither the npm script nor
+// the workflow passes one. An override is also announced on stdout, so a run that lowered its
+// own bar cannot look like a run that cleared it.
+const floorArg = process.argv.find((a) => a.startsWith('--floor='));
+const floor = floorArg
+  ? Number(floorArg.slice('--floor='.length))
+  : CITATION_FLOOR;
+if (!Number.isInteger(floor) || floor < 0) {
+  refuse(
+    `--floor expects a non-negative integer, got ${JSON.stringify(floorArg)}.`,
+  );
+}
+if (floor !== CITATION_FLOOR) {
+  console.log(
+    `citation floor overridden: ${floor} (calibrated floor is ${CITATION_FLOOR})`,
+  );
+}
+requireCorpusFloor({ count: cited.size, floor });
 
 // --- the run -----------------------------------------------------------------------------
 console.log(
