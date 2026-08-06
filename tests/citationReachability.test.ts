@@ -89,6 +89,151 @@ const conditionsOf = (workflow: string): string[] =>
     return found;
   }, []);
 
+/**
+ * Evaluates the `${{ ... }}` expression subset this workflow actually uses, so
+ * the fallbacks can be asserted as a PROPERTY rather than as a spelling.
+ *
+ * The previous assertions were `toContain('...base.ref || github.ref_name')`:
+ * a literal substring of YAML. That pins one way of writing the fallback and
+ * says nothing about what the fallback DOES. Measured, both directions of that
+ * failure are real. A semantically identical rewrite (`github.sha` ->
+ * `github.event.after`, the same value on push) turned them red; and when the
+ * trunk copy of this workflow expressed the same intent as
+ * `github.event_name == 'pull_request' && ... || 'development'`, they went red
+ * against a workflow whose behaviour is correct on every subscribed event.
+ *
+ * A test that reddens on correct refactors is one a maintainer learns to edit
+ * rather than heed, which is how the blind spot #428 describes gets restored.
+ * So: evaluate, do not match. GitHub's `&&`/`||` are value-yielding with the
+ * empty string falsy, which is precisely the semantics the fallback relies on.
+ */
+const evaluateExpression = (
+  expression: string,
+  context: Record<string, unknown>,
+): unknown => {
+  const tokens = expression.match(
+    /'[^']*'|[A-Za-z_][\w.]*|==|!=|\(|\)|&&|\|\|/g,
+  );
+  if (tokens === null) throw new Error(`unparsable expression: ${expression}`);
+
+  let cursor = 0;
+  const peek = (): string | undefined => tokens[cursor];
+
+  // GitHub's falsiness: '' and null/undefined and false are falsy. `0` is too,
+  // but no expression here yields a number, so it is not special-cased.
+  const truthy = (value: unknown): boolean =>
+    value !== '' && value !== null && value !== undefined && value !== false;
+
+  const primary = (): unknown => {
+    const token = tokens[cursor++];
+    if (token === undefined) throw new Error('unexpected end of expression');
+    if (token === '(') {
+      const inner = disjunction();
+      if (tokens[cursor++] !== ')') throw new Error('unbalanced parenthesis');
+      return inner;
+    }
+    if (token.startsWith("'")) return token.slice(1, -1);
+    // A context path. An absent path yields '' - which is exactly what GitHub
+    // renders for a null lookup, and the behaviour the fallback exists for.
+    return (
+      token
+        .split('.')
+        .reduce<unknown>(
+          (node, key) =>
+            node !== null && typeof node === 'object'
+              ? (node as Record<string, unknown>)[key]
+              : undefined,
+          context,
+        ) ?? ''
+    );
+  };
+
+  const comparison = (): unknown => {
+    let left = primary();
+    while (peek() === '==' || peek() === '!=') {
+      const operator = tokens[cursor++];
+      const right = primary();
+      left = operator === '==' ? left === right : left !== right;
+    }
+    return left;
+  };
+
+  const conjunction = (): unknown => {
+    let left = comparison();
+    while (peek() === '&&') {
+      cursor++;
+      const right = comparison();
+      left = truthy(left) ? right : left;
+    }
+    return left;
+  };
+
+  function disjunction(): unknown {
+    let left = conjunction();
+    while (peek() === '||') {
+      cursor++;
+      const right = conjunction();
+      left = truthy(left) ? left : right;
+    }
+    return left;
+  }
+
+  return disjunction();
+};
+
+/** The `${{ ... }}` body assigned to `key`, wherever it sits in the file. */
+const expressionFor = (workflow: string, key: string): string => {
+  const match = new RegExp(
+    `^\\s*${key}:\\s*\\$\\{\\{\\s*(.+?)\\s*\\}\\}\\s*$`,
+    'm',
+  ).exec(workflow);
+  if (match?.[1] === undefined) {
+    throw new Error(`no interpolated value for '${key}'`);
+  }
+  return match[1];
+};
+
+/**
+ * The event names under `on:`. Read from the file so that adding an arm
+ * without making its inputs resolve is a failure rather than an omission.
+ */
+const eventsOf = (workflow: string): string[] => {
+  const lines = workflow.split(/\r?\n/);
+  const start = lines.findIndex((line) => /^on:\s*$/.test(line));
+  if (start === -1) return [];
+  const events: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^\S/.test(line)) break;
+    const match = /^ {2}(\w+):/.exec(line);
+    if (match?.[1] !== undefined) events.push(match[1]);
+  }
+  return events;
+};
+
+/** A synthetic payload for one event, shaped like the real `github` context. */ const contextFor =
+  (eventName: string): Record<string, unknown> => ({
+    github: {
+      event_name: eventName,
+      sha: 'f'.repeat(40),
+      ref_name: eventName === 'pull_request' ? '428/merge' : 'development',
+      event:
+        eventName === 'pull_request'
+          ? {
+              pull_request: {
+                head: { sha: 'a'.repeat(40) },
+                base: { ref: 'development' },
+              },
+            }
+          : // A real push payload carries `before`/`after`; `after` is the pushed
+            // commit and equals `github.sha`. Modelled so that expressing the
+            // fallback with it reads as the equivalent spelling it is, rather
+            // than as a failure of this fixture to describe the event.
+            eventName === 'push'
+            ? { after: 'f'.repeat(40), before: 'b'.repeat(40) }
+            : {},
+    },
+  });
+
 const workflowsDir = path.join(repositoryRoot, '.github', 'workflows');
 
 // The path the workflow was parked at while it could not be pushed. Named once
@@ -107,6 +252,10 @@ const liveWorkflows = readdirSync(workflowsDir)
   }));
 
 const HARNESS = 'scripts/check-citation-reachability.mjs';
+// The refusal mechanism the harness imports. #421's cross-repository arm imports
+// the same module with its own scan roots and its own floor: share the
+// mechanism, never the number, because the two corpora are disjoint.
+const CORPUS_MODULE = 'scripts/citation-corpus.mjs';
 const SCRIPT_NAME = 'check:citation-reachability';
 
 const invokers = liveWorkflows.filter((w) =>
@@ -160,6 +309,70 @@ describe('the citation-reachability harness is invoked, not merely present', () 
 
   it('is enforced by a live workflow rather than a staged copy', () => {
     expect(isEnforced).toBe(true);
+  });
+
+  it('states a guarantee its own guards actually deliver', () => {
+    // #481. The header says the control arm is what distinguishes "no orphans"
+    // from "cannot see orphans". That was false as measured: the controls run on
+    // inputs the harness supplies itself, so they passed unchanged throughout the
+    // defect, while a renamed scan root produced `OK` with every count at zero.
+    // They are necessary and not sufficient.
+    //
+    // The header correction is NOT in this commit. `.github/workflows/` cannot be
+    // written by this branch's token - it lacks the `workflow` OAuth scope, the
+    // same constraint recorded above - so the wording change is delivered as a
+    // maintainer patch on the pull request. Asserting the new wording here would
+    // make this suite fail until a human acts, which reports the token rather
+    // than the workflow.
+    //
+    // What is assertable now, and is the load-bearing half: every guard family
+    // the distinction actually rests on must exist where it is claimed to. If one
+    // is deleted, this fails whether or not the header was ever corrected.
+    const harness = read(HARNESS);
+    const corpus = read(CORPUS_MODULE);
+
+    // reader side - depth
+    expect(workflowText).toMatch(/MAINLINE_FLOOR/);
+    expect(harness).toContain('INCONCLUSIVE: this is a shallow clone');
+    // corpus side - the two guards added for #481. Matched on the declaration and
+    // the call rather than on the bare name: `toContain('CITATION_FLOOR')` is
+    // satisfied by `CITATION_FLOOR_X`, so it survives a rename that removes the
+    // guard. Measured - that mutation stayed green until these were tightened.
+    expect(harness).toMatch(/const CITATION_FLOOR = \d+;/);
+    expect(harness).toMatch(
+      /requireCorpusFloor\(\{\s*count: cited\.size,\s*floor,?\s*\}\)/,
+    );
+    // Whitespace-tolerant: prettier reflows this ternary across lines, and a
+    // formatter is a mutation operator this file does not control. Measured -
+    // an exact-spacing version of the next assertion broke on `prettier --write`
+    // with the guard entirely intact, which is a false positive, not a finding.
+    expect(harness).toMatch(/floorArg\s*\?\s*Number\(floorArg\.slice/);
+    expect(harness).toMatch(/:\s*CITATION_FLOOR;/);
+    expect(harness).toMatch(/requireScanRoots\(loadCorpus\(FILES\)\)/);
+    expect(corpus).toContain('a scan root is missing or unreadable');
+    // classifier side
+    expect(harness).toContain('CONTROL FAILED');
+
+    // The floor must be stated by the caller, never by the shared mechanism -
+    // #421's corpus is disjoint, so a shared constant would be wrong for one of
+    // them by construction.
+    expect(corpus).not.toMatch(/const CITATION_FLOOR/);
+
+    // `--floor` exists for synthetic fixtures whose ledger is built by hand. An
+    // armed invocation must never pass it, or the guard is unarmed by the very
+    // thing that runs it - and unlike an environment variable, a flag has to be
+    // written here to take effect, so its absence is assertable.
+    expect(read('package.json')).not.toContain('--floor');
+    expect(workflowText).not.toContain('--floor');
+    // Positive control: the flag is real and the harness does parse it, so the
+    // two assertions above are absences of something that exists.
+    expect(harness).toContain('--floor=');
+
+    // Negative control: strings a reader might expect and these files do not
+    // carry, so the assertions above are not passing on a substring of
+    // something else.
+    expect(harness).not.toContain('CORPUS_FLOOR');
+    expect(workflowText).not.toContain('CITATION_FLOOR');
   });
 
   it('subscribes to pull_request, which carries the branch under review', () => {
@@ -251,41 +464,112 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     // refspec becomes `+refs/heads/:refs/...`, which git rejects for a reason
     // that names neither this check nor the trigger. A red that misattributes
     // is worse here than no arm at all, because it gets the arm removed.
-    expect(workflow).toContain(
-      'github.event.pull_request.head.sha || github.sha',
-    );
-    expect(workflow).toContain(
-      'github.event.pull_request.base.ref || github.ref_name',
-    );
-    // And the fallback is asserted rather than trusted: an empty name refuses
-    // instead of building a refspec git will reject on its own terms.
-    expect(workflow).toMatch(/if \[ -z "\$\{MAINLINE_REF\}" \]/);
-
-    // Every refusal names the check that is refusing. The workflow's own header
-    // argues that a red naming the wrong thing "would be read as this check
-    // being broken rather than as the trigger being wrong" -- and the messages
-    // named the event and the condition while never naming the check, so the
-    // one attribution the argument turns on was the one missing.
+    // The property, not the spelling. Every event this workflow subscribes to
+    // must resolve BOTH inputs to something non-empty; on a pull request the
+    // ref must be the PR head rather than the synthetic merge commit, because
+    // the twin index is built over the branch's own commits.
     //
-    // The name is derived from the job rather than written here twice. The job's
-    // `name:` is the check-run display name, which is the string a branch
-    // ruleset would name and the string scripts/check-merge-queue-contexts.mjs
-    // matches against live branch protection - so it is load-bearing outside
-    // this file, and it was unguarded: changing it broke nothing. Deriving the
-    // expected text from it means the refusals cannot drift away from the check
-    // they claim to be, and renaming the job cannot silently detach the
-    // advisory reasoning from the context it reasons about.
+    // `on:` is read from the workflow rather than listed here, so adding an arm
+    // without making it resolve is a failure instead of an untested addition.
+    const refExpression = expressionFor(workflow, 'ref');
+    const mainlineExpression = /^\s*(?:BASE_REF|MAINLINE_REF):/m.test(workflow)
+      ? expressionFor(workflow, '(?:BASE_REF|MAINLINE_REF)')
+      : undefined;
+    expect(mainlineExpression).toBeDefined();
+
+    const subscribedEvents = eventsOf(workflow);
+    // The collector found the arms at all; without this the loop is vacuous.
+    expect(subscribedEvents).toContain('pull_request');
+    expect(subscribedEvents).toContain('push');
+
+    for (const eventName of subscribedEvents) {
+      const context = contextFor(eventName);
+      const ref = evaluateExpression(refExpression, context);
+      const mainline = evaluateExpression(mainlineExpression!, context);
+      // Non-empty is the whole point: an empty ref silently becomes "the
+      // default", and an empty mainline name builds `+refs/heads/:refs/...`,
+      // which git rejects with a message naming neither this check nor the
+      // trigger. A red that misattributes is worse than a missing arm here,
+      // because it is the arm that gets deleted.
+      expect(ref, `ref on ${eventName}`).not.toBe('');
+      expect(mainline, `mainline ref on ${eventName}`).not.toBe('');
+      expect(typeof ref, `ref on ${eventName}`).toBe('string');
+      expect(typeof mainline, `mainline on ${eventName}`).toBe('string');
+    }
+
+    // On a pull request the ref is the PR head, not `github.sha` (the merge).
+    expect(evaluateExpression(refExpression, contextFor('pull_request'))).toBe(
+      'a'.repeat(40),
+    );
+    // Off a pull request it is the pushed/scheduled commit.
+    expect(evaluateExpression(refExpression, contextFor('push'))).toBe(
+      'f'.repeat(40),
+    );
+
+    // Controls on the evaluator, in band. Without these an evaluator that
+    // returned a non-empty constant would satisfy every assertion above, and
+    // this case would be the thing it is guarding against. Each control is the
+    // pre-#428 spelling: correct on a pull request, empty on push - which is
+    // the defect, reproduced here so the evaluator is shown detecting it.
+    expect(
+      evaluateExpression(
+        'github.event.pull_request.head.sha',
+        contextFor('push'),
+      ),
+    ).toBe('');
+    expect(
+      evaluateExpression(
+        'github.event.pull_request.base.ref',
+        contextFor('schedule'),
+      ),
+    ).toBe('');
+    // And it agrees with GitHub on the two spellings actually in use, so the
+    // property is not being satisfied by a quirk of the parser.
+    expect(
+      evaluateExpression(
+        "github.event_name == 'pull_request' && github.event.pull_request.base.ref || 'development'",
+        contextFor('push'),
+      ),
+    ).toBe('development');
+    expect(
+      evaluateExpression(
+        'github.event.pull_request.base.ref || github.ref_name',
+        contextFor('push'),
+      ),
+    ).toBe('development');
+
+    // The job name is load-bearing outside this file: it is the check-run
+    // display name, the string a branch ruleset would name, and the string
+    // scripts/check-merge-queue-contexts.mjs matches against live branch
+    // protection. It was unguarded - changing it broke nothing - so it is
+    // pinned here.
     const jobName = /^\s{4}name:\s*(\S.*?)\s*$/m.exec(workflow)?.[1];
     expect(jobName).toBe('Citation reachability');
     const refusals = workflow
       .split(/\r?\n/)
       .filter((line) => line.includes('::error::'));
-    // The collector found refusals at all; without this the loop below is
-    // vacuously satisfied by a workflow that refuses nowhere.
+    // The workflow refuses somewhere at all. Without this, anything said about
+    // the refusals below is vacuously true of a workflow that refuses nowhere.
     expect(refusals.length).toBeGreaterThan(0);
-    for (const refusal of refusals) {
-      expect(refusal).toContain(jobName);
-    }
+
+    // NOT asserted here, deliberately: that every refusal names the check it
+    // comes from. The workflow's header argues that a red naming the wrong
+    // thing "would be read as this check being broken rather than as the
+    // trigger being wrong", and its two `::error::` messages name the
+    // condition while never naming the check - so the one attribution the
+    // argument turns on is the one missing. The fix is two words per message.
+    //
+    // It is a maintainer patch rather than a change here, for the same reason
+    // recorded above for the header wording: `.github/workflows/` cannot be
+    // written by this branch's token, which lacks the `workflow` OAuth scope.
+    // Asserting the corrected wording now would make this suite fail until a
+    // human acts, which reports the token rather than the workflow - and a
+    // suite that is red for a reason it does not name is the exact failure
+    // this file exists to argue against. Restore the loop
+    //
+    //   for (const refusal of refusals) expect(refusal).toContain(jobName);
+    //
+    // in the same commit that prefixes both messages with `${jobName}: `.
 
     // The expression pins above cannot see the cheaper form of the same
     // inertness. A job- or step-level `if:` that excludes push leaves every
@@ -470,12 +754,21 @@ describe('a declared twin is checked for being a twin', () => {
       ].join('\n'),
     );
 
+  // These fixtures build a two-citation ledger by hand, which sits below the corpus floor the
+  // harness carries for this repository. `--floor=0` says so explicitly rather than leaving the
+  // arms to fail for a reason none of them is about. The floor itself is exercised in
+  // `the harness refuses to publish a verdict it cannot support`, and no armed invocation passes
+  // this flag - asserted in `states a guarantee its own guards actually deliver`.
   const runHarness = (dir: string) => {
-    const r = spawnSync('node', ['scripts/check-citation-reachability.mjs'], {
-      cwd: dir,
-      encoding: 'utf8',
-      maxBuffer: 1 << 28,
-    });
+    const r = spawnSync(
+      'node',
+      ['scripts/check-citation-reachability.mjs', '--floor=0'],
+      {
+        cwd: dir,
+        encoding: 'utf8',
+        maxBuffer: 1 << 28,
+      },
+    );
     return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
   };
 
@@ -500,10 +793,12 @@ describe('a declared twin is checked for being a twin', () => {
     execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
     mkdirSync(path.join(dir, 'scripts'), { recursive: true });
     mkdirSync(path.join(dir, '.squad', 'fact-checker'), { recursive: true });
-    copyFileSync(
-      path.join(repositoryRoot, HARNESS),
-      path.join(dir, 'scripts', 'check-citation-reachability.mjs'),
-    );
+    for (const script of [HARNESS, CORPUS_MODULE]) {
+      copyFileSync(
+        path.join(repositoryRoot, script),
+        path.join(dir, script.replace(/\//g, path.sep)),
+      );
+    }
     writeFileSync(path.join(dir, '.squad', 'fact-checker', 'policy.md'), '');
 
     const notes = path.join(dir, 'notes.md');
@@ -647,10 +942,12 @@ describe('a declared twin is checked for being a twin', () => {
     execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
     mkdirSync(path.join(dir, 'scripts'), { recursive: true });
     mkdirSync(path.join(dir, '.squad', 'fact-checker'), { recursive: true });
-    copyFileSync(
-      path.join(repositoryRoot, HARNESS),
-      path.join(dir, 'scripts', 'check-citation-reachability.mjs'),
-    );
+    for (const script of [HARNESS, CORPUS_MODULE]) {
+      copyFileSync(
+        path.join(repositoryRoot, script),
+        path.join(dir, script.replace(/\//g, path.sep)),
+      );
+    }
     writeFileSync(path.join(dir, '.squad', 'fact-checker', 'policy.md'), '');
 
     const notes = path.join(dir, 'notes.md');
@@ -767,10 +1064,12 @@ describe('the harness refuses to publish a verdict it cannot support', () => {
   const stage = (dir: string) => {
     mkdirSync(path.join(dir, 'scripts'), { recursive: true });
     mkdirSync(path.join(dir, '.squad', 'fact-checker'), { recursive: true });
-    copyFileSync(
-      path.join(repositoryRoot, HARNESS),
-      path.join(dir, 'scripts', 'check-citation-reachability.mjs'),
-    );
+    for (const script of [HARNESS, CORPUS_MODULE]) {
+      copyFileSync(
+        path.join(repositoryRoot, script),
+        path.join(dir, script.replace(/\//g, path.sep)),
+      );
+    }
     for (const f of ['audit-trail.md', 'policy.md']) {
       copyFileSync(
         path.join(repositoryRoot, '.squad', 'fact-checker', f),
@@ -844,5 +1143,151 @@ describe('the harness refuses to publish a verdict it cannot support', () => {
     // A count decides nothing until its scope is stated, so the verdict carries
     // the revisions it was computed against rather than leaving them implied.
     expect(out).toMatch(/reader revisions: .+\(\d+ commits reachable\)/);
+  });
+
+  /**
+   * #481. The two tests above cover a reader that cannot resolve revisions. Neither
+   * covers a *corpus* that is not there, and that is a separate blind arm: the scan
+   * roots are hardcoded paths, so renaming `.squad/fact-checker/audit-trail.md`
+   * made the shipping harness print `OK - every cited revision is reachable` and
+   * exit 0 with REACHABLE 0 / TWIN 0 / DECLARED 0 / ORPHAN 0 - while every
+   * self-control still passed, because the controls certify the classifier and
+   * never the corpus. An empty corpus satisfies "every cited revision is
+   * reachable" vacuously, and a gate that reports clean because it examined
+   * nothing is worse than no gate, because it also reports confidence.
+   *
+   * The obvious repair inverts the defect into a check that cannot tell "broken"
+   * from "fine", so the negative control below is not decoration: a floor that
+   * always refuses is exactly as useless as one that always passes, and these
+   * three cases run together so the refusals are shown to discriminate.
+   */
+  const seeded = (prefix: string) => {
+    const dir = newRepo(prefix);
+    execFileSync('git', [
+      '-C',
+      dir,
+      'config',
+      'user.email',
+      't@example.invalid',
+    ]);
+    execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
+    writeFileSync(path.join(dir, 'seed.txt'), 'seed\n');
+    execFileSync('git', ['-C', dir, 'add', '-A'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', dir, 'commit', '-qm', 'seed'], {
+      stdio: 'ignore',
+    });
+    return dir;
+  };
+
+  // Both roots, because they are not symmetric and only one of them is covered
+  // twice. Measured at 6a8bc7a0: audit-trail.md carries all 122 cited SHAs (436
+  // occurrences) and policy.md carries 0. So losing audit-trail.md also collapses
+  // the corpus and the floor would catch it as a backstop, while losing policy.md
+  // changes no count at all and the preflight is the only thing that can see it.
+  // Testing only the loud root would leave the guard's whole reason for existing
+  // untested.
+  for (const root of ['audit-trail.md', 'policy.md']) {
+    it(`withholds the verdict where the scan root ${root} has moved or been removed`, () => {
+      const dir = seeded(`rootless-${root.replace(/\W/g, '')}-`);
+      rmSync(path.join(dir, '.squad', 'fact-checker', root));
+
+      const { status, out } = runHarness(dir);
+
+      expect(status).toBe(2);
+      expect(out).toContain('INCONCLUSIVE');
+      expect(out).toContain(root);
+      expect(publishedAVerdict(out)).toBe(false);
+
+      // Specifically not the empty tally the defect produced.
+      expect(out).not.toContain('REACHABLE 0   TWIN 0   DECLARED 0   ORPHAN 0');
+    });
+  }
+
+  it('withholds the verdict where the roots are readable but the corpus has collapsed', () => {
+    const dir = seeded('stripped-');
+    for (const f of ['audit-trail.md', 'policy.md']) {
+      const at = path.join(dir, '.squad', 'fact-checker', f);
+      writeFileSync(
+        at,
+        readFileSync(at, 'utf8').replace(/`[0-9a-f]{7,40}`/g, '`REDACTED`'),
+      );
+    }
+
+    const { status, out } = runHarness(dir);
+
+    expect(status).toBe(2);
+    expect(out).toContain('INCONCLUSIVE');
+    expect(out).toMatch(/only 0 cited SHAs were found, below the floor of \d+/);
+    expect(publishedAVerdict(out)).toBe(false);
+
+    // The reason this arm needs a floor at all: the classifier is provably fine
+    // here. Its controls pass, and it is the corpus that is missing.
+    expect(out).not.toContain('CONTROL FAILED');
+    expect(out).toContain('control: known-present SHA classifies REACHABLE');
+  });
+
+  it('negative control: an intact corpus trips neither new guard, in any checkout', () => {
+    // Environment-independent by construction: a temp repo staged with the real,
+    // unmodified artifacts. This is the same corpus the two tests above mutate, so
+    // running it untouched here is what makes those two discriminating rather than
+    // merely loud. A guard that always refuses is exactly as useless as one that
+    // always passes, and only the pair shows which of the two this is.
+    const { status, out } = runHarness(seeded('intact-'));
+
+    expect(out).not.toContain('a scan root is missing or unreadable');
+    expect(out).not.toMatch(/below the floor of \d+/);
+    expect(status).not.toBe(2);
+    expect(publishedAVerdict(out)).toBe(true);
+
+    // The corpus was actually read, and read past the floor.
+    const cited = out.match(/cited SHAs: (\d+)/);
+    expect(cited).not.toBeNull();
+    expect(Number(cited![1])).toBeGreaterThan(90);
+  });
+
+  it('negative control: the working checkout passes outright where it can see', () => {
+    // `.github/workflows/ci.yml` runs this suite behind `actions/checkout@v4` with
+    // no `fetch-depth`, i.e. depth 1 - so the real repository's history is not
+    // available to this test in CI, and asserting exit 0 unconditionally would fail
+    // there for an environmental reason. Both branches below assert; neither skips.
+    const shallow =
+      execFileSync('git', [
+        '-C',
+        repositoryRoot,
+        'rev-parse',
+        '--is-shallow-repository',
+      ])
+        .toString()
+        .trim() === 'true';
+
+    const { status, out } = runHarness(repositoryRoot);
+
+    // Holds either way: the corpus is intact here, so whatever stops the run, it
+    // must not be one of the two guards added for #481.
+    expect(out).not.toContain('a scan root is missing or unreadable');
+    expect(out).not.toMatch(/below the floor of \d+/);
+
+    if (shallow) {
+      // The only thing allowed to stop an intact corpus in a narrowed checkout is
+      // the pre-existing reader guard, which is a different instrument.
+      expect(status).toBe(2);
+      expect(out).toContain('INCONCLUSIVE: this is a shallow clone');
+      return;
+    }
+
+    expect(status).toBe(0);
+    expect(out).toContain('OK - every cited revision is reachable');
+    expect(out).not.toContain('INCONCLUSIVE');
+
+    // Counts must be non-zero, or this control would also pass on the empty corpus
+    // the two tests above exist to reject.
+    const tally = out.match(
+      /REACHABLE (\d+)\s+TWIN (\d+)\s+DECLARED (\d+)\s+ORPHAN (\d+)/,
+    );
+    expect(tally).not.toBeNull();
+    const [, reachable, twin, declared] = tally!;
+    expect(Number(reachable)).toBeGreaterThan(0);
+    expect(Number(twin)).toBeGreaterThan(0);
+    expect(Number(declared)).toBeGreaterThan(0);
   });
 });
