@@ -154,14 +154,29 @@ export class LegacyBackupApprovalStore {
 // the approved source boundary (ADR 0001, issue #51).
 // ---------------------------------------------------------------------------
 
-/** ISO 8601 date string — safe range only. */
+/**
+ * ISO 8601 date string — safe range only.
+ *
+ * The bound is read with `getUTCFullYear`, not `getFullYear`, so that the
+ * answer is a property of the input alone. `new Date(s)` parses an ISO string
+ * to an absolute instant; `getFullYear` then reports that instant in the
+ * *machine's* local frame, which the contract never mentions. Reading the bound
+ * in a different frame from the one the value was parsed in made this
+ * validator's verdict depend on where it ran: west of UTC the lower bound
+ * over-rejected `2000-01-01T00:00:00Z` (local year 1999), and east of UTC the
+ * upper bound over-rejected `2100-12-31T23:59:59Z` (local year 2101). UTC is
+ * the one frame in which both boundaries pass, so CI — which runs on UTC
+ * runners — could not observe it. See #381.
+ */
 const SafeDate = z
   .string()
   .max(64)
   .refine((s) => {
     const d = new Date(s);
     return (
-      !isNaN(d.getTime()) && d.getFullYear() >= 2000 && d.getFullYear() <= 2100
+      !isNaN(d.getTime()) &&
+      d.getUTCFullYear() >= 2000 &&
+      d.getUTCFullYear() <= 2100
     );
   }, 'Invalid or out-of-range date');
 
