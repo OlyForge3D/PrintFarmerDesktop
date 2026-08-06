@@ -440,6 +440,12 @@ export function validateSpec(spec) {
             reason: `case ${c.label}: vars.${k} must be a string`,
           };
         }
+        if (v.includes('\0')) {
+          return {
+            ok: false,
+            reason: `case ${c.label}: vars.${k} cannot contain a NUL character`,
+          };
+        }
       }
     }
   }
@@ -528,10 +534,19 @@ export function buildArgv(spec, nodePath, probePath, vars = {}) {
  */
 export function runArgv(argv, env) {
   const [cmd, ...rest] = argv;
-  const res = spawnSync(cmd, rest, {
-    encoding: 'utf8',
-    env: { ...process.env, ...env },
-  });
+  let res;
+  try {
+    res = spawnSync(cmd, rest, {
+      encoding: 'utf8',
+      env: { ...process.env, ...env },
+    });
+  } catch (error) {
+    return {
+      status: null,
+      stdout: '',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
   if (res.error) {
     return {
       status: null,
