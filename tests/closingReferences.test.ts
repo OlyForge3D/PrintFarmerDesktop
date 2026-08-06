@@ -294,6 +294,51 @@ describe('readSettled failure classification', () => {
     expect(calls).toBe(13);
   });
 
+  it('distinguishes an absent sample from a successful empty result', async () => {
+    const cleanClock = clock();
+    let cleanCalls = 0;
+    const clean = await readSettled(
+      () => {
+        cleanCalls += 1;
+        return [];
+      },
+      { ...cleanClock, maxReads: 2, minElapsedMs: 0 },
+    );
+
+    expect(clean).toMatchObject({
+      value: [],
+      reads: 2,
+      settled: true,
+      retryableFailures: 0,
+    });
+    expect(cleanCalls).toBe(2);
+
+    const failedClock = clock();
+    const failure = ghFailure('connect ETIMEDOUT', 'ETIMEDOUT');
+    let failedCalls = 0;
+    const recovered = await readSettled(
+      () => {
+        failedCalls += 1;
+        if (failedCalls === 1) {
+          throw failure;
+        }
+        return [];
+      },
+      { ...failedClock, maxReads: 3, minElapsedMs: 0 },
+    );
+
+    // The failed first call supplied no value. Treating it as [] would settle
+    // on call two, exactly like the clean control, and erase the distinction
+    // between "GitHub returned no references" and "GitHub returned nothing."
+    expect(recovered).toMatchObject({
+      value: [],
+      reads: 3,
+      settled: true,
+      retryableFailures: 1,
+    });
+    expect(failedCalls).toBe(3);
+  });
+
   it('aborts a terminal credential failure on its first call', async () => {
     const fake = clock();
     const failure = ghFailure('HTTP 401: Bad credentials');
