@@ -108,6 +108,48 @@ function pathIsAbsent(target: string) {
   }
 }
 
+interface RawRemovalState {
+  gitVersion: string;
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  error: string | null;
+  targetCount: number | null;
+  junctionAbsent: boolean;
+  worktreeAbsent: boolean;
+  registered: boolean;
+}
+
+function rawRemovalContext(state: RawRemovalState) {
+  return [
+    state.gitVersion,
+    `exit=${String(state.status)}`,
+    `signal=${state.signal ?? '<none>'}`,
+    `error=${state.error ?? '<none>'}`,
+    `sentinels=${String(state.targetCount)}/${SENTINEL_COUNT}`,
+    `junctionAbsent=${String(state.junctionAbsent)}`,
+    `worktreeAbsent=${String(state.worktreeAbsent)}`,
+    `registered=${String(state.registered)}`,
+  ].join('; ');
+}
+
+function classifyRawRemoval(state: RawRemovalState) {
+  const completeRemoval =
+    state.status === 0 &&
+    state.signal === null &&
+    state.error === null &&
+    state.junctionAbsent &&
+    state.worktreeAbsent &&
+    !state.registered;
+  if (!completeRemoval) {
+    throw new Error(
+      `unknown raw Git removal state: ${rawRemovalContext(state)}`,
+    );
+  }
+  if (state.targetCount === 0) return 'vulnerable' as const;
+  if (state.targetCount === SENTINEL_COUNT) return 'fixed' as const;
+  throw new Error(`unknown raw Git removal state: ${rawRemovalContext(state)}`);
+}
+
 function removeFixtureWorktreeAdmin(worktree: string) {
   const pointer = readFileSync(path.join(worktree, '.git'), 'utf8').trim();
   expect(pointer.startsWith('gitdir: ')).toBe(true);
@@ -123,6 +165,45 @@ function availableSubstDrive() {
 }
 
 describe('safe worktree removal validation', () => {
+  const completeRawState = {
+    gitVersion: 'git version fixture',
+    status: 0,
+    signal: null,
+    error: null,
+    junctionAbsent: true,
+    worktreeAbsent: true,
+    registered: false,
+  } satisfies Omit<RawRemovalState, 'targetCount'>;
+
+  it('classifies both supported complete raw Git outcomes', () => {
+    expect(classifyRawRemoval({ ...completeRawState, targetCount: 0 })).toBe(
+      'vulnerable',
+    );
+    expect(
+      classifyRawRemoval({
+        ...completeRawState,
+        targetCount: SENTINEL_COUNT,
+      }),
+    ).toBe('fixed');
+  });
+
+  it('rejects partial counts and inconsistent raw Git removal states', () => {
+    const ambiguous: RawRemovalState[] = [
+      { ...completeRawState, targetCount: 6 },
+      { ...completeRawState, targetCount: 0, status: 1 },
+      { ...completeRawState, targetCount: 0, signal: 'SIGTERM' },
+      { ...completeRawState, targetCount: 0, junctionAbsent: false },
+      { ...completeRawState, targetCount: 0, worktreeAbsent: false },
+      { ...completeRawState, targetCount: 0, registered: true },
+      { ...completeRawState, targetCount: null },
+    ];
+    for (const state of ambiguous) {
+      expect(() => classifyRawRemoval(state)).toThrow(
+        'unknown raw Git removal state',
+      );
+    }
+  });
+
   it('refuses a path absent from the linked-worktree registry', () => {
     expect(() =>
       validateRemovalTarget(
@@ -332,53 +413,61 @@ describe('linked-worktree registry contract', () => {
 describe.skipIf(!onWindows)(
   'Windows Git junction teardown observed-behavior regression (#546)',
   () => {
-    it('classifies raw Git as vulnerable or fixed and always verifies guarded 12-sentinel survival', () => {
+    it('classifies the complete raw Git result as vulnerable or fixed', () => {
       const root = mkdtempSync(
         path.join(os.tmpdir(), 'pfd-junction-teardown-'),
       );
       let raw: ReturnType<typeof makeArm> | null = null;
-      let guarded: ReturnType<typeof makeArm> | null = null;
       try {
         raw = makeArm(root, 'raw');
-        guarded = makeArm(root, 'guarded');
 
         const rawRemoval = spawnSync(
           'git',
           ['worktree', 'remove', '--force', raw.worktree],
           { cwd: raw.repository, encoding: 'utf8' },
         );
-        const rawTargetCount = readdirSync(raw.target).length;
-        const rawOutcome =
-          rawTargetCount === 0
-            ? 'vulnerable: external target emptied'
-            : rawTargetCount === SENTINEL_COUNT
-              ? 'fixed: external target preserved'
-              : `ambiguous: ${rawTargetCount}/${SENTINEL_COUNT} sentinels remain`;
-        const rawContext = `${gitVersion}; ${rawOutcome}; exit=${String(rawRemoval.status)}; stderr=${rawRemoval.stderr.trim() || '<empty>'}`;
-        console.info(`[junction-teardown raw outcome] ${rawContext}`);
-
-        expect(rawRemoval.error, rawContext).toBeUndefined();
-        expect(rawRemoval.status, rawContext).toBe(0);
-        expect([0, SENTINEL_COUNT], rawContext).toContain(rawTargetCount);
-        expect(pathIsAbsent(raw.junction), rawContext).toBe(true);
-        expect(pathIsAbsent(raw.worktree), rawContext).toBe(true);
-        expect(
-          registeredWorktree(raw.repository, raw.worktree),
-          rawContext,
-        ).toBe(false);
-
-        if (rawTargetCount === 0) {
-          expect(rawOutcome).toBe('vulnerable: external target emptied');
-        } else {
-          expect(rawTargetCount).toBe(SENTINEL_COUNT);
-          expect(rawOutcome).toBe('fixed: external target preserved');
+        const state: RawRemovalState = {
+          gitVersion,
+          status: rawRemoval.status,
+          signal: rawRemoval.signal,
+          error: rawRemoval.error ? String(rawRemoval.error) : null,
+          targetCount: existsSync(raw.target)
+            ? readdirSync(raw.target).length
+            : null,
+          junctionAbsent: pathIsAbsent(raw.junction),
+          worktreeAbsent: pathIsAbsent(raw.worktree),
+          registered: registeredWorktree(raw.repository, raw.worktree),
+        };
+        const outcome = classifyRawRemoval(state);
+        console.info(
+          `[junction-teardown raw outcome] ${outcome}; ${rawRemovalContext(state)}`,
+        );
+      } finally {
+        if (raw) {
+          unlinkJunction(raw.junction);
+          if (registeredWorktree(raw.repository, raw.worktree)) {
+            git(
+              ['worktree', 'remove', '--force', raw.worktree],
+              raw.repository,
+            );
+          }
         }
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
 
+    it('always verifies guarded removal with all 12 sentinels surviving', () => {
+      const root = mkdtempSync(path.join(os.tmpdir(), 'pfd-guarded-teardown-'));
+      let guarded: ReturnType<typeof makeArm> | null = null;
+      try {
+        guarded = makeArm(root, 'guarded');
         const guardedRemoval = spawnSync(
           process.execPath,
           [scriptPath, guarded.worktree],
           { cwd: guarded.repository, encoding: 'utf8' },
         );
+        expect(guardedRemoval.error).toBeUndefined();
+        expect(guardedRemoval.signal).toBeNull();
         expect(guardedRemoval.status).toBe(0);
         expect(guardedRemoval.stdout).toContain(
           'unlinked 1 reparse point(s); verified 1 external target(s) remain',
@@ -390,13 +479,12 @@ describe.skipIf(!onWindows)(
           false,
         );
       } finally {
-        for (const arm of [raw, guarded]) {
-          if (!arm) continue;
-          unlinkJunction(arm.junction);
-          if (registeredWorktree(arm.repository, arm.worktree)) {
+        if (guarded) {
+          unlinkJunction(guarded.junction);
+          if (registeredWorktree(guarded.repository, guarded.worktree)) {
             git(
-              ['worktree', 'remove', '--force', arm.worktree],
-              arm.repository,
+              ['worktree', 'remove', '--force', guarded.worktree],
+              guarded.repository,
             );
           }
         }
