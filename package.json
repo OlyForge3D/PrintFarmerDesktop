@@ -60,6 +60,7 @@
     "probe:sha-query": "node scripts/probe-sha-query.mjs",
     "seam:injected-defaults": "node scripts/check-injected-defaults.mjs",
     "push:force": "node scripts/safe-force-push.mjs",
+    "worktree:remove": "node scripts/safe-worktree-remove.mjs",
     "sha:status": "node scripts/sha-status.mjs",
     "merge:survival": "node scripts/merge-survival.mjs",
     "typecheck": "tsc --noEmit",
