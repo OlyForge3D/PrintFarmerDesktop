@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  classifyClosingReferenceReadError,
+  ClosingReferenceReadBudgetError,
   compareClosures,
   formatFailure,
   formatUnsettled,
   main,
   parseBoundClosures,
+  parseClosingReferenceResponse,
   parseDeclaredClosures,
   readSettled,
+  toGitHubCliError,
   witnessContradiction,
   witnessUnreadableBinding,
 } from '../scripts/check-closing-references.mjs';
@@ -228,6 +232,351 @@ describe('readSettled', () => {
     });
     expect(result.settled).toBe(true);
     expect(result.value).toEqual([1, 2]);
+  });
+});
+
+describe('readSettled failure classification', () => {
+  function clock() {
+    let t = 0;
+    return {
+      sleep: (ms: number) => {
+        t += ms;
+        return Promise.resolve();
+      },
+      now: () => t,
+    };
+  }
+
+  function ghFailure(stderr: string, code?: string) {
+    return toGitHubCliError(
+      ['pr', 'view', '530', '--json', 'body,closingIssuesReferences'],
+      Object.assign(new Error('Command failed: gh'), {
+        status: 1,
+        stderr,
+        ...(code === undefined ? {} : { code }),
+      }),
+    );
+  }
+
+  it('preserves structured execFileSync failure details', () => {
+    const cause = Object.assign(new Error('Command failed: gh'), {
+      status: 1,
+      stderr: 'HTTP 401: Bad credentials\n',
+      stdout: '',
+      code: 'EACCES',
+    });
+    const error = toGitHubCliError(['pr', 'view', '530'], cause);
+
+    expect(error).toMatchObject({
+      status: 1,
+      stderr: 'HTTP 401: Bad credentials',
+      stdout: '',
+      code: 'EACCES',
+    });
+    expect(error.cause).toBe(cause);
+    expect(error.message).toContain('HTTP 401: Bad credentials');
+  });
+
+  it('settles the stable no-error control at the normal call count', async () => {
+    const fake = clock();
+    let calls = 0;
+    const result = await readSettled(() => {
+      calls += 1;
+      return [231];
+    }, fake);
+
+    expect(result).toMatchObject({
+      reads: 13,
+      settled: true,
+      stableMs: 60_000,
+      retryableFailures: 0,
+    });
+    expect(calls).toBe(13);
+  });
+
+  it('distinguishes an absent sample from a successful empty result', async () => {
+    const cleanClock = clock();
+    let cleanCalls = 0;
+    const clean = await readSettled(
+      () => {
+        cleanCalls += 1;
+        return [];
+      },
+      { ...cleanClock, maxReads: 2, minElapsedMs: 0 },
+    );
+
+    expect(clean).toMatchObject({
+      value: [],
+      reads: 2,
+      settled: true,
+      retryableFailures: 0,
+    });
+    expect(cleanCalls).toBe(2);
+
+    const failedClock = clock();
+    const failure = ghFailure('connect ETIMEDOUT', 'ETIMEDOUT');
+    let failedCalls = 0;
+    const recovered = await readSettled(
+      () => {
+        failedCalls += 1;
+        if (failedCalls === 1) {
+          throw failure;
+        }
+        return [];
+      },
+      { ...failedClock, maxReads: 3, minElapsedMs: 0 },
+    );
+
+    // The failed first call supplied no value. Treating it as [] would settle
+    // on call two, exactly like the clean control, and erase the distinction
+    // between "GitHub returned no references" and "GitHub returned nothing."
+    expect(recovered).toMatchObject({
+      value: [],
+      reads: 3,
+      settled: true,
+      retryableFailures: 1,
+    });
+    expect(failedCalls).toBe(3);
+  });
+
+  it('aborts a terminal credential failure on its first call', async () => {
+    const fake = clock();
+    const failure = ghFailure('HTTP 401: Bad credentials');
+    let calls = 0;
+
+    expect(classifyClosingReferenceReadError(failure)).toMatchObject({
+      disposition: 'abort',
+      reason: 'authentication',
+    });
+    await expect(
+      readSettled(() => {
+        calls += 1;
+        throw failure;
+      }, fake),
+    ).rejects.toBe(failure);
+    expect(calls).toBe(1);
+    expect(fake.now()).toBe(0);
+  });
+
+  it('retries an explicit rate limit but aborts an ordinary permission failure', () => {
+    const rateLimit = ghFailure('HTTP 403: API rate limit exceeded');
+    const permission = ghFailure(
+      'HTTP 403: Resource not accessible by integration',
+    );
+
+    expect(classifyClosingReferenceReadError(rateLimit)).toMatchObject({
+      disposition: 'retry',
+      reason: 'rate-limit',
+    });
+    expect(classifyClosingReferenceReadError(permission)).toMatchObject({
+      disposition: 'abort',
+      reason: 'terminal-gh',
+    });
+  });
+
+  it('retries an early transient server failure and restarts continuity', async () => {
+    const fake = clock();
+    const failure = ghFailure('HTTP 502: Bad Gateway');
+    let calls = 0;
+    const result = await readSettled(() => {
+      calls += 1;
+      if (calls === 3) {
+        throw failure;
+      }
+      return [231];
+    }, fake);
+
+    expect(classifyClosingReferenceReadError(failure)).toMatchObject({
+      disposition: 'retry',
+      reason: 'server',
+    });
+    expect(result).toMatchObject({
+      reads: 16,
+      settled: true,
+      stableMs: 60_000,
+      retryableFailures: 1,
+    });
+    expect(calls).toBe(16);
+  });
+
+  it('reaches and recovers from a transient failure just before normal settling', async () => {
+    const fake = clock();
+    const failure = ghFailure('connect ETIMEDOUT', 'ETIMEDOUT');
+    let calls = 0;
+    const result = await readSettled(() => {
+      calls += 1;
+      if (calls === 12) {
+        throw failure;
+      }
+      return [231];
+    }, fake);
+
+    expect(classifyClosingReferenceReadError(failure)).toMatchObject({
+      disposition: 'retry',
+      reason: 'transport',
+    });
+    // The no-error control settles on call 13. A failed call 12 is therefore
+    // reached, and resetting the agreement run makes call 25 the first honest
+    // settle point: 60 seconds after the next successful sample.
+    expect(result).toMatchObject({
+      reads: 25,
+      settled: true,
+      stableMs: 60_000,
+      retryableFailures: 1,
+    });
+    expect(calls).toBe(25);
+  });
+
+  it('fails with actionable diagnostics when transient failures exhaust the budget', async () => {
+    const fake = clock();
+    const failure = ghFailure('connect ETIMEDOUT', 'ETIMEDOUT');
+    let calls = 0;
+    let caught: unknown;
+
+    try {
+      await readSettled(
+        () => {
+          calls += 1;
+          throw failure;
+        },
+        { ...fake, maxReads: 4 },
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ClosingReferenceReadBudgetError);
+    if (!(caught instanceof ClosingReferenceReadBudgetError)) {
+      throw new Error('expected the retry budget error');
+    }
+    expect(caught).toMatchObject({
+      attempts: 4,
+      successfulReads: 0,
+      retryableFailures: 4,
+      elapsedMs: 15_000,
+      cause: failure,
+    });
+    expect(caught.message).toContain('4 attempts');
+    expect(caught.message).toContain('4 retryable failures');
+    expect(caught.message).toContain('ETIMEDOUT');
+    expect(caught.message).toContain('No read succeeded');
+    expect(caught.message).not.toContain('Last successful value');
+    expect(caught.message).toContain('Re-run');
+    expect(calls).toBe(4);
+  });
+
+  it('reports post-recovery value churn as unsettled, not as a transport failure', async () => {
+    const fake = clock();
+    const failure = ghFailure('connect ETIMEDOUT', 'ETIMEDOUT');
+    let calls = 0;
+    const result = await readSettled(
+      () => {
+        calls += 1;
+        if (calls === 2) {
+          throw failure;
+        }
+        return [calls % 2];
+      },
+      { ...fake, maxReads: 6, minElapsedMs: 0 },
+    );
+
+    expect(result).toMatchObject({
+      reads: 6,
+      settled: false,
+      retryableFailures: 1,
+    });
+    expect(calls).toBe(6);
+    const message = formatUnsettled({
+      prNumber: 530,
+      reads: result.reads,
+      elapsedMs: result.elapsedMs,
+      value: result.value,
+      retryableFailures: result.retryableFailures,
+    });
+    expect(message).toContain('1 attempt failed');
+    expect(message).toContain('reset the stability interval');
+    expect(message).not.toContain('retry budget exhausted');
+  });
+
+  it('classifies a truncated API response explicitly and retries it', async () => {
+    const fake = clock();
+    let classification: ReturnType<
+      typeof classifyClosingReferenceReadError
+    > | null = null;
+    try {
+      parseClosingReferenceResponse('{"body":"","refs":[');
+    } catch (error) {
+      classification = classifyClosingReferenceReadError(error);
+    }
+    expect(classification).toMatchObject({
+      disposition: 'retry',
+      reason: 'malformed-response',
+    });
+
+    let calls = 0;
+    const result = await readSettled(
+      () => {
+        calls += 1;
+        const raw =
+          calls === 1 ? '{"body":"","refs":[' : '{"body":"","refs":[231]}';
+        return parseClosingReferenceResponse(raw).refs;
+      },
+      {
+        ...fake,
+        maxReads: 3,
+        minElapsedMs: 0,
+      },
+    );
+
+    expect(result).toMatchObject({
+      reads: 3,
+      settled: true,
+      retryableFailures: 1,
+    });
+    expect(calls).toBe(3);
+  });
+
+  it('aborts a valid response with the wrong schema instead of retrying drift', async () => {
+    const fake = clock();
+    let failure: unknown;
+    try {
+      parseClosingReferenceResponse('{"body":"","refs":"not-an-array"}');
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(classifyClosingReferenceReadError(failure)).toMatchObject({
+      disposition: 'abort',
+      reason: 'invalid-response-shape',
+    });
+    let calls = 0;
+    await expect(
+      readSettled(() => {
+        calls += 1;
+        throw failure;
+      }, fake),
+    ).rejects.toBe(failure);
+    expect(calls).toBe(1);
+    expect(fake.now()).toBe(0);
+  });
+
+  it('fails closed on an unknown error instead of treating SyntaxError as transient', async () => {
+    const fake = clock();
+    const failure = new SyntaxError('bug outside the response parser');
+    let calls = 0;
+
+    expect(classifyClosingReferenceReadError(failure)).toMatchObject({
+      disposition: 'abort',
+      reason: 'unknown',
+    });
+    await expect(
+      readSettled(() => {
+        calls += 1;
+        throw failure;
+      }, fake),
+    ).rejects.toBe(failure);
+    expect(calls).toBe(1);
+    expect(fake.now()).toBe(0);
   });
 });
 
