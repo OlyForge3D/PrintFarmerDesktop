@@ -79,6 +79,16 @@ exercised in CI.
   empty an external target. Use `npm run worktree:remove -- <path>`; it unlinks
   reparse points without recursive traversal, verifies their targets remain,
   and refuses removal if the preflight cannot prove that state.
+- Run removal from a registered worktree outside the target. Native filesystem
+  identity checks refuse callers inside the target even through a junction or
+  `subst` alias.
+- If Git fails after preflight and deregisters the target while leaving its
+  directory behind, use
+  `npm run worktree:remove -- --recover-stale <path>`. Recovery requires the
+  matching identity receipt written by the original removal, refuses registered,
+  current, main, unresolved, or ambiguous paths, repeats the junction-safety
+  checks, and then removes the stale tree without following links. It never
+  treats an arbitrary unregistered directory as recoverable.
 
 ## Printer Calibration source-derived contributions
 
