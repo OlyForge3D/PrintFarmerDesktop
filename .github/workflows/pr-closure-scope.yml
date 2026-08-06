@@ -4,9 +4,12 @@ name: PR closure scope
 #
 # Machine-readable form of the constraint the comment below already states in
 # prose: this workflow does not report under merge_group, so its check run MUST
-# NOT be a required context. Until now that was documented and unenforced —
-# scripts/check-merge-queue-contexts.mjs now checks it against live branch
-# protection, so making it required fails instead of deadlocking silently.
+# NOT be a required context. scripts/check-merge-queue-contexts.mjs holds that
+# classification, enforced by tests/mergeQueueReadiness.test.ts under
+# `npm run test`. Its comparison against live branch protection — the half that
+# would notice protection drifting from this line — needs a token, is run by
+# hand, and does not execute in CI, so making this context required would still
+# deadlock silently (#472).
 
 # Deliberately a separate workflow rather than a job in ci.yml.
 #
