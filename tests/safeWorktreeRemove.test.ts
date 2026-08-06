@@ -16,6 +16,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   DIAGNOSTIC_PREFIX,
+  listLinkedWorktrees,
   main,
   prepareWindowsWorktreeForRemoval,
   validateRemovalTarget,
@@ -104,6 +105,31 @@ describe('safe worktree removal validation', () => {
     expect(stderr.join('')).toContain('unresolved reparse point');
   });
 
+  it.each(['C:\\linked', 'C:\\linked\\nested'])(
+    'refuses caller location %s before Windows preflight',
+    (cwd) => {
+      const prepareWindows = vi.fn();
+      const runGit = vi.fn(() => ({ stdout: '', stderr: '', status: 0 }));
+      const stderr: string[] = [];
+      const status = main(['C:\\linked'], {
+        cwd,
+        platform: 'win32',
+        listWorktrees: () => ['C:\\repo', 'C:\\linked'],
+        prepareWindows,
+        runGit,
+        writeStdout: () => undefined,
+        writeStderr: (message) => stderr.push(message),
+      });
+
+      expect(status).toBe(1);
+      expect(prepareWindows).not.toHaveBeenCalled();
+      expect(runGit).not.toHaveBeenCalled();
+      expect(stderr.join('')).toContain(
+        'current directory is inside the worktree being removed',
+      );
+    },
+  );
+
   it('leaves non-Windows removal to git without running the NTFS preflight', () => {
     const prepareWindows = vi.fn();
     const runGit = vi.fn(() => ({ stdout: '', stderr: '', status: 0 }));
@@ -120,6 +146,30 @@ describe('safe worktree removal validation', () => {
     expect(status).toBe(0);
     expect(prepareWindows).not.toHaveBeenCalled();
     expect(runGit).toHaveBeenCalledWith('/', path.resolve('/linked'));
+  });
+});
+
+describe('linked-worktree registry contract', () => {
+  it('keeps the main worktree first as required by validateRemovalTarget', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'pfd-worktree-order-'));
+    const repository = path.join(root, 'repo');
+    const linked = path.join(root, 'linked');
+    try {
+      mkdirSync(repository);
+      git(['init', '--initial-branch=development'], repository);
+      git(['config', 'user.name', 'Worktree fixture'], repository);
+      git(['config', 'user.email', 'fixture@example.invalid'], repository);
+      writeFileSync(path.join(repository, 'tracked.txt'), 'fixture\n');
+      git(['add', 'tracked.txt'], repository);
+      git(['commit', '-m', 'fixture'], repository);
+      git(['worktree', 'add', '-b', 'linked', linked], repository);
+
+      expect(
+        listLinkedWorktrees(linked).map((entry) => path.resolve(entry)),
+      ).toEqual([repository, linked]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -203,6 +253,34 @@ describe.skipIf(!onWindows)('Windows junction removal guard', () => {
         ['/d', '/s', '/c', 'rmdir', arm.junction],
         { stdio: 'ignore' },
       );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses invocation from inside the target without unlinking the junction', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'pfd-junction-cwd-'));
+    try {
+      const arm = makeArm(root, 'caller');
+      const removal = spawnSync(process.execPath, [scriptPath, arm.worktree], {
+        cwd: arm.worktree,
+        encoding: 'utf8',
+      });
+
+      expect(removal.status).toBe(1);
+      expect(removal.stderr).toContain(
+        'current directory is inside the worktree being removed',
+      );
+      expect(lstatSync(arm.junction).isSymbolicLink()).toBe(true);
+      expect(readdirSync(arm.target)).toHaveLength(SENTINEL_COUNT);
+      expect(existsSync(arm.worktree)).toBe(true);
+
+      execFileSync(
+        process.env.ComSpec ?? 'cmd.exe',
+        ['/d', '/s', '/c', 'rmdir', arm.junction],
+        { stdio: 'ignore' },
+      );
+      git(['worktree', 'remove', '--force', arm.worktree], arm.repository);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

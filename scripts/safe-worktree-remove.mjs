@@ -60,6 +60,21 @@ export function listLinkedWorktrees(cwd = process.cwd()) {
   return parseWorktreeList(output);
 }
 
+export function validateCallerLocation(
+  cwd,
+  target,
+  platform = process.platform,
+) {
+  if (
+    normalizedPath(cwd, platform) === normalizedPath(target, platform) ||
+    isPathInside(cwd, target, platform)
+  ) {
+    throw new Error(
+      `${DIAGNOSTIC_PREFIX}: refusing because the current directory is inside the worktree being removed: ${cwd}`,
+    );
+  }
+}
+
 function targetKind(stats) {
   if (stats.isDirectory()) return 'directory';
   if (stats.isFile()) return 'file';
@@ -182,6 +197,8 @@ export function validateRemovalTarget(
     );
   }
   if (index === 0) {
+    // git-worktree(1) defines the main worktree as the first list entry, followed
+    // by linked worktrees. The integration test pins that ordering against Git.
     throw new Error(
       `${DIAGNOSTIC_PREFIX}: refusing to remove the repository's main worktree: ${target}`,
     );
@@ -215,6 +232,7 @@ export function main(
   try {
     const worktrees = listWorktrees(cwd);
     validateRemovalTarget(target, worktrees, platform);
+    validateCallerLocation(cwd, target, platform);
 
     if (platform === 'win32') {
       const prepared = prepareWindows(target);
