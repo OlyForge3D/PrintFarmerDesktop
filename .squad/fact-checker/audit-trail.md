@@ -4660,6 +4660,118 @@ stands on trunk and the author's branch is not in the reader set.
 
 ⇒ #121 is chartered → wired → armed → **exercised where the author is not standing.**
 
+### Run CH — a mechanism finding that was true when published and deliberately falsified four hours later
+
+**Read** `observed_at 2026-08-06T01:22:30Z`. Every revision, commit date and workflow blob cited below is
+immutable at the SHA named; the check-run and workflow-run counts are **mutable** and move whenever this
+pull request's body is edited, which is the subject of this entry.
+
+#### 1. The observation
+
+Polling CI at this branch's head `31fad487c41f5cb77cd97f0a384b0c14bf279e7a` returned **29 check-runs
+across 11 distinct names** with three separate `CI` workflow runs in flight at one immutable commit. The
+run list resolves it exactly:
+
+```
+CI                     pull_request  queued        1  01:17:56Z   <- body PATCH
+Stacked base           pull_request  success       1  01:17:56Z   <- body PATCH
+PR closure scope       pull_request  success       1  01:17:55Z   <- body PATCH
+Stacked base           pull_request  success       1  01:17:37Z   <- body PATCH
+PR closure scope       pull_request  success       1  01:17:37Z   <- body PATCH
+CI                     pull_request  in_progress   1  01:17:37Z   <- body PATCH
+Citation reachability  pull_request  success       1  01:13:11Z   <- push
+Sequencing hold        pull_request  success       1  01:13:11Z   <- push
+PR closure scope       pull_request  success       1  01:13:11Z   <- push
+Stacked base           pull_request  success       1  01:13:11Z   <- push
+CI                     pull_request  in_progress   1  01:13:11Z   <- push
+```
+
+All eleven are `run_attempt` 1, so **nothing here is a re-run**; three workflows fired again because the
+body was written twice.
+
+#### 2. The mechanism, with perfect separation and no blind rows
+
+Read from the five workflow blobs at this head:
+
+```
+edited PRESENT in `types:`   ci.yml · stacked-base.yml · pr-closure-scope.yml     re-fired  3 of 3
+edited ABSENT  in `types:`   citation-reachability.yml · sequencing-hold.yml      silent    2 of 2
+```
+
+Five workflows, five rows, no undiscriminated cases. The two that stayed silent are the two whose trigger
+lists stop at `opened, synchronize, reopened` — `sequencing-hold.yml` adds `labeled, unlabeled` and still
+lacks `edited`.
+
+#### 3. This refutes a sentence in run AE — and run AE was right when it wrote it
+
+Run AE published: **"`PR closure scope` fires on `pull_request: edited` and every other check fires only
+on push"**, supported by a genuine control arm — two body edits at `22:56:33Z` and `22:56:47Z` started
+that check **alone**, and the other eight did not fire.
+
+Dated at the objects:
+
+```
+pr-closure-scope.yml  gains `edited`  2026-08-04T09:21:29Z   BEFORE run AE's reading
+                      f436eb51377eb8d30d66060b16c35e2e0be0b470
+ci.yml                gains `edited`  2026-08-05T03:27:37Z   4h31m AFTER it
+                      9dec686e089627c0389bd8527258fa6ffe5e3659
+stacked-base.yml      gains `edited`  2026-08-05T03:46:39Z   4h50m AFTER it
+                      fe09ae93748b81334d6d8416c1eb21d93985cc48
+all three  --is-ancestor origin/development -> exit 0
+NEG CONTROL  this branch's head vs origin/development -> exit 1
+```
+
+⇒ **The observation was exact, the control arm was real, and the generalisation is now false because
+somebody changed the world.** The `ci.yml` commit's own subject states the intent: _"rerun the gate when
+the body changes"_ — a deliberate subscription, made for the same reason my closing-reference gate needs
+it. Cited at full length with a route, not by abbreviation: an abbreviation and its full form are two
+different citations to this harness, and quoting someone else's abbreviation creates a third.
+
+⇒ **A stale head SHA announces its perishability; a stale mechanism does not.** Run BS recorded that a
+claim is re-read and re-adjudicated while a withdrawal is treated as permanent. This is the third member:
+**a measured mechanism is treated as permanent too**, and it reads as structural rather than
+observational precisely because it explains something. Nothing in the grammar of _"X fires on Y and
+nothing else does"_ marks it as a reading of a mutable file.
+
+#### 4. The cost, and the general form
+
+The subscription that must exist is for **one job**: `check-closing-references` reads the pull-request
+body, so a body edit genuinely changes its input, and without `edited` a pull request could pass at open
+and then be edited to arm anything at all. That reasoning is correct and is recorded in `ci.yml`'s own
+comment.
+
+But `edited` is declared on the **workflow**, and `ci.yml` also carries Desktop, Sidecar, Release package
+and Dependency advisories across two runners — jobs whose only input is the tree, which did not move.
+Measured by counting jobs per run rather than by inference:
+
+```
+push event  01:13:11Z   5 workflow runs   11 jobs
+edit events 01:17:37Z + 01:17:56Z   6 workflow runs   18 jobs   (9 each, CI contributing 7)
+CONTROL     11 + 18 = 29 == the 29 check-runs observed at this head   PASS
+```
+
+⇒ **A workflow is the subscription unit and a job is not, so an event subscription chosen for one job's
+input is paid by every job in the file.** One job needed to re-read the body; **eighteen jobs ran, seven
+of them a full desktop build matrix over an unchanged tree**, and `mergeable_state` stayed at `blocked`
+— pending required contexts, not failing ones — until they drained.
+
+⇒ It also sharpens run AE's own conclusion rather than overturning it. Run AE found that **the act of
+publishing a figure is the event that increments it**; the increment was then one narrow check, and it is
+now three workflows and nine jobs per edit. **The defect grew ninefold while the sentence describing it
+stayed word-for-word true.**
+
+#### 5. What I would have concluded from the count alone
+
+`29 check-runs / 11 distinct` at one head is the shape of a laundered re-run — run BF's hazard, where
+`actions/runs` serves the latest attempt and a red is quietly replaced. Every row here is `run_attempt` 1,
+so the correct reading is _the same workflow dispatched three times by three events_, not _one workflow
+retried_.
+
+⇒ **A surplus of check-runs over distinct names has at least two causes with opposite meanings** — a
+re-run that may be concealing a failure, and an extra event subscription that conceals nothing — and the
+count cannot separate them. Only `run_attempt` and `created_at` can, and both were already required by
+run BF and run AE respectively for different reasons.
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
