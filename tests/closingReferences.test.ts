@@ -872,6 +872,68 @@ describe('parseBoundClosures', () => {
     const body = ['fixes #1', 'resolved #2', 'close #3'].join('\n\n');
     expect(parseBoundClosures(body)).toEqual([1, 2, 3]);
   });
+
+  /**
+   * #558. The separator is `[\s:]+`. Each accepted separator is pinned on its
+   * own below, so narrowing the class back to either single alternative turns
+   * exactly one of these red rather than leaving both green.
+   */
+  it('binds the whitespace separator', () => {
+    // Fails if the class is narrowed to `:+`.
+    expect(
+      parseBoundClosures(`This ${KEYWORD} #472 and nothing else.`),
+    ).toEqual([472]);
+  });
+
+  it('binds the colon separator, measured armed on PR #554', () => {
+    // Fails if the class is narrowed back to `\s+`, which is the defect.
+    // Measured: an ordinary prose phrase in this shape armed #436 across 13
+    // guard reads, and removing it retracted the reference on read 1.
+    const FIX = 'fi' + 'x';
+    expect(parseBoundClosures(`regardless of that ${FIX}: #436`)).toEqual([
+      436,
+    ]);
+    expect(parseBoundClosures(`${KEYWORD.replace('c', 'C')}: #472`)).toEqual([
+      472,
+    ]);
+  });
+
+  it('returns a non-empty result for a body that binds', () => {
+    // Vacuity control. Every other assertion in this block but the two above
+    // is satisfied by a function that returns [] unconditionally, so without
+    // this one the suite could go green on a parser that reads nothing.
+    expect(parseBoundClosures(`This ${KEYWORD} #231.`).length).toBeGreaterThan(
+      0,
+    );
+  });
+
+  it('does not bind a colon after a word that is not a closing keyword', () => {
+    // The widening is to the separator only. A regex that matched everything
+    // would pass the two separator tests above; these hold it to the keyword
+    // list, and the inert-region and mention-only controls hold the rest.
+    expect(parseBoundClosures('see: #436')).toEqual([]);
+    expect(parseBoundClosures('affects: #436')).toEqual([]);
+    expect(parseBoundClosures('unfixed: #436')).toEqual([]);
+  });
+
+  it('still ignores a bare mention', () => {
+    expect(parseBoundClosures('see #436')).toEqual([]);
+  });
+
+  it('still ignores the inert regions when the colon form appears in them', () => {
+    // The negative controls have to survive the widening in the widened form
+    // too, not only in the shape they were written against.
+    const FIX = 'fi' + 'x';
+    const body = [
+      '```',
+      `${FIX}: #436`,
+      '```',
+      '',
+      `an inline \`${FIX}: #472\` span`,
+      `<!-- ${FIX}: #558 -->`,
+    ].join('\n');
+    expect(parseBoundClosures(body)).toEqual([]);
+  });
 });
 
 describe('witnessContradiction', () => {
