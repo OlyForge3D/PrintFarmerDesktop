@@ -40,7 +40,32 @@ const liveWorkflows = readdirSync(workflowsDir)
   }));
 
 const HARNESS = 'scripts/check-citation-reachability.mjs';
+// The refusal mechanism the harness imports. #421's cross-repository arm imports
+// the same module with its own scan roots and its own floor: share the
+// mechanism, never the number, because the two corpora are disjoint.
+const CORPUS_MODULE = 'scripts/citation-corpus.mjs';
 const SCRIPT_NAME = 'check:citation-reachability';
+
+/**
+ * A floor under every arm that spawns the harness into a fixture directory.
+ *
+ * Node exits **1** when a module fails to resolve, which is the same code the harness
+ * uses for "these citations are broken". So an arm asserting a non-zero exit cannot
+ * distinguish the check reporting a defect from the check being unable to start, and
+ * an arm asserting the *absence* of a string is satisfied outright by a program that
+ * printed nothing. ARM G held three assertions and a crash satisfied two of them; only
+ * its demand for specific positive content failed, and that was luck rather than design.
+ *
+ * This is not the spawn failure `status === null` already covers - the spawn succeeded
+ * and the process ran. It died at import, one layer further in, and reported it through
+ * the verdict channel.
+ */
+const assertHarnessStarted = (out: string) => {
+  if (/ERR_MODULE_NOT_FOUND|Cannot find module/.test(out))
+    throw new Error(
+      `the harness never loaded, so this arm tested nothing - its fixture is missing a file the harness imports:\n${out}`,
+    );
+};
 
 const invokers = liveWorkflows.filter((w) =>
   w.text.includes(`npm run ${SCRIPT_NAME}`),
@@ -93,6 +118,70 @@ describe('the citation-reachability harness is invoked, not merely present', () 
 
   it('is enforced by a live workflow rather than a staged copy', () => {
     expect(isEnforced).toBe(true);
+  });
+
+  it('states a guarantee its own guards actually deliver', () => {
+    // #481. The header says the control arm is what distinguishes "no orphans"
+    // from "cannot see orphans". That was false as measured: the controls run on
+    // inputs the harness supplies itself, so they passed unchanged throughout the
+    // defect, while a renamed scan root produced `OK` with every count at zero.
+    // They are necessary and not sufficient.
+    //
+    // The header correction is NOT in this commit. `.github/workflows/` cannot be
+    // written by this branch's token - it lacks the `workflow` OAuth scope, the
+    // same constraint recorded above - so the wording change is delivered as a
+    // maintainer patch on the pull request. Asserting the new wording here would
+    // make this suite fail until a human acts, which reports the token rather
+    // than the workflow.
+    //
+    // What is assertable now, and is the load-bearing half: every guard family
+    // the distinction actually rests on must exist where it is claimed to. If one
+    // is deleted, this fails whether or not the header was ever corrected.
+    const harness = read(HARNESS);
+    const corpus = read(CORPUS_MODULE);
+
+    // reader side - depth
+    expect(workflowText).toMatch(/MAINLINE_FLOOR/);
+    expect(harness).toContain('INCONCLUSIVE: this is a shallow clone');
+    // corpus side - the two guards added for #481. Matched on the declaration and
+    // the call rather than on the bare name: `toContain('CITATION_FLOOR')` is
+    // satisfied by `CITATION_FLOOR_X`, so it survives a rename that removes the
+    // guard. Measured - that mutation stayed green until these were tightened.
+    expect(harness).toMatch(/const CITATION_FLOOR = \d+;/);
+    expect(harness).toMatch(
+      /requireCorpusFloor\(\{\s*count: cited\.size,\s*floor,?\s*\}\)/,
+    );
+    // Whitespace-tolerant: prettier reflows this ternary across lines, and a
+    // formatter is a mutation operator this file does not control. Measured -
+    // an exact-spacing version of the next assertion broke on `prettier --write`
+    // with the guard entirely intact, which is a false positive, not a finding.
+    expect(harness).toMatch(/floorArg\s*\?\s*Number\(floorArg\.slice/);
+    expect(harness).toMatch(/:\s*CITATION_FLOOR;/);
+    expect(harness).toMatch(/requireScanRoots\(loadCorpus\(FILES\)\)/);
+    expect(corpus).toContain('a scan root is missing or unreadable');
+    // classifier side
+    expect(harness).toContain('CONTROL FAILED');
+
+    // The floor must be stated by the caller, never by the shared mechanism -
+    // #421's corpus is disjoint, so a shared constant would be wrong for one of
+    // them by construction.
+    expect(corpus).not.toMatch(/const CITATION_FLOOR/);
+
+    // `--floor` exists for synthetic fixtures whose ledger is built by hand. An
+    // armed invocation must never pass it, or the guard is unarmed by the very
+    // thing that runs it - and unlike an environment variable, a flag has to be
+    // written here to take effect, so its absence is assertable.
+    expect(read('package.json')).not.toContain('--floor');
+    expect(workflowText).not.toContain('--floor');
+    // Positive control: the flag is real and the harness does parse it, so the
+    // two assertions above are absences of something that exists.
+    expect(harness).toContain('--floor=');
+
+    // Negative control: strings a reader might expect and these files do not
+    // carry, so the assertions above are not passing on a substring of
+    // something else.
+    expect(harness).not.toContain('CORPUS_FLOOR');
+    expect(workflowText).not.toContain('CITATION_FLOOR');
   });
 
   it('subscribes to pull_request, the only event carrying the branch to check', () => {
@@ -258,13 +347,24 @@ describe('a declared twin is checked for being a twin', () => {
       ].join('\n'),
     );
 
+  // These fixtures build a two-citation ledger by hand, which sits below the corpus floor the
+  // harness carries for this repository. `--floor=0` says so explicitly rather than leaving the
+  // arms to fail for a reason none of them is about. The floor itself is exercised in
+  // `the harness refuses to publish a verdict it cannot support`, and no armed invocation passes
+  // this flag - asserted in `states a guarantee its own guards actually deliver`.
   const runHarness = (dir: string) => {
-    const r = spawnSync('node', ['scripts/check-citation-reachability.mjs'], {
-      cwd: dir,
-      encoding: 'utf8',
-      maxBuffer: 1 << 28,
-    });
-    return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+    const r = spawnSync(
+      'node',
+      ['scripts/check-citation-reachability.mjs', '--floor=0'],
+      {
+        cwd: dir,
+        encoding: 'utf8',
+        maxBuffer: 1 << 28,
+      },
+    );
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    assertHarnessStarted(out);
+    return { status: r.status, out };
   };
 
   /**
@@ -288,10 +388,12 @@ describe('a declared twin is checked for being a twin', () => {
     execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
     mkdirSync(path.join(dir, 'scripts'), { recursive: true });
     mkdirSync(path.join(dir, '.squad', 'fact-checker'), { recursive: true });
-    copyFileSync(
-      path.join(repositoryRoot, HARNESS),
-      path.join(dir, 'scripts', 'check-citation-reachability.mjs'),
-    );
+    for (const script of [HARNESS, CORPUS_MODULE]) {
+      copyFileSync(
+        path.join(repositoryRoot, script),
+        path.join(dir, script.replace(/\//g, path.sep)),
+      );
+    }
     writeFileSync(path.join(dir, '.squad', 'fact-checker', 'policy.md'), '');
 
     const notes = path.join(dir, 'notes.md');
@@ -409,6 +511,101 @@ describe('a declared twin is checked for being a twin', () => {
   });
 
   /**
+   * The hint path, which is where #413 actually bites this harness.
+   *
+   * `git patch-id --stable` hashes context lines, so a true twin that landed after somebody
+   * else appended carries a different id. The *verdict* never depended on that - it uses the
+   * containment test, which is why ARM B has been exercising this hazard since before the
+   * issue was filed - but the authoring hint did, and it degraded on exactly the append-only
+   * ledger every citation here points at.
+   *
+   * The failure this guards is not a false ORPHAN. The revision is an orphan either way. What
+   * was lost is the line naming the commit to declare, and a bare orphan carrying no candidate
+   * reads as "there is no twin", which is the opposite of the truth.
+   */
+  it('ARM F: names a candidate twin the patch-id cannot see, without rescuing the verdict', () => {
+    const { dir, cited, genuineTwin } = fixture();
+    ledger(dir, cited, null);
+
+    // Premise, asserted rather than assumed: unless patch-id genuinely fails on this pair the
+    // arm passes without exercising the hazard, and a green would mean nothing.
+    const patchId = (rev: string) =>
+      execFileSync('git', ['patch-id', '--stable'], {
+        input: execFileSync('git', ['-C', dir, 'show', rev], {
+          encoding: 'utf8',
+          maxBuffer: 1 << 28,
+        }),
+        encoding: 'utf8',
+      }).split(' ')[0];
+    expect(patchId(cited)).not.toBe(patchId(genuineTwin));
+
+    const { status, out } = runHarness(dir);
+
+    expect(out).toContain(`candidate twin ${genuineTwin.slice(0, 8)}`);
+    expect(out).toContain('patch-id differs');
+
+    // The hint is a remedy, never a verdict. An undeclared orphan stays an orphan and the
+    // harness still exits non-zero, or the aid would have become the pass it must never be.
+    expect(out).toContain('ORPHAN');
+    expect(status).toBe(1);
+  });
+
+  it('ARM G: offers no candidate when nothing in reach contains the cited lines', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'nocand-'));
+    made.push(dir);
+    execFileSync('git', ['-C', dir, 'init', '-q'], { stdio: 'ignore' });
+    execFileSync('git', [
+      '-C',
+      dir,
+      'config',
+      'user.email',
+      't@example.invalid',
+    ]);
+    execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
+    mkdirSync(path.join(dir, 'scripts'), { recursive: true });
+    mkdirSync(path.join(dir, '.squad', 'fact-checker'), { recursive: true });
+    // Both files, because the harness imports the second one. This fixture named its
+    // single file literally while its three siblings copy a list, so #495's extraction
+    // of the refusal mechanism reached them and not this one.
+    for (const script of [HARNESS, CORPUS_MODULE])
+      copyFileSync(
+        path.join(repositoryRoot, script),
+        path.join(dir, script.replace(/\//g, path.sep)),
+      );
+    writeFileSync(path.join(dir, '.squad', 'fact-checker', 'policy.md'), '');
+
+    const notes = path.join(dir, 'notes.md');
+    writeFileSync(notes, 'opening line\n');
+    ledger(dir, '0'.repeat(40), null);
+    commit(dir, 'seed');
+
+    writeFileSync(notes, 'opening line\na finding that is never re-added\n');
+    const orphan = commit(dir, 'the finding');
+    execFileSync('git', ['-C', dir, 'reset', '-q', '--hard', 'HEAD~1'], {
+      stdio: 'ignore',
+    });
+
+    writeFileSync(path.join(dir, 'other.md'), 'entirely unrelated\n');
+    commit(dir, 'unrelated work');
+    ledger(dir, orphan, null);
+
+    const { status, out } = runHarness(dir);
+
+    // Without this arm, "ARM F found a candidate" is equally consistent with a fallback that
+    // matches anything it is shown - the containment test runs over every commit in reach, and
+    // a rule loose enough to always match would look identical on ARM F alone.
+    //
+    // Stated plainly because an unmarked always-green test is its own defect: this arm passes
+    // against the pre-fix harness as well, and is meant to. Measured by replaying the harness
+    // at the parent commit with both arms present - ARM F fails there, ARM G passes. It is a
+    // bound on the fallback's looseness, not a detector of the defect, and only ARM F carries
+    // the claim that the repair does anything.
+    expect(out).toContain('no declared twin, undeclared');
+    expect(out).not.toContain('candidate twin');
+    expect(status).toBe(1);
+  });
+
+  /**
    * The regression guard for the fix that was nearly shipped instead of this one.
    *
    * Every twin declaration in this repository names a squash - 41 commits of #162 collapsed
@@ -435,10 +632,12 @@ describe('a declared twin is checked for being a twin', () => {
     execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
     mkdirSync(path.join(dir, 'scripts'), { recursive: true });
     mkdirSync(path.join(dir, '.squad', 'fact-checker'), { recursive: true });
-    copyFileSync(
-      path.join(repositoryRoot, HARNESS),
-      path.join(dir, 'scripts', 'check-citation-reachability.mjs'),
-    );
+    for (const script of [HARNESS, CORPUS_MODULE]) {
+      copyFileSync(
+        path.join(repositoryRoot, script),
+        path.join(dir, script.replace(/\//g, path.sep)),
+      );
+    }
     writeFileSync(path.join(dir, '.squad', 'fact-checker', 'policy.md'), '');
 
     const notes = path.join(dir, 'notes.md');
@@ -555,10 +754,12 @@ describe('the harness refuses to publish a verdict it cannot support', () => {
   const stage = (dir: string) => {
     mkdirSync(path.join(dir, 'scripts'), { recursive: true });
     mkdirSync(path.join(dir, '.squad', 'fact-checker'), { recursive: true });
-    copyFileSync(
-      path.join(repositoryRoot, HARNESS),
-      path.join(dir, 'scripts', 'check-citation-reachability.mjs'),
-    );
+    for (const script of [HARNESS, CORPUS_MODULE]) {
+      copyFileSync(
+        path.join(repositoryRoot, script),
+        path.join(dir, script.replace(/\//g, path.sep)),
+      );
+    }
     for (const f of ['audit-trail.md', 'policy.md']) {
       copyFileSync(
         path.join(repositoryRoot, '.squad', 'fact-checker', f),
@@ -581,7 +782,9 @@ describe('the harness refuses to publish a verdict it cannot support', () => {
       encoding: 'utf8',
       maxBuffer: 1 << 28,
     });
-    return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    assertHarnessStarted(out);
+    return { status: r.status, out };
   };
 
   const publishedAVerdict = (out: string) =>
@@ -632,5 +835,151 @@ describe('the harness refuses to publish a verdict it cannot support', () => {
     // A count decides nothing until its scope is stated, so the verdict carries
     // the revisions it was computed against rather than leaving them implied.
     expect(out).toMatch(/reader revisions: .+\(\d+ commits reachable\)/);
+  });
+
+  /**
+   * #481. The two tests above cover a reader that cannot resolve revisions. Neither
+   * covers a *corpus* that is not there, and that is a separate blind arm: the scan
+   * roots are hardcoded paths, so renaming `.squad/fact-checker/audit-trail.md`
+   * made the shipping harness print `OK - every cited revision is reachable` and
+   * exit 0 with REACHABLE 0 / TWIN 0 / DECLARED 0 / ORPHAN 0 - while every
+   * self-control still passed, because the controls certify the classifier and
+   * never the corpus. An empty corpus satisfies "every cited revision is
+   * reachable" vacuously, and a gate that reports clean because it examined
+   * nothing is worse than no gate, because it also reports confidence.
+   *
+   * The obvious repair inverts the defect into a check that cannot tell "broken"
+   * from "fine", so the negative control below is not decoration: a floor that
+   * always refuses is exactly as useless as one that always passes, and these
+   * three cases run together so the refusals are shown to discriminate.
+   */
+  const seeded = (prefix: string) => {
+    const dir = newRepo(prefix);
+    execFileSync('git', [
+      '-C',
+      dir,
+      'config',
+      'user.email',
+      't@example.invalid',
+    ]);
+    execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
+    writeFileSync(path.join(dir, 'seed.txt'), 'seed\n');
+    execFileSync('git', ['-C', dir, 'add', '-A'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', dir, 'commit', '-qm', 'seed'], {
+      stdio: 'ignore',
+    });
+    return dir;
+  };
+
+  // Both roots, because they are not symmetric and only one of them is covered
+  // twice. Measured at 6a8bc7a0: audit-trail.md carries all 122 cited SHAs (436
+  // occurrences) and policy.md carries 0. So losing audit-trail.md also collapses
+  // the corpus and the floor would catch it as a backstop, while losing policy.md
+  // changes no count at all and the preflight is the only thing that can see it.
+  // Testing only the loud root would leave the guard's whole reason for existing
+  // untested.
+  for (const root of ['audit-trail.md', 'policy.md']) {
+    it(`withholds the verdict where the scan root ${root} has moved or been removed`, () => {
+      const dir = seeded(`rootless-${root.replace(/\W/g, '')}-`);
+      rmSync(path.join(dir, '.squad', 'fact-checker', root));
+
+      const { status, out } = runHarness(dir);
+
+      expect(status).toBe(2);
+      expect(out).toContain('INCONCLUSIVE');
+      expect(out).toContain(root);
+      expect(publishedAVerdict(out)).toBe(false);
+
+      // Specifically not the empty tally the defect produced.
+      expect(out).not.toContain('REACHABLE 0   TWIN 0   DECLARED 0   ORPHAN 0');
+    });
+  }
+
+  it('withholds the verdict where the roots are readable but the corpus has collapsed', () => {
+    const dir = seeded('stripped-');
+    for (const f of ['audit-trail.md', 'policy.md']) {
+      const at = path.join(dir, '.squad', 'fact-checker', f);
+      writeFileSync(
+        at,
+        readFileSync(at, 'utf8').replace(/`[0-9a-f]{7,40}`/g, '`REDACTED`'),
+      );
+    }
+
+    const { status, out } = runHarness(dir);
+
+    expect(status).toBe(2);
+    expect(out).toContain('INCONCLUSIVE');
+    expect(out).toMatch(/only 0 cited SHAs were found, below the floor of \d+/);
+    expect(publishedAVerdict(out)).toBe(false);
+
+    // The reason this arm needs a floor at all: the classifier is provably fine
+    // here. Its controls pass, and it is the corpus that is missing.
+    expect(out).not.toContain('CONTROL FAILED');
+    expect(out).toContain('control: known-present SHA classifies REACHABLE');
+  });
+
+  it('negative control: an intact corpus trips neither new guard, in any checkout', () => {
+    // Environment-independent by construction: a temp repo staged with the real,
+    // unmodified artifacts. This is the same corpus the two tests above mutate, so
+    // running it untouched here is what makes those two discriminating rather than
+    // merely loud. A guard that always refuses is exactly as useless as one that
+    // always passes, and only the pair shows which of the two this is.
+    const { status, out } = runHarness(seeded('intact-'));
+
+    expect(out).not.toContain('a scan root is missing or unreadable');
+    expect(out).not.toMatch(/below the floor of \d+/);
+    expect(status).not.toBe(2);
+    expect(publishedAVerdict(out)).toBe(true);
+
+    // The corpus was actually read, and read past the floor.
+    const cited = out.match(/cited SHAs: (\d+)/);
+    expect(cited).not.toBeNull();
+    expect(Number(cited![1])).toBeGreaterThan(90);
+  });
+
+  it('negative control: the working checkout passes outright where it can see', () => {
+    // `.github/workflows/ci.yml` runs this suite behind `actions/checkout@v4` with
+    // no `fetch-depth`, i.e. depth 1 - so the real repository's history is not
+    // available to this test in CI, and asserting exit 0 unconditionally would fail
+    // there for an environmental reason. Both branches below assert; neither skips.
+    const shallow =
+      execFileSync('git', [
+        '-C',
+        repositoryRoot,
+        'rev-parse',
+        '--is-shallow-repository',
+      ])
+        .toString()
+        .trim() === 'true';
+
+    const { status, out } = runHarness(repositoryRoot);
+
+    // Holds either way: the corpus is intact here, so whatever stops the run, it
+    // must not be one of the two guards added for #481.
+    expect(out).not.toContain('a scan root is missing or unreadable');
+    expect(out).not.toMatch(/below the floor of \d+/);
+
+    if (shallow) {
+      // The only thing allowed to stop an intact corpus in a narrowed checkout is
+      // the pre-existing reader guard, which is a different instrument.
+      expect(status).toBe(2);
+      expect(out).toContain('INCONCLUSIVE: this is a shallow clone');
+      return;
+    }
+
+    expect(status).toBe(0);
+    expect(out).toContain('OK - every cited revision is reachable');
+    expect(out).not.toContain('INCONCLUSIVE');
+
+    // Counts must be non-zero, or this control would also pass on the empty corpus
+    // the two tests above exist to reject.
+    const tally = out.match(
+      /REACHABLE (\d+)\s+TWIN (\d+)\s+DECLARED (\d+)\s+ORPHAN (\d+)/,
+    );
+    expect(tally).not.toBeNull();
+    const [, reachable, twin, declared] = tally!;
+    expect(Number(reachable)).toBeGreaterThan(0);
+    expect(Number(twin)).toBeGreaterThan(0);
+    expect(Number(declared)).toBeGreaterThan(0);
   });
 });

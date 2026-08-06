@@ -272,6 +272,27 @@ interface RequestPolicy {
   terminateOnTimeout: boolean;
 }
 
+/**
+ * The sidecar was reached, understood the request, and answered with an error.
+ *
+ * This exists so the condition is carried by the error's *type* rather than by
+ * which branch of a caller's `catch` happens to be reached. Every other
+ * rejection out of this client — a disposed client, an unreachable channel, a
+ * timeout, a restart mid-request — means the sidecar could not be *asked*. This
+ * one means it was asked and said no, so a caller that reports it as
+ * `sidecarUnavailable` names a cause the evidence positively excludes: the
+ * sidecar is manifestly running.
+ *
+ * It carries no code of its own because the wire envelope does not supply one;
+ * `message` is whatever the sidecar sent, and callers must not parse it.
+ */
+export class SidecarRespondedError extends Error {
+  constructor(detail?: string) {
+    super(detail ?? 'sidecar returned an error');
+    this.name = 'SidecarRespondedError';
+  }
+}
+
 export class SidecarClient {
   private disposed = false;
   private channel: SidecarChannel | null = null;
@@ -1297,8 +1318,22 @@ export class SidecarClient {
       this.consecutiveFailures = 0;
       pending.resolve(envelope.result);
     } else {
-      this.recordFailure();
-      pending.reject(new Error(envelope.error ?? 'sidecar returned an error'));
+      // Deliberately does not call recordFailure(). `consecutiveFailures` gates
+      // ensureChannel(), whose ceiling refuses to create a channel and reports
+      // "sidecar unavailable after N consecutive failures" — but a well-formed
+      // error envelope is positive evidence that the sidecar is running,
+      // connected and parsing requests. Counting it meant five rejected
+      // requests in a row (five unopenable models, say) stopped a healthy
+      // sidecar from being contacted at all, under a message that could only
+      // ever be false: the counter reached the ceiling because the sidecar
+      // answered.
+      //
+      // The streak is left untouched rather than reset. Reaching the sidecar
+      // proves it is alive now, so resetting is arguable — but a flapping
+      // sidecar that answers once between transport faults should still be
+      // able to trip the ceiling, and there is no evidence here for the more
+      // permissive rule. The four transport call sites are unchanged.
+      pending.reject(new SidecarRespondedError(envelope.error));
     }
   }
 

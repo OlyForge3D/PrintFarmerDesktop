@@ -11,11 +11,48 @@ on:
   push:
     branches: [development, main]
   pull_request:
-  # Inert until a merge queue exists — GitHub dispatches `merge_group` only when
-  # one is enabled. Without this, a queued entry's required contexts are never
-  # reported and the queue hangs rather than fails. See
-  # tests/ciWorkflowTriggers.test.ts.
+    # `edited` is not in GitHub's default set (opened, synchronize, reopened),
+    # and the PR body is the input the closing-reference check reads -- both
+    # the declaration and the armed references derive from it. Without this,
+    # a PR passes the check at open and can then be edited to arm anything at
+    # all without the gate running again: the one field the check is about is
+    # the one field that did not retrigger it.
+    types: [opened, synchronize, reopened, edited]
+  # GitHub dispatches `merge_group` only when a merge queue is enabled. That has
+  # happened: two entries were dispatched on 2026-08-04 against base db03fbf1,
+  # 54 seconds apart, and both were cancelled --
+  #
+  #   30889162530  gh-readonly-queue/development/pr-227-db03fbf1  07:46:33Z
+  #   30889221719  gh-readonly-queue/development/pr-221-db03fbf1  07:47:27Z
+  #
+  # `required_merge_queue` is absent from branch protection now, so the queue
+  # was enabled, dispatched those two, and was turned off again. What cancelled
+  # them is not established and this comment does not guess; ci.yml declared no
+  # `concurrency:` at the time, so it was not this file.
+  #
+  # The previous wording here read "Inert until a merge queue exists", which is
+  # defensible as written but reads as "this branch has never executed" -- and a
+  # reviewer relied on it and stated a false premise. Without this trigger a
+  # queued entry's required contexts are never reported and the queue hangs
+  # rather than fails. See tests/ciWorkflowTriggers.test.ts.
   merge_group:
+
+concurrency:
+  # Unique per pull request AND per merge-queue entry. `github.ref` is
+  # `refs/pull/N/merge` for a pull_request, and
+  # `refs/heads/gh-readonly-queue/<base>/pr-N-<sha>` for a merge_group, so two
+  # queued entries never share a group and cannot cancel one another -- the
+  # failure mode tests/ciWorkflowTriggers.test.ts bans the unkeyed form for.
+  group: ci-${{ github.ref }}
+  # Only a pull_request run may be cancelled. A merge_group entry must reach a
+  # conclusion: `cancelled` is not a success conclusion, so cancelling one
+  # evicts the entry from the queue for a reason unrelated to its own changes.
+  # Push runs on the long-lived branches are release inputs and are likewise
+  # never cancelled. Superseding a stale pull_request run is the entire point:
+  # without it a run that is still in flight when its head is replaced still
+  # publishes a green, and that green is attributed to a commit that is no
+  # longer the head (#405).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
