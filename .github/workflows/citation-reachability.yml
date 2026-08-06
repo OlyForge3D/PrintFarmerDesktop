@@ -5,8 +5,9 @@ name: Citation reachability
 # Runs on pull_request, on pushes to the trunk, and on a daily schedule. It
 # emits a check run and does NOT report for a queued entry, so this context
 # MUST NOT be added to a branch ruleset's required contexts.
-# scripts/check-merge-queue-contexts.mjs enforces that against live branch
-# protection rather than leaving it to this comment.
+# scripts/check-merge-queue-contexts.mjs holds that classification, enforced by
+# tests/mergeQueueReadiness.test.ts under `npm run test`; its live
+# branch-protection comparison is run by hand (#472).
 #
 # "Advisory" here means "no ruleset may require it". It does NOT mean
 # continue-on-error, and this job deliberately has none: a check that cannot
