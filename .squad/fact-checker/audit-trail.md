@@ -4503,6 +4503,163 @@ Posted as a superseding comment on #428; sections 1, 2, 4, 5 and 6 of the supers
 Round-trip verified by **equality**, with size reported in **UTF-8 bytes** per run CE rather than in
 a parser-dependent character count.
 
+### Run CG — a fixture that named its file literally, and a crash that satisfied two of three assertions
+
+Read `observed_at 2026-08-06T00:41:00Z` unless stated otherwise; every revision below is
+reachable from `HEAD` or `origin/development` at the time of writing.
+
+#### 1. The lead — the module under test was split by a third party and one arm silently stopped testing anything
+
+PR #495 extracted the harness's refusal mechanism into `scripts/citation-corpus.mjs` and
+generalised the suite's fixtures to copy a **list** of scripts into the temporary repository.
+Three of the four fixtures in `tests/citationReachability.test.ts` already copied a list. The
+fourth — ARM G — named its one file literally. After the merge that fixture no longer contained
+a file the harness imports, so **the harness could not start**.
+
+Node exits **1** on a module-resolution failure. That is the same code the harness uses for
+_citations are broken_. ARM G asserts three things, and two of them were satisfied by a program
+that never ran:
+
+```
+expect(out).not.toContain('candidate twin')   satisfied — a crashed process emits no such text
+expect(status).toBe(1)                        satisfied — ERR_MODULE_NOT_FOUND also exits 1
+expect(out).toContain(<specific positive text>) FAILED   — the only assertion with content in it
+```
+
+⇒ The failure was **luck, not detection**. Had ARM G been written entirely in negative space —
+the natural shape for _the fallback must not match anything_ — it would have gone green against
+a program that did not exist. And ARM G is the arm this ledger labelled **"not a detector"** in
+run BR: negative-space assertions plus an exit code that collides with the crash code are
+exactly the assertions that go vacuous.
+
+⇒ Strictly harder than run AA's `status === null`. There the runner failed to spawn and the
+sentinel was outside the range of legitimate values. **Here the spawn succeeded, the process
+ran, it wrote to stderr, and it exited with the code that means the check did its job.** No
+field distinguishes the two conditions.
+
+**Repaired at the fixture** (copy `[HARNESS, CORPUS_MODULE]`, matching its three siblings) and
+**at the class**: a shared `assertHarnessStarted` floor now runs inside both `runHarness`
+helpers, throwing on `ERR_MODULE_NOT_FOUND` / `Cannot find module` before any assertion is
+evaluated.
+
+**Non-vacuity control run.** Reverting the fixture to the single literal file makes the floor
+fire with its own message: exit 1, `1 failed | 24 skipped (25)`. Restoring it: **exit 0,
+25 passed**. The floor's first answer is not its only answer.
+
+#### 2. The attribution, derived, with a control that discriminates
+
+The obvious reading is that #495 broke my arm. It cannot have.
+
+```
+tests/citationReachability.test.ts at origin/development   ARM F 0   ARM G 0   865 lines
+tests/citationReachability.test.ts at HEAD                 ARM F 5   ARM G 2   956 lines
+git log -S 'ARM G'  ->  4b16a8d8  "restore the twin hint that patch-id context-sensitivity destroys"
+4b16a8d8 --is-ancestor origin/development  ->  exit 1     NOT on trunk
+4b16a8d8 --is-ancestor HEAD                ->  exit 0     on my branch
+```
+
+`4b16a8d8` is **my own commit**, run BR. ARM F and ARM G exist only on this unmerged branch, so
+#495's fixture-generalisation pass could not have reached them and its author could not have
+seen them.
+
+**The discriminating control — is either side red alone?**
+
+```
+c9c2bb85   trunk parent  (subject: Merge pull request #495 …)   exit 0   23 passed (23)
+bac4e2cf   my parent     (db3d9866 + d098ec77)                  exit 0   19 passed (19)
+533cd52b   the merge of the two                                 exit 1   1 failed | 24 passed (25)
+```
+
+⇒ **Both parents green; the merge red.** Git merged the two cleanly and raised no textual
+conflict, because the two changes touch different regions of one file. The defect exists **only
+in the union**, which nothing evaluates: every gate here is a function of one tree.
+
+⇒ This is run AK's #322 finding (`62e8808` + `eb68310`, red only in the union) **reproduced in
+my own tree, by my own commit, against a stranger's**. Neither author could have found it from
+their own side.
+
+#### 3. The cleanup destroyed the environment, and it presented as exit 1
+
+Run CF introduced a technique for taking a reader position at an arbitrary revision: a detached
+worktree plus a `mklink /J` junction pointing its `node_modules` at the main checkout's. **It is
+safe to create and destructive to tear down.**
+
+```
+git worktree remove --force <wt>   ->  followed the junction and recursively deleted the TARGET
+this worktree's node_modules       ->  1 entry remaining (.vite-temp); vitest absent
+main checkout node_modules         ->  568 entries, vitest present   <- blast radius measured
+git status --porcelain             ->  only the intended test edit; the repo tree undamaged
+```
+
+It presents as **vitest exit 1** — `failed to load config`, `UNRESOLVED_IMPORT
+'@vitejs/plugin-react'`, `ERR_MODULE_NOT_FOUND: vitest` — i.e. **the same exit code as a genuine
+test failure**, which is this round's own lead finding arriving in the cleanup step of the round
+that discovered it.
+
+⇒ **The only reason no neighbouring session was damaged is which directory I happened to
+junction.** Had the junction pointed at the main checkout's `node_modules` — the more obvious
+choice, since that is the store being borrowed — the forced removal would have deleted another
+session's dependencies with no signal to them and no event either party could observe. Run BB's
+shared-object-store hazard, arriving through the filesystem instead of through git.
+
+**Safe teardown, recorded:** `cmd /c rmdir "<wt>\node_modules"` first, which unlinks a junction
+without recursing, **then** `git worktree remove`. Recovery is `npm ci`; nothing tracked was lost.
+
+#### 4. Identical totals across an instrument replacement, and a new disclosure axis
+
+#495 rewrote `scripts/check-citation-reachability.mjs`. Its report is byte-identical before and
+after: **REACHABLE 97 · TWIN 45 · DECLARED 17 · ORPHAN 0**. A purely numeric comparison of the
+old and new instrument reports _no change_.
+
+It is blind to what the rewrite added. The new harness annotates each twin with the evidence
+that supports it, and the split is **34 accepted on the declaration alone / 11 content-verified**.
+
+⇒ Run R's finding (a positive control proves the data is live, not that the predicate asks the
+intended question) arriving on **instrument replacement**: identical totals are not evidence
+that two instruments answer the same question. ⇒ And the standing fact it discloses has never
+been published: **34 of my 45 twin declarations rest on the declaration alone.**
+
+#### 5. Three maintainer merges falsified correctly-measured published figures
+
+While this session was interrupted, a maintainer merged `origin/development` into this branch
+twice (`db3d9866` → `bac4e2cf` → `533cd52b`). Each merge falsified a figure that was correct at
+the SHA I pushed, with no act of mine and no notification:
+
+```
+instance 1   the test count moved 35 -> 61 -> 67          understating, in every case
+instance 2   the instrument itself was replaced           the figure held; the question changed
+instance 3   the branch was left RED                      invisible from every figure I publish
+```
+
+⇒ The direction is **understating**, and run AP's rule applies: an under-claiming figure
+embarrasses nobody, so nothing re-reads it. Instance three is the serious one — a red branch is
+not a figure at all, so no discipline about figures can reach it.
+
+#### 6. Two instrument notes
+
+`Select-String -Pattern "Tests +\d"` returns **zero** for a line that plainly exists: vitest
+emits ANSI escapes between the label and the digits. The strip
+`[regex]::Replace($raw, "<ESC>\[[0-9;]*m", "")` works, and was used for every count above. It
+repairs the **summary** line and not the per-file lines, which carry escapes in other positions.
+
+`continue-on-error` in `.github/workflows/` counts **1** and means **0**: the single hit is the
+comment forbidding it. Run BN's use/mention finding, still live in the workflow directory.
+
+#### 7. The positive result, and it is the assignment closing
+
+`#531` merged as a **two-parent** merge at `2026-08-05T23:09:31Z`. Trunk's
+`.github/workflows/citation-reachability.yml` now carries `pull_request`, **`push`,
+`schedule` and `workflow_dispatch`**, and the trunk trigger **has fired**: 10 `push` runs, 10
+success, every one with `head_branch=development`, and the step _"Verify every cited revision is
+reachable, twinned, or declared"_ recorded **success** — executed, not skipped.
+
+⇒ Run BV's objection was that forty greens were forty readings from one blind position, because
+on a `pull_request` run `HEAD` is the branch tip and a PR citing its own commits classifies them
+REACHABLE by construction. **That objection does not reach the push position**, where the run
+stands on trunk and the author's branch is not in the reader set.
+
+⇒ #121 is chartered → wired → armed → **exercised where the author is not standing.**
+
 ## Superseded citations and their live twins
 
 **Post-squash declaration (#162).** The 44 entries below name 41 distinct commits on the pull-request branch — the surplus rows are revisions written at more than one length, because a citation is matched as a string and a declaration at one abbreviation does not cover another. #162 was squash-merged, so every one of them collapsed into `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` and the branch was deleted; verified in a fresh full clone of `development`, in which all 41 are unresolvable rather than merely unreachable. `3fac5567cbf0bea23f8e22a9b601e41c5ae0bf2d` is the live rendering of each, which is what a twin declaration asserts. **The citations were accurate when written and the merge method destroyed the objects they named** — the failure this block exists to absorb, arriving through the one operation nobody had to opt into.
