@@ -3,8 +3,9 @@
 /**
  * Nothing on the untrusted calibration input path expands its input (#158).
  *
- * #158 asks for one malicious-input corpus across the four untrusted
- * calibration entry points, and lists thirteen vectors. Two of them —
+ * #158 asks for one malicious-input corpus across three untrusted calibration
+ * input classes represented by four source entry files. It lists thirteen
+ * vectors, and two of them —
  * `zip / archive decompression bomb` and `decompression-bomb image in a staged
  * photo` — are **not applicable to any entry point**, and the issue's own
  * acceptance criteria say a deliberately skipped pair must carry a reason.
@@ -12,7 +13,7 @@
  * Measured, the reason is an **absence**:
  *
  *   - no `node:zlib`, `gunzip`, `inflate`, `brotli` or archive reader is
- *     reachable from any of the four entry points;
+ *     reachable from any of the four source entry files;
  *   - no image decoder is a runtime dependency at all, and nothing decodes
  *     pixels. `calibrationImportV4` base64-decodes photo bytes, bounds them by
  *     `MAX_PHOTO_DECODED_BYTES`, and compares magic bytes. Bytes in, bytes
@@ -36,7 +37,7 @@
  *
  * ## Scope
  *
- * The closure is computed transitively from the four entry points through
+ * The closure is computed transitively from the four source entry files through
  * relative imports, rather than checking the four named files, because the
  * property has to hold for everything they can reach. `nativeImage` is included
  * in the banned set: it decodes images, and it is legitimate elsewhere in the
@@ -63,7 +64,7 @@ const repoRoot = path.resolve(
 );
 const mainDir = path.join(repoRoot, 'src', 'main');
 
-/** The four untrusted calibration entry points named by #158. */
+/** Four source entry files representing the three input classes in #158. */
 const ENTRY_POINTS = [
   'calibrationImportV4.ts', // legacy v4 backup files, native picker
   'orcaProfileDiscovery.ts', // upstream-Orca profiles, scanned from disk
@@ -79,88 +80,101 @@ const ENTRY_POINTS = [
 const EXPANDING_APIS: {
   pattern: RegExp;
   why: string;
-  samples: readonly string[];
 }[] = [
   {
     pattern:
-      /(?:\bfrom\s+['"](?:node:)?zlib['"]|\bimport\(\s*['"](?:node:)?zlib['"]\s*\))/,
+      /(?:\bfrom\s+['"](?:node:)?zlib['"]|\bimport\(\s*([`'"])(?:node:)?zlib\1\s*\))/,
     why: 'node:zlib (decompression)',
-    samples: [
-      "import { unzipSync } from 'node:zlib';",
-      "const zlib = await import('node:zlib');",
-      "const zlib = await import('zlib');",
-    ],
   },
   {
-    pattern: /\brequire\(\s*['"](?:node:)?zlib['"]\s*\)/,
+    pattern: /\brequire\(\s*([`'"])(?:node:)?zlib\1\s*\)/,
     why: 'zlib via require',
-    samples: ["const zlib = require('node:zlib');"],
   },
   {
     pattern: /\bcreateGunzip\b/,
     why: 'createGunzip',
-    samples: ['zlib.createGunzip();'],
   },
   {
     pattern: /\bcreateInflate(?:Raw)?\b/,
     why: 'createInflate',
-    samples: ['zlib.createInflateRaw();'],
   },
   {
     pattern: /\bcreateBrotliDecompress\b/,
     why: 'createBrotliDecompress',
-    samples: ['zlib.createBrotliDecompress();'],
   },
   {
     pattern: /\bgunzipSync\b/,
     why: 'gunzipSync',
-    samples: ['zlib.gunzipSync(bytes);'],
   },
   {
     pattern: /\binflateSync\b/,
     why: 'inflateSync',
-    samples: ['zlib.inflateSync(bytes);'],
   },
   {
     pattern: /\bbrotliDecompressSync\b/,
     why: 'brotliDecompressSync',
-    samples: ['zlib.brotliDecompressSync(bytes);'],
   },
   {
     pattern:
-      /(?:\bfrom\s+['"](?:adm-zip|yauzl|unzipper|node-stream-zip|decompress|tar|tar-stream|tar-fs)['"]|\bimport\(\s*['"](?:adm-zip|yauzl|unzipper|node-stream-zip|decompress|tar|tar-stream|tar-fs)['"]\s*\))/,
+      /(?:\bfrom\s+['"](?:adm-zip|yauzl|unzipper|node-stream-zip|decompress|tar|tar-stream|tar-fs|fflate|extract-zip)['"]|\b(?:import|require)\(\s*([`'"])(?:adm-zip|yauzl|unzipper|node-stream-zip|decompress|tar|tar-stream|tar-fs|fflate|extract-zip)\1\s*\))/,
     why: 'archive reader package',
-    samples: [
-      "import archive from 'adm-zip';",
-      "const archive = await import('adm-zip');",
-    ],
   },
   {
     pattern:
-      /(?:\bfrom\s+['"](?:sharp|jimp|canvas|pngjs|jpeg-js|image-size)['"]|\bimport\(\s*['"](?:sharp|jimp|canvas|pngjs|jpeg-js|image-size)['"]\s*\))/,
+      /(?:\bfrom\s+['"](?:sharp|jimp|canvas|pngjs|jpeg-js|image-size)['"]|\b(?:import|require)\(\s*([`'"])(?:sharp|jimp|canvas|pngjs|jpeg-js|image-size)\1\s*\))/,
     why: 'image decoder package',
-    samples: [
-      "import sharp from 'sharp';",
-      "const sharp = await import('sharp');",
-    ],
   },
   {
     pattern: /\bnativeImage\b/,
     why: 'electron nativeImage (decodes images)',
-    samples: ['nativeImage.createFromBuffer(bytes);'],
   },
 ];
 
+const EXPANDING_API_CASES: Readonly<Record<string, readonly string[]>> = {
+  'node:zlib (decompression)': [
+    "import { unzipSync } from 'node:zlib';",
+    "const zlib = await import('node:zlib');",
+    'const zlib = await import(`zlib`);',
+  ],
+  'zlib via require': [
+    "const zlib = require('node:zlib');",
+    'import zlib = require(`zlib`);',
+  ],
+  createGunzip: ['zlib.createGunzip();'],
+  createInflate: ['zlib.createInflateRaw();'],
+  createBrotliDecompress: ['zlib.createBrotliDecompress();'],
+  gunzipSync: ['zlib.gunzipSync(bytes);'],
+  inflateSync: ['zlib.inflateSync(bytes);'],
+  brotliDecompressSync: ['zlib.brotliDecompressSync(bytes);'],
+  'archive reader package': [
+    "import archive from 'adm-zip';",
+    "const archive = await import('fflate');",
+    'const archive = require(`extract-zip`);',
+  ],
+  'image decoder package': [
+    "import sharp from 'sharp';",
+    'const sharp = await import(`sharp`);',
+    "const image = require('jimp');",
+  ],
+  'electron nativeImage (decodes images)': [
+    'nativeImage.createFromBuffer(bytes);',
+  ],
+};
+
 /** Runtime dependencies that would make the above reachable at all. */
 const EXPANDING_PACKAGES =
-  /^(?:adm-zip|yauzl|unzipper|node-stream-zip|decompress|tar|tar-stream|tar-fs|sharp|jimp|canvas|pngjs|jpeg-js|image-size)$/;
+  /^(?:adm-zip|yauzl|unzipper|node-stream-zip|decompress|tar|tar-stream|tar-fs|fflate|extract-zip|sharp|jimp|canvas|pngjs|jpeg-js|image-size)$/;
 
 function resolveLocalImport(
   fromFile: string,
   specifier: string,
 ): string | null {
-  if (!specifier.startsWith('.')) return null;
-  const base = path.resolve(path.dirname(fromFile), specifier);
+  const base = specifier.startsWith('@shared/')
+    ? path.join(repoRoot, 'src', 'shared', specifier.slice('@shared/'.length))
+    : specifier.startsWith('.')
+      ? path.resolve(path.dirname(fromFile), specifier)
+      : null;
+  if (base === null) return null;
   // Source is authored as .ts and imported as .js.
   for (const candidate of [
     base.replace(/\.js$/, '.ts'),
@@ -173,6 +187,27 @@ function resolveLocalImport(
 }
 
 type NonLiteralReferenceKind = 'dynamic import' | 'require';
+
+function isRuntimeImport(node: ts.ImportDeclaration): boolean {
+  const clause = node.importClause;
+  if (clause === undefined) return true;
+  if (clause.isTypeOnly) return false;
+  if (clause.name !== undefined) return true;
+  if (clause.namedBindings === undefined) return false;
+  return (
+    !ts.isNamedImports(clause.namedBindings) ||
+    clause.namedBindings.elements.some((element) => !element.isTypeOnly)
+  );
+}
+
+function isRuntimeExport(node: ts.ExportDeclaration): boolean {
+  if (node.isTypeOnly) return false;
+  return (
+    node.exportClause === undefined ||
+    !ts.isNamedExports(node.exportClause) ||
+    node.exportClause.elements.some((element) => !element.isTypeOnly)
+  );
+}
 
 function literalSpecifier(
   expression: ts.Expression | undefined,
@@ -214,7 +249,10 @@ function moduleSpecifiers(file: string, source: string): string[] {
   };
 
   const visit = (node: ts.Node): void => {
-    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+    if (
+      (ts.isImportDeclaration(node) && isRuntimeImport(node)) ||
+      (ts.isExportDeclaration(node) && isRuntimeExport(node))
+    ) {
       if (
         node.moduleSpecifier !== undefined &&
         ts.isStringLiteralLike(node.moduleSpecifier)
@@ -223,6 +261,7 @@ function moduleSpecifiers(file: string, source: string): string[] {
       }
     } else if (
       ts.isImportEqualsDeclaration(node) &&
+      !node.isTypeOnly &&
       ts.isExternalModuleReference(node.moduleReference)
     ) {
       collectReference(
@@ -304,8 +343,78 @@ function expansionOffenders(
   pattern: RegExp,
 ): string[] {
   return [...closure]
-    .filter(([, source]) => pattern.test(source))
+    .filter(([, source]) => pattern.test(sourceForExpansionScan(source)))
     .map(([file]) => file);
+}
+
+function sourceForExpansionScan(source: string): string {
+  const masked = [...source];
+  const mask = (start: number, end: number): void => {
+    for (let index = start; index < end; index += 1) {
+      if (masked[index] !== '\n' && masked[index] !== '\r') masked[index] = ' ';
+    }
+  };
+  const restore = (start: number, end: number): void => {
+    for (let index = start; index < end; index += 1)
+      masked[index] = source[index]!;
+  };
+
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    false,
+    ts.LanguageVariant.Standard,
+    source,
+  );
+  for (
+    let token = scanner.scan();
+    token !== ts.SyntaxKind.EndOfFileToken;
+    token = scanner.scan()
+  ) {
+    if (
+      token === ts.SyntaxKind.SingleLineCommentTrivia ||
+      token === ts.SyntaxKind.MultiLineCommentTrivia ||
+      token === ts.SyntaxKind.StringLiteral ||
+      token === ts.SyntaxKind.NoSubstitutionTemplateLiteral
+    ) {
+      mask(scanner.getTokenPos(), scanner.getTextPos());
+    }
+  }
+
+  const sourceFile = ts.createSourceFile(
+    'expansion-scan.ts',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const visit = (node: ts.Node): void => {
+    if (
+      (ts.isImportDeclaration(node) && !isRuntimeImport(node)) ||
+      (ts.isExportDeclaration(node) && !isRuntimeExport(node)) ||
+      (ts.isImportEqualsDeclaration(node) && node.isTypeOnly)
+    ) {
+      mask(node.getStart(sourceFile), node.getEnd());
+    } else if (
+      (ts.isImportDeclaration(node) && isRuntimeImport(node)) ||
+      (ts.isExportDeclaration(node) && isRuntimeExport(node)) ||
+      (ts.isImportEqualsDeclaration(node) && !node.isTypeOnly) ||
+      (ts.isCallExpression(node) &&
+        (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+          (ts.isIdentifier(node.expression) &&
+            node.expression.text === 'require')))
+    ) {
+      restore(node.getStart(sourceFile), node.getEnd());
+    } else if (
+      (ts.isImportSpecifier(node) || ts.isExportSpecifier(node)) &&
+      node.isTypeOnly
+    ) {
+      mask(node.getStart(sourceFile), node.getEnd());
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+
+  return masked.join('');
 }
 
 function expansionMatches(
@@ -319,7 +428,7 @@ function expansionMatches(
   );
 }
 
-describe('the closure walker follows every supported module-reference form', () => {
+describe('the closure walker follows every module-reference form in scope', () => {
   it('anchors dynamic import and require traversal in the walker source', () => {
     const source = readFileSync(fileURLToPath(import.meta.url), 'utf8');
     const walkerStart = source.indexOf('function moduleSpecifiers(');
@@ -365,6 +474,9 @@ describe('the closure walker follows every supported module-reference form', () 
           "export { value } from './exported.js';",
           "const dynamic = import('./dynamic.js');",
           "const required = require('./required.js');",
+          "import importedEquals = require('./import-equals.js');",
+          "import type { Hidden } from './type-only.js';",
+          "export { type Hidden } from './export-type-only.js';",
           '/** import (issue #56). */',
         ].join('\n'),
       ),
@@ -373,6 +485,7 @@ describe('the closure walker follows every supported module-reference form', () 
       './exported.js',
       './dynamic.js',
       './required.js',
+      './import-equals.js',
     ]);
   });
 
@@ -416,9 +529,12 @@ describe('the closure walker follows every supported module-reference form', () 
 
   it.each([
     ['node:zlib', "const zlib = await import('node:zlib');"],
+    ['node:zlib template', 'const zlib = await import(`node:zlib`);'],
     ['archive reader', "const archive = await import('adm-zip');"],
+    ['archive require', "const archive = require('fflate');"],
     ['image decoder', "const image = await import('sharp');"],
-  ])('detects a banned %s dynamic package specifier', (_name, source) => {
+    ['image require', "const image = require('jimp');"],
+  ])('detects a banned %s package loader', (_name, source) => {
     withSourceFixture({ 'entry.ts': `${source}\n` }, (directory) => {
       const closure = reachableFromEntryPoints(directory, ['entry.ts']);
       expect(expansionMatches(closure)).toHaveLength(1);
@@ -508,6 +624,20 @@ describe('the closure walker follows every supported module-reference form', () 
       },
     );
   });
+
+  it('ignores expansion tokens in comments, strings, and type-only imports', () => {
+    const source = [
+      "import type { nativeImage } from 'electron';",
+      "import { type nativeImage, BrowserWindow } from 'electron';",
+      'const prose = "await import(\'node:zlib\') and gunzipSync";',
+      "// require('sharp');",
+      'export type { Decoder } from "jimp";',
+    ].join('\n');
+    const closure = new Map([['entry.ts', source]]);
+
+    expect(sourceForExpansionScan(source)).not.toContain('node:zlib');
+    expect(expansionMatches(closure)).toEqual([]);
+  });
 });
 
 describe('the untrusted calibration input path expands nothing', () => {
@@ -531,6 +661,12 @@ describe('the untrusted calibration input path expands nothing', () => {
     expect(closure.size).toBeGreaterThan(ENTRY_POINTS.length);
   });
 
+  it('resolves the runtime @shared alias instead of dropping it from the closure', () => {
+    expect(closure.has(path.join(repoRoot, 'src', 'shared', 'ipc.ts'))).toBe(
+      true,
+    );
+  });
+
   it.each(EXPANDING_APIS)(
     'does not reach $why anywhere in that closure',
     ({ pattern, why }) => {
@@ -545,15 +681,30 @@ describe('the untrusted calibration input path expands nothing', () => {
     },
   );
 
-  it.each(EXPANDING_APIS)(
-    'pins every $why detector and each supported module form',
-    ({ pattern, samples }) => {
-      for (const sample of samples) {
-        expect(pattern.test(sample), `did not detect: ${sample}`).toBe(true);
-      }
-      expect(pattern.test("const safe = await import('node:path');")).toBe(
-        false,
+  it('keeps every expected expansion detector in the inventory', () => {
+    expect(EXPANDING_APIS.map(({ why }) => why)).toEqual(
+      Object.keys(EXPANDING_API_CASES),
+    );
+  });
+
+  it.each(Object.entries(EXPANDING_API_CASES))(
+    'pins the independent %s detector cases',
+    (why, samples) => {
+      const detector = EXPANDING_APIS.find(
+        (candidate) => candidate.why === why,
       );
+      expect(detector, `missing detector: ${why}`).toBeDefined();
+      for (const sample of samples) {
+        expect(
+          detector!.pattern.test(sourceForExpansionScan(sample)),
+          `did not detect: ${sample}`,
+        ).toBe(true);
+      }
+      expect(
+        detector!.pattern.test(
+          sourceForExpansionScan("const safe = await import('node:path');"),
+        ),
+      ).toBe(false);
     },
   );
 
