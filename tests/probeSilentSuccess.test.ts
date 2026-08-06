@@ -645,6 +645,20 @@ describe('the probe end to end', () => {
     expect(armCalls).toBe(0);
   });
 
+  it('returns exit 2 and reports malformed non-array preconditions', () => {
+    expect(
+      main({
+        readPreconditions: () => ({ not: 'an array' } as never),
+      }),
+    ).toBe(EXIT_UNDETERMINED);
+    expect(
+      formatReport({ not: 'an array' } as never, [], {
+        exitCode: EXIT_UNDETERMINED,
+        summary: 'invalid preconditions',
+      }),
+    ).toContain('invalid preconditions: expected an array');
+  });
+
   it('cleans up its fixture, so repeated runs cannot accumulate temp repositories', () => {
     const before = mkdtempSync(join(tmpdir(), 'probe-silent-count-'));
     writeFileSync(join(before, 'marker'), 'x');

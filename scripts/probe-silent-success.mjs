@@ -347,7 +347,20 @@ export function overallVerdict(preconditions, judged) {
 export function formatReport(preconditions, judged, verdict) {
   const lines = [];
   lines.push('PRECONDITIONS (read before any arm; a failure here is exit 2)');
-  for (const p of preconditions ?? []) {
+  if (!Array.isArray(preconditions)) {
+    lines.push('  invalid preconditions: expected an array');
+  }
+  for (const p of Array.isArray(preconditions) ? preconditions : []) {
+    if (
+      p === null ||
+      typeof p !== 'object' ||
+      typeof p.satisfied !== 'boolean' ||
+      typeof p.id !== 'string' ||
+      typeof p.detail !== 'string'
+    ) {
+      lines.push('  invalid precondition record');
+      continue;
+    }
     lines.push(`  ${p.satisfied ? 'ok  ' : 'FAIL'} ${p.id} — ${p.detail}`);
   }
   lines.push('');

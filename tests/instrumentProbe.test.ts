@@ -1114,6 +1114,23 @@ describe('end to end, running the real entry point', () => {
     expect(r.stdout).toContain('UNUSABLE');
   });
 
+  it('exits 2 without an uncaught stack trace for a NUL-containing env value', () => {
+    const r = runProbe(
+      spec({
+        instrument: 'a command with an invalid environment value',
+        command: ['node', '-e', 'process.exit(0)', '{{VALUE}}'],
+        cases: [
+          { label: 'invalid value', vars: { VALUE: 'bad\0value' } },
+          { label: 'valid value', vars: { VALUE: 'good' } },
+        ],
+      }),
+    );
+    expect(r.status).toBe(EXIT_UNDETERMINED);
+    expect(r.stdout).toContain('invalid spec');
+    expect(r.stdout).not.toContain('TypeError');
+    expect(r.stdout).not.toContain(' at ');
+  });
+
   it('prints usage and exits 2 when no spec is given', () => {
     let status = 0;
     let stdout = '';
