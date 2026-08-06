@@ -178,6 +178,26 @@ export function effectiveTypes(types) {
 }
 
 /**
+ * Defaults missing from an explicitly declared `types:` list.
+ *
+ * Scoped deliberately. A workflow that subscribes to NONE of the defaults --
+ * `[closed]`, `[completed]` -- is scoped to a different lifecycle and is not
+ * dropping anything. A workflow that subscribes to SOME of them has opted into
+ * the code-changing lifecycle and then silently left part of it out: because
+ * `types:` replaces the default set rather than extending it, `[opened,
+ * reopened, edited]` stops CI on every push and reads identically to a
+ * workflow that simply never ran. Partial overlap is the signature.
+ */
+export function droppedDefaultTypes(types) {
+  if (!Array.isArray(types) || types.length === 0) return [];
+  const overlap = DEFAULT_PULL_REQUEST_TYPES.filter((type) =>
+    types.includes(type),
+  );
+  if (overlap.length === 0) return [];
+  return DEFAULT_PULL_REQUEST_TYPES.filter((type) => !types.includes(type));
+}
+
+/**
  * Which workflows run a body-reading guard without subscribing to `edited`.
  *
  * `guards` is returned alongside the findings so a caller can assert the scan
@@ -193,14 +213,25 @@ export function evaluateBodyEditTriggers({ workflows, scripts, npmScripts }) {
 
   const findings = [];
   const compliant = [];
+  const droppedDefaults = [];
 
   for (const { path: workflowPath, contents } of workflows) {
+    const declared = pullRequestTypes(contents);
+    const dropped = droppedDefaultTypes(declared);
+    if (dropped.length > 0) {
+      droppedDefaults.push({
+        workflow: workflowPath,
+        types: declared,
+        dropped,
+      });
+    }
+
     const invoked = invokedScripts(contents, npmScripts).filter((basename) =>
       guards.has(basename),
     );
     if (invoked.length === 0) continue;
 
-    const types = effectiveTypes(pullRequestTypes(contents));
+    const types = effectiveTypes(declared);
     if (types === null) continue;
 
     const entry = {
@@ -213,7 +244,24 @@ export function evaluateBodyEditTriggers({ workflows, scripts, npmScripts }) {
     else findings.push(entry);
   }
 
-  return { findings, compliant, guards: [...guards.keys()].sort() };
+  return {
+    findings,
+    compliant,
+    droppedDefaults,
+    guards: [...guards.keys()].sort(),
+  };
+}
+
+/** One line per dropped-default finding. */
+export function formatDroppedDefaults(droppedDefaults) {
+  return droppedDefaults.map(
+    ({ workflow, types, dropped }) =>
+      `${path.basename(workflow)} subscribes to [${types.join(', ')}], which ` +
+      `opts into the code-changing lifecycle but omits [${dropped.join(', ')}]. ` +
+      `types: replaces the default set rather than extending it, so the omitted ` +
+      `events never dispatch and the workflow is indistinguishable from one that ` +
+      `never ran. List all of [${DEFAULT_PULL_REQUEST_TYPES.join(', ')}].`,
+  );
 }
 
 /** One line per finding, naming the mechanism and not the regex. */

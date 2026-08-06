@@ -8,8 +8,10 @@ import {
   BODY_EDIT_TYPE,
   DEFAULT_PULL_REQUEST_TYPES,
   bodyDerivedReads,
+  droppedDefaultTypes,
   effectiveTypes,
   evaluateBodyEditTriggers,
+  formatDroppedDefaults,
   formatFindings,
   invokedScripts,
   pullRequestTypes,
@@ -226,5 +228,65 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
       'synchronize',
       'reopened',
     ]);
+  });
+});
+
+describe('a types: list that opts in partially loses events silently', () => {
+  // `types:` REPLACES the default set. A workflow listing some of the defaults
+  // has opted into the code-changing lifecycle and then dropped part of it, and
+  // the dropped events simply never dispatch -- which reads exactly like a
+  // workflow that was never triggered. This case exists because the repo comment
+  // claimed the gate "fails if any of the four types is dropped" and, measured by
+  // mutation, dropping `synchronize` was not detected by anything.
+  it('flags a list that keeps some defaults and drops others', () => {
+    expect(droppedDefaultTypes(['opened', 'reopened', 'edited'])).toEqual([
+      'synchronize',
+    ]);
+    expect(droppedDefaultTypes(['opened', 'synchronize', 'edited'])).toEqual([
+      'reopened',
+    ]);
+  });
+
+  // The exoneration half. Without this the rule would flag every lifecycle
+  // workflow in the repo, and a check that fires on correct input is not a
+  // stricter check -- it is one nobody can leave green.
+  it('exonerates a list scoped to a different lifecycle entirely', () => {
+    expect(droppedDefaultTypes(['closed'])).toEqual([]);
+    expect(droppedDefaultTypes(['completed'])).toEqual([]);
+    expect(droppedDefaultTypes([])).toEqual([]);
+    expect(droppedDefaultTypes(null)).toEqual([]);
+  });
+
+  it('accepts a full default set with extras alongside', () => {
+    expect(
+      droppedDefaultTypes([...DEFAULT_PULL_REQUEST_TYPES, 'labeled']),
+    ).toEqual([]);
+  });
+
+  // The live corpus. This is the assertion the mutation moves.
+  it('leaves no workflow in this repo dropping part of the default set', () => {
+    const { droppedDefaults } = evaluateBodyEditTriggers({
+      workflows,
+      scripts,
+      npmScripts,
+    });
+    expect(formatDroppedDefaults(droppedDefaults)).toEqual([]);
+  });
+
+  // Vacuity control: the formatter must actually produce text, or the assertion
+  // above passes by comparing two empty arrays for the wrong reason.
+  it('renders a finding naming the omitted events', () => {
+    const rendered = first(
+      formatDroppedDefaults([
+        {
+          workflow: '.github/workflows/ci.yml',
+          types: ['opened', 'reopened', 'edited'],
+          dropped: ['synchronize'],
+        },
+      ]),
+    );
+    expect(rendered).toContain('ci.yml');
+    expect(rendered).toContain('synchronize');
+    expect(rendered).toContain('replaces the default set');
   });
 });

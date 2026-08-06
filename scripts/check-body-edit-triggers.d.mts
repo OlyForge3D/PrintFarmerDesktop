@@ -25,6 +25,12 @@ export interface TriggerFinding {
   reasons: string[];
 }
 
+export interface DroppedDefaultsFinding {
+  workflow: string;
+  types: string[];
+  dropped: string[];
+}
+
 export function bodyDerivedReads(contents: string): string[];
 export function invokedScripts(
   workflowContents: string,
@@ -33,6 +39,7 @@ export function invokedScripts(
 /** `null` when the workflow has no `pull_request:` trigger at all. */
 export function pullRequestTypes(workflowContents: string): string[] | null;
 export function effectiveTypes(types: string[] | null): string[] | null;
+export function droppedDefaultTypes(types: string[] | null): string[];
 export function evaluateBodyEditTriggers(input: {
   workflows: WorkflowSource[];
   scripts: ScriptSource[];
@@ -40,6 +47,10 @@ export function evaluateBodyEditTriggers(input: {
 }): {
   findings: TriggerFinding[];
   compliant: TriggerFinding[];
+  droppedDefaults: DroppedDefaultsFinding[];
   guards: string[];
 };
 export function formatFindings(findings: TriggerFinding[]): string[];
+export function formatDroppedDefaults(
+  droppedDefaults: DroppedDefaultsFinding[],
+): string[];
