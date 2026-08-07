@@ -184,7 +184,7 @@ Check `attempt` before trusting any log: `gh run list --json attempt`. Only 1 of
 recent runs has `attempt >= 2` — but re-runs are concentrated on exactly the failures someone
 cared enough to re-run, which is the population an investigation samples from. See #261.
 
-`mergeStateStatus: UNSTABLE` means CI is still running or has failed — it is **not** ready to merge. `CLEAN` plus seven passes is the bar.
+`mergeStateStatus: UNSTABLE` means CI is still running or has failed — it is **not** ready to merge. `CLEAN` plus every required context green by name is the bar.
 
 ## Fixture traps
 
