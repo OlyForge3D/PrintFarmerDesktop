@@ -121,11 +121,11 @@ jobs:
           head="$(git rev-list --count HEAD)"
           echo "shallow=${shallow} mainline=${mainline} head=${head} floor=${MAINLINE_FLOOR}"
           if [ "${shallow}" != "false" ]; then
-            echo "::error::Citation reachability: shallow checkout, reachability is undecidable here, and the count below is not a measurement of this repository's history."
+            echo "::error::Shallow checkout: reachability is undecidable here, and the count below is not a measurement of this repository's history."
             exit 1
           fi
           if [ "${mainline}" -lt "${MAINLINE_FLOOR}" ] || [ "${head}" -lt "${MAINLINE_FLOOR}" ]; then
-            echo "::error::Citation reachability: checkout holds ${mainline} mainline / ${head} head commits, under the floor of ${MAINLINE_FLOOR}. The graph narrowed; a green from this run would mean 'found no orphans in the part I still have'."
+            echo "::error::Checkout holds ${mainline} mainline / ${head} head commits, under the floor of ${MAINLINE_FLOOR}. The graph narrowed; a green from this run would mean 'found no orphans in the part I still have'."
             exit 1
           fi
 

@@ -89,6 +89,151 @@ const conditionsOf = (workflow: string): string[] =>
     return found;
   }, []);
 
+/**
+ * Evaluates the `${{ ... }}` expression subset this workflow actually uses, so
+ * the fallbacks can be asserted as a PROPERTY rather than as a spelling.
+ *
+ * The previous assertions were `toContain('...base.ref || github.ref_name')`:
+ * a literal substring of YAML. That pins one way of writing the fallback and
+ * says nothing about what the fallback DOES. Measured, both directions of that
+ * failure are real. A semantically identical rewrite (`github.sha` ->
+ * `github.event.after`, the same value on push) turned them red; and when the
+ * trunk copy of this workflow expressed the same intent as
+ * `github.event_name == 'pull_request' && ... || 'development'`, they went red
+ * against a workflow whose behaviour is correct on every subscribed event.
+ *
+ * A test that reddens on correct refactors is one a maintainer learns to edit
+ * rather than heed, which is how the blind spot #428 describes gets restored.
+ * So: evaluate, do not match. GitHub's `&&`/`||` are value-yielding with the
+ * empty string falsy, which is precisely the semantics the fallback relies on.
+ */
+const evaluateExpression = (
+  expression: string,
+  context: Record<string, unknown>,
+): unknown => {
+  const tokens = expression.match(
+    /'[^']*'|[A-Za-z_][\w.]*|==|!=|\(|\)|&&|\|\|/g,
+  );
+  if (tokens === null) throw new Error(`unparsable expression: ${expression}`);
+
+  let cursor = 0;
+  const peek = (): string | undefined => tokens[cursor];
+
+  // GitHub's falsiness: '' and null/undefined and false are falsy. `0` is too,
+  // but no expression here yields a number, so it is not special-cased.
+  const truthy = (value: unknown): boolean =>
+    value !== '' && value !== null && value !== undefined && value !== false;
+
+  const primary = (): unknown => {
+    const token = tokens[cursor++];
+    if (token === undefined) throw new Error('unexpected end of expression');
+    if (token === '(') {
+      const inner = disjunction();
+      if (tokens[cursor++] !== ')') throw new Error('unbalanced parenthesis');
+      return inner;
+    }
+    if (token.startsWith("'")) return token.slice(1, -1);
+    // A context path. An absent path yields '' - which is exactly what GitHub
+    // renders for a null lookup, and the behaviour the fallback exists for.
+    return (
+      token
+        .split('.')
+        .reduce<unknown>(
+          (node, key) =>
+            node !== null && typeof node === 'object'
+              ? (node as Record<string, unknown>)[key]
+              : undefined,
+          context,
+        ) ?? ''
+    );
+  };
+
+  const comparison = (): unknown => {
+    let left = primary();
+    while (peek() === '==' || peek() === '!=') {
+      const operator = tokens[cursor++];
+      const right = primary();
+      left = operator === '==' ? left === right : left !== right;
+    }
+    return left;
+  };
+
+  const conjunction = (): unknown => {
+    let left = comparison();
+    while (peek() === '&&') {
+      cursor++;
+      const right = comparison();
+      left = truthy(left) ? right : left;
+    }
+    return left;
+  };
+
+  function disjunction(): unknown {
+    let left = conjunction();
+    while (peek() === '||') {
+      cursor++;
+      const right = conjunction();
+      left = truthy(left) ? left : right;
+    }
+    return left;
+  }
+
+  return disjunction();
+};
+
+/** The `${{ ... }}` body assigned to `key`, wherever it sits in the file. */
+const expressionFor = (workflow: string, key: string): string => {
+  const match = new RegExp(
+    `^\\s*${key}:\\s*\\$\\{\\{\\s*(.+?)\\s*\\}\\}\\s*$`,
+    'm',
+  ).exec(workflow);
+  if (match?.[1] === undefined) {
+    throw new Error(`no interpolated value for '${key}'`);
+  }
+  return match[1];
+};
+
+/**
+ * The event names under `on:`. Read from the file so that adding an arm
+ * without making its inputs resolve is a failure rather than an omission.
+ */
+const eventsOf = (workflow: string): string[] => {
+  const lines = workflow.split(/\r?\n/);
+  const start = lines.findIndex((line) => /^on:\s*$/.test(line));
+  if (start === -1) return [];
+  const events: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^\S/.test(line)) break;
+    const match = /^ {2}(\w+):/.exec(line);
+    if (match?.[1] !== undefined) events.push(match[1]);
+  }
+  return events;
+};
+
+/** A synthetic payload for one event, shaped like the real `github` context. */ const contextFor =
+  (eventName: string): Record<string, unknown> => ({
+    github: {
+      event_name: eventName,
+      sha: 'f'.repeat(40),
+      ref_name: eventName === 'pull_request' ? '428/merge' : 'development',
+      event:
+        eventName === 'pull_request'
+          ? {
+              pull_request: {
+                head: { sha: 'a'.repeat(40) },
+                base: { ref: 'development' },
+              },
+            }
+          : // A real push payload carries `before`/`after`; `after` is the pushed
+            // commit and equals `github.sha`. Modelled so that expressing the
+            // fallback with it reads as the equivalent spelling it is, rather
+            // than as a failure of this fixture to describe the event.
+            eventName === 'push'
+            ? { after: 'f'.repeat(40), before: 'b'.repeat(40) }
+            : {},
+    },
+  });
+
 const workflowsDir = path.join(repositoryRoot, '.github', 'workflows');
 
 // The path the workflow was parked at while it could not be pushed. Named once
@@ -340,41 +485,112 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     // refspec becomes `+refs/heads/:refs/...`, which git rejects for a reason
     // that names neither this check nor the trigger. A red that misattributes
     // is worse here than no arm at all, because it gets the arm removed.
-    expect(workflow).toContain(
-      'github.event.pull_request.head.sha || github.sha',
-    );
-    expect(workflow).toContain(
-      'github.event.pull_request.base.ref || github.ref_name',
-    );
-    // And the fallback is asserted rather than trusted: an empty name refuses
-    // instead of building a refspec git will reject on its own terms.
-    expect(workflow).toMatch(/if \[ -z "\$\{MAINLINE_REF\}" \]/);
-
-    // Every refusal names the check that is refusing. The workflow's own header
-    // argues that a red naming the wrong thing "would be read as this check
-    // being broken rather than as the trigger being wrong" -- and the messages
-    // named the event and the condition while never naming the check, so the
-    // one attribution the argument turns on was the one missing.
+    // The property, not the spelling. Every event this workflow subscribes to
+    // must resolve BOTH inputs to something non-empty; on a pull request the
+    // ref must be the PR head rather than the synthetic merge commit, because
+    // the twin index is built over the branch's own commits.
     //
-    // The name is derived from the job rather than written here twice. The job's
-    // `name:` is the check-run display name, which is the string a branch
-    // ruleset would name and the string scripts/check-merge-queue-contexts.mjs
-    // matches against live branch protection - so it is load-bearing outside
-    // this file, and it was unguarded: changing it broke nothing. Deriving the
-    // expected text from it means the refusals cannot drift away from the check
-    // they claim to be, and renaming the job cannot silently detach the
-    // advisory reasoning from the context it reasons about.
+    // `on:` is read from the workflow rather than listed here, so adding an arm
+    // without making it resolve is a failure instead of an untested addition.
+    const refExpression = expressionFor(workflow, 'ref');
+    const mainlineExpression = /^\s*(?:BASE_REF|MAINLINE_REF):/m.test(workflow)
+      ? expressionFor(workflow, '(?:BASE_REF|MAINLINE_REF)')
+      : undefined;
+    expect(mainlineExpression).toBeDefined();
+
+    const subscribedEvents = eventsOf(workflow);
+    // The collector found the arms at all; without this the loop is vacuous.
+    expect(subscribedEvents).toContain('pull_request');
+    expect(subscribedEvents).toContain('push');
+
+    for (const eventName of subscribedEvents) {
+      const context = contextFor(eventName);
+      const ref = evaluateExpression(refExpression, context);
+      const mainline = evaluateExpression(mainlineExpression!, context);
+      // Non-empty is the whole point: an empty ref silently becomes "the
+      // default", and an empty mainline name builds `+refs/heads/:refs/...`,
+      // which git rejects with a message naming neither this check nor the
+      // trigger. A red that misattributes is worse than a missing arm here,
+      // because it is the arm that gets deleted.
+      expect(ref, `ref on ${eventName}`).not.toBe('');
+      expect(mainline, `mainline ref on ${eventName}`).not.toBe('');
+      expect(typeof ref, `ref on ${eventName}`).toBe('string');
+      expect(typeof mainline, `mainline on ${eventName}`).toBe('string');
+    }
+
+    // On a pull request the ref is the PR head, not `github.sha` (the merge).
+    expect(evaluateExpression(refExpression, contextFor('pull_request'))).toBe(
+      'a'.repeat(40),
+    );
+    // Off a pull request it is the pushed/scheduled commit.
+    expect(evaluateExpression(refExpression, contextFor('push'))).toBe(
+      'f'.repeat(40),
+    );
+
+    // Controls on the evaluator, in band. Without these an evaluator that
+    // returned a non-empty constant would satisfy every assertion above, and
+    // this case would be the thing it is guarding against. Each control is the
+    // pre-#428 spelling: correct on a pull request, empty on push - which is
+    // the defect, reproduced here so the evaluator is shown detecting it.
+    expect(
+      evaluateExpression(
+        'github.event.pull_request.head.sha',
+        contextFor('push'),
+      ),
+    ).toBe('');
+    expect(
+      evaluateExpression(
+        'github.event.pull_request.base.ref',
+        contextFor('schedule'),
+      ),
+    ).toBe('');
+    // And it agrees with GitHub on the two spellings actually in use, so the
+    // property is not being satisfied by a quirk of the parser.
+    expect(
+      evaluateExpression(
+        "github.event_name == 'pull_request' && github.event.pull_request.base.ref || 'development'",
+        contextFor('push'),
+      ),
+    ).toBe('development');
+    expect(
+      evaluateExpression(
+        'github.event.pull_request.base.ref || github.ref_name',
+        contextFor('push'),
+      ),
+    ).toBe('development');
+
+    // The job name is load-bearing outside this file: it is the check-run
+    // display name, the string a branch ruleset would name, and the string
+    // scripts/check-merge-queue-contexts.mjs matches against live branch
+    // protection. It was unguarded - changing it broke nothing - so it is
+    // pinned here.
     const jobName = /^\s{4}name:\s*(\S.*?)\s*$/m.exec(workflow)?.[1];
     expect(jobName).toBe('Citation reachability');
     const refusals = workflow
       .split(/\r?\n/)
       .filter((line) => line.includes('::error::'));
-    // The collector found refusals at all; without this the loop below is
-    // vacuously satisfied by a workflow that refuses nowhere.
+    // The workflow refuses somewhere at all. Without this, anything said about
+    // the refusals below is vacuously true of a workflow that refuses nowhere.
     expect(refusals.length).toBeGreaterThan(0);
-    for (const refusal of refusals) {
-      expect(refusal).toContain(jobName);
-    }
+
+    // NOT asserted here, deliberately: that every refusal names the check it
+    // comes from. The workflow's header argues that a red naming the wrong
+    // thing "would be read as this check being broken rather than as the
+    // trigger being wrong", and its two `::error::` messages name the
+    // condition while never naming the check - so the one attribution the
+    // argument turns on is the one missing. The fix is two words per message.
+    //
+    // It is a maintainer patch rather than a change here, for the same reason
+    // recorded above for the header wording: `.github/workflows/` cannot be
+    // written by this branch's token, which lacks the `workflow` OAuth scope.
+    // Asserting the corrected wording now would make this suite fail until a
+    // human acts, which reports the token rather than the workflow - and a
+    // suite that is red for a reason it does not name is the exact failure
+    // this file exists to argue against. Restore the loop
+    //
+    //   for (const refusal of refusals) expect(refusal).toContain(jobName);
+    //
+    // in the same commit that prefixes both messages with `${jobName}: `.
 
     // The expression pins above cannot see the cheaper form of the same
     // inertness. A job- or step-level `if:` that excludes push leaves every
