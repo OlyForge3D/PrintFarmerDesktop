@@ -105,6 +105,28 @@ export const UNENFORCED_CHECKS = {
     'Discharge path: invoke it from whatever performs the merge, and treat a ' +
     'non-zero exit as a refusal — at which point it becomes a gate and this ' +
     'entry should be deleted.',
+  'check:squad-verdict':
+    'Its verifier logic IS enforced in CI: tests/squadReviewVerdict.test.ts ' +
+    'drives bindStatusToHead, verifySquadVerdict and selectSquadVerdict over ' +
+    'plain fixtures, including the forgery/lookalike/rerun arms and both ' +
+    'directions of head-movement supersession. Its main() additionally needs ' +
+    'a specific PR number and a live commit status posted by a prior, ' +
+    'independently-dispatched run of squad-review-verdict.yml — neither of ' +
+    'which a per-PR CI run can supply about itself without asking whether its ' +
+    'own still-running checks had finished. ' +
+    'STATE THE WEAKNESS PLAINLY: nothing forces anyone to run this before ' +
+    'merging, and squad-review-verdict.yml itself is workflow_dispatch-only, ' +
+    'so no PR here carries a squad/pre-pr-verdict status until a non-author ' +
+    'administrator manually dispatches it. Until then, review here is ' +
+    'advisory and author-opened squad PRs require a human GitHub approval ' +
+    'before merge — recorded as a decision in ' +
+    '.squad/decisions/inbox/vasquez-187-squad-verdict-evidence.md, not left ' +
+    'implicit. Ported from OlyForge3D/PrintFarmer #1187 (fixing PrintFarmer ' +
+    'issue #1116), which carries the identical unwired script for the ' +
+    'identical reason. Discharge path: the day #111/#151 revisit trigger ' +
+    'fires (a second collaborator or non-admin automation account), a ' +
+    'non-author administrator can dispatch the verdict workflow for real, ' +
+    'and this check becomes invocable from whatever performs the merge.',
 };
 
 // `check:citation-reachability` was here, with a four-condition discharge path.
