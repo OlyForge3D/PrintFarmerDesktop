@@ -232,25 +232,44 @@ describe('main-owned root approvals', () => {
     }
   });
 
-  it('rejects a symbolic-link source before opening it', async () => {
+  it('rejects a source classified as a symbolic link before opening it', async () => {
     const fixture = path.resolve('tests', `.approval-${randomUUID()}`);
     const root = path.join(fixture, 'root');
     const target = path.join(root, 'target.stl');
-    const source = path.join(root, 'link.stl');
+    let reportTargetAsSymlink = false;
     try {
       await fs.mkdir(root, { recursive: true });
       await fs.writeFile(target, 'bytes');
-      try {
-        await fs.symlink(target, source, 'file');
-      } catch (error) {
-        if ((error as { code?: unknown }).code === 'EPERM') return;
-        throw error;
-      }
+      const fileSystem: RootApprovalFileSystem = {
+        readFile: (filePath) => fs.readFile(filePath),
+        writeFile: (filePath, data) => fs.writeFile(filePath, data),
+        rename: (from, to) => fs.rename(from, to),
+        mkdir: (directory) =>
+          fs.mkdir(directory, { recursive: true }).then(() => undefined),
+        unlink: (filePath) => fs.unlink(filePath),
+        realpath: (filePath) => fs.realpath(filePath),
+        open: (filePath, flags) => fs.open(filePath, flags),
+        lstat: async (filePath) => {
+          const stats = await fs.lstat(filePath, { bigint: true });
+          if (filePath !== target || !reportTargetAsSymlink) return stats;
+          Object.defineProperty(stats, 'isSymbolicLink', {
+            value: () => true,
+          });
+          return stats;
+        },
+      };
       const store = new RootApprovalStore({
         userDataPath: path.join(fixture, 'user-data'),
+        fileSystem,
       });
       await store.approveFromPicker(root);
-      await expect(store.openApprovedFile(source)).rejects.toMatchObject({
+
+      const direct = await store.openApprovedFile(target);
+      expect(direct.size).toBe(5);
+      await direct.handle.close();
+
+      reportTargetAsSymlink = true;
+      await expect(store.openApprovedFile(target)).rejects.toMatchObject({
         code: 'APPROVAL_REQUIRED',
       });
     } finally {

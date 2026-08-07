@@ -2295,11 +2295,6 @@ fn verified_library_fd_path(file: &File) -> Result<PathBuf, String> {
     }
 }
 
-#[cfg(all(windows, test))]
-fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
-    std::os::windows::fs::symlink_file(target, link)
-}
-
 #[cfg(unix)]
 fn create_file_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(target, link)
@@ -2518,7 +2513,6 @@ fn run_git_stdout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::ErrorKind;
 
     #[test]
     fn affine_transform_converts_lib3mf_matrix() {
@@ -2618,31 +2612,45 @@ mod tests {
         let target_dir = temp.path().join("target-bin");
         let link_dir = temp.path().join("link-bin");
         std::fs::create_dir_all(&target_dir).unwrap();
-        std::fs::create_dir_all(&link_dir).unwrap();
 
         let target_exe = target_dir.join("model-core-test.exe");
         std::fs::write(&target_exe, b"test").unwrap();
 
-        let symlink_exe = link_dir.join("model-core-test.exe");
-        if let Err(error) = create_file_symlink(&target_exe, &symlink_exe) {
-            if should_skip_symlink_test(&error) {
-                eprintln!(
-                    "skipping symlink canonical_exe_dir test: insufficient privileges to create file symlink ({error})"
-                );
-                return;
-            }
-            panic!("failed to create symlinked executable fixture: {error}");
-        }
+        let symlink_exe = create_executable_alias(&target_dir, &link_dir, &target_exe);
 
         let canonical_dir = canonical_exe_dir(&symlink_exe).unwrap();
         let expected_dir = target_dir.canonicalize().unwrap();
-        let symlink_parent = symlink_exe.parent().unwrap().canonicalize().unwrap();
 
         assert_ne!(
-            expected_dir, symlink_parent,
-            "test fixture must place the symlink in a different directory than its target"
+            symlink_exe.parent().unwrap(),
+            target_dir,
+            "test fixture must use a distinct alias spelling"
         );
         assert_eq!(canonical_dir, expected_dir);
+    }
+
+    #[cfg(windows)]
+    fn create_executable_alias(target_dir: &Path, link_dir: &Path, target_exe: &Path) -> PathBuf {
+        let output = Command::new("cmd.exe")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(link_dir)
+            .arg(target_dir)
+            .output()
+            .expect("create junction fixture");
+        assert!(
+            output.status.success(),
+            "failed to create junction fixture: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        link_dir.join(target_exe.file_name().unwrap())
+    }
+
+    #[cfg(not(windows))]
+    fn create_executable_alias(_target_dir: &Path, link_dir: &Path, target_exe: &Path) -> PathBuf {
+        std::fs::create_dir_all(link_dir).unwrap();
+        let symlink_exe = link_dir.join(target_exe.file_name().unwrap());
+        create_file_symlink(target_exe, &symlink_exe).expect("create symlinked executable fixture");
+        symlink_exe
     }
 
     #[test]
@@ -3120,11 +3128,6 @@ mod tests {
             .join("tests")
             .join("fixtures")
             .join(name)
-    }
-
-    fn should_skip_symlink_test(error: &std::io::Error) -> bool {
-        matches!(error.kind(), ErrorKind::PermissionDenied)
-            || cfg!(windows) && matches!(error.raw_os_error(), Some(1314))
     }
 
     #[cfg(not(windows))]
