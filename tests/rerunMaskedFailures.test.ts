@@ -329,12 +329,17 @@ describe('API pagination', () => {
 describe('stable current-head orchestration', () => {
   function apiFixture({
     finalHead = HEAD,
+    finalBase = 'development',
     finalAttempt = 2,
+    finalRequired = REQUIRED,
   }: {
     finalHead?: string;
+    finalBase?: string;
     finalAttempt?: number;
+    finalRequired?: string[];
   } = {}) {
     let pullReads = 0;
+    let protectionReads = 0;
     let runReads = 0;
     return vi.fn<typeof fetch>((input) => {
       const url =
@@ -350,17 +355,20 @@ describe('stable current-head orchestration', () => {
             JSON.stringify({
               number: 272,
               head: { sha: pullReads === 1 ? HEAD : finalHead },
-              base: { ref: 'development' },
+              base: {
+                ref: pullReads === 1 ? 'development' : finalBase,
+              },
             }),
           ),
         );
       }
       if (/\/branches\/development\/protection$/.test(url)) {
+        protectionReads += 1;
         return Promise.resolve(
           new Response(
             JSON.stringify({
               required_status_checks: {
-                contexts: REQUIRED,
+                contexts: protectionReads === 1 ? REQUIRED : finalRequired,
                 strict: true,
               },
             }),
@@ -536,6 +544,17 @@ describe('stable current-head orchestration', () => {
     ).rejects.toThrow(/head or base moved/);
   });
 
+  it('discards a scan when the PR base branch moves', async () => {
+    await expect(
+      scanPullRequest({
+        repository: { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' },
+        prNumber: 272,
+        token: 't',
+        fetchImpl: apiFixture({ finalBase: 'release' }),
+      }),
+    ).rejects.toThrow(/head or base moved/);
+  });
+
   it('discards a scan when a workflow advances another attempt', async () => {
     await expect(
       scanPullRequest({
@@ -543,6 +562,19 @@ describe('stable current-head orchestration', () => {
         prNumber: 272,
         token: 't',
         fetchImpl: apiFixture({ finalAttempt: 3 }),
+      }),
+    ).rejects.toThrow(/attempts or required contexts changed/);
+  });
+
+  it('discards a scan when required contexts change', async () => {
+    await expect(
+      scanPullRequest({
+        repository: { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' },
+        prNumber: 272,
+        token: 't',
+        fetchImpl: apiFixture({
+          finalRequired: [...REQUIRED, 'New required context'],
+        }),
       }),
     ).rejects.toThrow(/attempts or required contexts changed/);
   });
