@@ -46,18 +46,12 @@ const countHits = (text, fig) => {
 };
 
 const TARGETS = [
-  [
-    'origin/development',
-    '.squad/decisions/inbox/ripley-false-outcome-invented-mechanism.md',
-  ],
-  [
-    'origin/development',
-    '.squad/decisions/inbox/ripley-falsifier-before-publishing.md',
-  ],
-  ['origin/development', '.squad/decisions/inbox/ripley-go-and-look.md'],
-  ['origin/development', '.squad/decisions.md'],
-  ['origin/development', '.squad/skills/test-discipline/SKILL.md'],
-  ['origin/development', 'docs/security/THREAT_MODEL.md'],
+  ['HEAD', '.squad/decisions/inbox/ripley-false-outcome-invented-mechanism.md'],
+  ['HEAD', '.squad/decisions/inbox/ripley-falsifier-before-publishing.md'],
+  ['HEAD', '.squad/decisions/inbox/ripley-go-and-look.md'],
+  ['HEAD', '.squad/decisions.md'],
+  ['HEAD', '.squad/skills/test-discipline/SKILL.md'],
+  ['HEAD', 'docs/security/THREAT_MODEL.md'],
   ['HEAD', '.squad/fact-checker/audit-trail.md'],
 ];
 
@@ -125,12 +119,9 @@ console.log(
 console.log('\nevery occurrence candidate B removed, for checking by hand:');
 for (const s of suppressed) console.log(`  ${s}`);
 
-// Every row of this table is read from `origin/development`, so in any checkout without that
-// ref -- a CI job, a fresh clone, a branch-only fetch -- the whole table is MISSING and the
-// script previously still exited 0. A measurement instrument that cannot reach its inputs and
-// reports success is the same defect this repository has now catalogued six times: the output
-// is indistinguishable from a run that found nothing to report. The condition is announced in
-// the exit status so a caller can tell the two apart without parsing prose.
+// Every row is read from the commit under test. Reading `origin/development` made the result
+// depend on whether a runner happened to have that remote-tracking ref, and CI accepted the
+// resulting INCOMPLETE table. Missing committed inputs still fail distinctly.
 if (missing.length > 0) {
   console.log(
     `\nINCOMPLETE: ${missing.length} of ${TARGETS.length} revisions could not be read.`,
