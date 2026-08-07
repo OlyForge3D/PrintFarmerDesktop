@@ -58,12 +58,14 @@ describe('required-name discrimination', () => {
         { context: 'Same name', appId: 99 },
         { context: DESKTOP_WINDOWS, appId: ACTIONS_APP_ID },
         { context: 'Legacy context', appId: null },
+        { context: 'Any app context', appId: -1 },
       ],
     };
 
     expect(requiredActionContexts(protection, [ACTIONS_APP_ID])).toEqual([
       DESKTOP_WINDOWS,
       'Legacy context',
+      'Any app context',
     ]);
     expect(
       githubActionsAppIds([

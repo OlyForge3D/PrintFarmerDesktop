@@ -349,6 +349,10 @@ describe('fetchRequiredContexts fails loudly rather than reporting an empty rule
               context: 'Desktop (macos-latest)',
               app_id: 15368,
             },
+            {
+              context: 'Legacy any-app',
+              app_id: -1,
+            },
           ],
           strict: true,
         },
@@ -357,6 +361,7 @@ describe('fetchRequiredContexts fails loudly rather than reporting an empty rule
 
     expect(result.checks).toEqual([
       { context: 'Desktop (macos-latest)', appId: 15368 },
+      { context: 'Legacy any-app', appId: -1 },
     ]);
   });
 

@@ -287,7 +287,12 @@ export function requiredActionContexts(protection, actionAppIds) {
   const contexts = [
     ...new Set(
       protection.checks
-        .filter((check) => check.appId === null || actions.has(check.appId))
+        .filter(
+          (check) =>
+            check.appId === null ||
+            check.appId === -1 ||
+            actions.has(check.appId),
+        )
         .map((check) => check.context),
     ),
   ];

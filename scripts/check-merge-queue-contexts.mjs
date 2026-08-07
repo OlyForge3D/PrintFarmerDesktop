@@ -430,7 +430,8 @@ export async function fetchRequiredContexts({
         typeof check?.context !== 'string' ||
         check.context === '' ||
         (check.app_id !== null &&
-          (!Number.isSafeInteger(check.app_id) || check.app_id <= 0))
+          (!Number.isSafeInteger(check.app_id) ||
+            (check.app_id !== -1 && check.app_id <= 0)))
       ) {
         throw new Error(
           `branch protection required check ${index + 1} has no valid context or app_id`,
