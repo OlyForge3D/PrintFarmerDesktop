@@ -11,7 +11,10 @@ import {
   main,
   parseBoundClosures,
   parseClosingReferenceResponse,
+  parseCommitClosures,
   parseDeclaredClosures,
+  parsePullRequestCommitResponse,
+  readPullRequestCommitClosures,
   readSettled,
   toGitHubCliError,
   witnessContradiction,
@@ -30,6 +33,33 @@ import {
  */
 
 const KEYWORD = 'clo' + 'ses';
+
+const INCIDENT_0AB96610 = `docs(test): mark the two excused expansion cells provisional on #435
+
+The matrix is eleven wide because #357 settled two vectors as
+excused-and-enforced. The excuse is an absence — no decompressor and no
+image decoder anywhere in the entry points' transitive import closure —
+and #357 enforces it by walking that closure rather than by asserting a
+comment.
+
+#435 records that the walker keys on \`from '...'\` only, so a module
+reached solely through \`await import('./x.js')\` is scanned by none of its
+ban patterns. A closure gap disables every pattern at once, where a
+pattern gap disables one.
+
+Measured at this head rather than assumed: building the closure both ways
+adds zero files and finds zero non-literal specifiers, so the excuse is
+true and its enforcement is evadable. The exposure is prospective, not
+live. That distinction is the whole content of the note, and it is the
+part a reader would otherwise have to reconstruct.
+
+Deliberately not repaired here. A one-issue change belongs in a one-issue
+pull request, and the completeness test deliberately does not assert the
+walker's shape — a tripwire on it would fail the very change that fixes
+#435.
+
+Co-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>
+Copilot-Session: f4512f41-e807-4472-9d9d-baa2b1a45b98`;
 
 describe('parseDeclaredClosures', () => {
   it('reads a fenced declaration block', () => {
@@ -123,6 +153,71 @@ describe('compareClosures', () => {
     const result = compareClosures([231], [57]);
     expect(result.unexpected).toEqual([57]);
     expect(result.missing).toEqual([231]);
+  });
+});
+
+describe('parseCommitClosures', () => {
+  it('flags the exact 0ab96610 message whose keyword wraps onto the next line', () => {
+    expect(parseCommitClosures([INCIDENT_0AB96610])).toEqual([435]);
+  });
+
+  it('reads every GitHub closing keyword form', () => {
+    const keywords = [
+      'close',
+      'closes',
+      'closed',
+      'fix',
+      'fixes',
+      'fixed',
+      'resolve',
+      'resolves',
+      'resolved',
+    ];
+    expect(
+      parseCommitClosures(
+        keywords.map((keyword, index) => `${keyword} #${index + 1}`),
+      ),
+    ).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  });
+
+  it('flags negated prose because GitHub does not interpret the sentence', () => {
+    expect(parseCommitClosures(['this must not close #57'])).toEqual([57]);
+  });
+
+  it('ignores a bare reference and a see reference without a keyword', () => {
+    expect(parseCommitClosures(['Parent: #57', 'see #57 for context'])).toEqual(
+      [],
+    );
+  });
+
+  it('reads every paginated commit message and rejects malformed entries', () => {
+    const response = JSON.stringify([
+      [{ commit: { message: 'first page' } }],
+      [{ commit: { message: 'second page' } }],
+    ]);
+    expect(parsePullRequestCommitResponse(response)).toEqual([
+      'first page',
+      'second page',
+    ]);
+    expect(() =>
+      parsePullRequestCommitResponse(JSON.stringify([[{ commit: {} }]])),
+    ).toThrow(/no message string/);
+  });
+
+  it('requests every commit page rather than only the first page', () => {
+    const run = vi.fn(() =>
+      JSON.stringify([
+        [{ commit: { message: 'see #1' } }],
+        [{ commit: { message: 'fixes\n#2' } }],
+      ]),
+    );
+    expect(readPullRequestCommitClosures(418, run)).toEqual([2]);
+    expect(run).toHaveBeenCalledWith([
+      'api',
+      '--paginate',
+      '--slurp',
+      'repos/{owner}/{repo}/pulls/418/commits?per_page=100',
+    ]);
   });
 });
 
@@ -643,8 +738,17 @@ describe('main', () => {
   const BODY = ['```' + KEYWORD, '#231', '```'].join('\n');
 
   /** `gh` stub: body on the first call shape, closures on the other. */
-  function ghStub(closures: number[], witnessBody: string = BODY) {
+  function ghStub(
+    closures: number[],
+    witnessBody: string = BODY,
+    commitMessages: string[] = [],
+  ) {
     return (args: string[]) => {
+      if (args[0] === 'api') {
+        return JSON.stringify([
+          commitMessages.map((message) => ({ commit: { message } })),
+        ]);
+      }
       // The witness read asks for both fields at once. Checked before the
       // bare-`body` shape because the combined selector is a single argument
       // and would not match it.
@@ -693,7 +797,7 @@ describe('main', () => {
     expect(printed).not.toContain('do not match its declaration');
   });
 
-  it('passes a settled read that matches', async () => {
+  it('preserves body scanning when no commit message arms a closure', async () => {
     // CONTROL. Without it, the assertion above is satisfied by a `main` that
     // fails unconditionally, which would also "not pass an unsettled read".
     const spies = silenced();
@@ -713,6 +817,43 @@ describe('main', () => {
     expect(
       spies.log.mock.calls.map((call) => String(call[0])).join('\n'),
     ).toContain('match the declaration');
+  });
+
+  it('fails when a commit closes an issue outside the declared scope', async () => {
+    const spies = silenced();
+    const result = await main(['231'], {
+      run: ghStub([231], BODY, ['fixes #999']),
+      readClosures: () =>
+        Promise.resolve({
+          value: [231],
+          reads: 13,
+          settled: true,
+          elapsedMs: 61000,
+        }),
+    });
+
+    expect(result).toEqual({ ok: false, settled: true, stale: false });
+    expect(process.exitCode).toBe(1);
+    expect(
+      spies.error.mock.calls.map((call) => String(call[0])).join('\n'),
+    ).toContain('#999');
+  });
+
+  it('passes when a commit closes exactly the declared issue', async () => {
+    silenced();
+    const result = await main(['231'], {
+      run: ghStub([], BODY, ['fixes\n#231']),
+      readClosures: () =>
+        Promise.resolve({
+          value: [],
+          reads: 13,
+          settled: true,
+          elapsedMs: 61000,
+        }),
+    });
+
+    expect(result).toEqual({ ok: true, settled: true, stale: false });
+    expect(process.exitCode).toBeUndefined();
   });
 
   it('reports a settled mismatch as a mismatch, not as an unsettled read', async () => {
@@ -1058,6 +1199,9 @@ describe('main staleness witness', () => {
   /** Serves both call shapes; `witness` is the body the combined read returns. */
   function ghStub(declBody: string, witness: string, refs: number[]) {
     return (args: string[]) => {
+      if (args[0] === 'api') {
+        return '[[]]';
+      }
       if (args.includes('body,closingIssuesReferences')) {
         return JSON.stringify({ body: witness, refs });
       }
@@ -1081,6 +1225,7 @@ describe('main staleness witness', () => {
     const calls: string[][] = [];
     const run = (args: string[]) => {
       calls.push(args);
+      if (args[0] === 'api') return '[[]]';
       return args.includes('body,closingIssuesReferences')
         ? JSON.stringify({ body: 'a bare mention of #398', refs: [] })
         : 'no declaration here';
@@ -1099,9 +1244,13 @@ describe('main staleness witness', () => {
         }),
       });
       expect(result).toMatchObject({ ok: true, settled: true });
-      expect(calls.length).toBeGreaterThan(1);
-      expect(calls.map((args) => args.slice(0, 3))).toEqual(
-        calls.map(() => ['pr', 'view', '398']),
+      const prCalls = calls.filter((args) => args[0] === 'pr');
+      expect(prCalls.length).toBeGreaterThan(1);
+      expect(prCalls.map((args) => args.slice(0, 3))).toEqual(
+        prCalls.map(() => ['pr', 'view', '398']),
+      );
+      expect(calls.find((args) => args[0] === 'api')?.at(-1)).toContain(
+        '/pulls/398/commits',
       );
     } finally {
       rmSync(directory, { recursive: true, force: true });

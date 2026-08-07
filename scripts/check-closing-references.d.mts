@@ -152,6 +152,15 @@ export function parseDeclaredClosures(body: string): DeclaredClosures;
 
 export function parseBoundClosures(body: string): number[];
 
+export function parseCommitClosures(messages: string[]): number[];
+
+export function parsePullRequestCommitResponse(raw: string): string[];
+
+export function readPullRequestCommitClosures(
+  prNumber: number | string,
+  run: (args: string[]) => string,
+): number[];
+
 export function witnessContradiction(body: string, derived: number[]): number[];
 
 export function witnessUnreadableBinding(
@@ -186,6 +195,10 @@ export function formatUnsettled(input: {
 
 export interface MainDeps {
   run?: (args: string[]) => string;
+  readCommitClosures?: (
+    prNumber: number | string,
+    run: (args: string[]) => string,
+  ) => number[];
   environment?: Record<string, string | undefined>;
   readClosures?: (
     read: () => number[] | Promise<number[]>,
