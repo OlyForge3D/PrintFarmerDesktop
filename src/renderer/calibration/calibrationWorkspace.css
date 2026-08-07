@@ -260,6 +260,14 @@
   border-right: 0;
 }
 
+.cal-summary-action {
+  min-height: auto;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  justify-self: start;
+}
+
 .cal-summary-strip strong {
   font-size: 23px;
   font-variant-numeric: tabular-nums;
