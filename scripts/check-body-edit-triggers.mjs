@@ -245,11 +245,19 @@ export function evaluateBodyEditTriggers({ workflows, scripts, npmScripts }) {
     else findings.push(entry);
   }
 
+  const coveredGuards = new Set(
+    [...findings, ...compliant].flatMap(({ guards: invoked }) => invoked),
+  );
+  const uninvokedGuards = [...guards.keys()]
+    .filter((basename) => !coveredGuards.has(basename))
+    .sort();
+
   return {
     findings,
     compliant,
     droppedDefaults,
     guards: [...guards.keys()].sort(),
+    uninvokedGuards,
   };
 }
 
@@ -304,6 +312,11 @@ function main(repoRoot) {
   const findings = [
     ...formatFindings(result.findings),
     ...formatDroppedDefaults(result.droppedDefaults),
+    ...result.uninvokedGuards.map(
+      (basename) =>
+        `${basename} reads PR body-derived data but no pull_request workflow invokes it. ` +
+        `Wire it into a workflow that subscribes to '${BODY_EDIT_TYPE}'.`,
+    ),
   ];
 
   if (result.guards.length === 0) {

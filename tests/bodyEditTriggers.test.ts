@@ -25,6 +25,7 @@ import {
   invokedScripts,
   pullRequestTypes,
 } from '../scripts/check-body-edit-triggers.mjs';
+import { triggersOf } from '../scripts/check-merge-queue-contexts.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const workflowsDir = path.join(repoRoot, '.github', 'workflows');
@@ -73,16 +74,31 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
   });
 
   it('sees each guard invoked by at least one workflow', () => {
-    const { findings, compliant } = evaluateBodyEditTriggers({
-      workflows,
-      scripts,
+    const { findings, compliant, guards, uninvokedGuards } =
+      evaluateBodyEditTriggers({
+        workflows,
+        scripts,
+        npmScripts,
+      });
+    const covered = [...findings, ...compliant]
+      .flatMap((entry) => entry.guards)
+      .sort();
+    expect([...new Set(covered)]).toEqual(guards);
+    expect(uninvokedGuards).toEqual([]);
+  });
+
+  it('reports every discovered guard that no pull-request workflow runs', () => {
+    const { uninvokedGuards } = evaluateBodyEditTriggers({
+      workflows: [],
+      scripts: [
+        {
+          basename: 'check-new-body-contract.mjs',
+          contents: "gh(['pr', 'view', '--json', 'body'])",
+        },
+      ],
       npmScripts,
     });
-    const covered = [...findings, ...compliant].flatMap(
-      (entry) => entry.guards,
-    );
-    expect(covered).toContain('check-closing-references.mjs');
-    expect(covered).toContain('check-pr-closure-scope.mjs');
+    expect(uninvokedGuards).toEqual(['check-new-body-contract.mjs']);
   });
 
   it('runs this policy through the required closing-reference context', () => {
@@ -95,7 +111,9 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
     );
     expect(workflow).toContain('npm run check:body-edit-triggers');
     expect(pullRequestTypes(workflow)).toContain(BODY_EDIT_TYPE);
-    expect(workflow).toMatch(/^\s+merge_group:\s*$/m);
+    expect(triggersOf(workflow, 'closing-reference-declaration.yml')).toContain(
+      'merge_group',
+    );
   });
 
   // The gate itself. #436: ci.yml runs the arming guard inside the required
