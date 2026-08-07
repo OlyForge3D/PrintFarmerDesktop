@@ -291,19 +291,18 @@ describe('installOrcaProfileWindows', () => {
 });
 
 describe('restoreOrcaProfileWindows', () => {
-  it('throws unsupportedPlatform on non-Windows', async () => {
-    if (process.platform === 'win32') {
-      // On Windows, can only test with a real backup file present; skip this.
-      return;
-    }
-    await expect(
-      restoreOrcaProfileWindows(
-        '/some/backup.bak',
-        'a'.repeat(64),
-        'test.json',
-      ),
-    ).rejects.toMatchObject({ code: 'unsupportedPlatform' });
-  });
+  it.runIf(process.platform !== 'win32')(
+    'throws unsupportedPlatform on non-Windows',
+    async () => {
+      await expect(
+        restoreOrcaProfileWindows(
+          '/some/backup.bak',
+          'a'.repeat(64),
+          'test.json',
+        ),
+      ).rejects.toMatchObject({ code: 'unsupportedPlatform' });
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

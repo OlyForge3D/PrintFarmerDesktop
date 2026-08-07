@@ -1,5 +1,7 @@
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -39,10 +41,11 @@ const repositoryRoot = path.resolve(
 
 const runScript = (
   relativePath: string,
+  cwd = repositoryRoot,
 ): { output: string; status: number } => {
   const result = spawnSync('node', [path.join(repositoryRoot, relativePath)], {
     encoding: 'utf8',
-    cwd: repositoryRoot,
+    cwd,
     maxBuffer: 1 << 28,
   });
   return {
@@ -51,19 +54,34 @@ const runScript = (
   };
 };
 
-/**
- * Whether this checkout can see the mainline. CI checks out the pull request
- * head alone, so `origin/development` does not resolve there, while a developer
- * worktree has it. That difference is not incidental: the first version of
- * these tests asserted the mainline divergence unconditionally, passed locally,
- * and failed on CI - the author-position defect this pull request is about,
- * arriving in the test written to guard against it.
- */
-const mainlineVisible =
-  spawnSync('git', ['rev-parse', '--verify', 'origin/development^{commit}'], {
-    cwd: repositoryRoot,
-    encoding: 'utf8',
-  }).status === 0;
+const mentionFixturePaths = [
+  '.squad/decisions/inbox/ripley-false-outcome-invented-mechanism.md',
+  '.squad/decisions/inbox/ripley-falsifier-before-publishing.md',
+  '.squad/decisions/inbox/ripley-go-and-look.md',
+  '.squad/decisions.md',
+  '.squad/skills/test-discipline/SKILL.md',
+  'docs/security/THREAT_MODEL.md',
+  '.squad/fact-checker/audit-trail.md',
+];
+
+function git(cwd: string, args: string[]) {
+  execFileSync('git', args, { cwd, stdio: 'ignore' });
+}
+
+function createBranchOnlyMentionFixture(): string {
+  const root = mkdtempSync(path.join(tmpdir(), 'mention-filter-'));
+  git(root, ['init', '-q', '-b', 'fixture']);
+  git(root, ['config', 'user.name', 'Fixture']);
+  git(root, ['config', 'user.email', 'fixture@example.invalid']);
+  for (const relative of mentionFixturePaths) {
+    const absolute = path.join(root, ...relative.split('/'));
+    mkdirSync(path.dirname(absolute), { recursive: true });
+    writeFileSync(absolute, 'fixture 49,150 32,767 16,383 16,384\n');
+  }
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'fixture']);
+  return root;
+}
 
 describe('the measurement scripts this change cites are executed, not merely present', () => {
   it('rebuilds the diamond DAG and reports the total the threat model names', () => {
@@ -90,8 +108,9 @@ describe('the measurement scripts this change cites are executed, not merely pre
   });
 
   it('reports the mention-filtered figure counts across the artifacts', () => {
-    const { output } = runScript('scripts/measure-mention-filter.mjs');
+    const { output, status } = runScript('scripts/measure-mention-filter.mjs');
 
+    expect(status).toBe(0);
     // The filter exists because a figure quoted inside a fence or a quotation
     // is a mention, not a claim, and counting mentions as claims manufactures
     // divergences. The header proves the filtered columns are still produced.
@@ -100,16 +119,8 @@ describe('the measurement scripts this change cites are executed, not merely pre
     expect(output).toMatch(/-quoted/);
   });
 
-  it('confirms run D is discharged on the mainline and would notice a regression', () => {
+  it('confirms run D is discharged in the commit under test', () => {
     const { output, status } = runScript('scripts/measure-mention-filter.mjs');
-
-    if (!mainlineVisible) {
-      // Same reason as above: without the mainline ref there is nothing to
-      // check, and the property worth pinning is that the script says so.
-      expect(status).toBe(2);
-      expect(output).toContain('INCOMPLETE');
-      return;
-    }
 
     expect(status).toBe(0);
 
@@ -124,7 +135,7 @@ describe('the measurement scripts this change cites are executed, not merely pre
     // sentence, which is why this reads the blob rather than trusting the row.
     const sentence = execFileSync(
       'git',
-      ['show', 'origin/development:docs/security/THREAT_MODEL.md'],
+      ['show', 'HEAD:docs/security/THREAT_MODEL.md'],
       { encoding: 'utf8', cwd: repositoryRoot, maxBuffer: 1 << 28 },
     )
       .split('\n')
@@ -141,5 +152,26 @@ describe('the measurement scripts this change cites are executed, not merely pre
       .filter((line) => line.includes('THREAT_MODEL.md'));
 
     expect(rows.some((line) => line.includes('49,150'))).toBe(true);
+  });
+
+  it('runs from a branch-only checkout and still refuses a missing committed input', () => {
+    const root = createBranchOnlyMentionFixture();
+    try {
+      const complete = runScript('scripts/measure-mention-filter.mjs', root);
+      expect(complete.status, complete.output).toBe(0);
+      expect(complete.output).not.toContain('INCOMPLETE');
+
+      const missing = mentionFixturePaths[0]!;
+      rmSync(path.join(root, ...missing.split('/')));
+      git(root, ['add', '-A']);
+      git(root, ['commit', '-qm', 'remove required input']);
+
+      const incomplete = runScript('scripts/measure-mention-filter.mjs', root);
+      expect(incomplete.status).toBe(2);
+      expect(incomplete.output).toContain(`MISSING HEAD:${missing}`);
+      expect(incomplete.output).toContain('INCOMPLETE');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

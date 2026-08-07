@@ -99,25 +99,29 @@ describe('calibration photo inspection', () => {
   });
 
   it('rejects paths containing a symlink or reparse point', async () => {
-    const target = path.join(scratch, 'symlink-target.png');
-    const linked = path.join(scratch, 'symlink-photo.png');
-    await writeFile(
-      target,
-      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01]),
+    const targetDirectory = path.join(scratch, 'symlink-target');
+    const linkedDirectory = path.join(scratch, 'symlink-photo');
+    const target = path.join(targetDirectory, 'photo.png');
+    const linked = path.join(linkedDirectory, 'photo.png');
+    const bytes = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01,
+    ]);
+    await mkdir(targetDirectory);
+    await writeFile(target, bytes);
+    await symlink(
+      targetDirectory,
+      linkedDirectory,
+      process.platform === 'win32' ? 'junction' : 'dir',
     );
-    try {
-      await symlink(target, linked, 'file');
-    } catch (error) {
-      if (
-        error &&
-        typeof error === 'object' &&
-        'code' in error &&
-        String(error.code) === 'EPERM'
-      ) {
-        return;
-      }
-      throw error;
-    }
+
+    const direct = await stagePrivateCalibrationPhoto(
+      target,
+      path.join(scratch, 'private'),
+      '11111111-1111-4111-8111-111111111111',
+      randomUUID(),
+    );
+    expect(direct.bytes).toEqual(bytes);
+    expect(direct.created).toBe(true);
 
     await expect(
       stagePrivateCalibrationPhoto(
