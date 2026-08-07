@@ -55,6 +55,8 @@ export function classify(facts: ShaFacts): {
   summary: string;
 };
 export function fetchPrHead(pr: string, remote?: string): string | null;
+export function resolveCommit(rev: string): string | null;
+export function distanceToTip(sha: string, base: string): number | null;
 export function remoteTrackingParts(
   base: string,
   remote?: string,

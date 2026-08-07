@@ -105,6 +105,27 @@ export const UNENFORCED_CHECKS = {
     'Discharge path: invoke it from whatever performs the merge, and treat a ' +
     'non-zero exit as a refusal — at which point it becomes a gate and this ' +
     'entry should be deleted.',
+  'check:behind-base':
+    'Its judgement IS enforced in CI: tests/behindBase.test.ts drives ' +
+    'evaluateBehindBase and formatResult over plain objects, exercising all ' +
+    'three states under `npm run test`. Its main() needs the same two things ' +
+    '`check:required-contexts` needs and cannot get from a pull_request run: a ' +
+    'credential, and the PR NUMBER being merged — this answers "is THIS PR ' +
+    'behind THIS base right now", asked at the moment of merging, not a ' +
+    'property a commit could assert about itself while still open (#397: the ' +
+    'incident this exists for is a PR that was green and BEHIND simultaneously; ' +
+    'a workflow attached to that same PR run cannot see what lands on the base ' +
+    'after it). ' +
+    'STATE THE WEAKNESS PLAINLY: `enforce_admins: false` already makes the ' +
+    'server-side `strict` requirement bypassable for the sole admin merger ' +
+    '(#397, #388), so this check is not a second server-side gate either — it ' +
+    'is a client-side one, same shape as scripts/push-guard.mjs for force-pushes. ' +
+    'Nothing forces anyone to run it before `gh pr merge`; `.squad/skills/' +
+    'git-workflow/SKILL.md` documents it as a required step, and a documented ' +
+    'step is a convention, not a control, until something runs it for you. ' +
+    'Discharge path: invoke it from whatever performs the merge and treat a ' +
+    'non-zero exit as a refusal — at which point it becomes a gate and this ' +
+    'entry should be deleted.',
 };
 
 // `check:citation-reachability` was here, with a four-condition discharge path.
