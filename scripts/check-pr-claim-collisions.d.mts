@@ -3,7 +3,12 @@ export interface OpenPullRequestClaim {
   title: string;
   url: string;
   headRefName: string;
-  closingIssueNumbers: number[];
+  closingIssues: IssueClaimIdentity[];
+}
+
+export interface IssueClaimIdentity {
+  repository: string;
+  number: number;
 }
 
 export interface PullRequestIssueClaim {
@@ -15,6 +20,7 @@ export interface PullRequestIssueClaim {
 }
 
 export interface IssueClaimCollision {
+  repository: string;
   issueNumber: number;
   pullRequests: PullRequestIssueClaim[];
 }
@@ -81,6 +87,7 @@ export function resolveBranchIssueNumbers(input: {
 export function evaluateClaimCollisions(
   pullRequests: OpenPullRequestClaim[],
   branchIssueNumbers: number[],
+  branchIssueRepository: string,
 ): ClaimCollisionResult;
 export function formatCollisionWarnings(result: ClaimCollisionResult): string[];
 export function main(

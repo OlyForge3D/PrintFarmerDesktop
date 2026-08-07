@@ -22,6 +22,9 @@ const OPEN_PULL_REQUESTS_QUERY = `
           closingIssuesReferences(first: 100) {
             nodes {
               number
+              repository {
+                nameWithOwner
+              }
             }
             pageInfo {
               hasNextPage
@@ -145,20 +148,39 @@ export function parseOpenPullRequestPages(raw) {
         );
       }
 
-      const closingIssueNumbers = closingNodes.map((issueValue) =>
-        positiveInteger(
-          asRecord(issueValue)?.number,
-          `closing issue number on PR #${number}`,
-        ),
+      const closingIssues = closingNodes.map((issueValue) => {
+        const issue = asRecord(issueValue);
+        const repository = asRecord(issue?.repository)?.nameWithOwner;
+        if (typeof repository !== 'string' || repository.trim() === '') {
+          throw new TypeError(
+            `closing issue on PR #${number} has no repository identity`,
+          );
+        }
+        return {
+          number: positiveInteger(
+            issue?.number,
+            `closing issue number on PR #${number}`,
+          ),
+          repository,
+        };
+      });
+      const uniqueClosingIssues = [
+        ...new Map(
+          closingIssues.map((issue) => [
+            `${issue.repository}#${issue.number}`,
+            issue,
+          ]),
+        ).values(),
+      ].sort(
+        (a, b) =>
+          a.repository.localeCompare(b.repository) || a.number - b.number,
       );
       pullRequests.push({
         number,
         title: node.title,
         url: node.url,
         headRefName: node.headRefName,
-        closingIssueNumbers: [...new Set(closingIssueNumbers)].sort(
-          (a, b) => a - b,
-        ),
+        closingIssues: uniqueClosingIssues,
       });
       seenPullRequests.add(number);
     }
@@ -238,6 +260,7 @@ export function parseBranchIssueTypes(raw, expectedNumbers) {
   }
 
   const expectedKeys = new Set(expectedNumbers.map((number) => `n${number}`));
+  const notFoundKeys = new Set();
   for (const errorValue of response?.errors ?? []) {
     const error = asRecord(errorValue);
     const path = error?.path;
@@ -261,6 +284,7 @@ export function parseBranchIssueTypes(raw, expectedNumbers) {
         }`,
       );
     }
+    notFoundKeys.add(key);
   }
 
   const issueNumbers = [];
@@ -274,6 +298,11 @@ export function parseBranchIssueTypes(raw, expectedNumbers) {
     }
     const value = repository[key];
     if (value === null) {
+      if (!notFoundKeys.has(key)) {
+        throw new Error(
+          `branch issue type response returned an unexplained null for candidate #${number}`,
+        );
+      }
       continue;
     }
     const typename = asRecord(value)?.__typename;
@@ -383,10 +412,19 @@ export function resolveBranchIssueNumbers({ owner, repo, numbers, run }) {
   return issueNumbers;
 }
 
-export function evaluateClaimCollisions(pullRequests, branchIssueNumbers) {
-  if (!Array.isArray(pullRequests) || !Array.isArray(branchIssueNumbers)) {
+export function evaluateClaimCollisions(
+  pullRequests,
+  branchIssueNumbers,
+  branchIssueRepository,
+) {
+  if (
+    !Array.isArray(pullRequests) ||
+    !Array.isArray(branchIssueNumbers) ||
+    typeof branchIssueRepository !== 'string' ||
+    branchIssueRepository.trim() === ''
+  ) {
     throw new TypeError(
-      'pullRequests and branchIssueNumbers must both be arrays',
+      'pullRequests and branchIssueNumbers must be arrays and branchIssueRepository must identify OWNER/REPO',
     );
   }
   const validBranchIssues = new Set(
@@ -402,9 +440,25 @@ export function evaluateClaimCollisions(pullRequests, branchIssueNumbers) {
       'pull request number',
     );
     const sourcesByIssue = new Map();
-    for (const issueNumber of pullRequest.closingIssueNumbers ?? []) {
-      positiveInteger(issueNumber, `closing issue number on PR #${prNumber}`);
-      sourcesByIssue.set(issueNumber, new Set(['closingIssuesReferences']));
+    for (const issue of pullRequest.closingIssues ?? []) {
+      const issueNumber = positiveInteger(
+        issue?.number,
+        `closing issue number on PR #${prNumber}`,
+      );
+      if (
+        typeof issue.repository !== 'string' ||
+        issue.repository.trim() === ''
+      ) {
+        throw new TypeError(
+          `closing issue #${issueNumber} on PR #${prNumber} has no repository identity`,
+        );
+      }
+      const key = `${issue.repository}#${issueNumber}`;
+      sourcesByIssue.set(key, {
+        repository: issue.repository,
+        issueNumber,
+        sources: new Set(['closingIssuesReferences']),
+      });
     }
     for (const issueNumber of parseBranchIssueCandidates(
       pullRequest.headRefName,
@@ -412,37 +466,52 @@ export function evaluateClaimCollisions(pullRequests, branchIssueNumbers) {
       if (!validBranchIssues.has(issueNumber)) {
         continue;
       }
-      const sources = sourcesByIssue.get(issueNumber) ?? new Set();
-      sources.add('branch');
-      sourcesByIssue.set(issueNumber, sources);
+      const key = `${branchIssueRepository}#${issueNumber}`;
+      const claim = sourcesByIssue.get(key) ?? {
+        repository: branchIssueRepository,
+        issueNumber,
+        sources: new Set(),
+      };
+      claim.sources.add('branch');
+      sourcesByIssue.set(key, claim);
     }
 
-    for (const [issueNumber, sources] of sourcesByIssue) {
-      const claims = claimsByIssue.get(issueNumber) ?? [];
+    for (const [key, issueClaim] of sourcesByIssue) {
+      const claims = claimsByIssue.get(key)?.pullRequests ?? [];
       claims.push({
         number: prNumber,
         title: pullRequest.title,
         url: pullRequest.url,
         headRefName: pullRequest.headRefName,
-        sources: [...sources].sort(),
+        sources: [...issueClaim.sources].sort(),
       });
-      claimsByIssue.set(issueNumber, claims);
+      claimsByIssue.set(key, {
+        repository: issueClaim.repository,
+        issueNumber: issueClaim.issueNumber,
+        pullRequests: claims,
+      });
     }
   }
 
   const collisions = [...claimsByIssue]
-    .filter(([, claims]) => claims.length > 1)
-    .map(([issueNumber, claims]) => ({
+    .map(([, claim]) => claim)
+    .filter(({ pullRequests }) => pullRequests.length > 1)
+    .map(({ repository, issueNumber, pullRequests }) => ({
+      repository,
       issueNumber,
-      pullRequests: claims.sort((a, b) => a.number - b.number),
+      pullRequests: pullRequests.sort((a, b) => a.number - b.number),
     }))
-    .sort((a, b) => a.issueNumber - b.issueNumber);
+    .sort(
+      (a, b) =>
+        a.repository.localeCompare(b.repository) ||
+        a.issueNumber - b.issueNumber,
+    );
 
   return {
     openPullRequestCount: pullRequests.length,
     claimedIssueCount: claimsByIssue.size,
     singleClaimCount: [...claimsByIssue.values()].filter(
-      (claims) => claims.length === 1,
+      ({ pullRequests: claims }) => claims.length === 1,
     ).length,
     collisions,
   };
@@ -463,8 +532,9 @@ export function formatCollisionWarnings(result) {
           `PR #${pullRequest.number} (${pullRequest.url}; ${pullRequest.sources.join('+')})`,
       )
       .join(', ');
-    return `::warning title=Duplicate issue claim #${collision.issueNumber}::${escapeWorkflowCommand(
-      `Issue #${collision.issueNumber} is claimed by ${claimants}. This is advisory: deliberate replacement PRs are valid, but every conflicting PR must be reviewed together.`,
+    const issue = `${collision.repository}#${collision.issueNumber}`;
+    return `::warning title=Duplicate issue claim ${issue}::${escapeWorkflowCommand(
+      `Issue ${issue} is claimed by ${claimants}. This is advisory: deliberate replacement PRs are valid, but every conflicting PR must be reviewed together.`,
     )}`;
   });
 }
@@ -555,7 +625,11 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
           numbers: candidates,
           run,
         });
-  const result = evaluateClaimCollisions(pullRequests, branchIssueNumbers);
+  const result = evaluateClaimCollisions(
+    pullRequests,
+    branchIssueNumbers,
+    `${owner}/${repo}`,
+  );
 
   output(
     `[pr-claim-collisions] open PRs ${result.openPullRequestCount}; claimed issues ${result.claimedIssueCount}; collisions ${result.collisions.length}; singly claimed ${result.singleClaimCount}; population reads ${population.reads}; stable ${Math.round(population.stableMs / 1000)}s`,

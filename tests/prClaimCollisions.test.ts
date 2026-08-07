@@ -23,11 +23,18 @@ interface FixturePr {
   closingIssueNumbers: number[];
 }
 
+const REPOSITORY = 'OlyForge3D/PrintFarmerDesktop';
+
 function pr(input: FixturePr) {
+  const { closingIssueNumbers, ...rest } = input;
   return {
     title: `PR ${input.number}`,
     url: `https://github.test/pull/${input.number}`,
-    ...input,
+    ...rest,
+    closingIssues: closingIssueNumbers.map((number) => ({
+      number,
+      repository: REPOSITORY,
+    })),
   };
 }
 
@@ -46,7 +53,10 @@ function page(
             url: node.url,
             headRefName: node.headRefName,
             closingIssuesReferences: {
-              nodes: node.closingIssueNumbers.map((number) => ({ number })),
+              nodes: node.closingIssues.map((issue) => ({
+                number: issue.number,
+                repository: { nameWithOwner: issue.repository },
+              })),
               pageInfo: { hasNextPage: false },
             },
           })),
@@ -73,10 +83,12 @@ describe('historical collision fixtures', () => {
         }),
       ],
       [],
+      REPOSITORY,
     );
 
     expect(result.collisions).toEqual([
       {
+        repository: REPOSITORY,
         issueNumber: 314,
         pullRequests: [
           expect.objectContaining({
@@ -107,10 +119,12 @@ describe('historical collision fixtures', () => {
         }),
       ],
       [481],
+      REPOSITORY,
     );
 
     expect(result.collisions).toEqual([
       {
+        repository: REPOSITORY,
         issueNumber: 481,
         pullRequests: [
           expect.objectContaining({ number: 495, sources: ['branch'] }),
@@ -193,6 +207,17 @@ describe('branch issue candidates', () => {
     ).toThrow(/omitted candidate #9999/);
   });
 
+  it('rejects a null alias without its matching NOT_FOUND error', () => {
+    expect(() =>
+      parseBranchIssueTypes(
+        JSON.stringify({
+          data: { repository: { n9999: null } },
+        }),
+        [9999],
+      ),
+    ).toThrow(/unexplained null/);
+  });
+
   it('rejects GraphQL errors that are not an expected alias-specific NOT_FOUND', () => {
     expect(() =>
       parseBranchIssueTypes(
@@ -226,6 +251,7 @@ describe('branch issue candidates', () => {
         }),
       ],
       [],
+      REPOSITORY,
     );
     expect(result.claimedIssueCount).toBe(0);
     expect(result.collisions).toEqual([]);
@@ -478,6 +504,7 @@ describe('population discrimination and advisory output', () => {
         }),
       ],
       [100],
+      REPOSITORY,
     );
     expect(result).toMatchObject({
       claimedIssueCount: 2,
@@ -501,8 +528,30 @@ describe('population discrimination and advisory output', () => {
         }),
       ],
       [100, 101],
+      REPOSITORY,
     );
     expect(result.collisions).toEqual([]);
+  });
+
+  it('does not conflate equal issue numbers from different repositories', () => {
+    const first = pr({
+      number: 10,
+      headRefName: 'no-number',
+      closingIssueNumbers: [100],
+    });
+    const second = pr({
+      number: 11,
+      headRefName: 'no-number',
+      closingIssueNumbers: [100],
+    });
+    second.closingIssues[0]!.repository = 'OlyForge3D/PrintFarmer';
+
+    const result = evaluateClaimCollisions([first, second], [], REPOSITORY);
+    expect(result).toMatchObject({
+      claimedIssueCount: 2,
+      singleClaimCount: 2,
+      collisions: [],
+    });
   });
 
   it('names every conflicting PR in one advisory warning', () => {
@@ -525,6 +574,7 @@ describe('population discrimination and advisory output', () => {
         }),
       ],
       [100],
+      REPOSITORY,
     );
     const warnings = formatCollisionWarnings(result);
     expect(warnings).toHaveLength(1);
