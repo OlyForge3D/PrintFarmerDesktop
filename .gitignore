@@ -59,6 +59,11 @@ test-results/
 # Goal workflow artifacts
 .goals/
 
+# Ralph's per-round delta-scan state. Machine-written every hour and only
+# meaningful on the machine that produced it; committing it would churn the
+# history and hand stale head SHAs to another checkout.
+.squad/agents/ralph/.state.json
+
 # Secrets, signing material, local config (NEVER commit)
 *.pem
 *.pfx
