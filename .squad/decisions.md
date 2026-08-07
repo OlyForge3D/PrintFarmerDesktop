@@ -534,7 +534,7 @@ Retractions are followed by contest language **above** findings and **above** ba
 
 **By:** Vasquez
 
-**Amendment to the 2026-07-25 `Copilot-Session` finding.** The earlier entry remains intact because its forensic result is valid: divergent trailers are durable positive evidence that a second writer touched a branch, and `push-guard.mjs` still uses that evidence for its strong `foreign-session` refusal. Its statement that identical trailers prove one writer does not survive the post-#264 measurement, however. The trailer value reaches committers through their **prompt**, not through a session-specific environment value; measured on `development` at `ce4a7515`, one value carried 74 commits spanning 37 hours. It is therefore demonstrably non-injective over time: equality of trailer values is not identity of writer.
+**Amendment to the 2026-07-25 `Copilot-Session` finding.** The earlier entry remains intact because its forensic result is valid: divergent trailers are durable positive evidence that a second writer touched a branch, and `push-guard.mjs` still uses that evidence for its strong `foreign-session` refusal. Its statement that identical trailers prove one writer does not survive the post-#264 measurement, however. The trailer value reaches committers through their **prompt**, not through a session-specific environment value; measured on `development` at `ce4a7515`, one value carried 74 commits from 2026-07-21 21:06:29 -0700 through 2026-07-23 12:40:18 -0700 — 39 hours, 33 minutes, and 49 seconds. It is therefore demonstrably non-injective over time: equality of trailer values is not identity of writer.
 
 **The post-#264 split is by primary question.**
 
