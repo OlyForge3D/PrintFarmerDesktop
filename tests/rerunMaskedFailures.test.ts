@@ -327,7 +327,15 @@ describe('API pagination', () => {
 });
 
 describe('stable current-head orchestration', () => {
-  function apiFixture({ finalHead = HEAD, finalAttempt = 2 } = {}) {
+  function apiFixture({
+    finalHead = HEAD,
+    finalAttempt = 2,
+    onRequest = () => {},
+  }: {
+    finalHead?: string;
+    finalAttempt?: number;
+    onRequest?: (url: string) => void;
+  } = {}) {
     let pullReads = 0;
     let runReads = 0;
     return vi.fn<typeof fetch>((input) => {
@@ -337,6 +345,7 @@ describe('stable current-head orchestration', () => {
           : typeof input === 'string'
             ? input
             : input.url;
+      onRequest(url);
       if (/\/pulls\/272$/.test(url)) {
         pullReads += 1;
         return Promise.resolve(
@@ -408,6 +417,28 @@ describe('stable current-head orchestration', () => {
     expect(result.findings[0]?.context).toBe(
       'Release package (windows-latest)',
     );
+  });
+
+  it('reads the final PR head after the dependent run and protection reads', async () => {
+    const requests: string[] = [];
+    await scanPullRequest({
+      repository: { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' },
+      prNumber: 272,
+      token: 't',
+      fetchImpl: apiFixture({
+        onRequest: (url) => requests.push(url),
+      }),
+    });
+
+    expect(requests.at(-1)).toMatch(/\/pulls\/272$/);
+    expect(
+      requests.slice(-3, -1).some((url) => /\/actions\/runs\?/.test(url)),
+    ).toBe(true);
+    expect(
+      requests
+        .slice(-3, -1)
+        .some((url) => /\/branches\/development\/protection$/.test(url)),
+    ).toBe(true);
   });
 
   it('discards a scan when the PR head moves', async () => {

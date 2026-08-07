@@ -384,8 +384,7 @@ export async function scanPullRequest({
       listAttemptJobs({ repository, runId, attempt, token, fetchImpl }),
   });
 
-  const [finalPull, finalRuns, finalProtection] = await Promise.all([
-    fetchPullSnapshot({ repository, prNumber, token, fetchImpl }),
+  const [finalRuns, finalProtection] = await Promise.all([
     listWorkflowRuns({
       repository,
       headSha: initialPull.headSha,
@@ -399,6 +398,15 @@ export async function scanPullRequest({
       fetchImpl,
     }),
   ]);
+  // Read the mutable PR head last. If it were fetched concurrently with the
+  // slower run pages, the head could move after that read but before the scan
+  // returns, leaving an old-head report labelled current.
+  const finalPull = await fetchPullSnapshot({
+    repository,
+    prNumber,
+    token,
+    fetchImpl,
+  });
   if (
     finalPull.headSha !== initialPull.headSha ||
     finalPull.baseRef !== initialPull.baseRef
