@@ -52,6 +52,7 @@
     "check:script-reachability": "node scripts/check-script-reachability.mjs",
     "check:sequencing-hold": "node scripts/check-sequencing-hold.mjs",
     "check:citation-reachability": "node scripts/check-citation-reachability.mjs",
+    "check:admin-guide-citations": "node scripts/check-admin-guide-citations.mjs",
     "check:review-coverage": "node scripts/check-review-head-coverage.mjs",
     "review:target": "node scripts/prepare-review-target.mjs",
     "instrument:probe": "node scripts/instrument-probe.mjs",

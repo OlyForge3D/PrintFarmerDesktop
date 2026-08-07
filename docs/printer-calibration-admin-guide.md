@@ -504,10 +504,10 @@ The four routes guarded by the parity test (`CALIBRATION_QUEUE_ROUTE_TEMPLATES`)
 
 | Path template                                                             | Method | Symbol                                                | Line                         |
 | ------------------------------------------------------------------------- | ------ | ----------------------------------------------------- | ---------------------------- |
-| `/api/job-queue`                                                          | POST   | `JobQueueController.QueueJobAsync`                    | 95@167a3b13 / 105@9c1d7e4b   |
+| `/api/job-queue`                                                          | POST   | `JobQueueController.QueueJobAsync`                    | 101@167a3b13 / 111@9c1d7e4b  |
 | `/api/job-queue/{jobId}`                                                  | GET    | `JobQueueController.GetJobAsync`                      | both                         |
 | `/api/calibration-projects/{projectId}/attempts/{attemptId}/generate-job` | POST   | `CalibrationGenerationController.GenerateJobAsync`    | 41 (both)                    |
-| `/api/job-queue/{jobId}/acknowledge-bed-clear-and-start`                  | POST   | `JobQueueController.AcknowledgeBedClearAndStartAsync` | 946@167a3b13 / 1011@9c1d7e4b |
+| `/api/job-queue/{jobId}/acknowledge-bed-clear-and-start`                  | POST   | `JobQueueController.AcknowledgeBedClearAndStartAsync` | 960@167a3b13 / 1025@9c1d7e4b |
 
 Source files: `src/api/Controllers/JobQueueController.cs`,
 `src/api/Controllers/CalibrationGenerationController.cs`.
@@ -539,7 +539,7 @@ via `acknowledgeBedClearAndStart`, which builds its headers from the exported
 | --------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Idempotency-Key`           | Stable per-operation key   | 428 when both header **and** body `idempotencyKey` are blank (body fallback exists; symbol `idempotencyKey` at 973@167a3b13 / 1038@9c1d7e4b) |
 | `If-Match`                  | Opaque job ETag (§10.4)    | 428 when absent or blank (no body fallback; server variable _ifMatchHeader_ at 984@167a3b13 / 1049@9c1d7e4b)                                 |
-| `X-Dispatch-State-If-Match` | Opaque dispatch-state ETag | 428 when absent or blank (no body fallback; server variable _dispatchIfMatchHeader_ at 986@167a3b13 / 1051@9c1d7e4b)                         |
+| `X-Dispatch-State-If-Match` | Opaque dispatch-state ETag | 428 when absent or blank (no body fallback; server variable _dispatchIfMatchHeader_ at 985@167a3b13 / 1050@9c1d7e4b)                         |
 
 Source: `src/api/Controllers/JobQueueController.cs`,
 `AcknowledgeBedClearAndStartAsync`.
@@ -549,23 +549,26 @@ Source: `src/api/Controllers/JobQueueController.cs`,
 Two distinct `[Timestamp] byte[]?` properties produce the bed-clear ETags:
 
 - **Job ETag** (`If-Match`): `PrintJob.RowVersion`
-  (`src/infra/Domain/PrintJob.cs` lines 19–20@167a3b13 / 20–21@9c1d7e4b)
-  mapped to base-64 by `JobQueueService.ToBase64RowVersion` (lines
-  1408–1409@167a3b13 / 1532–1533@9c1d7e4b; calls `Convert.ToBase64String`).
+  (`src/infra/Domain/PrintJob.cs` line 20@167a3b13 / 21@9c1d7e4b)
+  mapped to base-64 by `JobQueueService.ToBase64RowVersion`
+  (`src/infra/Services/Queue/JobQueueService.cs`, line
+  1408@167a3b13 / 1532@9c1d7e4b; calls `Convert.ToBase64String`).
 - **Dispatch-state ETag** (`X-Dispatch-State-If-Match`): `PrinterDispatchState.RowVersion`
   (`src/infra/Domain/PrinterDispatchState.cs` lines 37–38 at both commits),
-  mapped by the same `ToBase64RowVersion` helper (called at line 806@9c1d7e4b).
+  mapped by the same `ToBase64RowVersion` helper
+  (`src/infra/Services/Queue/JobQueueService.cs`, called at line 806@9c1d7e4b).
 
 **Treat both as opaque and forward without application-level interpretation.**
-The server decodes them via `DecodeEtag` (calls `Convert.FromBase64String` after
-trimming quotes; `JobQueueController.cs` lines 1197–1200@9c1d7e4b). Three
+The server's `DecodeEtag` method is at
+`JobQueueController.cs` line 1197@9c1d7e4b and calls
+`Convert.FromBase64String` after trimming quotes. Three
 distinct HTTP outcomes:
 
-- **400** — `DecodeEtag` throws `FormatException` on malformed base-64 (lines
-  1072–1077@9c1d7e4b); the token is corrupt or not base-64.
+- **400** — `DecodeEtag` throws `FormatException` on malformed base-64 (line
+  1072@9c1d7e4b); the token is corrupt or not base-64.
 - **412 `dispatch_revision_conflict`** — decoded bytes do not match the stored
   row version; the token is stale but well-formed (symbol `DispatchRevisionConflict`,
-  lines 1127–1139@9c1d7e4b).
+  line 1127@9c1d7e4b).
 - **428 `precondition_required`** — header is absent entirely (see §10.3).
 
 PFD's wire types `RemoteJobQueueJob.rowVersion` and
@@ -600,7 +603,9 @@ envelope.** For full job data subscribe to `QueueJob-{jobId}` (symbol
 
 The `status` field of `CalibrationOrchestrationStatusDto`
 (`src/api/Contracts/CalibrationGenerationContracts.cs`) is populated by
-`CalibrationGenerationSaga.Project` (symbol, line 2131@9c1d7e4b) as
+`CalibrationGenerationSaga.Project`
+(`src/api/Services/Calibration/Generation/CalibrationGenerationSaga.cs`,
+symbol, line 2131@9c1d7e4b) as
 `orchestration.Status.ToString()` where `CalibrationOrchestrationStatus` is an
 enum with values `Pending`, `Running`, `WaitingToRetry`, `Completed`, `Failed`,
 `Cancelled` (`src/infra/Domain/CalibrationEntities.cs`, both commits).
@@ -621,14 +626,16 @@ declares both as `z.string()` for forward compatibility.
 `QueueEventSchemaVersions.Current = "3"` is declared at
 `src/infra/Domain/QueueDispatchEntities.cs` line 7 at 9c1d7e4b (same at
 167a3b13). The `SchemaVersion` field on `QueueDispatchOutbox` is initialized to
-`QueueEventSchemaVersions.Current` (line 148@9c1d7e4b), persisted to the outbox
-row at write time. `QueueOutboxPublisherService` (lines 155–180@9c1d7e4b,
-`src/infra/Services/Queue/QueueOutboxPublisherService.cs`) passes the persisted
-the event's `SchemaVersion` into each `QueueEventEnvelope.FromOutbox` call, so every
+`QueueEventSchemaVersions.Current`
+(`src/infra/Domain/QueueDispatchEntities.cs`, line 148@9c1d7e4b), persisted to
+the outbox row at write time. `QueueOutboxPublisherService`
+(`src/infra/Services/Queue/QueueOutboxPublisherService.cs`) calls
+`QueueEventEnvelope.FromOutbox` (line 155@9c1d7e4b) with the persisted
+event's `SchemaVersion`, so every
 SignalR-published envelope carries the value written at outbox insert time.
 The change-feed REST projection also echoes the persisted value: symbol
-`GetChangesAsync`, assigning the event's `SchemaVersion` property at line
-336@167a3b13 / 346@9c1d7e4b in `src/api/Controllers/JobQueueController.cs`.
+`GetChangesAsync` in `src/api/Controllers/JobQueueController.cs`, assigning the
+event's `SchemaVersion` property at line 336@167a3b13 / 346@9c1d7e4b.
 
 **Desktop handling:** PFD's `RemoteQueueEventEnvelope` parses `schemaVersion` as
 `z.string()` (not a literal), so it accepts `"3"` from the server today and
