@@ -39,9 +39,9 @@ describe('evaluateBehindBase', () => {
   });
 
   it('is undetermined when ancestry could not be measured, not a silent pass', () => {
-    expect(
-      evaluateBehindBase({ baseIsAncestorOfHead: null }).exitCode,
-    ).toBe(EXIT_UNDETERMINED);
+    expect(evaluateBehindBase({ baseIsAncestorOfHead: null }).exitCode).toBe(
+      EXIT_UNDETERMINED,
+    );
     expect(
       evaluateBehindBase({ baseIsAncestorOfHead: undefined }).exitCode,
     ).toBe(EXIT_UNDETERMINED);
