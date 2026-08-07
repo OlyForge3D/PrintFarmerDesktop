@@ -29,9 +29,15 @@ name: Citation reachability
 #
 # The harness withholds its verdict unless both of its controls fire - a
 # known-present revision must classify REACHABLE and a synthetic one must
-# classify ORPHAN - and exits 2 if either fails. That distinguishes "no orphans"
-# from "cannot see orphans", which are the same output on an unwired instrument
-# and the reason this workflow exists rather than a note asking people to run it.
+# classify ORPHAN - and exits 2 if either fails. Those classifier controls are
+# necessary rather than sufficient: they run on inputs the harness supplies
+# itself, so they cannot detect an empty real input set. Distinguishing "no
+# orphans" from "cannot see orphans" requires three independent guard families:
+# classifier controls; the shallow-history refusal plus MAINLINE_FLOOR for the
+# reader; and scan-root preflights plus corpus-specific floors for the inputs.
+# The local arm uses CITATION_FLOOR, while the cross-repository admin-guide arm
+# below uses its own ADMIN_GUIDE_CITATION_FLOOR. Each guard covers a different
+# way of seeing nothing, and none implies the others.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
