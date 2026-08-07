@@ -188,7 +188,13 @@ export type CalibrationHttpErrorCode =
   // A 409 whose server-supplied error code this build does not recognise.
   // Deliberately distinct from every diagnosed 409 so that an unclassified
   // refusal cannot be read as a diagnosed one (#326).
-  | 'unclassifiedConflict';
+  | 'unclassifiedConflict'
+  // A 422 whose server-supplied error code this build does not recognise.
+  // The 409 sibling above is the precedent: 'invalidData' was previously
+  // returned here, and it is a *diagnosed* code produced by ten other call
+  // sites, so an unrecognised rejection was byte-identical to a validated one
+  // (#508).
+  | 'unclassifiedValidationFailure';
 
 export class CalibrationHttpError extends Error {
   constructor(
@@ -252,12 +258,13 @@ export class CalibrationHttpError extends Error {
       calibrationJobIncompatible: 'calibrationJobIncompatible',
       filamentCheckFailed: 'filamentCheckFailed',
     };
-    // 'unclassifiedConflict' is deliberately absent from this map. The shared
+    // 'unclassifiedConflict' and 'unclassifiedValidationFailure' are
+    // deliberately absent from this map. The shared
     // IPC enum has no unclassified member and widening it is a contract change
     // owned by #219, so the fall-through to 'serverError' is a *rendering*
     // fallback and not a classification. The honest code survives where it can
     // be acted on: in the main process, in the structured log vocabulary, and
-    // in this error's message, which carries the raw server code (#326).
+    // in this error's message, which carries the raw server code (#326, #508).
     const apiCode = codeMap[this.code] ?? 'serverError';
     const retryable = [
       'timeout',
@@ -470,7 +477,10 @@ function isTransient(error: CalibrationHttpError): boolean {
  * diagnosed code a definite cause (#326).
  *
  * This matches {@link mapBedClearErrorCode422}, whose fallback is likewise a
- * code that none of its named cases produces.
+ * code that none of its named cases produces. That sentence was false when it
+ * was written: 422's fallback was `'invalidData'`, a diagnosed code with ten
+ * producers elsewhere in the main process. It is true as of #508, which is the
+ * change that made the comment honest rather than aspirational.
  */
 function mapBedClearErrorCode409(
   errorCode: string | null,
@@ -491,7 +501,16 @@ function mapBedClearErrorCode409(
 
 /**
  * Map a 422 error code string from the bed-clear endpoint to a typed error code.
- * Unrecognised codes fall back to 'invalidData'.
+ *
+ * Unrecognised codes return `'unclassifiedValidationFailure'`, which no named
+ * case produces. Returning `'invalidData'` here — as this function did before
+ * #508 — made *"the server validated the payload and rejected it"* and *"the
+ * server said something this build has never seen"* byte-identical to every
+ * consumer, including the runbooks, which give `invalidData` the definite cause
+ * *"the server rejected the request as invalid."*
+ *
+ * This is the treatment {@link mapBedClearErrorCode409} already applied twenty
+ * lines above; the two mappers now agree.
  */
 function mapBedClearErrorCode422(
   errorCode: string | null,
@@ -502,7 +521,7 @@ function mapBedClearErrorCode422(
     case 'filament_check_failed':
       return 'filamentCheckFailed';
     default:
-      return 'invalidData';
+      return 'unclassifiedValidationFailure';
   }
 }
 

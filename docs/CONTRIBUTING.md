@@ -22,16 +22,17 @@ npm install
 
 Renderer/main/preload (run from the repo root):
 
-| Command                          | Purpose                                    |
-| -------------------------------- | ------------------------------------------ |
-| `npm run dev`                    | Launch the app with hot reload             |
-| `npm run typecheck`              | Strict TypeScript check (no emit)          |
-| `npm run lint`                   | ESLint (type-aware)                        |
-| `npm run format`                 | Prettier check (`format:write` fixes)      |
-| `npm run check:provenance`       | Calibration source/provenance gate         |
-| `npm run test`                   | Vitest unit/component tests                |
-| `npm run make`                   | Build platform installers                  |
-| `npm run verify:target-profiles` | Verify the pinned printer-profile snapshot |
+| Command                             | Purpose                                    |
+| ----------------------------------- | ------------------------------------------ |
+| `npm run dev`                       | Launch the app with hot reload             |
+| `npm run typecheck`                 | Strict TypeScript check (no emit)          |
+| `npm run lint`                      | ESLint (type-aware)                        |
+| `npm run format`                    | Prettier check (`format:write` fixes)      |
+| `npm run check:provenance`          | Calibration source/provenance gate         |
+| `npm run test`                      | Vitest unit/component tests                |
+| `npm run make`                      | Build platform installers                  |
+| `npm run verify:target-profiles`    | Verify the pinned printer-profile snapshot |
+| `npm run worktree:remove -- <path>` | Safely force-remove a linked worktree      |
 
 Rust sidecar (run from `native/`):
 
@@ -73,6 +74,21 @@ exercised in CI.
 - Source models are read-only. Never move, rename, modify, or upload a user's
   files without an explicit user action.
 - Never commit credentials or signing material (see `.gitignore`).
+- On Windows, never run `git worktree remove --force` directly. Git for Windows
+  2.53.0.windows.3 follows NTFS junctions inside the worktree and can silently
+  empty an external target. Use `npm run worktree:remove -- <path>`; it unlinks
+  reparse points without recursive traversal, verifies their targets remain,
+  and refuses removal if the preflight cannot prove that state.
+- Run removal from a registered worktree outside the target. Native filesystem
+  identity checks refuse callers inside the target even through a junction or
+  `subst` alias.
+- If Git fails after preflight and deregisters the target while leaving its
+  directory behind, use
+  `npm run worktree:remove -- --recover-stale <path>`. Recovery requires the
+  matching identity receipt written by the original removal, refuses registered,
+  current, main, unresolved, or ambiguous paths, repeats the junction-safety
+  checks, and then removes the stale tree without following links. It never
+  treats an arbitrary unregistered directory as recoverable.
 
 ## Printer Calibration source-derived contributions
 

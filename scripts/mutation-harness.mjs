@@ -43,6 +43,13 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
+import {
+  INCONCLUSIVE,
+  UNMATCHED,
+  checkSelectors,
+  formatRefusal,
+} from './vitest-strict.mjs';
+
 export const ARM_KILLED = 'killed';
 export const ARM_SURVIVED = 'survived';
 export const ARM_CONFOUNDED = 'confounded';
@@ -395,6 +402,149 @@ export function runArm({
   return { label, ...classifyArm({ application, restore, summary }) };
 }
 
+/**
+ * A fourth control: THE SUITE IS THE ONE NAMED.
+ *
+ * `spec.testCommand` is a free-form array, so it can carry several selectors.
+ * #369 measured what vitest does with one that matches nothing:
+ *
+ *   vitest run <fabricated>          -> "No test files found"  exit 1
+ *   vitest run <real> <fabricated>   -> "1 passed"             exit 0
+ *
+ * The second row is invisible to all three controls above it. The mutation
+ * still lands, the extractor still reads a summary, the restore still verifies
+ * -- and the arm reports SURVIVED for a mutation whose guarding test was never
+ * run. That is a manufactured finding, and this header already says that
+ * reporting a confounded arm as survived invents one.
+ *
+ * The check is delegated to scripts/vitest-strict.mjs rather than
+ * reimplemented, for the reason that file gives: reproducing another tool's
+ * filter grammar hard-codes a claim about it that goes stale toward a false
+ * red (#146).
+ */
+const VITEST_LAUNCHER_SUFFIXES = new Set([
+  '',
+  '.mjs',
+  '.cjs',
+  '.js',
+  '.cmd',
+  '.bat',
+  '.exe',
+  '.ps1',
+]);
+
+/**
+ * Is this token vitest itself, rather than a launcher or a selector?
+ *
+ * The suffix set is an allow-list on purpose. A selector named
+ * `tests/vitest.test.ts` has the stem `vitest.test`, and even a bare
+ * `vitest.test` would be refused by the suffix check -- the two ways of
+ * getting this wrong both fail closed.
+ */
+export function isVitestToken(token) {
+  const tail = String(token ?? '')
+    .split(/[\\/]/)
+    .pop();
+  const dot = tail.lastIndexOf('.');
+  const stem = dot > 0 ? tail.slice(0, dot) : tail;
+  const suffix = dot > 0 ? tail.slice(dot).toLowerCase() : '';
+  return stem === 'vitest' && VITEST_LAUNCHER_SUFFIXES.has(suffix);
+}
+
+/**
+ * Split a launcher command into (launcher, vitest argv).
+ *
+ * Handing the whole command to selectorCandidates() is the mistake this
+ * function exists to prevent. Measured, not assumed:
+ *
+ *   ["npx","vitest","run","tests/a.test.ts"]
+ *     -> candidates ["npx", "vitest", "tests/a.test.ts"]
+ *
+ * `npx` and `vitest` are then checked as selectors, match nothing, and EVERY
+ * CORRECT SPEC IS REFUSED. A false red inside the guard against a false green
+ * is not a trade; it is the same defect wearing the other sign.
+ *
+ * Rather than parse launcher grammars -- npx, npm, yarn, pnpm, node, and
+ * whatever arrives next -- find the token that IS vitest and take what follows
+ * it. The first such token, not the last: a selector can only appear after the
+ * binary, so searching forward keeps a selector that is somehow named `vitest`
+ * inside the argv instead of cutting it off.
+ *
+ * When no such token exists -- `["npm","test","--","tests/a.test.ts"]` is the
+ * measured case -- the boundary is genuinely unknown, and this returns null so
+ * the caller can decline to check rather than guess at it.
+ */
+export function vitestArgvOf(command = []) {
+  const tokens = [...command];
+  const index = tokens.findIndex((token) => isVitestToken(token));
+  if (index === -1) return { argv: null, index: -1 };
+  return { argv: tokens.slice(index + 1), index };
+}
+
+/**
+ * Decide whether a testCommand may be trusted to run the suite it names.
+ *
+ * Refusal is exit 2, never 1, for the reason at the foot of this file: an
+ * inability to run the harness is not a surviving mutant.
+ *
+ * Two cases deliberately do NOT refuse:
+ *
+ *   - an unreadable boundary. Refusing here would punish a spec for a launcher
+ *     form this function has not met, which is the false red above.
+ *   - INCONCLUSIVE. `vitest list` failing is weaker evidence than the baseline
+ *     arm, which runs the real command a moment later and already refuses when
+ *     it cannot read a passing run.
+ *
+ * Both say so on stderr. An unchecked selector you have been TOLD about is a
+ * different object from one you have not.
+ */
+export function selectorGate(
+  command = [],
+  { check = checkSelectors, format = formatRefusal } = {},
+) {
+  const { argv } = vitestArgvOf(command);
+
+  if (argv === null) {
+    return {
+      refuse: false,
+      message:
+        '[mutation-harness] NOT CHECKED: no `vitest` token in testCommand, so ' +
+        'the selectors could not be located.\n' +
+        `  testCommand: ${command.join(' ')}\n` +
+        '  A selector matching nothing would report a survivor for an arm that ' +
+        'never ran.',
+    };
+  }
+
+  const outcome = check(argv);
+
+  if (outcome.verdict === UNMATCHED) {
+    return {
+      refuse: true,
+      message: [
+        '[mutation-harness] confounded: a selector in testCommand matched no test files.',
+        '',
+        format(outcome),
+        '',
+        '  Every arm would have been measured against a suite you did not name.',
+      ].join('\n'),
+    };
+  }
+
+  if (outcome.verdict === INCONCLUSIVE) {
+    return {
+      refuse: false,
+      message:
+        `[mutation-harness] NOT CHECKED: \`vitest list\` exited ${outcome.code} ` +
+        `for ${outcome.selector}.\n` +
+        '  Not refused here: the baseline arm runs the real command and is the ' +
+        'better instrument for whether it can run at all.',
+    };
+  }
+
+  return { refuse: false, message: null };
+}
+
 function main() {
   const [, , specPath] = process.argv;
   if (!specPath) {
@@ -408,6 +558,15 @@ function main() {
   }
 
   const spec = JSON.parse(readFileSync(specPath, 'utf8'));
+
+  // Before any file is read or written: is the named suite the one that runs?
+  const gate = selectorGate(spec.testCommand);
+  if (gate.message) console.error(gate.message);
+  if (gate.refuse) {
+    process.exitCode = 2;
+    return;
+  }
+
   const filePath = spec.file;
   const original = readFileSync(filePath, 'utf8');
   const pinnedHash = hashWorkingFile(filePath);
