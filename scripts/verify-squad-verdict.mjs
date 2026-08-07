@@ -90,13 +90,18 @@ function isStatusCreatedDuringRun(status, run) {
     return false;
   }
   const toleranceMs = 5_000;
-  return createdAt >= startedAt - toleranceMs &&
-    createdAt <= completedAt + toleranceMs;
+  return (
+    createdAt >= startedAt - toleranceMs &&
+    createdAt <= completedAt + toleranceMs
+  );
 }
 
 export function verifySquadVerdict({ pull, status, run }) {
   if (!status) {
-    return result('MISSING', 'No squad verdict status exists on the current head.');
+    return result(
+      'MISSING',
+      'No squad verdict status exists on the current head.',
+    );
   }
   if (status.context !== verdictContext) {
     return result('INVALID', `Unexpected status context: ${status.context}.`);
@@ -107,29 +112,45 @@ export function verifySquadVerdict({ pull, status, run }) {
   const author = pull.user?.login;
   const currentHeadSha = pull.head?.sha?.toLowerCase();
   const statusSha = status.sha?.toLowerCase();
-  if (!repository || !defaultBranch || !author || !currentHeadSha || !statusSha) {
+  if (
+    !repository ||
+    !defaultBranch ||
+    !author ||
+    !currentHeadSha ||
+    !statusSha
+  ) {
     return result('INVALID', 'PR or status metadata is incomplete.');
   }
   if (status.creator?.login !== trustedStatusCreator) {
-    return result('INVALID', 'The verdict status was not created by GitHub Actions.');
+    return result(
+      'INVALID',
+      'The verdict status was not created by GitHub Actions.',
+    );
   }
 
   const runId = parseRunTarget(status.target_url, repository);
   if (!runId || run?.id !== runId || run.html_url !== status.target_url) {
-    return result('INVALID', 'The status does not target its verified workflow run.');
+    return result(
+      'INVALID',
+      'The status does not target its verified workflow run.',
+    );
   }
   if (
     run.path !== verdictWorkflowPath ||
     run.event !== 'workflow_dispatch' ||
     run.run_attempt !== 1 ||
-    run.triggering_actor?.login?.toLowerCase() !== run.actor?.login?.toLowerCase() ||
+    run.triggering_actor?.login?.toLowerCase() !==
+      run.actor?.login?.toLowerCase() ||
     run.head_branch !== defaultBranch ||
     run.default_branch_contains_run !== true ||
     run.repository?.full_name !== repository ||
     run.status !== 'completed' ||
     run.conclusion !== 'success'
   ) {
-    return result('INVALID', 'The target is not a successful trusted verdict workflow run.');
+    return result(
+      'INVALID',
+      'The target is not a successful trusted verdict workflow run.',
+    );
   }
 
   const title = parseDisplayTitle(run.display_title);
@@ -139,34 +160,42 @@ export function verifySquadVerdict({ pull, status, run }) {
     title.reviewedHeadSha !== statusSha ||
     title.actor.toLowerCase() !== run.actor?.login?.toLowerCase()
   ) {
-    return result('INVALID', 'The workflow run metadata does not match the status.');
+    return result(
+      'INVALID',
+      'The workflow run metadata does not match the status.',
+    );
   }
   if (title.actor.toLowerCase() === author.toLowerCase()) {
     return result('INVALID', 'The PR author recorded the verdict.');
   }
 
   const expectedState = title.verdict === 'APPROVE' ? 'success' : 'failure';
-  const expectedDescription =
-    `${title.verdict} @ ${statusSha.slice(0, 12)} by ${title.actor}`;
+  const expectedDescription = `${title.verdict} @ ${statusSha.slice(0, 12)} by ${title.actor}`;
   if (
     status.state !== expectedState ||
     status.description !== expectedDescription ||
     !isStatusCreatedDuringRun(status, run)
   ) {
-    return result('INVALID', 'The status does not match the trusted workflow verdict.');
+    return result(
+      'INVALID',
+      'The status does not match the trusted workflow verdict.',
+    );
   }
 
   if (statusSha !== currentHeadSha) {
     return result(
       'SUPERSEDED',
       `${title.verdict} applies to ${statusSha}, not current head ${currentHeadSha}.`,
-      { verdict: title.verdict, reviewedHeadSha: statusSha, actor: title.actor },
+      {
+        verdict: title.verdict,
+        reviewedHeadSha: statusSha,
+        actor: title.actor,
+      },
     );
   }
 
-  const classification = title.verdict === 'APPROVE'
-    ? 'APPROVED'
-    : 'CHANGES_REQUESTED';
+  const classification =
+    title.verdict === 'APPROVE' ? 'APPROVED' : 'CHANGES_REQUESTED';
   return result(classification, 'Verified SHA-pinned squad verdict.', {
     verdict: title.verdict,
     reviewedHeadSha: statusSha,
@@ -193,12 +222,18 @@ export function selectSquadVerdict({
   for (const status of candidates) {
     const runId = parseRunTarget(status.target_url, pull.base.repo.full_name);
     if (!runId) {
-      return result('INVALID', 'The newest verdict status has no trusted run target.');
+      return result(
+        'INVALID',
+        'The newest verdict status has no trusted run target.',
+      );
     }
     const run = loadRun(runId);
     return verifySquadVerdict({ pull, status, run });
   }
-  return result('MISSING', 'No squad verdict status exists on the current head.');
+  return result(
+    'MISSING',
+    'No squad verdict status exists on the current head.',
+  );
 }
 
 function parseArgs(argv) {
@@ -258,7 +293,7 @@ async function main() {
       const run = ghApi(`/repos/${args.repo}/actions/runs/${runId}`);
       const comparison = ghApi(
         `/repos/${args.repo}/compare/${run.head_sha}...` +
-        encodeURIComponent(pull.base.repo.default_branch),
+          encodeURIComponent(pull.base.repo.default_branch),
       );
       return {
         ...run,

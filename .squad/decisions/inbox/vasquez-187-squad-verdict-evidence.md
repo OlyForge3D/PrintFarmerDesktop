@@ -36,7 +36,7 @@ merge but is not a repeatable control.
 - **#111** (cited throughout `scripts/check-protection-assumptions.mjs` and
   `tests/protectionAssumptions.test.ts`) already declined
   `required_approving_review_count: 1` and `enforce_admins: true` as
-  *impossible* rather than merely undesirable: the sole collaborator is the
+  _impossible_ rather than merely undesirable: the sole collaborator is the
   sole admin, GitHub forbids self-approval, and either setting would deadlock
   every merge in the repository permanently, not just squad-authored ones.
   #111 named its own revisit trigger — a second collaborator or a non-admin
@@ -46,14 +46,14 @@ merge but is not a repeatable control.
   mechanism here today) and gives it a real, written status plus a concrete
   artifact.
 - **`scripts/check-review-head-coverage.mjs`** already exists, already ships,
-  and says so explicitly in its own text: *"This is a reading, not a gate. It
-  reports absence and blocks nothing."* The repository has already built and
+  and says so explicitly in its own text: _"This is a reading, not a gate. It
+  reports absence and blocks nothing."_ The repository has already built and
   accepted an advisory-only review-coverage report as correct design. This
   decision is consistent with that precedent, not a reversal of it.
 - **`.squad/decisions/inbox/ripley-held-branch-force-push-control.md`**
   (#151-adjacent) establishes the working rule for this single-identity
-  repository: controls phrased as *who may act* bind nobody here, because
-  there is one principal; controls phrased as *which operation is permitted*
+  repository: controls phrased as _who may act_ bind nobody here, because
+  there is one principal; controls phrased as _which operation is permitted_
   bind regardless of identity. The mechanism adopted below is closer to the
   second kind than the first — it does not depend on GitHub recognizing a
   second identity, it depends on a workflow run's own server-generated
@@ -89,7 +89,7 @@ created it**, not the account that happened to trigger the run:
   actor/triggering-actor mismatch), requires the PR to be open and
   same-repository, **rejects if the dispatching actor is the PR author**,
   requires the dispatching actor to hold **admin** collaborator permission,
-  and requires the PR's *current* head to equal the reviewed SHA before it
+  and requires the PR's _current_ head to equal the reviewed SHA before it
   will post anything. It then posts a commit status
   (`context: squad/pre-pr-verdict`) on that SHA, with `target_url` pointing
   at the workflow run itself.
@@ -103,7 +103,7 @@ created it**, not the account that happened to trigger the run:
   and actor as the status description. It rejects the case where the
   recording actor equals the PR author. It classifies each PR as `APPROVED`,
   `CHANGES_REQUESTED`, `SUPERSEDED` (a rebase or force-push moved the head
-  since the verdict was recorded — checked for *both* an approval and a
+  since the verdict was recorded — checked for _both_ an approval and a
   rejection, so a stale block cannot survive but also cannot silently expire
   the wrong way), `MISSING`, or `INVALID`.
 

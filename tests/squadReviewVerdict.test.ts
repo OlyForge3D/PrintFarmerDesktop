@@ -62,8 +62,7 @@ function fixture(verdict = 'APPROVE') {
     repository: { full_name: 'OlyForge3D/PrintFarmerDesktop' },
     actor: { login: actor },
     triggering_actor: { login: actor },
-    display_title:
-      `Squad verdict ${verdict} for PR #187 @ ${reviewedHeadSha} by ${actor}`,
+    display_title: `Squad verdict ${verdict} for PR #187 @ ${reviewedHeadSha} by ${actor}`,
     status: 'completed',
     conclusion: 'success',
     run_started_at: '2026-08-07T03:00:00Z',
@@ -82,8 +81,9 @@ describe('a trusted, exact-head verdict', () => {
 
   it('binds the list-statuses API shape to the requested head', () => {
     const evidence = fixture();
-    const apiStatus = { ...evidence.status };
-    delete apiStatus.sha;
+    const apiStatus = Object.fromEntries(
+      Object.entries(evidence.status).filter(([key]) => key !== 'sha'),
+    );
     const status = bindStatusToHead(apiStatus, reviewedHeadSha);
     const verdict = verifySquadVerdict({ ...evidence, status });
     expect(verdict.classification).toBe('APPROVED');
@@ -148,10 +148,8 @@ describe('forgery and lookalike attempts are rejected, not merely unconvincing',
   it('rejects a workflow run dispatched by the PR author', () => {
     const evidence = fixture();
     evidence.run.actor.login = 'pr-author';
-    evidence.run.display_title =
-      `Squad verdict APPROVE for PR #187 @ ${reviewedHeadSha} by pr-author`;
-    evidence.status.description =
-      `APPROVE @ ${reviewedHeadSha.slice(0, 12)} by pr-author`;
+    evidence.run.display_title = `Squad verdict APPROVE for PR #187 @ ${reviewedHeadSha} by pr-author`;
+    evidence.status.description = `APPROVE @ ${reviewedHeadSha.slice(0, 12)} by pr-author`;
     expect(verifySquadVerdict(evidence).classification).toBe('INVALID');
   });
 
@@ -193,7 +191,8 @@ describe('forgery and lookalike attempts are rejected, not merely unconvincing',
     const verdict = selectSquadVerdict({
       pull: newer.pull,
       statuses: [older.status, newer.status],
-      loadRun: (runId) => (runId === newer.run.id ? newer.run : older.run),
+      loadRun: (runId: number) =>
+        runId === newer.run.id ? newer.run : older.run,
     });
     expect(verdict.classification).toBe('INVALID');
   });
@@ -216,8 +215,10 @@ describe('forgery and lookalike attempts are rejected, not merely unconvincing',
     const verdict = selectSquadVerdict({
       pull: replayedApproval.pull,
       statuses: [rejection.status, replayedApproval.status],
-      loadRun: (runId) =>
-        runId === replayedApproval.run.id ? replayedApproval.run : rejection.run,
+      loadRun: (runId: number) =>
+        runId === replayedApproval.run.id
+          ? replayedApproval.run
+          : rejection.run,
     });
     expect(verdict.classification).toBe('INVALID');
   });
@@ -226,22 +227,31 @@ describe('forgery and lookalike attempts are rejected, not merely unconvincing',
 describe('the workflow file itself keeps the independent-recorder and exact-head controls', () => {
   it('has not lost the checks the verifier assumes are enforced server-side', () => {
     const workflow = readFileSync(
-      path.join(repositoryRoot, '.github', 'workflows', 'squad-review-verdict.yml'),
+      path.join(
+        repositoryRoot,
+        '.github',
+        'workflows',
+        'squad-review-verdict.yml',
+      ),
       'utf8',
     ).replaceAll('\r\n', '\n');
 
     expect(workflow).toContain(
-      'run-name: "Squad verdict ${{ inputs.verdict }} for PR ' +
+      "run-name: 'Squad verdict ${{ inputs.verdict }} for PR " +
         '#${{ inputs.pr_number }} @ ${{ inputs.reviewed_head_sha }} ' +
-        'by ${{ github.actor }}"',
+        "by ${{ github.actor }}'",
     );
     expect(workflow).toMatch(/^\s+statuses: write$/m);
     expect(workflow).toMatch(/\/\^\[1-9\]\\d\*\$\/\.test\(prNumberInput\)/);
-    expect(workflow).toMatch(/\/\^\[0-9a-f\]\{40\}\$\/\.test\(reviewedHeadSha\)/);
+    expect(workflow).toMatch(
+      /\/\^\[0-9a-f\]\{40\}\$\/\.test\(reviewedHeadSha\)/,
+    );
     expect(workflow).toMatch(
       /pull\.user\.login\.toLowerCase\(\) === actor\.toLowerCase\(\)/,
     );
-    expect(workflow).toMatch(/pull\.head\.sha\.toLowerCase\(\) !== reviewedHeadSha/);
+    expect(workflow).toMatch(
+      /pull\.head\.sha\.toLowerCase\(\) !== reviewedHeadSha/,
+    );
     expect(workflow).toMatch(/getCollaboratorPermissionLevel/);
     expect(workflow).toMatch(/actorPermission\.permission !== 'admin'/);
     expect(workflow).toMatch(/runAttempt !== '1'/);

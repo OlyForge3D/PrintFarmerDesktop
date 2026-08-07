@@ -21,7 +21,7 @@ name: Record squad review verdict
 # forgeable by a comment, and checkable independently by
 # scripts/verify-squad-verdict.mjs.
 
-run-name: "Squad verdict ${{ inputs.verdict }} for PR #${{ inputs.pr_number }} @ ${{ inputs.reviewed_head_sha }} by ${{ github.actor }}"
+run-name: 'Squad verdict ${{ inputs.verdict }} for PR #${{ inputs.pr_number }} @ ${{ inputs.reviewed_head_sha }} by ${{ github.actor }}'
 
 on:
   workflow_dispatch:
@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Validate provenance and record verdict
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           PR_NUMBER: ${{ inputs.pr_number }}
           REVIEWED_HEAD_SHA: ${{ inputs.reviewed_head_sha }}
