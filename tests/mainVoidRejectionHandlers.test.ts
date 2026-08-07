@@ -190,6 +190,7 @@ function isPresentHandler(argument: ts.Expression | undefined): boolean {
     ts.isArrayLiteralExpression(unwrapped) ||
     ts.isRegularExpressionLiteral(unwrapped) ||
     ts.isClassExpression(unwrapped) ||
+    ts.isNewExpression(unwrapped) ||
     ts.isPrefixUnaryExpression(unwrapped);
   return !(
     nonCallableKeyword ||
@@ -351,6 +352,7 @@ describe('void-suppressed promises in src/main carry rejection handlers', () => 
       'promise.catch((undefined))',
       'promise.catch(false as any)',
       'promise.catch({} as any)',
+      'promise.catch(new (class {})() as any)',
       'promise.then(resolve,)',
       'promise.then(resolve, 0 as any)',
       'promise.then(resolve, undefined)',
