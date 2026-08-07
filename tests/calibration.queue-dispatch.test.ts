@@ -23,6 +23,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   CalibrationHttpClient,
   CalibrationHttpError,
+  CALIBRATION_QUEUE_ROUTE_TEMPLATES,
   type CalibrationTokenProvider,
 } from '../src/main/calibrationHttp.js';
 import { CalibrationBlockedReason } from '../src/shared/ipc.js';
@@ -165,22 +166,40 @@ function makeClient(
 // ==========================================================================
 
 describe('ROUTES constant — dead routes absent (issue #54)', () => {
-  it('does not export a "generation" route constant', async () => {
-    // Import the module and check that none of its exports contain the dead
-    // /calibration-projects/{id}/generation path.
-    const mod = await import('../src/main/calibrationHttp.js');
-    const exported = JSON.stringify(mod);
-    expect(exported).not.toContain('/generation');
-    expect(exported).not.toContain('calibration-projects');
+  it('route templates contain no project-scoped queue route', () => {
+    const templates = Object.values(
+      CALIBRATION_QUEUE_ROUTE_TEMPLATES,
+    ) as string[];
+    expect(
+      templates.length,
+      'non-vacuous: must have templates',
+    ).toBeGreaterThan(0);
+    // Positive control: this is the exact dead route shape that must be absent.
+    const deadQueueRoute = '/api/calibration-projects/{id}/queue';
+    expect(templates).not.toContain(deadQueueRoute);
+    // Pattern check: no template ends with /queue (handles any {param} variant).
+    const hasQueueTerminal = templates.some((t) => t.endsWith('/queue'));
+    expect(
+      hasQueueTerminal,
+      'a template ending with /queue was found — this is the dead project-scoped queue route',
+    ).toBe(false);
   });
 
-  it('does not export a dead queue route (/calibration-projects/{id}/queue)', async () => {
-    const mod = await import('../src/main/calibrationHttp.js');
-    // The only acceptable calibration-projects URLs are per-attempt:
-    // /api/calibration-projects/{projectId}/attempts/{attemptId}/generate-job
-    const exported = JSON.stringify(mod);
-    // There should be no route that ends with /queue under calibration-projects
-    expect(exported).not.toMatch(/calibration-projects[^}]+\/queue/);
+  it('route templates contain no project-scoped generation route', () => {
+    const templates = Object.values(
+      CALIBRATION_QUEUE_ROUTE_TEMPLATES,
+    ) as string[];
+    // Positive control: the exact dead generation route shape must be absent.
+    const deadGenerationRoute = '/api/calibration-projects/{id}/generation';
+    expect(templates).not.toContain(deadGenerationRoute);
+    // Pattern check: no template ends with /generation (not /generate-job).
+    const hasGenerationTerminal = templates.some((t) =>
+      /\/generation$/.test(t),
+    );
+    expect(
+      hasGenerationTerminal,
+      'a template ending with /generation was found — this is the dead project-scoped generation route',
+    ).toBe(false);
   });
 });
 

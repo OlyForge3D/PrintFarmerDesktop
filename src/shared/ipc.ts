@@ -3565,7 +3565,7 @@ export const CalibrationOrchestrationStatus = z
     operationId: z.string(),
     /** Free-form status from the saga — e.g. "Running", "Completed". NOT an enum. */
     status: z.string(),
-    /** Free-form current step — e.g. "Slicing". NOT an enum. */
+    /** Free-form current step — e.g. "submitting-slice-job", "awaiting-worker". NOT an enum. */
     currentStep: z.string(),
     revision: z.number().int(),
     retryCount: z.number().int(),
@@ -3885,6 +3885,23 @@ export const CalibrationQueueEventEnvelope = z
 export type CalibrationQueueEventEnvelope = z.infer<
   typeof CalibrationQueueEventEnvelope
 >;
+
+/**
+ * Returns `true` when a change-feed envelope belongs to a specific queue job.
+ *
+ * Redacted Printer-group envelopes (from the server's
+ * `QueueEventEnvelope.RedactForPrinter()`) have `jobId === null` and always
+ * return `false`, preventing them from being consumed as job-specific state.
+ * See admin guide §10.5.
+ *
+ * Used by `CalibrationQueueDispatchPanel` and directly testable.
+ */
+export function isJobScopedEnvelope(
+  evt: { readonly jobId: string | null },
+  jobId: string,
+): boolean {
+  return evt.jobId === jobId;
+}
 
 export const CalibrationPollQueueChangesRequest = z
   .object({
