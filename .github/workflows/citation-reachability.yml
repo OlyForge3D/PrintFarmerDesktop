@@ -138,3 +138,8 @@ jobs:
       # shells out to git, so it runs against the checkout alone.
       - name: Verify every cited revision is reachable, twinned, or declared
         run: npm run check:citation-reachability
+
+      - name: Verify admin-guide server citations at their pinned revisions
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: npm run check:admin-guide-citations
