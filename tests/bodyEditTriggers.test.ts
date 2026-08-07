@@ -1,6 +1,15 @@
 // @vitest-environment node
 
-import { readFileSync, readdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -39,6 +48,7 @@ const manifest = JSON.parse(
   readFileSync(path.join(repoRoot, 'package.json'), 'utf8'),
 ) as { scripts: Record<string, string> };
 const npmScripts: Record<string, string> = manifest.scripts;
+const guardScript = path.join(scriptsDir, 'check-body-edit-triggers.mjs');
 
 /** First element, or a thrown error — an assertion on `undefined` passes too easily. */
 function first<T>(items: T[]): T {
@@ -73,6 +83,19 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
     expect(covered).toContain('check-pr-closure-scope.mjs');
   });
 
+  it('runs this policy through the required closing-reference context', () => {
+    const workflow = readFileSync(
+      path.join(workflowsDir, 'closing-reference-declaration.yml'),
+      'utf8',
+    );
+    expect(npmScripts['check:body-edit-triggers']).toBe(
+      'node scripts/check-body-edit-triggers.mjs',
+    );
+    expect(workflow).toContain('npm run check:body-edit-triggers');
+    expect(pullRequestTypes(workflow)).toContain(BODY_EDIT_TYPE);
+    expect(workflow).toMatch(/^\s+merge_group:\s*$/m);
+  });
+
   // The gate itself. #436: ci.yml runs the arming guard inside the required
   // `Desktop` context but subscribes only to the defaults, so a body edited
   // after a green run is certified by a check that never read it.
@@ -82,6 +105,7 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
       scripts,
       npmScripts,
     });
+
     expect(formatFindings(findings)).toEqual([]);
   });
 
@@ -228,6 +252,69 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
       'synchronize',
       'reopened',
     ]);
+  });
+});
+
+describe('the wired CLI discriminates a bad trigger configuration', () => {
+  it('fails without edited and passes when the same workflow is restored', () => {
+    const fixture = mkdtempSync(path.join(tmpdir(), 'body-edit-triggers-'));
+    const workflowDirectory = path.join(fixture, '.github', 'workflows');
+    const fixtureScripts = path.join(fixture, 'scripts');
+    mkdirSync(workflowDirectory, { recursive: true });
+    mkdirSync(fixtureScripts);
+    writeFileSync(
+      path.join(fixture, 'package.json'),
+      JSON.stringify({
+        scripts: {
+          'check:closing-references':
+            'node scripts/check-closing-references.mjs',
+        },
+      }),
+    );
+    writeFileSync(
+      path.join(fixtureScripts, 'check-closing-references.mjs'),
+      'export const currentBody = pullRequest.body;\n',
+    );
+
+    const run = () =>
+      spawnSync('node', [guardScript, fixture], {
+        encoding: 'utf8',
+      });
+    const workflow = (types: string) =>
+      [
+        'on:',
+        '  pull_request:',
+        `    types: [${types}]`,
+        '  merge_group:',
+        'jobs:',
+        '  closing-references:',
+        '    steps:',
+        '      - run: npm run check:closing-references',
+      ].join('\n');
+
+    try {
+      writeFileSync(
+        path.join(workflowDirectory, 'closing-reference-declaration.yml'),
+        workflow('opened, synchronize, reopened'),
+      );
+      const red = run();
+      expect(red.status).toBe(1);
+      expect(`${red.stdout}${red.stderr}`).toContain(
+        "Add 'edited' to its pull_request types",
+      );
+
+      writeFileSync(
+        path.join(workflowDirectory, 'closing-reference-declaration.yml'),
+        workflow('opened, synchronize, reopened, edited'),
+      );
+      const green = run();
+      expect(green.status).toBe(0);
+      expect(`${green.stdout}${green.stderr}`).toContain(
+        '1 workflow invocation(s) subscribe to edited',
+      );
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
   });
 });
 
