@@ -3,9 +3,10 @@
 //
 // Citation grammar:
 //   - The corpus is section `## 10.` through the next level-two heading.
-//   - A citation is a decimal line or inclusive line range followed by `@` and a
-//     7-40 character hexadecimal prefix, for example `95@167a3b13` or
-//     `19-20@167a3b13`.
+//   - A citation is one decimal line followed by `@` and a 7-40 character
+//     hexadecimal prefix, for example `95@167a3b13`. Ranges are rejected: their
+//     second boundary needs a second content anchor, and accepting an unanchored
+//     end lets that line number drift while the first line keeps the row green.
 //   - The prefix must resolve unambiguously to a full SHA declared in section 10's
 //     introductory pin list.
 //   - The cited path is a `src/.../*.cs` path in the same subsection. A bare
@@ -33,8 +34,8 @@ export const ADMIN_GUIDE_CITATION_FLOOR = 20;
 
 const API_ROOT = 'https://api.github.com';
 const FULL_PATH = /\b(src\/[A-Za-z0-9_./-]+\.cs)\b/g;
-const LINE_CITATION =
-  /\b(?:lines?\s+)?(\d+)(?:\s*[-\u2013]\s*(\d+))?@([0-9a-f]{7,40})\b/g;
+const LINE_CITATION = /\b(?:line\s+)?(\d+)@([0-9a-f]{7,40})\b/g;
+const RANGE_CITATION = /\b(?:lines?\s+)?\d+\s*[-\u2013]\s*\d+@[0-9a-f]{7,40}\b/;
 const FULL_SHA = /`([0-9a-f]{40})`/g;
 
 export class CitationParseError extends Error {}
@@ -126,7 +127,13 @@ const nearestPriorExplicitPath = (context, citationOffset) => {
 };
 
 const resolvePath = ({ section, offset, context, anchor }) => {
-  const allPaths = pathsIn(section);
+  const subsection = subsectionAt(section, offset);
+  const allPaths = pathsIn(subsection);
+  if (allPaths.length === 0) {
+    throw new CitationParseError(
+      `citation near ${JSON.stringify(context.trim())} has no explicit server path in its subsection`,
+    );
+  }
   const rowPaths = pathsIn(lineAround(section, offset));
   if (rowPaths.length === 1) return rowPaths[0];
 
@@ -147,7 +154,7 @@ const resolvePath = ({ section, offset, context, anchor }) => {
       /[.*+?^${}()|[\]\\]/g,
       '\\$&',
     )}\\b`,
-  ).exec(subsectionAt(section, offset))?.[1];
+  ).exec(subsection)?.[1];
   if (owner !== undefined) {
     const owned = allPaths.filter(
       (candidate) => path.posix.basename(candidate) === `${owner}.cs`,
@@ -167,15 +174,15 @@ const resolvePath = ({ section, offset, context, anchor }) => {
   const distinctMatching = unique(matching);
   if (distinctMatching.length === 1) return distinctMatching[0];
 
-  const subsectionPaths = pathsIn(subsectionAt(section, offset));
-  if (subsectionPaths.length === 1) return subsectionPaths[0];
+  if (allPaths.length === 1) return allPaths[0];
 
-  const nearest = lastMentionedPath(section, offset, allPaths);
+  const subsectionOffset = offset - section.indexOf(subsection);
+  const nearest = lastMentionedPath(subsection, subsectionOffset, allPaths);
   if (nearest !== undefined) return nearest;
 
   throw new CitationParseError(
     `citation near ${JSON.stringify(context.trim())} has ${
-      distinctMatching.length || subsectionPaths.length
+      distinctMatching.length || allPaths.length
     } possible server paths`,
   );
 };
@@ -208,6 +215,12 @@ const anchorLeaf = (anchor) =>
 
 export function parseAdminGuideCitations(guide) {
   const section = section10Of(guide);
+  const unsupportedRange = RANGE_CITATION.exec(section)?.[0];
+  if (unsupportedRange !== undefined) {
+    throw new CitationParseError(
+      `${unsupportedRange} is a range citation; cite each anchored line separately`,
+    );
+  }
   const pins = unique(
     [...section.slice(0, section.indexOf('### 10.1')).matchAll(FULL_SHA)].map(
       (match) => match[1],
@@ -224,7 +237,7 @@ export function parseAdminGuideCitations(guide) {
     const offset = match.index ?? 0;
     const context = paragraphsAround(section, offset);
     const contextOffset = offset - section.indexOf(context);
-    const prefix = match[3];
+    const prefix = match[2];
     const commits = pins.filter((pin) => pin.startsWith(prefix));
     if (commits.length !== 1) {
       throw new CitationParseError(
@@ -232,7 +245,7 @@ export function parseAdminGuideCitations(guide) {
       );
     }
     const startLine = Number(match[1]);
-    const endLine = Number(match[2] ?? match[1]);
+    const endLine = startLine;
     if (
       !Number.isSafeInteger(startLine) ||
       !Number.isSafeInteger(endLine) ||
@@ -262,6 +275,9 @@ export function verifyCitationContent(citation, contents) {
   const lines = contents.split(/\r?\n/);
   if (citation.endLine > lines.length) {
     return `${citation.path}:${citation.raw} exceeds the file's ${lines.length} lines`;
+  }
+  if (citation.endLine !== citation.startLine) {
+    return `${citation.path}:${citation.raw} is a range citation without an independently anchored end line`;
   }
   const firstLine = lines[citation.startLine - 1] ?? '';
   if (firstLine.includes(citation.anchor)) return null;
@@ -372,7 +388,7 @@ export async function verifyRemoteCitations({
   const uniqueFiles = unique(
     parsed.citations.map((citation) => `${citation.commit}:${citation.path}`),
   );
-  const plannedRequests = 3 + parsed.pins.length * 2 + uniqueFiles.length;
+  const plannedRequests = 3 + parsed.pins.length * 3 + uniqueFiles.length;
   if (!Number.isSafeInteger(remaining) || remaining < plannedRequests) {
     throw new CitationFetchError(
       `rate-limit allowance is ${String(
@@ -424,12 +440,20 @@ export async function verifyRemoteCitations({
   const stale = [];
   const unresolvedPins = new Set();
   for (const pin of parsed.pins) {
-    const pinRead = await requestJson(
+    let pinRead = await requestJson(
       fetchImpl,
       endpoint(`commits/${pin}`),
       token,
       `commit pin ${pin}`,
     );
+    if ([404, 422].includes(pinRead.response.status)) {
+      pinRead = await requestJson(
+        fetchImpl,
+        endpoint(`commits/${pin}`),
+        token,
+        `confirmation read for absent commit pin ${pin}`,
+      );
+    }
     if ([404, 422].includes(pinRead.response.status)) {
       stale.push(`${pin}: commit does not resolve`);
       unresolvedPins.add(pin);

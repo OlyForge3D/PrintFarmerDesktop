@@ -174,6 +174,25 @@ describe('admin-guide section 10 citation grammar', () => {
     expect(parsed.citations).toHaveLength(1);
   });
 
+  it('binds a citation to its subsection path rather than a duplicate elsewhere', () => {
+    const parsed = parseAdminGuideCitations(
+      fixtureGuide().replace(
+        'src/api/Controllers/JobQueueController.cs',
+        'src/api/Controllers/MissingController.cs',
+      ) + '\n## 12. Unrelated\n`src/api/Controllers/JobQueueController.cs`\n',
+    );
+
+    expect(parsed.citations[0]?.path).toBe(
+      'src/api/Controllers/MissingController.cs',
+    );
+  });
+
+  it('rejects a range whose end line has no independent anchor', () => {
+    expect(() =>
+      parseAdminGuideCitations(fixtureGuide('7–8@11111111')),
+    ).toThrow(/range citation/);
+  });
+
   it('rejects an undeclared commit prefix instead of silently shrinking the corpus', () => {
     expect(() => parseAdminGuideCitations(fixtureGuide('7@abcdef12'))).toThrow(
       /resolves to 0 declared commit pins/,
@@ -285,6 +304,27 @@ describe('citation line, path, and commit mutations', () => {
     expect(result.stale).toEqual([
       expect.stringContaining(`${dead}: commit does not resolve`),
     ]);
+    expect(result.broken).toEqual([]);
+  });
+
+  it('does not call a transient first 404 stale when confirmation resolves', async () => {
+    const fallback = happyFetch();
+    let pinReads = 0;
+    const fetchImpl = vi.fn((input: string | URL | Request) => {
+      if (requestUrl(input).includes(`/commits/${PIN_A}`) && pinReads++ === 0) {
+        return Promise.resolve(response(404, { message: 'Not Found' }));
+      }
+      return fallback(input);
+    });
+
+    const result = await verifyRemoteCitations({
+      parsed: parsedFixture(),
+      token: 'default-token',
+      fetchImpl,
+    });
+
+    expect(pinReads).toBe(2);
+    expect(result.stale).toEqual([]);
     expect(result.broken).toEqual([]);
   });
 });

@@ -539,7 +539,7 @@ via `acknowledgeBedClearAndStart`, which builds its headers from the exported
 | --------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Idempotency-Key`           | Stable per-operation key   | 428 when both header **and** body `idempotencyKey` are blank (body fallback exists; symbol `idempotencyKey` at 973@167a3b13 / 1038@9c1d7e4b) |
 | `If-Match`                  | Opaque job ETag (§10.4)    | 428 when absent or blank (no body fallback; server variable _ifMatchHeader_ at 984@167a3b13 / 1049@9c1d7e4b)                                 |
-| `X-Dispatch-State-If-Match` | Opaque dispatch-state ETag | 428 when absent or blank (no body fallback; server variable _dispatchIfMatchHeader_ at 985–986@167a3b13 / 1050–1051@9c1d7e4b)                |
+| `X-Dispatch-State-If-Match` | Opaque dispatch-state ETag | 428 when absent or blank (no body fallback; server variable _dispatchIfMatchHeader_ at 985@167a3b13 / 1050@9c1d7e4b)                         |
 
 Source: `src/api/Controllers/JobQueueController.cs`,
 `AcknowledgeBedClearAndStartAsync`.
@@ -551,8 +551,8 @@ Two distinct `[Timestamp] byte[]?` properties produce the bed-clear ETags:
 - **Job ETag** (`If-Match`): `PrintJob.RowVersion`
   (`src/infra/Domain/PrintJob.cs` line 20@167a3b13 / 21@9c1d7e4b)
   mapped to base-64 by `JobQueueService.ToBase64RowVersion`
-  (`src/infra/Services/Queue/JobQueueService.cs`, lines
-  1408–1409@167a3b13 / 1532–1533@9c1d7e4b; calls `Convert.ToBase64String`).
+  (`src/infra/Services/Queue/JobQueueService.cs`, line
+  1408@167a3b13 / 1532@9c1d7e4b; calls `Convert.ToBase64String`).
 - **Dispatch-state ETag** (`X-Dispatch-State-If-Match`): `PrinterDispatchState.RowVersion`
   (`src/infra/Domain/PrinterDispatchState.cs` lines 37–38 at both commits),
   mapped by the same `ToBase64RowVersion` helper
@@ -560,15 +560,15 @@ Two distinct `[Timestamp] byte[]?` properties produce the bed-clear ETags:
 
 **Treat both as opaque and forward without application-level interpretation.**
 The server's `DecodeEtag` method is at
-`JobQueueController.cs` lines 1197–1200@9c1d7e4b and calls
+`JobQueueController.cs` line 1197@9c1d7e4b and calls
 `Convert.FromBase64String` after trimming quotes. Three
 distinct HTTP outcomes:
 
-- **400** — `DecodeEtag` throws `FormatException` on malformed base-64 (lines
-  1072–1077@9c1d7e4b); the token is corrupt or not base-64.
+- **400** — `DecodeEtag` throws `FormatException` on malformed base-64 (line
+  1072@9c1d7e4b); the token is corrupt or not base-64.
 - **412 `dispatch_revision_conflict`** — decoded bytes do not match the stored
   row version; the token is stale but well-formed (symbol `DispatchRevisionConflict`,
-  lines 1127–1139@9c1d7e4b).
+  line 1127@9c1d7e4b).
 - **428 `precondition_required`** — header is absent entirely (see §10.3).
 
 PFD's wire types `RemoteJobQueueJob.rowVersion` and
@@ -630,7 +630,7 @@ declares both as `z.string()` for forward compatibility.
 (`src/infra/Domain/QueueDispatchEntities.cs`, line 148@9c1d7e4b), persisted to
 the outbox row at write time. `QueueOutboxPublisherService`
 (`src/infra/Services/Queue/QueueOutboxPublisherService.cs`) calls
-`QueueEventEnvelope.FromOutbox` (lines 155–180@9c1d7e4b) with the persisted
+`QueueEventEnvelope.FromOutbox` (line 155@9c1d7e4b) with the persisted
 event's `SchemaVersion`, so every
 SignalR-published envelope carries the value written at outbox insert time.
 The change-feed REST projection also echoes the persisted value: symbol
