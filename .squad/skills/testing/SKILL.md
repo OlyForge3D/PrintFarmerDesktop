@@ -67,8 +67,9 @@ Disable pagers: `git --no-pager ...`.
 
 ## CI gate
 
-Seven required checks must pass:
+Eight required checks must pass:
 
+- Closing-reference declaration
 - Desktop (windows-latest)
 - Desktop (macos-latest)
 - Sidecar (windows-latest)
@@ -96,7 +97,7 @@ If that output disagrees with the list above, the endpoint wins — fix this fil
 
 | number                       | on an open PR | after it closes | is it a gate?     |
 | ---------------------------- | ------------- | --------------- | ----------------- |
-| required contexts            | 7             | 7               | **yes, this one** |
+| required contexts            | 8             | 8               | **yes, this one** |
 | distinct check-run names     | 9             | 10              | no                |
 | check-run objects on the SHA | 9 or more     | 10 or more      | no                |
 
@@ -141,7 +142,7 @@ $run = @(gh api "repos/OlyForge3D/PrintFarmerDesktop/commits/$sha/check-runs?per
 **Assert the required names, not a total.** A gate written as `emitted -ge 9` answers _at
 least this many succeeded_ — narrower than _which required contexts are green on this commit_
 — and passes identically on nine names, nine names plus a duplicate, or eight names plus two
-reruns. Check the seven by name. No total is a safety property.
+reruns. Check the eight by name. No total is a safety property.
 
 ```powershell
 gh pr checks <N> --repo OlyForge3D/PrintFarmerDesktop --watch --interval 20

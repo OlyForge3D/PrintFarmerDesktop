@@ -16,7 +16,8 @@ import {
 } from '../scripts/check-required-contexts.mjs';
 import type { RollupRun } from '../scripts/check-required-contexts.mjs';
 
-const SEVEN = [
+const EIGHT = [
+  'Closing-reference declaration',
   'Desktop (windows-latest)',
   'Desktop (macos-latest)',
   'Sidecar (windows-latest)',
@@ -30,36 +31,39 @@ function ok(name: string, conclusion: string = 'SUCCESS') {
   return { name, status: 'COMPLETED', conclusion, completedAt: '2026-01-01' };
 }
 
-function allSeven(): RollupRun[] {
-  return SEVEN.map((n) => ok(n));
+function allEight(): RollupRun[] {
+  return EIGHT.map((n) => ok(n));
 }
 
 describe('evaluateRequiredContexts', () => {
-  it('is ready when all seven are present and successful', () => {
-    const r = evaluateRequiredContexts(SEVEN, allSeven());
+  it('is ready when all eight are present and successful', () => {
+    const r = evaluateRequiredContexts(EIGHT, allEight());
     expect(r.exitCode).toBe(EXIT_READY);
-    expect(r.green).toHaveLength(7);
+    expect(r.green).toHaveLength(8);
     expect(r.absent).toEqual([]);
   });
 
   it('THE POINT: a count of greens cannot see an absent required context', () => {
-    // Nine runs, every one of them green, and one required context missing.
-    const runs = allSeven()
+    // Ten runs, every one of them green, and one required context missing.
+    const runs = allEight()
       .filter((r) => r.name !== 'Dependency advisories')
       .concat([ok('Lint'), ok('Format'), ok('Provenance')]);
     expect(runs.every((r) => r.conclusion === 'SUCCESS')).toBe(true);
-    expect(runs).toHaveLength(9);
+    expect(runs).toHaveLength(10);
 
-    const r = evaluateRequiredContexts(SEVEN, runs);
+    const r = evaluateRequiredContexts(EIGHT, runs);
     expect(r.exitCode).toBe(EXIT_ABSENT);
     expect(r.absent).toEqual(['Dependency advisories']);
     expect(r.notGreen).toEqual([]);
   });
 
   it('reports a red required context as EXIT_NOT_GREEN, distinctly from absent', () => {
-    const runs = allSeven();
-    runs[0] = ok('Desktop (windows-latest)', 'FAILURE');
-    const r = evaluateRequiredContexts(SEVEN, runs);
+    const runs = allEight();
+    runs[runs.findIndex((r) => r.name === 'Desktop (windows-latest)')] = ok(
+      'Desktop (windows-latest)',
+      'FAILURE',
+    );
+    const r = evaluateRequiredContexts(EIGHT, runs);
     expect(r.exitCode).toBe(EXIT_NOT_GREEN);
     expect(r.notGreen).toEqual([
       { name: 'Desktop (windows-latest)', state: 'FAILURE' },
@@ -68,67 +72,73 @@ describe('evaluateRequiredContexts', () => {
   });
 
   it('lets ABSENT outrank RED when both are present', () => {
-    const runs = allSeven()
+    const runs = allEight()
       .filter((r) => r.name !== 'Dependency advisories')
       .map((r) =>
         r.name === 'Sidecar (macos-latest)'
           ? ok('Sidecar (macos-latest)', 'FAILURE')
           : r,
       );
-    const r = evaluateRequiredContexts(SEVEN, runs);
+    const r = evaluateRequiredContexts(EIGHT, runs);
     expect(r.exitCode).toBe(EXIT_ABSENT);
     expect(r.absent).toEqual(['Dependency advisories']);
     expect(r.notGreen).toHaveLength(1);
   });
 
   it('treats an unfinished run as pending, not as green and not as red', () => {
-    const runs = allSeven();
-    runs[2] = {
+    const runs = allEight();
+    runs[runs.findIndex((r) => r.name === 'Sidecar (windows-latest)')] = {
       name: 'Sidecar (windows-latest)',
       status: 'IN_PROGRESS',
       conclusion: '',
       completedAt: null,
       startedAt: '2026-01-01',
     };
-    const r = evaluateRequiredContexts(SEVEN, runs);
+    const r = evaluateRequiredContexts(EIGHT, runs);
     expect(r.pending).toEqual(['Sidecar (windows-latest)']);
-    expect(r.green).toHaveLength(6);
+    expect(r.green).toHaveLength(7);
     expect(r.notGreen).toEqual([]);
     expect(r.exitCode).toBe(EXIT_NOT_GREEN);
   });
 
   it('does not count non-required runs toward readiness', () => {
-    const r = evaluateRequiredContexts(SEVEN, [
-      ...allSeven(),
+    const r = evaluateRequiredContexts(EIGHT, [
+      ...allEight(),
       ok('Lint'),
       ok('Format'),
     ]);
-    expect(r.green).toHaveLength(7);
+    expect(r.green).toHaveLength(8);
     expect(r.extra).toBe(2);
   });
 
   it('is ABSENT when there are no runs at all rather than vacuously ready', () => {
-    const r = evaluateRequiredContexts(SEVEN, []);
+    const r = evaluateRequiredContexts(EIGHT, []);
     expect(r.exitCode).toBe(EXIT_ABSENT);
-    expect(r.absent).toHaveLength(7);
+    expect(r.absent).toHaveLength(8);
   });
 
   it('tolerates undefined runs', () => {
-    const r = evaluateRequiredContexts(SEVEN, undefined);
+    const r = evaluateRequiredContexts(EIGHT, undefined);
     expect(r.exitCode).toBe(EXIT_ABSENT);
   });
 
   it('treats a SKIPPED required context as not green', () => {
-    const runs = allSeven();
-    runs[1] = ok('Desktop (macos-latest)', 'SKIPPED');
-    const r = evaluateRequiredContexts(SEVEN, runs);
+    const runs = allEight();
+    runs[runs.findIndex((r) => r.name === 'Desktop (macos-latest)')] = ok(
+      'Desktop (macos-latest)',
+      'SKIPPED',
+    );
+    const r = evaluateRequiredContexts(EIGHT, runs);
     expect(r.exitCode).toBe(EXIT_NOT_GREEN);
   });
 
   it('treats a NEUTRAL required context as not green', () => {
-    const runs = allSeven();
-    runs[1] = ok('Desktop (macos-latest)', 'NEUTRAL');
-    const r = evaluateRequiredContexts(SEVEN, runs);
+    const runs = allEight();
+    runs[runs.findIndex((r) => r.name === 'Desktop (macos-latest)')] = ok(
+      'Desktop (macos-latest)',
+      'NEUTRAL',
+    );
+    const r = evaluateRequiredContexts(EIGHT, runs);
     expect(r.exitCode).toBe(EXIT_NOT_GREEN);
   });
 });
@@ -256,15 +266,15 @@ describe('latestRunNamed', () => {
 
 describe('formatResult', () => {
   it('names each absent context rather than only counting', () => {
-    const r = evaluateRequiredContexts(SEVEN, [ok('Dependency advisories')]);
-    const text = formatResult(1, r, SEVEN);
+    const r = evaluateRequiredContexts(EIGHT, [ok('Dependency advisories')]);
+    const text = formatResult(1, r, EIGHT);
     expect(text).toContain('ABSENT  Desktop (windows-latest)');
     expect(text).toContain('cannot go red');
   });
 
   it('separates the non-required population explicitly', () => {
-    const r = evaluateRequiredContexts(SEVEN, [...allSeven(), ok('Lint')]);
-    expect(formatResult(2, r, SEVEN)).toContain(
+    const r = evaluateRequiredContexts(EIGHT, [...allEight(), ok('Lint')]);
+    expect(formatResult(2, r, EIGHT)).toContain(
       '1 non-required check run name(s)',
     );
   });
@@ -438,14 +448,14 @@ describe('main', () => {
     ).toBe(EXIT_UNDETERMINED);
   });
 
-  it('returns 0 for a head carrying all seven', () => {
+  it('returns 0 for a head carrying all eight', () => {
     expect(
       main(
         ['--pr', '1'],
         { GITHUB_TOKEN: 't', GITHUB_REPOSITORY: 'o/r' },
         () => ({
           status: 0,
-          stdout: JSON.stringify({ statusCheckRollup: allSeven() }),
+          stdout: JSON.stringify({ statusCheckRollup: allEight() }),
           stderr: '',
         }),
       ),
@@ -460,7 +470,7 @@ describe('main', () => {
         () => ({
           status: 0,
           stdout: JSON.stringify({
-            statusCheckRollup: allSeven()
+            statusCheckRollup: allEight()
               .slice(1)
               .concat([ok('Lint')]),
           }),
@@ -471,8 +481,11 @@ describe('main', () => {
   });
 
   it('returns 1 for a head with a red required context', () => {
-    const runs = allSeven();
-    runs[3] = ok('Sidecar (macos-latest)', 'FAILURE');
+    const runs = allEight();
+    runs[runs.findIndex((r) => r.name === 'Sidecar (macos-latest)')] = ok(
+      'Sidecar (macos-latest)',
+      'FAILURE',
+    );
     expect(
       main(
         ['--pr', '1'],
