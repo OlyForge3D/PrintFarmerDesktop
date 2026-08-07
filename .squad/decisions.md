@@ -529,3 +529,19 @@ Retractions are followed by contest language **above** findings and **above** ba
 **No gate covers this file.** `tests/citationReachability.test.ts` passes with `.squad/decisions.md:99999` and a citation to a non-existent file appended to this document — measured, not assumed. The entry above is therefore held by review alone, which is the correct place for a convention and is stated here so no later reader mistakes a green suite for a check on these claims.
 
 **Amendment to the falsifier, since the original cannot run.** Do not measure the rate at which withdrawals are challenged; that number is unavailable here and would be uninterpretable if it were not. **Measure the yield: of the withdrawals that were audited, how many were found wrong.** It needs no authorship signal, it is computable from the record as it stands, and at 4/4 it already carries the decision. A rate whose denominator is "how often someone chose to look" measures attention; a yield measures whether looking was worth it.
+
+## 2026-08-07 — Amendment: commit ownership and concurrent-writer evidence answer different questions
+
+**By:** Vasquez
+
+**Amendment to the 2026-07-25 `Copilot-Session` finding.** The earlier entry remains intact because its forensic result is valid: divergent trailers are durable positive evidence that a second writer touched a branch, and `push-guard.mjs` still uses that evidence for its strong `foreign-session` refusal. Its statement that identical trailers prove one writer does not survive the post-#264 measurement, however. The trailer value reaches committers through their **prompt**, not through a session-specific environment value; one value on `development` appears on 74 commits spanning 37 hours. It is therefore demonstrably non-injective over time: equality of trailer values is not identity of writer.
+
+**The post-#264 split is by primary question.**
+
+| Primary question              | Primary instrument                                                                                                                                                                          |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| _Are these commits mine?_     | `ownCommits`, populated by `readOwnedCommits` from this worktree's reflog. Ownership is attached to the commit object this worktree produced, not to any session identifier in its message. |
+| _Is a second writer present?_ | `Copilot-Session`. Divergent values establish multiple writers and preserve that fact through rewrites; equal values do not establish one writer.                                           |
+
+Each instrument is primary for its own
+question, and neither is secondary. The decision order in `push-guard.mjs` makes the distinction observable: the `unowned-discard` arm remains reachable only for commits the session-id check has already allowed. The reflog-derived SHA set therefore adds an ownership refusal underneath the concurrent-writer check; it does not replace or weaken the trailer's separate forensic role.
