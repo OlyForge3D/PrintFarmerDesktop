@@ -95,10 +95,21 @@ function unlinkJunction(junction: string) {
   );
 }
 
+function worktreeIdentity(value: string) {
+  let resolved: string;
+  try {
+    resolved = filesystemRealpath()(value);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    resolved = path.resolve(value);
+  }
+  return onWindows ? resolved.toLowerCase() : resolved;
+}
+
 function registeredWorktree(repository: string, worktree: string) {
-  const expected = path.resolve(worktree).toLowerCase();
+  const expected = worktreeIdentity(worktree);
   return listLinkedWorktrees(repository).some(
-    (entry) => path.resolve(entry).toLowerCase() === expected,
+    (entry) => worktreeIdentity(entry) === expected,
   );
 }
 
@@ -197,6 +208,28 @@ describe('safe worktree removal validation', () => {
     expect(filesystemRealpath('darwin')).toBe(realpathSync);
     expect(filesystemRealpath('linux')).toBe(realpathSync);
   });
+
+  it.skipIf(!onWindows)(
+    'canonical test identity equates an 8.3 alias without equating distinct directories',
+    () => {
+      const root = mkdtempSync(path.join(os.tmpdir(), 'pfd-test-identity-'));
+      const target = path.join(root, 'long-worktree-directory-name');
+      const distinct = path.join(root, 'other-worktree-directory-name');
+      try {
+        mkdirSync(target);
+        mkdirSync(distinct);
+        const shortTarget = windowsShortPath(target);
+
+        expect(path.resolve(shortTarget).toLowerCase()).not.toBe(
+          path.resolve(target).toLowerCase(),
+        );
+        expect(worktreeIdentity(shortTarget)).toBe(worktreeIdentity(target));
+        expect(worktreeIdentity(distinct)).not.toBe(worktreeIdentity(target));
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   const completeRawState = {
     gitVersion: 'git version fixture',
@@ -521,8 +554,8 @@ describe('linked-worktree registry contract', () => {
       git(['worktree', 'add', '-b', 'linked', linked], repository);
 
       expect(
-        listLinkedWorktrees(linked).map((entry) => realpathSync(entry)),
-      ).toEqual([realpathSync(repository), realpathSync(linked)]);
+        listLinkedWorktrees(linked).map((entry) => worktreeIdentity(entry)),
+      ).toEqual([worktreeIdentity(repository), worktreeIdentity(linked)]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
