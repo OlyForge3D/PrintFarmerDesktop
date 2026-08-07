@@ -85,7 +85,7 @@ function blankCommentsAndStrings(source: string): string {
   return out.join('');
 }
 
-function callExpressionOperand(expression: string): ts.CallExpression | null {
+function voidOperand(expression: string): ts.Expression | null {
   const sourceFile = ts.createSourceFile(
     'void-expression.ts',
     `void ${expression};`,
@@ -101,8 +101,31 @@ function callExpressionOperand(expression: string): ts.CallExpression | null {
   ) {
     return null;
   }
-  const operand = unwrapExpression(statement.expression.expression);
-  return ts.isCallExpression(operand) ? operand : null;
+  return unwrapExpression(statement.expression.expression);
+}
+
+function promiseCallOperands(expression: string): ts.CallExpression[] {
+  const collect = (operand: ts.Expression): ts.CallExpression[] => {
+    const unwrapped = unwrapExpression(operand);
+    if (ts.isCallExpression(unwrapped)) return [unwrapped];
+    if (ts.isConditionalExpression(unwrapped)) {
+      return [...collect(unwrapped.whenTrue), ...collect(unwrapped.whenFalse)];
+    }
+    if (
+      ts.isBinaryExpression(unwrapped) &&
+      (unwrapped.operatorToken.kind === ts.SyntaxKind.CommaToken ||
+        unwrapped.operatorToken.kind ===
+          ts.SyntaxKind.AmpersandAmpersandToken ||
+        unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+        unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
+    ) {
+      return [...collect(unwrapped.left), ...collect(unwrapped.right)];
+    }
+    return [];
+  };
+
+  const operand = voidOperand(expression);
+  return operand ? collect(operand) : [];
 }
 
 /** True when `void` at `index` is an operator rather than a type annotation. */
@@ -123,18 +146,18 @@ function isVoidOperatorPosition(
     const linePrefix = code.slice(code.lastIndexOf('\n', k) + 1, k + 1);
     return (
       /\b(?:case\b[^:]*|default)\s*:$/.test(linePrefix) &&
-      callExpressionOperand(expression) !== null
+      promiseCallOperands(expression).length > 0
     );
   }
 
   if (/[)>?=,&|!+\-*%~^]/.test(code[k]!)) {
-    return callExpressionOperand(expression) !== null;
+    return promiseCallOperands(expression).length > 0;
   }
 
   const precedingWord = code.slice(0, k + 1).match(/([A-Za-z]+)$/)?.[1];
   return (
     /^(?:return|throw|yield|else|do)$/.test(precedingWord ?? '') &&
-    callExpressionOperand(expression) !== null
+    promiseCallOperands(expression).length > 0
   );
 }
 
@@ -168,8 +191,8 @@ function isPresentHandler(argument: ts.Expression | undefined): boolean {
  * handler followed by another `.then` is not terminal and cannot answer for
  * failures introduced by that later callback.
  */
-function hasRejectionHandler(expression: string): boolean {
-  let call = callExpressionOperand(expression);
+function callHasRejectionHandler(initialCall: ts.CallExpression): boolean {
+  let call: ts.CallExpression | null = initialCall;
   let allowSettlementObserver = true;
   while (call) {
     if (!ts.isPropertyAccessExpression(call.expression)) return false;
@@ -186,6 +209,11 @@ function hasRejectionHandler(expression: string): boolean {
     call = ts.isCallExpression(receiver) ? receiver : null;
   }
   return false;
+}
+
+function hasRejectionHandler(expression: string): boolean {
+  const calls = promiseCallOperands(expression);
+  return calls.length > 0 && calls.every(callHasRejectionHandler);
 }
 
 interface VoidStatement {
@@ -232,7 +260,7 @@ function scanVoidStatements(source: string, file: string): VoidStatement[] {
       file,
       line: code.slice(0, at).split('\n').length,
       expression,
-      isCall: callExpressionOperand(expression) !== null,
+      isCall: promiseCallOperands(expression).length > 0,
       hasRejectionHandler: hasRejectionHandler(expression),
     });
   }
@@ -288,6 +316,15 @@ describe('void-suppressed promises in src/main carry rejection handlers', () => 
       'control-two-argument-then.ts',
     );
     expect(twoArgumentThen[0]?.hasRejectionHandler).toBe(true);
+
+    // The recovered contract distinguishes a bare suppression from a chain
+    // that already has a rejection path. A trailing settlement observer does
+    // not erase the two-argument `.then` handler and exists in current source.
+    const handledBeforeFinally = scanVoidStatements(
+      'function f() {\n  void reader.read().then(resolve, reject).finally(cleanup);\n}\n',
+      'control-handled-before-finally.ts',
+    );
+    expect(handledBeforeFinally[0]?.hasRejectionHandler).toBe(true);
 
     for (const expression of [
       'promise.catch()',
@@ -402,6 +439,23 @@ describe('void-suppressed promises in src/main carry rejection handlers', () => 
       '(reader.cancel())',
       'report()',
     ]);
+    expect(statements.every((statement) => statement.isCall)).toBe(true);
+    expect(statements.every((statement) => statement.hasRejectionHandler)).toBe(
+      false,
+    );
+  });
+
+  it('classifies calls wrapped by conditionals and sequences', () => {
+    const statements = scanVoidStatements(
+      [
+        'function f(condition: boolean) {',
+        '  void (condition ? reader.cancel() : reader.read());',
+        '  void (first(), second());',
+        '}',
+      ].join('\n'),
+      'control-wrapped-promise-expressions.ts',
+    );
+    expect(statements).toHaveLength(2);
     expect(statements.every((statement) => statement.isCall)).toBe(true);
     expect(statements.every((statement) => statement.hasRejectionHandler)).toBe(
       false,
