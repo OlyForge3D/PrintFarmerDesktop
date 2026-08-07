@@ -22,6 +22,18 @@ export const EXIT_UNDETERMINED = 2;
 
 const API_ROOT = 'https://api.github.com';
 const PAGE_SIZE = 100;
+const FILTERED_RUN_LIMIT = 1000;
+const TERMINAL_CONCLUSIONS = new Set([
+  'action_required',
+  'cancelled',
+  'failure',
+  'neutral',
+  'skipped',
+  'stale',
+  'startup_failure',
+  'success',
+  'timed_out',
+]);
 const NON_FAILURE_CONCLUSIONS = new Set(['success', 'skipped', 'neutral']);
 
 function apiHeaders(token) {
@@ -63,6 +75,7 @@ async function fetchCountedPages({
   subject,
   token,
   fetchImpl,
+  refuseTotalAtOrAbove,
 }) {
   const rows = [];
   let expectedTotal;
@@ -73,6 +86,14 @@ async function fetchCountedPages({
       fetchImpl,
     );
     const parsed = requireCountedPage(payload, field, subject);
+    if (
+      refuseTotalAtOrAbove !== undefined &&
+      parsed.totalCount >= refuseTotalAtOrAbove
+    ) {
+      throw new Error(
+        `${subject} reached GitHub's ${refuseTotalAtOrAbove}-result filtered-search ceiling; the response may be truncated`,
+      );
+    }
     expectedTotal ??= parsed.totalCount;
     if (parsed.totalCount !== expectedTotal) {
       throw new Error(
@@ -181,6 +202,7 @@ export async function listWorkflowRuns({
     subject: `workflow runs for ${sha}`,
     token,
     fetchImpl,
+    refuseTotalAtOrAbove: FILTERED_RUN_LIMIT,
   });
 }
 
@@ -225,10 +247,10 @@ export function maskedRequiredFailures(jobs, requiredContexts) {
         typeof job?.name !== 'string' ||
         job.name === '' ||
         typeof job.conclusion !== 'string' ||
-        job.conclusion === ''
+        !TERMINAL_CONCLUSIONS.has(job.conclusion)
       ) {
         throw new Error(
-          `attempt job ${index + 1} has no non-empty name or terminal conclusion`,
+          `attempt job ${index + 1} has no non-empty name or recognized terminal conclusion`,
         );
       }
       return job;
@@ -293,6 +315,11 @@ export async function scanHead({
     for (let attempt = 1; attempt < run.run_attempt; attempt += 1) {
       superseded.push(attempt);
       const jobs = await listJobs(run.id, attempt);
+      if (jobs.length === 0) {
+        throw new Error(
+          `run ${run.id} attempt ${attempt} returned zero jobs; the superseded attempt was not observable`,
+        );
+      }
       for (const job of maskedRequiredFailures(jobs, required)) {
         findings.push({
           runId: run.id,

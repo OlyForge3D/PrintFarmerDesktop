@@ -109,9 +109,10 @@ describe('required-name discrimination', () => {
     { name: DESKTOP_WINDOWS },
     { conclusion: 'failure' },
     { name: '', conclusion: 'failure' },
+    { name: 'Sequencing hold', conclusion: 'bogus' },
   ])('refuses malformed or unfinished historical job row %#', (job) => {
     expect(() => maskedRequiredFailures([job], REQUIRED)).toThrow(
-      /no non-empty name or terminal conclusion/,
+      /no non-empty name or recognized terminal conclusion/,
     );
   });
 
@@ -162,7 +163,7 @@ describe('attempt and scope coverage', () => {
           created_at: '2026-08-04T14:18:21Z',
         },
       ],
-      { 1: [] },
+      { 1: [{ name: DESKTOP_WINDOWS, conclusion: 'success' }] },
     );
     const result = await scanHead({
       headSha: HEAD,
@@ -196,6 +197,18 @@ describe('attempt and scope coverage', () => {
 
     expect(report).toContain('none (no run was re-run)');
     expect(report).not.toContain('examined 1');
+  });
+
+  it('refuses an empty superseded attempt rather than reporting a vacuous clean', async () => {
+    const h = harness([RUN], { 1: [] });
+    await expect(
+      scanHead({
+        headSha: HEAD,
+        requiredContexts: REQUIRED,
+        listRuns: h.listRuns,
+        listJobs: h.listJobs,
+      }),
+    ).rejects.toThrow(/returned zero jobs/);
   });
 
   it('refuses zero runs rather than turning an unobserved head green', async () => {
@@ -261,6 +274,28 @@ describe('API pagination', () => {
 
     expect(runs).toHaveLength(101);
     expect(urlOf(fetchImpl.mock.calls[1]![0])).toContain('&page=2');
+  });
+
+  it("refuses GitHub's filtered workflow-run ceiling as potentially truncated", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementationOnce(() =>
+      response({
+        total_count: 1000,
+        workflow_runs: Array.from({ length: 100 }, (_, index) => ({
+          ...RUN,
+          id: index + 1,
+        })),
+      }),
+    );
+
+    await expect(
+      listWorkflowRuns({
+        repository: { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' },
+        headSha: HEAD,
+        token: 't',
+        fetchImpl,
+      }),
+    ).rejects.toThrow(/1000-result filtered-search ceiling/);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('paginates jobs to total_count', async () => {
