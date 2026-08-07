@@ -9,6 +9,8 @@ export type CalibrationApi = Pick<
   | 'getCalibrationWorkspaceState'
   | 'saveCalibrationWorkspaceState'
   | 'syncCalibrationNow'
+  | 'listCalibrationConflicts'
+  | 'resolveCalibrationConflict'
   | 'listOrcaProfiles'
   | 'openCalibrationPhoto'
   | 'stageCalibrationPhoto'

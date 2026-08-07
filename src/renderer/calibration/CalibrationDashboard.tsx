@@ -3,6 +3,7 @@ import { useCalibrationWorkspaceStore } from './CalibrationWorkspaceStore';
 import { formatTimestamp } from './workspaceTypes';
 import { ImportLegacyBackup } from './ImportLegacyBackup';
 import { browserCalibrationEnvironment } from './api';
+import { CalibrationConflictDialog } from './CalibrationConflictDialog';
 
 const availabilityCopy = {
   serverVersionTooLow:
@@ -25,6 +26,8 @@ const availabilityCopy = {
 export function CalibrationDashboard(): React.JSX.Element {
   const store = useCalibrationWorkspaceStore();
   const [showImport, setShowImport] = useState(false);
+  const [showConflicts, setShowConflicts] = useState(false);
+  const conflictProfileId = store.profileId;
   const active = store.records.filter(
     (record) => record.status !== 'complete' && record.status !== 'archived',
   );
@@ -165,6 +168,16 @@ export function CalibrationDashboard(): React.JSX.Element {
         <div>
           <strong>{conflicts.length}</strong>
           <span>Conflicts</span>
+          <button
+            type="button"
+            className="cal-link-button cal-summary-action"
+            onClick={() => setShowConflicts(true)}
+            disabled={
+              store.profileId === null || store.offline || store.disabled
+            }
+          >
+            Review conflicts
+          </button>
         </div>
       </section>
 
@@ -380,6 +393,15 @@ export function CalibrationDashboard(): React.JSX.Element {
           />
         </div>
       )}
+      {showConflicts && conflictProfileId !== null ? (
+        <CalibrationConflictDialog
+          key={conflictProfileId}
+          profileId={conflictProfileId}
+          profileName={store.profileName || 'Selected profile'}
+          onClose={() => setShowConflicts(false)}
+          onResolved={() => void store.refresh()}
+        />
+      ) : null}
     </section>
   );
 }
