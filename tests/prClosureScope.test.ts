@@ -182,15 +182,27 @@ describe('resolvePullRequestNumber', () => {
     expect(resolvePullRequestNumber({ GITHUB_EVENT_PATH: eventPath })).toBe(57);
   });
 
+  it('reads the pull request number from a merge-queue head ref', () => {
+    const eventPath = writeEvent({
+      merge_group: {
+        head_ref:
+          'refs/heads/gh-readonly-queue/development/pr-398-4a38021c3ffa',
+      },
+    });
+    expect(resolvePullRequestNumber({ GITHUB_EVENT_PATH: eventPath })).toBe(
+      398,
+    );
+  });
+
   it('fails rather than guessing when no number is available', () => {
     expect(() => resolvePullRequestNumber({})).toThrow(/no pull request/);
   });
 
-  it('fails when the event is not a pull request', () => {
+  it('fails when the event identifies neither a PR nor its queue entry', () => {
     const eventPath = writeEvent({ push: {} });
     expect(() =>
       resolvePullRequestNumber({ GITHUB_EVENT_PATH: eventPath }),
-    ).toThrow(/pull_request\.number/);
+    ).toThrow(/neither pull_request\.number nor a merge-queue PR head ref/);
   });
 });
 
@@ -268,7 +280,7 @@ describe('fetchClosingIssues', () => {
   });
 });
 
-describe('the closure-scope workflow stays outside the merge queue', () => {
+describe('the closure workflow reports for pull requests and merge queues', () => {
   const repositoryRoot = path.resolve(import.meta.dirname, '..');
   const workflow = readFileSync(
     path.join(repositoryRoot, '.github', 'workflows', 'pr-closure-scope.yml'),
@@ -317,15 +329,12 @@ describe('the closure-scope workflow stays outside the merge queue', () => {
     expect(triggersOf(workflow).length).toBeGreaterThan(0);
   });
 
-  it('subscribes to pull_request only, because no other event carries a PR number', () => {
-    expect(triggersOf(workflow)).toEqual(['pull_request']);
+  it('subscribes to both event classes a required context must cover', () => {
+    expect(triggersOf(workflow)).toEqual(['merge_group', 'pull_request']);
   });
 
-  it('does not subscribe to merge_group, so it must never be a required context', () => {
-    // A required context that no workflow emits stays Pending forever and
-    // blocks the entry rather than failing it. If this workflow ever learns to
-    // report under merge_group, this assertion is the place that says so.
-    expect(triggersOf(workflow)).not.toContain('merge_group');
+  it('declares that its contexts are eligible to be required', () => {
+    expect(workflow).toContain('# merge-queue: reports');
   });
 
   /**

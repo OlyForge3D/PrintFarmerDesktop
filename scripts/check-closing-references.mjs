@@ -32,6 +32,7 @@
 import { pathToFileURL } from 'node:url';
 import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
+import { resolvePullRequestNumber } from './check-pr-closure-scope.mjs';
 
 const RETRYABLE_TRANSPORT_CODES = new Set([
   'EAI_AGAIN',
@@ -715,11 +716,16 @@ function gh(args) {
  * one that decides the exit code.
  */
 export async function main(argv, deps = {}) {
-  const { run = gh, readClosures = readSettled } = deps;
-  const prNumber = argv[0];
-  if (!prNumber || !/^\d+$/.test(prNumber)) {
+  const {
+    run = gh,
+    readClosures = readSettled,
+    environment = process.env,
+  } = deps;
+  const supplied = argv[0];
+  if (supplied !== undefined && !/^[1-9]\d*$/.test(supplied)) {
     throw new Error('usage: check-closing-references.mjs <pr-number>');
   }
+  const prNumber = supplied ?? String(resolvePullRequestNumber(environment));
 
   const body = run(['pr', 'view', prNumber, '--json', 'body', '--jq', '.body']);
   const { declared, hasBlock } = parseDeclaredClosures(body);

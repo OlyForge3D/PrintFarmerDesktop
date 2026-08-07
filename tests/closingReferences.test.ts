@@ -1062,6 +1062,22 @@ describe('main staleness witness', () => {
     };
   }
 
+  it('resolves the event PR when the workflow supplies no CLI argument', async () => {
+    silenced();
+    const result = await main([], {
+      environment: { PR_NUMBER: '231' },
+      run: ghStub('no declaration here', 'a bare mention of #231', []),
+      readClosures: async (read) => ({
+        value: await read(),
+        reads: 2,
+        settled: true,
+        elapsedMs: 1000,
+        stableMs: 1000,
+      }),
+    });
+    expect(result).toMatchObject({ ok: true, settled: true });
+  });
+
   it('reports, but does not fail, a settled empty read the body contradicts', async () => {
     const spies = silenced();
     // Declares nothing and arms nothing: on the settled value alone this is a

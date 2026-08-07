@@ -186,6 +186,7 @@ export function formatUnsettled(input: {
 
 export interface MainDeps {
   run?: (args: string[]) => string;
+  environment?: Record<string, string | undefined>;
   readClosures?: (
     read: () => number[] | Promise<number[]>,
     options?: SettleOptions,

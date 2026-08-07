@@ -1,30 +1,18 @@
 name: PR closure contracts
 
-# merge-queue: advisory
+# merge-queue: reports
 #
-# Machine-readable form of the constraint the comment below already states in
-# prose: this workflow does not report under merge_group, so its check run MUST
-# NOT be a required context. scripts/check-merge-queue-contexts.mjs holds that
-# classification, enforced by tests/mergeQueueReadiness.test.ts under
-# `npm run test`. Its comparison against live branch protection — the half that
-# would notice protection drifting from this line — needs a token, is run by
-# hand, and does not execute in CI, so making this context required would still
-# deadlock silently (#472).
+# Both contexts report for pull requests and merge-queue entries, so either is
+# eligible for required-check configuration. scripts/check-merge-queue-contexts.mjs
+# enforces that classification under `npm run test`.
 
 # Deliberately a separate workflow rather than jobs in ci.yml.
 #
-# Both checks need a pull request number or PR-derived fields, and neither
-# `push` nor `merge_group` carries them. Adding either to ci.yml would require a
-# job-level `if:` or a `github.event_name` branch. A skipped job reports success,
-# so such a context would be unsafe to require: it could satisfy the gate without
-# evaluating the contract it names.
-#
-# Consequence, stated plainly rather than left to be discovered: this workflow
-# does not report under `merge_group`, so it MUST NOT be added to a branch
-# ruleset's required contexts while that remains true. A required context that
-# no workflow emits stays Pending forever and blocks the entry instead of
-# failing it. tests/prClosureScope.test.ts pins this subscription so the
-# constraint is checked rather than remembered.
+# Both checks need a pull request number or PR-derived fields. A pull_request
+# event carries the number directly. A merge_group event carries it in the
+# queue's standard `head_ref` (`.../pr-<number>-<sha>`), which
+# resolvePullRequestNumber parses and tests. Neither check uses a skipped branch,
+# so a queued entry receives a real verdict rather than a success-shaped skip.
 #
 # `edited` is in the type list for a reason found the hard way on this very
 # pull request: `closingIssuesReferences` is derived from the pull request
@@ -41,6 +29,7 @@ name: PR closure contracts
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
+  merge_group:
 
 permissions:
   contents: read
@@ -84,4 +73,4 @@ jobs:
       - name: Compare declared and armed closing references
         env:
           GH_TOKEN: ${{ github.token }}
-        run: npm run check:closing-references -- ${{ github.event.pull_request.number }}
+        run: npm run check:closing-references

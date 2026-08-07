@@ -167,12 +167,22 @@ describe('the parsers see the real files, not an empty string', () => {
   });
 
   it('reads the advisory workflows as not subscribing', () => {
-    for (const file of ['pr-closure-scope.yml', 'sequencing-hold.yml']) {
+    for (const file of ['citation-reachability.yml', 'sequencing-hold.yml']) {
       const entry = workflows.find((candidate) => candidate.file === file);
       const triggers = triggersOf(entry!.contents, file);
       expect(triggers).toContain('pull_request');
       expect(triggers).not.toContain('merge_group');
     }
+  });
+
+  it('reads the closure workflow as reporting for queued entries', () => {
+    const entry = workflows.find(
+      (candidate) => candidate.file === 'pr-closure-scope.yml',
+    );
+    expect(triggersOf(entry!.contents, entry!.file)).toEqual([
+      'merge_group',
+      'pull_request',
+    ]);
   });
 
   it('expands matrix jobs into the strings a ruleset actually pins', () => {
@@ -226,27 +236,16 @@ describe('a required context must be emitted by a workflow that reports', () => 
     ).toEqual([]);
   });
 
-  it('refuses the PR-only closure contexts, naming the workflow and the reason', () => {
-    // The deadlock, as the settings page would produce it. Both run on every
-    // pull request and look exactly like checks worth requiring.
-    const offenders = evaluateRequiredContexts({
-      workflows,
-      requiredContexts: [
-        'Gate issue closure scope',
-        'Closing-reference declaration',
-      ],
-    });
-    expect(offenders.map(({ context }) => context)).toEqual([
-      'Gate issue closure scope',
-      'Closing-reference declaration',
-    ]);
-    expect(offenders.map(({ emittedBy }) => emittedBy)).toEqual([
-      'pr-closure-scope.yml',
-      'pr-closure-scope.yml',
-    ]);
-    for (const { reason } of offenders) {
-      expect(reason).toMatch(/does not report under merge_group/);
-    }
+  it('accepts both closure contexts because they report for queued entries', () => {
+    expect(
+      evaluateRequiredContexts({
+        workflows,
+        requiredContexts: [
+          'Gate issue closure scope',
+          'Closing-reference declaration',
+        ],
+      }),
+    ).toEqual([]);
   });
 
   it('distinguishes a context nothing emits from one an advisory workflow emits', () => {

@@ -316,13 +316,22 @@ export function resolvePullRequestNumber(environment) {
   }
 
   const event = JSON.parse(readFileSync(eventPath, 'utf8'));
-  const number = event?.pull_request?.number;
-  if (!Number.isInteger(number)) {
-    throw new Error(
-      `event payload at ${eventPath} has no pull_request.number; this check must run on a pull_request event`,
-    );
+  const pullRequestNumber = event?.pull_request?.number;
+  if (Number.isInteger(pullRequestNumber) && pullRequestNumber > 0) {
+    return pullRequestNumber;
   }
-  return number;
+
+  const mergeGroupHeadRef = event?.merge_group?.head_ref;
+  if (typeof mergeGroupHeadRef === 'string') {
+    const match = /\/pr-([1-9]\d*)-[^/]+$/.exec(mergeGroupHeadRef);
+    if (match?.[1] !== undefined) {
+      return Number(match[1]);
+    }
+  }
+
+  throw new Error(
+    `event payload at ${eventPath} has neither pull_request.number nor a merge-queue PR head ref`,
+  );
 }
 
 export function resolveRepository(environment) {
