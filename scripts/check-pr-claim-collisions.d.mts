@@ -26,6 +26,14 @@ export interface ClaimCollisionResult {
   collisions: IssueClaimCollision[];
 }
 
+export interface SettledOpenPullRequests {
+  value: OpenPullRequestClaim[];
+  reads: number;
+  settled: boolean;
+  elapsedMs: number;
+  stableMs: number;
+}
+
 export function parseOpenPullRequestPages(raw: string): OpenPullRequestClaim[];
 export function parseBranchIssueCandidates(headRefName: string): number[];
 export function collectBranchIssueCandidates(
@@ -41,6 +49,17 @@ export function readOpenPullRequests(input: {
   repo: string;
   run: (args: string[]) => string;
 }): OpenPullRequestClaim[];
+export function readSettledOpenPullRequests(
+  read: () => OpenPullRequestClaim[] | Promise<OpenPullRequestClaim[]>,
+  options?: {
+    requiredAgreements?: number;
+    maxReads?: number;
+    delayMs?: number;
+    minStableMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+  },
+): Promise<SettledOpenPullRequests>;
 export function resolveBranchIssueNumbers(input: {
   owner: string;
   repo: string;
@@ -58,5 +77,8 @@ export function main(
     run?: (args: string[]) => string;
     environment?: Record<string, string | undefined>;
     output?: (line: string) => void;
+    readPopulation?: (
+      read: () => OpenPullRequestClaim[] | Promise<OpenPullRequestClaim[]>,
+    ) => Promise<SettledOpenPullRequests>;
   },
-): ClaimCollisionResult;
+): Promise<ClaimCollisionResult>;

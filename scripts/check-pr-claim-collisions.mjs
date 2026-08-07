@@ -278,6 +278,66 @@ export function readOpenPullRequests({ owner, repo, run }) {
   return parseOpenPullRequestPages(raw);
 }
 
+/**
+ * Wait for the complete population snapshot to hold still for the measured
+ * closingIssuesReferences propagation interval.
+ *
+ * Agreement alone is insufficient: a stale pre-edit value is stable while the
+ * derived field catches up. The stability floor is therefore measured from the
+ * first read of the current agreement run, not from the start of polling.
+ */
+export async function readSettledOpenPullRequests(read, options = {}) {
+  const {
+    requiredAgreements = 2,
+    maxReads = 40,
+    delayMs = 5000,
+    minStableMs = 60000,
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now = () => Date.now(),
+  } = options;
+
+  const start = now();
+  let agreementStart = start;
+  let previousKey;
+  let agreements = 0;
+  let reads = 0;
+  let value = [];
+
+  for (let index = 0; index < maxReads; index += 1) {
+    if (index > 0) {
+      await sleep(delayMs);
+    }
+    reads += 1;
+    value = await read();
+    const key = JSON.stringify(value);
+    if (key === previousKey) {
+      agreements += 1;
+    } else {
+      previousKey = key;
+      agreements = 1;
+      agreementStart = now();
+    }
+    const stableMs = now() - agreementStart;
+    if (agreements >= requiredAgreements && stableMs >= minStableMs) {
+      return {
+        value,
+        reads,
+        settled: true,
+        elapsedMs: now() - start,
+        stableMs,
+      };
+    }
+  }
+
+  return {
+    value,
+    reads,
+    settled: false,
+    elapsedMs: now() - start,
+    stableMs: now() - agreementStart,
+  };
+}
+
 export function resolveBranchIssueNumbers({ owner, repo, numbers, run }) {
   const issueNumbers = [];
   for (let index = 0; index < numbers.length; index += RESOLUTION_BATCH_SIZE) {
@@ -421,12 +481,23 @@ function defaultRun(args) {
   });
 }
 
-export function main(argv = process.argv.slice(2), deps = {}) {
+export async function main(argv = process.argv.slice(2), deps = {}) {
   const run = deps.run ?? defaultRun;
   const environment = deps.environment ?? process.env;
   const output = deps.output ?? console.log;
+  const readPopulation = deps.readPopulation ?? readSettledOpenPullRequests;
   const { owner, repo } = parseArgs(argv, environment, run);
-  const pullRequests = readOpenPullRequests({ owner, repo, run });
+  const population = await readPopulation(() =>
+    readOpenPullRequests({ owner, repo, run }),
+  );
+  if (!population.settled) {
+    throw new Error(
+      `open pull request population did not hold stable for the required interval ` +
+        `(${population.reads} reads over ${Math.round(population.elapsedMs / 1000)}s; ` +
+        `last stable interval ${Math.round(population.stableMs / 1000)}s)`,
+    );
+  }
+  const pullRequests = population.value;
   const candidates = collectBranchIssueCandidates(pullRequests);
   const branchIssueNumbers =
     candidates.length === 0
@@ -440,7 +511,7 @@ export function main(argv = process.argv.slice(2), deps = {}) {
   const result = evaluateClaimCollisions(pullRequests, branchIssueNumbers);
 
   output(
-    `[pr-claim-collisions] open PRs ${result.openPullRequestCount}; claimed issues ${result.claimedIssueCount}; collisions ${result.collisions.length}; singly claimed ${result.singleClaimCount}`,
+    `[pr-claim-collisions] open PRs ${result.openPullRequestCount}; claimed issues ${result.claimedIssueCount}; collisions ${result.collisions.length}; singly claimed ${result.singleClaimCount}; population reads ${population.reads}; stable ${Math.round(population.stableMs / 1000)}s`,
   );
   for (const warning of formatCollisionWarnings(result)) {
     output(warning);
@@ -459,12 +530,10 @@ if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-  try {
-    main();
-  } catch (error) {
+  main().catch((error) => {
     console.error(
       `[pr-claim-collisions] FAILED: ${error instanceof Error ? error.message : String(error)}`,
     );
     process.exitCode = 1;
-  }
+  });
 }

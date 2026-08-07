@@ -10,6 +10,7 @@ import {
   parseBranchIssueTypes,
   parseOpenPullRequestPages,
   readOpenPullRequests,
+  readSettledOpenPullRequests,
   resolveBranchIssueNumbers,
 } from '../scripts/check-pr-claim-collisions.mjs';
 
@@ -253,6 +254,12 @@ describe('open pull request pagination', () => {
     ).toThrow(/ended before/);
   });
 
+  it('rejects a page after the connection already reported its terminal page', () => {
+    expect(() =>
+      parseOpenPullRequestPages(JSON.stringify([page([]), page([])])),
+    ).toThrow(/after a terminal page/);
+  });
+
   it('rejects a truncated nested closing-reference connection', () => {
     const response = page([
       pr({
@@ -278,6 +285,98 @@ describe('open pull request pagination', () => {
         ]),
       ),
     ).toThrow(/reported errors/);
+  });
+});
+
+describe('eventually consistent population reads', () => {
+  function fakeClock() {
+    let time = 0;
+    return {
+      sleep: (ms: number) => {
+        time += ms;
+        return Promise.resolve();
+      },
+      now: () => time,
+    };
+  }
+
+  it('waits for a newly armed claim to arrive and then hold for the stability floor', async () => {
+    const stale = [
+      pr({
+        number: 10,
+        headRefName: 'no-number',
+        closingIssueNumbers: [],
+      }),
+    ];
+    const fresh = [
+      pr({
+        number: 10,
+        headRefName: 'no-number',
+        closingIssueNumbers: [452],
+      }),
+    ];
+    const readings = [stale, stale, fresh, fresh];
+    let index = 0;
+    const result = await readSettledOpenPullRequests(
+      () => readings[Math.min(index++, readings.length - 1)]!,
+      {
+        ...fakeClock(),
+        delayMs: 20_000,
+        minStableMs: 60_000,
+      },
+    );
+
+    expect(result.value).toEqual(fresh);
+    expect(result.settled).toBe(true);
+    expect(result.stableMs).toBeGreaterThanOrEqual(60_000);
+  });
+
+  it('demonstrates that agreement without the floor would certify the stale population', async () => {
+    const stale = [
+      pr({
+        number: 10,
+        headRefName: 'no-number',
+        closingIssueNumbers: [],
+      }),
+    ];
+    const fresh = [
+      pr({
+        number: 10,
+        headRefName: 'no-number',
+        closingIssueNumbers: [452],
+      }),
+    ];
+    const readings = [stale, stale, fresh, fresh];
+    let index = 0;
+    const result = await readSettledOpenPullRequests(() => readings[index++]!, {
+      ...fakeClock(),
+      delayMs: 20_000,
+      minStableMs: 0,
+    });
+
+    expect(result.value).toEqual(stale);
+    expect(result.settled).toBe(true);
+  });
+
+  it('reports unsettled rather than trusting the last population when the budget expires', async () => {
+    let number = 0;
+    const result = await readSettledOpenPullRequests(
+      () => [
+        pr({
+          number: 10,
+          headRefName: 'no-number',
+          closingIssueNumbers: [number++ + 1],
+        }),
+      ],
+      {
+        ...fakeClock(),
+        delayMs: 20_000,
+        minStableMs: 60_000,
+        maxReads: 3,
+      },
+    );
+    expect(result.settled).toBe(false);
+    expect(result.reads).toBe(3);
   });
 });
 
@@ -354,7 +453,7 @@ describe('population discrimination and advisory output', () => {
     expect(warnings[0]).toContain('deliberate replacement PRs are valid');
   });
 
-  it('returns normally when collisions exist because the finding is advisory', () => {
+  it('returns normally when collisions exist because the finding is advisory', async () => {
     const output = vi.fn();
     const run = vi
       .fn<(args: string[]) => string>()
@@ -382,18 +481,25 @@ describe('population discrimination and advisory output', () => {
         }),
       );
 
-    const result = main([], {
+    const result = await main([], {
       run,
       environment: {
         GITHUB_REPOSITORY: 'OlyForge3D/PrintFarmerDesktop',
       },
       output,
+      readPopulation: async (read) => ({
+        value: await read(),
+        reads: 13,
+        settled: true,
+        elapsedMs: 60_000,
+        stableMs: 60_000,
+      }),
     });
     expect(result.collisions).toHaveLength(1);
     expect(output).toHaveBeenCalledWith(expect.stringContaining('ADVISORY'));
   });
 
-  it('does not make a type-resolution request for an empty candidate population', () => {
+  it('does not make a type-resolution request for an empty candidate population', async () => {
     const run = vi.fn(() =>
       JSON.stringify([
         page([
@@ -405,15 +511,42 @@ describe('population discrimination and advisory output', () => {
         ]),
       ]),
     );
-    const result = main([], {
+    const result = await main([], {
       run,
       environment: {
         GITHUB_REPOSITORY: 'OlyForge3D/PrintFarmerDesktop',
       },
       output: vi.fn(),
+      readPopulation: async (read) => ({
+        value: await read(),
+        reads: 13,
+        settled: true,
+        elapsedMs: 60_000,
+        stableMs: 60_000,
+      }),
     });
     expect(result.collisions).toEqual([]);
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails instead of evaluating the last value from an unsettled population', async () => {
+    await expect(
+      main([], {
+        run: vi.fn(),
+        environment: {
+          GITHUB_REPOSITORY: 'OlyForge3D/PrintFarmerDesktop',
+        },
+        output: vi.fn(),
+        readPopulation: () =>
+          Promise.resolve({
+            value: [],
+            reads: 40,
+            settled: false,
+            elapsedMs: 195_000,
+            stableMs: 5_000,
+          }),
+      }),
+    ).rejects.toThrow(/did not hold stable/);
   });
 
   it('batches branch issue type resolution rather than building an unbounded query', () => {
@@ -447,6 +580,27 @@ describe('population discrimination and advisory output', () => {
       }),
     ).toEqual(numbers.slice(0, 50));
     expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it('queries issueOrPullRequest typename under a stable alias for each candidate', () => {
+    const run = vi.fn<(args: string[]) => string>(() =>
+      JSON.stringify({
+        data: {
+          repository: { n481: { __typename: 'Issue' } },
+        },
+      }),
+    );
+    resolveBranchIssueNumbers({
+      owner: 'OlyForge3D',
+      repo: 'PrintFarmerDesktop',
+      numbers: [481],
+      run,
+    });
+    const args = run.mock.calls[0]?.[0] ?? [];
+    const query = args.find((argument) => argument.startsWith('query='));
+    expect(query).toContain(
+      'n481: issueOrPullRequest(number: 481) { __typename }',
+    );
   });
 });
 
