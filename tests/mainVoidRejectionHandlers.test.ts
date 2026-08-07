@@ -11,6 +11,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(
@@ -70,12 +71,57 @@ function blankCommentsAndStrings(source: string): string {
   return out.join('');
 }
 
-/** True when `void` at `index` starts a statement rather than naming a type. */
-function isStatementPosition(code: string, index: number): boolean {
+function callExpressionOperand(expression: string): ts.CallExpression | null {
+  const sourceFile = ts.createSourceFile(
+    'void-expression.ts',
+    `void ${expression};`,
+    ts.ScriptTarget.Latest,
+    false,
+    ts.ScriptKind.TS,
+  );
+  const statement = sourceFile.statements[0];
+  if (
+    !statement ||
+    !ts.isExpressionStatement(statement) ||
+    !ts.isVoidExpression(statement.expression) ||
+    !ts.isCallExpression(statement.expression.expression)
+  ) {
+    return null;
+  }
+  return statement.expression.expression;
+}
+
+/** True when `void` at `index` is an operator rather than a type annotation. */
+function isVoidOperatorPosition(
+  code: string,
+  index: number,
+  expression: string,
+): boolean {
   let k = index - 1;
   while (k >= 0 && /\s/.test(code[k]!)) k -= 1;
   if (k < 0) return true;
-  return code[k] === ';' || code[k] === '{' || code[k] === '}';
+  if (code[k] === ';' || code[k] === '{' || code[k] === '}') return true;
+
+  // Single-statement branches, case clauses, arrow bodies, and operator
+  // operands are valid `void` positions. Requiring a call-shaped operand keeps
+  // type annotations such as `() => void` out of this expanded population.
+  if (code[k] === ':') {
+    const linePrefix = code.slice(code.lastIndexOf('\n', k) + 1, k + 1);
+    return (
+      /\b(?:case\b[^:]*|default)\s*:$/.test(linePrefix) &&
+      callExpressionOperand(expression) !== null
+    );
+  }
+
+  if (/[)>?=,&|!+\-*%~^]/.test(code[k]!)) {
+    return callExpressionOperand(expression) !== null;
+  }
+
+  const precedingWord = code.slice(0, k + 1).match(/([A-Za-z]+)$/)?.[1];
+  return (
+    /^(?:return|throw|yield|else|do)$/.test(precedingWord ?? '') &&
+    callExpressionOperand(expression) !== null
+  );
 }
 
 /** Expression text between `void` and its terminating depth-zero semicolon. */
@@ -103,38 +149,56 @@ function topLevelOccurrences(expression: string, name: string): number[] {
   return found;
 }
 
-/** Top-level arguments for the call whose opening parenthesis is `parenIndex`. */
+/** Arguments parsed from the call whose opening parenthesis is `parenIndex`. */
 function callArguments(
   expression: string,
   parenIndex: number,
-): string[] | null {
-  const argumentsFound: string[] = [];
-  let argumentStart = parenIndex + 1;
-  let depth = 0;
-  for (let k = parenIndex; k < expression.length; k += 1) {
-    const ch = expression[k]!;
-    if (ch === '(' || ch === '[' || ch === '{') depth += 1;
-    else if (ch === ')' || ch === ']' || ch === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        argumentsFound.push(expression.slice(argumentStart, k).trim());
-        return argumentsFound;
-      }
-    } else if (ch === ',' && depth === 1) {
-      argumentsFound.push(expression.slice(argumentStart, k).trim());
-      argumentStart = k + 1;
+): ts.NodeArray<ts.Expression> | null {
+  const sourceFile = ts.createSourceFile(
+    'handler-call.ts',
+    `probe${expression.slice(parenIndex)};`,
+    ts.ScriptTarget.Latest,
+    false,
+    ts.ScriptKind.TS,
+  );
+  let current: ts.Expression | undefined = (
+    sourceFile.statements[0] as ts.ExpressionStatement | undefined
+  )?.expression;
+  while (current && ts.isCallExpression(current)) {
+    if (
+      ts.isIdentifier(current.expression) &&
+      current.expression.text === 'probe'
+    ) {
+      return current.arguments;
     }
+    current = ts.isPropertyAccessExpression(current.expression)
+      ? current.expression.expression
+      : current.expression;
   }
   return null;
 }
 
-function isPresentHandler(argument: string | undefined): boolean {
+function unwrapExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isSatisfiesExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function isPresentHandler(argument: ts.Expression | undefined): boolean {
+  if (!argument) return false;
+  const unwrapped = unwrapExpression(argument);
   return (
-    argument !== undefined &&
-    argument !== '' &&
-    argument !== 'null' &&
-    argument !== 'undefined' &&
-    !/^void\s+0$/.test(argument)
+    unwrapped.kind !== ts.SyntaxKind.NullKeyword &&
+    !ts.isVoidExpression(unwrapped) &&
+    !(ts.isIdentifier(unwrapped) && unwrapped.text === 'undefined')
   );
 }
 
@@ -173,13 +237,13 @@ function scanVoidStatements(source: string, file: string): VoidStatement[] {
 
   while ((match = pattern.exec(code)) !== null) {
     const at = match.index;
-    if (!isStatementPosition(code, at)) continue;
     const expression = readExpression(code, at + 'void'.length).trim();
+    if (!isVoidOperatorPosition(code, at, expression)) continue;
     found.push({
       file,
       line: code.slice(0, at).split('\n').length,
       expression,
-      isCall: expression.includes('('),
+      isCall: callExpressionOperand(expression) !== null,
       hasRejectionHandler: hasRejectionHandler(expression),
     });
   }
@@ -239,9 +303,12 @@ describe('void-suppressed promises in src/main carry rejection handlers', () => 
     for (const expression of [
       'promise.catch()',
       'promise.catch(null)',
+      'promise.catch((null))',
       'promise.catch(undefined)',
+      'promise.catch((undefined))',
       'promise.then(resolve,)',
       'promise.then(resolve, undefined)',
+      'promise.then(makeHandler<Result, Error>())',
     ]) {
       const absentHandler = scanVoidStatements(
         `function f() {\n  void ${expression};\n}\n`,
@@ -252,6 +319,28 @@ describe('void-suppressed promises in src/main carry rejection handlers', () => 
         `${expression} does not attach a rejection handler`,
       ).toBe(false);
     }
+  });
+
+  it('discovers void calls in every supported statement position', () => {
+    const statements = scanVoidStatements(
+      [
+        'function f(condition: boolean, value: number) {',
+        '  if (condition) void first();',
+        '  switch (value) { case 1: void second(); }',
+        '  return () => void third();',
+        '}',
+      ].join('\n'),
+      'control-statement-positions.ts',
+    );
+    expect(statements.map((statement) => statement.expression)).toEqual([
+      'first()',
+      'second()',
+      'third()',
+    ]);
+    expect(statements.every((statement) => statement.isCall)).toBe(true);
+    expect(statements.every((statement) => statement.hasRejectionHandler)).toBe(
+      false,
+    );
   });
 
   it('requires the bootstrap chain own top-level rejection handler', () => {
