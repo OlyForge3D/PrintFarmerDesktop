@@ -143,7 +143,7 @@ const resolvePath = ({ section, offset, context, anchor }) => {
   if (rowMatching.length === 1) return rowMatching[0];
 
   const owner = new RegExp(
-    `\\b([A-Z][A-Za-z0-9_]+)\\.${anchor.replace(
+    `\\b([A-Z][A-Za-z0-9_]+)\\.${anchorLeaf(anchor).replace(
       /[.*+?^${}()|[\]\\]/g,
       '\\$&',
     )}\\b`,
@@ -200,9 +200,11 @@ const anchorBefore = (context, citationOffset) => {
       `citation near ${JSON.stringify(context.trim())} has no content anchor`,
     );
   }
-  const qualified = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(token)?.[1];
-  return qualified ?? token;
+  return token;
 };
+
+const anchorLeaf = (anchor) =>
+  /([A-Za-z_][A-Za-z0-9_]*)$/.exec(anchor)?.[1] ?? anchor;
 
 export function parseAdminGuideCitations(guide) {
   const section = section10Of(guide);
@@ -261,15 +263,37 @@ export function verifyCitationContent(citation, contents) {
   if (citation.endLine > lines.length) {
     return `${citation.path}:${citation.raw} exceeds the file's ${lines.length} lines`;
   }
-  const cited = lines
-    .slice(citation.startLine - 1, citation.endLine)
-    .join('\n');
-  if (!cited.includes(citation.anchor)) {
+  const firstLine = lines[citation.startLine - 1] ?? '';
+  if (firstLine.includes(citation.anchor)) return null;
+
+  const qualified = /^([A-Z][A-Za-z0-9_]+)\.([A-Za-z_][A-Za-z0-9_]*)$/.exec(
+    citation.anchor,
+  );
+  const owner =
+    qualified === null
+      ? null
+      : lines
+          .slice(0, citation.startLine)
+          .reverse()
+          .find((line) =>
+            new RegExp(`\\bclass\\s+${qualified[1]}\\b`).test(line),
+          );
+  if (
+    qualified !== null &&
+    owner !== undefined &&
+    firstLine.includes(qualified[2])
+  ) {
+    return null;
+  }
+
+  if (!firstLine.includes(anchorLeaf(citation.anchor))) {
     return `${citation.path}:${citation.raw} does not contain anchor ${JSON.stringify(
       citation.anchor,
-    )}`;
+    )} on its first cited line`;
   }
-  return null;
+  return `${citation.path}:${citation.raw} contains only the unqualified anchor ${JSON.stringify(
+    anchorLeaf(citation.anchor),
+  )} outside its declared owner`;
 }
 
 const responseMessage = async (response) => {
@@ -406,10 +430,15 @@ export async function verifyRemoteCitations({
       token,
       `commit pin ${pin}`,
     );
-    if (pinRead.response.status !== 200 || pinRead.body?.sha !== pin) {
+    if ([404, 422].includes(pinRead.response.status)) {
       stale.push(`${pin}: commit does not resolve`);
       unresolvedPins.add(pin);
       continue;
+    }
+    if (pinRead.response.status !== 200 || pinRead.body?.sha !== pin) {
+      throw new CitationFetchError(
+        `commit pin ${pin}: ${pinRead.response.status} ${pinRead.message || 'unreadable response'}`,
+      );
     }
     const ancestry = await requestJson(
       fetchImpl,

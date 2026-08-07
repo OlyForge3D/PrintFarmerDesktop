@@ -207,6 +207,27 @@ describe('citation line, path, and commit mutations', () => {
     ).toMatch(/does not contain anchor/);
   });
 
+  it('does not let a range-wide anchor hide a shifted first line', () => {
+    const repeated = [
+      'line 1',
+      '',
+      '',
+      '',
+      '',
+      'nearby context',
+      'public void QueueJobAsync()',
+      '',
+    ].join('\n');
+
+    expect(
+      verifyCitationContent(
+        { ...citation(), startLine: 6, endLine: 7 },
+        repeated,
+      ),
+    ).not.toBeNull();
+    expect(verifyCitationContent(citation(), repeated)).toBeNull();
+  });
+
   it('kills a path mutation and names the broken citation', async () => {
     const parsed = parsedFixture();
     parsed.citations[0] = {
@@ -330,6 +351,22 @@ describe('remote fetch controls and completeness', () => {
         fetchImpl,
       }),
     ).rejects.toBeInstanceOf(CitationFetchError);
+  });
+
+  it('refuses a server error while reading a pin instead of calling it stale', async () => {
+    const fetchImpl = happyFetch({
+      [`/commits/${PIN_A}`]: response(500, {
+        message: 'Internal Server Error',
+      }),
+    });
+
+    await expect(
+      verifyRemoteCitations({
+        parsed: parsedFixture(),
+        token: 'default-token',
+        fetchImpl,
+      }),
+    ).rejects.toThrow(/commit pin .*500 Internal Server Error/);
   });
 
   it('refuses empty or partial file payloads', async () => {

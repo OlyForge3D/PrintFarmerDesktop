@@ -549,7 +549,7 @@ Source: `src/api/Controllers/JobQueueController.cs`,
 Two distinct `[Timestamp] byte[]?` properties produce the bed-clear ETags:
 
 - **Job ETag** (`If-Match`): `PrintJob.RowVersion`
-  (`src/infra/Domain/PrintJob.cs` lines 19–20@167a3b13 / 20–21@9c1d7e4b)
+  (`src/infra/Domain/PrintJob.cs` line 20@167a3b13 / 21@9c1d7e4b)
   mapped to base-64 by `JobQueueService.ToBase64RowVersion`
   (`src/infra/Services/Queue/JobQueueService.cs`, lines
   1408–1409@167a3b13 / 1532–1533@9c1d7e4b; calls `Convert.ToBase64String`).
@@ -559,8 +559,9 @@ Two distinct `[Timestamp] byte[]?` properties produce the bed-clear ETags:
   (`src/infra/Services/Queue/JobQueueService.cs`, called at line 806@9c1d7e4b).
 
 **Treat both as opaque and forward without application-level interpretation.**
-The server decodes them via `DecodeEtag` (calls `Convert.FromBase64String` after
-trimming quotes; `JobQueueController.cs` lines 1197–1200@9c1d7e4b). Three
+The server's `DecodeEtag` method is at
+`JobQueueController.cs` lines 1197–1200@9c1d7e4b and calls
+`Convert.FromBase64String` after trimming quotes. Three
 distinct HTTP outcomes:
 
 - **400** — `DecodeEtag` throws `FormatException` on malformed base-64 (lines
