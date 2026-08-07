@@ -413,7 +413,38 @@ export async function fetchRequiredContexts({
       'branch protection response has no required_status_checks.contexts array',
     );
   }
-  return { contexts, strict: payload.required_status_checks.strict === true };
+  const rawChecks = payload?.required_status_checks?.checks;
+  let checks;
+  if (
+    rawChecks === undefined ||
+    (Array.isArray(rawChecks) && rawChecks.length === 0)
+  ) {
+    checks = contexts.map((context) => ({ context, appId: null }));
+  } else if (!Array.isArray(rawChecks)) {
+    throw new Error(
+      'branch protection response has a malformed required_status_checks.checks field',
+    );
+  } else {
+    checks = rawChecks.map((check, index) => {
+      if (
+        typeof check?.context !== 'string' ||
+        check.context === '' ||
+        (check.app_id !== null &&
+          (!Number.isSafeInteger(check.app_id) ||
+            (check.app_id !== -1 && check.app_id <= 0)))
+      ) {
+        throw new Error(
+          `branch protection required check ${index + 1} has no valid context or app_id`,
+        );
+      }
+      return { context: check.context, appId: check.app_id };
+    });
+  }
+  return {
+    contexts,
+    checks,
+    strict: payload.required_status_checks.strict === true,
+  };
 }
 
 /** Human-readable refusal. The text is the product; the exit code is a summary. */
