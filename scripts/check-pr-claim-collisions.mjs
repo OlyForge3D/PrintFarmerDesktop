@@ -6,6 +6,7 @@
 // question: whether two or more PRs claim the same issue.
 
 import { execFileSync } from 'node:child_process';
+import { Buffer } from 'node:buffer';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
@@ -229,12 +230,37 @@ export function branchIssueTypeQuery(numbers) {
 
 export function parseBranchIssueTypes(raw, expectedNumbers) {
   const response = asRecord(parseJson(raw, 'branch issue type response'));
-  assertNoGraphQlErrors(response, 'branch issue type response');
   const repository = asRecord(asRecord(response?.data)?.repository);
   if (!repository) {
     throw new TypeError(
       'branch issue type response has no repository object; refusing to treat candidates as nonexistent',
     );
+  }
+
+  const expectedKeys = new Set(expectedNumbers.map((number) => `n${number}`));
+  for (const errorValue of response?.errors ?? []) {
+    const error = asRecord(errorValue);
+    const path = error?.path;
+    const key =
+      Array.isArray(path) &&
+      path.length === 2 &&
+      path[0] === 'repository' &&
+      typeof path[1] === 'string'
+        ? path[1]
+        : null;
+    const expectedNotFound =
+      error?.type === 'NOT_FOUND' &&
+      key !== null &&
+      expectedKeys.has(key) &&
+      Object.hasOwn(repository, key) &&
+      repository[key] === null;
+    if (!expectedNotFound) {
+      throw new Error(
+        `branch issue type response reported an unexpected error: ${
+          error?.message ?? JSON.stringify(errorValue)
+        }`,
+      );
+    }
   }
 
   const issueNumbers = [];
@@ -473,12 +499,33 @@ function parseArgs(argv, environment, run) {
   return parseRepository(repository);
 }
 
-function defaultRun(args) {
-  return execFileSync('gh', args, {
+export function runGitHub(args, execute = execFileSync) {
+  const options = {
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  };
+  try {
+    return execute('gh', args, options);
+  } catch (error) {
+    const stdout =
+      typeof error?.stdout === 'string'
+        ? error.stdout
+        : error?.stdout instanceof Uint8Array
+          ? Buffer.from(error.stdout).toString('utf8')
+          : '';
+    if (args[0] === 'api' && args.includes('graphql') && stdout.trim() !== '') {
+      // GraphQL returns useful partial data with a nonzero gh exit when one
+      // issueOrPullRequest alias is NOT_FOUND. The response parser, not the
+      // process status, decides whether those errors are expected.
+      return stdout;
+    }
+    throw error;
+  }
+}
+
+function defaultRun(args) {
+  return runGitHub(args);
 }
 
 export async function main(argv = process.argv.slice(2), deps = {}) {

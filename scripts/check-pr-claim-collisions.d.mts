@@ -44,6 +44,18 @@ export function parseBranchIssueTypes(
   raw: string,
   expectedNumbers: number[],
 ): number[];
+export function runGitHub(
+  args: string[],
+  execute?: (
+    command: string,
+    args: string[],
+    options: {
+      encoding: string;
+      maxBuffer: number;
+      stdio: string[];
+    },
+  ) => string,
+): string;
 export function readOpenPullRequests(input: {
   owner: string;
   repo: string;

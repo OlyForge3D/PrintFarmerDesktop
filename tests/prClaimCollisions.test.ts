@@ -12,6 +12,7 @@ import {
   readOpenPullRequests,
   readSettledOpenPullRequests,
   resolveBranchIssueNumbers,
+  runGitHub,
 } from '../scripts/check-pr-claim-collisions.mjs';
 
 interface FixturePr {
@@ -168,6 +169,13 @@ describe('branch issue candidates', () => {
               n9999: null,
             },
           },
+          errors: [
+            {
+              type: 'NOT_FOUND',
+              path: ['repository', 'n9999'],
+              message: 'Could not resolve to an Issue or PullRequest',
+            },
+          ],
         }),
         [481, 495, 9999],
       ),
@@ -183,6 +191,24 @@ describe('branch issue candidates', () => {
         [481, 9999],
       ),
     ).toThrow(/omitted candidate #9999/);
+  });
+
+  it('rejects GraphQL errors that are not an expected alias-specific NOT_FOUND', () => {
+    expect(() =>
+      parseBranchIssueTypes(
+        JSON.stringify({
+          data: { repository: { n481: { __typename: 'Issue' } } },
+          errors: [
+            {
+              type: 'FORBIDDEN',
+              path: ['repository', 'n481'],
+              message: 'Resource not accessible',
+            },
+          ],
+        }),
+        [481],
+      ),
+    ).toThrow(/unexpected error/);
   });
 
   it('does not let a branch PR number or nonexistent number create a collision', () => {
@@ -203,6 +229,32 @@ describe('branch issue candidates', () => {
     );
     expect(result.claimedIssueCount).toBe(0);
     expect(result.collisions).toEqual([]);
+  });
+
+  it('preserves partial GraphQL stdout when gh exits nonzero for NOT_FOUND aliases', () => {
+    const response = JSON.stringify({
+      data: { repository: { n9999: null } },
+      errors: [
+        {
+          type: 'NOT_FOUND',
+          path: ['repository', 'n9999'],
+          message: 'Could not resolve',
+        },
+      ],
+    });
+    const execute = vi.fn(() => {
+      throw Object.assign(new Error('gh exited 1'), { stdout: response });
+    });
+    expect(runGitHub(['api', 'graphql'], execute)).toBe(response);
+  });
+
+  it('does not reinterpret an ordinary gh failure as a GraphQL response', () => {
+    const failure = Object.assign(new Error('gh exited 1'), { stdout: '' });
+    expect(() =>
+      runGitHub(['pr', 'list'], () => {
+        throw failure;
+      }),
+    ).toThrow(failure);
   });
 });
 
@@ -377,6 +429,36 @@ describe('eventually consistent population reads', () => {
     );
     expect(result.settled).toBe(false);
     expect(result.reads).toBe(3);
+  });
+
+  it('restarts the stability floor when the population changes after time accrued', async () => {
+    const first = [
+      pr({
+        number: 10,
+        headRefName: 'no-number',
+        closingIssueNumbers: [],
+      }),
+    ];
+    const second = [
+      pr({
+        number: 10,
+        headRefName: 'no-number',
+        closingIssueNumbers: [452],
+      }),
+    ];
+    const readings = [first, first, first, second, second, second, second];
+    let index = 0;
+    const result = await readSettledOpenPullRequests(
+      () => readings[Math.min(index++, readings.length - 1)]!,
+      {
+        ...fakeClock(),
+        delayMs: 20_000,
+        minStableMs: 60_000,
+      },
+    );
+    expect(result.value).toEqual(second);
+    expect(result.reads).toBe(7);
+    expect(result.stableMs).toBe(60_000);
   });
 });
 
