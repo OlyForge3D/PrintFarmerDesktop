@@ -19,7 +19,7 @@ const repositoryRoot = path.resolve(
  * What the name is matters, because it decides what this guard is for. It is
  * not a fabrication. `7f31829` establishes that the job was real in `ci.yml`
  * from `97518ce` until `d20aa73` renamed it -- to `Release package`, which
- * supplies two of the seven required contexts today. The citations that named
+ * supplies two of the eight required contexts today. The citations that named
  * it were accurate the day they were written; the rename landed in an unrelated
  * 24-file commit and orphaned them.
  *

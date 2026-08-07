@@ -3,12 +3,12 @@
 // WHY THIS EXISTS
 //
 // Every session in this squad, including me, has reported readiness as a
-// fraction: "11/11 pass", "9/9 green", "10/10". The required set is seven
+// fraction: "11/11 pass", "9/9 green", "10/10". The required set is eight
 // contexts BY NAME, and a head here carries ten to fifteen check runs. So the
 // numerator and the denominator are both drawn from a population that is not
 // the required set, and the fraction can be any of:
 //
-//   9/9 green   with all seven required present      -> genuinely ready
+//   10/10 green with all eight required present      -> genuinely ready
 //   9/9 green   with a required context ABSENT       -> not ready, reads ready
 //   11/11 green with a required context ABSENT       -> not ready, reads ready
 //
@@ -155,7 +155,7 @@ export function formatResult(prNumber, result, required) {
   lines.push(
     `  ${result.extra} non-required check run name(s) also present. They are not ` +
       `evidence of readiness and are excluded from the count above — reporting ` +
-      `them together is how "9/9 green" gets said about a seven-context gate.`,
+      `them together cannot establish readiness for the ${required.length}-context gate.`,
   );
   if (result.absent.length > 0) {
     lines.push('');

@@ -44,8 +44,8 @@
 // exactly one entry, so nothing is dropped on the floor.
 //
 // Measured while building this, and the reason the guard is worth having:
-// `required_approving_review_count` on `development` is 0 and all 7 required
-// contexts are CI jobs, so no gate reads a review, a comment, or a hold label
+// `required_approving_review_count` on `development` is 0 and all 8 required
+// contexts are automated jobs, so no gate reads a review, a comment, or a hold label
 // (#480). A verdict relayed from a stale snapshot therefore has nothing
 // downstream that would catch it.
 //

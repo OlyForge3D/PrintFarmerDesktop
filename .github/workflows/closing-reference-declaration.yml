@@ -34,6 +34,9 @@ jobs:
 
       # Independent because a PR-body mismatch is not a platform build failure.
       # No `npm ci`: the script imports only node: builtins.
+      - name: Verify body-edit trigger coverage
+        run: npm run check:body-edit-triggers
+
       - name: Compare declared and armed closing references
         env:
           GH_TOKEN: ${{ github.token }}

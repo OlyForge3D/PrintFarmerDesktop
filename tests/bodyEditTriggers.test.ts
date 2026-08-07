@@ -1,6 +1,15 @@
 // @vitest-environment node
 
-import { readFileSync, readdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -16,6 +25,7 @@ import {
   invokedScripts,
   pullRequestTypes,
 } from '../scripts/check-body-edit-triggers.mjs';
+import { triggersOf } from '../scripts/check-merge-queue-contexts.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const workflowsDir = path.join(repoRoot, '.github', 'workflows');
@@ -39,6 +49,7 @@ const manifest = JSON.parse(
   readFileSync(path.join(repoRoot, 'package.json'), 'utf8'),
 ) as { scripts: Record<string, string> };
 const npmScripts: Record<string, string> = manifest.scripts;
+const guardScript = path.join(scriptsDir, 'check-body-edit-triggers.mjs');
 
 /** First element, or a thrown error — an assertion on `undefined` passes too easily. */
 function first<T>(items: T[]): T {
@@ -58,19 +69,51 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
     });
     expect(guards).toContain('check-closing-references.mjs');
     expect(guards).toContain('check-pr-closure-scope.mjs');
+    expect(guards).not.toContain('check-body-edit-triggers.mjs');
+    expect(guards).not.toContain('check-injected-defaults.mjs');
   });
 
   it('sees each guard invoked by at least one workflow', () => {
-    const { findings, compliant } = evaluateBodyEditTriggers({
-      workflows,
-      scripts,
+    const { findings, compliant, guards, uninvokedGuards } =
+      evaluateBodyEditTriggers({
+        workflows,
+        scripts,
+        npmScripts,
+      });
+    const covered = [...findings, ...compliant]
+      .flatMap((entry) => entry.guards)
+      .sort();
+    expect([...new Set(covered)]).toEqual(guards);
+    expect(uninvokedGuards).toEqual([]);
+  });
+
+  it('reports every discovered guard that no pull-request workflow runs', () => {
+    const { uninvokedGuards } = evaluateBodyEditTriggers({
+      workflows: [],
+      scripts: [
+        {
+          basename: 'check-new-body-contract.mjs',
+          contents: "gh(['pr', 'view', '--json', 'body'])",
+        },
+      ],
       npmScripts,
     });
-    const covered = [...findings, ...compliant].flatMap(
-      (entry) => entry.guards,
+    expect(uninvokedGuards).toEqual(['check-new-body-contract.mjs']);
+  });
+
+  it('runs this policy through the required closing-reference context', () => {
+    const workflow = readFileSync(
+      path.join(workflowsDir, 'closing-reference-declaration.yml'),
+      'utf8',
     );
-    expect(covered).toContain('check-closing-references.mjs');
-    expect(covered).toContain('check-pr-closure-scope.mjs');
+    expect(npmScripts['check:body-edit-triggers']).toBe(
+      'node scripts/check-body-edit-triggers.mjs',
+    );
+    expect(workflow).toContain('npm run check:body-edit-triggers');
+    expect(pullRequestTypes(workflow)).toContain(BODY_EDIT_TYPE);
+    expect(triggersOf(workflow, 'closing-reference-declaration.yml')).toContain(
+      'merge_group',
+    );
   });
 
   // The gate itself. #436: ci.yml runs the arming guard inside the required
@@ -82,6 +125,7 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
       scripts,
       npmScripts,
     });
+
     expect(formatFindings(findings)).toEqual([]);
   });
 
@@ -148,10 +192,22 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
   });
 
   it('treats a body-derived field as a body read', () => {
-    expect(bodyDerivedReads('const x = closingIssuesReferences')).toEqual([
+    expect(bodyDerivedReads('const x = pr.closingIssuesReferences')).toEqual([
       'reads closingIssuesReferences, which GitHub derives from the body text',
     ]);
     expect(bodyDerivedReads('const x = 1')).toEqual([]);
+  });
+
+  it('does not confuse unrelated properties or its own matcher with body reads', () => {
+    expect(bodyDerivedReads('for (const node of ast.body) {}')).toEqual([]);
+    expect(
+      bodyDerivedReads(
+        readFileSync(
+          path.join(scriptsDir, 'check-body-edit-triggers.mjs'),
+          'utf8',
+        ),
+      ),
+    ).toEqual([]);
   });
 
   // The mirror of the workflow-citation test, and it exists because this
@@ -164,7 +220,9 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
     );
     expect(bodyDerivedReads('/* reads .body eventually */')).toEqual([]);
     expect(
-      bodyDerivedReads('// discusses .body\nconst x = closingIssuesReferences'),
+      bodyDerivedReads(
+        '// discusses .body\nconst x = pr.closingIssuesReferences',
+      ),
     ).toHaveLength(1);
   });
 
@@ -228,6 +286,69 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
       'synchronize',
       'reopened',
     ]);
+  });
+});
+
+describe('the wired CLI discriminates a bad trigger configuration', () => {
+  it('fails without edited and passes when the same workflow is restored', () => {
+    const fixture = mkdtempSync(path.join(tmpdir(), 'body-edit-triggers-'));
+    const workflowDirectory = path.join(fixture, '.github', 'workflows');
+    const fixtureScripts = path.join(fixture, 'scripts');
+    mkdirSync(workflowDirectory, { recursive: true });
+    mkdirSync(fixtureScripts);
+    writeFileSync(
+      path.join(fixture, 'package.json'),
+      JSON.stringify({
+        scripts: {
+          'check:closing-references':
+            'node scripts/check-closing-references.mjs',
+        },
+      }),
+    );
+    writeFileSync(
+      path.join(fixtureScripts, 'check-closing-references.mjs'),
+      "export const currentBody = gh(['pr', 'view', '--json', 'body']);\n",
+    );
+
+    const run = () =>
+      spawnSync('node', [guardScript, fixture], {
+        encoding: 'utf8',
+      });
+    const workflow = (types: string) =>
+      [
+        'on:',
+        '  pull_request:',
+        `    types: [${types}]`,
+        '  merge_group:',
+        'jobs:',
+        '  closing-references:',
+        '    steps:',
+        '      - run: npm run check:closing-references',
+      ].join('\n');
+
+    try {
+      writeFileSync(
+        path.join(workflowDirectory, 'closing-reference-declaration.yml'),
+        workflow('opened, synchronize, reopened'),
+      );
+      const red = run();
+      expect(red.status).toBe(1);
+      expect(`${red.stdout}${red.stderr}`).toContain(
+        "Add 'edited' to its pull_request types",
+      );
+
+      writeFileSync(
+        path.join(workflowDirectory, 'closing-reference-declaration.yml'),
+        workflow('opened, synchronize, reopened, edited'),
+      );
+      const green = run();
+      expect(green.status).toBe(0);
+      expect(`${green.stdout}${green.stderr}`).toContain(
+        '1 workflow invocation(s) subscribe to edited',
+      );
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
   });
 });
 
