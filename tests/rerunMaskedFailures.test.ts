@@ -92,16 +92,27 @@ describe('required-name discrimination', () => {
     expect(h.calls).toEqual([`runs:${HEAD}`, 'jobs:30917030009:1']);
   });
 
-  it('does not report successful, skipped, neutral, or unfinished jobs', () => {
+  it('does not report successful, skipped, or neutral jobs', () => {
     expect(
       maskedRequiredFailures(
-        ['success', 'skipped', 'neutral', null].map((conclusion) => ({
+        ['success', 'skipped', 'neutral'].map((conclusion) => ({
           name: DESKTOP_WINDOWS,
           conclusion,
         })),
         REQUIRED,
       ),
     ).toEqual([]);
+  });
+
+  it.each([
+    { name: DESKTOP_WINDOWS, conclusion: null },
+    { name: DESKTOP_WINDOWS },
+    { conclusion: 'failure' },
+    { name: '', conclusion: 'failure' },
+  ])('refuses malformed or unfinished historical job row %#', (job) => {
+    expect(() => maskedRequiredFailures([job], REQUIRED)).toThrow(
+      /no non-empty name or terminal conclusion/,
+    );
   });
 
   it('refuses an empty required set rather than returning a vacuous clean', () => {

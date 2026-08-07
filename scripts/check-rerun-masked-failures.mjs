@@ -219,13 +219,24 @@ function validateRequiredContexts(requiredContexts) {
 
 export function maskedRequiredFailures(jobs, requiredContexts) {
   const required = new Set(validateRequiredContexts(requiredContexts));
-  return jobs.filter(
-    (job) =>
-      typeof job?.name === 'string' &&
-      required.has(job.name) &&
-      typeof job.conclusion === 'string' &&
-      !NON_FAILURE_CONCLUSIONS.has(job.conclusion),
-  );
+  return jobs
+    .map((job, index) => {
+      if (
+        typeof job?.name !== 'string' ||
+        job.name === '' ||
+        typeof job.conclusion !== 'string' ||
+        job.conclusion === ''
+      ) {
+        throw new Error(
+          `attempt job ${index + 1} has no non-empty name or terminal conclusion`,
+        );
+      }
+      return job;
+    })
+    .filter(
+      (job) =>
+        required.has(job.name) && !NON_FAILURE_CONCLUSIONS.has(job.conclusion),
+    );
 }
 
 function parseRun(run) {
