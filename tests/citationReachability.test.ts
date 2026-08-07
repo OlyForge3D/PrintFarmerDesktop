@@ -333,24 +333,48 @@ describe('the citation-reachability harness is invoked, not merely present', () 
   });
 
   it('states a guarantee its own guards actually deliver', () => {
-    // #481. The header says the control arm is what distinguishes "no orphans"
-    // from "cannot see orphans". That was false as measured: the controls run on
-    // inputs the harness supplies itself, so they passed unchanged throughout the
-    // defect, while a renamed scan root produced `OK` with every count at zero.
-    // They are necessary and not sufficient.
-    //
-    // The header correction is NOT in this commit. `.github/workflows/` cannot be
-    // written by this branch's token - it lacks the `workflow` OAuth scope, the
-    // same constraint recorded above - so the wording change is delivered as a
-    // maintainer patch on the pull request. Asserting the new wording here would
-    // make this suite fail until a human acts, which reports the token rather
-    // than the workflow.
-    //
-    // What is assertable now, and is the load-bearing half: every guard family
-    // the distinction actually rests on must exist where it is claimed to. If one
-    // is deleted, this fails whether or not the header was ever corrected.
+    // #481. Bind the claim in the designated header paragraph, not decorative
+    // wording elsewhere in the workflow. The former header said the self-supplied
+    // controls alone distinguished blindness from no orphans, even though those
+    // controls stayed green when a renamed scan root produced an empty corpus.
+    const guardContractOf = (workflow: string): string => {
+      return (
+        workflow.match(
+          /^# The harness withholds its verdict[\s\S]*?(?=\r?\non:)/m,
+        )?.[0] ?? ''
+      );
+    };
+    const statesCurrentGuardContract = (contract: string): boolean =>
+      [
+        /classifier controls are\s+# necessary rather than sufficient:/,
+        /three independent guard families:/,
+        /classifier controls;/,
+        /shallow-history refusal plus MAINLINE_FLOOR/,
+        /scan-root preflights plus corpus-specific floors/,
+        /local arm uses CITATION_FLOOR/,
+        /cross-repository admin-guide arm\s+# below uses its own ADMIN_GUIDE_CITATION_FLOOR/,
+        /none implies the others/,
+      ].every((claim) => claim.test(contract));
+
+    const guardContract = guardContractOf(workflowText);
+    expect(statesCurrentGuardContract(guardContract)).toBe(true);
+
+    // Mutation/negative control: restoring the stale sufficiency claim must fail
+    // even if the corrected phrase is appended decoratively outside the header.
+    const staleWorkflow =
+      workflowText.replace(
+        'necessary rather than sufficient:',
+        'sufficient on their own:',
+      ) + '\n# necessary rather than sufficient:\n';
+    expect(staleWorkflow).not.toBe(workflowText);
+    expect(statesCurrentGuardContract(guardContractOf(staleWorkflow))).toBe(
+      false,
+    );
+
+    // Every named guard family must also exist where the header says it does.
     const harness = read(HARNESS);
     const corpus = read(CORPUS_MODULE);
+    const adminGuideHarness = read('scripts/check-admin-guide-citations.mjs');
 
     // reader side - depth
     expect(workflowText).toMatch(/MAINLINE_FLOOR/);
@@ -374,10 +398,18 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     // classifier side
     expect(harness).toContain('CONTROL FAILED');
 
-    // The floor must be stated by the caller, never by the shared mechanism -
-    // #421's corpus is disjoint, so a shared constant would be wrong for one of
-    // them by construction.
+    // The floor must be stated by each caller, never by the shared mechanism.
+    // #421's cross-repository corpus is disjoint and has its own calibrated floor.
     expect(corpus).not.toMatch(/const CITATION_FLOOR/);
+    expect(adminGuideHarness).toMatch(
+      /export const ADMIN_GUIDE_CITATION_FLOOR = \d+;/,
+    );
+    expect(adminGuideHarness).toMatch(
+      /requireScanRoots\(loadCorpus\(\[GUIDE_PATH\]\)\)/,
+    );
+    expect(adminGuideHarness).toMatch(
+      /requireCorpusFloor\(\{\s*count: parsed\.citations\.length,\s*floor: ADMIN_GUIDE_CITATION_FLOOR,/,
+    );
 
     // `--floor` exists for synthetic fixtures whose ledger is built by hand. An
     // armed invocation must never pass it, or the guard is unarmed by the very
@@ -393,7 +425,7 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     // carry, so the assertions above are not passing on a substring of
     // something else.
     expect(harness).not.toContain('CORPUS_FLOOR');
-    expect(workflowText).not.toContain('CITATION_FLOOR');
+    expect(adminGuideHarness).not.toMatch(/(?:^|\s)CITATION_FLOOR(?:\s|[=;,])/);
   });
 
   it('subscribes to pull_request, which carries the branch under review', () => {
