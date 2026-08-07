@@ -73,11 +73,13 @@ async function fetchCountedPages({
   pageUrl,
   field,
   subject,
+  identity,
   token,
   fetchImpl,
   refuseTotalAtOrAbove,
 }) {
   const rows = [];
+  const identities = new Set();
   let expectedTotal;
   for (let page = 1; ; page += 1) {
     const payload = await requestJson(
@@ -100,7 +102,16 @@ async function fetchCountedPages({
         `${subject} changed from ${expectedTotal} to ${parsed.totalCount} rows while it was paged`,
       );
     }
-    rows.push(...parsed.rows);
+    for (const row of parsed.rows) {
+      const rowIdentity = identity(row);
+      if (identities.has(rowIdentity)) {
+        throw new Error(
+          `${subject} returned duplicate row identity ${rowIdentity} while it was paged`,
+        );
+      }
+      identities.add(rowIdentity);
+      rows.push(row);
+    }
     if (rows.length >= expectedTotal) break;
     if (parsed.rows.length === 0) {
       throw new Error(
@@ -114,6 +125,23 @@ async function fetchCountedPages({
     );
   }
   return rows;
+}
+
+function integerIdentity(value, subject) {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${subject} carried no positive integer id`);
+  }
+  return String(value);
+}
+
+function workflowRunIdentity(run) {
+  const id = integerIdentity(run?.id, 'workflow run');
+  if (!Number.isSafeInteger(run?.run_attempt) || run.run_attempt <= 0) {
+    throw new Error(
+      `workflow run ${id} carried no positive integer run_attempt`,
+    );
+  }
+  return `${id}:${run.run_attempt}`;
 }
 
 export function parseArgs(argv) {
@@ -200,6 +228,7 @@ export async function listWorkflowRuns({
     pageUrl: (page) => `${prefix}&page=${page}`,
     field: 'workflow_runs',
     subject: `workflow runs for ${sha}`,
+    identity: workflowRunIdentity,
     token,
     fetchImpl,
     refuseTotalAtOrAbove: FILTERED_RUN_LIMIT,
@@ -221,6 +250,7 @@ export async function listAttemptJobs({
     pageUrl: (page) => `${prefix}&page=${page}`,
     field: 'jobs',
     subject: `jobs for run ${runId} attempt ${attempt}`,
+    identity: (job) => integerIdentity(job?.id, 'workflow job'),
     token,
     fetchImpl,
   });
@@ -246,6 +276,7 @@ export async function listHeadCheckRuns({
     pageUrl: (page) => `${prefix}&page=${page}`,
     field: 'check_runs',
     subject: `check runs for ${sha}`,
+    identity: (checkRun) => integerIdentity(checkRun?.id, 'head check run'),
     token,
     fetchImpl,
   });
@@ -259,7 +290,7 @@ export function githubActionsAppIds(checkRuns) {
   }
   const ids = new Set();
   for (const [index, check] of checkRuns.entries()) {
-    if (check?.app === null) continue;
+    if (check?.app == null) continue;
     if (
       typeof check?.app?.slug !== 'string' ||
       !Number.isSafeInteger(check?.app?.id) ||

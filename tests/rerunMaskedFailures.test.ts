@@ -328,6 +328,7 @@ describe('API pagination', () => {
 
   it('paginates jobs to total_count', async () => {
     const first = Array.from({ length: 100 }, (_, index) => ({
+      id: index + 1,
       name: `job-${index}`,
       conclusion: 'success',
     }));
@@ -337,7 +338,7 @@ describe('API pagination', () => {
       .mockImplementationOnce(() =>
         response({
           total_count: 101,
-          jobs: [{ name: 'last', conclusion: 'failure' }],
+          jobs: [{ id: 101, name: 'last', conclusion: 'failure' }],
         }),
       );
 
@@ -354,7 +355,8 @@ describe('API pagination', () => {
   });
 
   it('paginates head check runs to total_count', async () => {
-    const first = Array.from({ length: 100 }, () => ({
+    const first = Array.from({ length: 100 }, (_, index) => ({
+      id: index + 1,
       app: { id: ACTIONS_APP_ID, slug: 'github-actions' },
     }));
     const fetchImpl = vi
@@ -365,7 +367,12 @@ describe('API pagination', () => {
       .mockImplementationOnce(() =>
         response({
           total_count: 101,
-          check_runs: [{ app: { id: ACTIONS_APP_ID, slug: 'github-actions' } }],
+          check_runs: [
+            {
+              id: 101,
+              app: { id: ACTIONS_APP_ID, slug: 'github-actions' },
+            },
+          ],
         }),
       );
 
@@ -378,6 +385,39 @@ describe('API pagination', () => {
 
     expect(checks).toHaveLength(101);
     expect(urlOf(fetchImpl.mock.calls[1]![0])).toContain('&page=2');
+  });
+
+  it('rejects a duplicate paginated job that could hide a required failure', async () => {
+    const first = Array.from({ length: 100 }, (_, index) => ({
+      id: index + 1,
+      name: `job-${index}`,
+      conclusion: 'success',
+    }));
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(() => response({ total_count: 101, jobs: first }))
+      .mockImplementationOnce(() =>
+        response({
+          total_count: 101,
+          jobs: [{ ...first[0], name: RELEASE_WINDOWS }],
+        }),
+      );
+
+    await expect(
+      scanHead({
+        headSha: HEAD,
+        requiredContexts: [RELEASE_WINDOWS],
+        listRuns: () => Promise.resolve([RUN]),
+        listJobs: (runId, attempt) =>
+          listAttemptJobs({
+            repository: { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' },
+            runId,
+            attempt,
+            token: 't',
+            fetchImpl,
+          }),
+      }),
+    ).rejects.toThrow(/duplicate row identity 1/);
   });
 });
 
@@ -452,6 +492,7 @@ describe('stable current-head orchestration', () => {
               total_count: 1,
               check_runs: [
                 {
+                  id: 1,
                   app: {
                     id: checkReads === 1 ? ACTIONS_APP_ID : finalCheckAppId,
                     slug: 'github-actions',
@@ -485,6 +526,7 @@ describe('stable current-head orchestration', () => {
               total_count: 1,
               jobs: [
                 {
+                  id: 1,
                   name: 'Release package (windows-latest)',
                   conclusion: 'failure',
                 },
@@ -575,6 +617,7 @@ describe('stable current-head orchestration', () => {
               total_count: 1,
               check_runs: [
                 {
+                  id: 1,
                   app: {
                     id: ACTIONS_APP_ID,
                     slug: 'github-actions',
@@ -595,7 +638,7 @@ describe('stable current-head orchestration', () => {
           return Promise.resolve(
             response({
               total_count: 1,
-              jobs: [{ name: DESKTOP_WINDOWS, conclusion: 'success' }],
+              jobs: [{ id: 1, name: DESKTOP_WINDOWS, conclusion: 'success' }],
             }),
           );
         }
@@ -634,6 +677,7 @@ describe('stable current-head orchestration', () => {
         total_count: 1,
         check_runs: [
           {
+            id: 1,
             app: { id: ACTIONS_APP_ID, slug: 'github-actions' },
           },
         ],

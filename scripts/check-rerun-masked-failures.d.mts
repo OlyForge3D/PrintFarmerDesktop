@@ -11,11 +11,13 @@ export interface WorkflowRun {
 }
 
 export interface AttemptJob {
+  id?: number;
   name?: string;
   conclusion?: string | null;
 }
 
 export interface HeadCheckRun {
+  id?: number;
   app?: { id?: number; slug?: string } | null;
 }
 
