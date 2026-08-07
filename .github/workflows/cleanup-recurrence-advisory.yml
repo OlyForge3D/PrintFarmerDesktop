@@ -1,0 +1,49 @@
+name: Cleanup recurrence advisory
+
+# merge-queue: publication
+#
+# This scheduler-triggered advisory never reports on pull requests or queued
+# entries, so its job must not become a required branch context. The script
+# exits 1 (finding) or 0 (clean) but the job is always allowed to pass for
+# merge-gate purposes — recurrence is an environmental signal, not a code
+# defect in the commit being merged. See docs/cleanup-recurrence-advisory.md.
+#
+# Advisory does not mean silent: exit 1 is surfaced in the workflow UI so
+# a maintainer who opens the run sees the finding immediately.
+
+on:
+  # Run weekly to keep the advisory current without polling every push.
+  schedule:
+    - cron: '0 6 * * 1'
+  # Allow maintainers to trigger manually, e.g. after a new cleanup event.
+  workflow_dispatch:
+
+# No write permissions are needed — this workflow only reads the tracking issue.
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  advisory:
+    name: npm-ci-strict cleanup recurrence advisory
+    runs-on: ubuntu-latest
+    # Exit 1 (recurrence confirmed) is intentionally reported in the run log
+    # but does NOT fail any branch protection rule. The job is flagged as a
+    # warning rather than a hard failure so it does not block any queue entry.
+    # The distinction between exit 0 (clean) and exit 1 (recurrence) is
+    # preserved in the exit code visible in the workflow UI.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: development
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run cleanup recurrence advisory
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/check-cleanup-recurrence.mjs
