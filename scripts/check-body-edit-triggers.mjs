@@ -4,17 +4,16 @@
 // sets are opposites of their enforceability:
 //
 //   check-closing-references.mjs  reads `gh pr view --json body`
-//                                runs in ci.yml -> Desktop (REQUIRED)
-//                                pull_request: has no `types:` -> defaults to
-//                                opened, synchronize, reopened -- NOT edited
+//                                runs in pr-closure-scope.yml (NOT required)
+//                                pull_request: types include `edited`
 //
 //   check-pr-closure-scope.mjs   reads `closingIssuesReferences`, which GitHub
 //                                derives from the body
 //                                runs in pr-closure-scope.yml (NOT required)
 //                                pull_request: types include `edited`
 //
-// So: the body-reading guard that gates cannot see a body edit, and the one
-// that can see a body edit does not gate. Measured on PR #427 at head
+// Before #436: the body-reading guard that gated could not see a body edit,
+// while the one that could see an edit did not gate. Measured on PR #427 at head
 // 1764e735, after a body-only edit -- `PR closure scope` ran twice while every
 // required context ran once and stayed green on the previous body revision.
 //

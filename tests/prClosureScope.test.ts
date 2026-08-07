@@ -21,6 +21,7 @@ import {
   resolveRepository,
 } from '../scripts/check-pr-closure-scope.mjs';
 import type { ClosingIssue } from '../scripts/check-pr-closure-scope.mjs';
+import { invokedScripts } from '../scripts/check-body-edit-triggers.mjs';
 
 const CHILD_ISSUE: ClosingIssue = {
   number: 161,
@@ -273,6 +274,22 @@ describe('the closure-scope workflow stays outside the merge queue', () => {
     path.join(repositoryRoot, '.github', 'workflows', 'pr-closure-scope.yml'),
     'utf8',
   );
+  const ciWorkflow = readFileSync(
+    path.join(repositoryRoot, '.github', 'workflows', 'ci.yml'),
+    'utf8',
+  );
+  const manifest = JSON.parse(
+    readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'),
+  ) as { scripts: Record<string, string> };
+
+  function jobBlock(contents: string, job: string): string {
+    const lines = contents.split(/\r?\n/);
+    const start = lines.findIndex((line) => line === `  ${job}:`);
+    if (start < 0) throw new Error(`workflow has no ${job} job`);
+    const rest = lines.slice(start + 1);
+    const end = rest.findIndex((line) => /^ {2}\S[^:]*:\s*$/.test(line));
+    return [lines[start], ...(end < 0 ? rest : rest.slice(0, end))].join('\n');
+  }
 
   /**
    * Event names the workflow subscribes to, sorted. Textual for the same
@@ -355,11 +372,32 @@ describe('the closure-scope workflow stays outside the merge queue', () => {
     // Without this the workflow could drift to a different entry point than
     // the one every test above exercises.
     expect(workflow).toContain('npm run check:closure-scope');
-    const manifest = JSON.parse(
-      readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'),
-    ) as { scripts: Record<string, string> };
     expect(manifest.scripts['check:closure-scope']).toBe(
       'node scripts/check-pr-closure-scope.mjs',
+    );
+  });
+
+  it('publishes the general and gate-only checks as accurately named sibling contexts', () => {
+    // PR #456 produced opposite conclusions for these checks on one head. Keeping
+    // them as sibling jobs makes that disagreement visible without lending the
+    // narrower green to the general contract.
+    const gateOnly = jobBlock(workflow, 'closure-scope');
+    expect(gateOnly).toContain('name: Gate issue closure scope');
+    expect(gateOnly).toContain('npm run check:closure-scope');
+    expect(gateOnly).not.toContain('check:closing-references');
+
+    const general = jobBlock(workflow, 'closing-references');
+    expect(general).toContain('name: Closing-reference declaration');
+    expect(general).toContain('npm run check:closing-references');
+    expect(general).not.toContain('check:closure-scope');
+  });
+
+  it('does not attribute the general PR-body contract to either Desktop platform', () => {
+    expect(invokedScripts(ciWorkflow, manifest.scripts)).not.toContain(
+      'check-closing-references.mjs',
+    );
+    expect(invokedScripts(workflow, manifest.scripts)).toContain(
+      'check-closing-references.mjs',
     );
   });
 
@@ -376,7 +414,7 @@ describe('the closure-scope workflow stays outside the merge queue', () => {
       const match = /^\s*runs-on:\s*(.+)$/.exec(line);
       return match?.[1] === undefined ? [] : [match[1].trim()];
     });
-    expect(runsOn).toEqual(['ubuntu-latest']);
+    expect(runsOn).toEqual(['ubuntu-latest', 'ubuntu-latest']);
   });
 });
 

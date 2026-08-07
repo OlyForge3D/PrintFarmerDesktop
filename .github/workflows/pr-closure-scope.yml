@@ -1,4 +1,4 @@
-name: PR closure scope
+name: PR closure contracts
 
 # merge-queue: advisory
 #
@@ -11,14 +11,13 @@ name: PR closure scope
 # hand, and does not execute in CI, so making this context required would still
 # deadlock silently (#472).
 
-# Deliberately a separate workflow rather than a job in ci.yml.
+# Deliberately a separate workflow rather than jobs in ci.yml.
 #
-# The check needs a pull request number: `closingIssuesReferences` is a property
-# of a pull request, and neither `push` nor `merge_group` carries one. Adding it
-# to ci.yml would have required either a job-level `if:` or a `github.event_name`
-# branch, both of which tests/ciWorkflowTriggers.test.ts bans outright — a job
-# skipped by a conditional reports `skipped`, which counts as success, so the
-# required context would be satisfied by a job that never executed.
+# Both checks need a pull request number or PR-derived fields, and neither
+# `push` nor `merge_group` carries them. Adding either to ci.yml would require a
+# job-level `if:` or a `github.event_name` branch. A skipped job reports success,
+# so such a context would be unsafe to require: it could satisfy the gate without
+# evaluating the contract it names.
 #
 # Consequence, stated plainly rather than left to be discovered: this workflow
 # does not report under `merge_group`, so it MUST NOT be added to a branch
@@ -50,7 +49,7 @@ permissions:
 
 jobs:
   closure-scope:
-    name: PR closure scope
+    name: Gate issue closure scope
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,3 +65,23 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run check:closure-scope
+
+  closing-references:
+    name: Closing-reference declaration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # This is an independent context because a PR-body mismatch is not a
+      # platform build failure and the gate-only check above measures a narrower
+      # set. No `npm ci`: the script imports only node: builtins.
+      - name: Compare declared and armed closing references
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npm run check:closing-references -- ${{ github.event.pull_request.number }}

@@ -226,19 +226,22 @@ describe('a required context must be emitted by a workflow that reports', () => 
     ).toEqual([]);
   });
 
-  it('refuses the two advisory contexts, naming the workflow and the reason', () => {
-    // The deadlock, as the settings page would produce it. Both of these run on
-    // every pull request and look exactly like checks worth requiring.
+  it('refuses the PR-only closure contexts, naming the workflow and the reason', () => {
+    // The deadlock, as the settings page would produce it. Both run on every
+    // pull request and look exactly like checks worth requiring.
     const offenders = evaluateRequiredContexts({
       workflows,
-      requiredContexts: ['Sequencing hold', 'PR closure scope'],
+      requiredContexts: [
+        'Gate issue closure scope',
+        'Closing-reference declaration',
+      ],
     });
     expect(offenders.map(({ context }) => context)).toEqual([
-      'Sequencing hold',
-      'PR closure scope',
+      'Gate issue closure scope',
+      'Closing-reference declaration',
     ]);
     expect(offenders.map(({ emittedBy }) => emittedBy)).toEqual([
-      'sequencing-hold.yml',
+      'pr-closure-scope.yml',
       'pr-closure-scope.yml',
     ]);
     for (const { reason } of offenders) {

@@ -592,6 +592,17 @@ describe('formatFailure', () => {
     expect(message).toContain('does not read negation');
   });
 
+  it('names past-tense narration as another way to arm a closure', () => {
+    const message = formatFailure({
+      unexpected: [121],
+      missing: [],
+      hasBlock: true,
+      prNumber: 328,
+    });
+    expect(message).toContain('#121');
+    expect(message).toMatch(/narrat(?:e|ing).*another PR closed/i);
+  });
+
   it('prints a declaration block a reader can paste', () => {
     // The remedy a guard prints has to be tested with the guard. A failure
     // message that instructs the reader to write something is a second

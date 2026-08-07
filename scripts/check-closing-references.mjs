@@ -623,9 +623,10 @@ export function formatFailure({ unexpected, missing, hasBlock, prNumber }) {
       '  ARMED BUT NOT DECLARED: ' + unexpected.map((n) => `#${n}`).join(', '),
       '  Merging this PR would close those issues. If that is not intended, the',
       '  cause is almost certainly a closing keyword in the body -- including in',
-      '  a sentence saying the PR must NOT close them, because the parser',
-      '  does not read negation. Put the reference inside backticks or a fenced',
-      '  block to discuss it without arming it.',
+      '  a sentence saying the PR must NOT close them. The parser does not read negation.',
+      '  Narrating that another PR closed them also arms the reference because the',
+      '  parser does not track who performed the closure. Put the reference inside',
+      '  backticks or a fenced block to discuss it without arming it.',
     );
   }
   if (missing.length > 0) {

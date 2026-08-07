@@ -482,22 +482,7 @@ describe('CI is safe to run under a merge queue', () => {
     ]);
   });
 
-  it('guards every step that reads PR context, so none can run under a queue entry', () => {
-    // The dual of the assertion above, and the one that actually fails closed.
-    //
-    // Narrowing the `github.event_name` ban to step level opens a gap that the
-    // narrowed assertion cannot see: DELETING a step's guard leaves the file
-    // with no event branching at all, so that test goes green. The step then
-    // runs under `merge_group`, where `github.event.pull_request` expands to
-    // nothing, the step fails, and the job fails -- so a required context
-    // reports failure on every queued entry and the queue never drains. That
-    // is #122's deadlock arriving through the fix for #231.
-    //
-    // Stated as a property over the file rather than as a list of known steps:
-    // a new step added later gets the same treatment without anyone
-    // remembering this test exists. A list would have to be maintained to keep
-    // working, and the failure of an unmaintained list here is a merge queue
-    // that hangs.
+  it('contains no PR-context step that would fail on a merge-queue entry', () => {
     const steps: string[][] = [];
     ciWorkflow.split('\n').forEach((line) => {
       if (/^ {6}- /.test(line)) steps.push([line]);
@@ -505,34 +490,12 @@ describe('CI is safe to run under a merge queue', () => {
         steps[steps.length - 1]?.push(line);
     });
 
-    const unguarded = steps
-      .filter((step) =>
-        step.some((line) => line.includes('github.event.pull_request')),
-      )
-      .filter(
-        (step) =>
-          !step.some(
-            (line) =>
-              /^ {8}if:/.test(line) &&
-              line.includes("github.event_name == 'pull_request'"),
-          ),
-      )
-      .map((step) => step[0]?.trim() ?? '');
-
-    expect(unguarded).toEqual([]);
-
-    // Harness control, and it has already earned its place: the first draft of
-    // the splitter reset on each job header, which discarded every step of
-    // every job but the last. `unguarded` was [] -- not because the steps were
-    // guarded, but because the only PR-context step in the file lives in the
-    // FIRST job and was never collected. An empty result reads identically
-    // whether nothing is wrong or nothing was examined.
     expect(steps.length).toBeGreaterThan(10);
     expect(
       steps.filter((step) =>
         step.some((line) => line.includes('github.event.pull_request')),
       ).length,
-    ).toBeGreaterThan(0);
+    ).toBe(0);
   });
 
   it('emits exactly the seven check-run names ci.yml produces, byte-identical', () => {
@@ -855,17 +818,7 @@ describe('publication workflows stay outside the merge queue', () => {
   );
 });
 
-/**
- * Reviewer finding on #366: the closing-reference gate did not rerun when a PR
- * body was edited, which is the only action that changes what it measures.
- *
- * `pull_request:` with no `types:` subscribes to GitHub's default set --
- * opened, synchronize, reopened -- and `edited` is not in it. So the check ran
- * once at open and never again, and a body edited afterwards to arm an
- * unrelated issue sailed through a gate that exists to catch exactly that.
- * The gate watched every event except the one it is about.
- */
-describe('ci.yml reruns when the PR body changes', () => {
+describe('ci.yml remains commit-driven', () => {
   /**
    * Event types listed under a subscribed event, sorted.
    *
@@ -891,30 +844,10 @@ describe('ci.yml reruns when the PR body changes', () => {
       .sort();
   }
 
-  it('subscribes to pull_request edited', () => {
-    // The harness must be able to see a type at all before an absence means
-    // anything: an extractor that always returns [] satisfies "does not
-    // contain edited" and would satisfy this too if it were the only claim.
-    const types = typesOf(ciWorkflow, 'pull_request');
-    expect(types).toContain('opened');
-    expect(types).toContain('edited');
-  });
-
-  it('keeps the events an unlisted default would have supplied', () => {
-    // Naming any type discards GitHub's defaults for that event. Adding
-    // `edited` therefore silently unsubscribes from push-driven reruns unless
-    // synchronize and reopened are relisted -- a fix that breaks CI on every
-    // subsequent commit would be worse than the gap it closes.
-    // Containment, not equality. The property being defended is that the three
-    // defaults are RELISTED; forbidding a fourth type defends nothing and is
-    // reachable today -- taking this very PR out of draft fires
-    // `ready_for_review`, and subscribing to it is a defensible change that
-    // adds no risk. An exact-set assertion turns "someone added a trigger"
-    // into a red build with no added safety, which is the shape that reddened
-    // PR #146 on a correct change.
-    expect(typesOf(ciWorkflow, 'pull_request')).toEqual(
-      expect.arrayContaining(['opened', 'synchronize', 'reopened', 'edited']),
-    );
+  it('uses the default code-changing events rather than rebuilding after body edits', () => {
+    // The PR-body checks now run in pr-closure-scope.yml. Keeping `edited` here
+    // would rerun two full platform builds for metadata they no longer read.
+    expect(typesOf(ciWorkflow, 'pull_request')).toEqual([]);
   });
 
   /**
