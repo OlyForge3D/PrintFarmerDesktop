@@ -330,7 +330,34 @@ describe('fetchRequiredContexts fails loudly rather than reporting an empty rule
       }),
     });
     expect(result.contexts).toEqual(['Desktop (macos-latest)']);
+    expect(result.checks).toEqual([
+      { context: 'Desktop (macos-latest)', appId: null },
+    ]);
     expect(result.strict).toBe(true);
+  });
+
+  it('preserves modern context and app identities', async () => {
+    const result = await fetchRequiredContexts({
+      repository,
+      branch: 'development',
+      token: 't',
+      fetchImpl: respondWith({
+        required_status_checks: {
+          contexts: ['Desktop (macos-latest)'],
+          checks: [
+            {
+              context: 'Desktop (macos-latest)',
+              app_id: 15368,
+            },
+          ],
+          strict: true,
+        },
+      }),
+    });
+
+    expect(result.checks).toEqual([
+      { context: 'Desktop (macos-latest)', appId: 15368 },
+    ]);
   });
 
   it('throws when the response carries no contexts array', async () => {

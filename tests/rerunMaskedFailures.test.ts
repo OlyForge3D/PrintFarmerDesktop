@@ -2,10 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   formatReport,
+  githubActionsAppIds,
   listAttemptJobs,
+  listHeadCheckRuns,
   listWorkflowRuns,
   maskedRequiredFailures,
   parsePullSnapshot,
+  requiredActionContexts,
   scanHead,
   scanPullRequest,
 } from '../scripts/check-rerun-masked-failures.mjs';
@@ -16,6 +19,7 @@ import type {
 
 const HEAD = 'b89390fd370b1cb268bc25f234b1be6611007ac8';
 const OTHER_HEAD = '0123456789abcdef0123456789abcdef01234567';
+const ACTIONS_APP_ID = 15368;
 const REQUIRED = [
   'Desktop (windows-latest)',
   'Release package (windows-latest)',
@@ -48,6 +52,27 @@ function harness(
 }
 
 describe('required-name discrimination', () => {
+  it('includes only requirements attributable to GitHub Actions', () => {
+    const protection = {
+      checks: [
+        { context: 'Same name', appId: 99 },
+        { context: DESKTOP_WINDOWS, appId: ACTIONS_APP_ID },
+        { context: 'Legacy context', appId: null },
+      ],
+    };
+
+    expect(requiredActionContexts(protection, [ACTIONS_APP_ID])).toEqual([
+      DESKTOP_WINDOWS,
+      'Legacy context',
+    ]);
+    expect(
+      githubActionsAppIds([
+        { app: { id: 99, slug: 'other-app' } },
+        { app: { id: ACTIONS_APP_ID, slug: 'github-actions' } },
+      ]),
+    ).toEqual([ACTIONS_APP_ID]);
+  });
+
   it('reports the measured required failure from PR #272', async () => {
     const h = harness([RUN], {
       1: [
@@ -324,6 +349,33 @@ describe('API pagination', () => {
     expect(jobs).toHaveLength(101);
     expect(urlOf(fetchImpl.mock.calls[1]![0])).toContain('&page=2');
   });
+
+  it('paginates head check runs to total_count', async () => {
+    const first = Array.from({ length: 100 }, () => ({
+      app: { id: ACTIONS_APP_ID, slug: 'github-actions' },
+    }));
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(() =>
+        response({ total_count: 101, check_runs: first }),
+      )
+      .mockImplementationOnce(() =>
+        response({
+          total_count: 101,
+          check_runs: [{ app: { id: ACTIONS_APP_ID, slug: 'github-actions' } }],
+        }),
+      );
+
+    const checks = await listHeadCheckRuns({
+      repository: { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' },
+      headSha: HEAD,
+      token: 't',
+      fetchImpl,
+    });
+
+    expect(checks).toHaveLength(101);
+    expect(urlOf(fetchImpl.mock.calls[1]![0])).toContain('&page=2');
+  });
 });
 
 describe('stable current-head orchestration', () => {
@@ -332,15 +384,20 @@ describe('stable current-head orchestration', () => {
     finalBase = 'development',
     finalAttempt = 2,
     finalRequired = REQUIRED,
+    finalProtectionAppId = ACTIONS_APP_ID,
+    finalCheckAppId = ACTIONS_APP_ID,
   }: {
     finalHead?: string;
     finalBase?: string;
     finalAttempt?: number;
     finalRequired?: string[];
+    finalProtectionAppId?: number;
+    finalCheckAppId?: number;
   } = {}) {
     let pullReads = 0;
     let protectionReads = 0;
     let runReads = 0;
+    let checkReads = 0;
     return vi.fn<typeof fetch>((input) => {
       const url =
         input instanceof URL
@@ -369,8 +426,35 @@ describe('stable current-head orchestration', () => {
             JSON.stringify({
               required_status_checks: {
                 contexts: protectionReads === 1 ? REQUIRED : finalRequired,
+                checks: (protectionReads === 1 ? REQUIRED : finalRequired).map(
+                  (context) => ({
+                    context,
+                    app_id:
+                      protectionReads === 1
+                        ? ACTIONS_APP_ID
+                        : finalProtectionAppId,
+                  }),
+                ),
                 strict: true,
               },
+            }),
+          ),
+        );
+      }
+      if (/\/commits\/[^/]+\/check-runs\?/.test(url)) {
+        checkReads += 1;
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              total_count: 1,
+              check_runs: [
+                {
+                  app: {
+                    id: checkReads === 1 ? ACTIONS_APP_ID : finalCheckAppId,
+                    slug: 'github-actions',
+                  },
+                },
+              ],
             }),
           ),
         );
@@ -424,19 +508,24 @@ describe('stable current-head orchestration', () => {
     );
   });
 
-  it.each(['runs', 'protection'] as const)(
-    'does not start the final PR-head read after only %s resolves',
-    async (firstToResolve) => {
+  it.each(['runs', 'protection', 'checks'] as const)(
+    'does not start the final PR-head read while %s remains unresolved',
+    async (lastToResolve) => {
       let pullReads = 0;
       let runReads = 0;
       let protectionReads = 0;
+      let checkReads = 0;
       let resolveFinalRuns!: (response: Response) => void;
       let resolveFinalProtection!: (response: Response) => void;
+      let resolveFinalChecks!: (response: Response) => void;
       const finalRuns = new Promise<Response>((resolve) => {
         resolveFinalRuns = resolve;
       });
       const finalProtection = new Promise<Response>((resolve) => {
         resolveFinalProtection = resolve;
+      });
+      const finalChecks = new Promise<Response>((resolve) => {
+        resolveFinalChecks = resolve;
       });
       const response = (body: unknown) =>
         new Response(JSON.stringify(body), {
@@ -466,8 +555,29 @@ describe('stable current-head orchestration', () => {
             response({
               required_status_checks: {
                 contexts: REQUIRED,
+                checks: REQUIRED.map((context) => ({
+                  context,
+                  app_id: ACTIONS_APP_ID,
+                })),
                 strict: true,
               },
+            }),
+          );
+        }
+        if (/\/commits\/[^/]+\/check-runs\?/.test(url)) {
+          checkReads += 1;
+          if (checkReads === 2) return finalChecks;
+          return Promise.resolve(
+            response({
+              total_count: 1,
+              check_runs: [
+                {
+                  app: {
+                    id: ACTIONS_APP_ID,
+                    slug: 'github-actions',
+                  },
+                },
+              ],
             }),
           );
         }
@@ -499,6 +609,7 @@ describe('stable current-head orchestration', () => {
       await vi.waitFor(() => {
         expect(runReads).toBe(2);
         expect(protectionReads).toBe(2);
+        expect(checkReads).toBe(2);
       });
       expect(pullReads).toBe(1);
 
@@ -509,23 +620,41 @@ describe('stable current-head orchestration', () => {
       const protectionResponse = response({
         required_status_checks: {
           contexts: REQUIRED,
+          checks: REQUIRED.map((context) => ({
+            context,
+            app_id: ACTIONS_APP_ID,
+          })),
           strict: true,
         },
       });
-      if (firstToResolve === 'runs') {
+      const checksResponse = response({
+        total_count: 1,
+        check_runs: [
+          {
+            app: { id: ACTIONS_APP_ID, slug: 'github-actions' },
+          },
+        ],
+      });
+      if (lastToResolve !== 'runs') {
         resolveFinalRuns(runsResponse);
-      } else {
+      }
+      if (lastToResolve !== 'protection') {
         resolveFinalProtection(protectionResponse);
+      }
+      if (lastToResolve !== 'checks') {
+        resolveFinalChecks(checksResponse);
       }
       await new Promise<void>((resolve) => {
         setTimeout(resolve, 0);
       });
       expect(pullReads).toBe(1);
 
-      if (firstToResolve === 'runs') {
+      if (lastToResolve === 'runs') {
+        resolveFinalRuns(runsResponse);
+      } else if (lastToResolve === 'protection') {
         resolveFinalProtection(protectionResponse);
       } else {
-        resolveFinalRuns(runsResponse);
+        resolveFinalChecks(checksResponse);
       }
       await pendingScan;
 
@@ -563,7 +692,9 @@ describe('stable current-head orchestration', () => {
         token: 't',
         fetchImpl: apiFixture({ finalAttempt: 3 }),
       }),
-    ).rejects.toThrow(/attempts or required contexts changed/);
+    ).rejects.toThrow(
+      /attempts, required checks, or check-run app identities changed/,
+    );
   });
 
   it('discards a scan when required contexts change', async () => {
@@ -576,7 +707,35 @@ describe('stable current-head orchestration', () => {
           finalRequired: [...REQUIRED, 'New required context'],
         }),
       }),
-    ).rejects.toThrow(/attempts or required contexts changed/);
+    ).rejects.toThrow(
+      /attempts, required checks, or check-run app identities changed/,
+    );
+  });
+
+  it('discards a scan when a required context is rebound to another app', async () => {
+    await expect(
+      scanPullRequest({
+        repository: { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' },
+        prNumber: 272,
+        token: 't',
+        fetchImpl: apiFixture({ finalProtectionAppId: 99 }),
+      }),
+    ).rejects.toThrow(
+      /attempts, required checks, or check-run app identities changed/,
+    );
+  });
+
+  it('discards a scan when the observed GitHub Actions app identity changes', async () => {
+    await expect(
+      scanPullRequest({
+        repository: { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' },
+        prNumber: 272,
+        token: 't',
+        fetchImpl: apiFixture({ finalCheckAppId: 99 }),
+      }),
+    ).rejects.toThrow(
+      /attempts, required checks, or check-run app identities changed/,
+    );
   });
 });
 

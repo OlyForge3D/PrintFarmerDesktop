@@ -226,6 +226,78 @@ export async function listAttemptJobs({
   });
 }
 
+export async function listHeadCheckRuns({
+  repository,
+  headSha,
+  token,
+  fetchImpl = fetch,
+}) {
+  const sha = normalizeSha(headSha);
+  if (sha === null) {
+    throw new Error(
+      'head SHA must be the full value returned by the pull request API',
+    );
+  }
+  const prefix =
+    `${API_ROOT}/repos/${repository.owner}/${repository.repo}/commits/` +
+    `${sha}/check-runs?per_page=${PAGE_SIZE}`;
+  return fetchCountedPages({
+    firstUrl: prefix,
+    pageUrl: (page) => `${prefix}&page=${page}`,
+    field: 'check_runs',
+    subject: `check runs for ${sha}`,
+    token,
+    fetchImpl,
+  });
+}
+
+export function githubActionsAppIds(checkRuns) {
+  if (!Array.isArray(checkRuns) || checkRuns.length === 0) {
+    throw new Error(
+      'current head has no check runs from which to identify GitHub Actions',
+    );
+  }
+  const ids = new Set();
+  for (const [index, check] of checkRuns.entries()) {
+    if (
+      typeof check?.app?.slug !== 'string' ||
+      !Number.isSafeInteger(check?.app?.id) ||
+      check.app.id <= 0
+    ) {
+      throw new Error(
+        `head check run ${index + 1} has no valid app slug or app id`,
+      );
+    }
+    if (check.app.slug === 'github-actions') ids.add(check.app.id);
+  }
+  if (ids.size === 0) {
+    throw new Error('current head has no check run owned by GitHub Actions');
+  }
+  return [...ids].sort((left, right) => left - right);
+}
+
+export function requiredActionContexts(protection, actionAppIds) {
+  if (!Array.isArray(protection?.checks) || protection.checks.length === 0) {
+    throw new Error(
+      'branch protection has no required check identities to classify',
+    );
+  }
+  const actions = new Set(actionAppIds);
+  const contexts = [
+    ...new Set(
+      protection.checks
+        .filter((check) => check.appId === null || actions.has(check.appId))
+        .map((check) => check.context),
+    ),
+  ];
+  if (contexts.length === 0) {
+    throw new Error(
+      'branch protection has no required checks attributable to GitHub Actions',
+    );
+  }
+  return contexts;
+}
+
 function validateRequiredContexts(requiredContexts) {
   const required = [...requiredContexts];
   if (
@@ -286,6 +358,15 @@ function runSignature(runs) {
 
 function sameStrings(left, right) {
   return JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
+}
+
+function protectionSignature(protection) {
+  if (!Array.isArray(protection?.checks)) {
+    throw new Error('branch protection has no required check identities');
+  }
+  return protection.checks
+    .map((check) => `${check.context}:${check.appId ?? '*'}`)
+    .sort();
 }
 
 export async function scanHead({
@@ -375,16 +456,27 @@ export async function scanPullRequest({
     token,
     fetchImpl,
   });
+  const initialCheckRuns = await listHeadCheckRuns({
+    repository,
+    headSha: initialPull.headSha,
+    token,
+    fetchImpl,
+  });
+  const initialActionAppIds = githubActionsAppIds(initialCheckRuns);
+  const requiredContexts = requiredActionContexts(
+    initialProtection,
+    initialActionAppIds,
+  );
   const result = await scanHead({
     headSha: initialPull.headSha,
-    requiredContexts: initialProtection.contexts,
+    requiredContexts,
     listRuns: (headSha) =>
       listWorkflowRuns({ repository, headSha, token, fetchImpl }),
     listJobs: (runId, attempt) =>
       listAttemptJobs({ repository, runId, attempt, token, fetchImpl }),
   });
 
-  const [finalRuns, finalProtection] = await Promise.all([
+  const [finalRuns, finalProtection, finalCheckRuns] = await Promise.all([
     listWorkflowRuns({
       repository,
       headSha: initialPull.headSha,
@@ -394,6 +486,12 @@ export async function scanPullRequest({
     fetchRequiredContexts({
       repository,
       branch: initialPull.baseRef,
+      token,
+      fetchImpl,
+    }),
+    listHeadCheckRuns({
+      repository,
+      headSha: initialPull.headSha,
       token,
       fetchImpl,
     }),
@@ -417,10 +515,17 @@ export async function scanPullRequest({
   }
   if (
     !sameStrings(result.scope.runSignature, runSignature(finalRuns)) ||
-    !sameStrings(initialProtection.contexts, finalProtection.contexts)
+    !sameStrings(
+      protectionSignature(initialProtection),
+      protectionSignature(finalProtection),
+    ) ||
+    !sameStrings(
+      initialActionAppIds.map(String),
+      githubActionsAppIds(finalCheckRuns).map(String),
+    )
   ) {
     throw new Error(
-      'workflow attempts or required contexts changed during the scan; discard the result and retry',
+      'workflow attempts, required checks, or check-run app identities changed during the scan; discard the result and retry',
     );
   }
   return { ...result, pull: initialPull };

@@ -15,6 +15,10 @@ export interface AttemptJob {
   conclusion?: string | null;
 }
 
+export interface HeadCheckRun {
+  app?: { id?: number; slug?: string };
+}
+
 export interface MaskedFinding {
   runId: number;
   runName: string | undefined;
@@ -79,6 +83,24 @@ export declare function listAttemptJobs(input: {
   token: string;
   fetchImpl?: typeof fetch;
 }): Promise<AttemptJob[]>;
+
+export declare function listHeadCheckRuns(input: {
+  repository: Repository;
+  headSha: string;
+  token: string;
+  fetchImpl?: typeof fetch;
+}): Promise<HeadCheckRun[]>;
+
+export declare function githubActionsAppIds(
+  checkRuns: HeadCheckRun[],
+): number[];
+
+export declare function requiredActionContexts(
+  protection: {
+    checks: { context: string; appId: number | null }[];
+  },
+  actionAppIds: Iterable<number>,
+): string[];
 
 export declare function maskedRequiredFailures(
   jobs: AttemptJob[],
