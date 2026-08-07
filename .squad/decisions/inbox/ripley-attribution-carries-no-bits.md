@@ -58,8 +58,8 @@ or notices its absence.
 ## The convention's coverage, measured, because "by convention" is a rate
 
 ```
-Copilot-Session: present   160 / 185   86.5%
-                 absent     25 / 185   13.5%
+Copilot-Session trailer present   160 / 185   86.5%
+                        absent     25 / 185   13.5%
 ```
 
 **One commit in seven on `development` cannot be attributed to a session by any
