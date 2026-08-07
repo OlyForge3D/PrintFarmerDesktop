@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   classifyClosingReferenceReadError,
@@ -687,6 +690,17 @@ describe('formatFailure', () => {
     expect(message).toContain('does not read negation');
   });
 
+  it('names past-tense narration as another way to arm a closure', () => {
+    const message = formatFailure({
+      unexpected: [121],
+      missing: [],
+      hasBlock: true,
+      prNumber: 328,
+    });
+    expect(message).toContain('#121');
+    expect(message).toMatch(/narrat(?:e|ing).*another PR closed/i);
+  });
+
   it('prints a declaration block a reader can paste', () => {
     // The remedy a guard prints has to be tested with the guard. A failure
     // message that instructs the reader to write something is a second
@@ -1194,6 +1208,54 @@ describe('main staleness witness', () => {
       return args.includes('body') ? declBody : JSON.stringify(refs);
     };
   }
+
+  it('passes the merge-queue PR number through to every gh read', async () => {
+    silenced();
+    const directory = mkdtempSync(path.join(tmpdir(), 'closing-reference-'));
+    const eventPath = path.join(directory, 'event.json');
+    writeFileSync(
+      eventPath,
+      JSON.stringify({
+        merge_group: {
+          head_ref:
+            'refs/heads/gh-readonly-queue/development/pr-398-2426904fbd97',
+        },
+      }),
+    );
+    const calls: string[][] = [];
+    const run = (args: string[]) => {
+      calls.push(args);
+      if (args[0] === 'api') return '[[]]';
+      return args.includes('body,closingIssuesReferences')
+        ? JSON.stringify({ body: 'a bare mention of #398', refs: [] })
+        : 'no declaration here';
+    };
+
+    try {
+      const result = await main([], {
+        environment: { GITHUB_EVENT_PATH: eventPath },
+        run,
+        readClosures: async (read) => ({
+          value: await read(),
+          reads: 2,
+          settled: true,
+          elapsedMs: 1000,
+          stableMs: 1000,
+        }),
+      });
+      expect(result).toMatchObject({ ok: true, settled: true });
+      const prCalls = calls.filter((args) => args[0] === 'pr');
+      expect(prCalls.length).toBeGreaterThan(1);
+      expect(prCalls.map((args) => args.slice(0, 3))).toEqual(
+        prCalls.map(() => ['pr', 'view', '398']),
+      );
+      expect(calls.find((args) => args[0] === 'api')?.at(-1)).toContain(
+        '/pulls/398/commits',
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 
   it('reports, but does not fail, a settled empty read the body contradicts', async () => {
     const spies = silenced();

@@ -1,31 +1,12 @@
-name: PR closure scope
+name: Gate issue closure scope
 
 # merge-queue: advisory
 #
-# Machine-readable form of the constraint the comment below already states in
-# prose: this workflow does not report under merge_group, so its check run MUST
-# NOT be a required context. scripts/check-merge-queue-contexts.mjs holds that
-# classification, enforced by tests/mergeQueueReadiness.test.ts under
-# `npm run test`. Its comparison against live branch protection — the half that
-# would notice protection drifting from this line — needs a token, is run by
-# hand, and does not execute in CI, so making this context required would still
-# deadlock silently (#472).
+# This narrow check reads closingIssuesReferences once. It does not apply the
+# settled polling used by the general declaration check, so it stays advisory
+# and MUST NOT be configured as a required context.
 
-# Deliberately a separate workflow rather than a job in ci.yml.
-#
-# The check needs a pull request number: `closingIssuesReferences` is a property
-# of a pull request, and neither `push` nor `merge_group` carries one. Adding it
-# to ci.yml would have required either a job-level `if:` or a `github.event_name`
-# branch, both of which tests/ciWorkflowTriggers.test.ts bans outright — a job
-# skipped by a conditional reports `skipped`, which counts as success, so the
-# required context would be satisfied by a job that never executed.
-#
-# Consequence, stated plainly rather than left to be discovered: this workflow
-# does not report under `merge_group`, so it MUST NOT be added to a branch
-# ruleset's required contexts while that remains true. A required context that
-# no workflow emits stays Pending forever and blocks the entry instead of
-# failing it. tests/prClosureScope.test.ts pins this subscription so the
-# constraint is checked rather than remembered.
+# Deliberately a separate workflow rather than jobs in ci.yml.
 #
 # `edited` is in the type list for a reason found the hard way on this very
 # pull request: `closingIssuesReferences` is derived from the pull request
@@ -50,7 +31,7 @@ permissions:
 
 jobs:
   closure-scope:
-    name: PR closure scope
+    name: Gate issue closure scope
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

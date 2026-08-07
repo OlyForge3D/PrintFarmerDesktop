@@ -167,12 +167,26 @@ describe('the parsers see the real files, not an empty string', () => {
   });
 
   it('reads the advisory workflows as not subscribing', () => {
-    for (const file of ['pr-closure-scope.yml', 'sequencing-hold.yml']) {
+    for (const file of [
+      'citation-reachability.yml',
+      'pr-closure-scope.yml',
+      'sequencing-hold.yml',
+    ]) {
       const entry = workflows.find((candidate) => candidate.file === file);
       const triggers = triggersOf(entry!.contents, file);
       expect(triggers).toContain('pull_request');
       expect(triggers).not.toContain('merge_group');
     }
+  });
+
+  it('reads the general closing-reference workflow as reporting for queued entries', () => {
+    const entry = workflows.find(
+      (candidate) => candidate.file === 'closing-reference-declaration.yml',
+    );
+    expect(triggersOf(entry!.contents, entry!.file)).toEqual([
+      'merge_group',
+      'pull_request',
+    ]);
   });
 
   it('expands matrix jobs into the strings a ruleset actually pins', () => {
@@ -226,24 +240,19 @@ describe('a required context must be emitted by a workflow that reports', () => 
     ).toEqual([]);
   });
 
-  it('refuses the two advisory contexts, naming the workflow and the reason', () => {
-    // The deadlock, as the settings page would produce it. Both of these run on
-    // every pull request and look exactly like checks worth requiring.
-    const offenders = evaluateRequiredContexts({
+  it('accepts the general context and refuses the advisory gate-only context', () => {
+    expect(
+      evaluateRequiredContexts({
+        workflows,
+        requiredContexts: ['Closing-reference declaration'],
+      }),
+    ).toEqual([]);
+    const [gateOnly] = evaluateRequiredContexts({
       workflows,
-      requiredContexts: ['Sequencing hold', 'PR closure scope'],
+      requiredContexts: ['Gate issue closure scope'],
     });
-    expect(offenders.map(({ context }) => context)).toEqual([
-      'Sequencing hold',
-      'PR closure scope',
-    ]);
-    expect(offenders.map(({ emittedBy }) => emittedBy)).toEqual([
-      'sequencing-hold.yml',
-      'pr-closure-scope.yml',
-    ]);
-    for (const { reason } of offenders) {
-      expect(reason).toMatch(/does not report under merge_group/);
-    }
+    expect(gateOnly?.emittedBy).toBe('pr-closure-scope.yml');
+    expect(gateOnly?.reason).toMatch(/does not report under merge_group/);
   });
 
   it('distinguishes a context nothing emits from one an advisory workflow emits', () => {
