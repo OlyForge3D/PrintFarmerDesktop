@@ -176,10 +176,27 @@ function readExpression(code: string, start: number): string {
 function isPresentHandler(argument: ts.Expression | undefined): boolean {
   if (!argument) return false;
   const unwrapped = unwrapExpression(argument);
-  return (
-    unwrapped.kind !== ts.SyntaxKind.NullKeyword &&
-    !ts.isVoidExpression(unwrapped) &&
-    !(ts.isIdentifier(unwrapped) && unwrapped.text === 'undefined')
+  const nonCallableKeyword =
+    unwrapped.kind === ts.SyntaxKind.NullKeyword ||
+    unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
+    unwrapped.kind === ts.SyntaxKind.FalseKeyword;
+  const nonCallableLiteral =
+    ts.isNumericLiteral(unwrapped) ||
+    ts.isBigIntLiteral(unwrapped) ||
+    ts.isStringLiteral(unwrapped) ||
+    ts.isNoSubstitutionTemplateLiteral(unwrapped) ||
+    ts.isTemplateExpression(unwrapped) ||
+    ts.isObjectLiteralExpression(unwrapped) ||
+    ts.isArrayLiteralExpression(unwrapped) ||
+    ts.isRegularExpressionLiteral(unwrapped) ||
+    ts.isClassExpression(unwrapped) ||
+    ts.isPrefixUnaryExpression(unwrapped);
+  return !(
+    nonCallableKeyword ||
+    nonCallableLiteral ||
+    ts.isVoidExpression(unwrapped) ||
+    (ts.isIdentifier(unwrapped) &&
+      /^(?:undefined|NaN|Infinity)$/.test(unwrapped.text))
   );
 }
 
@@ -332,7 +349,10 @@ describe('void-suppressed promises in src/main carry rejection handlers', () => 
       'promise.catch((null))',
       'promise.catch(undefined)',
       'promise.catch((undefined))',
+      'promise.catch(false as any)',
+      'promise.catch({} as any)',
       'promise.then(resolve,)',
+      'promise.then(resolve, 0 as any)',
       'promise.then(resolve, undefined)',
       'promise.then(makeHandler<Result, Error>())',
       'promise.catch(handler).then(next)',
