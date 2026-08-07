@@ -1,18 +1,12 @@
-name: PR closure contracts
+name: Gate issue closure scope
 
-# merge-queue: reports
+# merge-queue: advisory
 #
-# Both contexts report for pull requests and merge-queue entries, so either is
-# eligible for required-check configuration. scripts/check-merge-queue-contexts.mjs
-# enforces that classification under `npm run test`.
+# This narrow check reads closingIssuesReferences once. It does not apply the
+# settled polling used by the general declaration check, so it stays advisory
+# and MUST NOT be configured as a required context.
 
 # Deliberately a separate workflow rather than jobs in ci.yml.
-#
-# Both checks need a pull request number or PR-derived fields. A pull_request
-# event carries the number directly. A merge_group event carries it in the
-# queue's standard `head_ref` (`.../pr-<number>-<sha>`), which
-# resolvePullRequestNumber parses and tests. Neither check uses a skipped branch,
-# so a queued entry receives a real verdict rather than a success-shaped skip.
 #
 # `edited` is in the type list for a reason found the hard way on this very
 # pull request: `closingIssuesReferences` is derived from the pull request
@@ -29,7 +23,6 @@ name: PR closure contracts
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
-  merge_group:
 
 permissions:
   contents: read
@@ -54,23 +47,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run check:closure-scope
-
-  closing-references:
-    name: Closing-reference declaration
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      # This is an independent context because a PR-body mismatch is not a
-      # platform build failure and the gate-only check above measures a narrower
-      # set. No `npm ci`: the script imports only node: builtins.
-      - name: Compare declared and armed closing references
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: npm run check:closing-references

@@ -167,7 +167,11 @@ describe('the parsers see the real files, not an empty string', () => {
   });
 
   it('reads the advisory workflows as not subscribing', () => {
-    for (const file of ['citation-reachability.yml', 'sequencing-hold.yml']) {
+    for (const file of [
+      'citation-reachability.yml',
+      'pr-closure-scope.yml',
+      'sequencing-hold.yml',
+    ]) {
       const entry = workflows.find((candidate) => candidate.file === file);
       const triggers = triggersOf(entry!.contents, file);
       expect(triggers).toContain('pull_request');
@@ -175,9 +179,9 @@ describe('the parsers see the real files, not an empty string', () => {
     }
   });
 
-  it('reads the closure workflow as reporting for queued entries', () => {
+  it('reads the general closing-reference workflow as reporting for queued entries', () => {
     const entry = workflows.find(
-      (candidate) => candidate.file === 'pr-closure-scope.yml',
+      (candidate) => candidate.file === 'closing-reference-declaration.yml',
     );
     expect(triggersOf(entry!.contents, entry!.file)).toEqual([
       'merge_group',
@@ -236,16 +240,19 @@ describe('a required context must be emitted by a workflow that reports', () => 
     ).toEqual([]);
   });
 
-  it('accepts both closure contexts because they report for queued entries', () => {
+  it('accepts the general context and refuses the advisory gate-only context', () => {
     expect(
       evaluateRequiredContexts({
         workflows,
-        requiredContexts: [
-          'Gate issue closure scope',
-          'Closing-reference declaration',
-        ],
+        requiredContexts: ['Closing-reference declaration'],
       }),
     ).toEqual([]);
+    const [gateOnly] = evaluateRequiredContexts({
+      workflows,
+      requiredContexts: ['Gate issue closure scope'],
+    });
+    expect(gateOnly?.emittedBy).toBe('pr-closure-scope.yml');
+    expect(gateOnly?.reason).toMatch(/does not report under merge_group/);
   });
 
   it('distinguishes a context nothing emits from one an advisory workflow emits', () => {

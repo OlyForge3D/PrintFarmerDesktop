@@ -194,6 +194,19 @@ describe('resolvePullRequestNumber', () => {
     );
   });
 
+  it.each([
+    'garbage/pr-398-x',
+    'refs/heads/gh-readonly-queue/development/pr-0-x',
+    'refs/heads/gh-readonly-queue/development/pr-398',
+  ])('refuses a nonstandard merge-queue head ref: %s', (headRef) => {
+    const eventPath = writeEvent({
+      merge_group: { head_ref: headRef },
+    });
+    expect(() =>
+      resolvePullRequestNumber({ GITHUB_EVENT_PATH: eventPath }),
+    ).toThrow(/neither pull_request\.number nor a merge-queue PR head ref/);
+  });
+
   it('fails rather than guessing when no number is available', () => {
     expect(() => resolvePullRequestNumber({})).toThrow(/no pull request/);
   });
@@ -280,10 +293,19 @@ describe('fetchClosingIssues', () => {
   });
 });
 
-describe('the closure workflow reports for pull requests and merge queues', () => {
+describe('the two closure checks publish independent contexts', () => {
   const repositoryRoot = path.resolve(import.meta.dirname, '..');
   const workflow = readFileSync(
     path.join(repositoryRoot, '.github', 'workflows', 'pr-closure-scope.yml'),
+    'utf8',
+  );
+  const generalWorkflow = readFileSync(
+    path.join(
+      repositoryRoot,
+      '.github',
+      'workflows',
+      'closing-reference-declaration.yml',
+    ),
     'utf8',
   );
   const ciWorkflow = readFileSync(
@@ -329,12 +351,17 @@ describe('the closure workflow reports for pull requests and merge queues', () =
     expect(triggersOf(workflow).length).toBeGreaterThan(0);
   });
 
-  it('subscribes to both event classes a required context must cover', () => {
-    expect(triggersOf(workflow)).toEqual(['merge_group', 'pull_request']);
+  it('keeps the single-read gate check advisory and PR-only', () => {
+    expect(triggersOf(workflow)).toEqual(['pull_request']);
+    expect(workflow).toContain('# merge-queue: advisory');
   });
 
-  it('declares that its contexts are eligible to be required', () => {
-    expect(workflow).toContain('# merge-queue: reports');
+  it('runs the settled general check for both event classes a required context must cover', () => {
+    expect(triggersOf(generalWorkflow)).toEqual([
+      'merge_group',
+      'pull_request',
+    ]);
+    expect(generalWorkflow).toContain('# merge-queue: reports');
   });
 
   /**
@@ -375,6 +402,7 @@ describe('the closure workflow reports for pull requests and merge queues', () =
       'reopened',
       'synchronize',
     ]);
+    expect(typesOf(generalWorkflow)).toEqual(typesOf(workflow));
   });
 
   it('runs the npm script rather than a divergent inline command', () => {
@@ -386,7 +414,7 @@ describe('the closure workflow reports for pull requests and merge queues', () =
     );
   });
 
-  it('publishes the general and gate-only checks as accurately named sibling contexts', () => {
+  it('publishes the general and gate-only checks as accurately named independent contexts', () => {
     // PR #456 produced opposite conclusions for these checks on one head. Keeping
     // them as sibling jobs makes that disagreement visible without lending the
     // narrower green to the general contract.
@@ -395,7 +423,7 @@ describe('the closure workflow reports for pull requests and merge queues', () =
     expect(gateOnly).toContain('npm run check:closure-scope');
     expect(gateOnly).not.toContain('check:closing-references');
 
-    const general = jobBlock(workflow, 'closing-references');
+    const general = jobBlock(generalWorkflow, 'closing-references');
     expect(general).toContain('name: Closing-reference declaration');
     expect(general).toContain('npm run check:closing-references');
     expect(general).not.toContain('check:closure-scope');
@@ -405,7 +433,7 @@ describe('the closure workflow reports for pull requests and merge queues', () =
     expect(invokedScripts(ciWorkflow, manifest.scripts)).not.toContain(
       'check-closing-references.mjs',
     );
-    expect(invokedScripts(workflow, manifest.scripts)).toContain(
+    expect(invokedScripts(generalWorkflow, manifest.scripts)).toContain(
       'check-closing-references.mjs',
     );
   });
@@ -423,7 +451,7 @@ describe('the closure workflow reports for pull requests and merge queues', () =
       const match = /^\s*runs-on:\s*(.+)$/.exec(line);
       return match?.[1] === undefined ? [] : [match[1].trim()];
     });
-    expect(runsOn).toEqual(['ubuntu-latest', 'ubuntu-latest']);
+    expect(runsOn).toEqual(['ubuntu-latest']);
   });
 });
 

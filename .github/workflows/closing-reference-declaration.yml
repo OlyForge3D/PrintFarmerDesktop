@@ -1,0 +1,40 @@
+name: Closing-reference declaration
+
+# merge-queue: reports
+#
+# This workflow reports a real verdict for pull requests and merge-queue
+# entries, so its context is eligible for required-check configuration.
+# tests/mergeQueueReadiness.test.ts imports
+# scripts/check-merge-queue-contexts.mjs and enforces that classification.
+#
+# A pull_request event carries its number directly. A merge_group event carries
+# it in the queue's standard `head_ref` (`.../pr-<number>-<sha>`), which the
+# shared resolver parses and the end-to-end test drives through the CLI boundary.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  merge_group:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  closing-references:
+    name: Closing-reference declaration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Independent because a PR-body mismatch is not a platform build failure.
+      # No `npm ci`: the script imports only node: builtins.
+      - name: Compare declared and armed closing references
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npm run check:closing-references

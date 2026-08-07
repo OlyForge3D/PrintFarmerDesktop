@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   classifyClosingReferenceReadError,
@@ -1062,20 +1065,47 @@ describe('main staleness witness', () => {
     };
   }
 
-  it('resolves the event PR when the workflow supplies no CLI argument', async () => {
+  it('passes the merge-queue PR number through to every gh read', async () => {
     silenced();
-    const result = await main([], {
-      environment: { PR_NUMBER: '231' },
-      run: ghStub('no declaration here', 'a bare mention of #231', []),
-      readClosures: async (read) => ({
-        value: await read(),
-        reads: 2,
-        settled: true,
-        elapsedMs: 1000,
-        stableMs: 1000,
+    const directory = mkdtempSync(path.join(tmpdir(), 'closing-reference-'));
+    const eventPath = path.join(directory, 'event.json');
+    writeFileSync(
+      eventPath,
+      JSON.stringify({
+        merge_group: {
+          head_ref:
+            'refs/heads/gh-readonly-queue/development/pr-398-2426904fbd97',
+        },
       }),
-    });
-    expect(result).toMatchObject({ ok: true, settled: true });
+    );
+    const calls: string[][] = [];
+    const run = (args: string[]) => {
+      calls.push(args);
+      return args.includes('body,closingIssuesReferences')
+        ? JSON.stringify({ body: 'a bare mention of #398', refs: [] })
+        : 'no declaration here';
+    };
+
+    try {
+      const result = await main([], {
+        environment: { GITHUB_EVENT_PATH: eventPath },
+        run,
+        readClosures: async (read) => ({
+          value: await read(),
+          reads: 2,
+          settled: true,
+          elapsedMs: 1000,
+          stableMs: 1000,
+        }),
+      });
+      expect(result).toMatchObject({ ok: true, settled: true });
+      expect(calls.length).toBeGreaterThan(1);
+      expect(calls.map((args) => args.slice(0, 3))).toEqual(
+        calls.map(() => ['pr', 'view', '398']),
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('reports, but does not fail, a settled empty read the body contradicts', async () => {

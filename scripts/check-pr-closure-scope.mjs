@@ -323,7 +323,10 @@ export function resolvePullRequestNumber(environment) {
 
   const mergeGroupHeadRef = event?.merge_group?.head_ref;
   if (typeof mergeGroupHeadRef === 'string') {
-    const match = /\/pr-([1-9]\d*)-[^/]+$/.exec(mergeGroupHeadRef);
+    const match =
+      /^refs\/heads\/gh-readonly-queue\/.+\/pr-([1-9]\d*)-[^/]+$/.exec(
+        mergeGroupHeadRef,
+      );
     if (match?.[1] !== undefined) {
       return Number(match[1]);
     }
