@@ -588,8 +588,17 @@ impl ThreeMfMesh {
 
 /// Parse a 3MF file from disk.
 pub fn parse_file(path: &Path) -> Result<ThreeMfMesh, ThreeMfError> {
+    let mut guard = ParseGuard::default();
+    parse_file_with_guard(path, &mut guard)
+}
+
+pub(crate) fn parse_file_with_guard(
+    path: &Path,
+    guard: &mut ParseGuard,
+) -> Result<ThreeMfMesh, ThreeMfError> {
     let data = std::fs::read(path)?;
-    parse_bytes(&data)
+    guard.check_now()?;
+    parse_bytes_with_guard(&data, guard)
 }
 
 /// Parse a 3MF file with the native lib3mf validator/reader when the feature is
@@ -619,15 +628,22 @@ pub fn parse_bytes_with_limits(
     limits: ParseLimits,
 ) -> Result<ThreeMfMesh, ThreeMfError> {
     let mut guard = ParseGuard::new(limits);
-    let (mut archive, package_index) = open_package(data, &mut guard)?;
+    parse_bytes_with_guard(data, &mut guard)
+}
+
+pub(crate) fn parse_bytes_with_guard(
+    data: &[u8],
+    guard: &mut ParseGuard,
+) -> Result<ThreeMfMesh, ThreeMfError> {
+    let (mut archive, package_index) = open_package(data, guard)?;
 
     let mut model_xml_bytes = 0u64;
     let mut parse_budget = ParseBudget::default();
-    let root_part = locate_model_part_indexed(&mut archive, &package_index, &mut guard)?;
+    let root_part = locate_model_part_indexed(&mut archive, &package_index, guard)?;
     let root_part_key = opc_part_key(&root_part);
-    let root_xml = read_model_entry(&mut archive, &root_part, &mut model_xml_bytes, &mut guard)?
+    let root_xml = read_model_entry(&mut archive, &root_part, &mut model_xml_bytes, guard)?
         .ok_or(ThreeMfError::MissingModelPart)?;
-    let root_model = parse_model_xml(&root_xml, true, &mut parse_budget, &mut guard)?;
+    let root_model = parse_model_xml(&root_xml, true, &mut parse_budget, guard)?;
     let root_unit = root_model.unit.clone();
     let root_unit_scale = unit_scale_millimeters(&root_unit)?;
 
@@ -643,7 +659,7 @@ pub fn parse_bytes_with_limits(
         &package_index,
         &root_part,
         &external_parts,
-        &mut guard,
+        guard,
     )?;
 
     let mut models = HashMap::with_capacity(external_parts.len() + 1);
@@ -652,18 +668,18 @@ pub fn parse_bytes_with_limits(
         let actual_name = package_index.actual_name(&model_part).ok_or_else(|| {
             ThreeMfError::Malformed(format!("referenced model part '/{model_part}' is missing"))
         })?;
-        let xml = read_model_entry(&mut archive, actual_name, &mut model_xml_bytes, &mut guard)?
+        let xml = read_model_entry(&mut archive, actual_name, &mut model_xml_bytes, guard)?
             .ok_or_else(|| {
                 ThreeMfError::Malformed(format!("referenced model part '/{model_part}' is missing"))
             })?;
-        let mut model = parse_model_xml(&xml, false, &mut parse_budget, &mut guard)?;
+        let mut model = parse_model_xml(&xml, false, &mut parse_budget, guard)?;
         let model_unit_scale = unit_scale_millimeters(&model.unit)?;
         model.scale_to_unit(model_unit_scale / root_unit_scale, &root_unit);
         models.insert(model_part, model);
     }
     models.insert(root_part_key.clone(), root_model);
 
-    let plate_layout = read_plate_layout(&mut archive, &package_index, &mut guard)?;
+    let plate_layout = read_plate_layout(&mut archive, &package_index, guard)?;
 
     flatten(
         &RawPackage {
@@ -671,7 +687,7 @@ pub fn parse_bytes_with_limits(
             root_part: root_part_key,
             plate_layout,
         },
-        &mut guard,
+        guard,
     )
 }
 
