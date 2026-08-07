@@ -21,6 +21,7 @@ import {
   resolveRepository,
 } from '../scripts/check-pr-closure-scope.mjs';
 import type { ClosingIssue } from '../scripts/check-pr-closure-scope.mjs';
+import { invokedScripts } from '../scripts/check-body-edit-triggers.mjs';
 
 const CHILD_ISSUE: ClosingIssue = {
   number: 161,
@@ -181,15 +182,40 @@ describe('resolvePullRequestNumber', () => {
     expect(resolvePullRequestNumber({ GITHUB_EVENT_PATH: eventPath })).toBe(57);
   });
 
+  it('reads the pull request number from a merge-queue head ref', () => {
+    const eventPath = writeEvent({
+      merge_group: {
+        head_ref:
+          'refs/heads/gh-readonly-queue/development/pr-398-4a38021c3ffa',
+      },
+    });
+    expect(resolvePullRequestNumber({ GITHUB_EVENT_PATH: eventPath })).toBe(
+      398,
+    );
+  });
+
+  it.each([
+    'garbage/pr-398-x',
+    'refs/heads/gh-readonly-queue/development/pr-0-x',
+    'refs/heads/gh-readonly-queue/development/pr-398',
+  ])('refuses a nonstandard merge-queue head ref: %s', (headRef) => {
+    const eventPath = writeEvent({
+      merge_group: { head_ref: headRef },
+    });
+    expect(() =>
+      resolvePullRequestNumber({ GITHUB_EVENT_PATH: eventPath }),
+    ).toThrow(/neither pull_request\.number nor a merge-queue PR head ref/);
+  });
+
   it('fails rather than guessing when no number is available', () => {
     expect(() => resolvePullRequestNumber({})).toThrow(/no pull request/);
   });
 
-  it('fails when the event is not a pull request', () => {
+  it('fails when the event identifies neither a PR nor its queue entry', () => {
     const eventPath = writeEvent({ push: {} });
     expect(() =>
       resolvePullRequestNumber({ GITHUB_EVENT_PATH: eventPath }),
-    ).toThrow(/pull_request\.number/);
+    ).toThrow(/neither pull_request\.number nor a merge-queue PR head ref/);
   });
 });
 
@@ -267,12 +293,37 @@ describe('fetchClosingIssues', () => {
   });
 });
 
-describe('the closure-scope workflow stays outside the merge queue', () => {
+describe('the two closure checks publish independent contexts', () => {
   const repositoryRoot = path.resolve(import.meta.dirname, '..');
   const workflow = readFileSync(
     path.join(repositoryRoot, '.github', 'workflows', 'pr-closure-scope.yml'),
     'utf8',
   );
+  const generalWorkflow = readFileSync(
+    path.join(
+      repositoryRoot,
+      '.github',
+      'workflows',
+      'closing-reference-declaration.yml',
+    ),
+    'utf8',
+  );
+  const ciWorkflow = readFileSync(
+    path.join(repositoryRoot, '.github', 'workflows', 'ci.yml'),
+    'utf8',
+  );
+  const manifest = JSON.parse(
+    readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'),
+  ) as { scripts: Record<string, string> };
+
+  function jobBlock(contents: string, job: string): string {
+    const lines = contents.split(/\r?\n/);
+    const start = lines.findIndex((line) => line === `  ${job}:`);
+    if (start < 0) throw new Error(`workflow has no ${job} job`);
+    const rest = lines.slice(start + 1);
+    const end = rest.findIndex((line) => /^ {2}\S[^:]*:\s*$/.test(line));
+    return [lines[start], ...(end < 0 ? rest : rest.slice(0, end))].join('\n');
+  }
 
   /**
    * Event names the workflow subscribes to, sorted. Textual for the same
@@ -300,15 +351,17 @@ describe('the closure-scope workflow stays outside the merge queue', () => {
     expect(triggersOf(workflow).length).toBeGreaterThan(0);
   });
 
-  it('subscribes to pull_request only, because no other event carries a PR number', () => {
+  it('keeps the single-read gate check advisory and PR-only', () => {
     expect(triggersOf(workflow)).toEqual(['pull_request']);
+    expect(workflow).toContain('# merge-queue: advisory');
   });
 
-  it('does not subscribe to merge_group, so it must never be a required context', () => {
-    // A required context that no workflow emits stays Pending forever and
-    // blocks the entry rather than failing it. If this workflow ever learns to
-    // report under merge_group, this assertion is the place that says so.
-    expect(triggersOf(workflow)).not.toContain('merge_group');
+  it('runs the settled general check for both event classes a required context must cover', () => {
+    expect(triggersOf(generalWorkflow)).toEqual([
+      'merge_group',
+      'pull_request',
+    ]);
+    expect(generalWorkflow).toContain('# merge-queue: reports');
   });
 
   /**
@@ -349,17 +402,39 @@ describe('the closure-scope workflow stays outside the merge queue', () => {
       'reopened',
       'synchronize',
     ]);
+    expect(typesOf(generalWorkflow)).toEqual(typesOf(workflow));
   });
 
   it('runs the npm script rather than a divergent inline command', () => {
     // Without this the workflow could drift to a different entry point than
     // the one every test above exercises.
     expect(workflow).toContain('npm run check:closure-scope');
-    const manifest = JSON.parse(
-      readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8'),
-    ) as { scripts: Record<string, string> };
     expect(manifest.scripts['check:closure-scope']).toBe(
       'node scripts/check-pr-closure-scope.mjs',
+    );
+  });
+
+  it('publishes the general and gate-only checks as accurately named independent contexts', () => {
+    // PR #456 produced opposite conclusions for these checks on one head. Keeping
+    // them as sibling jobs makes that disagreement visible without lending the
+    // narrower green to the general contract.
+    const gateOnly = jobBlock(workflow, 'closure-scope');
+    expect(gateOnly).toContain('name: Gate issue closure scope');
+    expect(gateOnly).toContain('npm run check:closure-scope');
+    expect(gateOnly).not.toContain('check:closing-references');
+
+    const general = jobBlock(generalWorkflow, 'closing-references');
+    expect(general).toContain('name: Closing-reference declaration');
+    expect(general).toContain('npm run check:closing-references');
+    expect(general).not.toContain('check:closure-scope');
+  });
+
+  it('does not attribute the general PR-body contract to either Desktop platform', () => {
+    expect(invokedScripts(ciWorkflow, manifest.scripts)).not.toContain(
+      'check-closing-references.mjs',
+    );
+    expect(invokedScripts(generalWorkflow, manifest.scripts)).toContain(
+      'check-closing-references.mjs',
     );
   });
 

@@ -199,6 +199,7 @@ export interface MainDeps {
     prNumber: number | string,
     run: (args: string[]) => string,
   ) => number[];
+  environment?: Record<string, string | undefined>;
   readClosures?: (
     read: () => number[] | Promise<number[]>,
     options?: SettleOptions,
