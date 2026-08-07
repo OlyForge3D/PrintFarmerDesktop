@@ -106,6 +106,7 @@ import {
   CalibrationWorkspaceStageId,
   CalibrationOutboxUnavailableReason,
   RetargetErrorCode,
+  isJobScopedEnvelope,
 } from '@shared/ipc';
 import type { ZodTypeAny } from 'zod';
 import {
@@ -116,7 +117,13 @@ import {
   CALIBRATION_LOG_LEVELS,
   CALIBRATION_LOG_OUTCOMES,
 } from '../src/main/calibrationLog.js';
-import { RemoteCalibrationCapabilities } from '../src/main/calibrationWire.js';
+import { CalibrationHttpClient } from '../src/main/calibrationHttp.js';
+import { detectQueueChangeFeedGap } from '../src/main/ipc.js';
+import {
+  RemoteCalibrationApplyRequest,
+  RemoteCalibrationCapabilities,
+  RemoteQueueEventEnvelope,
+} from '../src/main/calibrationWire.js';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
 const docsDir = path.join(repoRoot, 'docs');
@@ -296,9 +303,11 @@ const CONTRACT_SCHEMAS: readonly ZodTypeAny[] = [
   // Without this entry every correct reference to a server switch is reported as
   // a name the repository does not contain.
   RemoteCalibrationCapabilities,
+  RemoteCalibrationApplyRequest,
+  RemoteQueueEventEnvelope,
 ];
 
-/** Every camelCase identifier an operator may legitimately be told to read. */
+/** Every camelCase contract field or local symbol an operator may be told to read. */
 function knownFieldNames(): Set<string> {
   const names = new Set<string>([
     ...CALIBRATION_LOG_FIELDS,
@@ -318,6 +327,12 @@ function knownFieldNames(): Set<string> {
     // `sidecarUnavailable` failed this test while the operator staring at that
     // exact string had nowhere to look it up.
     ...RetargetErrorCode.options,
+    // Implementation symbols named by the source-backed server contract guide.
+    // Derive their spellings from the actual exports/prototype so a rename makes
+    // the guide fail rather than leaving a duplicated allow-list behind.
+    CalibrationHttpClient.prototype.acknowledgeBedClearAndStart.name,
+    isJobScopedEnvelope.name,
+    detectQueueChangeFeedGap.name,
   ]);
   for (const schema of CONTRACT_SCHEMAS) collectSchemaKeys(schema, names);
   return names;

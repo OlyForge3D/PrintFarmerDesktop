@@ -473,6 +473,227 @@ by itself evidence that an operation key was reused.**
 
 ---
 
+## 10. PrintFarmer server REST contract
+
+Verified from OlyForge3D/PrintFarmer read-only source:
+
+- **Pinned:** `167a3b134a678a0d9a8c10371da8333d03ddc636`
+- **Contract snapshot (queried 2026-08-05):**
+  `9c1d7e4b97c5f0fee0f0c702aa864374b3e21cf0`
+- **Default-branch HEAD (re-queried 2026-08-05):**
+  `09f6cae810c5b48992f905bab89d5e334a3fb98c`
+  — two commits ahead of the contract snapshot; changed files are UI/design
+  material only (theme CSS, ThemeContext, DESIGN_SYSTEM.md). No queue, calibration,
+  controller, DTO, or contract file was modified between `9c1d7e4b` and
+  `09f6cae8`. All claims below remain accurate at the latest head.
+
+Every claim is cited to a stable source path and named symbol; line numbers are
+given as `line@commit-prefix` where they differ between commits. The parity
+guard in `tests/calibrationServerContractParity.test.ts` derives one side from
+this section and the other from executable desktop production behavior; see that
+file for the test strategy.
+
+> **Source verification, not live validation.** The claims below were established
+> by reading authoritative server C# source only. No live PrintFarmer server,
+> Orca worker, or printer hardware was exercised. The residual live-instance
+> requirement for issue #57 is stated in §10.7.
+
+### 10.1 Four issue-#138 parity routes
+
+The four routes guarded by the parity test (`CALIBRATION_QUEUE_ROUTE_TEMPLATES`):
+
+| Path template                                                             | Method | Symbol                                                | Line                         |
+| ------------------------------------------------------------------------- | ------ | ----------------------------------------------------- | ---------------------------- |
+| `/api/job-queue`                                                          | POST   | `JobQueueController.QueueJobAsync`                    | 95@167a3b13 / 105@9c1d7e4b   |
+| `/api/job-queue/{jobId}`                                                  | GET    | `JobQueueController.GetJobAsync`                      | both                         |
+| `/api/calibration-projects/{projectId}/attempts/{attemptId}/generate-job` | POST   | `CalibrationGenerationController.GenerateJobAsync`    | 41 (both)                    |
+| `/api/job-queue/{jobId}/acknowledge-bed-clear-and-start`                  | POST   | `JobQueueController.AcknowledgeBedClearAndStartAsync` | 946@167a3b13 / 1011@9c1d7e4b |
+
+Source files: `src/api/Controllers/JobQueueController.cs`,
+`src/api/Controllers/CalibrationGenerationController.cs`.
+PFD makes additional calls (change-feed, subscription-resources, orchestration-status)
+not listed here; this table covers only the four parity-guarded paths.
+
+There is no route of the form `/api/calibration-projects/{id}/queue` and no
+project-level `/api/calibration-projects/{id}/generation` route at either
+inspected commit.
+
+### 10.2 Generation is per-attempt
+
+```
+POST /api/calibration-projects/{projectId}/attempts/{attemptId}/generate-job
+```
+
+Symbol `CalibrationGenerationController.GenerateJobAsync`, line 41 at both
+commits. Each immutable attempt can be independently (re-)generated. There is no
+generation route scoped to a project without an attempt.
+
+### 10.3 Bed-clear requires three precondition headers
+
+`POST /api/job-queue/{jobId}/acknowledge-bed-clear-and-start` enforces three
+precondition headers documented below. PFD always sends all three unconditionally
+via `acknowledgeBedClearAndStart`, which builds its headers from the exported
+`BED_CLEAR_PRECONDITION_HEADER_NAMES` constant.
+
+| Header                      | Carries                    | Server behavior when absent                                                                                                                  |
+| --------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Idempotency-Key`           | Stable per-operation key   | 428 when both header **and** body `idempotencyKey` are blank (body fallback exists; symbol `idempotencyKey` at 973@167a3b13 / 1038@9c1d7e4b) |
+| `If-Match`                  | Opaque job ETag (§10.4)    | 428 when absent or blank (no body fallback; server variable _ifMatchHeader_ at 984@167a3b13 / 1049@9c1d7e4b)                                 |
+| `X-Dispatch-State-If-Match` | Opaque dispatch-state ETag | 428 when absent or blank (no body fallback; server variable _dispatchIfMatchHeader_ at 986@167a3b13 / 1051@9c1d7e4b)                         |
+
+Source: `src/api/Controllers/JobQueueController.cs`,
+`AcknowledgeBedClearAndStartAsync`.
+
+### 10.4 Opaque row-version tokens
+
+Two distinct `[Timestamp] byte[]?` properties produce the bed-clear ETags:
+
+- **Job ETag** (`If-Match`): `PrintJob.RowVersion`
+  (`src/infra/Domain/PrintJob.cs` lines 19–20@167a3b13 / 20–21@9c1d7e4b)
+  mapped to base-64 by `JobQueueService.ToBase64RowVersion` (lines
+  1408–1409@167a3b13 / 1532–1533@9c1d7e4b; calls `Convert.ToBase64String`).
+- **Dispatch-state ETag** (`X-Dispatch-State-If-Match`): `PrinterDispatchState.RowVersion`
+  (`src/infra/Domain/PrinterDispatchState.cs` lines 37–38 at both commits),
+  mapped by the same `ToBase64RowVersion` helper (called at line 806@9c1d7e4b).
+
+**Treat both as opaque and forward without application-level interpretation.**
+The server decodes them via `DecodeEtag` (calls `Convert.FromBase64String` after
+trimming quotes; `JobQueueController.cs` lines 1197–1200@9c1d7e4b). Three
+distinct HTTP outcomes:
+
+- **400** — `DecodeEtag` throws `FormatException` on malformed base-64 (lines
+  1072–1077@9c1d7e4b); the token is corrupt or not base-64.
+- **412 `dispatch_revision_conflict`** — decoded bytes do not match the stored
+  row version; the token is stale but well-formed (symbol `DispatchRevisionConflict`,
+  lines 1127–1139@9c1d7e4b).
+- **428 `precondition_required`** — header is absent entirely (see §10.3).
+
+PFD's wire types `RemoteJobQueueJob.rowVersion` and
+`RemoteDispatchAttemptResult.jobRevision` accept the base-64 string as-is
+(`z.string().max(512)`). The `acknowledgeBedClearAndStart` method forwards
+`rowVersion` directly as the `If-Match` header value without modification.
+
+Source: `src/infra/Domain/PrintJob.cs`, `src/infra/Domain/PrinterDispatchState.cs`,
+`src/infra/Services/Queue/JobQueueService.cs`,
+`src/api/Controllers/JobQueueController.cs`.
+
+### 10.5 Printer-{id} envelopes redact job state
+
+The SignalR group name is produced by `AuthorizedHubGroups.Printer(Guid)` →
+`"Printer-{printerId}"` (`src/infra/Security/AuthorizedHubGroups.cs` line 17
+at 9c1d7e4b). Envelopes delivered to that group are produced by
+`QueueEventEnvelope.RedactForPrinter()` (`src/infra/Services/SignalR/QueueEventEnvelope.cs`,
+both commits), which nulls `jobId`, `projectId`, `calibrationAttemptId`,
+`jobKind`, `jobRevision`, `dispatchStateRevision`, `attemptId`, `attemptNumber`,
+`attemptOutcome`, `bedClearState`, `bedClearCommandId`, `bedClearExpiresAtUtc`,
+`errorCode`, `failureCode`, `failureRetryable`, `failureRequiresReconciliation`,
+_payloadJson_, `jobLogicalRevision`, and `dispatchStateLogicalRevision`, and
+forces `eventType` to `"PrintFarmer.Queue.PrinterStateChanged.v1"`.
+
+**Never read job state, bed-clear state, or revision tokens from a printer-group
+envelope.** For full job data subscribe to `QueueJob-{jobId}` (symbol
+`AuthorizedHubGroups.QueueJob(Guid)`). PFD enforces this via the exported
+`isJobScopedEnvelope` helper (`src/shared/ipc.ts`) used by
+`CalibrationQueueDispatchPanel`.
+
+### 10.5.1 Orchestration `status` and `currentStep` are forward-compatible strings
+
+The `status` field of `CalibrationOrchestrationStatusDto`
+(`src/api/Contracts/CalibrationGenerationContracts.cs`) is populated by
+`CalibrationGenerationSaga.Project` (symbol, line 2131@9c1d7e4b) as
+`orchestration.Status.ToString()` where `CalibrationOrchestrationStatus` is an
+enum with values `Pending`, `Running`, `WaitingToRetry`, `Completed`, `Failed`,
+`Cancelled` (`src/infra/Domain/CalibrationEntities.cs`, both commits).
+
+The `currentStep` field is set directly from `CalibrationGenerationSteps`
+constants (`src/api/Services/Calibration/Generation/CalibrationGenerationSteps.cs`,
+both commits), which are lowercase hyphenated strings: `"created"`,
+`"validating-context"`, `"resolving-model"`, `"compiling-plan"`,
+`"submitting-slice-job"`, `"awaiting-worker"`, `"verifying-artifact"`,
+`"composing-gcode"`, `"promoting"`, `"completed"`, `"failed"`, `"cancelled"`.
+
+The desktop must not switch exhaustively on either field — the server can extend
+both without a desktop deployment. PFD's `RemoteCalibrationOrchestrationStatus`
+declares both as `z.string()` for forward compatibility.
+
+### 10.5.2 Change-feed envelope schema version and sequence
+
+`QueueEventSchemaVersions.Current = "3"` is declared at
+`src/infra/Domain/QueueDispatchEntities.cs` line 7 at 9c1d7e4b (same at
+167a3b13). The `SchemaVersion` field on `QueueDispatchOutbox` is initialized to
+`QueueEventSchemaVersions.Current` (line 148@9c1d7e4b), persisted to the outbox
+row at write time. `QueueOutboxPublisherService` (lines 155–180@9c1d7e4b,
+`src/infra/Services/Queue/QueueOutboxPublisherService.cs`) passes the persisted
+the event's `SchemaVersion` into each `QueueEventEnvelope.FromOutbox` call, so every
+SignalR-published envelope carries the value written at outbox insert time.
+The change-feed REST projection also echoes the persisted value: symbol
+`GetChangesAsync`, assigning the event's `SchemaVersion` property at line
+336@167a3b13 / 346@9c1d7e4b in `src/api/Controllers/JobQueueController.cs`.
+
+**Desktop handling:** PFD's `RemoteQueueEventEnvelope` parses `schemaVersion` as
+`z.string()` (not a literal), so it accepts `"3"` from the server today and
+any future version without a code change. PFD does not hold a local authority on
+the deployed version — only live confirmation can establish which value a
+specific deployment emits. `sequence` is `z.number().int()` and is required;
+absent or non-integer `sequence` fails the schema parse.
+
+`QueueDispatchOutbox.Sequence` (`src/infra/Domain/QueueDispatchEntities.cs`
+line 56@9c1d7e4b) is a durable, monotonically increasing outbox sequence
+allocated in the same database transaction as the event write. It is identical
+across redeliveries of the same event. PFD's `detectQueueChangeFeedGap`
+(exported from `src/main/ipc.ts`) uses `sequence` to detect cursor gaps and
+internal gaps; REST is authoritative when a gap is detected.
+
+**What source verification cannot confirm** (residual for issue #57): that the
+currently deployed server instance emits `schemaVersion: "3"` on live envelopes.
+
+### 10.6 No `/start` route at either inspected commit; PFD uses acknowledge-bed-clear-and-start
+
+Neither `167a3b134a678a0d9a8c10371da8333d03ddc636` nor
+`9c1d7e4b97c5f0fee0f0c702aa864374b3e21cf0` has a `[HttpPost("{id:guid}/start")]`
+attribute in `JobQueueController.cs`.
+
+**Per-resource POST routes under `/api/job-queue/{id}`:**
+
+| Route segment                      | At 167a3b13 | At 9c1d7e4b |
+| ---------------------------------- | ----------- | ----------- |
+| `/dispatch`                        | ✓           | ✓           |
+| `/cancel`                          | ✓           | ✓           |
+| `/abort-print`                     | ✓           | ✓           |
+| `/rerun`                           | ✓           | ✓           |
+| `/harvest`                         | —           | ✓           |
+| `/dispatch-to`                     | ✓           | ✓           |
+| `/acknowledge-bed-clear-and-start` | ✓           | ✓           |
+
+**Collection POST routes (not under `/{id}`):**
+`/sync-orphaned` and `/batch-dispatch` at both commits.
+
+PFD's `CALIBRATION_QUEUE_ROUTE_TEMPLATES` constant contains no `/start` route
+and cannot satisfy a parity check against it. This is bounded to the two
+inspected commits; it is not a historical claim about commits not examined.
+
+### 10.7 Residual live-instance and hardware evidence requirement (issue #57)
+
+The claims in §§10.1–10.6 were established by reading authoritative server
+source only. They confirm that routes, header enforcement, row-version types,
+step name constants, schema version, sequence semantics, and redaction methods
+are present in the codebase at both inspected commits.
+
+**What cannot be established from source alone (open for issue #57):**
+
+1. **End-to-end round-trip** — that a live instance accepts `FilamentCalibration`
+   jobs, returns valid base-64 ETags, and enforces all three bed-clear headers.
+2. **Worker attestation** — that a running Orca worker satisfies the generation
+   saga contract.
+3. **Printer hardware** — that `acknowledge-bed-clear-and-start` causes a print
+   to start on a Klipper-backed printer.
+4. **Schema version "3" in production** — that the deployed server emits
+   `schemaVersion: "3"` on live change-feed envelopes.
+
+Until these are validated on a live instance, issue #57 remains open.
+
+---
+
 ## Related documents
 
 - [`docs/runbooks/`](./runbooks/) — the seven recovery procedures.

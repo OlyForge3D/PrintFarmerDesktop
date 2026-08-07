@@ -96,10 +96,28 @@ function unlinkJunction(junction: string) {
 }
 
 function registeredWorktree(repository: string, worktree: string) {
-  const expected = path.resolve(worktree).toLowerCase();
-  return listLinkedWorktrees(repository).some(
-    (entry) => path.resolve(entry).toLowerCase() === expected,
+  const resolveFilesystemPath = filesystemRealpath(
+    onWindows ? 'win32' : 'linux',
   );
+  let expected: string;
+  try {
+    expected = resolveFilesystemPath(worktree).toLowerCase();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  return listLinkedWorktrees(repository).some((entry) => {
+    try {
+      return resolveFilesystemPath(entry).toLowerCase() === expected;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    }
+  });
+}
+
+function canonicalPath(value: string) {
+  return filesystemRealpath(onWindows ? 'win32' : 'linux')(value);
 }
 
 function pathIsAbsent(target: string) {
@@ -521,8 +539,8 @@ describe('linked-worktree registry contract', () => {
       git(['worktree', 'add', '-b', 'linked', linked], repository);
 
       expect(
-        listLinkedWorktrees(linked).map((entry) => realpathSync(entry)),
-      ).toEqual([realpathSync(repository), realpathSync(linked)]);
+        listLinkedWorktrees(linked).map((entry) => canonicalPath(entry)),
+      ).toEqual([canonicalPath(repository), canonicalPath(linked)]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -15,11 +15,12 @@
  */
 
 import React, { useEffect, useRef, useCallback, useState } from 'react';
-import type {
-  CalibrationQueueJobState,
-  CalibrationBlockedReason,
-  CalibrationPollQueueChangesRequest,
-  CalibrationQueueEventEnvelope,
+import {
+  isJobScopedEnvelope,
+  type CalibrationQueueJobState,
+  type CalibrationBlockedReason,
+  type CalibrationPollQueueChangesRequest,
+  type CalibrationQueueEventEnvelope,
 } from '@shared/ipc';
 import type { CalibrationApi } from './api.js';
 import { calibrationErrorText } from './workspaceTypes';
@@ -178,7 +179,7 @@ function useQueueReconciliation(
           // CRITICAL: Printer-group envelopes are REDACTED — skip them.
           // Only process envelopes that have a matching jobId.
           for (const evt of result.events) {
-            if (evt.jobId === jobId) {
+            if (isJobScopedEnvelope(evt, jobId)) {
               onEvent(evt);
             }
           }

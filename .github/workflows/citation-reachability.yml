@@ -4,8 +4,9 @@ name: Citation reachability
 #
 # Runs on pull_request and on push to development, emits a check run, and does
 # NOT report for a queued entry, so this context MUST NOT be added to a branch
-# ruleset's required contexts. scripts/check-merge-queue-contexts.mjs enforces
-# that against live branch protection rather than leaving it to this comment.
+# ruleset's required contexts. The workflow's `run:` step invokes
+# `npm run check:citation-reachability`; the context checker enforces the
+# resulting agreement against live branch protection.
 # Advisory is load-bearing here rather than incidental: the push arm below runs
 # on the branch a queue would gate, and a required context that reports on push
 # but not for a queued entry is the deadlock #122 describes.
