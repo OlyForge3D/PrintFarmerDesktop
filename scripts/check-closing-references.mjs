@@ -412,6 +412,86 @@ export function parseBoundClosures(body) {
 }
 
 /**
+ * Read closing references from commit messages.
+ *
+ * Unlike pull request bodies, commit messages have no markdown regions that
+ * GitHub treats as inert. In particular, quoting a closing phrase does not
+ * protect it. The whitespace separator deliberately spans newlines: commit
+ * 0ab96610 closed #435 when ordinary paragraph wrapping separated the keyword
+ * from the issue number.
+ */
+export function parseCommitClosures(messages) {
+  if (!Array.isArray(messages)) {
+    throw new TypeError(
+      'expected commit messages to be an array; refusing to report no commit closures from an unreadable value',
+    );
+  }
+
+  const bound = new Set();
+  for (const message of messages) {
+    if (typeof message !== 'string') {
+      throw new TypeError(
+        'expected every commit message to be a string; refusing to treat an unreadable commit as closure-free',
+      );
+    }
+    for (const match of message.matchAll(CLOSING_KEYWORD)) {
+      bound.add(Number(match[1]));
+    }
+  }
+  return [...bound].sort((a, b) => a - b);
+}
+
+/**
+ * Parse every page returned by `gh api --paginate --slurp`.
+ *
+ * Keeping the page boundary in the response makes truncation visible in tests
+ * and avoids a first-page-only implementation that silently misses commit 101.
+ */
+export function parsePullRequestCommitResponse(raw) {
+  if (typeof raw !== 'string') {
+    throw new TypeError(
+      'expected the pull request commit response to be a string',
+    );
+  }
+
+  let pages;
+  try {
+    pages = JSON.parse(raw);
+  } catch (cause) {
+    throw new Error('pull request commit response is not valid JSON', {
+      cause,
+    });
+  }
+  if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page))) {
+    throw new TypeError(
+      'pull request commit response is not an array of pages; refusing to report no commit closures from an unreadable response',
+    );
+  }
+
+  return pages.flatMap((page) =>
+    page.map((entry) => {
+      const message = entry?.commit?.message;
+      if (typeof message !== 'string') {
+        throw new TypeError(
+          'pull request commit entry has no message string; refusing to treat an unreadable commit as closure-free',
+        );
+      }
+      return message;
+    }),
+  );
+}
+
+export function readPullRequestCommitClosures(prNumber, run) {
+  const raw = run([
+    'api',
+    '--paginate',
+    '--slurp',
+    `repos/{owner}/{repo}/pulls/${prNumber}/commits?per_page=100`,
+  ]);
+  return parseCommitClosures(parsePullRequestCommitResponse(raw));
+}
+
+/**
  * A settled read that its own source contradicts.
  *
  * Returns the references the body implies and the derived field lacks. Empty
@@ -622,10 +702,12 @@ export function formatFailure({ unexpected, missing, hasBlock, prNumber }) {
       '',
       '  ARMED BUT NOT DECLARED: ' + unexpected.map((n) => `#${n}`).join(', '),
       '  Merging this PR would close those issues. If that is not intended, the',
-      '  cause is almost certainly a closing keyword in the body -- including in',
-      '  a sentence saying the PR must NOT close them, because the parser',
-      '  does not read negation. Put the reference inside backticks or a fenced',
-      '  block to discuss it without arming it.',
+      '  cause is a closing keyword in the body or a contributed commit message.',
+      '  GitHub does not read negation. Narrating that another PR closed an issue',
+      '  also arms it because the parser does not track who performed the closure.',
+      '  In the body, put the phrase inside backticks or a fenced block. In a',
+      '  commit message, reword it so no closing keyword precedes the number;',
+      '  markdown formatting does not make commit-message references inert.',
     );
   }
   if (missing.length > 0) {
@@ -714,7 +796,11 @@ function gh(args) {
  * one that decides the exit code.
  */
 export async function main(argv, deps = {}) {
-  const { run = gh, readClosures = readSettled } = deps;
+  const {
+    run = gh,
+    readClosures = readSettled,
+    readCommitClosures = readPullRequestCommitClosures,
+  } = deps;
   const prNumber = argv[0];
   if (!prNumber || !/^\d+$/.test(prNumber)) {
     throw new Error('usage: check-closing-references.mjs <pr-number>');
@@ -722,6 +808,7 @@ export async function main(argv, deps = {}) {
 
   const body = run(['pr', 'view', prNumber, '--json', 'body', '--jq', '.body']);
   const { declared, hasBlock } = parseDeclaredClosures(body);
+  const commitClosures = readCommitClosures(prNumber, run);
 
   // Both fields out of ONE response. Fetched separately they cannot witness
   // each other: two calls can straddle the propagation, so a fresh body and a
@@ -761,9 +848,13 @@ export async function main(argv, deps = {}) {
     ? witnessUnreadableBinding(witnessBody, actual)
     : [];
   const suspect = contradiction.length > 0 || unreadable.length > 0;
-  const result = compareClosures(declared, actual);
+  const armed = [...new Set([...actual, ...commitClosures])].sort(
+    (a, b) => a - b,
+  );
+  const result = compareClosures(declared, armed);
   const summary =
-    `declared=[${declared.join(', ')}] armed=[${actual.join(', ')}] ` +
+    `declared=[${declared.join(', ')}] armed=[${armed.join(', ')}] ` +
+    `bodyArmed=[${actual.join(', ')}] commitArmed=[${commitClosures.join(', ')}] ` +
     `reads=${reads} retryableFailures=${retryableFailures} ` +
     `settled=${settled} stableMs=${stableMs}`;
 
