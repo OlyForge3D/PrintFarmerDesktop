@@ -67,6 +67,7 @@ describe('required-name discrimination', () => {
     ]);
     expect(
       githubActionsAppIds([
+        { app: null },
         { app: { id: 99, slug: 'other-app' } },
         { app: { id: ACTIONS_APP_ID, slug: 'github-actions' } },
       ]),

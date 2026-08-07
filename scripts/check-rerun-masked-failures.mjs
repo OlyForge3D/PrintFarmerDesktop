@@ -259,6 +259,7 @@ export function githubActionsAppIds(checkRuns) {
   }
   const ids = new Set();
   for (const [index, check] of checkRuns.entries()) {
+    if (check?.app === null) continue;
     if (
       typeof check?.app?.slug !== 'string' ||
       !Number.isSafeInteger(check?.app?.id) ||

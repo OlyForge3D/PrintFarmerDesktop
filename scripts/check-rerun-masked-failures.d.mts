@@ -16,7 +16,7 @@ export interface AttemptJob {
 }
 
 export interface HeadCheckRun {
-  app?: { id?: number; slug?: string };
+  app?: { id?: number; slug?: string } | null;
 }
 
 export interface MaskedFinding {
