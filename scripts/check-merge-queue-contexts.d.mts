@@ -25,6 +25,7 @@ export interface DeadlockingContext {
 
 export interface RequiredStatusChecks {
   contexts: string[];
+  checks: { context: string; appId: number | null }[];
   strict: boolean;
 }
 
