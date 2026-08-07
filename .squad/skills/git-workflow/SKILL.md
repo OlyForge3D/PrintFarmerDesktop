@@ -113,6 +113,24 @@ gh pr view <N> --repo OlyForge3D/PrintFarmerDesktop --json closingIssuesReferenc
 
 An empty array means it did not register.
 
+## Refuse to merge a PR that is BEHIND its base
+
+**#397: `development` has `required_status_checks.strict: true` — require a branch up to date before merging — and it does not bind.** `enforce_admins: false` exempts every admin from that rule, and the sole collaborator here is an admin, so `strict` is configured, correctly reported by GitHub, and stops nobody (`scripts/check-protection-assumptions.mjs` calls this reading `bypassable`, not `binding`). PR #322 merged BEHIND under exactly that gap: it changed a function signature, the incompatible caller lived in a file #322 never touched, and `development` was red for ~3h. No diff-based check would have caught it — only re-testing the union of both changes would have, which is what `strict` exists for and never ran.
+
+**This is not a call to flip `enforce_admins`.** That is a live, deliberate decision (#111, re-asserted by `check-protection-assumptions.mjs`) that is unsafe to reverse while `jpapiez` is the sole admin collaborator, and it belongs to #388, not to this rule. What binds the sole admin anyway is a client-side gate on the merge action itself — the same shape as the force-push guard above.
+
+**Before every `gh pr merge`, alongside `check:required-contexts`, run:**
+
+```powershell
+npm run check:behind-base -- --pr <N>
+```
+
+- exit `0` — the base is an ancestor of the PR head; safe to merge on this ground.
+- exit `1` — **BEHIND. Do not merge.** Sync by rebasing onto the latest base (not GitHub's "Update branch" button — that writes a merge commit, which `required_linear_history` forbids on this repo's normal squash-only path) and let CI re-run before merging.
+- exit `2` — undetermined (no credential, no network, refs could not be fetched). Not a pass; do not treat it as one.
+
+`scripts/check-behind-base.mjs` measures this with `git merge-base --is-ancestor <base> <head>` after refreshing the base — never the `mergeable`/`mergeStateStatus` API fields, which are documented elsewhere in this repo as flapping and going permanently stale.
+
 ## Merge one PR at a time, and verify each one landed
 
 **This is the most expensive lesson in the repo.** Two `gh pr merge` calls fired ~3 seconds apart against the same base both reported `MERGED`, but one merge commit was silently orphaned — the second merge resolved against the same stale base tip and its ref update dropped the first. `development` lost ~6000 lines of native engine code for hours.
