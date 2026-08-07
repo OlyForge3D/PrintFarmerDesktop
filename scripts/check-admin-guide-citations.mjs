@@ -347,17 +347,17 @@ async function requestJson(fetchImpl, url, token, purpose) {
         `${purpose}: GitHub rate limit prevented a complete read (${response.status} ${message})`,
       );
     }
-    return { response, body: null, message };
+    return { response, payload: null, message };
   }
-  let body;
+  let payload;
   try {
-    body = await response.json();
+    payload = await response.json();
   } catch (error) {
     throw new CitationFetchError(
       `${purpose}: malformed JSON (${error.message})`,
     );
   }
-  return { response, body, message: '' };
+  return { response, payload, message: '' };
 }
 
 const endpoint = (suffix) =>
@@ -376,7 +376,7 @@ export async function verifyRemoteCitations({
   );
   if (
     repoRead.response.status !== 200 ||
-    repoRead.body?.full_name !== SERVER_REPOSITORY
+    repoRead.payload?.full_name !== SERVER_REPOSITORY
   ) {
     throw new CitationFetchError(
       `positive repository control returned ${repoRead.response.status}`,
@@ -411,19 +411,19 @@ export async function verifyRemoteCitations({
 
   const headRead = await requestJson(
     fetchImpl,
-    endpoint(`commits/${repoRead.body.default_branch}`),
+    endpoint(`commits/${repoRead.payload.default_branch}`),
     token,
     'positive commit control',
   );
   if (
     headRead.response.status !== 200 ||
-    !/^[0-9a-f]{40}$/.test(headRead.body?.sha ?? '')
+    !/^[0-9a-f]{40}$/.test(headRead.payload?.sha ?? '')
   ) {
     throw new CitationFetchError(
       `positive commit control returned ${headRead.response.status} without a full SHA`,
     );
   }
-  const remoteHead = headRead.body.sha;
+  const remoteHead = headRead.payload.sha;
 
   const missingCommit = await requestJson(
     fetchImpl,
@@ -459,7 +459,7 @@ export async function verifyRemoteCitations({
       unresolvedPins.add(pin);
       continue;
     }
-    if (pinRead.response.status !== 200 || pinRead.body?.sha !== pin) {
+    if (pinRead.response.status !== 200 || pinRead.payload?.sha !== pin) {
       throw new CitationFetchError(
         `commit pin ${pin}: ${pinRead.response.status} ${pinRead.message || 'unreadable response'}`,
       );
@@ -477,10 +477,10 @@ export async function verifyRemoteCitations({
     }
     // Only the compare status is consumed. Its files array is capped at 300 and
     // is deliberately ignored; deletion/path truth comes from pinned contents.
-    if (!['ahead', 'identical'].includes(ancestry.body?.status)) {
+    if (!['ahead', 'identical'].includes(ancestry.payload?.status)) {
       stale.push(
-        `${pin}: not an ancestor of ${repoRead.body.default_branch} (${String(
-          ancestry.body?.status,
+        `${pin}: not an ancestor of ${repoRead.payload.default_branch} (${String(
+          ancestry.payload?.status,
         )})`,
       );
     }
@@ -509,23 +509,26 @@ export async function verifyRemoteCitations({
     }
     if (
       read.response.status !== 200 ||
-      read.body?.type !== 'file' ||
-      read.body?.encoding !== 'base64' ||
-      typeof read.body?.content !== 'string'
+      read.payload?.type !== 'file' ||
+      read.payload?.encoding !== 'base64' ||
+      typeof read.payload?.content !== 'string'
     ) {
       throw new CitationFetchError(
         `citation file ${filePath}@${commit}: incomplete response`,
       );
     }
     const decoded = Buffer.from(
-      read.body.content.replace(/\s/g, ''),
+      read.payload.content.replace(/\s/g, ''),
       'base64',
     ).toString('utf8');
-    if (decoded.length === 0 || Buffer.byteLength(decoded) !== read.body.size) {
+    if (
+      decoded.length === 0 ||
+      Buffer.byteLength(decoded) !== read.payload.size
+    ) {
       throw new CitationFetchError(
         `citation file ${filePath}@${commit}: empty or partial content (${Buffer.byteLength(
           decoded,
-        )}/${String(read.body.size)} bytes)`,
+        )}/${String(read.payload.size)} bytes)`,
       );
     }
     files.set(key, decoded);
