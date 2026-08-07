@@ -14,18 +14,10 @@ import {
   main,
   ghCandidates,
 } from '../scripts/check-required-contexts.mjs';
+import { REQUIRED_CONTEXT_NAMES } from '../scripts/check-protection-assumptions.mjs';
 import type { RollupRun } from '../scripts/check-required-contexts.mjs';
 
-const EIGHT = [
-  'Closing-reference declaration',
-  'Desktop (windows-latest)',
-  'Desktop (macos-latest)',
-  'Sidecar (windows-latest)',
-  'Sidecar (macos-latest)',
-  'Release package (windows-latest)',
-  'Release package (macos-latest)',
-  'Dependency advisories',
-];
+const EIGHT = [...REQUIRED_CONTEXT_NAMES];
 
 function ok(name: string, conclusion: string = 'SUCCESS') {
   return { name, status: 'COMPLETED', conclusion, completedAt: '2026-01-01' };
