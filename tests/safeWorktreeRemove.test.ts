@@ -95,29 +95,22 @@ function unlinkJunction(junction: string) {
   );
 }
 
-function registeredWorktree(repository: string, worktree: string) {
-  const resolveFilesystemPath = filesystemRealpath(
-    onWindows ? 'win32' : 'linux',
-  );
-  let expected: string;
+function worktreeIdentity(value: string) {
+  let resolved: string;
   try {
-    expected = resolveFilesystemPath(worktree).toLowerCase();
+    resolved = filesystemRealpath()(value);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw error;
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    resolved = path.resolve(value);
   }
-  return listLinkedWorktrees(repository).some((entry) => {
-    try {
-      return resolveFilesystemPath(entry).toLowerCase() === expected;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-      throw error;
-    }
-  });
+  return onWindows ? resolved.toLowerCase() : resolved;
 }
 
-function canonicalPath(value: string) {
-  return filesystemRealpath(onWindows ? 'win32' : 'linux')(value);
+function registeredWorktree(repository: string, worktree: string) {
+  const expected = worktreeIdentity(worktree);
+  return listLinkedWorktrees(repository).some(
+    (entry) => worktreeIdentity(entry) === expected,
+  );
 }
 
 function pathIsAbsent(target: string) {
@@ -215,6 +208,28 @@ describe('safe worktree removal validation', () => {
     expect(filesystemRealpath('darwin')).toBe(realpathSync);
     expect(filesystemRealpath('linux')).toBe(realpathSync);
   });
+
+  it.skipIf(!onWindows)(
+    'canonical test identity equates an 8.3 alias without equating distinct directories',
+    () => {
+      const root = mkdtempSync(path.join(os.tmpdir(), 'pfd-test-identity-'));
+      const target = path.join(root, 'long-worktree-directory-name');
+      const distinct = path.join(root, 'other-worktree-directory-name');
+      try {
+        mkdirSync(target);
+        mkdirSync(distinct);
+        const shortTarget = windowsShortPath(target);
+
+        expect(path.resolve(shortTarget).toLowerCase()).not.toBe(
+          path.resolve(target).toLowerCase(),
+        );
+        expect(worktreeIdentity(shortTarget)).toBe(worktreeIdentity(target));
+        expect(worktreeIdentity(distinct)).not.toBe(worktreeIdentity(target));
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   const completeRawState = {
     gitVersion: 'git version fixture',
@@ -539,8 +554,8 @@ describe('linked-worktree registry contract', () => {
       git(['worktree', 'add', '-b', 'linked', linked], repository);
 
       expect(
-        listLinkedWorktrees(linked).map((entry) => canonicalPath(entry)),
-      ).toEqual([canonicalPath(repository), canonicalPath(linked)]);
+        listLinkedWorktrees(linked).map((entry) => worktreeIdentity(entry)),
+      ).toEqual([worktreeIdentity(repository), worktreeIdentity(linked)]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
