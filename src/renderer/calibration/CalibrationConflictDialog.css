@@ -1,0 +1,314 @@
+.cal-conflict-backdrop {
+  position: fixed;
+  z-index: 49;
+  inset: 40px 0 24px;
+  background: color-mix(in srgb, var(--viewer) 82%, transparent);
+}
+
+.cal-conflict-dialog {
+  position: fixed;
+  z-index: 50;
+  top: 56px;
+  bottom: 40px;
+  left: 50%;
+  display: flex;
+  width: min(1100px, calc(100% - 56px));
+  min-height: 500px;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  box-shadow: 0 22px 70px rgb(0 0 0 / 55%);
+  background: var(--sidebar);
+  color: var(--text);
+  transform: translateX(-50%);
+}
+
+.cal-conflict-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--titlebar);
+}
+
+.cal-conflict-header h2,
+.cal-conflict-header p,
+.cal-conflict-detail h3,
+.cal-conflict-detail header p {
+  margin: 0;
+}
+
+.cal-conflict-header h2 {
+  font-size: 18px;
+}
+
+.cal-conflict-header p:last-child,
+.cal-conflict-detail header p:last-child {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.cal-conflict-close {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 20px;
+}
+
+.cal-conflict-content {
+  display: grid;
+  min-height: 0;
+  grid-template-columns: minmax(280px, 0.7fr) minmax(480px, 1.3fr);
+  flex: 1;
+  overflow: hidden;
+}
+
+.cal-conflict-list-pane,
+.cal-conflict-detail-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.cal-conflict-list-pane {
+  padding: 14px;
+  border-right: 1px solid var(--border);
+  background: var(--canvas);
+}
+
+.cal-conflict-list-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.cal-conflict-list-header h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.cal-conflict-list-header span,
+.cal-conflict-option span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.cal-conflict-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 8px;
+  list-style: none;
+}
+
+.cal-conflict-option {
+  display: grid;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  background: var(--surface);
+  cursor: pointer;
+  gap: 4px;
+}
+
+.cal-conflict-option:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.cal-conflict-option.selected {
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+  background: var(--accent-soft);
+}
+
+.cal-conflict-option .cal-conflict-status-text {
+  color: var(--warning);
+  font-weight: 650;
+}
+
+.cal-conflict-resolution-report {
+  flex: none;
+  max-height: 160px;
+  padding: 10px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  overflow-y: auto;
+  background: color-mix(in srgb, var(--warning) 10%, var(--sidebar));
+  color: var(--text);
+}
+
+.cal-conflict-resolution-report p,
+.cal-conflict-resolution-report ul {
+  margin: 4px 0 0;
+}
+
+.cal-conflict-resolution-report p,
+.cal-conflict-resolution-report li {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.cal-conflict-resolution-report ul {
+  padding-inline-start: 18px;
+}
+
+.cal-conflict-state {
+  display: flex;
+  min-height: 180px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+  gap: 5px;
+}
+
+.cal-conflict-state h3,
+.cal-conflict-state p {
+  margin: 0;
+}
+
+.cal-conflict-detail {
+  padding: 18px;
+}
+
+.cal-conflict-comparison {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.cal-conflict-comparison section {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  background: var(--canvas);
+}
+
+.cal-conflict-comparison h4 {
+  margin: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.cal-conflict-comparison pre {
+  min-height: 82px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  color: var(--muted);
+  font: 11px/1.45 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.cal-conflict-resolution,
+.cal-conflict-resolution fieldset,
+.cal-conflict-manual {
+  display: grid;
+  gap: 8px;
+}
+
+.cal-conflict-resolution fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.cal-conflict-resolution legend {
+  margin-bottom: 7px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cal-conflict-choice {
+  display: flex;
+  align-items: flex-start;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--surface);
+  gap: 8px;
+}
+
+.cal-conflict-choice:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.cal-conflict-manual {
+  margin-top: 4px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--canvas);
+}
+
+.cal-conflict-manual h4,
+.cal-conflict-manual p {
+  margin: 0;
+}
+
+.cal-conflict-manual label {
+  display: grid;
+  color: var(--muted);
+  font-size: 11px;
+  gap: 4px;
+}
+
+.cal-conflict-manual input {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius);
+  background: var(--viewer);
+  color: var(--text);
+}
+
+.cal-conflict-dialog :focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+@media (max-width: 850px) {
+  .cal-conflict-dialog {
+    top: 48px;
+    bottom: 32px;
+    width: calc(100% - 24px);
+    min-height: 0;
+  }
+
+  .cal-conflict-content {
+    display: block;
+    overflow-y: auto;
+  }
+
+  .cal-conflict-list-pane,
+  .cal-conflict-detail-pane {
+    overflow: visible;
+  }
+
+  .cal-conflict-list-pane {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .cal-conflict-comparison {
+    grid-template-columns: 1fr;
+  }
+}

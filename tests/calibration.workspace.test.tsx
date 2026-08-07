@@ -426,6 +426,11 @@ function makeApi(savedRecord = record()) {
         ],
       }),
     ),
+    listCalibrationConflicts: vi
+      .fn<CalibrationApi['listCalibrationConflicts']>()
+      .mockResolvedValue({ conflicts: [] }),
+    resolveCalibrationConflict:
+      vi.fn<CalibrationApi['resolveCalibrationConflict']>(),
     syncCalibrationNow: vi.fn().mockResolvedValue({
       phase: 'succeeded',
       profileId,
@@ -648,6 +653,10 @@ describe('CalibrationWorkspace', () => {
     expect(
       screen.getByRole('button', { name: 'New calibration project' }),
     ).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Review conflicts' }),
+    ).toBeDisabled();
+
     expect(screen.getByText('Not connected')).toBeInTheDocument();
     fireEvent.click(
       screen.getByRole('button', { name: 'Manage PrintFarmer profiles' }),
@@ -655,6 +664,25 @@ describe('CalibrationWorkspace', () => {
     await waitFor(() =>
       expect(noProfile.manageProfiles).toHaveBeenCalledOnce(),
     );
+  });
+
+  it('opens the authoritative conflict review even when workspace flags report zero', async () => {
+    const { api } = renderWorkspace();
+    const review = await screen.findByRole('button', {
+      name: 'Review conflicts',
+    });
+    expect(review).toBeEnabled();
+    fireEvent.click(review);
+
+    expect(
+      await screen.findByRole('dialog', {
+        name: 'Review calibration conflicts',
+      }),
+    ).toBeVisible();
+    expect(api.listCalibrationConflicts).toHaveBeenCalledWith({
+      profileId,
+      includeResolved: false,
+    });
   });
 
   it('uses explicit candidate eligibility independent of printer names', async () => {
