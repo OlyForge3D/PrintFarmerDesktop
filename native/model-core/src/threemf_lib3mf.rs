@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -18,41 +18,44 @@ use lib3mf_ffi::{
 };
 
 use crate::geometry::Aabb;
+use crate::limits::ParseGuard;
 use crate::scene_status::SceneLoadStatus;
 use crate::threemf::{
     ThreeMfError, ThreeMfMesh, ThreeMfPart, MAX_COMPONENT_DEPTH, MAX_TRIANGLES, MAX_VERTICES,
 };
 
 pub fn parse_file(path: &Path) -> Result<ThreeMfMesh, ThreeMfError> {
-    let mesh = crate::threemf::parse_file(path)?;
-    Ok(match Lib3mfSession::new() {
-        Ok(session) => merge_or_fallback(
-            mesh,
+    let mut guard = ParseGuard::default();
+    let mesh = crate::threemf::parse_file_with_guard(path, &mut guard)?;
+    let (validated, failure_kind) = match Lib3mfSession::new() {
+        Ok(session) => (
             session.parse_file(path),
             NativeValidationFailureKind::ValidationFailed,
         ),
-        Err(error) => merge_or_fallback(
-            mesh,
+        Err(error) => (
             Err(error),
             NativeValidationFailureKind::ValidatorUnavailable,
         ),
-    })
+    };
+    guard.check_now()?;
+    merge_or_fallback(mesh, validated, failure_kind, &mut guard)
 }
 
 pub fn parse_bytes(data: &[u8]) -> Result<ThreeMfMesh, ThreeMfError> {
-    let mesh = crate::threemf::parse_bytes(data)?;
-    Ok(match Lib3mfSession::new() {
-        Ok(session) => merge_or_fallback(
-            mesh,
+    let mut guard = ParseGuard::default();
+    let mesh = crate::threemf::parse_bytes_with_guard(data, &mut guard)?;
+    let (validated, failure_kind) = match Lib3mfSession::new() {
+        Ok(session) => (
             session.parse_bytes(data),
             NativeValidationFailureKind::ValidationFailed,
         ),
-        Err(error) => merge_or_fallback(
-            mesh,
+        Err(error) => (
             Err(error),
             NativeValidationFailureKind::ValidatorUnavailable,
         ),
-    })
+    };
+    guard.check_now()?;
+    merge_or_fallback(mesh, validated, failure_kind, &mut guard)
 }
 
 struct LoadedLib3mfApi {
@@ -1467,11 +1470,12 @@ fn merge_or_fallback(
     mut mesh: ThreeMfMesh,
     validated: Result<ThreeMfMesh, ThreeMfError>,
     failure_kind: NativeValidationFailureKind,
-) -> ThreeMfMesh {
+    guard: &mut ParseGuard,
+) -> Result<ThreeMfMesh, ThreeMfError> {
     match validated {
         Ok(validated) => {
-            merge_validated_scene(&mut mesh, validated);
-            mesh
+            merge_validated_scene(&mut mesh, validated, guard)?;
+            Ok(mesh)
         }
         Err(error) => {
             mesh.status = mesh.status.combine(SceneLoadStatus::Unsupported);
@@ -1491,12 +1495,18 @@ fn merge_or_fallback(
             {
                 mesh.status_messages.push(message);
             }
-            mesh
+            guard.check_now()?;
+            Ok(mesh)
         }
     }
 }
 
-fn merge_validated_scene(mesh: &mut ThreeMfMesh, validated: ThreeMfMesh) {
+fn merge_validated_scene(
+    mesh: &mut ThreeMfMesh,
+    validated: ThreeMfMesh,
+    guard: &mut ParseGuard,
+) -> Result<(), ThreeMfError> {
+    guard.check_now()?;
     mesh.unit = validated.unit;
     mesh.object_count = validated.object_count;
     mesh.build_item_count = validated.build_item_count;
@@ -1509,13 +1519,16 @@ fn merge_validated_scene(mesh: &mut ThreeMfMesh, validated: ThreeMfMesh) {
     // is enabled is worse than no diagnostic: it makes the stronger
     // configuration the quieter one.
     mesh.status = mesh.status.combine(validated.status);
+    let mut seen_messages: HashSet<String> = mesh.status_messages.iter().cloned().collect();
     for message in validated.status_messages {
-        if !mesh.status_messages.contains(&message) {
+        guard.checkpoint()?;
+        if seen_messages.insert(message.clone()) {
             mesh.status_messages.push(message);
         }
     }
 
     for (part, validated_part) in mesh.parts.iter_mut().zip(validated.parts) {
+        guard.checkpoint()?;
         if !validated_part.name.is_empty() {
             part.name = validated_part.name;
         }
@@ -1533,6 +1546,8 @@ fn merge_validated_scene(mesh: &mut ThreeMfMesh, validated: ThreeMfMesh) {
             mesh.parts.len()
         ));
     }
+    guard.check_now()?;
+    Ok(())
 }
 
 fn lib3mf_library_bases() -> Result<Vec<PathBuf>, ThreeMfError> {
@@ -2513,6 +2528,12 @@ fn run_git_stdout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::limits::{LimitViolation, ParseLimits};
+    use std::time::{Duration, Instant};
+
+    fn test_guard() -> ParseGuard {
+        ParseGuard::new(ParseLimits::default().without_timeout())
+    }
 
     #[test]
     fn affine_transform_converts_lib3mf_matrix() {
@@ -2529,6 +2550,7 @@ mod tests {
     #[test]
     fn fallback_marks_mesh_unsupported_when_validator_is_unavailable() {
         let mesh = sample_mesh();
+        let mut guard = test_guard();
 
         let mesh = merge_or_fallback(
             mesh,
@@ -2536,7 +2558,9 @@ mod tests {
                 "failed to locate lib3mf shared library".to_string(),
             )),
             NativeValidationFailureKind::ValidatorUnavailable,
-        );
+            &mut guard,
+        )
+        .unwrap();
 
         assert_eq!(mesh.status, SceneLoadStatus::Unsupported);
         assert_eq!(mesh.parts[0].status, SceneLoadStatus::Complete);
@@ -2549,6 +2573,7 @@ mod tests {
     #[test]
     fn fallback_marks_mesh_unsupported_when_validation_fails() {
         let mesh = sample_mesh();
+        let mut guard = test_guard();
 
         let mesh = merge_or_fallback(
             mesh,
@@ -2556,7 +2581,9 @@ mod tests {
                 "ReadFromBuffer failed: invalid resource reference".to_string(),
             )),
             NativeValidationFailureKind::ValidationFailed,
-        );
+            &mut guard,
+        )
+        .unwrap();
 
         assert_eq!(mesh.status, SceneLoadStatus::Unsupported);
         assert!(mesh.status_messages.iter().any(|message| {
@@ -3054,8 +3081,9 @@ mod tests {
         let mut validated = sample_mesh();
         validated.status = SceneLoadStatus::Complete;
         validated.status_messages = vec!["a native finding".to_string()];
+        let mut guard = test_guard();
 
-        merge_validated_scene(&mut mesh, validated);
+        merge_validated_scene(&mut mesh, validated, &mut guard).unwrap();
 
         assert_eq!(mesh.status, SceneLoadStatus::Partial);
         assert!(
@@ -3082,16 +3110,88 @@ mod tests {
         let mut mesh = sample_mesh();
         mesh.status_messages.push(shared.clone());
         let mut validated = sample_mesh();
-        validated.status_messages = vec![shared.clone()];
+        validated.status_messages = vec![
+            shared.clone(),
+            "native finding one".to_string(),
+            "native finding two".to_string(),
+            "native finding one".to_string(),
+        ];
+        let mut guard = test_guard();
 
-        merge_validated_scene(&mut mesh, validated);
+        merge_validated_scene(&mut mesh, validated, &mut guard).unwrap();
 
         assert_eq!(
-            mesh.status_messages
-                .iter()
-                .filter(|m| **m == shared)
-                .count(),
-            1
+            mesh.status_messages,
+            vec![
+                shared,
+                "native finding one".to_string(),
+                "native finding two".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn validated_scene_merge_observes_the_parse_deadline() {
+        let mut mesh = sample_mesh();
+        let validated = sample_mesh();
+        let mut guard =
+            ParseGuard::new(ParseLimits::default().with_timeout(Duration::from_millis(1)));
+        std::thread::sleep(Duration::from_millis(2));
+
+        let error = merge_validated_scene(&mut mesh, validated, &mut guard)
+            .expect_err("an expired parse deadline must stop the lib3mf merge");
+
+        assert!(matches!(
+            error,
+            ThreeMfError::Limit(LimitViolation::Timeout { limit_ms: 1, .. })
+        ));
+    }
+
+    #[test]
+    fn merging_a_large_distinct_message_count_dedups_correctly_and_stays_fast() {
+        // N is attacker-influenced (messages interpolate build-item and
+        // resource ids), so the dedup must not be O(N^2) in the distinct
+        // message count. This pins two properties at once: the *set* produced
+        // is identical to a naive reference implementation (correctness), and
+        // wall-clock time for a large N stays far below what a quadratic
+        // `contains` scan would take (performance). A regression to
+        // `Vec::contains`-based dedup would still pass the correctness half
+        // here, which is why the elapsed-time assertion is load-bearing, not
+        // decorative: 20_000 distinct messages is roughly 2*10^8 string
+        // comparisons under O(N^2), which does not complete in the bound
+        // below on any developer or CI machine, whereas the O(N) hash-set
+        // path does the same work in low single-digit milliseconds.
+        const DISTINCT: usize = 20_000;
+
+        let mut mesh = sample_mesh();
+        let mut validated = sample_mesh();
+        // Every message appears twice (once from each synthetic "pass") so the
+        // dedup has real duplicate work to do, not just N inserts into an
+        // empty set.
+        let mut expected = Vec::with_capacity(DISTINCT);
+        let mut messages = Vec::with_capacity(DISTINCT * 2);
+        for id in 0..DISTINCT {
+            let message = format!("lib3mf: unresolved reference to resource id {id}");
+            expected.push(message.clone());
+            messages.push(message.clone());
+            messages.push(message);
+        }
+        validated.status_messages = messages;
+        let mut guard = test_guard();
+
+        let started = Instant::now();
+        merge_validated_scene(&mut mesh, validated, &mut guard).unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(
+            mesh.status_messages, expected,
+            "dedup must preserve first-seen order and drop every duplicate"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "merging {DISTINCT} distinct messages took {elapsed:?}; an O(N^2) \
+             dedup would not finish this fast, so this points at a regression \
+             to the linear `contains` scan"
         );
     }
 
