@@ -103,20 +103,39 @@ function topLevelOccurrences(expression: string, name: string): number[] {
   return found;
 }
 
-/** True when the argument list at `parenIndex` has a top-level comma. */
-function callHasTopLevelComma(expression: string, parenIndex: number): boolean {
+/** Top-level arguments for the call whose opening parenthesis is `parenIndex`. */
+function callArguments(
+  expression: string,
+  parenIndex: number,
+): string[] | null {
+  const argumentsFound: string[] = [];
+  let argumentStart = parenIndex + 1;
   let depth = 0;
   for (let k = parenIndex; k < expression.length; k += 1) {
     const ch = expression[k]!;
     if (ch === '(' || ch === '[' || ch === '{') depth += 1;
     else if (ch === ')' || ch === ']' || ch === '}') {
       depth -= 1;
-      if (depth === 0) return false;
+      if (depth === 0) {
+        argumentsFound.push(expression.slice(argumentStart, k).trim());
+        return argumentsFound;
+      }
     } else if (ch === ',' && depth === 1) {
-      return true;
+      argumentsFound.push(expression.slice(argumentStart, k).trim());
+      argumentStart = k + 1;
     }
   }
-  return false;
+  return null;
+}
+
+function isPresentHandler(argument: string | undefined): boolean {
+  return (
+    argument !== undefined &&
+    argument !== '' &&
+    argument !== 'null' &&
+    argument !== 'undefined' &&
+    !/^void\s+0$/.test(argument)
+  );
 }
 
 /**
@@ -126,9 +145,15 @@ function callHasTopLevelComma(expression: string, parenIndex: number): boolean {
  * not protect the `app.whenReady()` chain itself.
  */
 function hasRejectionHandler(expression: string): boolean {
-  if (topLevelOccurrences(expression, '.catch(').length > 0) return true;
+  if (
+    topLevelOccurrences(expression, '.catch(').some((at) =>
+      isPresentHandler(callArguments(expression, at + '.catch'.length)?.[0]),
+    )
+  ) {
+    return true;
+  }
   return topLevelOccurrences(expression, '.then(').some((at) =>
-    callHasTopLevelComma(expression, at + '.then'.length),
+    isPresentHandler(callArguments(expression, at + '.then'.length)?.[1]),
   );
 }
 
@@ -210,6 +235,23 @@ describe('void-suppressed promises in src/main carry rejection handlers', () => 
       'control-two-argument-then.ts',
     );
     expect(twoArgumentThen[0]?.hasRejectionHandler).toBe(true);
+
+    for (const expression of [
+      'promise.catch()',
+      'promise.catch(null)',
+      'promise.catch(undefined)',
+      'promise.then(resolve,)',
+      'promise.then(resolve, undefined)',
+    ]) {
+      const absentHandler = scanVoidStatements(
+        `function f() {\n  void ${expression};\n}\n`,
+        'control-absent-handler.ts',
+      );
+      expect(
+        absentHandler[0]?.hasRejectionHandler,
+        `${expression} does not attach a rejection handler`,
+      ).toBe(false);
+    }
   });
 
   it('requires the bootstrap chain own top-level rejection handler', () => {
