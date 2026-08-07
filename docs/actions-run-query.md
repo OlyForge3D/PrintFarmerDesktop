@@ -20,7 +20,8 @@ npm run actions:runs-for-sha -- --sha 6f27bba
 
 Pass `--repo owner/name` when querying a repository other than the current one.
 The command first dereferences the input through `commits/<sha>`, validates that
-GitHub returned a full 40-character SHA, and only then calls
+GitHub returned a full 40-character SHA that begins with the requested prefix,
+and only then calls
 `actions/runs?head_sha=<full-sha>`.
 
 Successful output names the resolved SHA and the count:

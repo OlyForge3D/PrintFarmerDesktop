@@ -115,18 +115,28 @@ export function resolveCommitSha(input, repo, env, run) {
       reason: `the commit resolver returned an invalid full SHA: ${JSON.stringify(sha)}`,
     };
   }
+  if (!sha.startsWith(input.toLowerCase())) {
+    return {
+      ok: false,
+      reason: `the resolved commit ${sha} does not match requested SHA prefix ${input.toLowerCase()}`,
+    };
+  }
 
   return { ok: true, sha };
 }
 
 /**
+ * The raw Actions filter is deliberately private. Callers must enter through
+ * queryActionsRunsForInput so a syntactically valid but nonexistent full SHA
+ * cannot bypass repository resolution and become a successful zero.
+ *
  * @param {string} sha
  * @param {string} repo
  * @param {NodeJS.ProcessEnv} env
  * @param {typeof spawnSync} run
  * @returns {{ok: true, totalCount: number} | {ok: false, reason: string}}
  */
-export function queryActionsRuns(sha, repo, env, run) {
+function queryActionsRuns(sha, repo, env, run) {
   if (!FULL_SHA_PATTERN.test(sha)) {
     return {
       ok: false,
@@ -177,6 +187,27 @@ export function queryActionsRuns(sha, repo, env, run) {
 }
 
 /**
+ * @param {string} input
+ * @param {string} repo
+ * @param {NodeJS.ProcessEnv} env
+ * @param {typeof spawnSync} run
+ * @returns {{ok: true, sha: string, totalCount: number} | {ok: false, stage: 'resolve'|'query', reason: string}}
+ */
+export function queryActionsRunsForInput(input, repo, env, run) {
+  const resolved = resolveCommitSha(input, repo, env, run);
+  if (!resolved.ok) {
+    return { ok: false, stage: 'resolve', reason: resolved.reason };
+  }
+
+  const runs = queryActionsRuns(resolved.sha, repo, env, run);
+  if (!runs.ok) {
+    return { ok: false, stage: 'query', reason: runs.reason };
+  }
+
+  return { ok: true, sha: resolved.sha, totalCount: runs.totalCount };
+}
+
+/**
  * @param {readonly string[]} argv
  * @param {NodeJS.ProcessEnv} env
  * @param {typeof spawnSync} run
@@ -203,19 +234,15 @@ export function runMain(argv, env, run, write) {
     return EXIT_UNUSABLE;
   }
 
-  const resolved = resolveCommitSha(args.sha, repo, env, run);
-  if (!resolved.ok) {
-    write(`unusable input: ${resolved.reason}`);
+  const result = queryActionsRunsForInput(args.sha, repo, env, run);
+  if (!result.ok) {
+    write(
+      `${result.stage === 'resolve' ? 'unusable input' : 'query unusable'}: ${result.reason}`,
+    );
     return EXIT_UNUSABLE;
   }
 
-  const runs = queryActionsRuns(resolved.sha, repo, env, run);
-  if (!runs.ok) {
-    write(`query unusable: ${runs.reason}`);
-    return EXIT_UNUSABLE;
-  }
-
-  write(`resolved_sha=${resolved.sha}\ntotal_count=${runs.totalCount}`);
+  write(`resolved_sha=${result.sha}\ntotal_count=${result.totalCount}`);
   return EXIT_SUCCESS;
 }
 

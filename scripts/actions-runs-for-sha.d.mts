@@ -33,15 +33,16 @@ export declare function resolveCommitSha(
       reason: string;
     };
 
-export declare function queryActionsRuns(
-  sha: string,
+export declare function queryActionsRunsForInput(
+  input: string,
   repo: string,
   env: NodeJS.ProcessEnv,
   run: Run,
 ):
-  | { ok: true; totalCount: number }
+  | { ok: true; sha: string; totalCount: number }
   | {
       ok: false;
+      stage: 'resolve' | 'query';
       reason: string;
     };
 

@@ -5,11 +5,11 @@ import {
   EXIT_UNUSABLE,
   FULL_SHA_PATTERN,
   main,
-  queryActionsRuns,
+  queryActionsRunsForInput,
   resolveCommitSha,
 } from '../scripts/actions-runs-for-sha.mjs';
 
-const FULL_SHA = 'a'.repeat(40);
+const FULL_SHA = `a1b2c3d${'a'.repeat(33)}`;
 const NONEXISTENT_SHA = '0123456789abcdef0123456789abcdef01234567';
 
 function stub(
@@ -92,48 +92,60 @@ describe('resolveCommitSha', () => {
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.reason).toContain('invalid full SHA');
   });
+
+  it('rejects a hexadecimal ref that resolves outside the requested prefix', () => {
+    const result = resolveCommitSha(
+      'a1b2c3d',
+      'o/r',
+      {},
+      stub(() => ({ status: 0, stdout: `${'b'.repeat(40)}\n` })),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain(
+      'does not match requested SHA prefix',
+    );
+  });
 });
 
-describe('queryActionsRuns', () => {
-  it('refuses to query with a short SHA', () => {
-    let invoked = false;
-    const result = queryActionsRuns(
+describe('queryActionsRunsForInput', () => {
+  it('preserves a true zero after full-SHA validation', () => {
+    const calls: string[] = [];
+    const result = queryActionsRunsForInput(
+      'a1b2c3d',
+      'o/r',
+      {},
+      stub((_command, argv) => {
+        calls.push(argv[1] as string);
+        return calls.length === 1
+          ? { status: 0, stdout: `${FULL_SHA}\n` }
+          : { status: 0, stdout: '0\n' };
+      }),
+    );
+
+    expect(result).toEqual({ ok: true, sha: FULL_SHA, totalCount: 0 });
+    expect(calls).toEqual([
+      'repos/o/r/commits/a1b2c3d',
+      `repos/o/r/actions/runs?head_sha=${FULL_SHA}&per_page=1`,
+    ]);
+  });
+
+  it('does not coerce an empty response to zero', () => {
+    let calls = 0;
+    const result = queryActionsRunsForInput(
       'a1b2c3d',
       'o/r',
       {},
       stub(() => {
-        invoked = true;
-        return { status: 0, stdout: '0' };
+        calls += 1;
+        return calls === 1
+          ? { status: 0, stdout: FULL_SHA }
+          : { status: 0, stdout: '' };
       }),
     );
 
     expect(result.ok).toBe(false);
-    expect(invoked).toBe(false);
-  });
-
-  it('preserves a true zero after full-SHA validation', () => {
-    const result = queryActionsRuns(
-      FULL_SHA,
-      'o/r',
-      {},
-      stub((_command, argv) => {
-        expect(argv[1]).toContain(`head_sha=${FULL_SHA}`);
-        return { status: 0, stdout: '0\n' };
-      }),
-    );
-
-    expect(result).toEqual({ ok: true, totalCount: 0 });
-  });
-
-  it('does not coerce an empty response to zero', () => {
-    const result = queryActionsRuns(
-      FULL_SHA,
-      'o/r',
-      {},
-      stub(() => ({ status: 0, stdout: '' })),
-    );
-
-    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.stage).toBe('query');
   });
 });
 
