@@ -44,6 +44,9 @@ on:
   # operation, which is the only position from which this is visible.
   push:
     branches: [development]
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read

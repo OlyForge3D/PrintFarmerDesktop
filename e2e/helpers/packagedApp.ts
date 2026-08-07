@@ -52,6 +52,38 @@ export interface PackagedFailureDiagnostics {
   secondary: readonly PackagedErrorDiagnostic[];
 }
 
+export type PackagedStartupPhase =
+  'electronLaunch' | 'firstWindow' | 'domcontentloaded';
+
+export interface PackagedStartupMilestone {
+  name: 'spawn' | PackagedStartupPhase;
+  timestampUtc: string;
+  elapsedMs: number;
+}
+
+export interface PackagedStartupSnapshot {
+  startedAtUtc: string;
+  elapsedMs: number;
+  waitingFor: PackagedStartupPhase | null;
+  milestones: readonly PackagedStartupMilestone[];
+}
+
+export interface PackagedStartupTrace {
+  mark(name: 'spawn' | PackagedStartupPhase): void;
+  waitFor(phase: PackagedStartupPhase): void;
+  snapshot(): PackagedStartupSnapshot;
+}
+
+interface ElectronTestAppLike<TPage> {
+  process(): Pick<ChildProcess, 'stdout' | 'stderr'>;
+  firstWindow(): Promise<TPage>;
+  close(): Promise<void>;
+}
+
+interface ElectronTestPageLike {
+  waitForLoadState(state: 'domcontentloaded'): Promise<unknown>;
+}
+
 type TestOutcome<T> =
   | {
       status: 'fulfilled';
@@ -140,6 +172,101 @@ export function createPackagedProcessLog(): PackagedProcessLog {
       return decodeBoundedUtf8Tail(output).text;
     },
   };
+}
+
+export function createPackagedStartupTrace(
+  now: () => number = Date.now,
+): PackagedStartupTrace {
+  const startedAt = now();
+  const milestones: PackagedStartupMilestone[] = [];
+  let waitingFor: PackagedStartupPhase | null = null;
+
+  return {
+    mark(name) {
+      const timestamp = now();
+      milestones.push({
+        name,
+        timestampUtc: new Date(timestamp).toISOString(),
+        elapsedMs: timestamp - startedAt,
+      });
+      if (name === waitingFor) {
+        waitingFor = null;
+      }
+    },
+    waitFor(phase) {
+      waitingFor = phase;
+    },
+    snapshot() {
+      return {
+        startedAtUtc: new Date(startedAt).toISOString(),
+        elapsedMs: now() - startedAt,
+        waitingFor,
+        milestones: milestones.map((milestone) => ({ ...milestone })),
+      };
+    },
+  };
+}
+
+export async function launchInstrumentedElectronTestApp<
+  TPage extends ElectronTestPageLike,
+  TApp extends ElectronTestAppLike<TPage>,
+>(
+  launch: () => Promise<TApp>,
+  processLog: PackagedProcessLog,
+  startupTrace: PackagedStartupTrace,
+): Promise<{ app: TApp; page: TPage }> {
+  let app: TApp | null = null;
+  let phase: PackagedStartupPhase = 'electronLaunch';
+  startupTrace.mark('spawn');
+  startupTrace.waitFor(phase);
+
+  try {
+    app = await launch();
+    startupTrace.mark(phase);
+    const child = app.process();
+    captureProcessStream(child.stdout, 'stdout', processLog);
+    captureProcessStream(child.stderr, 'stderr', processLog);
+
+    phase = 'firstWindow';
+    startupTrace.waitFor(phase);
+    const page = await app.firstWindow();
+    startupTrace.mark(phase);
+
+    phase = 'domcontentloaded';
+    startupTrace.waitFor(phase);
+    await page.waitForLoadState('domcontentloaded');
+    startupTrace.mark(phase);
+    return { app, page };
+  } catch (cause) {
+    const startupError = new Error(
+      `Packaged Electron startup failed while waiting for ${phase}.`,
+      { cause },
+    );
+    if (app === null) {
+      throw startupError;
+    }
+    try {
+      await app.close();
+    } catch (closeError) {
+      throw new AggregateError(
+        [startupError, closeError],
+        startupError.message,
+        { cause: startupError },
+      );
+    }
+    throw startupError;
+  }
+}
+
+function captureProcessStream(
+  stream: NodeJS.ReadableStream | null,
+  name: 'stdout' | 'stderr',
+  processLog: PackagedProcessLog,
+): void {
+  stream?.on('data', (chunk: string | Uint8Array) => {
+    processLog.append(`[${name}] `);
+    processLog.append(chunk);
+  });
 }
 
 function withSerializableCauses(
@@ -288,7 +415,7 @@ function describeError(error: unknown): PackagedErrorDiagnostic {
   };
 }
 
-function failureDiagnostics(
+export function createPackagedFailureDiagnostics(
   primaryError: unknown,
   secondaryErrors: readonly unknown[],
 ): PackagedFailureDiagnostics {
@@ -306,8 +433,22 @@ export async function attachPackagedFailureDiagnostics(
   testInfo: Pick<TestInfo, 'attach'>,
   processOutput: string,
   diagnostics: PackagedFailureDiagnostics,
+  startup?: PackagedStartupSnapshot,
 ): Promise<void> {
   const attachmentErrors: unknown[] = [];
+  if (startup !== undefined) {
+    try {
+      await testInfo.attach('packaged-startup.json', {
+        body: Buffer.from(
+          JSON.stringify({ schemaVersion: 1, ...startup }, null, 2),
+          'utf8',
+        ),
+        contentType: 'application/json',
+      });
+    } catch (error) {
+      attachmentErrors.push(error);
+    }
+  }
   if (diagnostics.secondary.length > 0) {
     try {
       await testInfo.attach('packaged-secondary-errors.json', {
@@ -387,7 +528,7 @@ export async function runWithPackagedTestCleanup<T>(
     const diagnosticErrors: unknown[] = [];
     if (onFailure !== undefined) {
       try {
-        await onFailure(failureDiagnostics(cleanupFailure, []));
+        await onFailure(createPackagedFailureDiagnostics(cleanupFailure, []));
       } catch (error) {
         diagnosticErrors.push(error);
       }
@@ -397,7 +538,9 @@ export async function runWithPackagedTestCleanup<T>(
 
   if (onFailure !== undefined) {
     try {
-      await onFailure(failureDiagnostics(outcome.reason, secondaryErrors));
+      await onFailure(
+        createPackagedFailureDiagnostics(outcome.reason, secondaryErrors),
+      );
     } catch (error) {
       secondaryErrors.push(error);
     }
