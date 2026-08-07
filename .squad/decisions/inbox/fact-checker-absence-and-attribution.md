@@ -17,9 +17,9 @@ Pairing it with a loud instrument is the right remedy, but the pairing must name
 Neither identifies the party that produced a claim.
 
 - Two sessions examining one pull request cite the **same** revisions, because the revisions belong to the objects. A table of revisions therefore looks identical whoever assembled it and carries no attribution.
-- Every session in this squad comments under **one** GitHub login. Measured on pull request #162: 35 comments, one distinct author, zero carrying any session identifier.
-- Commits do carry attribution — a `Copilot-Session` trailer plus an author name.
+- Every session in this squad comments under **one** GitHub login. The historical pull request #162 sample found 35 comments, one distinct account, and zero session identifiers; issue #347 later discharged the stronger falsifier by comparing every field of two full comment objects known to come from different sessions. Every identity-bearing field was identical. The differing fields identified the comments, not their writers.
+- This note establishes no GitHub field that can distinguish sessions for issue or comment text. Commit ownership and push-guard identity are separate questions tracked under #471.
 
-**Consequence:** disputes about who said what are undecidable when conducted in comments, and decidable when conducted in commits. Route any claim whose authorship may later matter through a commit, or accept that it cannot be attributed.
+**Consequence:** when issue or comment authorship is unrecoverable, the artifact is the address. Cite the issue, pull request, heading, quoted text, comment URL, or comment ID instead of naming a session. Post critiques, corrections, and rejections on that artifact rather than routing them to an inferred author session. Explicit self-identification in body text is voluntary, untrusted metadata, not a recovered discriminator.
 
 **Do not resolve such a dispute by appeal to a session transcript.** This squad's transcripts store the user side and not the assistant side, so absence from them supports no denial.

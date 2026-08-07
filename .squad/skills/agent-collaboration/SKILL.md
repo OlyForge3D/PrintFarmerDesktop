@@ -52,6 +52,16 @@ So, when a review blocks a PR:
 
 The PR is also a delivery channel that does not drop messages. Cross-session chat demonstrably does — a fix list once sat undelivered while its author pinged asking why the PR had no reviews. Put the durable copy where the work is.
 
+## Issues and comments are their own address
+
+GitHub issue and comment authorship identifies the shared account, not the squad session that wrote the text. A full-object comparison recorded on issue #347 found no session discriminator: identity-bearing fields were identical, while differing fields identified the comment itself. Do not infer a session from the account, surrounding conversation, or who is currently discussing the artifact.
+
+- Cite the artifact and a stable location: issue or pull-request number plus heading, quoted text, comment URL, or comment ID. Do not name a session as the author of issue or comment text.
+- Post critiques, corrections, and rejections on the issue, pull request, or comment thread where the claim lives. The artifact is the durable address; an inferred author session is not a routable address.
+- Treat self-identification in body text as voluntary, untrusted metadata. It may be quoted as a claim but does not prove authorship.
+
+This does not change commit-revision ownership or the rejection rule below. Those operate on branch and commit work, not on a GitHub comment's shared-account author field.
+
 ## Freeze the branch during review
 
 Once a review is dispatched, the branch is frozen. Any push invalidates the verdict, because the reviewer's conclusions no longer describe the commit that would be merged. Push your fix, report the new SHA, then stop until released.
@@ -60,9 +70,9 @@ If the head does move, do not silently merge the old verdict forward. Assess the
 
 Before reporting or acting on any PR state, **re-query the live endpoint**. A snapshot taken minutes ago may describe a head that no longer exists.
 
-## Rejections go back to the original author
+## Rejected commit revisions stay with their owner
 
-The rejection-lockout rule (requiring a _different_ author to revise rejected work) was **dismissed on 2026-07-24**. When a reviewer rejects, the **original author fixes their own commit**. Do not rotate.
+The rejection-lockout rule (requiring a _different_ author to revise rejected work) was **dismissed on 2026-07-24**. When a reviewer rejects a commit revision, its branch owner fixes it. Do not infer that owner from an issue or comment author field, and do not rotate the revision.
 
 ## Reviewer standards
 
