@@ -106,16 +106,14 @@ function registeredWorktree(repository: string, worktree: string) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
   }
-  return listLinkedWorktrees(repository).some(
-    (entry) => {
-      try {
-        return resolveFilesystemPath(entry).toLowerCase() === expected;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-        throw error;
-      }
-    },
-  );
+  return listLinkedWorktrees(repository).some((entry) => {
+    try {
+      return resolveFilesystemPath(entry).toLowerCase() === expected;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    }
+  });
 }
 
 function canonicalPath(value: string) {
