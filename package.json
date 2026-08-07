@@ -57,6 +57,7 @@
     "report:pr-snapshot": "node scripts/pr-snapshot-report.mjs",
     "lift:sequencing-hold": "node scripts/lift-hold-on-close.mjs",
     "mutation:harness": "node scripts/mutation-harness.mjs",
+    "actions:runs-for-sha": "node scripts/actions-runs-for-sha.mjs",
     "probe:sha-query": "node scripts/probe-sha-query.mjs",
     "probe:silent-success": "node scripts/probe-silent-success.mjs",
     "seam:injected-defaults": "node scripts/check-injected-defaults.mjs",
