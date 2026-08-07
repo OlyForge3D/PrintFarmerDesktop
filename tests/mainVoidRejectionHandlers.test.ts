@@ -20,6 +20,20 @@ const repoRoot = path.resolve(
 );
 const mainDir = path.join(repoRoot, 'src', 'main');
 
+function unwrapExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isSatisfiesExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
 /**
  * Blank comments and literals without changing offsets so prose cannot become
  * a finding and reported line numbers remain accurate.
@@ -83,12 +97,12 @@ function callExpressionOperand(expression: string): ts.CallExpression | null {
   if (
     !statement ||
     !ts.isExpressionStatement(statement) ||
-    !ts.isVoidExpression(statement.expression) ||
-    !ts.isCallExpression(statement.expression.expression)
+    !ts.isVoidExpression(statement.expression)
   ) {
     return null;
   }
-  return statement.expression.expression;
+  const operand = unwrapExpression(statement.expression.expression);
+  return ts.isCallExpression(operand) ? operand : null;
 }
 
 /** True when `void` at `index` is an operator rather than a type annotation. */
@@ -136,62 +150,6 @@ function readExpression(code: string, start: number): string {
   return code.slice(start);
 }
 
-/** Offsets of `name` that are at bracket depth zero in `expression`. */
-function topLevelOccurrences(expression: string, name: string): number[] {
-  const found: number[] = [];
-  let depth = 0;
-  for (let k = 0; k < expression.length; k += 1) {
-    if (depth === 0 && expression.startsWith(name, k)) found.push(k);
-    const ch = expression[k]!;
-    if (ch === '(' || ch === '[' || ch === '{') depth += 1;
-    else if (ch === ')' || ch === ']' || ch === '}') depth -= 1;
-  }
-  return found;
-}
-
-/** Arguments parsed from the call whose opening parenthesis is `parenIndex`. */
-function callArguments(
-  expression: string,
-  parenIndex: number,
-): ts.NodeArray<ts.Expression> | null {
-  const sourceFile = ts.createSourceFile(
-    'handler-call.ts',
-    `probe${expression.slice(parenIndex)};`,
-    ts.ScriptTarget.Latest,
-    false,
-    ts.ScriptKind.TS,
-  );
-  let current: ts.Expression | undefined = (
-    sourceFile.statements[0] as ts.ExpressionStatement | undefined
-  )?.expression;
-  while (current && ts.isCallExpression(current)) {
-    if (
-      ts.isIdentifier(current.expression) &&
-      current.expression.text === 'probe'
-    ) {
-      return current.arguments;
-    }
-    current = ts.isPropertyAccessExpression(current.expression)
-      ? current.expression.expression
-      : current.expression;
-  }
-  return null;
-}
-
-function unwrapExpression(expression: ts.Expression): ts.Expression {
-  let current = expression;
-  while (
-    ts.isParenthesizedExpression(current) ||
-    ts.isAsExpression(current) ||
-    ts.isTypeAssertionExpression(current) ||
-    ts.isNonNullExpression(current) ||
-    ts.isSatisfiesExpression(current)
-  ) {
-    current = current.expression;
-  }
-  return current;
-}
-
 function isPresentHandler(argument: ts.Expression | undefined): boolean {
   if (!argument) return false;
   const unwrapped = unwrapExpression(argument);
@@ -203,22 +161,31 @@ function isPresentHandler(argument: ts.Expression | undefined): boolean {
 }
 
 /**
- * True only when the outer chain carries a rejection handler.
+ * True only when the outer chain ends in a rejection handler.
  *
- * Depth is load-bearing: the bootstrap body contains nested catches that do
- * not protect the `app.whenReady()` chain itself.
+ * Walking the outer call receiver is the AST equivalent of the recovered
+ * depth-zero check: catches inside callback arguments are never visited. A
+ * handler followed by another `.then` is not terminal and cannot answer for
+ * failures introduced by that later callback.
  */
 function hasRejectionHandler(expression: string): boolean {
-  if (
-    topLevelOccurrences(expression, '.catch(').some((at) =>
-      isPresentHandler(callArguments(expression, at + '.catch'.length)?.[0]),
-    )
-  ) {
-    return true;
+  let call = callExpressionOperand(expression);
+  let allowSettlementObserver = true;
+  while (call) {
+    if (!ts.isPropertyAccessExpression(call.expression)) return false;
+    const method = call.expression.name.text;
+    if (method === 'catch') {
+      return allowSettlementObserver && isPresentHandler(call.arguments[0]);
+    }
+    if (method === 'then') {
+      return allowSettlementObserver && isPresentHandler(call.arguments[1]);
+    }
+    if (method !== 'finally') allowSettlementObserver = false;
+
+    const receiver = unwrapExpression(call.expression.expression);
+    call = ts.isCallExpression(receiver) ? receiver : null;
   }
-  return topLevelOccurrences(expression, '.then(').some((at) =>
-    isPresentHandler(callArguments(expression, at + '.then'.length)?.[1]),
-  );
+  return false;
 }
 
 interface VoidStatement {
@@ -232,13 +199,35 @@ interface VoidStatement {
 function scanVoidStatements(source: string, file: string): VoidStatement[] {
   const code = blankCommentsAndStrings(source);
   const found: VoidStatement[] = [];
+  const sourceFile = ts.createSourceFile(
+    file,
+    source,
+    ts.ScriptTarget.Latest,
+    false,
+    ts.ScriptKind.TS,
+  );
+  const astVoidExpressions = new Map<number, ts.VoidExpression>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isVoidExpression(node)) {
+      astVoidExpressions.set(node.getStart(sourceFile), node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+
+  const candidateOffsets = new Set(astVoidExpressions.keys());
   const pattern = /\bvoid\b/g;
   let match: RegExpExecArray | null;
-
   while ((match = pattern.exec(code)) !== null) {
-    const at = match.index;
-    const expression = readExpression(code, at + 'void'.length).trim();
-    if (!isVoidOperatorPosition(code, at, expression)) continue;
+    candidateOffsets.add(match.index);
+  }
+
+  for (const at of [...candidateOffsets].sort((left, right) => left - right)) {
+    const astVoid = astVoidExpressions.get(at);
+    const expression = astVoid
+      ? astVoid.expression.getText(sourceFile)
+      : readExpression(code, at + 'void'.length).trim();
+    if (!astVoid && !isVoidOperatorPosition(code, at, expression)) continue;
     found.push({
       file,
       line: code.slice(0, at).split('\n').length,
@@ -309,6 +298,8 @@ describe('void-suppressed promises in src/main carry rejection handlers', () => 
       'promise.then(resolve,)',
       'promise.then(resolve, undefined)',
       'promise.then(makeHandler<Result, Error>())',
+      'promise.catch(handler).then(next)',
+      'promise.then(resolve, reject).then(next)',
     ]) {
       const absentHandler = scanVoidStatements(
         `function f() {\n  void ${expression};\n}\n`,
@@ -395,6 +386,26 @@ describe('void-suppressed promises in src/main carry rejection handlers', () => 
     );
     expect(bare).toHaveLength(1);
     expect(bare[0]?.hasRejectionHandler).toBe(false);
+  });
+
+  it('classifies parenthesized calls and template interpolations', () => {
+    const statements = scanVoidStatements(
+      [
+        'function f() {',
+        '  void (reader.cancel());',
+        '  const diagnostic = `${void report()}`;',
+        '}',
+      ].join('\n'),
+      'control-wrapped-calls.ts',
+    );
+    expect(statements.map((statement) => statement.expression)).toEqual([
+      '(reader.cancel())',
+      'report()',
+    ]);
+    expect(statements.every((statement) => statement.isCall)).toBe(true);
+    expect(statements.every((statement) => statement.hasRejectionHandler)).toBe(
+      false,
+    );
   });
 
   it('does not read types, prose, comments, or strings as statements', () => {
