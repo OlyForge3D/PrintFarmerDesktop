@@ -22,6 +22,218 @@ const repositoryRoot = path.resolve(
 const read = (...segments: string[]) =>
   readFileSync(path.join(repositoryRoot, ...segments), 'utf8');
 
+/**
+ * The branch list under a trigger arm, read in either YAML sequence form.
+ *
+ * An earlier form matched only the flow sequence (`branches: [development]`).
+ * The block form
+ *
+ *   push:
+ *     branches:
+ *       - development
+ *
+ * is equally valid and means the same thing, and it failed the extraction
+ * outright -- so the assertion reddened a correct workflow over a formatting
+ * choice while reading as a claim about which branch the arm is subscribed to.
+ * That is the false red this suite exists to avoid, inside this suite.
+ */
+const branchesOf = (workflow: string, event: string): string[] => {
+  const lines = workflow.split(/\r?\n/);
+  const start = lines.findIndex((line) =>
+    new RegExp(`^ {2}${event}:\\s*$`).test(line),
+  );
+  if (start < 0) return [];
+  const arm: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^ {0,2}\S/.test(line)) break;
+    arm.push(line);
+  }
+  const at = arm.findIndex((line) => /^\s+branches:/.test(line));
+  if (at < 0) return [];
+  const inline = /^\s+branches:\s*\[([^\]]*)\]\s*$/.exec(arm[at] ?? '');
+  const raw =
+    inline === null
+      ? arm.slice(at + 1).reduce<string[]>((names, line) => {
+          const item = /^\s+-\s*(.+?)\s*$/.exec(line);
+          if (item?.[1] !== undefined) names.push(item[1]);
+          return names;
+        }, [])
+      : (inline[1] ?? '').split(',');
+  return raw
+    .map((name) => name.trim().replace(/^['"]|['"]$/g, ''))
+    .filter((name) => name.length > 0);
+};
+
+/**
+ * Every `if:` in the workflow, job-level and step-level alike.
+ *
+ * An earlier form asserted the absence of the single token
+ * `github.event_name`. The property it meant to pin is "nothing here is
+ * disabled on push", and there are several ways to write that which never
+ * mention the event by name -- `github.event.pull_request != null`,
+ * `startsWith(github.ref, 'refs/pull/')`, or the same guard on the one step
+ * that invokes the harness. Each leaves every trigger armed and every
+ * fallback expression intact and simply does nothing on push, and each passed.
+ * The comment stated a property; the matcher tested a vocabulary.
+ *
+ * Collecting the conditions instead cannot be dodged by rephrasing. Its cost
+ * is stated rather than hidden: it refuses a legitimate condition too. That is
+ * the deliberate direction -- a condition added here should have to be
+ * justified out loud, because the failure it guards against is a required
+ * context that reports on push and never runs.
+ */
+const conditionsOf = (workflow: string): string[] =>
+  workflow.split(/\r?\n/).reduce<string[]>((found, line) => {
+    const match = /^\s+if:\s*(\S.*?)\s*$/.exec(line);
+    if (match?.[1] !== undefined) found.push(match[1]);
+    return found;
+  }, []);
+
+/**
+ * Evaluates the `${{ ... }}` expression subset this workflow actually uses, so
+ * the fallbacks can be asserted as a PROPERTY rather than as a spelling.
+ *
+ * The previous assertions were `toContain('...base.ref || github.ref_name')`:
+ * a literal substring of YAML. That pins one way of writing the fallback and
+ * says nothing about what the fallback DOES. Measured, both directions of that
+ * failure are real. A semantically identical rewrite (`github.sha` ->
+ * `github.event.after`, the same value on push) turned them red; and when the
+ * trunk copy of this workflow expressed the same intent as
+ * `github.event_name == 'pull_request' && ... || 'development'`, they went red
+ * against a workflow whose behaviour is correct on every subscribed event.
+ *
+ * A test that reddens on correct refactors is one a maintainer learns to edit
+ * rather than heed, which is how the blind spot #428 describes gets restored.
+ * So: evaluate, do not match. GitHub's `&&`/`||` are value-yielding with the
+ * empty string falsy, which is precisely the semantics the fallback relies on.
+ */
+const evaluateExpression = (
+  expression: string,
+  context: Record<string, unknown>,
+): unknown => {
+  const tokens = expression.match(
+    /'[^']*'|[A-Za-z_][\w.]*|==|!=|\(|\)|&&|\|\|/g,
+  );
+  if (tokens === null) throw new Error(`unparsable expression: ${expression}`);
+
+  let cursor = 0;
+  const peek = (): string | undefined => tokens[cursor];
+
+  // GitHub's falsiness: '' and null/undefined and false are falsy. `0` is too,
+  // but no expression here yields a number, so it is not special-cased.
+  const truthy = (value: unknown): boolean =>
+    value !== '' && value !== null && value !== undefined && value !== false;
+
+  const primary = (): unknown => {
+    const token = tokens[cursor++];
+    if (token === undefined) throw new Error('unexpected end of expression');
+    if (token === '(') {
+      const inner = disjunction();
+      if (tokens[cursor++] !== ')') throw new Error('unbalanced parenthesis');
+      return inner;
+    }
+    if (token.startsWith("'")) return token.slice(1, -1);
+    // A context path. An absent path yields '' - which is exactly what GitHub
+    // renders for a null lookup, and the behaviour the fallback exists for.
+    return (
+      token
+        .split('.')
+        .reduce<unknown>(
+          (node, key) =>
+            node !== null && typeof node === 'object'
+              ? (node as Record<string, unknown>)[key]
+              : undefined,
+          context,
+        ) ?? ''
+    );
+  };
+
+  const comparison = (): unknown => {
+    let left = primary();
+    while (peek() === '==' || peek() === '!=') {
+      const operator = tokens[cursor++];
+      const right = primary();
+      left = operator === '==' ? left === right : left !== right;
+    }
+    return left;
+  };
+
+  const conjunction = (): unknown => {
+    let left = comparison();
+    while (peek() === '&&') {
+      cursor++;
+      const right = comparison();
+      left = truthy(left) ? right : left;
+    }
+    return left;
+  };
+
+  function disjunction(): unknown {
+    let left = conjunction();
+    while (peek() === '||') {
+      cursor++;
+      const right = conjunction();
+      left = truthy(left) ? left : right;
+    }
+    return left;
+  }
+
+  return disjunction();
+};
+
+/** The `${{ ... }}` body assigned to `key`, wherever it sits in the file. */
+const expressionFor = (workflow: string, key: string): string => {
+  const match = new RegExp(
+    `^\\s*${key}:\\s*\\$\\{\\{\\s*(.+?)\\s*\\}\\}\\s*$`,
+    'm',
+  ).exec(workflow);
+  if (match?.[1] === undefined) {
+    throw new Error(`no interpolated value for '${key}'`);
+  }
+  return match[1];
+};
+
+/**
+ * The event names under `on:`. Read from the file so that adding an arm
+ * without making its inputs resolve is a failure rather than an omission.
+ */
+const eventsOf = (workflow: string): string[] => {
+  const lines = workflow.split(/\r?\n/);
+  const start = lines.findIndex((line) => /^on:\s*$/.test(line));
+  if (start === -1) return [];
+  const events: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^\S/.test(line)) break;
+    const match = /^ {2}(\w+):/.exec(line);
+    if (match?.[1] !== undefined) events.push(match[1]);
+  }
+  return events;
+};
+
+/** A synthetic payload for one event, shaped like the real `github` context. */ const contextFor =
+  (eventName: string): Record<string, unknown> => ({
+    github: {
+      event_name: eventName,
+      sha: 'f'.repeat(40),
+      ref_name: eventName === 'pull_request' ? '428/merge' : 'development',
+      event:
+        eventName === 'pull_request'
+          ? {
+              pull_request: {
+                head: { sha: 'a'.repeat(40) },
+                base: { ref: 'development' },
+              },
+            }
+          : // A real push payload carries `before`/`after`; `after` is the pushed
+            // commit and equals `github.sha`. Modelled so that expressing the
+            // fallback with it reads as the equivalent spelling it is, rather
+            // than as a failure of this fixture to describe the event.
+            eventName === 'push'
+            ? { after: 'f'.repeat(40), before: 'b'.repeat(40) }
+            : {},
+    },
+  });
+
 const workflowsDir = path.join(repositoryRoot, '.github', 'workflows');
 
 // The path the workflow was parked at while it could not be pushed. Named once
@@ -184,7 +396,7 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     expect(workflowText).not.toContain('CITATION_FLOOR');
   });
 
-  it('subscribes to pull_request, the only event carrying the branch to check', () => {
+  it('subscribes to pull_request, which carries the branch under review', () => {
     const workflow = workflowText;
 
     // `\r?` because the working tree is CRLF on Windows checkouts and LF in CI;
@@ -195,6 +407,222 @@ describe('the citation-reachability harness is invoked, not merely present', () 
     // first commit and never again, so a citation orphaned by a later rebase -
     // the exact mechanism in scope - would never be examined.
     expect(workflow).toMatch(/types:\s*\[[^\]]*\bsynchronize\b[^\]]*\]/);
+  });
+
+  /**
+   * #428, and the reason the case above no longer calls pull_request "the only
+   * event carrying the branch to check". It is not the only one, and believing
+   * it was is what left this check aimed away from its own defect.
+   *
+   * A pull_request run examines a head whose branch still exists, so a
+   * self-citation is reachable and the harness exits 0. Squash-merging that
+   * pull request and deleting the branch is the operation that orphans the
+   * citation. So the check passed, the merge then falsified what it had passed,
+   * and no event in the trigger set could ever observe the result. The failure
+   * existed only on trunk, and the instrument only ever looked at branches.
+   *
+   * That is a stronger statement than "coverage was incomplete": a trigger set
+   * confined to the side where the failure cannot exist is not a weak
+   * instrument for this defect, it is a non-instrument, and its green is
+   * uninformative rather than reassuring.
+   */
+  it('also fires after the merge, the operation that creates the failure', () => {
+    const workflow = workflowText;
+
+    const NON_PR_ARMS = /^\s{2}(?:push|schedule):/m;
+
+    // The binding assertion. Narrowing the trigger set back to pull_request
+    // alone - the likeliest edit, since every step here reads a pull_request
+    // context - turns this red instead of silently restoring the blind spot.
+    expect(workflow).toMatch(NON_PR_ARMS);
+
+    // The branch is read out of the list and compared as an element, not
+    // matched as a substring. `\bdevelopment\b` inside the list looked like it
+    // pinned the branch and did not: `\b` matches at the hyphen, so
+    // `[development-typo]` satisfied it while naming a branch that does not
+    // exist, and the arm would never have fired on trunk.
+    const branches = branchesOf(workflow, 'push');
+    expect(branches).toContain('development');
+    // Control on the extraction, in band: a parser that returned [] for
+    // everything would satisfy nothing above, but one that returned the whole
+    // list as a single string would satisfy `toContain` only by accident. This
+    // pins that the near-miss names are absent as elements.
+    expect(branches).not.toContain('development-typo');
+    // And the reader is shown reading BOTH YAML sequence forms. Without these
+    // the extraction could be satisfied by the shape this workflow happens to
+    // be written in today, and reformatting it -- a change that alters nothing
+    // about which branch is subscribed -- would turn this red.
+    expect(
+      branchesOf('on:\n  push:\n    branches: [development]\n', 'push'),
+    ).toEqual(['development']);
+    expect(
+      branchesOf('on:\n  push:\n    branches:\n      - development\n', 'push'),
+    ).toEqual(['development']);
+    // Negative control: an arm carrying no branch list must read as empty
+    // rather than as a pass, so a workflow that lost the list fails here.
+    expect(branchesOf('on:\n  push:\n    tags: [v1]\n', 'push')).toEqual([]);
+
+    // Control on the matcher, in band. Without it, a pattern that matched
+    // everything would assert the arm is present for a workflow that lost it,
+    // and this case would be the thing it is guarding against.
+    expect('name: X\non:\n  pull_request:\n    types: [opened]\n').not.toMatch(
+      NON_PR_ARMS,
+    );
+
+    // The push arm must not drag the check into a ruleset. It runs on the
+    // branch a queue would gate, and a required context that reports on push
+    // but not for a queued entry sits Pending forever - #122's deadlock.
+    expect(workflow).toMatch(/^#\s*merge-queue:\s*advisory$/m);
+    expect(workflow).not.toMatch(/^\s+merge_group:/m);
+  });
+
+  it('resolves its inputs on events that carry no pull_request object', () => {
+    const workflow = workflowText;
+
+    // A push arm whose steps only read `github.event.pull_request.*` is armed
+    // in the trigger block and inert in the job: the expressions resolve to the
+    // empty string, `ref:` quietly becomes the default, and the mainline
+    // refspec becomes `+refs/heads/:refs/...`, which git rejects for a reason
+    // that names neither this check nor the trigger. A red that misattributes
+    // is worse here than no arm at all, because it gets the arm removed.
+    // The property, not the spelling. Every event this workflow subscribes to
+    // must resolve BOTH inputs to something non-empty; on a pull request the
+    // ref must be the PR head rather than the synthetic merge commit, because
+    // the twin index is built over the branch's own commits.
+    //
+    // `on:` is read from the workflow rather than listed here, so adding an arm
+    // without making it resolve is a failure instead of an untested addition.
+    const refExpression = expressionFor(workflow, 'ref');
+    const mainlineExpression = /^\s*(?:BASE_REF|MAINLINE_REF):/m.test(workflow)
+      ? expressionFor(workflow, '(?:BASE_REF|MAINLINE_REF)')
+      : undefined;
+    expect(mainlineExpression).toBeDefined();
+
+    const subscribedEvents = eventsOf(workflow);
+    // The collector found the arms at all; without this the loop is vacuous.
+    expect(subscribedEvents).toContain('pull_request');
+    expect(subscribedEvents).toContain('push');
+
+    for (const eventName of subscribedEvents) {
+      const context = contextFor(eventName);
+      const ref = evaluateExpression(refExpression, context);
+      const mainline = evaluateExpression(mainlineExpression!, context);
+      // Non-empty is the whole point: an empty ref silently becomes "the
+      // default", and an empty mainline name builds `+refs/heads/:refs/...`,
+      // which git rejects with a message naming neither this check nor the
+      // trigger. A red that misattributes is worse than a missing arm here,
+      // because it is the arm that gets deleted.
+      expect(ref, `ref on ${eventName}`).not.toBe('');
+      expect(mainline, `mainline ref on ${eventName}`).not.toBe('');
+      expect(typeof ref, `ref on ${eventName}`).toBe('string');
+      expect(typeof mainline, `mainline on ${eventName}`).toBe('string');
+    }
+
+    // On a pull request the ref is the PR head, not `github.sha` (the merge).
+    expect(evaluateExpression(refExpression, contextFor('pull_request'))).toBe(
+      'a'.repeat(40),
+    );
+    // Off a pull request it is the pushed/scheduled commit.
+    expect(evaluateExpression(refExpression, contextFor('push'))).toBe(
+      'f'.repeat(40),
+    );
+
+    // Controls on the evaluator, in band. Without these an evaluator that
+    // returned a non-empty constant would satisfy every assertion above, and
+    // this case would be the thing it is guarding against. Each control is the
+    // pre-#428 spelling: correct on a pull request, empty on push - which is
+    // the defect, reproduced here so the evaluator is shown detecting it.
+    expect(
+      evaluateExpression(
+        'github.event.pull_request.head.sha',
+        contextFor('push'),
+      ),
+    ).toBe('');
+    expect(
+      evaluateExpression(
+        'github.event.pull_request.base.ref',
+        contextFor('schedule'),
+      ),
+    ).toBe('');
+    // And it agrees with GitHub on the two spellings actually in use, so the
+    // property is not being satisfied by a quirk of the parser.
+    expect(
+      evaluateExpression(
+        "github.event_name == 'pull_request' && github.event.pull_request.base.ref || 'development'",
+        contextFor('push'),
+      ),
+    ).toBe('development');
+    expect(
+      evaluateExpression(
+        'github.event.pull_request.base.ref || github.ref_name',
+        contextFor('push'),
+      ),
+    ).toBe('development');
+
+    // The job name is load-bearing outside this file: it is the check-run
+    // display name, the string a branch ruleset would name, and the string
+    // scripts/check-merge-queue-contexts.mjs matches against live branch
+    // protection. It was unguarded - changing it broke nothing - so it is
+    // pinned here.
+    const jobName = /^\s{4}name:\s*(\S.*?)\s*$/m.exec(workflow)?.[1];
+    expect(jobName).toBe('Citation reachability');
+    const refusals = workflow
+      .split(/\r?\n/)
+      .filter((line) => line.includes('::error::'));
+    // The workflow refuses somewhere at all. Without this, anything said about
+    // the refusals below is vacuously true of a workflow that refuses nowhere.
+    expect(refusals.length).toBeGreaterThan(0);
+
+    // NOT asserted here, deliberately: that every refusal names the check it
+    // comes from. The workflow's header argues that a red naming the wrong
+    // thing "would be read as this check being broken rather than as the
+    // trigger being wrong", and its two `::error::` messages name the
+    // condition while never naming the check - so the one attribution the
+    // argument turns on is the one missing. The fix is two words per message.
+    //
+    // It is a maintainer patch rather than a change here, for the same reason
+    // recorded above for the header wording: `.github/workflows/` cannot be
+    // written by this branch's token, which lacks the `workflow` OAuth scope.
+    // Asserting the corrected wording now would make this suite fail until a
+    // human acts, which reports the token rather than the workflow - and a
+    // suite that is red for a reason it does not name is the exact failure
+    // this file exists to argue against. Restore the loop
+    //
+    //   for (const refusal of refusals) expect(refusal).toContain(jobName);
+    //
+    // in the same commit that prefixes both messages with `${jobName}: `.
+
+    // The expression pins above cannot see the cheaper form of the same
+    // inertness. A job- or step-level `if:` that excludes push leaves every
+    // trigger armed and every fallback expression intact, and simply never runs
+    // the job on the event the arm exists for -- the workflow is subscribed to
+    // push and does nothing on push. Nothing about the expressions changes, so
+    // asserting on them is green either way.
+    expect(conditionsOf(workflow)).toEqual([]);
+    // Controls on the collector, in band, one per way of writing the guard.
+    // The form this replaced keyed on the token `github.event_name` and so was
+    // blind to the other three, each of which disables the push arm just as
+    // completely. A collector that found nothing would assert "no condition"
+    // for a workflow that has one -- the failure this case exists to catch --
+    // so it is shown finding every shape before its emptiness is trusted.
+    expect(
+      conditionsOf(
+        "jobs:\n  x:\n    if: github.event_name == 'pull_request'\n",
+      ),
+    ).toEqual(["github.event_name == 'pull_request'"]);
+    expect(
+      conditionsOf('jobs:\n  x:\n    if: github.event.pull_request != null\n'),
+    ).toEqual(['github.event.pull_request != null']);
+    expect(
+      conditionsOf(
+        "jobs:\n  x:\n    if: startsWith(github.ref, 'refs/pull/')\n",
+      ),
+    ).toEqual(["startsWith(github.ref, 'refs/pull/')"]);
+    expect(
+      conditionsOf(
+        'jobs:\n  x:\n    steps:\n      - run: node x.mjs\n        if: github.event.pull_request != null\n',
+      ),
+    ).toEqual(['github.event.pull_request != null']);
   });
 
   it('checks out the graph it needs rather than a depth-1 merge commit', () => {
