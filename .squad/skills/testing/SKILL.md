@@ -67,8 +67,9 @@ Disable pagers: `git --no-pager ...`.
 
 ## CI gate
 
-Seven required checks must pass:
+Eight required checks must pass:
 
+- Closing-reference declaration
 - Desktop (windows-latest)
 - Desktop (macos-latest)
 - Sidecar (windows-latest)
@@ -96,26 +97,17 @@ If that output disagrees with the list above, the endpoint wins — fix this fil
 
 | number                       | on an open PR | after it closes | is it a gate?     |
 | ---------------------------- | ------------- | --------------- | ----------------- |
-| required contexts            | 7             | 7               | **yes, this one** |
-| distinct check-run names     | 9             | 10              | no                |
-| check-run objects on the SHA | 9 or more     | 10 or more      | no                |
+| required contexts            | 8             | 8               | **yes, this one** |
+| distinct check-run names     | varies        | varies          | no                |
+| check-run objects on the SHA | varies        | varies          | no                |
 
-The two extra names on an open PR are `Sequencing hold` and `PR closure scope`, advisory by
-design and carrying a `# merge-queue: advisory` header saying so. The tenth name appears only
-after the PR closes: `Lift sequencing hold` runs on `closed` only, so it does not exist on an
-open PR at all.
+Advisory workflows add names that are not part of the gate, and that roster changes independently
+of branch protection. `Lift sequencing hold` appears only after the PR closes, while workflows
+subscribing to `edited` can add new run objects without changing the head SHA.
 
 **Run objects are not names.** `pr-closure-scope.yml` also triggers on `edited`, so editing a
-title or body adds another run object under a name that is already there. Measured on this
-file's own pull request: 10 run objects, 9 distinct names, `PR closure scope` twice.
-
-That is why the count keeps moving, and it moved twice while this section was being written:
-
-| reading                              | got | why                                            |
-| ------------------------------------ | --- | ---------------------------------------------- |
-| a merged PR's head, called it "a PR" | 10  | `Lift sequencing hold` only exists after close |
-| an open PR, counted run objects      | 10  | `PR closure scope` ran twice, from `edited`    |
-| an open PR, counted distinct names   | 9   | the honest answer to the question asked        |
+title or body adds another run object under a name that is already there. Historical totals are
+not reusable readiness facts; only the required names from live branch protection bind.
 
 **Watching a PR tells you what ran, not what binds**, and neither number is derivable from
 the other.
@@ -141,7 +133,7 @@ $run = @(gh api "repos/OlyForge3D/PrintFarmerDesktop/commits/$sha/check-runs?per
 **Assert the required names, not a total.** A gate written as `emitted -ge 9` answers _at
 least this many succeeded_ — narrower than _which required contexts are green on this commit_
 — and passes identically on nine names, nine names plus a duplicate, or eight names plus two
-reruns. Check the seven by name. No total is a safety property.
+reruns. Check the eight by name. No total is a safety property.
 
 ```powershell
 gh pr checks <N> --repo OlyForge3D/PrintFarmerDesktop --watch --interval 20
@@ -183,7 +175,7 @@ Check `attempt` before trusting any log: `gh run list --json attempt`. Only 1 of
 recent runs has `attempt >= 2` — but re-runs are concentrated on exactly the failures someone
 cared enough to re-run, which is the population an investigation samples from. See #261.
 
-`mergeStateStatus: UNSTABLE` means CI is still running or has failed — it is **not** ready to merge. `CLEAN` plus seven passes is the bar.
+`mergeStateStatus: UNSTABLE` means CI is still running or has failed — it is **not** ready to merge. `CLEAN` plus every required context green by name is the bar.
 
 ## Fixture traps
 

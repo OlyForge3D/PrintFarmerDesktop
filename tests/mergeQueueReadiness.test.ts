@@ -20,6 +20,7 @@ import {
   type CredentialProbe,
   discoverRepository,
 } from '../scripts/check-merge-queue-contexts.mjs';
+import { REQUIRED_CONTEXT_NAMES } from '../scripts/check-protection-assumptions.mjs';
 
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -220,23 +221,15 @@ describe('the parsers see the real files, not an empty string', () => {
 });
 
 describe('a required context must be emitted by a workflow that reports', () => {
-  it('holds for the seven contexts required on development today', () => {
-    // Pinned by value rather than read from the API: a test that fetches live
-    // branch protection would be measuring the repository at run time, and
-    // would go red for a ruleset change that is somebody's deliberate decision.
-    // The live check is scripts/check-merge-queue-contexts.mjs, run by a human
-    // before enabling the queue. This asserts the *repository* can satisfy it.
-    const required = [
-      'Desktop (windows-latest)',
-      'Desktop (macos-latest)',
-      'Sidecar (windows-latest)',
-      'Sidecar (macos-latest)',
-      'Release package (windows-latest)',
-      'Release package (macos-latest)',
-      'Dependency advisories',
-    ];
+  it('holds for every context the repository recognizes as required', () => {
+    // The live protection read stays in check-merge-queue-contexts.mjs. This
+    // offline half shares the repository's pinned names instead of maintaining
+    // a second roster that can omit a newly required workflow silently.
     expect(
-      evaluateRequiredContexts({ workflows, requiredContexts: required }),
+      evaluateRequiredContexts({
+        workflows,
+        requiredContexts: [...REQUIRED_CONTEXT_NAMES],
+      }),
     ).toEqual([]);
   });
 

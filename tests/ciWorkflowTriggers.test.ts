@@ -565,7 +565,7 @@ function documentedCiContexts(doc: string): string[] {
   // only then take the first contiguous bullet run inside it. #266 was that the
   // run had no outer bound: the terminator was gated on `bullets.length > 0`,
   // which is necessary because prose sits between this heading and its list
-  // ("Seven required checks must pass:"), but with an EMPTY list nothing ever
+  // ("Eight required checks must pass:"), but with an EMPTY list nothing ever
   // sets that gate, so the scan left the section and ran to EOF. Removing the
   // gate breaks the prose case; bounding the section fixes both.
   const nextHeading = lines.findIndex(
@@ -622,7 +622,7 @@ describe('the testing skill transcribes the contexts ci.yml emits', () => {
 
   it('names exactly those contexts, with no fictional and no omitted entry', () => {
     expect(documentedCiContexts(skillDoc)).toEqual(
-      renderedContexts(ciWorkflow),
+      [...renderedContexts(ciWorkflow), 'Closing-reference declaration'].sort(),
     );
   });
 

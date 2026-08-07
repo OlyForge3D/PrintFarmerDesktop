@@ -49,6 +49,7 @@ export function evaluateBodyEditTriggers(input: {
   compliant: TriggerFinding[];
   droppedDefaults: DroppedDefaultsFinding[];
   guards: string[];
+  uninvokedGuards: string[];
 };
 export function formatFindings(findings: TriggerFinding[]): string[];
 export function formatDroppedDefaults(

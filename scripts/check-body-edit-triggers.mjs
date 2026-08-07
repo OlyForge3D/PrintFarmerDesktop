@@ -43,7 +43,9 @@
 // No shebang: this module is imported by tests/bodyEditTriggers.test.ts, and
 // vite's transform does not strip one the way node does.
 
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { runCommandLines } from './check-script-reachability.mjs';
 
@@ -63,11 +65,11 @@ export const BODY_EDIT_TYPE = 'edited';
  */
 export const BODY_DERIVED_READS = [
   {
-    pattern: /--json['",\s]+body\b|['"]body['"]\s*,\s*['"]--jq['"]|\.body\b/,
+    pattern: /['"]--json['"]\s*,\s*['"][^'"]*\bbody\b/,
     reason: 'reads the pull request body directly',
   },
   {
-    pattern: /closingIssuesReferences/,
+    pattern: /\.\s*closingIssuesReferences\b/,
     reason:
       'reads closingIssuesReferences, which GitHub derives from the body text',
   },
@@ -243,11 +245,19 @@ export function evaluateBodyEditTriggers({ workflows, scripts, npmScripts }) {
     else findings.push(entry);
   }
 
+  const coveredGuards = new Set(
+    [...findings, ...compliant].flatMap(({ guards: invoked }) => invoked),
+  );
+  const uninvokedGuards = [...guards.keys()]
+    .filter((basename) => !coveredGuards.has(basename))
+    .sort();
+
   return {
     findings,
     compliant,
     droppedDefaults,
     guards: [...guards.keys()].sort(),
+    uninvokedGuards,
   };
 }
 
@@ -273,4 +283,77 @@ export function formatFindings(findings) {
       `'${BODY_EDIT_TYPE}' to its pull_request types (types: replaces the defaults, ` +
       `so list all of them).`,
   );
+}
+
+function readRepositoryInputs(repoRoot) {
+  const workflowDirectory = path.join(repoRoot, '.github', 'workflows');
+  const scriptDirectory = path.join(repoRoot, 'scripts');
+  const workflows = readdirSync(workflowDirectory)
+    .filter((file) => /\.ya?ml$/.test(file))
+    .map((file) => ({
+      path: path.join('.github', 'workflows', file),
+      contents: readFileSync(path.join(workflowDirectory, file), 'utf8'),
+    }));
+  const scripts = readdirSync(scriptDirectory)
+    .filter((file) => file.endsWith('.mjs'))
+    .map((basename) => ({
+      basename,
+      contents: readFileSync(path.join(scriptDirectory, basename), 'utf8'),
+    }));
+  const manifest = JSON.parse(
+    readFileSync(path.join(repoRoot, 'package.json'), 'utf8'),
+  );
+  return { workflows, scripts, npmScripts: manifest.scripts ?? {} };
+}
+
+function main(repoRoot) {
+  const inputs = readRepositoryInputs(repoRoot);
+  const result = evaluateBodyEditTriggers(inputs);
+  const findings = [
+    ...formatFindings(result.findings),
+    ...formatDroppedDefaults(result.droppedDefaults),
+    ...result.uninvokedGuards.map(
+      (basename) =>
+        `${basename} reads PR body-derived data but no pull_request workflow invokes it. ` +
+        `Wire it into a workflow that subscribes to '${BODY_EDIT_TYPE}'.`,
+    ),
+  ];
+
+  if (result.guards.length === 0) {
+    throw new Error(
+      'found no scripts that read PR body-derived data — the scan is broken, not the repository clean',
+    );
+  }
+  if (result.findings.length + result.compliant.length === 0) {
+    throw new Error(
+      'found no workflow invoking a body-reading guard — the scan is disconnected, not the repository compliant',
+    );
+  }
+
+  console.log(
+    `Checked ${result.guards.length} body-derived script(s) across ${inputs.workflows.length} workflow(s).`,
+  );
+  if (findings.length > 0) {
+    for (const finding of findings) console.error(`  ${finding}`);
+    throw new Error(`${findings.length} body-edit trigger violation(s)`);
+  }
+  console.log(
+    `  ${result.compliant.length} workflow invocation(s) subscribe to edited; no partial default trigger sets.`,
+  );
+}
+
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  const defaultRoot = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+  );
+  try {
+    main(path.resolve(process.argv[2] ?? defaultRoot));
+  } catch (error) {
+    console.error(`Body-edit trigger check failed: ${error.message}`);
+    process.exitCode = 1;
+  }
 }

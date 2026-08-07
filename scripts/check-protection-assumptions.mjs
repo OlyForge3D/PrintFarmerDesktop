@@ -41,12 +41,13 @@ import {
 } from './check-merge-queue-contexts.mjs';
 import { resolveRepository } from './check-pr-closure-scope.mjs';
 
-// The seven required contexts, by name. Three sessions in one evening reported
+// The eight required contexts, by name. Three sessions in one evening reported
 // this number as seven, eight and nine, each by counting rows in a check-run
 // rollup -- which is a superset in the same units, so the wrong number looks
 // exactly like the right one. Pinning the names rather than the count means a
 // swap of one context for another cannot pass as unchanged.
 export const REQUIRED_CONTEXT_NAMES = Object.freeze([
+  'Closing-reference declaration',
   'Dependency advisories',
   'Desktop (macos-latest)',
   'Desktop (windows-latest)',
