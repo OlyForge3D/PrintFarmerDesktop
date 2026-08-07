@@ -416,95 +416,114 @@ describe('stable current-head orchestration', () => {
     );
   });
 
-  it('does not start the final PR-head read until dependent reads resolve', async () => {
-    let pullReads = 0;
-    let runReads = 0;
-    let protectionReads = 0;
-    let resolveFinalRuns!: (response: Response) => void;
-    let resolveFinalProtection!: (response: Response) => void;
-    const finalRuns = new Promise<Response>((resolve) => {
-      resolveFinalRuns = resolve;
-    });
-    const finalProtection = new Promise<Response>((resolve) => {
-      resolveFinalProtection = resolve;
-    });
-    const response = (body: unknown) =>
-      new Response(JSON.stringify(body), {
-        headers: { 'content-type': 'application/json' },
+  it.each(['runs', 'protection'] as const)(
+    'does not start the final PR-head read after only %s resolves',
+    async (firstToResolve) => {
+      let pullReads = 0;
+      let runReads = 0;
+      let protectionReads = 0;
+      let resolveFinalRuns!: (response: Response) => void;
+      let resolveFinalProtection!: (response: Response) => void;
+      const finalRuns = new Promise<Response>((resolve) => {
+        resolveFinalRuns = resolve;
       });
-    const fetchImpl = vi.fn<typeof fetch>((input) => {
-      const url =
-        input instanceof URL
-          ? input.href
-          : typeof input === 'string'
-            ? input
-            : input.url;
-      if (/\/pulls\/272$/.test(url)) {
-        pullReads += 1;
-        return Promise.resolve(
-          response({
-            number: 272,
-            head: { sha: HEAD },
-            base: { ref: 'development' },
-          }),
-        );
-      }
-      if (/\/branches\/development\/protection$/.test(url)) {
-        protectionReads += 1;
-        if (protectionReads === 2) return finalProtection;
-        return Promise.resolve(
-          response({
-            required_status_checks: {
-              contexts: REQUIRED,
-              strict: true,
-            },
-          }),
-        );
-      }
-      if (/\/actions\/runs\?/.test(url)) {
-        runReads += 1;
-        if (runReads === 2) return finalRuns;
-        return Promise.resolve(
-          response({ total_count: 1, workflow_runs: [RUN] }),
-        );
-      }
-      if (/\/attempts\/1\/jobs\?/.test(url)) {
-        return Promise.resolve(
-          response({
-            total_count: 1,
-            jobs: [{ name: DESKTOP_WINDOWS, conclusion: 'success' }],
-          }),
-        );
-      }
-      throw new Error(`unexpected URL ${url}`);
-    });
+      const finalProtection = new Promise<Response>((resolve) => {
+        resolveFinalProtection = resolve;
+      });
+      const response = (body: unknown) =>
+        new Response(JSON.stringify(body), {
+          headers: { 'content-type': 'application/json' },
+        });
+      const fetchImpl = vi.fn<typeof fetch>((input) => {
+        const url =
+          input instanceof URL
+            ? input.href
+            : typeof input === 'string'
+              ? input
+              : input.url;
+        if (/\/pulls\/272$/.test(url)) {
+          pullReads += 1;
+          return Promise.resolve(
+            response({
+              number: 272,
+              head: { sha: HEAD },
+              base: { ref: 'development' },
+            }),
+          );
+        }
+        if (/\/branches\/development\/protection$/.test(url)) {
+          protectionReads += 1;
+          if (protectionReads === 2) return finalProtection;
+          return Promise.resolve(
+            response({
+              required_status_checks: {
+                contexts: REQUIRED,
+                strict: true,
+              },
+            }),
+          );
+        }
+        if (/\/actions\/runs\?/.test(url)) {
+          runReads += 1;
+          if (runReads === 2) return finalRuns;
+          return Promise.resolve(
+            response({ total_count: 1, workflow_runs: [RUN] }),
+          );
+        }
+        if (/\/attempts\/1\/jobs\?/.test(url)) {
+          return Promise.resolve(
+            response({
+              total_count: 1,
+              jobs: [{ name: DESKTOP_WINDOWS, conclusion: 'success' }],
+            }),
+          );
+        }
+        throw new Error(`unexpected URL ${url}`);
+      });
 
-    const pendingScan = scanPullRequest({
-      repository: { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' },
-      prNumber: 272,
-      token: 't',
-      fetchImpl,
-    });
+      const pendingScan = scanPullRequest({
+        repository: { owner: 'OlyForge3D', repo: 'PrintFarmerDesktop' },
+        prNumber: 272,
+        token: 't',
+        fetchImpl,
+      });
 
-    await vi.waitFor(() => {
-      expect(runReads).toBe(2);
-      expect(protectionReads).toBe(2);
-    });
-    expect(pullReads).toBe(1);
+      await vi.waitFor(() => {
+        expect(runReads).toBe(2);
+        expect(protectionReads).toBe(2);
+      });
+      expect(pullReads).toBe(1);
 
-    resolveFinalRuns(response({ total_count: 1, workflow_runs: [RUN] }));
-    resolveFinalProtection(
-      response({
+      const runsResponse = response({
+        total_count: 1,
+        workflow_runs: [RUN],
+      });
+      const protectionResponse = response({
         required_status_checks: {
           contexts: REQUIRED,
           strict: true,
         },
-      }),
-    );
-    await pendingScan;
+      });
+      if (firstToResolve === 'runs') {
+        resolveFinalRuns(runsResponse);
+      } else {
+        resolveFinalProtection(protectionResponse);
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+      expect(pullReads).toBe(1);
 
-    expect(pullReads).toBe(2);
-  });
+      if (firstToResolve === 'runs') {
+        resolveFinalProtection(protectionResponse);
+      } else {
+        resolveFinalRuns(runsResponse);
+      }
+      await pendingScan;
+
+      expect(pullReads).toBe(2);
+    },
+  );
 
   it('discards a scan when the PR head moves', async () => {
     await expect(
