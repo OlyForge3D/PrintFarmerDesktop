@@ -56,6 +56,8 @@
 
 **New rule:** Never fire two `gh pr merge` calls back-to-back without confirming, between them, that the first merge's commit is actually an ancestor of the target branch (e.g. `git merge-base --is-ancestor <merge-commit> origin/<branch>`, or re-fetching and checking `git log` before merging the next PR). Merges against a shared base must be serialized with a verification step in between — batching/parallelizing squash-merges of independent PRs targeting the same branch is not safe.
 
+**Exit-status polarity for the example above:** `git merge-base --is-ancestor A B` is silent when it answers the ancestry question and communicates that answer only through its exit status: `0` means A **is** an ancestor of B, and `1` means A is **not** an ancestor of B. A read failure may also print an error diagnostic and returns `128`, meaning an object could not be read (for example, a bad or unfetched SHA). `128` is distinct from `1` and must not be interpreted as a clean non-ancestor result.
+
 **Why:** Self-identified during routine PR monitoring; recorded so future sessions (Ripley/Ralph) don't reintroduce silent data loss by merging multiple PRs against the same base without verifying each one lands before starting the next.
 
 ## 2026-07-25: Backlog reconciliation — stale epics closed, sequencing chain shortened, Ralph re-enabled read-only
