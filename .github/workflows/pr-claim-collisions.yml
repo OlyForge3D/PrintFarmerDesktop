@@ -1,0 +1,34 @@
+name: Open PR issue-claim collisions
+
+# merge-queue: advisory
+#
+# A collision warns but does not fail: deliberate replacement pull requests are
+# valid. Query failures still fail loudly, because an unreadable population is
+# not evidence that the population has no collisions.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, closed]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  pr-claim-collisions:
+    name: Open PR issue-claim collisions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # No npm install: the detector imports only node: builtins.
+      - name: Report duplicate issue claims across open pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npm run check:pr-claim-collisions
