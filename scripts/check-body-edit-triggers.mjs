@@ -65,11 +65,11 @@ export const BODY_EDIT_TYPE = 'edited';
  */
 export const BODY_DERIVED_READS = [
   {
-    pattern: /--json['",\s]+body\b|['"]body['"]\s*,\s*['"]--jq['"]|\.body\b/,
+    pattern: /['"]--json['"]\s*,\s*['"][^'"]*\bbody\b/,
     reason: 'reads the pull request body directly',
   },
   {
-    pattern: /closingIssuesReferences/,
+    pattern: /\.\s*closingIssuesReferences\b/,
     reason:
       'reads closingIssuesReferences, which GitHub derives from the body text',
   },

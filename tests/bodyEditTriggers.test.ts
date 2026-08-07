@@ -68,6 +68,8 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
     });
     expect(guards).toContain('check-closing-references.mjs');
     expect(guards).toContain('check-pr-closure-scope.mjs');
+    expect(guards).not.toContain('check-body-edit-triggers.mjs');
+    expect(guards).not.toContain('check-injected-defaults.mjs');
   });
 
   it('sees each guard invoked by at least one workflow', () => {
@@ -172,10 +174,22 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
   });
 
   it('treats a body-derived field as a body read', () => {
-    expect(bodyDerivedReads('const x = closingIssuesReferences')).toEqual([
+    expect(bodyDerivedReads('const x = pr.closingIssuesReferences')).toEqual([
       'reads closingIssuesReferences, which GitHub derives from the body text',
     ]);
     expect(bodyDerivedReads('const x = 1')).toEqual([]);
+  });
+
+  it('does not confuse unrelated properties or its own matcher with body reads', () => {
+    expect(bodyDerivedReads('for (const node of ast.body) {}')).toEqual([]);
+    expect(
+      bodyDerivedReads(
+        readFileSync(
+          path.join(scriptsDir, 'check-body-edit-triggers.mjs'),
+          'utf8',
+        ),
+      ),
+    ).toEqual([]);
   });
 
   // The mirror of the workflow-citation test, and it exists because this
@@ -188,7 +202,9 @@ describe('a guard that reads a PR body re-runs when the body changes', () => {
     );
     expect(bodyDerivedReads('/* reads .body eventually */')).toEqual([]);
     expect(
-      bodyDerivedReads('// discusses .body\nconst x = closingIssuesReferences'),
+      bodyDerivedReads(
+        '// discusses .body\nconst x = pr.closingIssuesReferences',
+      ),
     ).toHaveLength(1);
   });
 
@@ -273,7 +289,7 @@ describe('the wired CLI discriminates a bad trigger configuration', () => {
     );
     writeFileSync(
       path.join(fixtureScripts, 'check-closing-references.mjs'),
-      'export const currentBody = pullRequest.body;\n',
+      "export const currentBody = gh(['pr', 'view', '--json', 'body']);\n",
     );
 
     const run = () =>
