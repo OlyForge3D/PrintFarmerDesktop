@@ -98,25 +98,16 @@ If that output disagrees with the list above, the endpoint wins — fix this fil
 | number                       | on an open PR | after it closes | is it a gate?     |
 | ---------------------------- | ------------- | --------------- | ----------------- |
 | required contexts            | 8             | 8               | **yes, this one** |
-| distinct check-run names     | 9             | 10              | no                |
-| check-run objects on the SHA | 9 or more     | 10 or more      | no                |
+| distinct check-run names     | varies        | varies          | no                |
+| check-run objects on the SHA | varies        | varies          | no                |
 
-The two extra names on an open PR are `Sequencing hold` and `PR closure scope`, advisory by
-design and carrying a `# merge-queue: advisory` header saying so. The tenth name appears only
-after the PR closes: `Lift sequencing hold` runs on `closed` only, so it does not exist on an
-open PR at all.
+Advisory workflows add names that are not part of the gate, and that roster changes independently
+of branch protection. `Lift sequencing hold` appears only after the PR closes, while workflows
+subscribing to `edited` can add new run objects without changing the head SHA.
 
 **Run objects are not names.** `pr-closure-scope.yml` also triggers on `edited`, so editing a
-title or body adds another run object under a name that is already there. Measured on this
-file's own pull request: 10 run objects, 9 distinct names, `PR closure scope` twice.
-
-That is why the count keeps moving, and it moved twice while this section was being written:
-
-| reading                              | got | why                                            |
-| ------------------------------------ | --- | ---------------------------------------------- |
-| a merged PR's head, called it "a PR" | 10  | `Lift sequencing hold` only exists after close |
-| an open PR, counted run objects      | 10  | `PR closure scope` ran twice, from `edited`    |
-| an open PR, counted distinct names   | 9   | the honest answer to the question asked        |
+title or body adds another run object under a name that is already there. Historical totals are
+not reusable readiness facts; only the required names from live branch protection bind.
 
 **Watching a PR tells you what ran, not what binds**, and neither number is derivable from
 the other.
