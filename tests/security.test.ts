@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const electronState = vi.hoisted(() => ({
   openedExternally: [] as string[],
+  openExternalRejection: null as Error | null,
   singleInstanceLock: true,
 }));
 
@@ -21,7 +22,9 @@ vi.mock('electron', () => ({
   shell: {
     openExternal: (url: string) => {
       electronState.openedExternally.push(url);
-      return Promise.resolve();
+      return electronState.openExternalRejection
+        ? Promise.reject(electronState.openExternalRejection)
+        : Promise.resolve();
     },
   },
 }));
@@ -123,8 +126,77 @@ function directive(csp: string, name: string): string {
 
 beforeEach(() => {
   electronState.openedExternally = [];
+  electronState.openExternalRejection = null;
   electronState.singleInstanceLock = true;
   delete process.env['ELECTRON_RENDERER_URL'];
+});
+
+async function captureConsoleErrors(body: () => void): Promise<unknown[][]> {
+  const calls: unknown[][] = [];
+  const spy = vi.spyOn(console, 'error').mockImplementation((...args) => {
+    calls.push(args);
+  });
+  try {
+    body();
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    spy.mockRestore();
+  }
+  return calls;
+}
+
+describe('failed external opens are reported instead of floated', () => {
+  it('reports a rejected will-navigate open', async () => {
+    const failure = new Error('no handler registered for this scheme');
+    electronState.openExternalRejection = failure;
+    const window = fakeWindow();
+    hardenWindow(window as never);
+
+    const errors = await captureConsoleErrors(() => {
+      navigate(window, 'https://evil.example/steal');
+    });
+
+    expect(electronState.openedExternally).toEqual([
+      'https://evil.example/steal',
+    ]);
+    expect(errors).toEqual([
+      ['[security] failed to open external URL', failure],
+    ]);
+  });
+
+  it('reports a rejected window-open', async () => {
+    const failure = new Error('no browser available');
+    electronState.openExternalRejection = failure;
+    const window = fakeWindow();
+    hardenWindow(window as never);
+
+    const errors = await captureConsoleErrors(() => {
+      window.windowOpenHandler?.({ url: 'https://evil.example/popup' });
+    });
+
+    expect(electronState.openedExternally).toEqual([
+      'https://evil.example/popup',
+    ]);
+    expect(errors).toEqual([
+      ['[security] failed to open external URL', failure],
+    ]);
+  });
+
+  it('stays silent when both external opens succeed', async () => {
+    const window = fakeWindow();
+    hardenWindow(window as never);
+
+    const errors = await captureConsoleErrors(() => {
+      navigate(window, 'https://evil.example/steal');
+      window.windowOpenHandler?.({ url: 'https://evil.example/popup' });
+    });
+
+    expect(electronState.openedExternally).toEqual([
+      'https://evil.example/steal',
+      'https://evil.example/popup',
+    ]);
+    expect(errors).toEqual([]);
+  });
 });
 
 describe('hardenWindow', () => {
