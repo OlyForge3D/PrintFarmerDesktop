@@ -198,12 +198,14 @@ Each PowerShell call is a fresh process, so this must be repeated in **every** c
 
 ## Commit messages
 
-Conventional-commit style subject (`feat(model-core): ...`, `fix(viewer): ...`, `docs(squad): ...`), a body explaining _why_, and the required trailers:
+Use a conventional-commit style subject (`feat(model-core): ...`, `fix(viewer): ...`, `docs(squad): ...`) and a body explaining _why_. Append the required trailers without placing a parseable `Key: value` example at the end of documentation:
 
+```powershell
+git commit --trailer "Co-authored-by=Copilot App <223556219+Copilot@users.noreply.github.com>" `
+  --trailer "Copilot-Session=<cloud-copilot-session-uuid>"
 ```
-Co-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>
-Copilot-Session: <session-id>
-```
+
+The `Copilot-Session` value is the full UUID from the **cloud Copilot-session namespace**. It is not the local session-state directory UUID or the project-session UUID used by cross-session messaging. Never abbreviate or reconstruct it.
 
 ## Do not merge your own work
 
