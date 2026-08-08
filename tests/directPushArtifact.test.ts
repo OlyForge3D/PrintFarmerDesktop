@@ -25,8 +25,8 @@ describe('findBareCommits', () => {
       commit('8031631'.padEnd(40, '0')),
     ];
     const counts = new Map([
-      [commits[0].sha, 0],
-      [commits[1].sha, 0],
+      [commits[0]!.sha, 0],
+      [commits[1]!.sha, 0],
     ]);
     expect(findBareCommits(commits, counts)).toEqual(commits);
   });
