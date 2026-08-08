@@ -150,10 +150,37 @@ export class ClosingReferenceReadBudgetError extends Error {
 
 export function parseDeclaredClosures(body: string): DeclaredClosures;
 
-/** Relative path (from the repository root) of the tracked declaration file. */
+/** Relative path (from the repository root) of the legacy shared declaration file. */
 export const DECLARATION_FILE_PATH: string;
 
+/** Directory holding one declaration file per PR, keyed by branch slug (#622). */
+export const PR_CLOSES_DIR: string;
+
+export function slugifyBranchName(branchName: string): string;
+
+export function declarationFilePathForBranch(branchName: string): string;
+
+export interface DeclarationResolutionOptions {
+  run?: (args: string[]) => string;
+  environment?: Record<string, string | undefined>;
+}
+
+export function resolveHeadBranchName(
+  prNumber: number | string,
+  options?: DeclarationResolutionOptions,
+): string;
+
+export function resolveDeclarationPath(
+  prNumber: number | string,
+  options?: DeclarationResolutionOptions,
+): string;
+
 export function readDeclarationFile(filePath?: string): string;
+
+export function readDeclarationForPullRequest(
+  prNumber: number | string,
+  options?: DeclarationResolutionOptions,
+): string;
 
 export function parseBoundClosures(body: string): number[];
 
@@ -204,7 +231,10 @@ export interface MainDeps {
     prNumber: number | string,
     run: (args: string[]) => string,
   ) => number[];
-  readDeclaration?: () => string;
+  readDeclaration?: (
+    prNumber: number | string,
+    options?: DeclarationResolutionOptions,
+  ) => string;
   environment?: Record<string, string | undefined>;
   readClosures?: (
     read: () => number[] | Promise<number[]>,
