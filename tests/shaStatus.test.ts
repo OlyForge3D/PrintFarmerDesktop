@@ -7,6 +7,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   classify,
+  distanceToTip,
+  isAncestor,
   parseArgs,
   remoteTrackingParts,
 } from '../scripts/sha-status.mjs';
@@ -852,5 +854,65 @@ describe('the tip and its ancestors are told apart, which ancestry alone cannot 
     // Not "0 commits behind": unknown and zero are different answers, and the
     // second is the one a reader would act on.
     expect(undecided.summary).not.toMatch(/\b0 commits?\b/);
+  });
+});
+
+/**
+ * #467. `git rev-list --count $A..$B` typed unquoted in PowerShell is two
+ * arguments, not one — the shell splits on `..` — and git fills the resulting
+ * empty range with the calling worktree's HEAD, so the count comes back
+ * plausible and wrong in a way that depends on which branch is checked out.
+ * `distanceToTip` was never exposed to that split (the range is one
+ * `execFileSync` argv element, never a shell), but it now carries the cheap
+ * cross-check the issue suggests: if `sha` is an ancestor of `base`, the
+ * reverse range must count zero. This block proves the check passes on a
+ * real ancestor/descendant pair and that the invariant it relies on actually
+ * holds, so the assertion is pinned against a real repository rather than
+ * only against `distanceToTip`'s own arithmetic.
+ */
+describe('a range built from two commits agrees with itself in both directions', () => {
+  let root: string;
+  let work: string;
+  let cwd: string;
+  let ancestorSha: string;
+  let descendantSha: string;
+
+  const DISTANCE = 4;
+
+  beforeAll(() => {
+    cwd = process.cwd();
+    root = mkdtempSync(path.join(os.tmpdir(), 'sha-status-range-'));
+    work = path.join(root, 'work');
+    git(['init', '-q', '--initial-branch=development', work], root);
+    configure(work);
+    ancestorSha = commit(work, 'commit 0');
+    for (let i = 1; i <= DISTANCE; i += 1) descendantSha = commit(work, `commit ${i}`);
+    // isAncestor/distanceToTip run git in the process's own cwd (they are
+    // called directly, not spawned via `run()` with a `cwd` option), so the
+    // fixture repo is entered for the duration of this block, matching the
+    // pattern already used for direct `isAncestor` calls elsewhere in this
+    // test suite.
+    process.chdir(work);
+  });
+
+  afterAll(() => {
+    process.chdir(cwd);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('returns the measured forward count for a genuine ancestor/descendant pair', () => {
+    expect(isAncestor(ancestorSha, descendantSha)).toBe(true);
+    expect(distanceToTip(ancestorSha, descendantSha)).toBe(DISTANCE);
+  });
+
+  it('holds the invariant the #467 cross-check depends on: reverse count is zero', () => {
+    // The property distanceToTip's cross-check trusts is exercised directly
+    // against the real repository, independent of distanceToTip itself — an
+    // independent instrument that would disagree if the forward count above
+    // were ever routed through something that could contaminate it.
+    expect(isAncestor(ancestorSha, descendantSha)).toBe(true);
+    expect(
+      Number(git(['rev-list', '--count', `${descendantSha}..${ancestorSha}`], work)),
+    ).toBe(0);
   });
 });

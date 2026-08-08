@@ -407,12 +407,35 @@ export function resolveCommit(rev) {
  * How many commits the base has that this one does not. Measured rather than
  * inferred, and returned as null when it cannot be measured, so a caller can
  * tell "zero" from "unknown" — the distinction the verdict below depends on.
+ *
+ * #467: `git rev-list --count $A..$B` typed unquoted in PowerShell is not one
+ * argument, it is two — PowerShell's argument-mode parser splits on `..` —
+ * and git silently fills the resulting empty range with the calling
+ * worktree's HEAD. The count still comes back, still looks plausible, and is
+ * wrong in a way that depends on which branch happens to be checked out. This
+ * call site was never exposed to that split: `execFileSync` passes
+ * `` `${sha}..${base}` `` as a single argv element and never touches a shell,
+ * so there is no `..` for a parser to split. It stays that way — one
+ * template-literal argument, never `sha, '..', base` as separate array
+ * elements — so a future refactor cannot reintroduce the hazard by accident.
+ *
+ * The cheap assertion the issue suggests is added anyway, as a second opinion
+ * that does not depend on trusting the plumbing that produced the first: if
+ * `sha` is an ancestor of `base`, the reverse range `base..sha` MUST count
+ * zero. A disagreement here means the forward count answered a different
+ * question than the one asked, and is reported as unmeasurable rather than
+ * silently returned.
  */
 export function distanceToTip(sha, base) {
   try {
     const count = git(['rev-list', '--count', `${sha}..${base}`]);
     const parsed = Number.parseInt(count, 10);
-    return Number.isNaN(parsed) ? null : parsed;
+    if (Number.isNaN(parsed)) return null;
+    if (isAncestor(sha, base) === true) {
+      const reverse = git(['rev-list', '--count', `${base}..${sha}`]);
+      if (Number.parseInt(reverse, 10) !== 0) return null;
+    }
+    return parsed;
   } catch {
     return null;
   }
