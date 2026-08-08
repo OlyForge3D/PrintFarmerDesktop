@@ -61,6 +61,7 @@
     "check:closed-head-dispatch": "node scripts/check-closed-head-dispatch.mjs",
     "check:direct-push-artifact": "node scripts/check-direct-push-artifact.mjs",
     "check:squad-verdict": "node scripts/verify-squad-verdict.mjs",
+    "check:hold-gate-readiness": "node scripts/check-hold-gate-readiness.mjs",
     "review:target": "node scripts/prepare-review-target.mjs",
     "instrument:probe": "node scripts/instrument-probe.mjs",
     "report:pr-snapshot": "node scripts/pr-snapshot-report.mjs",

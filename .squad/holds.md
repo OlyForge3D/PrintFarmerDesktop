@@ -93,6 +93,38 @@ The question of whether any control _could_ restrain a held branch is tracked
 separately, along with a measured answer for the force-push case. This document
 describes the signal; it is not the control and should not be read as one.
 
+### Update — #480: the "cannot be made binding under a merge queue" claim above was about the workflow as it existed, not a hard limit
+
+The paragraph above says "a label-based hold cannot be made binding under a
+merge queue at all" and treats requiring vs. not-requiring the check as the
+only two options, both bad. #480 re-examined this and found a third option was
+missed: **the check's underlying logic already handles a `merge_group` event.**
+`resolvePullRequestNumber` (shared with `check-pr-closure-scope.mjs`) already
+parses a merge-queue head ref (`refs/heads/gh-readonly-queue/<branch>/pr-<N>-<sha>`)
+into a PR number, and label-fetching is a plain REST call keyed on that number —
+neither depends on the `pull_request` event shape. **What actually deadlocks a
+queue is not "a label-based check cannot report under merge_group", it is
+specifically "`sequencing-hold.yml`'s `on:` block does not currently trigger on
+`merge_group`."** That is a workflow-trigger gap, not a structural one, and #480
+adopted closing it as the enforcement channel for a blocking verdict (see
+`.squad/decisions/inbox/ripley-480-sequencing-hold-required-context.md`).
+
+This correction does not make the hold binding today. Two things still have to
+happen, in order, before `Sequencing hold` may safely become a required
+context: (1) `sequencing-hold.yml` needs `merge_group:` added to its `on:`
+block and its header reclassified from `# merge-queue: advisory` to
+`# merge-queue: reports` — a `.github/workflows/` edit this session's
+credential cannot push (measured: rejected with "refusing to allow an OAuth
+App to create or update workflow ... without `workflow` scope"), so it needs a
+session or maintainer credential with the `workflow` OAuth scope; and (2) the
+repository owner adds `"Sequencing hold"` to `development`'s
+`required_status_checks.contexts` (a branch-protection admin write, not
+performed by an agent session by design). `scripts/check-hold-gate-readiness.mjs`
+(`npm run check:hold-gate-readiness`) reports live which of the two remain.
+Until both land, everything the paragraph above says about restraint being the
+only thing standing between a held PR and `development` remains true, and the
+check remains exactly as advisory as it always was.
+
 ### Who may apply it
 
 The lead (Ripley). In practice, whoever is sequencing the work — but the label
