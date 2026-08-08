@@ -571,6 +571,7 @@ question, and neither is secondary. The decision order in `push-guard.mjs` makes
 **Corollary recorded alongside it:** an unsound-operationalisation zero is worse than an uncontrolled one, because the passing control lends it authority — it reads as diligence and stops the next reader from ever asking whether the artifact could have shown the signal at all.
 
 **Why:** #361 documents that this exact failure survived being written down and enforced on others, in the same session, by the person enforcing it — the control alone does not catch it because the control and the error operate at different levels: the control validates the instrument, the error is one level up, in the choice of instrument for the claim. Recording the second question in the same file as the first closes that gap where the rule is actually read, rather than leaving it as a standalone observation that nothing routes people to.
+
 ## 2026-08-08 — #372: the agent emoji marker is not a provenance field; quote the sender line, don't trust the marker
 
 **By:** Fact Checker
