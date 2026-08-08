@@ -236,6 +236,36 @@ export const UNENFORCED_CHECKS = {
     '.github/workflows/direct-push-artifact.yml (on: push, branches: ' +
     '[development]) invoking `npm run check:direct-push-artifact -- --since ' +
     '<previous head>`, this becomes enforced and this entry should be deleted.',
+  'check:setup-files':
+    'Its judgement IS enforced in CI: tests/checkSetupFiles.test.ts drives ' +
+    'diffSetupFiles, resolveCommittedSetupFiles, checkSetupFiles and ' +
+    'formatReport over both the live vitest.config.ts and fixtures ' +
+    'reproducing every #642-review bypass (argv-gated, env-gated, ' +
+    'plugin-injected config), under `npm run test`. #539: a committed ' +
+    'setupFiles entry runs inside every vitest worker before any test module ' +
+    'and can redefine process.platform/execPath, path.sep and os.EOL, so this ' +
+    'check resolves the committed config the way vitest itself resolves it ' +
+    '(createVitest, not loadConfigFromFile) and refuses anything off an ' +
+    'explicit allowlist. Its workflow ' +
+    '(.github/workflows/setup-files-allowlist.yml, fully written and ' +
+    'reproduced verbatim in docs/setup-files-allowlist-workflow.md, covered ' +
+    'end-to-end by the same test file reading that doc) is NOT yet ' +
+    'committed — the same measured constraint check:closed-head-dispatch and ' +
+    'check:direct-push-artifact above are blocked on: the authoring ' +
+    "session's git credential is bound to a fixed OAuth App token that " +
+    'GitHub itself rejects for any push touching `.github/workflows/*` ' +
+    '("refusing to allow an OAuth App to create or update workflow ... ' +
+    'without `workflow` scope"), independent of which `gh auth` account is ' +
+    'active locally. STATE THE WEAKNESS PLAINLY: until a maintainer with ' +
+    '`workflow` scope adds the file, nothing runs this checker against the ' +
+    'live repository tree from outside a vitest worker, and the #539 gap it ' +
+    'exists to close — a policy read that never trusts the very worker a ' +
+    'malicious setupFiles entry runs inside — is proven only on fixtures, ' +
+    'not exercised for real on every pull request. Discharge path: a ' +
+    'maintainer pastes the workflow text from ' +
+    'docs/setup-files-allowlist-workflow.md in as ' +
+    '.github/workflows/setup-files-allowlist.yml verbatim and deletes this ' +
+    'entry — the reachability check will then find it invoked for real.',
   'check:hold-gate-readiness':
     'Its evaluator IS enforced in CI: tests/holdGateReadiness.test.ts drives ' +
     'evaluateHoldGateReadiness and formatReadiness over plain objects and the ' +

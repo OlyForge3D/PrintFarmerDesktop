@@ -26,6 +26,25 @@
 // plugin's `config()` hook -- and answer "clean" to the gate while
 // executing an unallowlisted file for real. The `argvGated`, `envGated`,
 // and `pluginInjected` fixtures below pin exactly those three bypasses.
+//
+// PR #642 REVIEW (Ripley): even with that logic fixed, nothing wired
+// `npm run check:setup-files` into a workflow that runs it against the
+// LIVE repository tree from OUTSIDE any vitest worker -- this file's own
+// "CONTROL: the live repository tree matches its own allowlist" test still
+// runs from inside a vitest worker, which is the position #539 exists to
+// distrust in the first place.
+//
+// The workflow file itself cannot be committed from this session: GitHub
+// rejects any push touching `.github/workflows/*` from this OAuth App
+// token ("without `workflow` scope"), the identical constraint already
+// documented for check:closed-head-dispatch in docs/closed-head-dispatch.md.
+// The full workflow text instead lives in
+// docs/setup-files-allowlist-workflow.md as a fenced code block a
+// maintainer with the right scope pastes in verbatim; the final describe
+// block below reads that block directly off disk and pins its exact
+// content, so the doc cannot drift from what this test suite expects
+// without failing here first.
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -334,5 +353,97 @@ describe('formatReport', () => {
     ]);
     expect(report).not.toContain('UNEXPECTED');
     expect(report).not.toContain('MISSING (');
+  });
+});
+
+// PR #642 REVIEW (Ripley): the describe block above proves the CHECKER's
+// logic is correct against fixtures, entirely from inside a vitest worker --
+// exactly the position #539 says not to trust, because a committed
+// `setupFiles` entry runs before any test module in that same worker and
+// could in principle interfere with the worker-side assertions themselves.
+// Proving the script's logic is right is not the same as proving the LIVE
+// REPOSITORY TREE is ever actually checked from OUTSIDE a vitest worker --
+// and before this fix, nothing did: `npm run check:setup-files` existed but
+// no workflow invoked it, so it was defined and never scheduled.
+//
+// This block pins the missing half. The workflow that would run
+// `node scripts/check-setup-files.mjs` against the live tree in a plain
+// `node`/`npm ci` job (never starting a vitest worker of its own) cannot be
+// committed as a real `.github/workflows/*.yml` file from this session (see
+// docs/setup-files-allowlist-workflow.md for why), so its exact text is
+// pinned here instead, read directly off disk from that doc -- not through
+// vitest's module graph, so nothing a setup file could touch -- so the doc
+// cannot drift from what a maintainer is expected to paste in without
+// failing this suite first.
+describe('the outside-worker gate has a fully written, pinned CI wiring, not just fixture-proven logic', () => {
+  const docPath = path.join(
+    process.cwd(),
+    'docs',
+    'setup-files-allowlist-workflow.md',
+  );
+  const doc = readFileSync(docPath, 'utf8');
+  const yamlBlockMatch = doc.match(/```yaml\n([\s\S]*?)\n```/);
+
+  it('has a fenced yaml workflow block in the pending-wiring doc, so the assertions below are not vacuous', () => {
+    expect(yamlBlockMatch).not.toBeNull();
+  });
+
+  const workflow = yamlBlockMatch?.[1] ?? '';
+
+  it('invokes the npm script that runs the checker as a CLI, outside any vitest worker', () => {
+    expect(workflow).toMatch(/run:\s*npm run check:setup-files\s*$/m);
+  });
+
+  it('never invokes `npm test`/`vitest run` itself, so its own job cannot be the worker #539 distrusts', () => {
+    const runLines = workflow
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('run:') || line.startsWith('- run:'));
+    for (const line of runLines) {
+      expect(line).not.toMatch(/\bnpm (run )?test\b/);
+      expect(line).not.toMatch(/\bvitest run\b/);
+    }
+
+    // Positive control: the assertion above must be capable of failing, not
+    // merely finding nothing to complain about. A workflow whose only `run:`
+    // step were `npm test` would be exactly the "checked from inside the
+    // worker" failure this test exists to catch.
+    const vacuousWorkflow = 'jobs:\n  x:\n    steps:\n      - run: npm test\n';
+    const vacuousRunLines = vacuousWorkflow
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('run:') || line.startsWith('- run:'));
+    expect(
+      vacuousRunLines.some((line) => /\bnpm (run )?test\b/.test(line)),
+    ).toBe(true);
+  });
+
+  it('declares itself advisory, not wired into a required CI status context yet', () => {
+    expect(workflow).toMatch(/^#\s*merge-queue:\s*advisory\s*$/m);
+  });
+
+  it('runs on pull_request, so it actually reports something for review to see', () => {
+    expect(workflow).toMatch(/pull_request:/);
+  });
+
+  it('names the exact filename the discharge path tells a maintainer to create', () => {
+    expect(doc).toContain('.github/workflows/setup-files-allowlist.yml');
+    expect(doc).toMatch(/add\s+the\s+following\s+file\s+as/);
+  });
+
+  it('has a matching package.json script that runs the checker directly', () => {
+    const packageJson = JSON.parse(
+      readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
+    ) as { scripts: Record<string, string> };
+    expect(packageJson.scripts['check:setup-files']).toBe(
+      'node scripts/check-setup-files.mjs',
+    );
+  });
+
+  it('is recorded in UNENFORCED_CHECKS with an honest, measured reason rather than silently unwired', async () => {
+    const { UNENFORCED_CHECKS } =
+      await import('../scripts/check-script-reachability.mjs');
+    expect(UNENFORCED_CHECKS['check:setup-files']).toBeDefined();
+    expect(UNENFORCED_CHECKS['check:setup-files']).toContain('workflow');
   });
 });
