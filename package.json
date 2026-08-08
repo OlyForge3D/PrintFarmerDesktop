@@ -63,6 +63,7 @@
     "check:direct-push-artifact": "node scripts/check-direct-push-artifact.mjs",
     "check:stranded-branches": "node scripts/check-stranded-branches.mjs",
     "check:squad-verdict": "node scripts/verify-squad-verdict.mjs",
+    "census:ownership-evidence": "node scripts/census-ownership-evidence.mjs",
     "review:target": "node scripts/prepare-review-target.mjs",
     "instrument:probe": "node scripts/instrument-probe.mjs",
     "report:pr-snapshot": "node scripts/pr-snapshot-report.mjs",
