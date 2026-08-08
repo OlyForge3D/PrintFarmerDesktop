@@ -1326,6 +1326,66 @@ describe('main', () => {
     spies.error.mockRestore();
     spies.log.mockRestore();
   });
+
+  // #638 (Vasquez, second REJECT): the epoch guard alone was not enough,
+  // because a call that REJECTS (rather than returning `{ ok: false }`)
+  // never reached either explicit `failureEpoch += 1` line -- only `main`'s
+  // own `catch` wrapper does that now. Repro from the review comment:
+  // `Promise.all([rejectingMain.catch(...), delayedSuccessfulMain])`, mirroring
+  // the CLI entry point's own `main(...).catch((error) => { ...; exitCode = 1 })`
+  // pattern, where the exitCode assignment happens OUTSIDE `main` entirely.
+  it('does not let a concurrent success erase a failure from a rejecting main() call, mirroring the CLI entry point catch handler', async () => {
+    const spies = silenced();
+    const rejectionError = new Error('simulated transport failure');
+    const rejectingDeps = {
+      run: ghStub([231]),
+      readDeclaration: () => BODY,
+      // Rejects immediately: this call resolves (by rejecting) well before
+      // the delayed passing call below, the same shape as the earlier spec,
+      // but through a throw/reject path instead of a `{ ok: false }` return.
+      readClosures: () => Promise.reject(rejectionError),
+    };
+    const delayedPassingDeps = {
+      run: ghStub([231]),
+      readDeclaration: () => BODY,
+      readClosures: () =>
+        new Promise<InjectedSettledRead>((resolve) => {
+          setTimeout(
+            () =>
+              resolve({
+                value: [231],
+                reads: 13,
+                settled: true,
+                elapsedMs: 61000,
+              }),
+            10,
+          );
+        }),
+    };
+
+    // Mirrors scripts/check-closing-references.mjs's own CLI entry point:
+    // `main(...).catch((error) => { console.error(...); process.exitCode = 1; })`.
+    // That assignment happens entirely outside `main`, after it has already
+    // rejected -- so it can only be correct here if `main` itself already
+    // recorded the failure against `failureEpoch` before this handler runs.
+    const rejectingCall = main(['231'], rejectingDeps).catch((error) => {
+      expect(error).toBe(rejectionError);
+      process.exitCode = 1;
+    });
+
+    const [, successResult] = await Promise.all([
+      rejectingCall,
+      main(['231'], delayedPassingDeps),
+    ]);
+
+    expect(successResult).toEqual({ ok: true, settled: true, stale: false });
+    // The real assertion: a rejection -- not just a `{ ok: false }` return --
+    // must also survive a concurrent success. Before wrapping `main` in
+    // try/catch, this was `undefined`.
+    expect(process.exitCode).toBe(1);
+    spies.error.mockRestore();
+    spies.log.mockRestore();
+  });
 });
 
 /**

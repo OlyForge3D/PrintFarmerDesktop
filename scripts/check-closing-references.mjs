@@ -986,12 +986,43 @@ let failureEpoch = 0;
  * test. It was not, and that is exactly how `settled` came to be computed,
  * printed, and never consulted: every unit in this file was covered except the
  * one that decides the exit code.
+ *
+ * #638 (Vasquez, second round): the epoch guard alone was not enough,
+ * because not every failure exits through the two explicit
+ * `process.exitCode = 1` branches below. A rejection from `readClosures`
+ * (e.g. `ClosingReferenceReadBudgetError`, a terminal credential failure, or
+ * the usage-error `throw` for a malformed argv) used to propagate straight
+ * out of `main` uncounted -- `failureEpoch` never moved, so a concurrent
+ * success racing against that rejection could still clear `process.exitCode`
+ * a caller's own `.catch` had just set. `main` now wraps its whole body so
+ * EVERY exit path -- return or throw -- bumps `failureEpoch` before it can
+ * leak out. `checkClosingReferences` below still returns `{ ok: false }` on
+ * its two "handled" failure branches; the wrapper's `catch` only fires for a
+ * genuine exception, but it always fires for one, and always bumps the same
+ * counter the return branches already do.
  */
 export async function main(argv, deps = {}) {
   // Read before any `await` in this call so a concurrent failure that starts
   // and finishes entirely within this call's lifetime is never mistaken for
   // one that happened before it and is therefore safe to treat as cleared.
   const epochAtStart = failureEpoch;
+  try {
+    return await checkClosingReferences(argv, deps, epochAtStart);
+  } catch (error) {
+    failureEpoch += 1;
+    process.exitCode = 1;
+    throw error;
+  }
+}
+
+/**
+ * The actual check, split out of `main` so `main` can wrap it uniformly in
+ * try/catch (see the note above). Not exported: every existing caller and
+ * test goes through `main`, and this split exists purely to make the epoch
+ * bump on a thrown/rejected path structurally unmissable rather than
+ * something each new failure branch has to remember to add by hand.
+ */
+async function checkClosingReferences(argv, deps, epochAtStart) {
   const {
     run = gh,
     readClosures = readSettled,
