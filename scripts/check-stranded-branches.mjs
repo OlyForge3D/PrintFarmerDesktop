@@ -166,10 +166,10 @@ export function countRemoteRefs(cwd, remote = DEFAULT_REMOTE) {
  * origin --prune` removes local `refs/remotes/origin/*` entries for branches
  * already deleted on the server, so a commit whose only "publication" is a
  * stale local ref is not mistaken for one that is actually reachable from
- * `origin` today. Best-effort: a network-less environment (or a `remote`
- * that does not exist) must not abort the whole check, so failures here are
- * swallowed and the check proceeds against whatever `refs/remotes/<remote>`
- * already holds.
+ * `origin` today. Uses `allowFailure` so a network-less environment doesn't
+ * throw here — but the caller (`runCheck`) inspects the returned result and
+ * must not silently evaluate against `refs/remotes/<remote>` when this
+ * failed; see the fail-closed note on `runCheck`.
  */
 export function pruneRemote(cwd, remote = DEFAULT_REMOTE) {
   return git(['fetch', '--quiet', remote, '--prune'], {
@@ -313,7 +313,29 @@ export function runCheck(cwd = process.cwd(), remote = DEFAULT_REMOTE) {
   // #289's own correctly-scoped test prunes before checking; do the same
   // here so a branch deleted on the server isn't still counted "published"
   // via a stale refs/remotes/<remote> entry this clone never dropped.
-  pruneRemote(cwd, remote);
+  //
+  // FAIL-CLOSED ON A FAILED PRUNE (mirrors check-merge-landed.mjs's
+  // UNVERIFIABLE verdict): if this fetch does not succeed, refs/remotes/
+  // <remote> may hold exactly the stale, deleted-on-the-server branches
+  // #289 exists to strip out, and evaluating against them regardless would
+  // recreate the same false-negative the prune step was added to remove —
+  // a broken remote URL or a network outage would then silently make a
+  // truly stranded commit read CLEAN off a ref the server no longer has.
+  // Report UNDETERMINED instead of guessing, exactly as `ensureObject` in
+  // check-merge-landed.mjs refuses to assert ancestry when its own fetch
+  // fails.
+  const pruneResult = pruneRemote(cwd, remote);
+  if (pruneResult.code !== 0) {
+    const detail = pruneResult.stderr?.trim();
+    return {
+      exitCode: EXIT_UNDETERMINED,
+      report:
+        `[stranded-branches] UNDETERMINED — \`git fetch ${remote} --prune\` failed ` +
+        `(exit ${pruneResult.code}), so refs/remotes/${remote} may be stale and ` +
+        'reachability against it cannot be trusted. Not evaluating against ' +
+        `possibly-stale state.${detail ? ` ${detail}` : ''}`,
+    };
+  }
 
   const remoteRefCount = countRemoteRefs(cwd, remote);
   const presence = evaluateRemoteRefPresence(remoteRefCount, remote);
