@@ -70,10 +70,32 @@
 // clones where `npm install` has run. This raises a silent accident to a
 // deliberate, legible act; it is not a server-side control. Branch protection on
 // the remote is the only true enforcement and is not configurable from here.
+//
+// Issue #184: a commit pushed to a MERGED PR's branch lands on a live ref with
+// no PR attached, no CI run, and no reviewer — and every check above passes it,
+// because none of them read anything but the objects. The push is often a
+// plain fast-forward (nothing was ever destroyed), the squad's standing
+// practice is squash-merge (so `git log origin/development` never shows the
+// commit there for a correct merge OR an orphaned push), and the branch is
+// simply gone from view once its PR closes. Nothing here previously answered
+// "is this ref still connected to a pull request".
+//
+// So the guard also resolves the PR for the branch being pushed (`gh pr list
+// --head <branch>`) and refuses when that PR is `MERGED` or `CLOSED`. This is
+// deliberately best-effort in one direction only: if the query cannot be run at
+// all (no `gh`, no credential, no network), the guard does not know the answer
+// and does not claim to — it allows the push rather than making every push in
+// this repo depend on `gh` being reachable, the same posture `gatherFacts`
+// already takes for the destructive-push check's own live query. Once an
+// answer IS obtained, `MERGED` or `CLOSED` is refused unconditionally; this is
+// not softened into a warning, because a warning is exactly the "note that
+// tells people to be careful" the issue rejects.
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { runGh, resolveRepositorySlug } from './check-required-contexts.mjs';
+import { discoverToken } from './check-merge-queue-contexts.mjs';
 
 export const ZERO_SHA = '0'.repeat(40);
 
@@ -163,6 +185,8 @@ function describe(commits, owned, attributable) {
  *   ownershipEvidence: boolean,
  *   ack?: string,
  *   ackForeign?: string,
+ *   prState?: 'OPEN' | 'MERGED' | 'CLOSED' | null,
+ *   prNumber?: number | null,
  * }} facts
  *   `liveRemoteSha` MUST come from `git ls-remote` (a live query), never from a
  *   `refs/remotes/**` read. `discarded` is `rev-list <live> ^<local>` — the
@@ -176,6 +200,11 @@ function describe(commits, owned, attributable) {
  *   `ownCommits` is the sha set this worktree actually created. It defaults to
  *   empty, which is the strict reading: nothing was created here, so nothing is
  *   exempt. `ownSessions` cannot substitute for it — see `readOwnedCommits`.
+ *
+ *   `prState` is the state (`'OPEN' | 'MERGED' | 'CLOSED'`) of the pull request
+ *   whose head is this branch, or `null` when none could be resolved — either
+ *   because there is no such PR or because the query could not be run (#184).
+ *   `prNumber` is that PR's number, or `null` under the same conditions.
  * @returns {{verdict: 'allow' | 'refuse', code: string, message: string}}
  */
 export function evaluateRefUpdate(update, facts) {
@@ -197,6 +226,47 @@ export function evaluateRefUpdate(update, facts) {
       message: [
         `${remoteRef} does not take direct pushes.`,
         'Open a pull request against development instead.',
+      ].join('\n'),
+    };
+  }
+
+  // #184: PR #171 merged, and a later push to the branch behind it landed on a
+  // live ref with no PR attached, no CI run, and no reviewer — caught only
+  // because the PR head happened to refuse to advance, an incidental
+  // observation rather than a check. Nothing above reads whether this ref is
+  // still connected to a pull request; a plain fast-forward sails through
+  // every check above unchanged.
+  //
+  // Skipped for a delete (`isAbsent(localSha)`): removing the ref of a merged
+  // or closed PR's branch is the hardening this issue names as a secondary
+  // remedy, not the hazard it exists to refuse.
+  //
+  // `prState` is `null` both when there is no PR for this branch and when the
+  // query could not be answered at all (no `gh`, no credential, no network) —
+  // `gatherFacts` collapses those deliberately, because neither one is
+  // evidence of anything to refuse. Only an affirmative `MERGED` or `CLOSED`
+  // fires here, and it fires unconditionally: this is a refusal, not a
+  // warning, because a warning is the "note that tells people to be careful"
+  // the issue explicitly rejects as a remedy.
+  if (
+    !isAbsent(localSha) &&
+    (facts.prState === 'MERGED' || facts.prState === 'CLOSED')
+  ) {
+    const branchName = remoteRef.replace(/^refs\/heads\//, '');
+    const prLabel =
+      facts.prNumber != null
+        ? `pull request #${facts.prNumber}`
+        : 'its pull request';
+    return {
+      verdict: 'refuse',
+      code: 'push-guard.pr-already-resolved',
+      message: [
+        `${remoteRef} is the head of ${prLabel}, which is already ${facts.prState}.`,
+        'This ref is no longer connected to anything reviewable: pushing to it',
+        'would land a commit with no PR, no CI run, and no reviewer.',
+        '',
+        `Re-file this work as a new pull request off development instead of`,
+        `pushing to ${branchName}.`,
       ].join('\n'),
     };
   }
@@ -599,6 +669,81 @@ export function readLiveRemoteSha(remote, ref, location = '') {
   const first = output.split('\n')[0] ?? '';
   const sha = first.split('\t')[0]?.trim();
   return sha && sha.length > 0 ? sha : null;
+}
+
+/**
+ * Resolve the pull request whose head is `branch`, if any (#184).
+ *
+ * Returns `{ state: null, number: null }` both when there is genuinely no PR
+ * for this branch and when the question could not be answered at all — no
+ * `gh` binary found, no credential, the API unreachable, or a response this
+ * function cannot parse. Those are collapsed DELIBERATELY: unlike the
+ * destructive-push check, this control has no evidence-of-danger fallback to
+ * fall back to (there is no local object that proves a branch's PR state),
+ * so "unknown" and "no PR" have to mean the same thing here — allow — or
+ * every push in this repository becomes conditional on `gh` being reachable,
+ * which no other part of the hook requires.
+ *
+ * `gh pr list --head <branch> --state all` matches PRs by head branch name in
+ * THIS repository, which is what `resolveRepositorySlug` resolves to and is
+ * the only case this repo's branch convention produces — a fork's PR would
+ * not share this repo's ref namespace to begin with.
+ *
+ * `run` and `env` are injected for the same reason `discoverToken` and
+ * `resolveRepositorySlug` take them: so this can be exercised without a real
+ * `gh` on PATH.
+ *
+ * @param {string} branch
+ * @param {NodeJS.ProcessEnv} env
+ * @param {typeof spawnSync} run
+ * @returns {{state: 'OPEN' | 'MERGED' | 'CLOSED' | null, number: number | null}}
+ */
+export function readAssociatedPullRequest(
+  branch,
+  env = process.env,
+  run = spawnSync,
+) {
+  const absent = { state: null, number: null };
+  if (!branch) return absent;
+  const token = discoverToken(env, run);
+  if (!token) return absent;
+  const repository = resolveRepositorySlug(env, run);
+  if (!repository) return absent;
+
+  const result = runGh(
+    run,
+    [
+      'pr',
+      'list',
+      '--repo',
+      repository,
+      '--head',
+      branch,
+      '--state',
+      'all',
+      '--json',
+      'number,state',
+      '--limit',
+      '1',
+    ],
+    { ...env, GH_TOKEN: token },
+  );
+  if (!result.spawned || result.status !== 0) return absent;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch {
+    return absent;
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) return absent;
+  const [pr] = parsed;
+  const state = pr?.state;
+  if (state !== 'OPEN' && state !== 'MERGED' && state !== 'CLOSED') {
+    return absent;
+  }
+  const number = Number.isInteger(pr?.number) ? pr.number : null;
+  return { state, number };
 }
 
 /**
@@ -1092,6 +1237,19 @@ export function gatherFacts(update, remote, env = process.env, location = '') {
     liveQueryError = error instanceof Error ? error.message : String(error);
   }
 
+  // #184: resolved independently of the live-tip query above and of whether
+  // it failed — this answers a different question (is the branch still
+  // connected to a pull request), not the destructive-push question the rest
+  // of this function is building facts for. Skipped for protected refs (their
+  // own refusal already fires first, unconditionally) and for a delete
+  // (removing a merged/closed PR's branch is the hardening this issue names
+  // as a secondary remedy, not the hazard being refused).
+  const branchName = update.remoteRef.replace(/^refs\/heads\//, '');
+  const pr =
+    !PROTECTED_REFS.includes(update.remoteRef) && !isAbsent(update.localSha)
+      ? readAssociatedPullRequest(branchName, env)
+      : { state: null, number: null };
+
   const facts = {
     liveRemoteSha,
     liveQueryFailed,
@@ -1104,6 +1262,12 @@ export function gatherFacts(update, remote, env = process.env, location = '') {
         ? true
         : isAncestor(update.remoteSha, update.localSha)
       : null,
+    // `null` for either "no PR found" or "could not be determined" — see
+    // `readAssociatedPullRequest`. Measured on every path (not just the
+    // fast-forward one below) so no caller can construct a `facts` shape this
+    // function does not produce.
+    prState: pr.state,
+    prNumber: pr.number,
     // Measured on every path, so no caller can construct a `facts` shape this
     // function does not produce. Vacuously true when the remote has no tip:
     // there is then no object to be missing, and the new-branch allow returns
