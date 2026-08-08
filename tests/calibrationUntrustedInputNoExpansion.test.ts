@@ -827,7 +827,7 @@ describe('the untrusted calibration input path expands nothing', () => {
  * self-contained closures rather than the real production files, so these
  * tests pin the assertion's *behavior* -- detecting exactly one missing
  * non-entry file, passing on an intact closure, and catching the compound
- * case where a banned API rides along in the file that goes missing -- 
+ * case where a banned API rides along in the file that goes missing --
  * independent of whatever files happen to be in the real closure today.
  * Changing the ban patterns, the walker, or traversal forms is out of scope
  * here (that is #435's job); this block only proves the harness can tell a
@@ -880,7 +880,10 @@ describe('the closure membership assertion tells a complete closure from a parti
         } catch (error) {
           failure = error;
         }
-        expect(failure, 'expected the membership assertion to fail').toBeDefined();
+        expect(
+          failure,
+          'expected the membership assertion to fail',
+        ).toBeDefined();
         expect(failureDetail(failure)).toContain('moduleB.ts');
       },
     );
@@ -889,8 +892,7 @@ describe('the closure membership assertion tells a complete closure from a parti
   it('pins the compound case: a banned API in a silently-dropped closure member must go red', () => {
     withSourceFixture(
       {
-        'entry.ts':
-          "import './moduleA.js';\nimport './expanding.js';\n",
+        'entry.ts': "import './moduleA.js';\nimport './expanding.js';\n",
         'moduleA.ts': entryAndTwoMembers['moduleA.ts'],
         // expanding.ts intentionally not written. In the real defect (row C
         // in #507), this file contains a live `node:zlib` import but
@@ -917,7 +919,10 @@ describe('the closure membership assertion tells a complete closure from a parti
         } catch (error) {
           failure = error;
         }
-        expect(failure, 'expected the membership assertion to fail').toBeDefined();
+        expect(
+          failure,
+          'expected the membership assertion to fail',
+        ).toBeDefined();
         expect(failureDetail(failure)).toContain('expanding.ts');
       },
     );
