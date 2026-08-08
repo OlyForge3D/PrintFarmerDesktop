@@ -4442,9 +4442,8 @@ fn calibration_conflict_from_row(row: &Row<'_>) -> rusqlite::Result<CalibrationC
     // that is not one of the six ratified conflict kinds cannot silently
     // reach the renderer as if it were classified. See `conflict_kind_as_db`
     // for the write side of this round trip.
-    let conflict_kind: Option<CalibrationConflictKind> = conflict_kind_raw
-        .as_deref()
-        .and_then(|value| {
+    let conflict_kind: Option<CalibrationConflictKind> =
+        conflict_kind_raw.as_deref().and_then(|value| {
             serde_json::from_value(serde_json::Value::String(value.to_string())).ok()
         });
     Ok(CalibrationConflictDto {
