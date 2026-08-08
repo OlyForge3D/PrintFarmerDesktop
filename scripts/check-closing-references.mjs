@@ -964,12 +964,65 @@ function gh(args) {
 }
 
 /**
+ * #527 follow-up (Vasquez, PR #638): a monotonic counter, bumped every time a
+ * `main` invocation records a failure. A success return only clears
+ * `process.exitCode` when this counter has not moved since ITS OWN call
+ * started -- i.e. no failure was recorded by any invocation, including a
+ * concurrent one still in flight, during this call's lifetime. Two
+ * invocations racing via `Promise.all` therefore cannot have the later one
+ * erase the earlier one's failure: the failing call bumps the epoch before
+ * it returns, so a concurrent success that observes a different epoch than
+ * the one it started with knows a failure happened on its watch and leaves
+ * `exitCode` alone. A purely SEQUENTIAL failure-then-success (the case this
+ * fix exists for, #527) still clears: the failing call has already returned
+ * -- and already bumped the epoch -- before the success call even starts, so
+ * the epoch it captures at entry already includes that bump, and it matches
+ * the epoch read at its own exit.
+ */
+let failureEpoch = 0;
+
+/**
  * Exported and dependency-injected so the decision below is reachable from a
  * test. It was not, and that is exactly how `settled` came to be computed,
  * printed, and never consulted: every unit in this file was covered except the
  * one that decides the exit code.
+ *
+ * #638 (Vasquez, second round): the epoch guard alone was not enough,
+ * because not every failure exits through the two explicit
+ * `process.exitCode = 1` branches below. A rejection from `readClosures`
+ * (e.g. `ClosingReferenceReadBudgetError`, a terminal credential failure, or
+ * the usage-error `throw` for a malformed argv) used to propagate straight
+ * out of `main` uncounted -- `failureEpoch` never moved, so a concurrent
+ * success racing against that rejection could still clear `process.exitCode`
+ * a caller's own `.catch` had just set. `main` now wraps its whole body so
+ * EVERY exit path -- return or throw -- bumps `failureEpoch` before it can
+ * leak out. `checkClosingReferences` below still returns `{ ok: false }` on
+ * its two "handled" failure branches; the wrapper's `catch` only fires for a
+ * genuine exception, but it always fires for one, and always bumps the same
+ * counter the return branches already do.
  */
 export async function main(argv, deps = {}) {
+  // Read before any `await` in this call so a concurrent failure that starts
+  // and finishes entirely within this call's lifetime is never mistaken for
+  // one that happened before it and is therefore safe to treat as cleared.
+  const epochAtStart = failureEpoch;
+  try {
+    return await checkClosingReferences(argv, deps, epochAtStart);
+  } catch (error) {
+    failureEpoch += 1;
+    process.exitCode = 1;
+    throw error;
+  }
+}
+
+/**
+ * The actual check, split out of `main` so `main` can wrap it uniformly in
+ * try/catch (see the note above). Not exported: every existing caller and
+ * test goes through `main`, and this split exists purely to make the epoch
+ * bump on a thrown/rejected path structurally unmissable rather than
+ * something each new failure branch has to remember to add by hand.
+ */
+async function checkClosingReferences(argv, deps, epochAtStart) {
   const {
     run = gh,
     readClosures = readSettled,
@@ -1055,6 +1108,7 @@ export async function main(argv, deps = {}) {
       }),
     );
     console.error(`\n  ${summary}`);
+    failureEpoch += 1;
     process.exitCode = 1;
     return { ok: false, settled: false, stale: suspect };
   }
@@ -1093,11 +1147,29 @@ export async function main(argv, deps = {}) {
   if (!result.ok) {
     console.error(formatFailure({ ...result, hasBlock, prNumber }));
     console.error(`\n  ${summary}`);
+    failureEpoch += 1;
     process.exitCode = 1;
     return { ok: false, settled: true, stale: suspect };
   }
 
   console.log(`Closing references match the declaration. ${summary}`);
+  // #527: clear a failure recorded by an earlier `main` call in the same
+  // process. The CLI entry point below only ever calls `main` once, so this
+  // costs nothing there -- but leaving `exitCode` at whatever a previous
+  // SEQUENTIAL call's failure branch set it to means a successful call
+  // reports failure to anything that inspects `process.exitCode` afterward,
+  // which is the opposite overclaim this module exists to refuse.
+  //
+  // #638 (Vasquez): guarded by `failureEpoch`, not unconditional. Two
+  // invocations racing in the same process (e.g. `Promise.all([main(...),
+  // main(...)])`) must not let a later success erase an earlier, still
+  // relevant failure from the OTHER invocation. If the epoch moved since this
+  // call started, some invocation -- possibly still in flight when this one
+  // began -- recorded a failure during this call's own lifetime, so this
+  // success does not get to clear it.
+  if (failureEpoch === epochAtStart) {
+    process.exitCode = undefined;
+  }
   return { ok: true, settled: true, stale: suspect };
 }
 

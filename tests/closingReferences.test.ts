@@ -28,6 +28,7 @@ import {
   witnessContradiction,
   witnessUnreadableBinding,
 } from '../scripts/check-closing-references.mjs';
+import type { InjectedSettledRead } from '../scripts/check-closing-references.mjs';
 
 /**
  * #231. See the header of scripts/check-closing-references.mjs for the
@@ -1205,6 +1206,185 @@ describe('main', () => {
     });
     expect(message).toContain('It is not reported as a result');
     expect(message).toContain('reading too early');
+  });
+
+  // #527: `main` writes `process.exitCode = 1` on every failure branch but
+  // never clears it on success. The suite-wide `afterEach` above resets
+  // `process.exitCode` between every `it()`, which means no cross-spec test
+  // can ever observe that -- only a single spec calling `main` twice, inside
+  // one `it()`, can. This is that spec.
+  it('clears process.exitCode on a successful call that follows a failed one, within a single spec', async () => {
+    const passingDeps = {
+      run: ghStub([231]),
+      readDeclaration: () => BODY,
+      readClosures: () =>
+        Promise.resolve({
+          value: [231],
+          reads: 13,
+          settled: true,
+          elapsedMs: 61000,
+        }),
+    };
+    const failingDeps = {
+      run: ghStub([231, 999]),
+      readDeclaration: () => BODY,
+      readClosures: () =>
+        Promise.resolve({
+          value: [231, 999],
+          reads: 13,
+          settled: true,
+          elapsedMs: 61000,
+        }),
+    };
+
+    // POSITIVE CONTROL, same block: the success arm alone, run first, must
+    // leave `process.exitCode` clear. Without this arm a green result below
+    // would be produced just as easily by a `main` whose success path never
+    // actually ran (or that always leaves `exitCode` undefined regardless of
+    // history) -- the control is what proves this spec can fail.
+    silenced();
+    const controlResult = await main(['231'], passingDeps);
+    expect(controlResult).toEqual({ ok: true, settled: true, stale: false });
+    expect(process.exitCode).toBeUndefined();
+
+    // ARM 1: a failing call in the same process, matching the defect report.
+    const spies = silenced();
+    const failureResult = await main(['231'], failingDeps);
+    expect(failureResult).toEqual({ ok: false, settled: true, stale: false });
+    expect(process.exitCode).toBe(1);
+    spies.error.mockRestore();
+    spies.log.mockRestore();
+
+    // SUBJECT: a successful call, in the SAME process, right after the
+    // failure above. Before the fix this stayed `1`, reporting failure for a
+    // run whose own result was `ok: true`.
+    const subjectSpies = silenced();
+    const successResult = await main(['231'], passingDeps);
+    expect(successResult).toEqual({ ok: true, settled: true, stale: false });
+    expect(process.exitCode).toBeUndefined();
+    subjectSpies.error.mockRestore();
+    subjectSpies.log.mockRestore();
+  });
+
+  // #638 (Vasquez, PR review on #527's fix): the naive "always clear
+  // process.exitCode on success" version above is not safe for two `main`
+  // invocations racing in the same process. Repro pattern from the review
+  // comment: `Promise.all([main(failingDeps), main(delayedPassingDeps)])`.
+  // The failing call resolves first and sets `exitCode = 1`; the delayed
+  // passing call resolves afterward and, under the naive fix, clears it back
+  // to `undefined` -- erasing a real failure recorded by a DIFFERENT,
+  // concurrent invocation. This spec pins the guarded behavior: a success
+  // must not clear an `exitCode` set by a failure that happened anywhere
+  // during its own in-flight window, even from another `main` call.
+  it('does not let a concurrent success erase a failure recorded by another in-flight main() call', async () => {
+    const spies = silenced();
+    const failingDeps = {
+      run: ghStub([231, 999]),
+      readDeclaration: () => BODY,
+      // Resolves immediately, so this call finishes well before the delayed
+      // passing call below and gets a real chance to set exitCode = 1 first.
+      readClosures: () =>
+        Promise.resolve({
+          value: [231, 999],
+          reads: 13,
+          settled: true,
+          elapsedMs: 61000,
+        }),
+    };
+    const delayedPassingDeps = {
+      run: ghStub([231]),
+      readDeclaration: () => BODY,
+      // Delayed: still in flight when the failing call above completes and
+      // sets process.exitCode = 1, so this call's success return happens
+      // strictly after that failure was recorded -- the scenario the naive
+      // unconditional clear could not handle.
+      readClosures: () =>
+        new Promise<InjectedSettledRead>((resolve) => {
+          setTimeout(
+            () =>
+              resolve({
+                value: [231],
+                reads: 13,
+                settled: true,
+                elapsedMs: 61000,
+              }),
+            10,
+          );
+        }),
+    };
+
+    const [failureResult, successResult] = await Promise.all([
+      main(['231'], failingDeps),
+      main(['231'], delayedPassingDeps),
+    ]);
+
+    expect(failureResult).toEqual({ ok: false, settled: true, stale: false });
+    expect(successResult).toEqual({ ok: true, settled: true, stale: false });
+    // The real assertion: the concurrent success must not have masked the
+    // concurrent failure. Before the epoch guard, this was `undefined`.
+    expect(process.exitCode).toBe(1);
+    spies.error.mockRestore();
+    spies.log.mockRestore();
+  });
+
+  // #638 (Vasquez, second REJECT): the epoch guard alone was not enough,
+  // because a call that REJECTS (rather than returning `{ ok: false }`)
+  // never reached either explicit `failureEpoch += 1` line -- only `main`'s
+  // own `catch` wrapper does that now. Repro from the review comment:
+  // `Promise.all([rejectingMain.catch(...), delayedSuccessfulMain])`, mirroring
+  // the CLI entry point's own `main(...).catch((error) => { ...; exitCode = 1 })`
+  // pattern, where the exitCode assignment happens OUTSIDE `main` entirely.
+  it('does not let a concurrent success erase a failure from a rejecting main() call, mirroring the CLI entry point catch handler', async () => {
+    const spies = silenced();
+    const rejectionError = new Error('simulated transport failure');
+    const rejectingDeps = {
+      run: ghStub([231]),
+      readDeclaration: () => BODY,
+      // Rejects immediately: this call resolves (by rejecting) well before
+      // the delayed passing call below, the same shape as the earlier spec,
+      // but through a throw/reject path instead of a `{ ok: false }` return.
+      readClosures: () => Promise.reject(rejectionError),
+    };
+    const delayedPassingDeps = {
+      run: ghStub([231]),
+      readDeclaration: () => BODY,
+      readClosures: () =>
+        new Promise<InjectedSettledRead>((resolve) => {
+          setTimeout(
+            () =>
+              resolve({
+                value: [231],
+                reads: 13,
+                settled: true,
+                elapsedMs: 61000,
+              }),
+            10,
+          );
+        }),
+    };
+
+    // Mirrors scripts/check-closing-references.mjs's own CLI entry point:
+    // `main(...).catch((error) => { console.error(...); process.exitCode = 1; })`.
+    // That assignment happens entirely outside `main`, after it has already
+    // rejected -- so it can only be correct here if `main` itself already
+    // recorded the failure against `failureEpoch` before this handler runs.
+    const rejectingCall = main(['231'], rejectingDeps).catch((error) => {
+      expect(error).toBe(rejectionError);
+      process.exitCode = 1;
+    });
+
+    const [, successResult] = await Promise.all([
+      rejectingCall,
+      main(['231'], delayedPassingDeps),
+    ]);
+
+    expect(successResult).toEqual({ ok: true, settled: true, stale: false });
+    // The real assertion: a rejection -- not just a `{ ok: false }` return --
+    // must also survive a concurrent success. Before wrapping `main` in
+    // try/catch, this was `undefined`.
+    expect(process.exitCode).toBe(1);
+    spies.error.mockRestore();
+    spies.log.mockRestore();
   });
 });
 
