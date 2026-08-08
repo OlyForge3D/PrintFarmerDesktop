@@ -19,6 +19,65 @@
 // extension any setup file -- has run, and refuse anything not on an
 // explicit allowlist.
 //
+// REVISION HISTORY -- WHY THIS IS NOT vite's BARE `loadConfigFromFile`
+//
+// The first version of this gate resolved `vitest.config.ts` with vite's
+// `loadConfigFromFile`, which only evaluates the exported config module. A
+// round of review on PR #642 (Vasquez, with a working repro) showed that is
+// a static snapshot, not what vitest actually executes with, and produced
+// three concrete bypasses that all resolved as "clean" under
+// `loadConfigFromFile` while a real `vitest run` executed an unallowlisted
+// setup file:
+//
+//   1. `process.argv`-gated:  `process.argv[1].includes('vitest') ? [...] : []`
+//   2. `process.env`-gated:   `process.env.VITEST ? [...] : []`
+//   3. plugin-injected:       a Vite plugin's `config()` hook returning
+//                              `{ test: { setupFiles: [...] } }`
+//
+// (1) and (2) are invisible to `loadConfigFromFile` because that checker
+// process is not itself a vitest invocation -- its own argv and env do not
+// look like a real `vitest run`, so an attacker's config can trivially
+// detect "am I being inspected by the gate, or actually run?" and answer
+// differently. (3) is invisible because `loadConfigFromFile` evaluates only
+// the exported config object; it does not run vite's plugin pipeline, so a
+// `config()` hook's contribution to `test.setupFiles` is never merged in.
+//
+// THE FIX: resolve the config the way vitest itself resolves it, in a
+// context that looks like a real invocation, rather than a bespoke
+// re-implementation of any part of that pipeline:
+//
+//   - Use `createVitest` from `vitest/node` -- vitest's OWN programmatic
+//     entry point, the same one its CLI (`vitest run`) calls internally
+//     (see `prepareVitest`/`startVitest` in vitest's own source). This goes
+//     through vite's full `createServer` config-resolution pipeline,
+//     including every plugin's `config()` hook, closing bypass (3).
+//   - Before calling it, set `process.env.VITEST`/`TEST`/`NODE_ENV` exactly
+//     as vitest's own `prepareVitest` does before resolving config, closing
+//     bypass (2).
+//   - Also set `process.argv` to look like a real `vitest run` invocation
+//     (argv[1] pointing at the actual installed `vitest.mjs` binary this
+//     project's `npm test` would execute, with `run` as an argument),
+//     closing bypass (1).
+//   - Restore the original `process.argv`/env afterward, in a `finally`, so
+//     this check does not leak invocation-context spoofing into anything
+//     that runs after it.
+//
+// `createVitest` alone -- without ever calling `ctx.start()` or `ctx.init()`
+// -- resolves the full config (including setupFiles) but does not glob test
+// files, spin up a worker pool, or execute any setup file. This is
+// deliberate: the committed setupFiles this gate is inspecting are exactly
+// the ones under suspicion, so this gate must never execute them to find
+// out what they are.
+//
+// This cannot claim to enumerate every possible signal a sufficiently
+// motivated config could branch on (wall-clock timing, filesystem probing
+// for a lockfile, etc.) -- see the header note in
+// scripts/check-test-narrowing.mjs on why enumerating witnesses is not a
+// sound strategy in general. What it does claim is closing the three
+// concrete, demonstrated bypasses above by resolving config through
+// vitest's real pipeline in a real invocation's argv/env context, rather
+// than a hand-rolled one.
+//
 // WHY THIS IS ONE HOME, NOT THREE (unlike #537's testNamePattern)
 //
 // #537 measured three distinct places a `-t`/`--testNamePattern` narrowing
@@ -28,15 +87,8 @@
 // and `vitest run --help` expose no `--setupFiles` flag, so there is no
 // package.json-script or workflow-run-step home for it to hide in the way a
 // narrowing can. The only committed surface that can populate
-// `test.setupFiles` in this repository is the resolved vitest config itself.
-// This file resolves that config the same way #537's gate resolves
-// `vitest.config.ts` for its own home 3: via vite's OWN `loadConfigFromFile`,
-// the identical resolution vitest performs before a worker starts, rather
-// than a source-text match. That also means a second config file (e.g. an
-// errant `vitest.config.js` alongside `vitest.config.ts`) cannot smuggle in
-// a different answer: vite resolves exactly one config file by its own
-// priority order, and this check reads whatever that resolution actually
-// produces, not a hand-picked path.
+// `test.setupFiles` in this repository is the resolved vitest config
+// itself, and this file resolves it the same way vitest's own CLI does.
 //
 // THE ALLOWLIST IS DELIBERATE, NOT INCIDENTAL
 //
@@ -53,6 +105,8 @@
 // every queued PR entry (#122's shape). This ships as a standalone script
 // with its own test suite only.
 
+import { createRequire } from 'node:module';
+import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -83,26 +137,106 @@ export function diffSetupFiles(actual, expected = EXPECTED_SETUP_FILES) {
 }
 
 /**
- * Read the committed `test.setupFiles` list via vite's OWN config
- * resolution -- the same resolution vitest itself performs before a worker
- * ever starts -- rather than a bespoke re-implementation or a source-text
- * match. This means a computed or spread-constructed setupFiles array
- * resolves to the same answer as a literal one, because resolution
- * evaluates the module rather than pattern-matching its source text.
+ * Resolve the path to the vitest binary this project's own `npm test`
+ * (`vitest run`) would actually execute, so this gate's invocation-context
+ * spoofing (see below) matches the real thing rather than a guess.
+ */
+export function resolveVitestBinPath({
+  cwd = process.cwd(),
+  requireImpl = createRequire(import.meta.url),
+} = {}) {
+  try {
+    return requireImpl.resolve('vitest/vitest.mjs');
+  } catch {
+    // Fall back to the conventional install location if package-exports
+    // resolution is unavailable in this context (e.g. a sandboxed test).
+    return path.join(cwd, 'node_modules', 'vitest', 'vitest.mjs');
+  }
+}
+
+/**
+ * Run `fn` with `process.argv` and the environment variables vitest's own
+ * CLI sets before resolving config (`process.env.VITEST`/`TEST`/`NODE_ENV`,
+ * see `prepareVitest` in vitest's source) temporarily overridden to look
+ * like a real `vitest run` invocation, then restore the originals -- even
+ * if `fn` throws.
+ *
+ * This exists because a committed `vitest.config.ts` can branch on its own
+ * invocation context (`process.argv[1].includes('vitest')`,
+ * `process.env.VITEST`) to behave differently when inspected by a plain
+ * `node` process than when actually run by CI. Resolving config from
+ * *inside* a context that looks like the real invocation closes that gap
+ * (PR #642 review, bypasses 1 and 2).
+ */
+export async function withRealVitestInvocationContext(fn, { vitestBinPath }) {
+  const originalArgv = process.argv;
+  const originalEnv = {
+    VITEST: process.env.VITEST,
+    TEST: process.env.TEST,
+    NODE_ENV: process.env.NODE_ENV,
+  };
+  try {
+    process.argv = [process.argv[0] ?? 'node', vitestBinPath, 'run'];
+    process.env.VITEST = 'true';
+    process.env.TEST = 'true';
+    process.env.NODE_ENV ??= 'test';
+    return await fn();
+  } finally {
+    process.argv = originalArgv;
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+function toRelativePosix(entry, root) {
+  if (typeof entry !== 'string') return entry;
+  if (!path.isAbsolute(entry)) return entry;
+  const relative = path.relative(root, entry).split(path.sep).join('/');
+  return relative.startsWith('.') ? relative : `./${relative}`;
+}
+
+/**
+ * Read the committed `test.setupFiles` list the way vitest itself resolves
+ * it: via `createVitest` (vitest's own programmatic entry point, the same
+ * one its CLI uses internally), from within a context spoofed to look like
+ * a real `vitest run` invocation. This closes all three bypasses found in
+ * PR #642 review -- argv-gated, env-gated, and plugin-injected -- because
+ * it is the real pipeline, not a re-implementation of part of it.
+ *
+ * Deliberately never calls `ctx.start()` or `ctx.init()`: config resolution
+ * (including every plugin's `config()` hook) completes inside
+ * `createVitest` itself, before any test file is globbed or any worker
+ * spawned. The setupFiles this gate inspects are exactly the ones under
+ * suspicion, so they must never actually execute here.
  */
 export async function resolveCommittedSetupFiles({
   configPath,
   cwd,
-  loadConfigFromFile,
+  createVitestImpl,
+  vitestBinPath = resolveVitestBinPath({ cwd }),
 }) {
-  const result = await loadConfigFromFile(
-    { command: 'serve', mode: 'test' },
-    configPath,
-    cwd,
+  return withRealVitestInvocationContext(
+    async () => {
+      const ctx = await createVitestImpl('test', {
+        run: true,
+        watch: false,
+        config: configPath,
+        root: cwd,
+      });
+      try {
+        const resolved = ctx.config?.setupFiles;
+        if (resolved === undefined || resolved === null) return [];
+        const root = ctx.config?.root ?? cwd;
+        const list = Array.isArray(resolved) ? resolved : [resolved];
+        return list.map((entry) => toRelativePosix(entry, root));
+      } finally {
+        await ctx.close();
+      }
+    },
+    { vitestBinPath },
   );
-  const setupFiles = result?.config?.test?.setupFiles;
-  if (setupFiles === undefined || setupFiles === null) return [];
-  return Array.isArray(setupFiles) ? setupFiles : [setupFiles];
 }
 
 /**
@@ -113,12 +247,14 @@ export async function checkSetupFiles({
   cwd = process.cwd(),
   configPath = fileURLToPath(new URL('../vitest.config.ts', import.meta.url)),
   expected = EXPECTED_SETUP_FILES,
-  loadConfigFromFile = defaultLoadConfigFromFile,
+  createVitestImpl = defaultCreateVitest,
+  vitestBinPath,
 } = {}) {
   const actual = await resolveCommittedSetupFiles({
     configPath,
     cwd,
-    loadConfigFromFile,
+    createVitestImpl,
+    ...(vitestBinPath !== undefined ? { vitestBinPath } : {}),
   });
   return diffSetupFiles(actual, expected);
 }
@@ -129,11 +265,12 @@ export function formatReport(
 ) {
   const lines = [];
   lines.push(
-    'Refusing: the committed `test.setupFiles` list in vitest.config.ts does',
+    'Refusing: the committed `test.setupFiles` list vitest would actually',
   );
   lines.push(
-    'not match the deliberate allowlist in scripts/check-setup-files.mjs.',
+    'resolve for vitest.config.ts does not match the deliberate allowlist in',
   );
+  lines.push('scripts/check-setup-files.mjs.');
   lines.push('');
   lines.push(
     'Every setupFiles entry runs inside each vitest worker before any test',
@@ -181,16 +318,16 @@ export function formatReport(
   return lines.join('\n');
 }
 
-export async function defaultLoadConfigFromFile(...args) {
-  const vite = await import('vite');
-  return vite.loadConfigFromFile(...args);
+export async function defaultCreateVitest(...args) {
+  const vitestNode = await import('vitest/node');
+  return vitestNode.createVitest(...args);
 }
 
 export async function main({
-  loadConfigFromFile = defaultLoadConfigFromFile,
+  createVitestImpl = defaultCreateVitest,
   log = console.error,
 } = {}) {
-  const diff = await checkSetupFiles({ loadConfigFromFile });
+  const diff = await checkSetupFiles({ createVitestImpl });
   if (diff.unexpected.length > 0 || diff.missing.length > 0) {
     log(formatReport(diff));
     return 1;
