@@ -17,10 +17,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('node:child_process', () => {
-  const execFileSync = (
-    _command: string,
-    args: readonly string[],
-  ) => {
+  const execFileSync = (_command: string, args: readonly string[]) => {
     const key = args.join(' ');
     const response = mocks.responses.get(key);
     if (response === undefined) {

@@ -886,7 +886,8 @@ describe('a range built from two commits agrees with itself in both directions',
     git(['init', '-q', '--initial-branch=development', work], root);
     configure(work);
     ancestorSha = commit(work, 'commit 0');
-    for (let i = 1; i <= DISTANCE; i += 1) descendantSha = commit(work, `commit ${i}`);
+    for (let i = 1; i <= DISTANCE; i += 1)
+      descendantSha = commit(work, `commit ${i}`);
     // isAncestor/distanceToTip run git in the process's own cwd (they are
     // called directly, not spawned via `run()` with a `cwd` option), so the
     // fixture repo is entered for the duration of this block, matching the
@@ -912,7 +913,9 @@ describe('a range built from two commits agrees with itself in both directions',
     // were ever routed through something that could contaminate it.
     expect(isAncestor(ancestorSha, descendantSha)).toBe(true);
     expect(
-      Number(git(['rev-list', '--count', `${descendantSha}..${ancestorSha}`], work)),
+      Number(
+        git(['rev-list', '--count', `${descendantSha}..${ancestorSha}`], work),
+      ),
     ).toBe(0);
   });
 });
