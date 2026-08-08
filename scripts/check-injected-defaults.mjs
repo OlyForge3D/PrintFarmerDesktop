@@ -61,14 +61,47 @@
  *
  * EXIT CODES
  *
- *   0  OK            every injected default is DRIVEN or DIRECT
- *   1  RELOCATED     at least one injected default is provably unreachable
- *   2  UNDETERMINED  nothing was proven unreachable and something is unresolved
+ *   0  OK               every injected default is DRIVEN or DIRECT
+ *   1  RELOCATED        at least one injected default is provably unreachable
+ *   2  UNDETERMINED     nothing was proven unreachable and something is unresolved
+ *   3  ROOT_NOT_DRIVEN  --root names a function that exists, injects no
+ *                       defaults of its own, and the suite has zero call
+ *                       sites reaching it
  *
  * RELOCATED outranks UNDETERMINED. The reasoning is the one pinned in
  * check-merge-landed.mjs: a dependency this tool could not resolve says nothing
  * about a dependency it proved unreachable. A proven finding is not weakened by
  * an adjacent unknown. This ordering is asserted by a test, not left to reading.
+ *
+ * WHY ROOT_NOT_DRIVEN IS ITS OWN CODE, AND WHY IT IS NARROWER THAN "ZERO CALL
+ * SITES" (#549)
+ *
+ * `--root` defaults to `main`, and a module can genuinely define a `main` that
+ * exists, is syntactically well-formed, and is simply not the composition root
+ * the suite drives — `scripts/sign-macos-release.mjs` is exactly this: its
+ * `main()` takes no injected parameters at all, so zero call sites for `main`
+ * in the suite reported `0 call site(s), 0 resolved` at exit 0, indistinguishable
+ * from a module with nothing to report. The real root, `signMacRelease`, has
+ * three UNREACHABLE defaults under the same suite.
+ *
+ * The guard is NOT "zero call sites", though — that would be too wide. DIRECT
+ * coverage (above) proves a default reachable WITHOUT the suite ever calling
+ * the root at all: the default is a named export the suite imports and calls
+ * directly. A root with injected defaults and zero call sites still produces
+ * one real verdict per default from `classifyDefaults` — DIRECT where the
+ * suite imports the default, UNREACHABLE where it does not — and that is
+ * correct, provable output, not silence. The failure this exit code targets is
+ * narrower and sharper: `defaults.length === 0` as well, so `classified` is
+ * vacuously `[]` and `exitCodeFor([])` is EXIT_OK by construction, with
+ * nothing underneath that verdict at all.
+ *
+ * A root that does not exist already fails loudly, at exit 2, by throwing out of
+ * `findCompositionRoot`. A root that exists, injects nothing, and the suite
+ * never calls is a different fact and must not collapse into the same code: it
+ * says the suite never drives this root, not merely that something about it
+ * could not be resolved. That is exit 3, and it names the root and the module
+ * in the message, so the fix is "point --root at what the suite calls", not
+ * "add an override somewhere".
  *
  * PARSER CHOICE
  *
@@ -86,8 +119,11 @@
  * condition made checkable, offered as exactly that.
  *
  * It is also static. A default reached only through `spawnSync` of the script,
- * or through a re-export chain, is invisible here and will be reported
- * unreachable. Both are over-reports, in the direction chosen above.
+ * through a re-export chain, or through a renamed/re-assigned local alias of
+ * the root (`import { main as run } from './m.mjs'; run();`), is invisible
+ * here and will be reported unreachable. All three are over-reports, in the
+ * direction chosen above — see the note on `findCallSites` for why alias
+ * tracking was tried and deliberately reverted.
  */
 
 import { readFileSync } from 'node:fs';
@@ -99,6 +135,22 @@ import { parse } from '@typescript-eslint/parser';
 export const EXIT_OK = 0;
 export const EXIT_RELOCATED = 1;
 export const EXIT_UNDETERMINED = 2;
+export const EXIT_ROOT_NOT_DRIVEN = 3;
+
+/**
+ * Thrown by analyse() when --root names a function that EXISTS in the module
+ * but the suite has zero call sites reaching it. This is deliberately a
+ * distinct class from a plain Error: `main()` catches both, but a missing root
+ * (findCompositionRoot returns null) is a different fact from an existing root
+ * the suite never drives, and the two must not share an exit code (#549) or a
+ * reader loses the one piece of information that tells them what to fix.
+ */
+export class RootNotDrivenError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'RootNotDrivenError';
+  }
+}
 
 export const VERDICT_DRIVEN = 'DRIVEN';
 export const VERDICT_DIRECT = 'DIRECT';
@@ -204,6 +256,15 @@ export function importedFrom(ast, suitePath, modulePath) {
   return names;
 }
 
+/**
+ * Local names in the suite that can invoke `rootName`, accounting for a
+ * renamed import.
+ *
+ * `import { main as run } from './m.mjs'; run();` calls `main` under the
+ * local name `run`. Tried and DELIBERATELY REVERTED: see the note on
+ * `findCallSites` for why a flat name-based alias set is the wrong shape for
+ * this and was pulled out again.
+ */
 /** The exported function `rootName`, or null. */
 export function findCompositionRoot(ast, rootName) {
   let found = null;
@@ -303,7 +364,27 @@ export function uniqueObjectBindings(ast) {
 }
 
 /**
- * Every call of `rootName`, with the keys its argument supplies.
+ * Every call of `rootName`, by its literal identifier only, with the keys its
+ * argument supplies.
+ *
+ * Ripley's review of #549 found that this only matches the literal
+ * identifier `rootName`, so a renamed import (`import { main as run } from
+ * './m.mjs'; run();`) is invisible to it: the call is real, but the
+ * unaliased match here does not see it. A `resolveCallNames`/aliased-set
+ * variant was tried against that finding and reverted — Ripley's own
+ * follow-up review (a transitive `const alsoRun = run; alsoRun();` alias hop
+ * the wider set still missed) and Vasquez's follow-up (a local `const run =
+ * () => {}` REDECLARATION after `import { main as run }`, which the flat
+ * name set could not tell apart from the import and so counted as DRIVEN
+ * when `main` is never actually called) both showed that a name-based alias
+ * set cannot be partially correct here: it either needs full scope-aware
+ * binding resolution (tracking, for every identifier, which declaration it
+ * currently resolves to at the point of each call — a small type-checker,
+ * not a tool addition) or it reproduces the exact false-clean failure this
+ * file exists to prevent. The literal-name match over-reports an aliased
+ * call as unreachable — the same accepted, documented direction as the
+ * `spawnSync`/re-export-chain limitations above — rather than under-report a
+ * shadowed rebind as driven.
  *
  * resolution:
  *   'none'       called with no argument   -> every default runs
@@ -492,6 +573,7 @@ const USAGE = [
   '  exit 0  every injected default is driven by a call that omits it, or imported directly',
   '  exit 1  at least one injected default is provably unreachable from the suite',
   '  exit 2  nothing proven unreachable and at least one call site could not be resolved',
+  '  exit 3  --root names a function that exists but injects nothing, and the suite never calls it',
 ].join('\n');
 
 export function analyse({
@@ -510,6 +592,32 @@ export function analyse({
   }
   const defaults = readInjectedDefaults(rootNode);
   const sites = findCallSites(suiteAst, rootName);
+  if (sites.length === 0 && defaults.length === 0) {
+    // #549: `rootName` exists — it parsed, it has a body — but the suite has
+    // zero call sites that reach it, AND the root injects no defaults at all.
+    // That combination is NOT the same fact as "nothing was proven
+    // unreachable": it means this run proves nothing whatsoever about the
+    // module, because `classified` is vacuously `[]` and `exitCodeFor([])` is
+    // EXIT_OK — a clean bill for a module nobody exercised under this root.
+    //
+    // This guard is deliberately narrower than "zero call sites": when
+    // `defaults.length > 0`, classifyDefaults() below still produces one
+    // verdict per default even with zero call sites, and DIRECT is exactly
+    // the supported route that proves coverage WITHOUT the suite ever calling
+    // the root — a default that is exported by the module and imported by the
+    // suite directly. Refusing on `sites.length === 0` alone would reject that
+    // legitimate, documented case (see the file banner's DIRECT route, and
+    // classifyDefaults()'s DIRECT arm) along with the genuinely vacuous one.
+    // Only the truly empty verdict list — nothing to classify AND nothing
+    // called — is refused here.
+    throw new RootNotDrivenError(
+      `${rootName} exists in ${moduleFile}, but ${suiteFile} has 0 call sites ` +
+        `that reach it, and ${rootName} injects no defaults for DIRECT ` +
+        `coverage to apply to. Zero call sites is not evidence ${rootName} is ` +
+        'clean — the suite never drives this root at all. Pass --root naming ' +
+        'the function the suite actually calls.',
+    );
+  }
   const classified = classifyDefaults({
     defaults,
     exports: namedExports(moduleAst),
@@ -549,10 +657,20 @@ export function runMain(
  * only by running it against an unresolvable input.
  */
 export function main(argv, io) {
+  const error = io?.error ?? console.error;
   try {
     return runMain(argv, io);
   } catch (caught) {
-    (io?.error ?? console.error)(`check-injected-defaults: ${caught.message}`);
+    error(`check-injected-defaults: ${caught.message}`);
+    // A RootNotDrivenError is a different fact from every other throw here — a
+    // missing root, a bad argument, an unreadable file — which all say "this
+    // run proved nothing, for a reason unrelated to the root's reachability".
+    // ROOT_NOT_DRIVEN says specifically "the root exists and the suite never
+    // reaches it", and #549 is exactly the defect of collapsing that into the
+    // same code as everything else, so it must not share EXIT_UNDETERMINED.
+    if (caught instanceof RootNotDrivenError) {
+      return EXIT_ROOT_NOT_DRIVEN;
+    }
     return EXIT_UNDETERMINED;
   }
 }

@@ -5,7 +5,9 @@ import { describe, expect, it } from 'vitest';
 import {
   EXIT_OK,
   EXIT_RELOCATED,
+  EXIT_ROOT_NOT_DRIVEN,
   EXIT_UNDETERMINED,
+  RootNotDrivenError,
   VERDICT_DIRECT,
   VERDICT_DRIVEN,
   VERDICT_UNDETERMINED,
@@ -279,6 +281,35 @@ describe('the import surface is matched by resolved path, not by specifier text'
   it('ignores bare package specifiers', () => {
     const ast = parseSource("import { parse } from 'some-package';", 's.ts');
     expect([...importedFrom(ast, 'tests/s.ts', 'scripts/x.mjs')]).toEqual([]);
+  });
+});
+
+describe('findCallSites matches the root only by its literal identifier — an aliased import call is a documented over-report, not a bug (#549 / #641)', () => {
+  // Ripley's review of #641 found that an aliased import call
+  // (`import { main as run } from './m.mjs'; run();`) was invisible to
+  // findCallSites, and a `resolveCallNames`/aliased-name-set fix was tried
+  // against that finding. Two follow-up rounds of review — Ripley's own
+  // `const alsoRun = run; alsoRun();` transitive-alias miss, and Vasquez's
+  // `const run = () => {};` shadowing-rebind false positive — showed a flat
+  // name set cannot be partially correct: it needs full scope-aware binding
+  // resolution or it reproduces the exact false-clean failure this file
+  // exists to prevent. The fix was reverted; this is the resulting, accepted
+  // behaviour, in the same "over-report over under-report" direction as the
+  // existing `spawnSync`/re-export-chain limitations documented in the file
+  // banner.
+  it('an aliased call to the root is not seen — findCallSites reports zero sites for it', () => {
+    const ast = parseSource(
+      "import { main as run } from './m.mjs';\nrun();",
+      's.ts',
+    );
+    expect(findCallSites(ast, 'main')).toEqual([]);
+  });
+
+  it('a direct, unaliased call to the root is still seen (no regression)', () => {
+    const ast = parseSource('main({ a: 1 });', 's.ts');
+    expect(findCallSites(ast, 'main')).toEqual([
+      { line: 1, resolution: 'literal', keys: new Set(['a']) },
+    ]);
   });
 });
 
@@ -626,6 +657,264 @@ describe('AN EXCEPTION IS NOT A FINDING', () => {
     expect(main(['--nope'], { log: () => {}, error: () => {} })).toBe(
       EXIT_UNDETERMINED,
     );
+  });
+});
+
+describe('A WRONG-BUT-EXISTING ROOT IS NOT INDISTINGUISHABLE FROM A CLEAN ONE (#549)', () => {
+  // #549: `check-injected-defaults.mjs` reported `0 call site(s), 0 resolved`,
+  // exit 0, on scripts/sign-macos-release.mjs when told to walk its DEFAULT
+  // root `main` — because `main` genuinely exists and genuinely has zero
+  // injected defaults reachable via that name. The suite never calls `main`;
+  // it calls `signMacRelease`, which has three UNREACHABLE defaults under the
+  // very same suite. An absent root already fails loudly at exit 2. This is
+  // the positive control proving the measured defect is fixed: the SAME pair
+  // that used to return a false-clean 0 must now refuse the result instead.
+  const SIGN_MACOS_RELEASE = path.join(
+    REPO_ROOT,
+    'scripts',
+    'sign-macos-release.mjs',
+  );
+  const RELEASE_SIGNING_SUITE = path.join(
+    REPO_ROOT,
+    'tests',
+    'releaseSigning.test.ts',
+  );
+
+  it('MEASURED DEFECT, NOW FIXED: main is 0 call sites on sign-macos-release.mjs, and analyse() refuses that instead of returning an empty clean result', () => {
+    expect(() =>
+      analyse({
+        moduleFile: SIGN_MACOS_RELEASE,
+        suiteFile: RELEASE_SIGNING_SUITE,
+        rootName: 'main',
+      }),
+    ).toThrow(RootNotDrivenError);
+  });
+
+  it('names the root walked and the module, and says the suite never reached it', () => {
+    expect(() =>
+      analyse({
+        moduleFile: SIGN_MACOS_RELEASE,
+        suiteFile: RELEASE_SIGNING_SUITE,
+        rootName: 'main',
+      }),
+    ).toThrow(/main.*sign-macos-release\.mjs/s);
+  });
+
+  it('main(), the CLI entry point, exits ROOT_NOT_DRIVEN (3), distinct from UNDETERMINED (2)', () => {
+    const code = main(
+      [
+        '--module',
+        SIGN_MACOS_RELEASE,
+        '--suite',
+        RELEASE_SIGNING_SUITE,
+        '--root',
+        'main',
+      ],
+      { log: () => {}, error: () => {} },
+    );
+    expect(code).toBe(EXIT_ROOT_NOT_DRIVEN);
+    expect(code).not.toBe(EXIT_UNDETERMINED);
+  });
+
+  it('POSITIVE CONTROL: the root the suite actually drives, signMacRelease, has call sites and reports RELOCATED', () => {
+    // Without this the fix above could be satisfied by a resolver that always
+    // throws RootNotDrivenError regardless of which root is named.
+    const result = analyse({
+      moduleFile: SIGN_MACOS_RELEASE,
+      suiteFile: RELEASE_SIGNING_SUITE,
+      rootName: 'signMacRelease',
+    });
+    expect(result.sites.length).toBeGreaterThan(0);
+    expect(exitCodeFor(result.classified)).toBe(EXIT_RELOCATED);
+  });
+
+  it('DISCRIMINATES from a missing root: a name that does not exist at all still throws a plain Error at exit 2, never ROOT_NOT_DRIVEN', () => {
+    // The existing behaviour this fix must not disturb: an absent root is a
+    // different fact from an existing-but-undriven one, and must keep its own
+    // exit code.
+    expect(() =>
+      analyse({
+        moduleFile: SIGN_MACOS_RELEASE,
+        suiteFile: RELEASE_SIGNING_SUITE,
+        rootName: 'zzzNoSuchRoot',
+      }),
+    ).toThrow(/zzzNoSuchRoot is not defined/);
+    const code = main(
+      [
+        '--module',
+        SIGN_MACOS_RELEASE,
+        '--suite',
+        RELEASE_SIGNING_SUITE,
+        '--root',
+        'zzzNoSuchRoot',
+      ],
+      { log: () => {}, error: () => {} },
+    );
+    expect(code).toBe(EXIT_UNDETERMINED);
+    expect(code).not.toBe(EXIT_ROOT_NOT_DRIVEN);
+  });
+
+  it('MINIMAL FIXTURE: a root with NO injected defaults at all and zero call sites is refused, not passed clean', () => {
+    // This isolates the exact shape of the defect: `defaults` here is `[]`
+    // (main takes no destructured parameter), so classifyDefaults() over an
+    // empty list is vacuously EXIT_OK. Before the fix this reached
+    // `formatResult`/`exitCodeFor` and printed a false clean bill.
+    expect(() =>
+      analyse({
+        moduleFile: 'm.mjs',
+        suiteFile: 'm.test.ts',
+        rootName: 'main',
+        readFile: sourcesOf({
+          'm.mjs': [
+            'export function realRoot({ a = impl } = {}) {}',
+            'export function main() { realRoot(); }',
+            'function impl() {}',
+          ].join('\n'),
+          'm.test.ts': "import { realRoot } from './m.mjs';\nrealRoot();",
+        }),
+      }),
+    ).toThrow(RootNotDrivenError);
+  });
+
+  it('MINIMAL FIXTURE, POSITIVE CONTROL: the same suite against the root it actually calls resolves normally', () => {
+    const result = analyse({
+      moduleFile: 'm.mjs',
+      suiteFile: 'm.test.ts',
+      rootName: 'realRoot',
+      readFile: sourcesOf({
+        'm.mjs': [
+          'export function realRoot({ a = impl } = {}) {}',
+          'export function main() { realRoot(); }',
+          'function impl() {}',
+        ].join('\n'),
+        'm.test.ts': "import { realRoot } from './m.mjs';\nrealRoot();",
+      }),
+    });
+    expect(result.sites.length).toBeGreaterThan(0);
+    // realRoot() is called with no argument, so `a`'s default runs — DRIVEN,
+    // not UNREACHABLE. The point of this control is only that a root the
+    // suite DOES call resolves and reports normally instead of throwing.
+    expect(exitCodeFor(result.classified)).toBe(EXIT_OK);
+  });
+
+  it('DIRECT-ROUTE REGRESSION (Vasquez review on #641): zero call sites does NOT throw when the root injects a default that is exported and imported directly', () => {
+    // Vasquez's review of the first version of this fix found that the guard
+    // fired on `sites.length === 0` ALONE, before classifyDefaults() could
+    // apply the documented DIRECT route (file banner, ~line 33-38, and
+    // classifyDefaults()'s DIRECT arm): a default reachable because the suite
+    // imports and calls it directly, without ever calling the root at all.
+    // `main({ a = helper } = {})` with `m.test.ts` importing and calling
+    // `helper()` directly is exactly that supported, pre-existing case, and it
+    // must still resolve to DIRECT rather than being rejected as
+    // ROOT_NOT_DRIVEN.
+    const result = analyse({
+      moduleFile: 'm.mjs',
+      suiteFile: 'm.test.ts',
+      rootName: 'main',
+      readFile: sourcesOf({
+        'm.mjs':
+          'export function helper() {}\nexport function main({ a = helper } = {}) {}',
+        'm.test.ts': "import { helper } from './m.mjs';\nhelper();",
+      }),
+    });
+    expect(result.sites.length).toBe(0);
+    expect(verdictFor(result.classified, 'a')).toBe(VERDICT_DIRECT);
+    expect(exitCodeFor(result.classified)).toBe(EXIT_OK);
+  });
+
+  it('DIRECT-ROUTE REGRESSION, NEGATIVE CONTROL: zero call sites AND no DIRECT coverage still throws ROOT_NOT_DRIVEN', () => {
+    // Without this, the arm above could be satisfied by a guard that simply
+    // never throws, which would resurrect the original #549 defect. The only
+    // difference from the case above is that nothing imports `helper`, so
+    // there is no DIRECT route and the default is genuinely unproven — but
+    // that must still surface as UNREACHABLE / EXIT_RELOCATED, not as a
+    // vacuous EXIT_OK, so this fixture instead removes the default entirely
+    // to reproduce the fully vacuous case the guard exists for.
+    expect(() =>
+      analyse({
+        moduleFile: 'm.mjs',
+        suiteFile: 'm.test.ts',
+        rootName: 'main',
+        readFile: sourcesOf({
+          'm.mjs': 'export function main() {}',
+          'm.test.ts': "import { main } from './m.mjs';\nconst x = 1;",
+        }),
+      }),
+    ).toThrow(RootNotDrivenError);
+  });
+
+  it('DIRECT-ROUTE REGRESSION, THIRD ARM: zero call sites, a default present, but NOT covered by DIRECT reports RELOCATED rather than throwing or passing clean', () => {
+    // A default with no DIRECT route and zero call sites is neither a false
+    // clean pass nor a case this guard should refuse — classifyDefaults()
+    // already reports it, correctly, as UNREACHABLE.
+    const result = analyse({
+      moduleFile: 'm.mjs',
+      suiteFile: 'm.test.ts',
+      rootName: 'main',
+      readFile: sourcesOf({
+        'm.mjs':
+          'function impl() {}\nexport function main({ a = impl } = {}) {}',
+        'm.test.ts': "import { main } from './m.mjs';\nconst x = 1;",
+      }),
+    });
+    expect(result.sites.length).toBe(0);
+    expect(verdictFor(result.classified, 'a')).toBe(VERDICT_UNREACHABLE);
+    expect(exitCodeFor(result.classified)).toBe(EXIT_RELOCATED);
+  });
+
+  it('ALIASED-IMPORT LIMITATION (Ripley review on #641), DOCUMENTED OVER-REPORT: a renamed import call to the root is not recognised as a call site, and is reported UNREACHABLE rather than DRIVEN', () => {
+    // Ripley's review found that findCallSites matched only the literal
+    // identifier `rootName`, so `import { main as run } from './m.mjs'; run()`
+    // — the suite plainly driving `main` under a local alias — was invisible
+    // to it. A fix (`resolveCallNames`, a flat name-based alias set) was
+    // tried and then reverted: Ripley's own follow-up review found a further
+    // alias hop (`const alsoRun = run; alsoRun();`) the wider set still
+    // missed, and Vasquez's follow-up found a local shadowing rebind
+    // (`const run = () => {};` after the same import) that the flat set
+    // wrongly counted as DRIVEN even though `main` is never called. Closing
+    // this class of gap needs scope-aware binding resolution, not a name
+    // set — see the note on `findCallSites` in the source file. Until that
+    // exists, an aliased call is a documented, deliberate over-report, in the
+    // same direction as the `spawnSync`/re-export-chain limitations already
+    // in the file banner: UNREACHABLE / EXIT_RELOCATED, not a false DRIVEN
+    // and not a false ROOT_NOT_DRIVEN either.
+    const result = analyse({
+      moduleFile: 'm.mjs',
+      suiteFile: 'm.test.ts',
+      rootName: 'main',
+      readFile: sourcesOf({
+        'm.mjs':
+          'function impl() {}\nexport function main({ a = impl } = {}) {}',
+        'm.test.ts': "import { main as run } from './m.mjs';\nrun();",
+      }),
+    });
+    expect(result.sites.length).toBe(0);
+    expect(verdictFor(result.classified, 'a')).toBe(VERDICT_UNREACHABLE);
+    expect(exitCodeFor(result.classified)).toBe(EXIT_RELOCATED);
+  });
+
+  it('SHADOWING-REBIND NEGATIVE CONTROL (Vasquez review on #641): a local redeclaration of an aliased import name must NOT be counted as DRIVEN', () => {
+    // Vasquez's finding, pinned directly: a name-based alias set cannot tell
+    // "this identifier is still bound to the import" apart from "this
+    // identifier was later rebound to something else". Because findCallSites
+    // never tracked aliases at all after the revert, this shape was never at
+    // risk of the false-DRIVEN failure Vasquez found — the call is invisible
+    // either way, and the (unrelated) default correctly reports UNREACHABLE.
+    // This test exists to pin that guarantee going forward: whatever alias
+    // handling is added in the future must keep this negative control green.
+    const result = analyse({
+      moduleFile: 'm.mjs',
+      suiteFile: 'm.test.ts',
+      rootName: 'main',
+      readFile: sourcesOf({
+        'm.mjs':
+          'function impl() {}\nexport function main({ a = impl } = {}) {}',
+        'm.test.ts':
+          "import { main as run } from './m.mjs';\nconst run = () => {};\nrun();",
+      }),
+    });
+    expect(verdictFor(result.classified, 'a')).toBe(VERDICT_UNREACHABLE);
+    expect(exitCodeFor(result.classified)).toBe(EXIT_RELOCATED);
   });
 });
 
