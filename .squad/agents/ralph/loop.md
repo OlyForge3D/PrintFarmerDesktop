@@ -349,6 +349,43 @@ Merged means **both**: `state == "MERGED"`, and step 2 lists `origin/development
 `--list 'origin/development'` explicitly — an unscoped `--contains` reports refs from remotes that
 do not exist here (issue #289).
 
+### 9.2 Re-deriving a merge gate's premises — never restate a remembered SHA
+
+**#536:** a merge/coordination session spent **six consecutive relay rounds** gating PR #423 on a
+head SHA (`cd512223`) that had not been the branch tip for hours. Every round re-confirmed the same
+stale premises because every check it ran was an EXISTENCE check against a value nobody re-derived
+— see `.squad/decisions/inbox/hicks-536-merge-gating-stale-sha.md` for the full worked example. The
+PR was `state=closed`, `merged=true` the entire time; its merge commit **was** the tip of
+`development`. Nothing incorrect merged — the cost was six rounds spent gating a PR already in the
+trunk before the first of them.
+
+Before gating ANY PR on ANY remembered fact, in this order:
+
+1. **Print the target.** `git ls-remote --get-url origin` before reading any ref through it. A
+   remote name is a variable; a check that reads an unprinted variable is not a check.
+2. **Check terminal state first.** Read `state`/`merged` fresh. A closed, merged PR needs no review
+   gate, no sync check, and no freeze check — full stop, regardless of what any older round said
+   about it.
+3. **Re-derive, never quote.** Any SHA, review, or freeze status older than the current round is an
+   input to re-verify this round, not a fact carried forward from the last one.
+4. **Ask position, not existence.** Compare two SEPARATELY obtained values (a fresh `gh api` read
+   against a fresh `git ls-remote`), never a remembered value against itself. `ahead=0 behind=0`
+   against your own last reading is not corroboration.
+5. **Bound the loop.** If this round's premises are identical to the last two rounds' with no new
+   observation, that repetition is itself the signal to stop restating and re-derive every input
+   from scratch.
+
+Codified in `scripts/check-gate-premises.mjs`:
+
+```bash
+npm run check:gate-premises -- --pr <n> --repo OlyForge3D/PrintFarmerDesktop
+```
+
+Exit `0` means no gate is currently owed (terminal state resolved it, or two independent reads
+agree) or the gate holds with agreement confirmed; exit `1` means the gate is required and a
+position mismatch was found — re-derive before acting on it; exit `2` means the inputs could not be
+resolved (never read as either answer).
+
 ---
 
 ## 10. Report Format
@@ -406,6 +443,9 @@ Each of these has already happened. They are not hypothetical.
   and removes them.
 - **Treating "branch commits are not on `development`" as proof of unmerged work.** This repo
   squash-merges, so that is true of every merged branch. Use §9.1.
+- **Gating a PR on a remembered SHA, status, or review pin across multiple rounds without
+  re-deriving it.** #536: six rounds gated PR #423 on a head that had moved hours earlier, each
+  round re-confirming the same stale premise instead of re-reading it. Use §9.2.
 - **Phrasing a cleanup rule as a permission.** "Archive only after the PR is merged" says when
   archiving is _allowed_ and never tells Ralph to go _find_ finished sessions — the same defect class
   as the old "Ralph is idling" line that stopped rounds terminating. Cleanup rules are
