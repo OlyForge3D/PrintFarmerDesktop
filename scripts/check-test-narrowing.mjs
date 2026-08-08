@@ -79,19 +79,20 @@
 // gate's false-positive rate has not been measured, so it ships as a
 // standalone script with its own test suite and is not added to any workflow.
 //
-// TWO REVIEW ROUNDS FOUND HOLES IN THE FIRST VERSION, BOTH FIXED HERE:
+// THREE REVIEW ROUNDS FOUND HOLES IN THE FIRST TWO VERSIONS, ALL FIXED HERE:
 //
-//   Ripley: a workflow `run:` block was split into sub-commands on every
-//   newline BEFORE tokenising, so a direct invocation split across a shell
-//   line-continuation (`vitest run \` / `  -t "pattern"`) put the flag and
-//   its value on different "sub-commands" and neither tokenised to a
+//   Ripley (round 1): a workflow `run:` block was split into sub-commands on
+//   every newline BEFORE tokenising, so a direct invocation split across a
+//   shell line-continuation (`vitest run \` / `  -t "pattern"`) put the flag
+//   and its value on different "sub-commands" and neither tokenised to a
 //   complete `-t <value>` pair -- the one-line form of the identical command
 //   was caught, the continued form was not. `joinLineContinuations` now
 //   rejoins a trailing-`\` line with the line that follows it before any
 //   splitting happens, so a continued command reaches the tokeniser as the
 //   single logical line it always was.
 //
-//   Vasquez: a committed wrapper that invokes vitest programmatically --
+//   Vasquez (round 1): a committed wrapper that invokes vitest
+//   programmatically --
 //   `node -e "spawnSync('vitest',['run','-t','only this arm'])"` -- passed
 //   both the package.json and workflow checks silently. The narrowing flag
 //   and its value are still committed as literal strings, only nested
@@ -100,10 +101,46 @@
 //   `isDirectVitestInvocation` never saw a bare `vitest` word to key off.
 //   `detectWrappedNarrowing` is a second, narrower instrument that requires
 //   the word `vitest` to appear anywhere in the command AND the flag to
-//   appear as a quoted string literal next to its value -- the shape an
-//   argument list takes when authored as data rather than typed as a shell
-//   command -- so it catches the wrapper without matching prose that merely
-//   mentions both words.
+//   appear as a quoted string literal next to its value.
+//
+//   Ripley (round 2): a `run: >` FOLDED block scalar was still joined with
+//   `\n` the same way a `run: |` LITERAL one is, so a narrowing split across
+//   two plain lines (no trailing `\` -- folding itself is what turns two
+//   YAML lines into one shell line) was split into two sub-commands by
+//   `checkWorkflowText`, same failure shape as the round-1 line-continuation
+//   finding but for a different YAML mechanism. `foldBlockScalarLines` now
+//   reproduces YAML's own fold (adjacent non-blank lines join with a space;
+//   a blank line still starts a new paragraph), used for `>` and for a bare
+//   `run:` with an indented body and no explicit `|`/`>` marker (YAML folds
+//   a plain multi-line scalar the same way).
+//
+//   Ripley (round 2): `detectWrappedNarrowing` matched a wrapper-shaped
+//   string wherever it appeared, so
+//   `echo "spawnSync('vitest',['run','-t','only this arm']) is forbidden"`
+//   tripped the gate even though `echo` only ever prints its argument and
+//   can never execute it. The instrument now refuses to scan a command
+//   whose leading word is one of a small, closed set of pure text-output
+//   commands (`echo`, `printf`, `cat`, ...) -- it asks whether the command
+//   COULD run the text before asking whether the text looks like a call.
+//
+//   Vasquez (round 2): `exec('vitest run -t "only this arm"')` -- the
+//   single shell-parsed command STRING that `child_process.exec` actually
+//   takes, as opposed to the `(command, argsArray)` shape `spawnSync` takes
+//   -- was missed; only the argv-array shape was recognised.
+//   `detectWrappedNarrowing` now also recognises the single-string call
+//   shape and re-runs the SAME tokeniser/`detectNarrowingFlag` this file
+//   already uses for a direct invocation on the string's own contents,
+//   rather than adding a third bespoke regex.
+//
+//   Vasquez (round 2): `checkPackageJsonScripts` only read the `test`/
+//   `test:*` script's own command text, so a narrowing one alias hop away
+//   (`"test": "npm run ci"`, with the narrowing committed to `"ci"` instead)
+//   was invisible -- `npm run test`, what CI actually invokes, reaches it
+//   exactly as surely as an inline command would. `checkPackageJsonScripts`
+//   now follows an `npm run <x>` / `yarn <x>` / `pnpm run <x>` reference
+//   into whichever script it names, repeatedly (a `visited` set stops a
+//   cycle rather than looping), until it finds a narrowing or runs out of
+//   script to follow.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
@@ -197,6 +234,36 @@ export function isDirectVitestInvocation(tokens) {
 
 const TEST_SCRIPT_NAME = /^test(:.*)?$/;
 
+const NPM_SCRIPT_REFERENCE =
+  /^(?:npm(?:\s+run(?:-script)?)?|yarn(?:\s+run)?|pnpm(?:\s+run)?)\s+(\S+)/;
+
+/**
+ * Vasquez (review of this PR, round 2): a narrowing does not have to live in
+ * the `test`/`test:*` script's own command line -- it can hide one hop away,
+ * behind an npm/yarn/pnpm script alias:
+ *
+ *   "test": "npm run ci"
+ *   "ci":   "vitest run -t \"only this arm\""
+ *
+ * `npm run test` -- what CI actually invokes -- reaches the narrowing exactly
+ * as surely as if it were written inline, but a check that reads only the
+ * `test` script's own text never sees it. This follows the reference --
+ * repeatedly, since the chain can be more than one hop deep -- into whichever
+ * script it names, with a `visited` set so a cycle (`test` -> `a` -> `test`)
+ * reports no narrowing rather than looping forever.
+ */
+function resolveNarrowingThroughAliasChain(scripts, command, visited) {
+  if (typeof command !== 'string') return null;
+  const direct = detectNarrowing(command, { requireDirectInvocation: false });
+  if (direct !== null) return { narrowing: direct, command };
+  const match = NPM_SCRIPT_REFERENCE.exec(command.trim());
+  if (match === null) return null;
+  const target = match[1];
+  if (visited.has(target)) return null;
+  visited.add(target);
+  return resolveNarrowingThroughAliasChain(scripts, scripts[target], visited);
+}
+
 /**
  * Home 1: `test`/`test:*` scripts in package.json.
  *
@@ -210,15 +277,17 @@ export function checkPackageJsonScripts(scripts) {
   for (const [name, command] of Object.entries(scripts)) {
     if (!TEST_SCRIPT_NAME.test(name)) continue;
     if (typeof command !== 'string') continue;
-    const narrowing = detectNarrowing(command, {
-      requireDirectInvocation: false,
-    });
-    if (narrowing !== null) {
+    const result = resolveNarrowingThroughAliasChain(
+      scripts,
+      command,
+      new Set(),
+    );
+    if (result !== null) {
       violations.push({
         home: 'package.json',
         location: `scripts.${name}`,
-        command,
-        ...narrowing,
+        command: result.command,
+        ...result.narrowing,
       });
     }
   }
@@ -269,6 +338,47 @@ const WRAPPED_FLAG_EQ_VALUE = /['"](--testNamePattern)=([^'"]*)['"]/;
 const WRAPPED_FLAG_THEN_VALUE =
   /['"](-t|--testNamePattern)['"]\s*,\s*['"]([^'"]*)['"]/;
 
+// A committed narrowing can only ever take effect if the text is CODE that
+// runs -- it cannot take effect merely by appearing, verbatim, inside a
+// string that some other command prints. `echo`/`printf`/`cat`/... are pure
+// text-output commands: whatever they are given, including a fragment that
+// happens to look exactly like a wrapper call, is a message, never an
+// invocation. Gating on the command's own leading word (not on whether the
+// wrapper-shaped text appears anywhere) is what tells "someone typed this
+// call" apart from "someone quoted this call in a warning". New executors
+// (a shell, an interpreter, a task runner) are deliberately NOT enumerated
+// here -- only the closed, small set of commands that can never execute
+// anything is excluded, so an unlisted executor is still checked rather than
+// silently trusted the way an allow-list would trust it.
+const OUTPUT_ONLY_COMMANDS = new Set([
+  'echo',
+  'print',
+  'printf',
+  'cat',
+  'true',
+  'false',
+  ':',
+  'Write-Host',
+  'Write-Output',
+  'Write-Information',
+]);
+
+// Call-name-adjacent forms only: the flag/value pair must sit inside what
+// reads as an actual `child_process` call naming `vitest`, not merely
+// anywhere in the text. Two shapes are distinguished because they are the
+// two real call shapes Node exposes:
+//   spawnSync/spawn/execFile(Sync) take (command, argsArray) -- the array
+//   elements are separate, comma-quoted strings (CALL_ARRAY_FORM).
+//   exec/execSync take a single, shell-parsed command STRING -- the flag and
+//   its value live inside one quoted string, shell-separated by a space, not
+//   a comma (CALL_STRING_FORM); that inner string is itself a command line,
+//   so it is handed back to the same tokeniser/`detectNarrowingFlag` this
+//   file already uses for the direct-invocation case.
+const CALL_ARRAY_FORM =
+  /\b(?:spawnSync|spawn|execFile|execFileSync)\s*\(\s*['"]vitest['"]\s*,\s*\[([^\]]*)\]/;
+const CALL_STRING_FORM =
+  /\b(?:exec|execSync|spawnSync|spawn|execFile|execFileSync)\s*\(\s*(['"])((?:(?!\1)[\s\S])*?)\1/;
+
 /**
  * Vasquez (review of this PR): a committed wrapper that invokes vitest
  * *programmatically* rather than as a bare shell word --
@@ -282,22 +392,61 @@ const WRAPPED_FLAG_THEN_VALUE =
  * one opaque token and `isDirectVitestInvocation` never sees a bare `vitest`
  * word to key off either.
  *
- * This is a second, narrower instrument alongside the tokeniser rather than
- * a replacement for it: it requires the literal word `vitest` to appear
- * SOMEWHERE in the command (so it does not fire on `eslint . -t x`, which
- * has a narrowing-shaped flag but never mentions vitest), and it requires
- * the flag itself to appear as a QUOTED string literal immediately followed
- * by its value (comma-separated, as an argv array element, or `=`-joined
- * inside one quoted token) -- the shape an argument list actually takes when
- * it is authored as data rather than typed as a shell command. That
- * quoting requirement is what keeps this from matching ordinary prose that
- * happens to mention both words (a comment reading "don't use vitest -t
- * flags in CI" has no quoted `-t` next to a quoted value, so it does not
- * match).
+ * Round 2 found two more holes in this instrument, both fixed here:
+ *
+ *   Ripley: a command whose top-level word is a pure text-output command --
+ *   `echo "spawnSync('vitest',['run','-t','only this arm']) is forbidden"`
+ *   -- tripped the gate, because the wrapper-shaped text was matched
+ *   wherever it appeared, without asking whether the surrounding command
+ *   could ever execute it. `echo` only ever prints its argument; the
+ *   OUTPUT_ONLY_COMMANDS gate above refuses to scan a command whose leading
+ *   word can only produce text, never run it.
+ *
+ *   Vasquez: `exec('vitest run -t "only this arm"')` -- the single-string
+ *   call shape `child_process.exec` actually takes -- was missed entirely;
+ *   only the comma-separated argv-array shape (`spawnSync`) was recognised.
+ *   CALL_STRING_FORM now extracts that inner string and re-runs the exact
+ *   direct-invocation tokeniser/detector on it, so a flag/value pair
+ *   authored as one shell-like string inside the call is caught the same
+ *   way it would be if it were typed directly on a command line.
+ *
+ * The original, looser quoted-flag/value scan remains as a final fallback
+ * for wrapper shapes that don't name a recognised `child_process` function
+ * at all -- keeping this robust to an unnamed/unknown wrapper -- but it now
+ * only runs once the OUTPUT_ONLY_COMMANDS gate has already cleared the
+ * command, so it can no longer fire on a message some other command merely
+ * prints.
  */
 export function detectWrappedNarrowing(rawText) {
   if (typeof rawText !== 'string') return null;
   if (!/\bvitest\b/.test(rawText)) return null;
+
+  const leadingToken = tokenizeCommand(rawText)[0];
+  if (
+    typeof leadingToken === 'string' &&
+    OUTPUT_ONLY_COMMANDS.has(leadingToken)
+  ) {
+    return null;
+  }
+
+  const arrayMatch = CALL_ARRAY_FORM.exec(rawText);
+  if (arrayMatch) {
+    const body = arrayMatch[1];
+    const eq = WRAPPED_FLAG_EQ_VALUE.exec(body);
+    if (eq) return { flag: eq[1], value: eq[2] };
+    const pair = WRAPPED_FLAG_THEN_VALUE.exec(body);
+    if (pair) return { flag: pair[1], value: pair[2] };
+  }
+
+  const stringMatch = CALL_STRING_FORM.exec(rawText);
+  if (stringMatch) {
+    const inner = stringMatch[2];
+    if (/\bvitest\b/.test(inner)) {
+      const direct = detectNarrowingFlag(tokenizeCommand(inner));
+      if (direct !== null) return direct;
+    }
+  }
+
   const eqMatch = WRAPPED_FLAG_EQ_VALUE.exec(rawText);
   if (eqMatch) return { flag: eqMatch[1], value: eqMatch[2] };
   const pairMatch = WRAPPED_FLAG_THEN_VALUE.exec(rawText);
@@ -330,6 +479,25 @@ function detectNarrowing(rawCommand, { requireDirectInvocation }) {
  * line scan would be a bigger surface than the scan itself. Handles both the
  * inline form (`run: some command`) and the block-scalar form
  * (`run: |` / `run: >` followed by more-indented lines).
+ *
+ * Ripley (review of this PR, round 2): every block-scalar form was joined
+ * with `\n`, which is only correct for the LITERAL style (`|`) -- YAML's
+ * FOLDED style (`>`, and a plain scalar with no `|`/`>` marker at all) folds
+ * adjacent non-blank lines into a single line joined by a space instead.
+ * Treating a folded body as newline-joined put a continued narrowing --
+ *
+ *   run: >
+ *     vitest run
+ *     -t "only this arm"
+ *
+ * -- on two separate "lines", which `checkWorkflowText` then splits into two
+ * separate sub-commands, neither of which tokenises to a complete
+ * `-t <value>` pair; the identical narrowing written under `|` (correctly
+ * newline-joined, so it needed `joinLineContinuations`'s trailing-`\` to
+ * become one line) was caught, the `>` form was not. `foldBlockScalarLines`
+ * now reproduces the fold: consecutive non-blank lines join with a space,
+ * and a blank line still starts a new paragraph, matching what vitest's own
+ * YAML-consuming runner (`actions/runner`) would hand to the shell.
  */
 export function extractRunBlocks(contents) {
   const lines = String(contents).split(/\r?\n/);
@@ -348,8 +516,12 @@ export function extractRunBlocks(contents) {
       continue;
     }
 
-    // Block scalar (`|`, `>`, `|-`, `>+`, ...): collect subsequent lines that
-    // are indented further than `run:` itself, until dedent or EOF.
+    // Block scalar (`|`, `>`, `|-`, `>+`, ... or a bare `run:` immediately
+    // followed by more-indented lines, which YAML treats as a plain
+    // multi-line scalar and folds the same way `>` does): collect
+    // subsequent lines that are indented further than `run:` itself, until
+    // dedent or EOF.
+    const isLiteral = rest.charAt(0) === '|';
     const body = [];
     let j = i + 1;
     for (; j < lines.length; j += 1) {
@@ -363,9 +535,37 @@ export function extractRunBlocks(contents) {
       body.push(candidate.trim());
     }
     i = j - 1;
-    blocks.push({ lineNumber, command: body.join('\n') });
+    const command = isLiteral ? body.join('\n') : foldBlockScalarLines(body);
+    blocks.push({ lineNumber, command });
   }
   return blocks;
+}
+
+/**
+ * Reproduce YAML's folded-scalar (`>`) line joining: consecutive non-blank
+ * lines become one line joined by a single space; a blank line closes the
+ * current paragraph and starts a new one (represented here as an empty
+ * paragraph, preserved as its own `\n`-separated entry so a later split on
+ * blank lines still behaves the same way the literal-style body does).
+ */
+function foldBlockScalarLines(bodyLines) {
+  const paragraphs = [];
+  let current = [];
+  for (const line of bodyLines) {
+    if (line === '') {
+      if (current.length > 0) {
+        paragraphs.push(current.join(' '));
+        current = [];
+      }
+      // A run of one or more blank lines still separates two paragraphs by
+      // exactly one `\n` -- it does not accumulate an extra blank line per
+      // repetition.
+    } else {
+      current.push(line);
+    }
+  }
+  if (current.length > 0) paragraphs.push(current.join(' '));
+  return paragraphs.join('\n');
 }
 
 /**

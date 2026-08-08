@@ -217,6 +217,72 @@ describe('HOME 1: package.json test/test:* scripts', () => {
     });
     expect(violations).toEqual([]);
   });
+
+  it('POSITIVE CONTROL (Vasquez, review of this PR, round 2): refuses a narrowing committed through a single-string exec() wrapper', () => {
+    // child_process.exec (unlike spawnSync) takes one shell-parsed command
+    // STRING rather than a (command, argsArray) pair -- a different real
+    // call shape than the round-1 spawnSync fixture, and one the round-1
+    // fix did not yet recognise.
+    const violations = checkPackageJsonScripts({
+      test: 'node -e "exec(\'vitest run -t "only this arm"\')"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('POSITIVE CONTROL (Vasquez, review of this PR, round 2): follows an npm run alias chain to the script that actually narrows', () => {
+    // "test" itself never mentions vitest or a narrowing flag -- it only
+    // names another script. `npm run test` (what CI actually invokes)
+    // reaches the narrowing committed to "ci" exactly as surely as if it
+    // were written inline.
+    const violations = checkPackageJsonScripts({
+      test: 'npm run ci',
+      ci: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      command: 'vitest run -t "only this arm"',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('follows an npm run alias chain more than one hop deep', () => {
+    const violations = checkPackageJsonScripts({
+      test: 'npm run ci',
+      ci: 'npm run ci:unit',
+      'ci:unit': 'vitest run --testNamePattern="only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '--testNamePattern',
+      value: 'only this arm',
+    });
+  });
+
+  it('does not loop forever on a cyclic npm run alias chain, and reports no narrowing', () => {
+    const violations = checkPackageJsonScripts({
+      test: 'npm run a',
+      a: 'npm run test',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it('does not false-positive when an alias points at a script that does not exist', () => {
+    const violations = checkPackageJsonScripts({
+      test: 'npm run does-not-exist',
+    });
+    expect(violations).toEqual([]);
+  });
 });
 
 describe('HOME 2: workflows invoking vitest directly', () => {
@@ -328,7 +394,7 @@ describe('HOME 2: workflows invoking vitest directly', () => {
 
   it('detectWrappedNarrowing (unit): matches the quoted eq-form flag directly', () => {
     const violation = detectWrappedNarrowing(
-      'node -e "spawnSync(\'vitest\',[\'run\',\'--testNamePattern=only this arm\'])"',
+      "node -e \"spawnSync('vitest',['run','--testNamePattern=only this arm'])\"",
     );
     expect(violation).toMatchObject({
       flag: '--testNamePattern',
@@ -338,7 +404,7 @@ describe('HOME 2: workflows invoking vitest directly', () => {
 
   it('detectWrappedNarrowing (unit): matches the quoted comma-pair flag/value form', () => {
     const violation = detectWrappedNarrowing(
-      'node -e "spawnSync(\'vitest\',[\'run\',\'-t\',\'only this arm\'])"',
+      "node -e \"spawnSync('vitest',['run','-t','only this arm'])\"",
     );
     expect(violation).toMatchObject({ flag: '-t', value: 'only this arm' });
   });
@@ -346,7 +412,7 @@ describe('HOME 2: workflows invoking vitest directly', () => {
   it('detectWrappedNarrowing (unit): returns null when vitest is never mentioned', () => {
     expect(
       detectWrappedNarrowing(
-        'node -e "spawnSync(\'eslint\',[\'.\',\'-t\',\'unrelated\'])"',
+        "node -e \"spawnSync('eslint',['.','-t','unrelated'])\"",
       ),
     ).toBeNull();
   });
@@ -355,6 +421,28 @@ describe('HOME 2: workflows invoking vitest directly', () => {
     expect(
       detectWrappedNarrowing('echo "please do not narrow vitest with -t"'),
     ).toBeNull();
+  });
+
+  it('detectWrappedNarrowing (unit, round 2): matches the single-string exec() call shape', () => {
+    const violation = detectWrappedNarrowing(
+      'exec(\'vitest run -t "only this arm"\')',
+    );
+    expect(violation).toMatchObject({ flag: '-t', value: 'only this arm' });
+  });
+
+  it('detectWrappedNarrowing (unit, round 2): refuses to scan a command whose leading word only prints text', () => {
+    expect(
+      detectWrappedNarrowing(
+        "echo \"spawnSync('vitest',['run','-t','only this arm']) is forbidden\"",
+      ),
+    ).toBeNull();
+  });
+
+  it('detectWrappedNarrowing (unit, round 2): still matches when the same call syntax is genuinely executed by node -e', () => {
+    const violation = detectWrappedNarrowing(
+      "node -e \"spawnSync('vitest',['run','-t','only this arm'])\"",
+    );
+    expect(violation).toMatchObject({ flag: '-t', value: 'only this arm' });
   });
 
   it('POSITIVE CONTROL (Ripley, review of this PR): refuses a narrowing split across a shell line-continuation', () => {
@@ -413,6 +501,97 @@ describe('HOME 2: workflows invoking vitest directly', () => {
       '        run: echo "don\'t use vitest -t flags in CI"',
     ].join('\n');
     expect(checkWorkflowText('ci.yml', contents)).toEqual([]);
+  });
+
+  it('POSITIVE CONTROL (Vasquez, review of this PR, round 2): refuses a narrowing committed through a single-string exec() wrapper', () => {
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: node -e "exec(\'vitest run -t "only this arm"\')"',
+    ].join('\n');
+    const violations = checkWorkflowText('ci.yml', contents);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('does NOT false-positive (Ripley, review of this PR, round 2): a wrapper-shaped call quoted inside an echo message is a message, not code', () => {
+    // The exact shape Ripley demonstrated: the wrapper-call TEXT is
+    // identical to the round-1 positive control, but it is the argument to
+    // `echo`, which only ever prints it -- it can never execute it.
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Reminder',
+      "        run: echo \"spawnSync('vitest',['run','-t','only this arm']) is forbidden\"",
+    ].join('\n');
+    expect(checkWorkflowText('ci.yml', contents)).toEqual([]);
+  });
+
+  it('POSITIVE CONTROL (Ripley, review of this PR, round 2): refuses a narrowing split across a folded (`>`) block scalar', () => {
+    // Unlike the `|` literal style (round-1 fixture above), `>` FOLDS
+    // adjacent non-blank lines into one line joined by a space -- there is
+    // no trailing `\` here at all, because folding itself is what turns
+    // these two YAML lines into a single shell line.
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: >',
+      '          vitest run',
+      '          -t "only this arm"',
+    ].join('\n');
+    const violations = checkWorkflowText('ci.yml', contents);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('folds a bare multi-line run: body (no explicit |/> marker) the same way `>` does', () => {
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run:',
+      '          vitest run',
+      '          --testNamePattern="only this arm"',
+    ].join('\n');
+    const violations = checkWorkflowText('ci.yml', contents);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '--testNamePattern',
+      value: 'only this arm',
+    });
+  });
+
+  it('a folded (`>`) block scalar still separates paragraphs at a blank line', () => {
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: >',
+      '          echo first paragraph',
+      '',
+      '          echo second paragraph',
+    ].join('\n');
+    const blocks = extractRunBlocks(contents);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.command).toBe(
+      'echo first paragraph\necho second paragraph',
+    );
   });
 
   it('reads the live workflow directory and finds every yml file', () => {
