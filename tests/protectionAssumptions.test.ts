@@ -49,15 +49,156 @@ describe('the premises of #111 and #151 are checked, not promised', () => {
     expect(evaluateProtectionAssumptions(baseline())).toEqual([]);
   });
 
-  it('refuses to report that assumptions hold when it was given nothing', () => {
+  it('refuses to report that assumptions hold when protection itself is null', () => {
     // A control that treats absent input as a pass is the failure this whole
-    // file exists to catch.
+    // file exists to catch. This covers only `protection: null` -- the
+    // absent-individual-field cases below are a distinct seam and have their
+    // own tests, because passing here proved nothing about them (#488).
     expect(() =>
       evaluateProtectionAssumptions({
         protection: null as unknown as Record<string, unknown>,
       }),
     ).toThrow(/refusing to report that assumptions hold/);
   });
+
+  it('fires when allow_force_pushes is deleted, not just when it is true', () => {
+    // #488: `node?.enabled === true` reads an absent node the same as
+    // `{ enabled: false }` -- both are "not true". A deleted key must not
+    // silently read as the safe, confirmed-false state.
+    const facts = baseline();
+    delete (facts.protection as Record<string, unknown>).allow_force_pushes;
+
+    expect(assumptionsOf(facts)).toEqual(['development.allow_force_pushes']);
+  });
+
+  it('fires when allow_deletions is deleted, not just when it is true', () => {
+    const facts = baseline();
+    delete (facts.protection as Record<string, unknown>).allow_deletions;
+
+    expect(assumptionsOf(facts)).toEqual(['development.allow_deletions']);
+  });
+
+  it('fires when required_linear_history is deleted', () => {
+    // Per the issue's mutation table this one already detected deletion
+    // correctly before the fix; pinned here so it stays true.
+    const facts = baseline();
+    delete (facts.protection as Record<string, unknown>)
+      .required_linear_history;
+
+    expect(assumptionsOf(facts)).toEqual([
+      'development.required_linear_history',
+    ]);
+  });
+
+  it('fires when enforce_admins is deleted, not just when it is true', () => {
+    const facts = baseline();
+    delete (facts.protection as Record<string, unknown>).enforce_admins;
+
+    expect(assumptionsOf(facts)).toEqual(['development.enforce_admins']);
+  });
+
+  it('fires when required_pull_request_reviews is deleted, not just when the count is non-zero', () => {
+    const facts = baseline();
+    delete (facts.protection as Record<string, unknown>)
+      .required_pull_request_reviews;
+
+    expect(assumptionsOf(facts)).toEqual([
+      'development.required_approving_review_count',
+    ]);
+  });
+
+  it.each([
+    ['allow_force_pushes', { enabled: true }],
+    ['allow_deletions', { enabled: true }],
+    ['required_linear_history', { enabled: false }],
+    ['enforce_admins', { enabled: true }],
+  ] as const)(
+    'words an absent %s violation differently from its present-unsafe-value violation',
+    (field, unsafeValue) => {
+      // The acceptance test requires the two to be distinguishable, not merely
+      // both non-empty, for every one of the five named fields (#488).
+      const deletedFacts = baseline();
+      delete (deletedFacts.protection as Record<string, unknown>)[field];
+      const [deletedViolation] = evaluateProtectionAssumptions(deletedFacts);
+
+      const unsafeFacts = baseline();
+      (unsafeFacts.protection as Record<string, unknown>)[field] = unsafeValue;
+      const [unsafeViolation] = evaluateProtectionAssumptions(unsafeFacts);
+
+      expect(deletedViolation?.actual).not.toBe(unsafeViolation?.actual);
+      expect(deletedViolation?.consequence).not.toBe(
+        unsafeViolation?.consequence,
+      );
+    },
+  );
+
+  it('words an absent required_pull_request_reviews violation differently from its present-unsafe-value violation', () => {
+    const deletedFacts = baseline();
+    delete (deletedFacts.protection as Record<string, unknown>)
+      .required_pull_request_reviews;
+    const [deletedViolation] = evaluateProtectionAssumptions(deletedFacts);
+
+    const unsafeFacts = baseline();
+    unsafeFacts.protection.required_pull_request_reviews.required_approving_review_count = 1;
+    const [unsafeViolation] = evaluateProtectionAssumptions(unsafeFacts);
+
+    expect(deletedViolation?.actual).not.toBe(unsafeViolation?.actual);
+    expect(deletedViolation?.consequence).not.toBe(
+      unsafeViolation?.consequence,
+    );
+  });
+
+  // #488, caught in review: a present-but-empty node (`{}`, missing the
+  // `enabled` key entirely rather than the node itself being deleted or
+  // `enabled: false`) is a different shape from both cases the tests above
+  // cover, and it fell through the earlier fix silently -- the guard only
+  // treated `undefined`/`null` nodes as unconfirmed, so `{}` read as "not
+  // literally true" and produced no violation, exactly like a legitimate
+  // `{ enabled: false }`. This is the same silent-false-safe hole #488 opened
+  // with, one level deeper: it is not enough to check the node exists, the
+  // node has to actually confirm `enabled` as a literal boolean.
+  it.each([
+    'allow_force_pushes',
+    'allow_deletions',
+    'required_linear_history',
+    'enforce_admins',
+  ] as const)(
+    'fires when %s is present but malformed (an empty node, not absent or false)',
+    (field) => {
+      const facts = baseline();
+      (facts.protection as Record<string, unknown>)[field] = {};
+
+      expect(assumptionsOf(facts)).toEqual([`development.${field}`]);
+    },
+  );
+
+  it('fires when required_pull_request_reviews is present but malformed (no required_approving_review_count)', () => {
+    const facts = baseline();
+    (
+      facts.protection as unknown as Record<string, unknown>
+    ).required_pull_request_reviews = {};
+
+    expect(assumptionsOf(facts)).toEqual([
+      'development.required_approving_review_count',
+    ]);
+  });
+
+  it.each([
+    'allow_force_pushes',
+    'allow_deletions',
+    'required_linear_history',
+    'enforce_admins',
+  ] as const)(
+    'fires when %s has a non-boolean enabled value, not just true/false',
+    (field) => {
+      const facts = baseline();
+      (facts.protection as Record<string, unknown>)[field] = {
+        enabled: 'yes',
+      };
+
+      expect(assumptionsOf(facts)).toEqual([`development.${field}`]);
+    },
+  );
 
   it('fires when the trunk stops refusing force pushes', () => {
     const facts = baseline();
