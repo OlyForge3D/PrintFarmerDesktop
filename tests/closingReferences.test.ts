@@ -884,7 +884,7 @@ describe('per-PR declaration files (#622)', () => {
       });
     });
 
-    it("falls back to the legacy shared file when the PR has no file of its own", () => {
+    it('falls back to the legacy shared file when the PR has no file of its own', () => {
       mkdirSync(path.dirname(DECLARATION_FILE_PATH), { recursive: true });
       writeFileSync(
         DECLARATION_FILE_PATH,

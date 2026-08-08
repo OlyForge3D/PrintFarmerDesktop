@@ -425,9 +425,7 @@ export function resolveHeadBranchName(
 
 /** The declaration file path this PR is judged against. */
 export function resolveDeclarationPath(prNumber, options = {}) {
-  return declarationFilePathForBranch(
-    resolveHeadBranchName(prNumber, options),
-  );
+  return declarationFilePathForBranch(resolveHeadBranchName(prNumber, options));
 }
 
 /**
