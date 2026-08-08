@@ -8,12 +8,12 @@ A merge/coordination session spent **six consecutive relay rounds** gating PR #4
 head SHA (`cd512223`) that had not been the branch tip for hours. Every round restated the
 same four premises, and every one of them was independently confirmed as stated:
 
-| Premise                                        | What was actually true                                          |
-| ----------------------------------------------- | ----------------------------------------------------------------- |
-| "#423 is draft/frozen"                          | `state=closed`, `merged=true`, `draft=false`                      |
-| "head is `cd512223`"                            | head was `3bfa78f2`; `cd512223` was `ahead=0 behind=158`           |
-| "reviews are pinned only to `9119b5df`"          | 9 review objects existed, at 3 different SHAs                     |
-| "`squad/366-freshness-timing` is at `cd512223`"  | `ls-remote` said `3bfa78f2`                                       |
+| Premise                                         | What was actually true                                   |
+| ----------------------------------------------- | -------------------------------------------------------- |
+| "#423 is draft/frozen"                          | `state=closed`, `merged=true`, `draft=false`             |
+| "head is `cd512223`"                            | head was `3bfa78f2`; `cd512223` was `ahead=0 behind=158` |
+| "reviews are pinned only to `9119b5df`"         | 9 review objects existed, at 3 different SHAs            |
+| "`squad/366-freshness-timing` is at `cd512223`" | `ls-remote` said `3bfa78f2`                              |
 
 Live, separately-obtained measurement resolved it in one shot:
 

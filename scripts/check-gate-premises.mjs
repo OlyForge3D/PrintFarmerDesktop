@@ -102,12 +102,7 @@ export function classifyTerminalState({ prNumber, state, merged } = {}) {
  * input and asserts nothing, exactly like the round that read
  * `ahead=0 behind=0` as corroboration.
  */
-export function classifyPosition({
-  sourceA,
-  valueA,
-  sourceB,
-  valueB,
-} = {}) {
+export function classifyPosition({ sourceA, valueA, sourceB, valueB } = {}) {
   if (!sourceA || !sourceB) {
     return {
       verdict: VERDICT_UNVERIFIABLE,
@@ -266,7 +261,9 @@ function resolveRepository(explicit) {
   const remote = resolveRemoteUrl('origin');
   const match = remote && remote.match(/github\.com[/:]([^/]+\/[^/.]+)/);
   if (!match) {
-    throw new Error(`cannot resolve a repository from origin (${remote ?? 'unset'})`);
+    throw new Error(
+      `cannot resolve a repository from origin (${remote ?? 'unset'})`,
+    );
   }
   return match[1];
 }
@@ -283,7 +280,9 @@ async function main() {
 
   const remoteUrl = resolveRemoteUrl('origin');
   // Fix #1: print the target before reading anything through it.
-  console.log(`[gate-premises] origin resolves to: ${remoteUrl ?? '(unresolved)'}`);
+  console.log(
+    `[gate-premises] origin resolves to: ${remoteUrl ?? '(unresolved)'}`,
+  );
 
   let repository;
   try {
