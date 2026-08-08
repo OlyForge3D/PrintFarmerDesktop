@@ -80,6 +80,34 @@ const violation = (assumption, expected, actual, decision, consequence) => ({
   consequence,
 });
 
+// Reads a `{ enabled: <bool> }`-shaped node into a fact that is either
+// "confirmed true", "confirmed false", or "not confirmed either way". A
+// plain `node?.enabled === true` check answers a narrower question -- "is
+// this literally true?" -- which would be exactly right for fields whose
+// safe value is `true` (an absent node correctly reads as not-true, i.e. a
+// violation), but wrong for fields whose safe value is `false`: it cannot
+// tell "GitHub confirmed this is off" from "GitHub said nothing about this
+// at all", and a payload that omits the key, or a payload that returns the
+// node but as `{}` or with `enabled` set to something other than a literal
+// boolean (a malformed-but-present shape), all collapse to the same silent
+// "not true" reading. Vasquez's review of #489's first pass (#488, and its
+// own re-application below) found exactly that hole in two places:
+// `allow_force_pushes: {}` produced no violation, and separately
+// `adminExemptibleSettingEnforcement` narrated a missing field as if it were
+// a confirmed, explicit unsafe value. `readEnabledFact` treats every
+// non-boolean shape the same as a fully missing node, at module scope, so
+// every reader of it -- `guardField` below and
+// `adminExemptibleSettingEnforcement` further down -- shares one place that
+// can go wrong instead of two.
+function readEnabledFact(node) {
+  if (node === undefined || node === null || typeof node !== 'object') {
+    return { confirmed: false };
+  }
+  if (node.enabled === true) return { confirmed: true, value: true };
+  if (node.enabled === false) return { confirmed: true, value: false };
+  return { confirmed: false };
+}
+
 /**
  * Pure. Takes the four reads and returns what has moved.
  *
@@ -101,32 +129,7 @@ export function evaluateProtectionAssumptions({
 
   const violations = [];
 
-  // Reads a `{ enabled: <bool> }`-shaped node into a fact that is either
-  // "confirmed true", "confirmed false", or "not confirmed either way".
-  // A plain `node?.enabled === true` check answers a narrower question --
-  // "is this literally true?" -- which would be exactly right for the fields
-  // whose safe value is `true` (an absent node correctly reads as not-true,
-  // i.e. a violation), but wrong for the fields below whose safe value is
-  // `false`: it cannot tell "GitHub confirmed this is off" from "GitHub said
-  // nothing about
-  // this at all", and a payload that omits the key, or a payload that
-  // returns the node but as `{}` or with `enabled` set to something other
-  // than a literal boolean (a malformed-but-present shape), all collapse to
-  // the same silent "not true" reading. Vasquez's review of this PR (#488)
-  // found exactly that hole: `allow_force_pushes: {}` produced no violation.
-  // `readEnabledFact` treats every one of those non-boolean shapes the same
-  // as a fully missing node, so `guardField` below raises the absent-field
-  // violation for all of them, not only for `undefined`/`null`.
-  const readEnabledFact = (node) => {
-    if (node === undefined || node === null || typeof node !== 'object') {
-      return { confirmed: false };
-    }
-    if (node.enabled === true) return { confirmed: true, value: true };
-    if (node.enabled === false) return { confirmed: true, value: false };
-    return { confirmed: false };
-  };
-
-  // The three fields above whose safe value is `false` share this hazard.
+  // The three fields below whose safe value is `false` share this hazard.
   // `guardField` raises a distinctly-worded violation when the fact is not
   // confirmed at all (missing node, or a present node that does not confirm
   // `enabled` as a literal boolean), and the existing present-unsafe-value
@@ -158,12 +161,18 @@ export function evaluateProtectionAssumptions({
     }
   };
 
+  // #489: `enforce_admins: false` exempts administrators from every one of
+  // the three settings guarded below, not only from `strict`. The sole
+  // collaborator here is an administrator, so each of these consequence
+  // texts names that the admin was already exempt from the rule before the
+  // drift below -- the drift removes the barrier for everyone else too, it
+  // does not take away a protection that was previously binding on them.
   guardField(
     protection.allow_force_pushes,
     'development.allow_force_pushes',
     '#81 / #149',
     'the allow_force_pushes fact is missing or malformed in the response rather than confirmed false -- an absent field, an empty node, or a non-boolean enabled value is not the same as GitHub reporting the trunk still refuses force pushes',
-    'the server-side half of the force-push protection is gone, leaving only the client-side guard, which --no-verify bypasses',
+    'force pushes are now allowed for every account, not only the sole admin whom enforce_admins:false already exempted from this rule; there was never a server-side barrier for that admin either, only the client-side guard, which --no-verify bypasses',
   );
 
   guardField(
@@ -171,7 +180,7 @@ export function evaluateProtectionAssumptions({
     'development.allow_deletions',
     '#81 / #149',
     'the allow_deletions fact is missing or malformed in the response rather than confirmed false -- an absent field, an empty node, or a non-boolean enabled value is not the same as GitHub reporting the trunk cannot be deleted',
-    'the trunk can be deleted outright, which no client-side guard sees',
+    'the trunk can now be deleted by every account, not only the sole admin whom enforce_admins:false already exempted from this rule; no client-side guard sees a deletion',
   );
 
   // Unlike the three false-safe fields, this one's safe value is `true`, so
@@ -197,7 +206,7 @@ export function evaluateProtectionAssumptions({
           'true',
           'false',
           '#149',
-          'squash-only history is what makes `--is-ancestor <head>` a known false negative rather than an unknown one',
+          'merge commits are now allowed for every account, not only the sole admin whom enforce_admins:false already exempted from this rule; squash-only history was already not something to rely on for `--is-ancestor <head>`',
         ),
       );
     }
@@ -336,6 +345,35 @@ export function evaluateProtectionAssumptions({
 }
 
 /**
+ * Shared shape behind every admin-exemptible reading below: a setting is
+ * `absent` when it isn't even configured the protective way, `bypassable` when
+ * it is configured correctly but `enforce_admins: false` exempts admins from
+ * it, and `binding` only when it is configured correctly AND admins are not
+ * exempt.
+ *
+ * The `present` argument must already distinguish "confirmed not configured
+ * the protective way" from "cannot be confirmed at all" -- collapsing those
+ * two into one boolean is exactly the hole #488 fixed for the violation
+ * checks above, and callers below split it back out via `readEnabledFact`
+ * rather than a plain `?.enabled === x` comparison.
+ */
+function adminExemptionReading({
+  present,
+  adminsExempt,
+  absentWhy,
+  bypassableWhy,
+  bindingWhy,
+}) {
+  if (!present) {
+    return { state: 'absent', why: absentWhy };
+  }
+  if (!adminsExempt) {
+    return { state: 'binding', why: bindingWhy };
+  }
+  return { state: 'bypassable', why: bypassableWhy };
+}
+
+/**
  * What `required_status_checks.strict` actually guarantees here, which is not what
  * its presence suggests.
  *
@@ -364,23 +402,106 @@ export function evaluateProtectionAssumptions({
  * one, and a check that fails on the correct state teaches its reader to ignore it.
  * What binds it is the test suite: if the pair ever changes, this reading changes
  * with it, so the claim cannot quietly outlive the facts it rests on.
+ *
+ * `strict` was the only setting read this way until #489: `enforce_admins: false`
+ * exempts administrators from `allow_force_pushes`, `allow_deletions` and
+ * `required_linear_history` exactly as it exempts them from `strict`, and the
+ * assumption check above was asserting those three as if they bound the sole
+ * admin. `adminExemptibleSettingEnforcement`, below, reads all four the same way.
  */
 export function statusCheckEnforcement(protection) {
-  if (protection?.required_status_checks?.strict !== true) {
-    return {
-      state: 'absent',
-      why: 'strict is not set, so a pull request may merge against a base it was never tested against',
-    };
-  }
-  if (protection?.enforce_admins?.enabled === true) {
-    return {
-      state: 'binding',
-      why: 'strict is set and administrators are not exempt, so up-to-date-ness is enforced for every merger',
-    };
-  }
+  return adminExemptionReading({
+    present: protection?.required_status_checks?.strict === true,
+    adminsExempt: protection?.enforce_admins?.enabled !== true,
+    absentWhy:
+      'strict is not set, so a pull request may merge against a base it was never tested against',
+    bindingWhy:
+      'strict is set and administrators are not exempt, so up-to-date-ness is enforced for every merger',
+    bypassableWhy:
+      'strict is set but administrators are exempt, and the only account that can merge is an administrator — do not rely on a merged PR having been tested against the trunk it landed on',
+  });
+}
+
+/**
+ * Every admin-exemptible setting read the same way `statusCheckEnforcement`
+ * reads `strict`: `enforce_admins: false` exempts administrators from ALL of
+ * these rules, not only `strict`, so a setting that is present and correct can
+ * still bind nobody when the only account that can push or merge is an admin.
+ * Returns one `{ state, why }` reading per setting, in the same
+ * `binding` / `bypassable` / `absent` vocabulary as `statusCheckEnforcement`.
+ *
+ * The three `{ enabled: <bool> }`-shaped settings below are read through
+ * `readEnabledFact` rather than a plain `?.enabled === x` comparison, so a
+ * missing or malformed node reads as `absent` with wording that says the
+ * field could not be confirmed, distinct from a node that GitHub confirmed
+ * as the explicit unsafe value. Collapsing those two into one `why` narration
+ * -- reporting an unconfirmed field as though it were a confirmed unsafe
+ * setting -- is the same hole #488 fixed for the violation checks above, and
+ * reappearing here in the enforcement-reporting path was exactly what
+ * Vasquez's own review of this generalisation caught.
+ */
+export function adminExemptibleSettingEnforcement(protection) {
+  const adminsExempt = protection?.enforce_admins?.enabled !== true;
+
+  const enabledNodeReading = ({
+    node,
+    protectiveValue,
+    missingWhy,
+    explicitUnsafeWhy,
+    bypassableWhy,
+    bindingWhy,
+  }) => {
+    const fact = readEnabledFact(node);
+    if (!fact.confirmed) {
+      return { state: 'absent', why: missingWhy };
+    }
+    return adminExemptionReading({
+      present: fact.value === protectiveValue,
+      adminsExempt,
+      absentWhy: explicitUnsafeWhy,
+      bypassableWhy,
+      bindingWhy,
+    });
+  };
+
   return {
-    state: 'bypassable',
-    why: 'strict is set but administrators are exempt, and the only account that can merge is an administrator — do not rely on a merged PR having been tested against the trunk it landed on',
+    strict: statusCheckEnforcement(protection),
+    allow_force_pushes: enabledNodeReading({
+      node: protection?.allow_force_pushes,
+      protectiveValue: false,
+      missingWhy:
+        'allow_force_pushes is missing or malformed in the response rather than confirmed either way, so whether force pushes are restricted cannot be read from this field',
+      explicitUnsafeWhy:
+        'allow_force_pushes is confirmed enabled, so force pushes are not restricted for anyone, administrator or not',
+      bindingWhy:
+        'force pushes are disallowed by configuration and administrators are not exempt, so the restriction binds every pusher',
+      bypassableWhy:
+        'force pushes are disallowed by configuration but administrators are exempt, and the only account that can push is an administrator — do not rely on the server-side force-push guard; the client-side hook, which --no-verify bypasses, is what actually holds',
+    }),
+    allow_deletions: enabledNodeReading({
+      node: protection?.allow_deletions,
+      protectiveValue: false,
+      missingWhy:
+        'allow_deletions is missing or malformed in the response rather than confirmed either way, so whether deletion is restricted cannot be read from this field',
+      explicitUnsafeWhy:
+        'allow_deletions is confirmed enabled, so the branch can be deleted by anyone, administrator or not',
+      bindingWhy:
+        'deletion is disallowed by configuration and administrators are not exempt, so the restriction binds every account',
+      bypassableWhy:
+        'deletion is disallowed by configuration but administrators are exempt, and the only account with push access is an administrator — do not rely on the server-side deletion guard',
+    }),
+    required_linear_history: enabledNodeReading({
+      node: protection?.required_linear_history,
+      protectiveValue: true,
+      missingWhy:
+        'required_linear_history is missing or malformed in the response rather than confirmed either way, so whether linear history is required cannot be read from this field',
+      explicitUnsafeWhy:
+        'required_linear_history is confirmed not enabled, so merge commits are not restricted for anyone, administrator or not',
+      bindingWhy:
+        'linear history is required by configuration and administrators are not exempt, so it binds every merger',
+      bypassableWhy:
+        'linear history is required by configuration but administrators are exempt, and the only account that can merge is an administrator — do not rely on trunk history actually being linear',
+    }),
   };
 }
 
@@ -488,12 +609,23 @@ async function main() {
   const facts = await fetchRepositoryFacts({ repository, token });
   const violations = evaluateProtectionAssumptions(facts);
 
-  // Printed on every run, pass or fail. A reader who sees `strict: true` in the
-  // settings concludes that a merged PR was tested against the trunk it landed on,
-  // and here that is false for half of them.
-  const enforcement = statusCheckEnforcement(facts.protection);
+  // Printed on every run, pass or fail. A reader who sees `strict: true`, or any
+  // of the other three settings below, in the raw settings concludes that the
+  // setting binds every merger or pusher. `enforce_admins: false` exempts
+  // administrators from every one of them, and the sole collaborator here is an
+  // administrator, so all four can be present and correct while binding nobody.
+  const enforcement = adminExemptibleSettingEnforcement(facts.protection);
   console.log(
-    `Up-to-date-with-base enforcement: ${enforcement.state} — ${enforcement.why}`,
+    `Up-to-date-with-base enforcement: ${enforcement.strict.state} — ${enforcement.strict.why}`,
+  );
+  console.log(
+    `Force-push protection enforcement: ${enforcement.allow_force_pushes.state} — ${enforcement.allow_force_pushes.why}`,
+  );
+  console.log(
+    `Deletion protection enforcement: ${enforcement.allow_deletions.state} — ${enforcement.allow_deletions.why}`,
+  );
+  console.log(
+    `Linear-history enforcement: ${enforcement.required_linear_history.state} — ${enforcement.required_linear_history.why}`,
   );
 
   if (violations.length === 0) {
