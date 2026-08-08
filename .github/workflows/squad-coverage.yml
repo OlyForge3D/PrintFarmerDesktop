@@ -1,0 +1,45 @@
+name: Squad label coverage
+
+# merge-queue: publication
+#
+# #410: every open issue must carry exactly one `squad:*` label or `triage`,
+# or it is not in anybody's queue and never will be. This is a board-hygiene
+# gate over the whole open-issue population, not a property of any single
+# commit or pull request, so it deliberately never runs on `pull_request` --
+# it runs on a schedule (to catch drift even when nothing else happens) and
+# on the issue events that can change an issue's coverage (to catch it fast
+# when something does).
+#
+# Coverage only: this does not, and must not, judge whether an assigned
+# `squad:*` label is the CORRECT one -- see scripts/check-squad-coverage.mjs
+# and the issue's own stated scope limit.
+
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  issues:
+    types: [opened, labeled, unlabeled, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  squad-coverage:
+    name: Squad label coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # No npm install: the detector imports only node: builtins.
+      - name: Enumerate open issues for squad:* / triage coverage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npm run check:squad-coverage
