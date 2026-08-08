@@ -22,6 +22,7 @@ const OPEN_PULL_REQUESTS_QUERY = `
           closingIssuesReferences(first: 100) {
             nodes {
               number
+              closed
               repository {
                 nameWithOwner
               }
@@ -156,12 +157,18 @@ export function parseOpenPullRequestPages(raw) {
             `closing issue on PR #${number} has no repository identity`,
           );
         }
+        if (typeof issue?.closed !== 'boolean') {
+          throw new TypeError(
+            `closing issue on PR #${number} is missing its closed state`,
+          );
+        }
         return {
           number: positiveInteger(
             issue?.number,
             `closing issue number on PR #${number}`,
           ),
           repository,
+          closed: issue.closed,
         };
       });
       const uniqueClosingIssues = [
@@ -238,7 +245,7 @@ export function branchIssueTypeQuery(numbers) {
   const fields = numbers
     .map((number) => {
       positiveInteger(number, 'branch issue candidate');
-      return `n${number}: issueOrPullRequest(number: ${number}) { __typename }`;
+      return `n${number}: issueOrPullRequest(number: ${number}) { __typename ... on Issue { closed } }`;
     })
     .join('\n');
   return `
@@ -317,6 +324,43 @@ export function parseBranchIssueTypes(raw, expectedNumbers) {
   return issueNumbers;
 }
 
+/**
+ * Sibling to `parseBranchIssueTypes`, reading the *same* raw response (the
+ * type-resolution query now also requests `... on Issue { closed }`) to
+ * report which branch-derived candidates are Issues that are already closed.
+ * A separate function, not a changed return shape on `parseBranchIssueTypes`,
+ * so every existing caller and assertion of that function is untouched.
+ */
+export function parseBranchIssueClosedNumbers(raw, expectedNumbers) {
+  const response = asRecord(parseJson(raw, 'branch issue type response'));
+  const repository = asRecord(asRecord(response?.data)?.repository);
+  if (!repository) {
+    throw new TypeError(
+      'branch issue type response has no repository object; refusing to treat candidates as nonexistent',
+    );
+  }
+
+  const closedNumbers = [];
+  for (const number of expectedNumbers) {
+    positiveInteger(number, 'expected branch issue candidate');
+    const key = `n${number}`;
+    if (!Object.hasOwn(repository, key)) {
+      throw new Error(
+        `branch issue type response omitted candidate #${number}; refusing to report from a partial response`,
+      );
+    }
+    const value = repository[key];
+    if (value === null) {
+      continue;
+    }
+    const record = asRecord(value);
+    if (record?.__typename === 'Issue' && record.closed === true) {
+      closedNumbers.push(number);
+    }
+  }
+  return closedNumbers;
+}
+
 export function readOpenPullRequests({ owner, repo, run }) {
   const raw = run([
     'api',
@@ -393,8 +437,15 @@ export async function readSettledOpenPullRequests(read, options = {}) {
   };
 }
 
-export function resolveBranchIssueNumbers({ owner, repo, numbers, run }) {
+/**
+ * Batches the type-resolution call once per `RESOLUTION_BATCH_SIZE` numbers
+ * and reads both which candidates are Issues and which of those are already
+ * closed from the same response, since `branchIssueTypeQuery` requests both
+ * `__typename` and `... on Issue { closed }` in one round trip.
+ */
+export function resolveBranchIssueDetails({ owner, repo, numbers, run }) {
   const issueNumbers = [];
+  const closedIssueNumbers = [];
   for (let index = 0; index < numbers.length; index += RESOLUTION_BATCH_SIZE) {
     const batch = numbers.slice(index, index + RESOLUTION_BATCH_SIZE);
     const raw = run([
@@ -408,28 +459,45 @@ export function resolveBranchIssueNumbers({ owner, repo, numbers, run }) {
       `repo=${repo}`,
     ]);
     issueNumbers.push(...parseBranchIssueTypes(raw, batch));
+    closedIssueNumbers.push(...parseBranchIssueClosedNumbers(raw, batch));
   }
-  return issueNumbers;
+  return { issueNumbers, closedIssueNumbers };
+}
+
+/**
+ * Kept for its existing signature and callers: delegates to
+ * `resolveBranchIssueDetails` so the batching and gh-call count are shared
+ * with the closed-issue lookup rather than doubled.
+ */
+export function resolveBranchIssueNumbers({ owner, repo, numbers, run }) {
+  return resolveBranchIssueDetails({ owner, repo, numbers, run }).issueNumbers;
 }
 
 export function evaluateClaimCollisions(
   pullRequests,
   branchIssueNumbers,
   branchIssueRepository,
+  closedBranchIssueNumbers = [],
 ) {
   if (
     !Array.isArray(pullRequests) ||
     !Array.isArray(branchIssueNumbers) ||
     typeof branchIssueRepository !== 'string' ||
-    branchIssueRepository.trim() === ''
+    branchIssueRepository.trim() === '' ||
+    !Array.isArray(closedBranchIssueNumbers)
   ) {
     throw new TypeError(
-      'pullRequests and branchIssueNumbers must be arrays and branchIssueRepository must identify OWNER/REPO',
+      'pullRequests, branchIssueNumbers and closedBranchIssueNumbers must be arrays and branchIssueRepository must identify OWNER/REPO',
     );
   }
   const validBranchIssues = new Set(
     branchIssueNumbers.map((number) =>
       positiveInteger(number, 'resolved branch issue number'),
+    ),
+  );
+  const closedBranchIssues = new Set(
+    closedBranchIssueNumbers.map((number) =>
+      positiveInteger(number, 'closed branch issue number'),
     ),
   );
   const claimsByIssue = new Map();
@@ -458,6 +526,7 @@ export function evaluateClaimCollisions(
         repository: issue.repository,
         issueNumber,
         sources: new Set(['closingIssuesReferences']),
+        closed: issue.closed === true,
       });
     }
     for (const issueNumber of parseBranchIssueCandidates(
@@ -471,13 +540,16 @@ export function evaluateClaimCollisions(
         repository: branchIssueRepository,
         issueNumber,
         sources: new Set(),
+        closed: false,
       };
       claim.sources.add('branch');
+      claim.closed = claim.closed || closedBranchIssues.has(issueNumber);
       sourcesByIssue.set(key, claim);
     }
 
     for (const [key, issueClaim] of sourcesByIssue) {
-      const claims = claimsByIssue.get(key)?.pullRequests ?? [];
+      const existing = claimsByIssue.get(key);
+      const claims = existing?.pullRequests ?? [];
       claims.push({
         number: prNumber,
         title: pullRequest.title,
@@ -489,6 +561,7 @@ export function evaluateClaimCollisions(
         repository: issueClaim.repository,
         issueNumber: issueClaim.issueNumber,
         pullRequests: claims,
+        closed: Boolean(existing?.closed) || issueClaim.closed,
       });
     }
   }
@@ -507,6 +580,23 @@ export function evaluateClaimCollisions(
         a.issueNumber - b.issueNumber,
     );
 
+  // Separate from `collisions`: a closed-issue claim is a defect on its own,
+  // even when exactly one open PR claims it -- that PR's declaration matches
+  // nothing observable precisely because nothing else claims it either.
+  const closedClaims = [...claimsByIssue]
+    .map(([, claim]) => claim)
+    .filter(({ closed }) => closed)
+    .map(({ repository, issueNumber, pullRequests }) => ({
+      repository,
+      issueNumber,
+      pullRequests: pullRequests.sort((a, b) => a.number - b.number),
+    }))
+    .sort(
+      (a, b) =>
+        a.repository.localeCompare(b.repository) ||
+        a.issueNumber - b.issueNumber,
+    );
+
   return {
     openPullRequestCount: pullRequests.length,
     claimedIssueCount: claimsByIssue.size,
@@ -514,6 +604,7 @@ export function evaluateClaimCollisions(
       ({ pullRequests: claims }) => claims.length === 1,
     ).length,
     collisions,
+    closedClaims,
   };
 }
 
@@ -535,6 +626,28 @@ export function formatCollisionWarnings(result) {
     const issue = `${collision.repository}#${collision.issueNumber}`;
     return `::warning title=Duplicate issue claim ${issue}::${escapeWorkflowCommand(
       `Issue ${issue} is claimed by ${claimants}. This is advisory: deliberate replacement PRs are valid, but every conflicting PR must be reviewed together.`,
+    )}`;
+  });
+}
+
+/**
+ * #520 AC2: an open PR claiming an issue that is already closed is the same
+ * defect after the fact as two open PRs claiming the same issue -- the
+ * claim matches nothing observable, quietly. Reported for every closed
+ * claim, independent of `collisions`: a single PR claiming a closed issue
+ * is a finding on its own, not only when another PR also claims it.
+ */
+export function formatClosedIssueClaimWarnings(result) {
+  return result.closedClaims.map((claim) => {
+    const claimants = claim.pullRequests
+      .map(
+        (pullRequest) =>
+          `PR #${pullRequest.number} (${pullRequest.url}; ${pullRequest.sources.join('+')})`,
+      )
+      .join(', ');
+    const issue = `${claim.repository}#${claim.issueNumber}`;
+    return `::warning title=Closed issue claimed ${issue}::${escapeWorkflowCommand(
+      `Issue ${issue} is already closed but is still claimed by ${claimants}. This is advisory: the claim may be stale, or the issue may have been reopened since; either way, it no longer describes what the claim asserts.`,
     )}`;
   });
 }
@@ -616,10 +729,10 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   }
   const pullRequests = population.value;
   const candidates = collectBranchIssueCandidates(pullRequests);
-  const branchIssueNumbers =
+  const { issueNumbers: branchIssueNumbers, closedIssueNumbers } =
     candidates.length === 0
-      ? []
-      : resolveBranchIssueNumbers({
+      ? { issueNumbers: [], closedIssueNumbers: [] }
+      : (deps.resolveBranchIssueDetails ?? resolveBranchIssueDetails)({
           owner,
           repo,
           numbers: candidates,
@@ -629,12 +742,16 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     pullRequests,
     branchIssueNumbers,
     `${owner}/${repo}`,
+    closedIssueNumbers,
   );
 
   output(
-    `[pr-claim-collisions] open PRs ${result.openPullRequestCount}; claimed issues ${result.claimedIssueCount}; collisions ${result.collisions.length}; singly claimed ${result.singleClaimCount}; population reads ${population.reads}; stable ${Math.round(population.stableMs / 1000)}s`,
+    `[pr-claim-collisions] open PRs ${result.openPullRequestCount}; claimed issues ${result.claimedIssueCount}; collisions ${result.collisions.length}; closed-issue claims ${result.closedClaims.length}; singly claimed ${result.singleClaimCount}; population reads ${population.reads}; stable ${Math.round(population.stableMs / 1000)}s`,
   );
   for (const warning of formatCollisionWarnings(result)) {
+    output(warning);
+  }
+  for (const warning of formatClosedIssueClaimWarnings(result)) {
     output(warning);
   }
   if (result.collisions.length === 0) {
@@ -642,6 +759,15 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   } else {
     output(
       `[pr-claim-collisions] ADVISORY: ${result.collisions.length} duplicate issue claim(s) found; the workflow remains green because replacement PRs can be deliberate`,
+    );
+  }
+  if (result.closedClaims.length === 0) {
+    output(
+      '[pr-claim-collisions] OK: no open PR claims an already-closed issue',
+    );
+  } else {
+    output(
+      `[pr-claim-collisions] ADVISORY: ${result.closedClaims.length} closed-issue claim(s) found; the workflow remains green because a claim may be stale rather than wrong`,
     );
   }
   return result;

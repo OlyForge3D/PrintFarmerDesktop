@@ -4,13 +4,16 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   collectBranchIssueCandidates,
   evaluateClaimCollisions,
+  formatClosedIssueClaimWarnings,
   formatCollisionWarnings,
   main,
   parseBranchIssueCandidates,
+  parseBranchIssueClosedNumbers,
   parseBranchIssueTypes,
   parseOpenPullRequestPages,
   readOpenPullRequests,
   readSettledOpenPullRequests,
+  resolveBranchIssueDetails,
   resolveBranchIssueNumbers,
   runGitHub,
 } from '../scripts/check-pr-claim-collisions.mjs';
@@ -21,12 +24,14 @@ interface FixturePr {
   url?: string;
   headRefName: string;
   closingIssueNumbers: number[];
+  closedIssueNumbers?: number[];
 }
 
 const REPOSITORY = 'OlyForge3D/PrintFarmerDesktop';
 
 function pr(input: FixturePr) {
-  const { closingIssueNumbers, ...rest } = input;
+  const { closingIssueNumbers, closedIssueNumbers = [], ...rest } = input;
+  const closed = new Set(closedIssueNumbers);
   return {
     title: `PR ${input.number}`,
     url: `https://github.test/pull/${input.number}`,
@@ -34,6 +39,7 @@ function pr(input: FixturePr) {
     closingIssues: closingIssueNumbers.map((number) => ({
       number,
       repository: REPOSITORY,
+      closed: closed.has(number),
     })),
   };
 }
@@ -55,6 +61,7 @@ function page(
             closingIssuesReferences: {
               nodes: node.closingIssues.map((issue) => ({
                 number: issue.number,
+                closed: issue.closed,
                 repository: { nameWithOwner: issue.repository },
               })),
               pageInfo: { hasNextPage: false },
@@ -731,8 +738,258 @@ describe('population discrimination and advisory output', () => {
     const args = run.mock.calls[0]?.[0] ?? [];
     const query = args.find((argument) => argument.startsWith('query='));
     expect(query).toContain(
-      'n481: issueOrPullRequest(number: 481) { __typename }',
+      'n481: issueOrPullRequest(number: 481) { __typename ... on Issue { closed } }',
     );
+  });
+});
+
+describe('closed-issue claims (#520 AC2)', () => {
+  it("detects an already-closed issue claimed through GitHub's own closing reference, alone on one PR", () => {
+    // Positive control: exactly one open PR, no collision with any other PR,
+    // yet the claim is a defect because the issue it names is already closed.
+    // A detector that only ever compares PRs against each other cannot find
+    // this; it has to check the claimed issue's own state.
+    const result = evaluateClaimCollisions(
+      [
+        pr({
+          number: 700,
+          headRefName: 'squad/701-something',
+          closingIssueNumbers: [701],
+          closedIssueNumbers: [701],
+        }),
+      ],
+      [],
+      REPOSITORY,
+    );
+    expect(result.collisions).toEqual([]);
+    expect(result.closedClaims).toEqual([
+      {
+        repository: REPOSITORY,
+        issueNumber: 701,
+        pullRequests: [
+          expect.objectContaining({
+            number: 700,
+            sources: ['closingIssuesReferences'],
+          }),
+        ],
+      },
+    ]);
+  });
+
+  it('detects an already-closed issue claimed only through a branch-derived candidate', () => {
+    const result = evaluateClaimCollisions(
+      [
+        pr({
+          number: 702,
+          headRefName: 'dev/hicks-703-fix',
+          closingIssueNumbers: [],
+        }),
+      ],
+      [703],
+      REPOSITORY,
+      [703],
+    );
+    expect(result.closedClaims).toEqual([
+      {
+        repository: REPOSITORY,
+        issueNumber: 703,
+        pullRequests: [
+          expect.objectContaining({ number: 702, sources: ['branch'] }),
+        ],
+      },
+    ]);
+  });
+
+  it('reports a closed-issue claim independently of an open-vs-open collision on the same issue', () => {
+    const result = evaluateClaimCollisions(
+      [
+        pr({
+          number: 704,
+          headRefName: 'squad/705-a',
+          closingIssueNumbers: [705],
+          closedIssueNumbers: [705],
+        }),
+        pr({
+          number: 706,
+          headRefName: 'squad/705-b',
+          closingIssueNumbers: [705],
+          closedIssueNumbers: [705],
+        }),
+      ],
+      [],
+      REPOSITORY,
+    );
+    expect(result.collisions).toHaveLength(1);
+    expect(result.closedClaims).toHaveLength(1);
+    expect(result.closedClaims[0]?.pullRequests.map((p) => p.number)).toEqual([
+      704, 706,
+    ]);
+  });
+
+  it('reports no closed claims on a clean board', () => {
+    // Clean-board control mirroring the collision suite's own concern: an
+    // empty result must be distinguishable from a detector that finds
+    // nothing because it never looks. Nothing here is closed, so nothing
+    // should be reported.
+    const result = evaluateClaimCollisions(
+      [
+        pr({
+          number: 707,
+          headRefName: 'squad/708-open-issue',
+          closingIssueNumbers: [708],
+        }),
+      ],
+      [],
+      REPOSITORY,
+    );
+    expect(result.closedClaims).toEqual([]);
+  });
+
+  it('names every claimant and marks the finding advisory in the warning text', () => {
+    const result = evaluateClaimCollisions(
+      [
+        pr({
+          number: 700,
+          headRefName: 'squad/701-something',
+          closingIssueNumbers: [701],
+          closedIssueNumbers: [701],
+        }),
+      ],
+      [],
+      REPOSITORY,
+    );
+    const warnings = formatClosedIssueClaimWarnings(result);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('::warning');
+    expect(warnings[0]).toContain(`${REPOSITORY}#701`);
+    expect(warnings[0]).toContain('PR #700');
+    expect(warnings[0]).toContain('already closed');
+  });
+
+  it('parses closed Issue candidates out of the shared type-resolution response', () => {
+    const raw = JSON.stringify({
+      data: {
+        repository: {
+          n701: { __typename: 'Issue', closed: true },
+          n702: { __typename: 'Issue', closed: false },
+          n703: { __typename: 'PullRequest' },
+        },
+      },
+    });
+    expect(parseBranchIssueClosedNumbers(raw, [701, 702, 703])).toEqual([701]);
+  });
+
+  it('resolves issue numbers and closed numbers from one batched round trip', () => {
+    const run = vi.fn<(args: string[]) => string>(() =>
+      JSON.stringify({
+        data: {
+          repository: {
+            n701: { __typename: 'Issue', closed: true },
+            n702: { __typename: 'Issue', closed: false },
+          },
+        },
+      }),
+    );
+    const details = resolveBranchIssueDetails({
+      owner: 'OlyForge3D',
+      repo: 'PrintFarmerDesktop',
+      numbers: [701, 702],
+      run,
+    });
+    expect(details).toEqual({
+      issueNumbers: [701, 702],
+      closedIssueNumbers: [701],
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps resolveBranchIssueNumbers returning only issue numbers, unchanged', () => {
+    const run = vi.fn<(args: string[]) => string>(() =>
+      JSON.stringify({
+        data: {
+          repository: { n701: { __typename: 'Issue', closed: true } },
+        },
+      }),
+    );
+    expect(
+      resolveBranchIssueNumbers({
+        owner: 'OlyForge3D',
+        repo: 'PrintFarmerDesktop',
+        numbers: [701],
+        run,
+      }),
+    ).toEqual([701]);
+  });
+
+  it('surfaces a closed-issue claim through main() without failing the check', async () => {
+    const output = vi.fn();
+    const run = vi.fn<(args: string[]) => string>().mockReturnValueOnce(
+      JSON.stringify([
+        page([
+          pr({
+            number: 700,
+            headRefName: 'squad/closed-issue-check',
+            closingIssueNumbers: [701],
+            closedIssueNumbers: [701],
+          }),
+        ]),
+      ]),
+    );
+
+    const result = await main([], {
+      run,
+      environment: { GITHUB_REPOSITORY: 'OlyForge3D/PrintFarmerDesktop' },
+      output,
+      readPopulation: async (read) => ({
+        value: await read(),
+        reads: 13,
+        settled: true,
+        elapsedMs: 60_000,
+        stableMs: 60_000,
+      }),
+    });
+    expect(result.closedClaims).toHaveLength(1);
+    expect(output).toHaveBeenCalledWith(
+      expect.stringContaining('closed-issue claim'),
+    );
+    expect(output).toHaveBeenCalledWith(
+      expect.stringContaining('::warning title=Closed issue claimed'),
+    );
+  });
+});
+
+describe('runs with no PR context (#520 AC4)', () => {
+  // The script never reads a PR number, GITHUB_HEAD_REF, or any other
+  // pull_request-only field: it derives owner/repo from --repo or
+  // GITHUB_REPOSITORY and reads the whole open-PR population. merge_group
+  // carries none of the former but does carry the latter, so the same
+  // invocation that already works on pull_request events is unaffected by
+  // running under merge_group, whatever workflow wiring might one day
+  // subscribe to it.
+  it('resolves owner/repo from GITHUB_REPOSITORY alone, without any pull_request-only environment field', async () => {
+    const output = vi.fn();
+    const run = vi.fn<(args: string[]) => string>(() =>
+      JSON.stringify([page([])]),
+    );
+    const result = await main([], {
+      run,
+      // Deliberately no GITHUB_HEAD_REF, GITHUB_EVENT_NAME, or PR number --
+      // merge_group's actual environment shape.
+      environment: { GITHUB_REPOSITORY: 'OlyForge3D/PrintFarmerDesktop' },
+      output,
+      readPopulation: async (read) => ({
+        value: await read(),
+        reads: 1,
+        settled: true,
+        elapsedMs: 0,
+        stableMs: 60_000,
+      }),
+    });
+    expect(result).toMatchObject({
+      openPullRequestCount: 0,
+      collisions: [],
+      closedClaims: [],
+    });
   });
 });
 

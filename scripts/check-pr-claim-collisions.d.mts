@@ -9,6 +9,7 @@ export interface OpenPullRequestClaim {
 export interface IssueClaimIdentity {
   repository: string;
   number: number;
+  closed: boolean;
 }
 
 export interface PullRequestIssueClaim {
@@ -30,6 +31,7 @@ export interface ClaimCollisionResult {
   claimedIssueCount: number;
   singleClaimCount: number;
   collisions: IssueClaimCollision[];
+  closedClaims: IssueClaimCollision[];
 }
 
 export interface SettledOpenPullRequests {
@@ -40,6 +42,11 @@ export interface SettledOpenPullRequests {
   stableMs: number;
 }
 
+export interface ResolvedBranchIssueDetails {
+  issueNumbers: number[];
+  closedIssueNumbers: number[];
+}
+
 export function parseOpenPullRequestPages(raw: string): OpenPullRequestClaim[];
 export function parseBranchIssueCandidates(headRefName: string): number[];
 export function collectBranchIssueCandidates(
@@ -47,6 +54,10 @@ export function collectBranchIssueCandidates(
 ): number[];
 export function branchIssueTypeQuery(numbers: number[]): string;
 export function parseBranchIssueTypes(
+  raw: string,
+  expectedNumbers: number[],
+): number[];
+export function parseBranchIssueClosedNumbers(
   raw: string,
   expectedNumbers: number[],
 ): number[];
@@ -84,12 +95,22 @@ export function resolveBranchIssueNumbers(input: {
   numbers: number[];
   run: (args: string[]) => string;
 }): number[];
+export function resolveBranchIssueDetails(input: {
+  owner: string;
+  repo: string;
+  numbers: number[];
+  run: (args: string[]) => string;
+}): ResolvedBranchIssueDetails;
 export function evaluateClaimCollisions(
   pullRequests: OpenPullRequestClaim[],
   branchIssueNumbers: number[],
   branchIssueRepository: string,
+  closedBranchIssueNumbers?: number[],
 ): ClaimCollisionResult;
 export function formatCollisionWarnings(result: ClaimCollisionResult): string[];
+export function formatClosedIssueClaimWarnings(
+  result: ClaimCollisionResult,
+): string[];
 export function main(
   argv?: string[],
   deps?: {
@@ -99,5 +120,11 @@ export function main(
     readPopulation?: (
       read: () => OpenPullRequestClaim[] | Promise<OpenPullRequestClaim[]>,
     ) => Promise<SettledOpenPullRequests>;
+    resolveBranchIssueDetails?: (input: {
+      owner: string;
+      repo: string;
+      numbers: number[];
+      run: (args: string[]) => string;
+    }) => ResolvedBranchIssueDetails;
   },
 ): Promise<ClaimCollisionResult>;
