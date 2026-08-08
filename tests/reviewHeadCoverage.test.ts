@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   EXIT_OK,
@@ -12,6 +12,8 @@ import {
   classifyCoverage,
   evaluateControls,
   evaluateSweep,
+  fetchReviews,
+  filterReviewsByState,
   formatSweep,
   normalizeSha,
   reviewCoversHead,
@@ -315,5 +317,141 @@ describe('the exit code a census returns', () => {
         typeof evaluateSweep
       >),
     ).toBe(EXIT_UNVERIFIABLE);
+  });
+});
+
+// #501: `GET .../pulls/{n}/reviews` accepts and silently discards `state`
+// (and `creator`, `since`) -- it returns the unfiltered set regardless of the
+// query string, sometimes the exact complement of what was requested. The
+// only correct narrowing is client-side on each review's own `state` field.
+describe('narrowing reviews by state client-side (#501)', () => {
+  const mixed = [
+    review(HEAD, 'COMMENTED', 1),
+    review(HEAD, 'APPROVED', 2),
+    review(OLDER, 'CHANGES_REQUESTED', 3),
+    review(HEAD, 'COMMENTED', 4),
+  ];
+
+  it('filters to the requested state', () => {
+    expect(filterReviewsByState(mixed, 'APPROVED').map((r) => r.id)).toEqual([
+      2,
+    ]);
+    expect(
+      filterReviewsByState(mixed, 'CHANGES_REQUESTED').map((r) => r.id),
+    ).toEqual([3]);
+    expect(filterReviewsByState(mixed, 'COMMENTED').map((r) => r.id)).toEqual([
+      1, 4,
+    ]);
+  });
+
+  // A requested state absent from the corpus must narrow to nothing, not
+  // fall back to the unfiltered set -- that would be the exact bug (#501)
+  // this helper exists to prevent.
+  it('narrows to an empty set when no review carries the requested state', () => {
+    const allCommented = [
+      review(HEAD, 'COMMENTED', 1),
+      review(OLDER, 'COMMENTED', 2),
+    ];
+    expect(filterReviewsByState(allCommented, 'APPROVED')).toEqual([]);
+  });
+
+  it('returns the corpus unchanged when no state is requested', () => {
+    expect(filterReviewsByState(mixed, undefined)).toEqual(mixed);
+  });
+
+  it('treats a non-array corpus as empty rather than throwing', () => {
+    expect(filterReviewsByState(undefined, 'APPROVED')).toEqual([]);
+  });
+});
+
+describe('fetching reviews against a mock endpoint that reproduces #501', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // The mock endpoint deliberately mirrors the measured defect: it ignores
+  // `state`, `creator`, and `since` and returns the full unfiltered corpus
+  // regardless, exactly as GitHub does against pulls/{n}/reviews. If
+  // fetchReviews ever regresses to trusting a server-side `state` filter,
+  // this fixture -- not a live API call -- is what would catch it.
+  function stubBrokenReviewsEndpoint(reviews: unknown[]) {
+    const fetchMock = vi.fn((input: string | URL) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toContain('/reviews');
+      // Honours per_page (as the real endpoint does) but every other query
+      // parameter is silently discarded -- the corpus is returned in full.
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(reviews),
+      } as Response);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  const corpus = [
+    { id: 10, state: 'COMMENTED', commit_id: HEAD },
+    { id: 11, state: 'COMMENTED', commit_id: HEAD },
+    { id: 12, state: 'COMMENTED', commit_id: OLDER },
+  ];
+
+  it('narrows to APPROVED client-side even though the mocked endpoint ignores ?state=APPROVED', async () => {
+    stubBrokenReviewsEndpoint(corpus);
+    const result = await fetchReviews({
+      repository: 'OlyForge3D/PrintFarmerDesktop',
+      prNumber: 248,
+      state: 'APPROVED',
+    });
+    // Measured shape from #501: the unfiltered corpus is all COMMENTED, so
+    // asking for APPROVED must come back empty, never the unfiltered three.
+    expect(result).toEqual([]);
+  });
+
+  it('narrows to CHANGES_REQUESTED client-side even though the mocked endpoint ignores the query string', async () => {
+    stubBrokenReviewsEndpoint(corpus);
+    const result = await fetchReviews({
+      repository: 'OlyForge3D/PrintFarmerDesktop',
+      prNumber: 248,
+      state: 'CHANGES_REQUESTED',
+    });
+    expect(result).toEqual([]);
+  });
+
+  it('narrows to COMMENTED and returns every matching review, not a subset the broken filter would have returned', async () => {
+    stubBrokenReviewsEndpoint(corpus);
+    const result = await fetchReviews({
+      repository: 'OlyForge3D/PrintFarmerDesktop',
+      prNumber: 248,
+      state: 'COMMENTED',
+    });
+    expect(result.map((r) => r.id)).toEqual([10, 11, 12]);
+  });
+
+  it('returns the full unfiltered corpus when no state narrowing is requested', async () => {
+    stubBrokenReviewsEndpoint(corpus);
+    const result = await fetchReviews({
+      repository: 'OlyForge3D/PrintFarmerDesktop',
+      prNumber: 248,
+    });
+    expect(result).toHaveLength(3);
+  });
+
+  // Regression guard for the bug itself: the request URL must never carry a
+  // `state` (or `creator`/`since`) query parameter, because trusting the
+  // endpoint to honour one is exactly what #501 says it will not do.
+  it('never sends a state, creator, or since query parameter to the endpoint', async () => {
+    const fetchMock = stubBrokenReviewsEndpoint(corpus);
+    await fetchReviews({
+      repository: 'OlyForge3D/PrintFarmerDesktop',
+      prNumber: 248,
+      state: 'APPROVED',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const requestedUrl = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    expect(requestedUrl.searchParams.has('state')).toBe(false);
+    expect(requestedUrl.searchParams.has('creator')).toBe(false);
+    expect(requestedUrl.searchParams.has('since')).toBe(false);
+    expect(requestedUrl.searchParams.get('per_page')).toBe('100');
   });
 });

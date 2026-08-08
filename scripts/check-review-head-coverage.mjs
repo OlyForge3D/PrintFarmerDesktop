@@ -346,16 +346,38 @@ export async function fetchMergedPulls({ repository, token, limit = 30 }) {
     .slice(0, limit);
 }
 
-export async function fetchReviews({ repository, token, prNumber }) {
+/**
+ * `GET .../pulls/{n}/reviews` accepts and silently discards `state` (and
+ * every other filter tried besides `per_page` -- see #501). It returns the
+ * unfiltered set regardless of the query string: `?state=APPROVED` against
+ * this repository has been observed to return reviews that are each stamped
+ * `"state": "COMMENTED"`, the exact complement of what was asked for, not a
+ * superset. The only correct narrowing is client-side, on the `state` field
+ * of each returned object, which is present and trustworthy even though the
+ * request-time filter is not.
+ */
+export function filterReviewsByState(reviews, state) {
+  const list = Array.isArray(reviews) ? reviews : [];
+  if (state === undefined || state === null) {
+    return list;
+  }
+  return list.filter((review) => review?.state === state);
+}
+
+export async function fetchReviews({ repository, token, prNumber, state }) {
+  // Deliberately no `state` (or `creator`/`since`) query parameter here --
+  // GitHub ignores them on this endpoint (#501). Fetch unfiltered and narrow
+  // with filterReviewsByState below instead of trusting the query string.
   const reviews = await requestJson(
     `https://api.github.com/repos/${repository}/pulls/${prNumber}/reviews?per_page=100`,
     token,
   );
-  return reviews.map((review) => ({
+  const mapped = reviews.map((review) => ({
     id: review.id,
     state: review.state,
     commit_id: review.commit_id,
   }));
+  return filterReviewsByState(mapped, state);
 }
 
 async function main() {
