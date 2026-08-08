@@ -361,6 +361,15 @@ pub struct CalibrationConflictResolutionDto {
     pub kind: CalibrationConflictKind,
     pub resolution: CalibrationConflictResolutionKind,
     pub resolved_at: String,
+    /// The instant the conflict was recorded (`calibration_conflicts.created_at`),
+    /// read back from the row rather than derived from `resolved_at`.
+    ///
+    /// Issue #525: this field used to not exist on this DTO at all, so the
+    /// adapter filled the IPC contract's `createdAt` by reusing `resolvedAt` --
+    /// the two are different instants (detection vs. resolution) whenever a
+    /// conflict sits unresolved for any length of time. Threading the real
+    /// value through here is what lets the adapter stop fabricating it.
+    pub created_at: String,
     /// The revision a `keepLocalAsNewRevision` resolution created.
     pub revision_id: Option<String>,
     /// The deleted predecessor that revision descends from.

@@ -40,6 +40,11 @@ ow_ts() emits: whole seconds, as text. */
 const EPOCH_SECONDS = '1785881744';
 /** The same instant, in the form the contract declares. */
 const EPOCH_AS_ISO = '2026-08-04T22:15:44.000Z';
+/** A distinct, earlier instant -- used to prove createdAt and resolvedAt are
+ * threaded through independently rather than one being copied from the other
+ * (issue #525). */
+const EARLIER_EPOCH_SECONDS = '1785800000';
+const EARLIER_EPOCH_AS_ISO = '2026-08-03T23:33:20.000Z';
 
 /**
  * The control the rest of the file rests on. If the contract ever stops
@@ -81,7 +86,10 @@ function listingSidecar(
   } as unknown as SidecarClient;
 }
 
-function resolvingSidecar(resolvedAt: unknown): SidecarClient {
+function resolvingSidecar(
+  resolvedAt: unknown,
+  createdAt: unknown,
+): SidecarClient {
   return {
     resolveCalibrationConflict: () =>
       Promise.resolve({
@@ -91,6 +99,7 @@ function resolvingSidecar(resolvedAt: unknown): SidecarClient {
         kind: 'projectMetadata',
         resolution: 'acceptServer',
         resolvedAt,
+        createdAt,
         supersededObservations: [],
       }),
   } as unknown as SidecarClient;
@@ -184,7 +193,7 @@ describe('#363 sidecar epoch timestamps are converted at the adapter boundary', 
     UNCONVERTED_IS_REJECTED();
 
     const adapter = new SidecarCalibrationAdapter(
-      resolvingSidecar(EPOCH_SECONDS),
+      resolvingSidecar(EPOCH_SECONDS, EPOCH_SECONDS),
     );
 
     const response = await adapter.resolveCalibrationConflict({
@@ -197,6 +206,49 @@ describe('#363 sidecar epoch timestamps are converted at the adapter boundary', 
 
     // Against the real channel schema, which is what the handler now parses
     // with -- so this spec and production read the same declaration.
+    const parsed =
+      ipcSchemas[IpcChannel.CalibrationResolveConflict].response.safeParse(
+        response,
+      );
+    expect(
+      parsed.success,
+      `the resolve response violates its own channel contract: ${
+        parsed.success ? '' : JSON.stringify(parsed.error?.issues)
+      }`,
+    ).toBe(true);
+  });
+
+  /**
+   * #525 — `createdAt` must not be fabricated from `resolvedAt`.
+   *
+   * The store's resolution DTO now carries its own `created_at` (the
+   * conflict's detection instant), threaded independently from
+   * `resolved_at`. Before this fix, the adapter reused `resolvedAtIso` for
+   * both fields, which is indistinguishable from a correct value by any
+   * check that inspects the value rather than its provenance -- so this test
+   * supplies a `createdAt` genuinely distinct from `resolvedAt` and asserts
+   * neither collapses into the other.
+   */
+  it('reports the conflict-detection instant independently of the resolution instant', async () => {
+    const adapter = new SidecarCalibrationAdapter(
+      resolvingSidecar(EPOCH_SECONDS, EARLIER_EPOCH_SECONDS),
+    );
+
+    const response = await adapter.resolveCalibrationConflict({
+      profileId: PROFILE_ID,
+      conflictId: CONFLICT_ID,
+      resolution: 'acceptServer',
+    });
+
+    expect(response.conflict.createdAt).toBe(EARLIER_EPOCH_AS_ISO);
+    expect(response.conflict.resolvedAt).toBe(EPOCH_AS_ISO);
+    expect(
+      response.conflict.createdAt,
+      'createdAt must not be fabricated from resolvedAt: a conflict that sat ' +
+        'unresolved for any length of time must report distinct instants for ' +
+        'when it was detected versus when it was resolved',
+    ).not.toBe(response.conflict.resolvedAt);
+
     const parsed =
       ipcSchemas[IpcChannel.CalibrationResolveConflict].response.safeParse(
         response,
