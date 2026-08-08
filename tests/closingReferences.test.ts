@@ -6,6 +6,7 @@ import {
   classifyClosingReferenceReadError,
   ClosingReferenceReadBudgetError,
   compareClosures,
+  DECLARATION_FILE_PATH,
   formatFailure,
   formatUnsettled,
   main,
@@ -14,6 +15,7 @@ import {
   parseCommitClosures,
   parseDeclaredClosures,
   parsePullRequestCommitResponse,
+  readDeclarationFile,
   readPullRequestCommitClosures,
   readSettled,
   toGitHubCliError,
@@ -734,6 +736,156 @@ describe('formatFailure', () => {
  * code was not, because `main` was the only export the test file did not
  * import. These specs exist as much to close that seam as to pin the branch.
  */
+describe('readDeclarationFile', () => {
+  it('reads the declaration from a tracked file', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'closing-decl-'));
+    const filePath = path.join(directory, 'PR_CLOSES.md');
+    writeFileSync(filePath, ['```closes', '#415', '```'].join('\n'));
+    try {
+      expect(readDeclarationFile(filePath)).toBe(
+        ['```closes', '#415', '```'].join('\n'),
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a missing file as "declares nothing", not as an error', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'closing-decl-'));
+    const filePath = path.join(directory, 'does-not-exist.md');
+    try {
+      expect(readDeclarationFile(filePath)).toBe('');
+      expect(parseDeclaredClosures(readDeclarationFile(filePath))).toEqual({
+        hasBlock: false,
+        declared: [],
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('does not swallow an unreadable path that is not simply absent', () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'closing-decl-'));
+    try {
+      // A directory at the declaration path is not ENOENT -- it is a distinct
+      // failure this must not report identically to "no declaration".
+      expect(() => readDeclarationFile(directory)).toThrow();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('defaults to DECLARATION_FILE_PATH, tracked in the commit tree', () => {
+    expect(DECLARATION_FILE_PATH).toBe('.github/PR_CLOSES.md');
+  });
+});
+
+/**
+ * #415's own acceptance criteria: the declaration must be pinned to the head
+ * commit, not the PR body, so these exercise `main` with the two inputs moved
+ * independently of one another -- exactly what a body edit with no new
+ * commit, and a commit that edits the declaration, each do in practice.
+ */
+describe('main: declaration is pinned to the commit tree, not the PR body', () => {
+  const DECLARATION = ['```closes', '#415', '```'].join('\n');
+
+  function silenced() {
+    return {
+      log: vi.spyOn(console, 'log').mockImplementation(() => undefined),
+      error: vi.spyOn(console, 'error').mockImplementation(() => undefined),
+    };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    process.exitCode = undefined;
+  });
+
+  function ghStub(witnessBody: string, refs: number[]) {
+    return (args: string[]) => {
+      if (args[0] === 'api') {
+        return JSON.stringify([[]]);
+      }
+      return JSON.stringify({ body: witnessBody, refs });
+    };
+  }
+
+  async function run(witnessBody: string, refs: number[]) {
+    return main(['415'], {
+      run: ghStub(witnessBody, refs),
+      readDeclaration: () => DECLARATION,
+      readClosures: async (read) => ({
+        value: await read(),
+        reads: 13,
+        settled: true,
+        elapsedMs: 60000,
+        stableMs: 60000,
+      }),
+    });
+  }
+
+  it('is unchanged by a PR-body edit that leaves the head SHA untouched', async () => {
+    // The head commit -- and so the declaration -- has not moved between
+    // these two calls. Only the body (read here purely for the arming half)
+    // differs, the shape of an `edited` event with no new commit.
+    silenced();
+    const before = await run('closes #415', [415]);
+    const after = await run(
+      'a completely rewritten body, still closes #415',
+      [415],
+    );
+
+    expect(before).toEqual({ ok: true, settled: true, stale: false });
+    expect(after).toEqual({ ok: true, settled: true, stale: false });
+    expect(after).toEqual(before);
+  });
+
+  it('changes when the in-commit declaration changes, so the previous test cannot pass vacuously', async () => {
+    silenced();
+    const declaresNothing = await main(['415'], {
+      run: ghStub('closes #415', [415]),
+      readDeclaration: () => ['```closes', '```'].join('\n'),
+      readClosures: async (read) => ({
+        value: await read(),
+        reads: 13,
+        settled: true,
+        elapsedMs: 60000,
+        stableMs: 60000,
+      }),
+    });
+
+    // Same body, same armed set as the passing case above -- only the
+    // committed declaration differs, and the verdict flips with it.
+    expect(declaresNothing).toEqual({ ok: false, settled: true, stale: false });
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('still fails an armed reference with no matching in-commit declaration, with the existing message', async () => {
+    const spies = silenced();
+    const result = await main(['415'], {
+      run: ghStub('closes #415', [415]),
+      readDeclaration: () => '',
+      readClosures: async (read) => ({
+        value: await read(),
+        reads: 13,
+        settled: true,
+        elapsedMs: 60000,
+        stableMs: 60000,
+      }),
+    });
+
+    expect(result).toEqual({ ok: false, settled: true, stale: false });
+    expect(process.exitCode).toBe(1);
+    const printed = spies.error.mock.calls
+      .map((call) => String(call[0]))
+      .join('\n');
+    expect(printed).toContain('do not match its declaration');
+    expect(printed).toContain('ARMED BUT NOT DECLARED');
+    expect(printed).toContain('#415');
+    expect(printed).toContain(DECLARATION_FILE_PATH);
+  });
+});
+
 describe('main', () => {
   const BODY = ['```' + KEYWORD, '#231', '```'].join('\n');
 
@@ -775,6 +927,7 @@ describe('main', () => {
     const spies = silenced();
     const result = await main(['231'], {
       run: ghStub([231]),
+      readDeclaration: () => BODY,
       // Matches the declaration exactly. Under the previous implementation
       // this was the passing case, which is the defect: the value may still
       // be arriving, so the match is not evidence of anything.
@@ -803,6 +956,7 @@ describe('main', () => {
     const spies = silenced();
     const result = await main(['231'], {
       run: ghStub([231]),
+      readDeclaration: () => BODY,
       readClosures: () =>
         Promise.resolve({
           value: [231],
@@ -823,6 +977,7 @@ describe('main', () => {
     const spies = silenced();
     const result = await main(['231'], {
       run: ghStub([231], BODY, ['fixes #999']),
+      readDeclaration: () => BODY,
       readClosures: () =>
         Promise.resolve({
           value: [231],
@@ -843,6 +998,7 @@ describe('main', () => {
     silenced();
     const result = await main(['231'], {
       run: ghStub([], BODY, ['fixes\n#231']),
+      readDeclaration: () => BODY,
       readClosures: () =>
         Promise.resolve({
           value: [],
@@ -863,6 +1019,7 @@ describe('main', () => {
     const spies = silenced();
     const result = await main(['231'], {
       run: ghStub([231, 999]),
+      readDeclaration: () => BODY,
       readClosures: () =>
         Promise.resolve({
           value: [231, 999],
@@ -1235,6 +1392,7 @@ describe('main staleness witness', () => {
       const result = await main([], {
         environment: { GITHUB_EVENT_PATH: eventPath },
         run,
+        readDeclaration: () => 'no declaration here',
         readClosures: async (read) => ({
           value: await read(),
           reads: 2,
@@ -1245,7 +1403,10 @@ describe('main staleness witness', () => {
       });
       expect(result).toMatchObject({ ok: true, settled: true });
       const prCalls = calls.filter((args) => args[0] === 'pr');
-      expect(prCalls.length).toBeGreaterThan(1);
+      // Declaration reading (#415) no longer goes through `gh`, so there is
+      // exactly one `pr` call left -- the combined-field witness read -- and
+      // it must still carry the resolved merge-queue PR number.
+      expect(prCalls.length).toBeGreaterThan(0);
       expect(prCalls.map((args) => args.slice(0, 3))).toEqual(
         prCalls.map(() => ['pr', 'view', '398']),
       );
@@ -1263,6 +1424,7 @@ describe('main staleness witness', () => {
     // clean pass, and that is exactly the shape a stale read takes.
     const result = await main(['231'], {
       run: ghStub('no declaration here', PROSE, []),
+      readDeclaration: () => 'no declaration here',
       readClosures: async (read) => {
         await read();
         return {
@@ -1300,6 +1462,7 @@ describe('main staleness witness', () => {
     // module exists to refuse.
     const result = await main(['231'], {
       run: ghStub('no declaration here', PROSE, []),
+      readDeclaration: () => 'no declaration here',
       readClosures: async (read) => {
         await read();
         return {
@@ -1326,6 +1489,7 @@ describe('main staleness witness', () => {
       const spies = silenced();
       const result = await main(['231'], {
         run: ghStub('no declaration here', PROSE, []),
+        readDeclaration: () => 'no declaration here',
         readClosures: async (read) => {
           await read();
           return {
@@ -1367,6 +1531,7 @@ describe('main staleness witness', () => {
         'a body that merely mentions #231',
         [],
       ),
+      readDeclaration: () => 'no declaration here',
       readClosures: async (read) => {
         await read();
         return {
@@ -1402,6 +1567,7 @@ describe('main staleness witness', () => {
       const spies = silenced();
       const result = await main(['231'], {
         run: ghStub(BODY, BODY, refs),
+        readDeclaration: () => BODY,
         readClosures: async (read) => {
           await read();
           return {
@@ -1448,6 +1614,7 @@ describe('main staleness witness', () => {
     const declared = ['```' + KEYWORD, '#231', '```'].join('\n');
     const result = await main(['231'], {
       run: ghStub(declared, 'body closing nothing in prose', []),
+      readDeclaration: () => declared,
       readClosures: async (read) => {
         await read();
         return {
