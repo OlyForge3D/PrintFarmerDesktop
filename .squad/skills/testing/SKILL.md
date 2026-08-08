@@ -9,6 +9,23 @@ Run the **smallest complete** validation that covers your change. Complete matte
 
 **Before reporting a negative result — "that path is unreachable", "this is safe", "I could not reproduce it" — state the observation that would have produced the opposite finding.** If you cannot name one, you measured a case, not the class. An experiment that _confirms_ a prediction and one that _risked_ it are both real measurements, and only the second licenses a claim about a class. This is the same rule as "an assertion that cannot fail proves nothing", pointed at reports rather than at tests, where nothing else is checking. See `.squad/decisions/inbox/vasquez-falsifiable-negatives.md` — it cost PR #149 two retractions, one of them a shared conclusion the lead had already ratified.
 
+## A positive control validates the instrument, not the operationalisation
+
+The rule above — pair a zero-result search with a positive control that fires — answers one question: **can the instrument speak?** It cannot answer a second, independent question: **is the searched artifact a place this evidence would necessarily appear?** Nothing in "run a control that fires" examines that mapping from claim to instrument, so when the mapping is wrong, a firing control converts a bad proxy into a _confident_ null. A controlled zero then carries more authority than an uncontrolled one, while being no more true.
+
+So before reporting any zero as a null, ask both questions and answer the second one by name, not by assumption:
+
+1. **Can the instrument speak?** — a positive control fires on a known-present case, using the same method. (unchanged)
+2. **Is the searched artifact a place this evidence would _necessarily_ appear?** — name the mechanism by which the evidence would have arrived there. If you cannot name the mechanism, the search is not evidence and must not be reported as a null at all — with or without a control.
+
+Three instances from a single review session (issue #361), each with a control that fired and a null that was worthless because question 2 had no answer:
+
+- **Grepping the wrong artifact for the wrong layer.** Claim: a package is darwin-only. Instrument: grep the CI job log for `darwin`. Result: 0, control (`EPERM`) fires at 2. The control was sound; the null was worthless — a platform constraint lives in the **dependency tree**, not in a job log's output, so the log had no mechanism by which the word would ever appear. It later turned out the constraint was a **path property** inherited from an ancestor package, while the failing nodes declared no `os` restriction of their own — so even grepping the _lockfile_ near the failing package would have returned a controlled zero. No text search at either end could see it; only walking the dependency path could.
+- **Confusing absence-from-disk with absence-from-the-tree.** Claim: a residue is invisible to `npm ls --omit=dev --all --json`. Instrument: run it, count occurrences. Result: 0, control (`version`) fires at 11. The package was never installed on the machine — the zero measured its absence from disk, not its absence from the dependency tree the claim was actually about.
+- **Reconstructing a case from analogy instead of from the artifact that defines it.** Having caught the second instance, the same reviewer reconstructed the residue by characterising it from an analogy they built — and still got it wrong, twice — because nothing independent fixed the reconstruction's identity. Only characterising it from the lockfile's own paths and versions reproduced the reported case, and reversed the conclusion.
+
+**Corollary: an unsound-operationalisation zero is worse than an uncontrolled one.** An uncontrolled zero at least advertises its own uncertainty. A controlled zero over the wrong artifact reads as diligence — it ran the extra step, it has a passing control to point to — and that apparent rigor is exactly what stops the next reader from asking whether the artifact could ever have shown the signal. The control should raise your confidence in the _instrument_; it must never be read as raising your confidence in the _mapping_ between the claim and what you searched.
+
 ## TypeScript / renderer / main
 
 ```powershell
