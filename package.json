@@ -73,6 +73,7 @@
     "actions:runs-for-sha": "node scripts/actions-runs-for-sha.mjs",
     "probe:sha-query": "node scripts/probe-sha-query.mjs",
     "probe:silent-success": "node scripts/probe-silent-success.mjs",
+    "probe:array-wrapper": "node scripts/probe-array-wrapper.mjs",
     "seam:injected-defaults": "node scripts/check-injected-defaults.mjs",
     "push:force": "node scripts/safe-force-push.mjs",
     "worktree:remove": "node scripts/safe-worktree-remove.mjs",
