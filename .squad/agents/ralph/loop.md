@@ -136,8 +136,9 @@ Priority outranks age; age outranks issue number.
 - Every kickoff prompt states: assigned member, issue number, acceptance criteria, the
   `squad/{issue}-{slug}` branch convention, required PR linkage back to the issue, and the targeted
   validation commands to run.
-- Every kickoff prompt **must end with the self-archive clause quoted verbatim in §8.1.** A dispatch
-  sent without it is a defect: it creates a session nothing can clean up.
+- Every kickoff prompt **must end with the closing clause quoted verbatim in §8.1.** A dispatch sent
+  without it is a defect: the session is left to guess how its life ends, and guessing produces the
+  failing `archive_session` call §8 exists to prevent.
 
 ---
 
@@ -228,43 +229,78 @@ definitively closed.** Opening a PR is a milestone, not completion.
 - While a PR is open, keep the owning session alive.
 - On failing checks or requested changes, message the owning session to address them.
 - Ownership ends only when the PR is merged or definitively closed and that final status is recorded.
-  **Who archives the session, and how finished sessions are surfaced, is §8.**
+  **How the finished session is then surfaced for cleanup is §8.**
 
 ---
 
 ## 8. Session Lifecycle and Reaping
 
-Completed sessions do not clean themselves up by default. Five sessions across two repos finished,
-had their PRs merged, and lingered with stale worktrees until reaped by hand — this repo's PRs
-**#588** and **#575**, plus PrintFarmer's #1234, #1235 and #1245.
+Completed sessions do not clean themselves up, and **nothing can make them.** Five sessions across
+two repos finished, had their PRs merged, and lingered with stale worktrees until reaped by hand —
+this repo's PRs **#588** and **#575**, plus PrintFarmer's #1234, #1235 and #1245.
 
-**The constraint, up front:** `archive_session` only works on sessions the **caller** created. Every
-Ralph round is a **new session**, so a round **cannot** archive a session spawned by a previous
-round. `list_sessions_and_chats` will show it, and the archive call will still fail. **Ralph must
-never attempt it.**
+**Two hard platform limits, and together they close every automatic route:**
 
-### 8.1 Self-archive is primary
+1. **`archive_session` only works on sessions the caller created.** Every Ralph round is a **new
+   session**, so a round **cannot** archive a session spawned by a previous round.
+   `list_sessions_and_chats` will show it, and the archive call will still fail. **Ralph must never
+   attempt it.**
+2. **A session cannot archive itself.** The runtime refuses the call on the current session with
+   exactly: `Cannot archive the current session.` A session that tries this wastes a failing tool
+   call as its last act. **Never instruct a session to archive itself, and do not reintroduce such
+   an instruction here** — this file carried one, and it was dead text for its whole life.
 
-Every dispatch kickoff prompt (§4) **must end with this clause, verbatim**:
+Therefore **there is no automated archival path.** Cleanup is the reap report (§8.3), performed by a
+human.
 
-> When your PR is merged (or definitively closed) and you have verified the merge landed and the
-> linked issue closed, report your final status and then archive yourself with `archive_session`
-> using your own session id. Do not archive while your PR is still open, has pending checks, or
-> needs fixes.
+### 8.1 The dispatch closing clause
 
-### 8.2 Reap report is the safety net
+Every dispatch kickoff prompt (§4) **must end with this clause, verbatim, as its final paragraph**:
+
+> "When your PR is merged (or definitively closed) and you have verified the merge landed and the
+> linked issue closed, report your final status as your last action and stop. Do NOT attempt to
+> archive yourself — the runtime refuses `archive_session` on the current session and the call will
+> fail. Do not attempt to archive any other session either. Cleanup is handled by Ralph's
+> `🧹 Ready to reap` report."
+
+This is **word-for-word identical to the clause in Ralph's workflow prompt.** Change one and you
+must change the other; the two must never drift.
+
+### 8.2 Hand-off to the creator is not an alternative
+
+The obvious repair — have the finished session message its creating session and ask to be archived —
+**also fails, and is worse than the problem.** Do not add it.
+
+- **The creator has exited.** The workflow prompt ends with a hard EXIT; a round terminates within
+  2–6 minutes. Implementation sessions almost never finish inside that window — sessions reaped by
+  hand were spawned by an 18:30 round and finished over three hours later. The request arrives at a
+  session that is no longer running.
+- **Messaging an idle session wakes it.** A completed Ralph round can be restarted by a cleanup
+  request and may re-run its round logic — re-triaging or re-dispatching as a side effect. That is a
+  worse failure than the stale worktree it was meant to clear.
+
+### 8.3 The reap report is the only mechanism
+
+Because §8's two limits admit no automation, the `🧹 Ready to reap` report is **not a safety net
+behind something else — it is the whole mechanism**, and **a human performs the removal.**
 
 Each round, **call `list_sessions_and_chats` and produce the reap list.** This is an instruction, not
 a permission — it runs every round whether or not anything looks stale.
 
 - Under a **`🧹 Ready to reap`** heading, list every session in this project whose PR is **merged or
   definitively closed**, with: session name, branch, PR number, and merged/closed state.
-- Verify merge state with §9.1 before listing anything as merged.
-- **REPORT ONLY.** Never archive another round's session. Never delete a session whose PR is still
+- Verify merge state with §9.1 before listing anything as merged — this repo squash-merges, so use
+  `npm run check:merge-landed`, or `gh pr view {n} --json state,mergeCommit` then
+  `git branch -r --contains {sha} --list 'origin/development'`.
+- **REPORT ONLY.** Never archive another round's session. Never list a session whose PR is still
   open, or which holds uncommitted or unpushed work.
-- **Emit this list every round, even when empty** (`🧹 Ready to reap: none`). It is exactly what
-  catches a session that finished but crashed before self-archiving — the case self-archive cannot
-  cover.
+- **Emit this heading every round, even when empty** (`🧹 Ready to reap: none`), so a missing section
+  is itself a signal.
+
+**On `delete_item`:** unlike `archive_session`, it works across sessions regardless of who created
+them — so the limits above are not what stops Ralph removing sessions. **Ralph must never call it
+anyway.** Squash-merge verification is error-prone (§9.1), and a false positive destroys unpushed
+work irreversibly. Reaping stays a human decision.
 
 ---
 
@@ -325,7 +361,7 @@ Report each round:
 - Analysis sessions spawned (§6)
 - Epic status lines — `X of Y children closed` per open epic (§5)
 - Sessions retained for open PRs
-- `🧹 Ready to reap` — merged/closed sessions, report only, every round even when empty (§8.2)
+- `🧹 Ready to reap` — merged/closed sessions, report only, every round even when empty (§8.3)
 - Active slot count (of 5)
 - Gate failures
 - PRs awaiting review or merge
@@ -361,7 +397,13 @@ When nothing is eligible, report exactly:
 Each of these has already happened. They are not hypothetical.
 
 - **Calling `archive_session` on a previous round's session.** It is not the caller; the call fails.
-  Reap by report (§8.2), never by archive.
+  Reap by report (§8.3), never by archive.
+- **Instructing a session to archive itself.** The runtime refuses with
+  `Cannot archive the current session.` This file carried that instruction and it never once worked.
+- **Instructing a finished session to message its creator for archival.** The creator has exited, and
+  the message wakes an idle round into re-running its logic (§8.2).
+- **Assuming some automation reaps sessions.** None does. A human reads the `🧹 Ready to reap` report
+  and removes them.
 - **Treating "branch commits are not on `development`" as proof of unmerged work.** This repo
   squash-merges, so that is true of every merged branch. Use §9.1.
 - **Phrasing a cleanup rule as a permission.** "Archive only after the PR is merged" says when
