@@ -219,6 +219,7 @@ const CalibrationConflictResolutionWire = z
       'manualFieldMerge',
     ]),
     resolvedAt: z.string(),
+    createdAt: z.string(),
     revisionId: z.string().nullable().default(null),
     supersedesRevisionId: z.string().nullable().default(null),
     supersededObservations: z.array(
@@ -417,6 +418,7 @@ export class SidecarCalibrationAdapter implements CalibrationSidecar {
       parsed.resolvedAt,
       'resolvedAt',
     );
+    const createdAtIso = sidecarTimestampToIso(parsed.createdAt, 'createdAt');
     return {
       conflict: {
         conflictId: parsed.conflictId,
@@ -430,14 +432,11 @@ export class SidecarCalibrationAdapter implements CalibrationSidecar {
         availableResolutions: conflictResolutionsFor(this, parsed.kind),
         resolvedAt: resolvedAtIso,
         resolution: parsed.resolution,
-        // NOT the creation instant: the resolution DTO carries no `created_at`,
-        // so no honest value is available at this boundary and this one is
-        // fabricated from the resolution instant. Converting the format does not
-        // repair it — a well-formed ISO string is exactly what makes the
-        // fabrication survive the response parse added for this issue. Filed
-        // separately; fixing it needs a field added to the sidecar DTO, which is
-        // a change to the store's contract rather than to this adapter.
-        createdAt: resolvedAtIso,
+        // The instant the conflict was detected, read back from the store's
+        // own `created_at` column (issue #525) rather than fabricated from
+        // `resolvedAt`. The two differ by however long the conflict sat
+        // unresolved, which is exactly what an operator wants when triaging.
+        createdAt: createdAtIso,
       },
       supersededObservations: parsed.supersededObservations,
     };
