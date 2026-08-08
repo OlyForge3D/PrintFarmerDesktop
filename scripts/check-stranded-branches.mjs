@@ -129,7 +129,10 @@ export function listLocalBranches(cwd) {
  * unpushed work. This is the control that keeps the instrument from firing
  * on a tree it cannot actually evaluate.
  */
-export function evaluateRemoteRefPresence(remoteRefCount, remote = DEFAULT_REMOTE) {
+export function evaluateRemoteRefPresence(
+  remoteRefCount,
+  remote = DEFAULT_REMOTE,
+) {
   if (remoteRefCount > 0) {
     return { ok: true };
   }
@@ -247,7 +250,10 @@ export function listStrandedCommits(branch, cwd, remote = DEFAULT_REMOTE) {
  * `branchesExamined`, matching the issue's own report shape ("worktree
  * branches examined -> 46").
  */
-export function evaluateStrandedBranches(branchResults, remote = DEFAULT_REMOTE) {
+export function evaluateStrandedBranches(
+  branchResults,
+  remote = DEFAULT_REMOTE,
+) {
   const stranded = branchResults
     .filter((entry) => entry.commits.length > 0)
     .map((entry) => ({

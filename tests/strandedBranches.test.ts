@@ -284,10 +284,7 @@ describe('the falsifier (#543): a real repo with a real unpushed commit', () => 
     // No configured remote named "pr" exists — `git remote -v` still shows
     // only `origin` — yet this ref lives under refs/remotes/pr/, exactly
     // the orphaned-namespace shape the issue measured.
-    git(
-      ['update-ref', 'refs/remotes/pr/68', strandedSha],
-      repoPath,
-    );
+    git(['update-ref', 'refs/remotes/pr/68', strandedSha], repoPath);
 
     // Confirm the fixture actually reproduces the issue's own contrast: the
     // unscoped instrument says "reachable", the origin-scoped one says
@@ -319,12 +316,16 @@ describe('the falsifier (#543): a real repo with a real unpushed commit', () => 
     git(['update-ref', 'refs/remotes/probeP/68', sha], repoPath);
 
     // Scoped to "origin" (the only real remote): still stranded.
-    expect(listStrandedCommits('squad/289-scoped', repoPath, 'origin')).toHaveLength(1);
+    expect(
+      listStrandedCommits('squad/289-scoped', repoPath, 'origin'),
+    ).toHaveLength(1);
 
     // Scoped to the decoy namespace name itself: the commit reads as
     // "published" under that (nonexistent) remote, proving the scoping
     // parameter — not some other side effect — drives the result.
-    expect(listStrandedCommits('squad/289-scoped', repoPath, 'probeP')).toHaveLength(0);
+    expect(
+      listStrandedCommits('squad/289-scoped', repoPath, 'probeP'),
+    ).toHaveLength(0);
   });
 
   it('FAIL-CLOSED (Ripley, #643 review) — a failed prune must not evaluate against stale refs/remotes/origin', () => {
@@ -341,23 +342,24 @@ describe('the falsifier (#543): a real repo with a real unpushed commit', () => 
     const originPath = path.join(tempRoot, 'origin.git');
 
     git(['checkout', '-q', '-b', 'squad/643-deleted-upstream'], repoPath);
-    commit(repoPath, 'deleted-upstream.txt', 'work whose upstream gets deleted (#643)');
+    commit(
+      repoPath,
+      'deleted-upstream.txt',
+      'work whose upstream gets deleted (#643)',
+    );
     git(['push', '-q', '-u', 'origin', 'squad/643-deleted-upstream'], repoPath);
 
     // Delete the branch on "the server" (the bare origin) directly, the way
     // a merge/cleanup would, without this clone ever fetching --prune.
-    execFileSync(
-      'git',
-      [
-        '-C',
-        originPath,
-        '-c',
-        'safe.bareRepository=all',
-        'update-ref',
-        '-d',
-        'refs/heads/squad/643-deleted-upstream',
-      ],
-    );
+    execFileSync('git', [
+      '-C',
+      originPath,
+      '-c',
+      'safe.bareRepository=all',
+      'update-ref',
+      '-d',
+      'refs/heads/squad/643-deleted-upstream',
+    ]);
 
     // Break the remote URL so `git fetch origin --prune` cannot succeed —
     // the stale refs/remotes/origin/squad/643-deleted-upstream tracking ref
