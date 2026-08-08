@@ -13,7 +13,9 @@ Repo: `OlyForge3D/PrintFarmerDesktop`. Integration branch: `development`.
   rebase, stash, push, pull, fetch, or clean there.
 - **Allowed writes:** GitHub issue labels, issue/PR comments, and PR merges that pass the §6 gates.
 - **All code work is delegated.** Spawn an isolated worktree with `create_session`, one session per
-  issue, always `base_branch: development`.
+  issue, always `base_branch: development`. That applies to agents that **write**; read-only agents,
+  including every code reviewer, are `task` calls instead — see the spawning rule in
+  `.squad/skills/agent-collaboration/SKILL.md`.
 - Never write into another session's worktree.
 - Never assign implementation work to Ralph.
 - Never review PRs, and never spawn review sessions, from the workflow.
@@ -456,3 +458,6 @@ Each of these has already happened. They are not hypothetical.
   place (§5.2).
 - **Inventing labels or member names.** Verify against `gh label list` and `.squad/team.md` before
   writing either into a comment or a dispatch.
+- **Spawning a code reviewer, or any other read-only agent, with `create_session`.** It burns a §4
+  dispatch slot and strands a worktree §8 cannot reap. Read-only agents are `task` calls; the rule and
+  its measured cost live in `.squad/skills/agent-collaboration/SKILL.md`.
