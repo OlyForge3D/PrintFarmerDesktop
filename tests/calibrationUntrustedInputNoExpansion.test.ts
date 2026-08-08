@@ -74,6 +74,26 @@ const ENTRY_POINTS = [
 ];
 
 /**
+ * The exact, complete file membership of the untrusted calibration closure
+ * (#507): the four entry points above plus every non-entry file transitively
+ * reachable from them. This is a set-equality expectation, not a floor --
+ * losing exactly one member (a file quietly failing to resolve) must fail
+ * this assertion by naming the missing file, the same as gaining one
+ * unexpectedly would. Update this list only when a real, reviewed import is
+ * added to or removed from the closure; a change here should always be
+ * accompanied by a diff to production source, never made just to turn a red
+ * test green on its own.
+ */
+const EXPECTED_CLOSURE_FILES = [
+  'calibrationAssetManifest.ts',
+  'calibrationImportV4.ts',
+  'ipc.ts',
+  'orcaProfileDiscovery.ts',
+  'orcaProfileInstall.ts',
+  'untrustedJson.ts',
+];
+
+/**
  * APIs that turn a small input into a large one, or that hand attacker-shaped
  * bytes to a decoder. Each is the enabling step for one of the two vectors
  * #158 lists and this repository currently cannot receive.
@@ -321,6 +341,24 @@ function withSourceFixture<T>(
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+}
+
+/**
+ * Renders an assertion failure's full detail, including the actual/expected
+ * values Vitest attaches (not just the top-line message), so a test can
+ * confirm a specific missing file name appears in what a developer would
+ * actually see in CI output.
+ */
+function failureDetail(error: unknown): string {
+  if (error instanceof Error) {
+    const withDiff = error as Error & { actual?: unknown; expected?: unknown };
+    return [
+      error.message,
+      withDiff.actual !== undefined ? JSON.stringify(withDiff.actual) : '',
+      withDiff.expected !== undefined ? JSON.stringify(withDiff.expected) : '',
+    ].join(' ');
+  }
+  return String(error);
 }
 
 function scannedFileNames(closure: ReadonlyMap<string, string>): string[] {
@@ -700,8 +738,24 @@ describe('the untrusted calibration input path expands nothing', () => {
 
   it('reaches beyond the entry points themselves, so the ban is transitive', () => {
     // A closure of exactly four files means import resolution failed and the
-    // guard silently degraded to checking only the files it was handed.
+    // guard silently degraded to checking only the files it was handed. This
+    // floor is real but incidental (#507): it holds only because of the
+    // entry-point precondition above plus depth-first traversal order, not
+    // because a floor of ENTRY_POINTS.length is itself a meaningful bound
+    // against a population of six. It is kept, and stated as incidental
+    // rather than removed, so a future refactor that changes traversal order
+    // has something naming the property it would silently break. The test
+    // below this one is the assertion that actually detects partial loss.
     expect(closure.size).toBeGreaterThan(ENTRY_POINTS.length);
+  });
+
+  it('resolves to exactly the expected closure membership, not merely past a floor (#507)', () => {
+    // Set equality, not a floor: this fails on losing *any* single non-entry
+    // file (a silent resolver failure hides nothing here) and also on an
+    // unexpected gain. `closure.size > ENTRY_POINTS.length` above cannot
+    // distinguish "resolved every file" from "resolved all but one" -- both
+    // report as enforced. This assertion is the one that closes that gap.
+    expect(scannedFileNames(closure)).toEqual(EXPECTED_CLOSURE_FILES);
   });
 
   it('resolves the runtime @shared alias instead of dropping it from the closure', () => {
@@ -765,6 +819,108 @@ describe('the untrusted calibration input path expands nothing', () => {
     expect(EXPANDING_PACKAGES.test('sharp')).toBe(true);
     expect(EXPANDING_PACKAGES.test('adm-zip')).toBe(true);
     expect(EXPANDING_PACKAGES.test('react')).toBe(false);
+  });
+});
+
+/**
+ * The membership assertion above (#507) is exercised here against synthetic,
+ * self-contained closures rather than the real production files, so these
+ * tests pin the assertion's *behavior* -- detecting exactly one missing
+ * non-entry file, passing on an intact closure, and catching the compound
+ * case where a banned API rides along in the file that goes missing -- 
+ * independent of whatever files happen to be in the real closure today.
+ * Changing the ban patterns, the walker, or traversal forms is out of scope
+ * here (that is #435's job); this block only proves the harness can tell a
+ * complete closure from a partial one.
+ */
+describe('the closure membership assertion tells a complete closure from a partial one (#507)', () => {
+  const entryAndTwoMembers = {
+    'entry.ts': "import './moduleA.js';\nimport './moduleB.js';\n",
+    'moduleA.ts': 'export const a = true;\n',
+    'moduleB.ts': 'export const b = true;\n',
+  };
+
+  it('positive control: passes set-equality on an intact closure', () => {
+    withSourceFixture(entryAndTwoMembers, (directory) => {
+      const closure = reachableFromEntryPoints(directory, ['entry.ts']);
+      expect(scannedFileNames(closure)).toEqual([
+        'entry.ts',
+        'moduleA.ts',
+        'moduleB.ts',
+      ]);
+    });
+  });
+
+  it('goes red and names the file when exactly one non-entry member silently stops resolving', () => {
+    withSourceFixture(
+      {
+        'entry.ts': entryAndTwoMembers['entry.ts'],
+        'moduleA.ts': entryAndTwoMembers['moduleA.ts'],
+        // moduleB.ts intentionally not written: models a member that quietly
+        // stops resolving (moved, renamed, or dropped) without entry.ts
+        // itself changing. Total-failure checks (empty closure, closure size
+        // <= ENTRY_POINTS.length) do not fire here -- two files still
+        // resolve. Only a set-equality assertion catches this.
+      },
+      (directory) => {
+        const closure = reachableFromEntryPoints(directory, ['entry.ts']);
+
+        // The partial loss is real: moduleB.ts is simply absent.
+        expect(scannedFileNames(closure)).toEqual(['entry.ts', 'moduleA.ts']);
+
+        // The membership assertion must fail here, and must name the
+        // missing file rather than just report a count mismatch.
+        let failure: unknown;
+        try {
+          expect(scannedFileNames(closure)).toEqual([
+            'entry.ts',
+            'moduleA.ts',
+            'moduleB.ts',
+          ]);
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure, 'expected the membership assertion to fail').toBeDefined();
+        expect(failureDetail(failure)).toContain('moduleB.ts');
+      },
+    );
+  });
+
+  it('pins the compound case: a banned API in a silently-dropped closure member must go red', () => {
+    withSourceFixture(
+      {
+        'entry.ts':
+          "import './moduleA.js';\nimport './expanding.js';\n",
+        'moduleA.ts': entryAndTwoMembers['moduleA.ts'],
+        // expanding.ts intentionally not written. In the real defect (row C
+        // in #507), this file contains a live `node:zlib` import but
+        // silently stops resolving, so the expansion scan below -- which can
+        // only see what actually resolved -- finds nothing wrong.
+      },
+      (directory) => {
+        const closure = reachableFromEntryPoints(directory, ['entry.ts']);
+
+        // The vacuous pass: no banned API anywhere in what was actually
+        // scanned, because the offending file was never in the closure.
+        expect(expansionMatches(closure)).toEqual([]);
+
+        // The membership assertion is what turns that vacuous pass red: the
+        // closure is missing the exact file that, per the scenario, carries
+        // the banned import.
+        let failure: unknown;
+        try {
+          expect(scannedFileNames(closure)).toEqual([
+            'entry.ts',
+            'expanding.ts',
+            'moduleA.ts',
+          ]);
+        } catch (error) {
+          failure = error;
+        }
+        expect(failure, 'expected the membership assertion to fail').toBeDefined();
+        expect(failureDetail(failure)).toContain('expanding.ts');
+      },
+    );
   });
 });
 
