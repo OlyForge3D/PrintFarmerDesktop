@@ -2,7 +2,8 @@ export const HOLD_CONTEXT_NAME: string;
 export const HOLD_WORKFLOW_FILE: string;
 
 export interface HoldGateBlocker {
-  readonly id: 'workflow-merge-group' | 'branch-protection-context' | 'live-deadlock';
+  readonly id:
+    'workflow-merge-group' | 'branch-protection-context' | 'live-deadlock';
   readonly owner: string;
   readonly detail: string;
 }

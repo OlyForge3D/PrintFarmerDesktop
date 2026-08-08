@@ -39,7 +39,7 @@ Because neither prerequisite is met, the demonstration this decision can produce
 
 ## What this does not reopen
 
-Does not revisit #111 (`enforce_admins: false`, no required approving review), #151's ruleset findings, #206/#187's self-review finding, or #388's decision not to require `Sequencing hold` or `PR closure scope` **as they exist today** (unmodified, `pull_request`-only workflows) — that decision is correct for the workflow's current trigger set and remains true until prerequisite 1 lands. This decision is additive to #388, not a reversal of it: #388 declined requiring the context *given the workflow as it was*; this decision names the two changes that would make requiring it safe, and does not claim either has happened yet.
+Does not revisit #111 (`enforce_admins: false`, no required approving review), #151's ruleset findings, #206/#187's self-review finding, or #388's decision not to require `Sequencing hold` or `PR closure scope` **as they exist today** (unmodified, `pull_request`-only workflows) — that decision is correct for the workflow's current trigger set and remains true until prerequisite 1 lands. This decision is additive to #388, not a reversal of it: #388 declined requiring the context _given the workflow as it was_; this decision names the two changes that would make requiring it safe, and does not claim either has happened yet.
 
 ## What comment-only verdicts remain (acceptance criterion 5)
 

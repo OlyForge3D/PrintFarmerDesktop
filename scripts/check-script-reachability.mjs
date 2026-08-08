@@ -210,7 +210,7 @@ export const UNENFORCED_CHECKS = {
     'remaining prerequisites this script reports on: (1) sequencing-hold.yml ' +
     'must subscribe to merge_group and reclassify from "advisory" to ' +
     '"reports" — a `.github/workflows/` edit, blocked by the same missing ' +
-    "`workflow` OAuth scope check:closed-head-dispatch and " +
+    '`workflow` OAuth scope check:closed-head-dispatch and ' +
     'check:direct-push-artifact above are blocked on (measured directly: a ' +
     'one-line push under that path was rejected with "refusing to allow an ' +
     'OAuth App to create or update workflow ... without `workflow` scope"); ' +

@@ -75,7 +75,11 @@ describe('evaluateHoldGateReadiness', () => {
         'Closing-reference declaration',
       ],
       rulesets: [
-        { name: 'development merge queue', target: 'BRANCH', enforcement: 'disabled' },
+        {
+          name: 'development merge queue',
+          target: 'BRANCH',
+          enforcement: 'disabled',
+        },
       ],
     });
     expect(result.workflowReports).toBe(false);
@@ -130,7 +134,11 @@ describe('evaluateHoldGateReadiness', () => {
       workflowContents: advisoryWorkflow,
       requiredContexts: [HOLD_CONTEXT_NAME],
       rulesets: [
-        { name: 'development merge queue', target: 'BRANCH', enforcement: 'active' },
+        {
+          name: 'development merge queue',
+          target: 'BRANCH',
+          enforcement: 'active',
+        },
       ],
     });
     expect(result.blockers.map((b) => b.id)).toContain('live-deadlock');
