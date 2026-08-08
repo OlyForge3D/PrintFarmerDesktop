@@ -49,3 +49,13 @@ export interface StatusCheckEnforcement {
 export function statusCheckEnforcement(
   protection: unknown,
 ): StatusCheckEnforcement;
+
+export interface AdminExemptibleSettingReadings {
+  strict: StatusCheckEnforcement;
+  allow_force_pushes: StatusCheckEnforcement;
+  allow_deletions: StatusCheckEnforcement;
+  required_linear_history: StatusCheckEnforcement;
+}
+export function adminExemptibleSettingEnforcement(
+  protection: unknown,
+): AdminExemptibleSettingReadings;

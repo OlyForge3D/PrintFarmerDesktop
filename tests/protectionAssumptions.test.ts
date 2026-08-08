@@ -6,6 +6,7 @@ import {
   EXPECTED_COLLABORATORS,
   EXIT_SKIPPED_WITHOUT_CREDENTIALS_IN_CI,
   REQUIRED_CONTEXT_NAMES,
+  adminExemptibleSettingEnforcement,
   evaluateProtectionAssumptions,
   formatViolations,
   rulesetCoversFeatureBranches,
@@ -368,6 +369,113 @@ describe('strict status checks are present and bind nobody', () => {
     const facts = baseline();
     expect(evaluateProtectionAssumptions(facts)).toEqual([]);
     expect(statusCheckEnforcement(facts.protection).state).not.toBe('binding');
+  });
+});
+
+describe('#489: the admin-exemption reading generalises beyond strict', () => {
+  // `enforce_admins: false` exempts administrators from allow_force_pushes,
+  // allow_deletions and required_linear_history exactly as it exempts them
+  // from strict. #390 applied that insight to strict alone and asserted the
+  // other three as if they bound the sole admin collaborator.
+  it('reads allow_force_pushes as bypassable under the live facts, binding once enforce_admins is on', () => {
+    const facts = baseline();
+    expect(
+      adminExemptibleSettingEnforcement(facts.protection).allow_force_pushes
+        .state,
+    ).toBe('bypassable');
+
+    facts.protection.enforce_admins = { enabled: true };
+    expect(
+      adminExemptibleSettingEnforcement(facts.protection).allow_force_pushes
+        .state,
+    ).toBe('binding');
+  });
+
+  it('reads allow_deletions as bypassable under the live facts, binding once enforce_admins is on', () => {
+    const facts = baseline();
+    expect(
+      adminExemptibleSettingEnforcement(facts.protection).allow_deletions.state,
+    ).toBe('bypassable');
+
+    facts.protection.enforce_admins = { enabled: true };
+    expect(
+      adminExemptibleSettingEnforcement(facts.protection).allow_deletions.state,
+    ).toBe('binding');
+  });
+
+  it('reads required_linear_history as bypassable under the live facts, binding once enforce_admins is on', () => {
+    const facts = baseline();
+    expect(
+      adminExemptibleSettingEnforcement(facts.protection)
+        .required_linear_history.state,
+    ).toBe('bypassable');
+
+    facts.protection.enforce_admins = { enabled: true };
+    expect(
+      adminExemptibleSettingEnforcement(facts.protection)
+        .required_linear_history.state,
+    ).toBe('binding');
+  });
+
+  it('reads a setting as absent when it is not configured the protective way at all, regardless of enforce_admins', () => {
+    const facts = baseline();
+    facts.protection.allow_force_pushes = { enabled: true };
+    facts.protection.allow_deletions = { enabled: true };
+    facts.protection.required_linear_history = { enabled: false };
+
+    const readings = adminExemptibleSettingEnforcement(facts.protection);
+    expect(readings.allow_force_pushes.state).toBe('absent');
+    expect(readings.allow_deletions.state).toBe('absent');
+    expect(readings.required_linear_history.state).toBe('absent');
+  });
+
+  it('agrees with statusCheckEnforcement on strict, since the generalised reading wraps it rather than duplicating it', () => {
+    const facts = baseline();
+    expect(adminExemptibleSettingEnforcement(facts.protection).strict).toEqual(
+      statusCheckEnforcement(facts.protection),
+    );
+  });
+
+  // The defect #489 reports: the violation text for these three settings
+  // described them as currently binding the sole admin, when the same
+  // enforce_admins:false exemption that #390 named for strict applies to them
+  // too. A violation fires only once the setting has drifted further than the
+  // baseline, but its wording must not claim the pre-drift configuration was
+  // a binding protection for the admin who is the only account able to push.
+  it('never describes an admin-exemptible setting as currently binding in its violation text', () => {
+    const bindingClaimPattern =
+      /\bis (currently )?binding\b|\bcurrently binds\b|\bcurrently enforced for (every|the) admin/i;
+
+    const forcePushFacts = baseline();
+    forcePushFacts.protection.allow_force_pushes = { enabled: true };
+    const forcePushViolation = evaluateProtectionAssumptions(
+      forcePushFacts,
+    ).find((v) => v.assumption === 'development.allow_force_pushes');
+    expect(forcePushViolation?.consequence).toBeDefined();
+    expect(forcePushViolation?.consequence).toMatch(/already exempt/);
+    expect(forcePushViolation?.consequence).not.toMatch(bindingClaimPattern);
+
+    const deletionFacts = baseline();
+    deletionFacts.protection.allow_deletions = { enabled: true };
+    const deletionViolation = evaluateProtectionAssumptions(deletionFacts).find(
+      (v) => v.assumption === 'development.allow_deletions',
+    );
+    expect(deletionViolation?.consequence).toBeDefined();
+    expect(deletionViolation?.consequence).toMatch(/already exempt/);
+    expect(deletionViolation?.consequence).not.toMatch(bindingClaimPattern);
+
+    const linearHistoryFacts = baseline();
+    linearHistoryFacts.protection.required_linear_history = {
+      enabled: false,
+    };
+    const linearHistoryViolation = evaluateProtectionAssumptions(
+      linearHistoryFacts,
+    ).find((v) => v.assumption === 'development.required_linear_history');
+    expect(linearHistoryViolation?.consequence).toBeDefined();
+    expect(linearHistoryViolation?.consequence).toMatch(/already exempt/);
+    expect(linearHistoryViolation?.consequence).not.toMatch(
+      bindingClaimPattern,
+    );
   });
 });
 

@@ -158,12 +158,18 @@ export function evaluateProtectionAssumptions({
     }
   };
 
+  // #489: `enforce_admins: false` exempts administrators from every one of
+  // the three settings guarded below, not only from `strict`. The sole
+  // collaborator here is an administrator, so each of these consequence
+  // texts names that the admin was already exempt from the rule before the
+  // drift below -- the drift removes the barrier for everyone else too, it
+  // does not take away a protection that was previously binding on them.
   guardField(
     protection.allow_force_pushes,
     'development.allow_force_pushes',
     '#81 / #149',
     'the allow_force_pushes fact is missing or malformed in the response rather than confirmed false -- an absent field, an empty node, or a non-boolean enabled value is not the same as GitHub reporting the trunk still refuses force pushes',
-    'the server-side half of the force-push protection is gone, leaving only the client-side guard, which --no-verify bypasses',
+    'force pushes are now allowed for every account, not only the sole admin whom enforce_admins:false already exempted from this rule; there was never a server-side barrier for that admin either, only the client-side guard, which --no-verify bypasses',
   );
 
   guardField(
@@ -171,7 +177,7 @@ export function evaluateProtectionAssumptions({
     'development.allow_deletions',
     '#81 / #149',
     'the allow_deletions fact is missing or malformed in the response rather than confirmed false -- an absent field, an empty node, or a non-boolean enabled value is not the same as GitHub reporting the trunk cannot be deleted',
-    'the trunk can be deleted outright, which no client-side guard sees',
+    'the trunk can now be deleted by every account, not only the sole admin whom enforce_admins:false already exempted from this rule; no client-side guard sees a deletion',
   );
 
   // Unlike the three false-safe fields, this one's safe value is `true`, so
@@ -197,7 +203,7 @@ export function evaluateProtectionAssumptions({
           'true',
           'false',
           '#149',
-          'squash-only history is what makes `--is-ancestor <head>` a known false negative rather than an unknown one',
+          'merge commits are now allowed for every account, not only the sole admin whom enforce_admins:false already exempted from this rule; squash-only history was already not something to rely on for `--is-ancestor <head>`',
         ),
       );
     }
@@ -336,6 +342,29 @@ export function evaluateProtectionAssumptions({
 }
 
 /**
+ * Shared shape behind every admin-exemptible reading below: a setting is
+ * `absent` when it isn't even configured the protective way, `bypassable` when
+ * it is configured correctly but `enforce_admins: false` exempts admins from
+ * it, and `binding` only when it is configured correctly AND admins are not
+ * exempt.
+ */
+function adminExemptionReading({
+  present,
+  adminsExempt,
+  absentWhy,
+  bypassableWhy,
+  bindingWhy,
+}) {
+  if (!present) {
+    return { state: 'absent', why: absentWhy };
+  }
+  if (!adminsExempt) {
+    return { state: 'binding', why: bindingWhy };
+  }
+  return { state: 'bypassable', why: bypassableWhy };
+}
+
+/**
  * What `required_status_checks.strict` actually guarantees here, which is not what
  * its presence suggests.
  *
@@ -364,23 +393,69 @@ export function evaluateProtectionAssumptions({
  * one, and a check that fails on the correct state teaches its reader to ignore it.
  * What binds it is the test suite: if the pair ever changes, this reading changes
  * with it, so the claim cannot quietly outlive the facts it rests on.
+ *
+ * `strict` was the only setting read this way until #489: `enforce_admins: false`
+ * exempts administrators from `allow_force_pushes`, `allow_deletions` and
+ * `required_linear_history` exactly as it exempts them from `strict`, and the
+ * assumption check above was asserting those three as if they bound the sole
+ * admin. `adminExemptibleSettingEnforcement`, below, reads all four the same way.
  */
 export function statusCheckEnforcement(protection) {
-  if (protection?.required_status_checks?.strict !== true) {
-    return {
-      state: 'absent',
-      why: 'strict is not set, so a pull request may merge against a base it was never tested against',
-    };
-  }
-  if (protection?.enforce_admins?.enabled === true) {
-    return {
-      state: 'binding',
-      why: 'strict is set and administrators are not exempt, so up-to-date-ness is enforced for every merger',
-    };
-  }
+  return adminExemptionReading({
+    present: protection?.required_status_checks?.strict === true,
+    adminsExempt: protection?.enforce_admins?.enabled !== true,
+    absentWhy:
+      'strict is not set, so a pull request may merge against a base it was never tested against',
+    bindingWhy:
+      'strict is set and administrators are not exempt, so up-to-date-ness is enforced for every merger',
+    bypassableWhy:
+      'strict is set but administrators are exempt, and the only account that can merge is an administrator — do not rely on a merged PR having been tested against the trunk it landed on',
+  });
+}
+
+/**
+ * Every admin-exemptible setting read the same way `statusCheckEnforcement`
+ * reads `strict`: `enforce_admins: false` exempts administrators from ALL of
+ * these rules, not only `strict`, so a setting that is present and correct can
+ * still bind nobody when the only account that can push or merge is an admin.
+ * Returns one `{ state, why }` reading per setting, in the same
+ * `binding` / `bypassable` / `absent` vocabulary as `statusCheckEnforcement`.
+ */
+export function adminExemptibleSettingEnforcement(protection) {
+  const adminsExempt = protection?.enforce_admins?.enabled !== true;
+
   return {
-    state: 'bypassable',
-    why: 'strict is set but administrators are exempt, and the only account that can merge is an administrator — do not rely on a merged PR having been tested against the trunk it landed on',
+    strict: statusCheckEnforcement(protection),
+    allow_force_pushes: adminExemptionReading({
+      present: protection?.allow_force_pushes?.enabled === false,
+      adminsExempt,
+      absentWhy:
+        'allow_force_pushes is enabled, so force pushes are not restricted for anyone, administrator or not',
+      bindingWhy:
+        'force pushes are disallowed by configuration and administrators are not exempt, so the restriction binds every pusher',
+      bypassableWhy:
+        'force pushes are disallowed by configuration but administrators are exempt, and the only account that can push is an administrator — do not rely on the server-side force-push guard; the client-side hook, which --no-verify bypasses, is what actually holds',
+    }),
+    allow_deletions: adminExemptionReading({
+      present: protection?.allow_deletions?.enabled === false,
+      adminsExempt,
+      absentWhy:
+        'allow_deletions is enabled, so the branch can be deleted by anyone, administrator or not',
+      bindingWhy:
+        'deletion is disallowed by configuration and administrators are not exempt, so the restriction binds every account',
+      bypassableWhy:
+        'deletion is disallowed by configuration but administrators are exempt, and the only account with push access is an administrator — do not rely on the server-side deletion guard',
+    }),
+    required_linear_history: adminExemptionReading({
+      present: protection?.required_linear_history?.enabled === true,
+      adminsExempt,
+      absentWhy:
+        'required_linear_history is not enabled, so merge commits are not restricted for anyone, administrator or not',
+      bindingWhy:
+        'linear history is required by configuration and administrators are not exempt, so it binds every merger',
+      bypassableWhy:
+        'linear history is required by configuration but administrators are exempt, and the only account that can merge is an administrator — do not rely on trunk history actually being linear',
+    }),
   };
 }
 
@@ -488,12 +563,23 @@ async function main() {
   const facts = await fetchRepositoryFacts({ repository, token });
   const violations = evaluateProtectionAssumptions(facts);
 
-  // Printed on every run, pass or fail. A reader who sees `strict: true` in the
-  // settings concludes that a merged PR was tested against the trunk it landed on,
-  // and here that is false for half of them.
-  const enforcement = statusCheckEnforcement(facts.protection);
+  // Printed on every run, pass or fail. A reader who sees `strict: true`, or any
+  // of the other three settings below, in the raw settings concludes that the
+  // setting binds every merger or pusher. `enforce_admins: false` exempts
+  // administrators from every one of them, and the sole collaborator here is an
+  // administrator, so all four can be present and correct while binding nobody.
+  const enforcement = adminExemptibleSettingEnforcement(facts.protection);
   console.log(
-    `Up-to-date-with-base enforcement: ${enforcement.state} — ${enforcement.why}`,
+    `Up-to-date-with-base enforcement: ${enforcement.strict.state} — ${enforcement.strict.why}`,
+  );
+  console.log(
+    `Force-push protection enforcement: ${enforcement.allow_force_pushes.state} — ${enforcement.allow_force_pushes.why}`,
+  );
+  console.log(
+    `Deletion protection enforcement: ${enforcement.allow_deletions.state} — ${enforcement.allow_deletions.why}`,
+  );
+  console.log(
+    `Linear-history enforcement: ${enforcement.required_linear_history.state} — ${enforcement.required_linear_history.why}`,
   );
 
   if (violations.length === 0) {
