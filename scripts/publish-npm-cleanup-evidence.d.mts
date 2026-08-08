@@ -26,6 +26,13 @@ export function publishCleanupEvidence(input: {
   issueNumber?: number;
   fetchImpl?: (input: string | URL, init?: RequestInit) => Promise<Response>;
 }): Promise<string>;
+export function assertTrackingIssueOpen(input: {
+  owner: string;
+  repo: string;
+  issueNumber: number;
+  token: string;
+  fetchImpl?: (input: string | URL, init?: RequestInit) => Promise<Response>;
+}): Promise<{ number: number; state: string }>;
 export function discoverCleanupEvidenceArtifacts(input: {
   owner: string;
   repo: string;

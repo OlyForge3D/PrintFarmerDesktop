@@ -8,7 +8,7 @@ import {
 } from './npm-ci-strict.mjs';
 import { resolveRepository } from './check-pr-closure-scope.mjs';
 
-export const CLEANUP_TRACKING_ISSUE = 274;
+export const CLEANUP_TRACKING_ISSUE = 626;
 export const CLEANUP_ARTIFACT_PREFIX = 'npm-cleanup-evidence-';
 export const MAXIMUM_EVIDENCE_ARTIFACT_BYTES = 64 * 1024;
 export const MAXIMUM_EVIDENCE_ARTIFACTS = 20;
@@ -183,6 +183,46 @@ export function formatCleanupEvidenceComment(evidence) {
   ].join('\n');
 }
 
+/**
+ * A fixed issue number embedded in source is a reference to a mutable
+ * object: nothing about writing `CLEANUP_TRACKING_ISSUE = <n>` records that
+ * the target was ever checked to still be alive. #274 was closed while both
+ * publishers kept writing to it — the write succeeds against a closed,
+ * unlocked issue, so the failure was silent (#482). Call this immediately
+ * before any write to the tracking issue, and hard-fail loudly rather than
+ * publishing durable evidence into an issue nobody is watching.
+ */
+export async function assertTrackingIssueOpen({
+  owner,
+  repo,
+  issueNumber,
+  token,
+  fetchImpl = fetch,
+}) {
+  const response = await fetchImpl(
+    `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}`,
+    {
+      headers: {
+        authorization: `bearer ${token}`,
+        accept: 'application/vnd.github+json',
+        'x-github-api-version': '2022-11-28',
+      },
+    },
+  );
+  if (!response.ok) {
+    throw new Error(
+      `could not verify cleanup tracking issue #${issueNumber} is open: ${response.status} ${response.statusText}`,
+    );
+  }
+  const payload = await response.json();
+  if (payload?.state !== 'open') {
+    throw new Error(
+      `cleanup tracking issue #${issueNumber} is ${payload?.state ?? 'unknown'}, not open; refusing to publish durable evidence into an unreachable issue`,
+    );
+  }
+  return payload;
+}
+
 export async function publishCleanupEvidence({
   owner,
   repo,
@@ -191,6 +231,7 @@ export async function publishCleanupEvidence({
   issueNumber = CLEANUP_TRACKING_ISSUE,
   fetchImpl = fetch,
 }) {
+  await assertTrackingIssueOpen({ owner, repo, issueNumber, token, fetchImpl });
   const body = formatCleanupEvidenceComment(evidence);
   const response = await fetchImpl(
     `https://api.github.com/repos/${owner}/${repo}/issues/${issueNumber}/comments`,

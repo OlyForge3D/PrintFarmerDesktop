@@ -4,6 +4,7 @@ import { CLEANUP_FAILURE_ANCHOR } from './npm-ci-strict.mjs';
 import {
   CLEANUP_SOURCE_WORKFLOWS,
   CLEANUP_TRACKING_ISSUE,
+  assertTrackingIssueOpen,
 } from './publish-npm-cleanup-evidence.mjs';
 import { resolveRepository } from './check-pr-closure-scope.mjs';
 
@@ -240,6 +241,8 @@ export async function dischargeCleanupFailure({
     request,
     run.run_attempt,
   );
+
+  await assertTrackingIssueOpen({ owner, repo, issueNumber, token, fetchImpl });
 
   const commentBody = formatDischargeComment({
     run,

@@ -22,8 +22,14 @@ unresolvable, the install step remains red.
 
 An unrecoverable cleanup failure stages JSON evidence in the runner temp
 directory. The next step uploads it as an artifact. A trusted `workflow_run`
-handler on `development` posts it to issue #274 with the run id, attempt, head
-SHA, job, runner, named directories, and exact anchor. This split also works for
+handler on `development` posts it to the durable tracking issue named by
+`CLEANUP_TRACKING_ISSUE` in `scripts/publish-npm-cleanup-evidence.mjs`
+(currently #626) with the run id, attempt, head SHA, job, runner, named
+directories, and exact anchor. Both publication and discharge assert that
+issue is still `open` before writing and hard-fail otherwise, so a closure of
+the tracking issue is loud rather than a silent write into an unreachable
+issue (#482) — update the constant at the same time the tracking issue is
+closed. This split also works for
 fork and Dependabot runs, whose pull-request token cannot write issue comments.
 The issue comment remains reachable after later pushes or reruns, unlike a
 failed attempt discovered only through the current commit's checks.
@@ -50,7 +56,7 @@ workflow:
    failed step and reads that job's log from the latest attempt.
 3. Refuses the whole discharge if any failed job lacks the exact anchor.
 4. Posts the authorization, failed job ids, actor, SHA, anchor, and justification
-   to issue #274.
+   to the same durable tracking issue, after verifying it is still open.
 5. Requests GitHub's failed-job rerun only after the durable comment succeeds.
 
 The rerun executes the original workflow unchanged. Install integrity, tests,
