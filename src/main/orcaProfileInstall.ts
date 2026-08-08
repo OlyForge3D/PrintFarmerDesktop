@@ -37,6 +37,7 @@ import {
   lstat,
   mkdir,
   realpath,
+  readdir,
 } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -462,6 +463,64 @@ export async function installOrcaProfileWindows(
 
 export interface RestoreResult {
   readonly restoredHash: string;
+}
+
+export interface LocatedBackup {
+  readonly backupPath: string;
+  readonly safeFilename: string;
+}
+
+/**
+ * Locate a `.bak-<timestamp>` file directly under `installRoot` whose SHA-256
+ * content hash equals `expectedHash`.
+ *
+ * This is deliberately independent of `profileCache`: the hash is what
+ * actually identifies a backup (it is supplied by the caller and re-verified
+ * before any write), while the cache only ever supplied a filename-prefix
+ * optimization for narrowing this same scan. Gating restore on the cache
+ * made a durable, content-addressed operation fail after a restart or after
+ * `MAX_CACHE_ENTRIES` more installs evicted the original entry, even though
+ * the backup file itself was untouched (#208). Scanning by hash means
+ * restore works as long as the backup file exists on disk, regardless of
+ * process lifetime or cache state.
+ *
+ * The original `safeFilename` is derived from the matched file's own name —
+ * backups are always written as `${safeFilename}.bak-${timestamp}` by
+ * `installOrcaProfileWindows` — so callers never need to look it up
+ * separately.
+ */
+export async function findBackupByHash(
+  installRoot: string,
+  expectedHash: string,
+): Promise<LocatedBackup | null> {
+  let entries: import('node:fs').Dirent[];
+  try {
+    entries = await readdir(installRoot, {
+      withFileTypes: true,
+      encoding: 'utf8',
+    });
+  } catch {
+    return null; // Directory not accessible.
+  }
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const bakIndex = entry.name.indexOf('.bak-');
+    if (bakIndex <= 0) continue;
+    const candidatePath = path.join(installRoot, entry.name);
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(candidatePath);
+    } catch {
+      continue; // Skip unreadable files.
+    }
+    if (sha256(bytes) === expectedHash) {
+      return {
+        backupPath: candidatePath,
+        safeFilename: entry.name.slice(0, bakIndex),
+      };
+    }
+  }
+  return null;
 }
 
 /**
