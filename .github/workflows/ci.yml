@@ -52,6 +52,29 @@ concurrency:
 permissions:
   contents: read
 
+# Documentation-only fast path.
+#
+# PR #596 changed one markdown file, `.squad/agents/ralph/loop.md`, and ran the
+# whole matrix: 9m44s + 8m8s + 5m48s + 5m3s + 4m36s + 4m3s + 3m26s, ~41 minutes
+# of platform build compute to validate a prose edit.
+#
+# It is gated at STEP level, and the two available alternatives are both unsafe
+# here rather than merely worse:
+#
+#   `paths-ignore:` / workflow-level path filtering suppresses the WORKFLOW, so
+#   the eight required contexts on `development` are never reported and the pull
+#   request sits at "Expected - waiting for status" forever. Unmergeable, which
+#   is worse than slow.
+#
+#   A job-level `if:` reports a `skipped` conclusion, and branch protection
+#   counts `skipped` as success -- so the required check is satisfied by a job
+#   that never ran. That is a false green, and 'declares no job-level `if:` and
+#   no event-name branching' in tests/ciWorkflowTriggers.test.ts already bans it.
+#
+# So every job below still runs, under its exact existing name, and reaches a
+# real `success` conclusion. Only steps a prose edit cannot affect stand down.
+# `scripts/docs-only-change.mjs` decides, and resolves every uncertainty toward
+# the full build.
 jobs:
   desktop:
     name: Desktop (${{ matrix.os }})
@@ -61,9 +84,16 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest]
     steps:
+      # depth 2, not the default 1: the docs-only detector diffs the
+      # `refs/pull/N/merge` commit against its first parent, so it needs both.
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 2
+
+      - name: Detect documentation-only change
+        id: changes
+        run: node scripts/docs-only-change.mjs
 
       - uses: actions/setup-node@v4
         with:
@@ -86,20 +116,33 @@ jobs:
           retention-days: 90
 
       - name: Calibration provenance
+        if: steps.changes.outputs.docs_only != 'true'
         run: npm run check:provenance
 
       - name: Target profile bundle
+        if: steps.changes.outputs.docs_only != 'true'
         run: npm run verify:target-profiles
 
       - name: Script reachability
+        if: steps.changes.outputs.docs_only != 'true'
         run: npm run check:script-reachability
 
       - name: Type-check
+        if: steps.changes.outputs.docs_only != 'true'
         run: npm run typecheck
 
       - name: Lint
+        if: steps.changes.outputs.docs_only != 'true'
         run: npm run lint
 
+      # Format check and Test are NOT gated, and the reason is measured rather
+      # than cautious. `prettier --check .` covers markdown and caught a real
+      # failure on docs PR #577. `vitest run` is a documentation check in this
+      # repository as much as a code one: 16 files under tests/ read `.md` or
+      # `.squad/` paths and assert their contents -- the CI-context list in
+      # `.squad/skills/testing/SKILL.md`, the calibration runbook references, the
+      # licensing text. Skipping them on a documentation change would remove
+      # cover from precisely the change that needs it.
       - name: Format check
         run: npm run format
 
@@ -118,39 +161,56 @@ jobs:
         working-directory: native
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      # `working-directory:` overrides the job default above; the detector reads
+      # the repository, not the crate.
+      - name: Detect documentation-only change
+        id: changes
+        working-directory: ${{ github.workspace }}
+        run: node scripts/docs-only-change.mjs
 
       - name: Install Rust
+        if: steps.changes.outputs.docs_only != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
 
       - name: Format check
+        if: steps.changes.outputs.docs_only != 'true'
         run: cargo fmt --check
 
       - name: Clippy
+        if: steps.changes.outputs.docs_only != 'true'
         run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Clippy (sqlite feature)
+        if: steps.changes.outputs.docs_only != 'true'
         run: cargo clippy --locked --all-targets --features sqlite -- -D warnings
 
       - name: Clippy (step feature)
+        if: steps.changes.outputs.docs_only != 'true'
         run: cargo clippy --locked --all-targets --features step -- -D warnings
 
       - name: Test
+        if: steps.changes.outputs.docs_only != 'true'
         run: cargo test --locked
 
       - name: Test (sqlite feature)
+        if: steps.changes.outputs.docs_only != 'true'
         run: cargo test --locked --features sqlite
 
       - name: Test (step feature)
+        if: steps.changes.outputs.docs_only != 'true'
         run: cargo test --locked --features step
 
       - name: Build (lib3mf feature)
-        if: runner.os == 'Windows'
+        if: steps.changes.outputs.docs_only != 'true' && runner.os == 'Windows'
         run: cargo build --locked --features lib3mf
 
       - name: Test (lib3mf feature)
-        if: runner.os == 'Windows'
+        if: steps.changes.outputs.docs_only != 'true' && runner.os == 'Windows'
         run: cargo test --locked --features lib3mf
 
   package:
@@ -164,17 +224,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 2
+
+      - name: Detect documentation-only change
+        id: changes
+        run: node scripts/docs-only-change.mjs
 
       - uses: actions/setup-node@v4
+        if: steps.changes.outputs.docs_only != 'true'
         with:
           node-version: 22
           cache: npm
 
       - name: Install Rust
+        if: steps.changes.outputs.docs_only != 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
         id: npm_ci
+        if: steps.changes.outputs.docs_only != 'true'
         env:
           NPM_CLEANUP_EVIDENCE_PATH: ${{ runner.temp }}/npm-cleanup-evidence.json
         run: node scripts/npm-ci-strict.mjs
@@ -189,10 +257,12 @@ jobs:
           retention-days: 90
 
       - name: Build sidecar (release)
+        if: steps.changes.outputs.docs_only != 'true'
         working-directory: native
         run: cargo build --locked --release -p model-core --features sqlite
 
       - name: Package app (bundles the prebuilt sidecar)
+        if: steps.changes.outputs.docs_only != 'true'
         env:
           # The sidecar is built in the dedicated step above; the packaging
           # hook only needs to stage it.
@@ -207,35 +277,44 @@ jobs:
         # both toolchains, so it is the only one where the cargo half of the
         # SBOM is derived from a real `cargo metadata` resolution at the
         # feature set a release builds.
+        if: steps.changes.outputs.docs_only != 'true'
         run: npm run verify:sbom
 
       - name: Verify third-party licence policy
         # Deterministic gate: every shipped component's licence must be
         # compatible with the AGPL-3.0-only outbound licence or hold a reviewed
         # exception. Reads the SBOM `npm run package` staged above.
+        if: steps.changes.outputs.docs_only != 'true'
         run: npm run verify:licenses
 
       - name: Verify third-party notices reproduce from the SBOM
+        if: steps.changes.outputs.docs_only != 'true'
         run: npm run verify:notices
 
       - name: Verify packaged sidecar and compliance resources
+        if: steps.changes.outputs.docs_only != 'true'
         run: node scripts/verify-packaged-sidecar.mjs
 
       - name: Verify committed lockfiles are unchanged
+        if: steps.changes.outputs.docs_only != 'true'
         run: git diff --exit-code -- native/Cargo.lock package-lock.json
 
       - name: Packaged Electron end-to-end tests
+        if: steps.changes.outputs.docs_only != 'true'
         run: npx playwright test --grep-invert "@gpu|@a11y"
 
       - name: Packaged accessibility (material WCAG A/AA)
+        if: steps.changes.outputs.docs_only != 'true'
         run: npx playwright test e2e/release.accessibility.spec.ts
 
       - name: Packaged WebGL2 (host default capability report)
+        if: steps.changes.outputs.docs_only != 'true'
         env:
           PRINTFARMER_E2E_GPU_MODE: default
         run: npx playwright test e2e/release.gpu.spec.ts
 
       - name: Packaged WebGL2 (SwiftShader fallback)
+        if: steps.changes.outputs.docs_only != 'true'
         env:
           PRINTFARMER_E2E_GPU_MODE: swiftshader
         run: npx playwright test e2e/release.gpu.spec.ts
@@ -247,20 +326,34 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 2
+
+      # Safe to stand down on documentation only because the docs-only rule
+      # cannot admit a manifest: `scripts/docs-only-change.mjs` rejects
+      # package.json, package-lock.json, Cargo.toml and Cargo.lock by basename
+      # before it consults the allowlist, so nothing that can change the
+      # dependency set can reach this branch.
+      - name: Detect documentation-only change
+        id: changes
+        run: node scripts/docs-only-change.mjs
 
       - uses: actions/setup-node@v4
+        if: steps.changes.outputs.docs_only != 'true'
         with:
           node-version: 22
           cache: npm
 
       - name: Install Rust
+        if: steps.changes.outputs.docs_only != 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-audit
+        if: steps.changes.outputs.docs_only != 'true'
         run: cargo install cargo-audit --locked
 
       - name: Install dependencies
         id: npm_ci
+        if: steps.changes.outputs.docs_only != 'true'
         env:
           NPM_CLEANUP_EVIDENCE_PATH: ${{ runner.temp }}/npm-cleanup-evidence.json
         run: node scripts/npm-ci-strict.mjs
@@ -275,6 +368,7 @@ jobs:
           retention-days: 90
 
       - name: Generate SBOM (scopes advisories to what ships)
+        if: steps.changes.outputs.docs_only != 'true'
         run: npm run sbom
 
       # Report mode by design (see docs/security/THREAT_MODEL.md T4.2): advisory
@@ -286,4 +380,5 @@ jobs:
       # audit runs, the gate independently walks feature-resolved cargo metadata
       # and requires its exact name@version set to match the generated SBOM.
       - name: Audit shipped dependencies for known advisories
+        if: steps.changes.outputs.docs_only != 'true'
         run: npm run audit:advisories
