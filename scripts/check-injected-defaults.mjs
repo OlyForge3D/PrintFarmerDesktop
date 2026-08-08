@@ -64,15 +64,17 @@
  *   0  OK               every injected default is DRIVEN or DIRECT
  *   1  RELOCATED        at least one injected default is provably unreachable
  *   2  UNDETERMINED     nothing was proven unreachable and something is unresolved
- *   3  ROOT_NOT_DRIVEN  --root names a function that exists, but the suite has
- *                       zero call sites reaching it
+ *   3  ROOT_NOT_DRIVEN  --root names a function that exists, injects no
+ *                       defaults of its own, and the suite has zero call
+ *                       sites reaching it
  *
  * RELOCATED outranks UNDETERMINED. The reasoning is the one pinned in
  * check-merge-landed.mjs: a dependency this tool could not resolve says nothing
  * about a dependency it proved unreachable. A proven finding is not weakened by
  * an adjacent unknown. This ordering is asserted by a test, not left to reading.
  *
- * WHY ROOT_NOT_DRIVEN IS ITS OWN CODE (#549)
+ * WHY ROOT_NOT_DRIVEN IS ITS OWN CODE, AND WHY IT IS NARROWER THAN "ZERO CALL
+ * SITES" (#549)
  *
  * `--root` defaults to `main`, and a module can genuinely define a `main` that
  * exists, is syntactically well-formed, and is simply not the composition root
@@ -82,13 +84,24 @@
  * from a module with nothing to report. The real root, `signMacRelease`, has
  * three UNREACHABLE defaults under the same suite.
  *
+ * The guard is NOT "zero call sites", though — that would be too wide. DIRECT
+ * coverage (above) proves a default reachable WITHOUT the suite ever calling
+ * the root at all: the default is a named export the suite imports and calls
+ * directly. A root with injected defaults and zero call sites still produces
+ * one real verdict per default from `classifyDefaults` — DIRECT where the
+ * suite imports the default, UNREACHABLE where it does not — and that is
+ * correct, provable output, not silence. The failure this exit code targets is
+ * narrower and sharper: `defaults.length === 0` as well, so `classified` is
+ * vacuously `[]` and `exitCodeFor([])` is EXIT_OK by construction, with
+ * nothing underneath that verdict at all.
+ *
  * A root that does not exist already fails loudly, at exit 2, by throwing out of
- * `findCompositionRoot`. Zero call sites for a root that DOES exist is a
- * different fact and must not collapse into the same code: it says the suite
- * never drives this root, not merely that something about it could not be
- * resolved. That is exit 3, and it names the root and the module in the
- * message, so the fix is "point --root at what the suite calls", not "add an
- * override somewhere".
+ * `findCompositionRoot`. A root that exists, injects nothing, and the suite
+ * never calls is a different fact and must not collapse into the same code: it
+ * says the suite never drives this root, not merely that something about it
+ * could not be resolved. That is exit 3, and it names the root and the module
+ * in the message, so the fix is "point --root at what the suite calls", not
+ * "add an override somewhere".
  *
  * PARSER CHOICE
  *
@@ -528,7 +541,7 @@ const USAGE = [
   '  exit 0  every injected default is driven by a call that omits it, or imported directly',
   '  exit 1  at least one injected default is provably unreachable from the suite',
   '  exit 2  nothing proven unreachable and at least one call site could not be resolved',
-  '  exit 3  --root names a function that exists, but the suite never calls it',
+  '  exit 3  --root names a function that exists but injects nothing, and the suite never calls it',
 ].join('\n');
 
 export function analyse({
@@ -547,20 +560,30 @@ export function analyse({
   }
   const defaults = readInjectedDefaults(rootNode);
   const sites = findCallSites(suiteAst, rootName);
-  if (sites.length === 0) {
+  if (sites.length === 0 && defaults.length === 0) {
     // #549: `rootName` exists — it parsed, it has a body — but the suite has
-    // zero call sites that reach it. That is NOT the same fact as "nothing was
-    // proven unreachable": it means this run proves nothing about the module
-    // at all, because the suite never drives the function this run was told to
-    // walk. Left unchecked, `defaults` here is also `[]` whenever the wrong
-    // root happens to take no injected parameters, and classifyDefaults() over
-    // an empty list is EXIT_OK — a clean bill for a module nobody exercised
-    // under this root. Refuse that result instead of returning it.
+    // zero call sites that reach it, AND the root injects no defaults at all.
+    // That combination is NOT the same fact as "nothing was proven
+    // unreachable": it means this run proves nothing whatsoever about the
+    // module, because `classified` is vacuously `[]` and `exitCodeFor([])` is
+    // EXIT_OK — a clean bill for a module nobody exercised under this root.
+    //
+    // This guard is deliberately narrower than "zero call sites": when
+    // `defaults.length > 0`, classifyDefaults() below still produces one
+    // verdict per default even with zero call sites, and DIRECT is exactly
+    // the supported route that proves coverage WITHOUT the suite ever calling
+    // the root — a default that is exported by the module and imported by the
+    // suite directly. Refusing on `sites.length === 0` alone would reject that
+    // legitimate, documented case (see the file banner's DIRECT route, and
+    // classifyDefaults()'s DIRECT arm) along with the genuinely vacuous one.
+    // Only the truly empty verdict list — nothing to classify AND nothing
+    // called — is refused here.
     throw new RootNotDrivenError(
       `${rootName} exists in ${moduleFile}, but ${suiteFile} has 0 call sites ` +
-        `that reach it. Zero call sites is not evidence ${rootName} is clean — ` +
-        'the suite never drives this root at all. Pass --root naming the ' +
-        'function the suite actually calls.',
+        `that reach it, and ${rootName} injects no defaults for DIRECT ` +
+        `coverage to apply to. Zero call sites is not evidence ${rootName} is ` +
+        'clean — the suite never drives this root at all. Pass --root naming ' +
+        'the function the suite actually calls.',
     );
   }
   const classified = classifyDefaults({

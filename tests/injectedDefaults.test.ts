@@ -767,6 +767,71 @@ describe('A WRONG-BUT-EXISTING ROOT IS NOT INDISTINGUISHABLE FROM A CLEAN ONE (#
     // suite DOES call resolves and reports normally instead of throwing.
     expect(exitCodeFor(result.classified)).toBe(EXIT_OK);
   });
+
+  it('DIRECT-ROUTE REGRESSION (Vasquez review on #641): zero call sites does NOT throw when the root injects a default that is exported and imported directly', () => {
+    // Vasquez's review of the first version of this fix found that the guard
+    // fired on `sites.length === 0` ALONE, before classifyDefaults() could
+    // apply the documented DIRECT route (file banner, ~line 33-38, and
+    // classifyDefaults()'s DIRECT arm): a default reachable because the suite
+    // imports and calls it directly, without ever calling the root at all.
+    // `main({ a = helper } = {})` with `m.test.ts` importing and calling
+    // `helper()` directly is exactly that supported, pre-existing case, and it
+    // must still resolve to DIRECT rather than being rejected as
+    // ROOT_NOT_DRIVEN.
+    const result = analyse({
+      moduleFile: 'm.mjs',
+      suiteFile: 'm.test.ts',
+      rootName: 'main',
+      readFile: sourcesOf({
+        'm.mjs':
+          'export function helper() {}\nexport function main({ a = helper } = {}) {}',
+        'm.test.ts': "import { helper } from './m.mjs';\nhelper();",
+      }),
+    });
+    expect(result.sites.length).toBe(0);
+    expect(verdictFor(result.classified, 'a')).toBe(VERDICT_DIRECT);
+    expect(exitCodeFor(result.classified)).toBe(EXIT_OK);
+  });
+
+  it('DIRECT-ROUTE REGRESSION, NEGATIVE CONTROL: zero call sites AND no DIRECT coverage still throws ROOT_NOT_DRIVEN', () => {
+    // Without this, the arm above could be satisfied by a guard that simply
+    // never throws, which would resurrect the original #549 defect. The only
+    // difference from the case above is that nothing imports `helper`, so
+    // there is no DIRECT route and the default is genuinely unproven — but
+    // that must still surface as UNREACHABLE / EXIT_RELOCATED, not as a
+    // vacuous EXIT_OK, so this fixture instead removes the default entirely
+    // to reproduce the fully vacuous case the guard exists for.
+    expect(() =>
+      analyse({
+        moduleFile: 'm.mjs',
+        suiteFile: 'm.test.ts',
+        rootName: 'main',
+        readFile: sourcesOf({
+          'm.mjs': 'export function main() {}',
+          'm.test.ts': "import { main } from './m.mjs';\nconst x = 1;",
+        }),
+      }),
+    ).toThrow(RootNotDrivenError);
+  });
+
+  it('DIRECT-ROUTE REGRESSION, THIRD ARM: zero call sites, a default present, but NOT covered by DIRECT reports RELOCATED rather than throwing or passing clean', () => {
+    // A default with no DIRECT route and zero call sites is neither a false
+    // clean pass nor a case this guard should refuse — classifyDefaults()
+    // already reports it, correctly, as UNREACHABLE.
+    const result = analyse({
+      moduleFile: 'm.mjs',
+      suiteFile: 'm.test.ts',
+      rootName: 'main',
+      readFile: sourcesOf({
+        'm.mjs':
+          'function impl() {}\nexport function main({ a = impl } = {}) {}',
+        'm.test.ts': "import { main } from './m.mjs';\nconst x = 1;",
+      }),
+    });
+    expect(result.sites.length).toBe(0);
+    expect(verdictFor(result.classified, 'a')).toBe(VERDICT_UNREACHABLE);
+    expect(exitCodeFor(result.classified)).toBe(EXIT_RELOCATED);
+  });
 });
 
 describe('argument parsing', () => {
