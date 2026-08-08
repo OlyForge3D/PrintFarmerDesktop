@@ -59,8 +59,10 @@ function conflictRow(overrides: Record<string, unknown> = {}) {
     conflictId: CONFLICT_ID,
     profileId: PROFILE_ID,
     projectId: PROJECT_ID,
-    // The sidecar writes the ENTITY TYPE into the column named `kind` (#219).
-    kind: 'CalibrationProject',
+    // The entity type (#365 renamed the column from `kind` to `entity_type`;
+    // the IPC contract's `kind` is now sourced from `conflictKind` below).
+    entityType: 'CalibrationProject',
+    conflictKind: 'projectMetadata',
     entityId: '44444444-4444-4444-8444-444444444444',
     operationId: null,
     localPayload: { displayName: 'local' },

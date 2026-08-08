@@ -250,13 +250,25 @@ pub struct CalibrationConflictDto {
     pub conflict_id: String,
     pub profile_id: String,
     pub project_id: String,
-    pub kind: String,
+    /// The entity type of the conflicted row (e.g. `CalibrationProject`).
+    ///
+    /// Renamed from `kind` (issue #365): this column never held a conflict
+    /// kind, and naming it `kind` invited the renderer to parse it against
+    /// the six-value `CalibrationConflictKind` enum, which no entity type is
+    /// ever a member of.
+    pub entity_type: String,
     pub entity_id: String,
     pub operation_id: Option<String>,
     pub local_payload: Option<Value>,
     pub server_payload: Option<Value>,
     pub server_revision: i64,
     pub created_at: String,
+    /// The ratified conflict kind, when the conflict has been classified.
+    ///
+    /// This is the column the IPC contract must read for `kind` (issue #365).
+    /// `None` means unclassified, not "guess from `entity_type`" -- a caller
+    /// that guesses reintroduces the defect this field exists to end.
+    pub conflict_kind: Option<CalibrationConflictKind>,
 }
 
 /// Parameters for `settleCalibrationOperation`.

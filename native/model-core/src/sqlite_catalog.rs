@@ -30,8 +30,9 @@ use crate::catalog::{
 };
 use crate::model::{FileFingerprint, ModelFormat};
 use crate::schema::{
-    SCHEMA_V1, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V2,
-    SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9, SCHEMA_VERSION,
+    SCHEMA_V1, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16,
+    SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9,
+    SCHEMA_VERSION,
 };
 use crate::sync::{
     self, ApplyPullBatchDto, CalibrationConflictKind, CalibrationConflictResolutionKind,
@@ -123,6 +124,9 @@ impl SqliteCatalog {
                 }
                 if version < 15 {
                     conn.execute_batch(SCHEMA_V15)?;
+                }
+                if version < 16 {
+                    conn.execute_batch(SCHEMA_V16)?;
                 }
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 conn.execute_batch("COMMIT")
@@ -3474,7 +3478,7 @@ impl CatalogStore for SqliteCatalog {
                 // OR IGNORE with nothing to suppress. (It never suppressed the
                 // foreign key failure above -- SQLite raises those regardless.)
                 "INSERT INTO calibration_conflicts
-                     (profile_id, conflict_id, project_id, kind, entity_id,
+                     (profile_id, conflict_id, project_id, entity_type, entity_id,
                       operation_id, server_revision, created_at, conflict_kind)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
@@ -3527,7 +3531,7 @@ impl CatalogStore for SqliteCatalog {
             .conn
             .query_row(
                 "SELECT project_id, conflict_kind, entity_id, resolved_at, resolution,
-                        resolution_revision_id, server_revision, kind
+                        resolution_revision_id, server_revision, entity_type
                  FROM calibration_conflicts
                  WHERE profile_id = ?1 AND conflict_id = ?2",
                 params![params.profile_id, params.conflict_id],
@@ -4075,9 +4079,9 @@ impl CatalogStore for SqliteCatalog {
         let mut stmt = if project_id.is_some() {
             self.conn
                 .prepare(
-                    "SELECT conflict_id, profile_id, project_id, kind, entity_id,
+                    "SELECT conflict_id, profile_id, project_id, entity_type, entity_id,
                             operation_id, local_payload_json, server_payload_json,
-                            server_revision, created_at
+                            server_revision, created_at, conflict_kind
                      FROM calibration_conflicts
                      WHERE profile_id = ?1 AND project_id = ?2 AND resolved_at IS NULL
                      ORDER BY created_at ASC",
@@ -4086,9 +4090,9 @@ impl CatalogStore for SqliteCatalog {
         } else {
             self.conn
                 .prepare(
-                    "SELECT conflict_id, profile_id, project_id, kind, entity_id,
+                    "SELECT conflict_id, profile_id, project_id, entity_type, entity_id,
                             operation_id, local_payload_json, server_payload_json,
-                            server_revision, created_at
+                            server_revision, created_at, conflict_kind
                      FROM calibration_conflicts
                      WHERE profile_id = ?1 AND resolved_at IS NULL
                      ORDER BY created_at ASC",
@@ -4433,17 +4437,27 @@ fn calibration_conflict_from_row(row: &Row<'_>) -> rusqlite::Result<CalibrationC
     let server_payload = server_payload_json
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok());
+    let conflict_kind_raw: Option<String> = row.get(10)?;
+    // Parsed rather than passed through as a raw string, so a stored value
+    // that is not one of the six ratified conflict kinds cannot silently
+    // reach the renderer as if it were classified. See `conflict_kind_as_db`
+    // for the write side of this round trip.
+    let conflict_kind: Option<CalibrationConflictKind> =
+        conflict_kind_raw.as_deref().and_then(|value| {
+            serde_json::from_value(serde_json::Value::String(value.to_string())).ok()
+        });
     Ok(CalibrationConflictDto {
         conflict_id: row.get(0)?,
         profile_id: row.get(1)?,
         project_id: row.get(2)?,
-        kind: row.get(3)?,
+        entity_type: row.get(3)?,
         entity_id: row.get(4)?,
         operation_id: row.get(5)?,
         local_payload,
         server_payload,
         server_revision: row.get(8)?,
         created_at: row.get(9)?,
+        conflict_kind,
     })
 }
 
@@ -6153,6 +6167,19 @@ mod tests {
                 "calibration_conflicts is missing {column} after migration"
             );
         }
+        // v16: `kind` is renamed to `entity_type` (issue #365). Asserting both
+        // the presence of the new name and the absence of the old one is the
+        // only way this test would fail if the rename were skipped and a
+        // third, still-ambiguous column were added instead.
+        assert!(
+            conflict_columns.contains(&"entity_type".to_string()),
+            "calibration_conflicts must expose entity_type after the v16 rename"
+        );
+        assert!(
+            !conflict_columns.contains(&"kind".to_string()),
+            "calibration_conflicts.kind must not survive the v16 migration; its \
+             continued presence is exactly the ambiguity issue #365 removes"
+        );
         let revision_columns: Vec<String> = store
             .conn
             .prepare("PRAGMA table_info(calibration_profile_revisions)")
@@ -6610,6 +6637,38 @@ mod tests {
             conflicts[0].conflict_id
         );
 
+        // The falsifier from issue #365: read the conflict back through the
+        // IPC contract's source column and assert the parsed kind is a member
+        // of the six-value conflict enum. Before this issue's fix, the
+        // contract read `kind` (== entity_type here), and no entity type is a
+        // member of that enum -- this assertion would have failed for every
+        // conflict ever recorded.
+        assert_eq!(
+            conflicts[0].conflict_kind,
+            Some(CalibrationConflictKind::ProjectMetadata),
+            "the contract's source column must round-trip the classification \
+             that was recorded"
+        );
+
+        // Positive control: `entity_type` (what `kind` used to hold) must
+        // never itself be mistakable for a ratified conflict kind. Without
+        // this, an assertion that `conflict_kind` parses would pass even on a
+        // schema where the two columns were never disambiguated, because
+        // nothing here would distinguish "conflict_kind holds the real
+        // vocabulary" from "entity_type coincidentally also parses".
+        assert_eq!(conflicts[0].entity_type, "CalibrationProject");
+        assert!(
+            serde_json::from_value::<CalibrationConflictKind>(serde_json::Value::String(
+                conflicts[0].entity_type.clone()
+            ))
+            .is_err(),
+            "entity_type {:?} must not be a member of CalibrationConflictKind; \
+             if it were, the two columns could both be read as the conflict \
+             vocabulary and 'which one is authoritative' would be ambiguous \
+             again",
+            conflicts[0].entity_type
+        );
+
         let state: String = store
             .conn
             .query_row(
@@ -6620,6 +6679,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(state, "conflict");
+    }
+
+    #[test]
+    fn no_calibration_entity_type_value_is_ever_a_ratified_conflict_kind() {
+        // The disjoint-vocabulary control for issue #365, generalized across
+        // every entity type the sync engine can name (not just the one
+        // exercised above). If any of these ever parsed as a
+        // `CalibrationConflictKind`, reading `entity_type` as the conflict
+        // vocabulary would occasionally look correct by coincidence, which is
+        // worse than always being wrong the same way.
+        for entity_type in [
+            "CalibrationProject",
+            "CalibrationStep",
+            "CalibrationAttempt",
+            "CalibrationEvent",
+            "CalibrationObservation",
+            "CalibrationPhoto",
+            "CalibrationProfileRevision",
+            "CalibrationPrinterSnapshot",
+        ] {
+            let parsed = serde_json::from_value::<CalibrationConflictKind>(
+                serde_json::Value::String(entity_type.to_string()),
+            );
+            assert!(
+                parsed.is_err(),
+                "entity type {entity_type:?} must not deserialize as a \
+                 CalibrationConflictKind; the two vocabularies must stay disjoint"
+            );
+        }
     }
 
     #[test]

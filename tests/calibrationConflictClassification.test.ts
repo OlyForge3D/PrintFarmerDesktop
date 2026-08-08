@@ -1,25 +1,30 @@
 /**
- * #219 — an unclassifiable conflict must not advertise the widest resolution set.
+ * Issue #365 — `conflict_kind` is the IPC contract's source for `kind`, not
+ * `entity_type`.
  *
- * `mapCalibrationConflictKind` used to send every unrecognised entity type to
- * `projectMetadata`, which is one of exactly two kinds granting
- * `manualFieldMerge`. Four of the eight entity types the sync engine handles
- * reached that arm, so the *unclassified* case advertised *more* than most
- * classified ones.
+ * Before this issue, the list path re-derived a displayed kind from the raw
+ * entity type on every read (`classifyCalibrationConflictKind`), with a
+ * guessed fallback (`projectMetadata`) for anything it could not map. That
+ * guess is gone: `mapCalibrationConflictKind` is now a write-time classifier
+ * only (called once, when a conflict is recorded), and the list path reads
+ * `conflictKind` back from the wire directly. A conflict whose `conflictKind`
+ * is null or not a member of the six-value enum is excluded from the
+ * returned list rather than advertised under a fabricated kind.
  *
- * These tests assert against the real adapter and a real transport. Nothing here
- * restates the policy table: the permitted-set expectations are derived by
- * calling `conflictResolutionsFor`, the same function the adapter uses, so a
- * legitimate policy change moves both sides together and this file keeps
- * checking the property it names -- that classification gates advertisement.
+ * These tests assert against the real adapter and a real transport. Nothing
+ * here restates the policy table: the permitted-set expectations are derived
+ * by calling `conflictResolutionsFor`, the same function the adapter uses, so
+ * a legitimate policy change moves both sides together and this file keeps
+ * checking the property it names -- that only a classified conflict is
+ * advertised, and it is advertised under the kind the store actually recorded.
  */
 
 import { describe, expect, it } from 'vitest';
 
 import {
   SidecarCalibrationAdapter,
-  classifyCalibrationConflictKind,
   conflictResolutionsFor,
+  mapCalibrationConflictKind,
   supportsConflictResolution,
 } from '../src/main/calibrationService.js';
 import type { SidecarClient } from '../src/main/sidecar.js';
@@ -43,13 +48,20 @@ const UNMAPPED_ENTITY_TYPES = [
   'CalibrationProfileRevision',
 ] as const;
 
+/**
+ * Builds a wire-shaped conflict row the way the store now produces one:
+ * `entityType` carries the entity type, `conflictKind` carries whatever was
+ * classified (and persisted) for it at record time -- `null` when
+ * `mapCalibrationConflictKind` returned `null`, exactly mirroring what
+ * `record_calibration_conflict` would have stored.
+ */
 function conflictRow(entityType: string): Record<string, unknown> {
   return {
     conflictId: `conflict-${entityType}`,
     profileId: 'profile-1',
     projectId: 'project-1',
-    // The sidecar writes the ENTITY TYPE into the column named `kind` (#219).
-    kind: entityType,
+    entityType,
+    conflictKind: mapCalibrationConflictKind(entityType),
     entityId: `entity-${entityType}`,
     operationId: null,
     localPayload: { displayName: 'local' },
@@ -83,8 +95,8 @@ function capableSidecar(
   } as unknown as SidecarClient;
 }
 
-describe('#219 classification gates what an adapter may advertise', () => {
-  it('advertises nothing for entity types it cannot classify', async () => {
+describe('#365 conflict_kind, not entity_type, is the source of the listed kind', () => {
+  it('excludes conflicts it cannot classify from the returned list', async () => {
     const adapter = new SidecarCalibrationAdapter(
       capableSidecar(UNMAPPED_ENTITY_TYPES.map(conflictRow)),
     );
@@ -94,16 +106,15 @@ describe('#219 classification gates what an adapter may advertise', () => {
       'project-1',
     );
 
-    expect(conflicts).toHaveLength(UNMAPPED_ENTITY_TYPES.length);
-    for (const conflict of conflicts) {
-      expect(
-        conflict.availableResolutions,
-        `${conflict.entityId} is unclassifiable, so the store would refuse it ` +
-          `with CALIBRATION_CONFLICT_KIND_UNCLASSIFIED; advertising ` +
-          `${JSON.stringify(conflict.availableResolutions)} offers the user a ` +
-          `button the store rejects`,
-      ).toEqual([]);
-    }
+    // The falsifier: an unclassified conflict (conflictKind: null) must not
+    // appear in the list at all -- not with an empty `availableResolutions`,
+    // not under a guessed `kind`. The store already refuses to *resolve*
+    // these (CALIBRATION_CONFLICT_KIND_UNCLASSIFIED); listing them as
+    // classified-but-unresolvable would offer a button the store rejects.
+    expect(
+      conflicts,
+      'entity types with no ratified conflict kind must be refused, not guessed',
+    ).toHaveLength(0);
   });
 
   it('never offers manualFieldMerge for a conflict it could not classify', async () => {
@@ -111,24 +122,22 @@ describe('#219 classification gates what an adapter may advertise', () => {
       capableSidecar([conflictRow('CalibrationProfileRevision')]),
     );
 
-    const [conflict] = await adapter.listCalibrationConflicts(
+    const conflicts = await adapter.listCalibrationConflicts(
       'profile-1',
       'project-1',
     );
-    expect(conflict).toBeDefined();
-    if (conflict === undefined) return;
 
-    // A conflicted profile revision is exact profile JSON -- named in the schema
-    // doc's exclusion list for textual merge. This is the case the old default
-    // arm got most wrong.
-    expect(
-      conflict.availableResolutions,
-      'a conflicted CalibrationProfileRevision is exact profile JSON and must ' +
-        'never arrive at the renderer advertised as textually mergeable',
-    ).not.toContain('manualFieldMerge');
+    // A conflicted profile revision is exact profile JSON -- named in the
+    // schema doc's exclusion list for textual merge. Unreachable today
+    // (unclassified conflicts are excluded above), but if a future entity
+    // type maps here, it must never be excluded via `manualFieldMerge`
+    // sneaking through instead of via omission.
+    for (const conflict of conflicts) {
+      expect(conflict.availableResolutions).not.toContain('manualFieldMerge');
+    }
   });
 
-  it('still advertises the full permitted set for types it can classify', async () => {
+  it('lists classified conflicts under the recorded conflictKind, not a re-derived one', async () => {
     const adapter = new SidecarCalibrationAdapter(
       capableSidecar(MAPPED_ENTITY_TYPES.map(conflictRow)),
     );
@@ -138,13 +147,11 @@ describe('#219 classification gates what an adapter may advertise', () => {
       'project-1',
     );
 
-    // Positive control. Without this, returning `[]` unconditionally would
-    // satisfy both tests above, and the fix would be indistinguishable from
-    // breaking advertisement entirely.
-    //
-    // The capability that makes advertisement non-empty belongs to the adapter,
-    // not to the injected client -- asserted rather than assumed, because
-    // assuming it is exactly what produced the false comment on capableSidecar.
+    expect(conflicts).toHaveLength(MAPPED_ENTITY_TYPES.length);
+
+    // Positive control. Without this, excluding everything would satisfy the
+    // exclusion test above, and the fix would be indistinguishable from
+    // breaking listing entirely.
     expect(supportsConflictResolution(adapter)).toBe(true);
     for (const conflict of conflicts) {
       const expected = conflictResolutionsFor(
@@ -160,34 +167,109 @@ describe('#219 classification gates what an adapter may advertise', () => {
     }
   });
 
-  it('reports classification separately from the displayed kind', () => {
-    // The display fallback is itself a valid enum member, so `kind` alone
-    // cannot distinguish "we classified this as projectMetadata" from "we could
-    // not classify this at all". Losing that distinction is the root of #219.
-    const real = classifyCalibrationConflictKind('CalibrationProject');
-    const fallback = classifyCalibrationConflictKind('CalibrationPhoto');
+  it('never accepts an entity-type-shaped value as a conflictKind', async () => {
+    // The two columns cannot both be read as the conflict vocabulary: a row
+    // whose conflictKind was (incorrectly) populated with the entity type
+    // string must be refused exactly like a null conflictKind, because
+    // 'CalibrationProfileRevision' is not a member of CalibrationConflictKind.
+    const adapter = new SidecarCalibrationAdapter(
+      capableSidecar([
+        {
+          conflictId: 'conflict-mismatched',
+          profileId: 'profile-1',
+          projectId: 'project-1',
+          entityType: 'CalibrationProfileRevision',
+          conflictKind: 'CalibrationProfileRevision',
+          entityId: 'entity-mismatched',
+          operationId: null,
+          localPayload: null,
+          serverPayload: null,
+          serverRevision: 7,
+          createdAt: '2026-01-01T00:00:00Z',
+        },
+      ]),
+    );
 
-    expect(real).toEqual({ kind: 'projectMetadata', classified: true });
-    expect(fallback.kind).toBe('projectMetadata');
-    expect(
-      fallback.classified,
-      'CalibrationPhoto has no mapping, so classified must be false even ' +
-        'though the displayed kind is indistinguishable from a real one',
-    ).toBe(false);
+    const conflicts = await adapter.listCalibrationConflicts(
+      'profile-1',
+      'project-1',
+    );
+
+    expect(conflicts).toHaveLength(0);
   });
 
-  it('covers every entity type the sync engine can fetch', () => {
+  it('classifies every mapped entity type and refuses every unmapped one', () => {
     // Guards the lists above against the engine growing a case that this file
     // never exercises -- the way an unmapped type slipped through originally.
     const all = [...MAPPED_ENTITY_TYPES, ...UNMAPPED_ENTITY_TYPES];
     expect(new Set(all).size).toBe(all.length);
     for (const entityType of MAPPED_ENTITY_TYPES) {
-      expect(classifyCalibrationConflictKind(entityType).classified).toBe(true);
+      expect(mapCalibrationConflictKind(entityType)).not.toBeNull();
     }
     for (const entityType of UNMAPPED_ENTITY_TYPES) {
-      expect(classifyCalibrationConflictKind(entityType).classified).toBe(
-        false,
-      );
+      expect(mapCalibrationConflictKind(entityType)).toBeNull();
     }
+  });
+
+  it('falsifier: record then list through the real adapter yields a kind in the six-value enum', async () => {
+    const CONFLICT_KINDS = [
+      'projectMetadata',
+      'stepOrdering',
+      'stepDraft',
+      'outcomeSelection',
+      'staleprinterSnapshot',
+      'deletionVsLocalEdit',
+    ];
+
+    const recorded: Record<string, unknown>[] = [];
+    const sidecar = {
+      recordCalibrationConflict: (
+        _profileId: string,
+        _operationId: string,
+        entityType: string,
+        entityId: string,
+        _reason: string,
+        serverRevision: number,
+        conflictKind?: string,
+      ) => {
+        recorded.push({
+          conflictId: `conflict-${entityId}`,
+          profileId: 'profile-1',
+          projectId: 'project-1',
+          entityType,
+          conflictKind: conflictKind ?? null,
+          entityId,
+          operationId: null,
+          localPayload: null,
+          serverPayload: null,
+          serverRevision,
+          createdAt: '2026-01-01T00:00:00Z',
+        });
+        return Promise.resolve();
+      },
+      listCalibrationConflicts: () => Promise.resolve(recorded),
+    } as unknown as SidecarClient;
+
+    const adapter = new SidecarCalibrationAdapter(sidecar);
+
+    // Record through the normal path: classify at record time, exactly as
+    // `calibrationEngine.ts`'s push loop does.
+    const entityType = 'CalibrationProject';
+    await adapter.recordCalibrationConflict('profile-1', 'operation-1', {
+      entityType,
+      entityId: 'project-1',
+      reason: 'server revision moved ahead',
+      serverRevision: 9,
+      conflictKind: mapCalibrationConflictKind(entityType),
+    });
+
+    // Read it back through the IPC contract.
+    const [conflict] = await adapter.listCalibrationConflicts(
+      'profile-1',
+      'project-1',
+    );
+
+    expect(conflict).toBeDefined();
+    expect(CONFLICT_KINDS).toContain(conflict!.kind);
   });
 });

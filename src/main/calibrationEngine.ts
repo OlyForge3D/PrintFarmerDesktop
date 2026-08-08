@@ -48,6 +48,7 @@ import {
   calibrationDiagnostics,
   type CalibrationDiagnosticsStore,
 } from './calibrationDiagnostics.js';
+import { mapCalibrationConflictKind } from './calibrationService.js';
 
 export type CalibrationEngineErrorCode =
   | 'NOT_FOUND'
@@ -147,6 +148,14 @@ export interface CalibrationSidecar {
       entityId: string;
       reason: string;
       serverRevision: number;
+      /**
+       * The ratified conflict kind, classified from `entityType` at record
+       * time (issue #365). `null` when the entity type has no classification
+       * (see `mapCalibrationConflictKind`) -- the store stores that as an
+       * unclassified conflict rather than guessing, and the resolve path
+       * already refuses to resolve it.
+       */
+      conflictKind: string | null;
     },
   ): Promise<void>;
 
@@ -479,7 +488,12 @@ export class CalibrationSyncEngine {
             );
             pushed += 1;
           } else if (result.kind === 'conflict') {
-            // Record typed conflict; do not overwrite server state
+            // Record typed conflict; do not overwrite server state.
+            //
+            // The conflict kind is classified from the entity type *here*, at
+            // record time, and stored alongside it (issue #365). The list
+            // path no longer re-derives a kind from the entity type on read
+            // -- it reads back exactly what this call classified.
             await this.sidecar.recordCalibrationConflict(
               profileId,
               op.operationId,
@@ -488,6 +502,9 @@ export class CalibrationSyncEngine {
                 entityId: result.value.entityId,
                 reason: result.value.reason,
                 serverRevision: result.value.serverRevision,
+                conflictKind: mapCalibrationConflictKind(
+                  result.value.entityType,
+                ),
               },
             );
             conflicts += 1;

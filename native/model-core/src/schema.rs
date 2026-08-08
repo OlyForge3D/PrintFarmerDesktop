@@ -8,7 +8,7 @@
 //! development and tests.
 
 /// Current schema version. Bump when adding a migration.
-pub const SCHEMA_VERSION: u32 = 15;
+pub const SCHEMA_VERSION: u32 = 16;
 
 /// DDL for schema v1. Separates logical model identity (`models`) from physical
 /// files (`model_locations`) and treats duplicates as one model with many
@@ -724,6 +724,25 @@ ALTER TABLE calibration_conflicts ADD COLUMN conflict_kind TEXT;
 ALTER TABLE calibration_conflicts ADD COLUMN resolution_payload TEXT;
 "#;
 
+/// Additive v16 rename disambiguating the two "kind" columns on
+/// `calibration_conflicts` (issue #365).
+///
+/// `kind` never held a conflict kind: `record_calibration_conflict` writes the
+/// *entity type* there (`CalibrationProject`, ...), while `conflict_kind`
+/// (added in v15) carries the ratified six-value conflict vocabulary. Nothing
+/// in either column's name said which was authoritative, so v15 quietly added
+/// a second vocabulary beside the first rather than fixing the read side that
+/// parsed `kind` against the conflict enum -- a parse that failed for every
+/// conflict ever recorded, because no entity type is a member of that enum.
+///
+/// Renaming `kind` to `entity_type` makes the column's actual content its
+/// name, and makes "which column does the contract read" a question with only
+/// one honest answer: `conflict_kind`. It is not a fix for anything reading
+/// `kind` as a conflict kind, because after this migration nothing does.
+pub const SCHEMA_V16: &str = r#"
+ALTER TABLE calibration_conflicts RENAME COLUMN kind TO entity_type;
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -907,6 +926,7 @@ mod tests {
         let migrations = [
             SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
             SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15,
+            SCHEMA_V16,
         ];
         assert_eq!(
             SCHEMA_VERSION as usize,
@@ -957,6 +977,23 @@ mod tests {
             !SCHEMA_V15.to_uppercase().contains("REFERENCES"),
             "a foreign key on provenance would make the deleted predecessor \
              unnameable, which is the case the ruling is about"
+        );
+    }
+
+    #[test]
+    fn calibration_schema_v16_disambiguates_the_two_kind_columns() {
+        // Issue #365: `kind` never held a conflict kind, so the migration
+        // renames it to what it actually stores. After this migration exactly
+        // one column can be read as the ratified conflict vocabulary.
+        assert!(
+            SCHEMA_V16.contains("RENAME COLUMN kind TO entity_type"),
+            "the migration must rename the misnamed column rather than add a \
+             third one"
+        );
+        assert!(
+            !SCHEMA_V16.to_lowercase().contains("conflict_kind"),
+            "v16 only renames kind -> entity_type; conflict_kind already \
+             exists from v15 and must not be touched here"
         );
     }
 }
