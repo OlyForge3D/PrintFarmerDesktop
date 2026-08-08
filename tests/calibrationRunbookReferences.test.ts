@@ -489,15 +489,20 @@ export function definedValues(markdown: string): string[] {
  *
  * Instead, relevance is derived from the runbook's own structure: a known
  * token named in `Diagnose` counts as relevant only if it also **recurs**
- * somewhere else in the same document — in `Trigger`, `Recover`, `Verify` or
- * `If this fails`. Measured against all seven shipped runbooks, every one of
- * them already satisfies this (see the PR description for the token-by-token
- * table), because a runbook's other sections necessarily talk about the same
- * signal Diagnose is supposed to be reading. This is not an allowlist: it is
- * computed fresh from each document's own text and the same emitter-backed
- * vocabulary functions (`knownFieldNames`, `knownDottedNames`,
- * `knownChannels`) used by every other check in this file, so it grows
- * automatically as the vocabulary and the runbooks do.
+ * in one of the other four mandated sections — `Trigger`, `Recover`,
+ * `Verify` or `If this fails` — of the *same* document. The document's title
+ * and intro paragraph, which precede the first `## ` heading, deliberately do
+ * not count: they are free-form prose, not one of the mandated sections, and
+ * counting a recurrence there would let an author satisfy this guard by
+ * mentioning an irrelevant field once in the intro and once in Diagnose.
+ * Every one of the seven shipped runbooks already satisfies this — verified
+ * directly by the loop test below, not merely asserted — because a runbook's
+ * other mandated sections necessarily talk about the same signal Diagnose is
+ * supposed to be reading. This is not an allowlist: it is computed fresh
+ * from each document's own text and the same emitter-backed vocabulary
+ * functions (`knownFieldNames`, `knownDottedNames`, `knownChannels`) used by
+ * every other check in this file, so it grows automatically as the
+ * vocabulary and the runbooks do.
  */
 export function diagnoseRelevance(
   markdown: string,
@@ -519,9 +524,24 @@ export function diagnoseRelevance(
     ];
   };
   const known = [...new Set(knownTokens(sections[diagnoseIndex]!))];
+  // Only the other four mandated sections count as "elsewhere". The chunk at
+  // index 0 is the document's title and intro paragraph, preceding the first
+  // `## ` heading — free-form prose, not one of Trigger/Recover/Verify/If
+  // this fails. Including it would let a token recur once in the intro and
+  // once in Diagnose with no connection to the runbook's actual incident
+  // narrative, reopening exactly the "existential check in disguise" gap
+  // this function exists to close, so it is excluded explicitly rather than
+  // by an "everything but Diagnose" complement.
+  const OTHER_MANDATED_SECTIONS = REQUIRED_SECTIONS.filter(
+    (section) => section !== 'Diagnose',
+  );
   const elsewhere = new Set(
     knownTokens(
-      sections.filter((_, index) => index !== diagnoseIndex).join('\n'),
+      sections
+        .filter((chunk) =>
+          OTHER_MANDATED_SECTIONS.some((section) => chunk.startsWith(section)),
+        )
+        .join('\n'),
     ),
   );
   const relevant = known.filter((token) => elsewhere.has(token));
@@ -652,6 +672,43 @@ const DIAGNOSE_RELEVANT_FIELD = [
   '## If this fails',
   '',
   'Escalate with the record contents.',
+].join('\n');
+
+/**
+ * Regression fixture for the preamble-leak defect caught in review: a token
+ * that recurs only in the document's title/intro paragraph (before the
+ * first `## ` heading) and in Diagnose, with no appearance in Trigger,
+ * Recover, Verify or If this fails. The intro paragraph is free-form prose,
+ * not one of the four mandated sections, so a token recurring only there
+ * must not count as relevant — otherwise an author could satisfy the guard
+ * by mentioning an irrelevant field once in the intro and once in Diagnose,
+ * reopening the exact "existential check in disguise" gap issue #387 is
+ * about.
+ */
+const DIAGNOSE_PREAMBLE_ONLY_RECURRENCE = [
+  '# Planted preamble leak',
+  '',
+  'This intro mentions `correlationId` in passing, which must not count.',
+  '',
+  '## Trigger',
+  '',
+  'Something in the system is broken.',
+  '',
+  '## Diagnose',
+  '',
+  'Read `correlationId` from the record.',
+  '',
+  '## Recover',
+  '',
+  'Restart the affected process.',
+  '',
+  '## Verify',
+  '',
+  'Confirm the process is healthy again.',
+  '',
+  '## If this fails',
+  '',
+  'Escalate to the on-call engineer.',
 ].join('\n');
 
 describe('calibration documentation reference integrity', () => {
@@ -984,5 +1041,24 @@ describe('calibration documentation reference integrity', () => {
       relevant?.relevant,
       'a field that recurs in Trigger/Verify must be reported as relevant',
     ).toContain('sync.failed');
+
+    // Regression for a defect caught in review: a token recurring only in
+    // the document's title/intro paragraph (before the first `## ` heading)
+    // must not count as relevant. That paragraph is free-form prose, not one
+    // of Trigger/Recover/Verify/If this fails, so counting it would let an
+    // author satisfy the guard by mentioning an irrelevant field once in the
+    // intro and once in Diagnose.
+    const preambleLeak = diagnoseRelevance(
+      DIAGNOSE_PREAMBLE_ONLY_RECURRENCE,
+      fields,
+      dotted,
+      channels,
+    );
+    expect(preambleLeak).toBeDefined();
+    expect(preambleLeak?.known).toEqual(['correlationId']);
+    expect(
+      preambleLeak?.relevant,
+      'a token recurring only in the title/intro paragraph, not in Trigger/Recover/Verify/If this fails, must not count as relevant',
+    ).toEqual([]);
   });
 });
