@@ -148,6 +148,18 @@ export const UNENFORCED_CHECKS = {
     'Discharge path: invoke it from whatever performs the merge and treat a ' +
     'non-zero exit as a refusal — at which point it becomes a gate and this ' +
     'entry should be deleted.',
+  'check:stale-checkout-head':
+    'Its judgement IS enforced in CI: tests/staleCheckoutHead.test.ts drives ' +
+    'normalizeSha, classifyHeadFreshness, evaluateControls and formatResult ' +
+    'over plain objects, including both control arms, under `npm run test`. ' +
+    'Its main() answers "is THIS checkout\'s read of THIS branch/PR still ' +
+    'live", which is a question asked by whoever is ABOUT TO USE a shared ' +
+    'checkout at the moment they use it (#473) — not a property of a commit ' +
+    'that a pull_request-triggered workflow could assert about itself, and ' +
+    'the same shape check:required-contexts and check:stacked-base above are ' +
+    'unenforced for. Discharge path: invoke it by hand (or from whatever reads ' +
+    'a shared checkout before quoting a head) whenever a session is about to ' +
+    'report a PR head from a local branch that was not just freshly cloned.',
 };
 
 // `check:citation-reachability` was here, with a four-condition discharge path.
