@@ -40,6 +40,7 @@ import {
   evaluateRefUpdate,
   isAncestor,
   parseStdin,
+  readAssociatedPullRequest,
 } from '../scripts/push-guard.mjs';
 import { originLabel } from '../scripts/safe-force-push.mjs';
 import { HOOKS_PATH } from '../scripts/install-git-hooks.mjs';
@@ -78,6 +79,11 @@ function facts(
     // The stronger one has to be asked for.
     ownershipEvidence: false,
     discarded: [],
+    // `null` matches `gatherFacts`' default for "no PR resolved" — see
+    // `readAssociatedPullRequest`. A fixture asserting the #184 refusal has to
+    // ask for `MERGED` or `CLOSED` explicitly.
+    prState: null,
+    prNumber: null,
     ...overrides,
   };
 }
@@ -439,6 +445,179 @@ describe('the guard refuses direct writes to the branches that take pull request
     );
     expect(acknowledged.verdict).toBe('allow');
     expect(acknowledged.code).toBe('push-guard.acknowledged-delete');
+  });
+});
+
+describe('the guard refuses a push whose PR is already resolved (#184)', () => {
+  // PR #171 merged, then a later push to the branch behind it landed on a live
+  // ref with no PR attached, no CI run, and no reviewer. Every other check in
+  // this file is unmoved by an ordinary fast-forward, which is exactly the
+  // shape that push had — nothing was destroyed, so the guard has to ask a
+  // question none of its other facts answer.
+  it('refuses when the resolved PR is MERGED, naming the PR number', () => {
+    const result = evaluateRefUpdate(
+      update({}),
+      facts({ prState: 'MERGED', prNumber: 171 }),
+    );
+
+    expect(result.verdict).toBe('refuse');
+    expect(result.code).toBe('push-guard.pr-already-resolved');
+    expect(result.message).toContain('#171');
+    expect(result.message).toContain('MERGED');
+    expect(result.message.toLowerCase()).toContain('development');
+  });
+
+  it('refuses when the resolved PR is CLOSED, naming the PR number', () => {
+    const result = evaluateRefUpdate(
+      update({}),
+      facts({ prState: 'CLOSED', prNumber: 42 }),
+    );
+
+    expect(result.verdict).toBe('refuse');
+    expect(result.code).toBe('push-guard.pr-already-resolved');
+    expect(result.message).toContain('#42');
+    expect(result.message).toContain('CLOSED');
+  });
+
+  it('allows a push whose PR is still OPEN', () => {
+    const result = evaluateRefUpdate(
+      update({}),
+      facts({ prState: 'OPEN', prNumber: 171 }),
+    );
+
+    expect(result.verdict).toBe('allow');
+    expect(result.code).toBe('push-guard.fast-forward');
+  });
+
+  it('allows a push when no PR could be resolved at all — absent and unknown are the same fact', () => {
+    // `prState: null` covers BOTH "no PR exists for this branch" and "the `gh`
+    // query could not be answered" (no binary, no credential, no network).
+    // Neither is evidence of a merged/closed PR, so neither refuses.
+    const result = evaluateRefUpdate(
+      update({}),
+      facts({ prState: null, prNumber: null }),
+    );
+
+    expect(result.verdict).toBe('allow');
+  });
+
+  it('does not refuse a branch deletion even when its PR is MERGED — deleting is the hardening this issue asks for, not the hazard', () => {
+    const result = evaluateRefUpdate(
+      update({ localSha: ZERO_SHA }),
+      facts({ prState: 'MERGED', prNumber: 171, ack: THEIRS }),
+    );
+
+    expect(result.verdict).toBe('allow');
+    expect(result.code).toBe('push-guard.acknowledged-delete');
+  });
+
+  it('refuses via the merged-PR check even for a push that would otherwise fast-forward cleanly', () => {
+    // The defining property of the #184 incident: the push was NOT destructive.
+    // A check keyed only on `discarded.length` would never see it.
+    const result = evaluateRefUpdate(
+      update({}),
+      facts({ prState: 'MERGED', prNumber: 171, discarded: [] }),
+    );
+
+    expect(result.verdict).toBe('refuse');
+    expect(result.code).toBe('push-guard.pr-already-resolved');
+  });
+});
+
+describe('readAssociatedPullRequest', () => {
+  it('resolves state and number from gh pr list', () => {
+    const result = readAssociatedPullRequest(
+      'feature',
+      {},
+      (command: string, args: string[]) => {
+        if (args[0] === 'auth')
+          return { status: 0, stdout: 'token\n', stderr: '' };
+        if (args[0] === 'repo') {
+          return { status: 0, stdout: 'o/r\n', stderr: '' };
+        }
+        if (args[0] === 'pr') {
+          return {
+            status: 0,
+            stdout: JSON.stringify([{ number: 171, state: 'MERGED' }]),
+            stderr: '',
+          };
+        }
+        return { status: 1, stdout: '', stderr: 'unexpected' };
+      },
+    );
+
+    expect(result).toEqual({ state: 'MERGED', number: 171 });
+  });
+
+  it('returns null/null when there is no PR for this branch', () => {
+    const result = readAssociatedPullRequest(
+      'feature',
+      {},
+      (command: string, args: string[]) => {
+        if (args[0] === 'auth')
+          return { status: 0, stdout: 'token\n', stderr: '' };
+        if (args[0] === 'repo')
+          return { status: 0, stdout: 'o/r\n', stderr: '' };
+        if (args[0] === 'pr') return { status: 0, stdout: '[]', stderr: '' };
+        return { status: 1, stdout: '', stderr: 'unexpected' };
+      },
+    );
+
+    expect(result).toEqual({ state: null, number: null });
+  });
+
+  it('returns null/null rather than throwing when no credential can be found', () => {
+    const result = readAssociatedPullRequest(
+      'feature',
+      { SKIP_CREDENTIAL_DISCOVERY: '1' },
+      () => {
+        throw new Error('should not be called once no credential is found');
+      },
+    );
+
+    expect(result).toEqual({ state: null, number: null });
+  });
+
+  it('returns null/null rather than throwing when gh fails to run at all', () => {
+    const result = readAssociatedPullRequest(
+      'feature',
+      {},
+      (command: string, args: string[]) => {
+        if (args[0] === 'auth')
+          return { status: 0, stdout: 'token\n', stderr: '' };
+        if (args[0] === 'repo')
+          return { status: 0, stdout: 'o/r\n', stderr: '' };
+        return { error: new Error('ENOENT') };
+      },
+    );
+
+    expect(result).toEqual({ state: null, number: null });
+  });
+
+  it('returns null/null on a response it cannot parse, rather than throwing', () => {
+    const result = readAssociatedPullRequest(
+      'feature',
+      {},
+      (command: string, args: string[]) => {
+        if (args[0] === 'auth')
+          return { status: 0, stdout: 'token\n', stderr: '' };
+        if (args[0] === 'repo')
+          return { status: 0, stdout: 'o/r\n', stderr: '' };
+        if (args[0] === 'pr')
+          return { status: 0, stdout: 'not json', stderr: '' };
+        return { status: 1, stdout: '', stderr: 'unexpected' };
+      },
+    );
+
+    expect(result).toEqual({ state: null, number: null });
+  });
+
+  it('returns null/null for an empty branch name without spawning anything', () => {
+    const result = readAssociatedPullRequest('', {}, () => {
+      throw new Error('should not be called for an empty branch');
+    });
+
+    expect(result).toEqual({ state: null, number: null });
   });
 });
 

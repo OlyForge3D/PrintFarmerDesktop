@@ -64,10 +64,23 @@ export interface PushFacts {
   ownershipEvidence: boolean;
   ack?: string | undefined;
   ackForeign?: string | undefined;
+  /**
+   * State of the pull request whose head is this branch (#184), or `null` when
+   * none could be resolved — either there is no such PR, or the `gh` query
+   * could not be answered at all (no binary, no credential, no network).
+   * Those two cases are collapsed deliberately: neither is evidence of a
+   * merged/closed PR. Optional because the safe default is "unknown", which
+   * never refuses — omitting it can only make the guard more permissive on
+   * THIS check, unlike `ownershipEvidence`.
+   */
+  prState?: 'OPEN' | 'MERGED' | 'CLOSED' | null;
+  /** The PR's number under the same conditions as `prState`. */
+  prNumber?: number | null;
 }
 
 export type GuardCode =
   | 'push-guard.protected-ref'
+  | 'push-guard.pr-already-resolved'
   | 'push-guard.stale-lease'
   | 'push-guard.unfetched-remote-tip'
   | 'push-guard.unverified-fast-forward'
@@ -104,6 +117,20 @@ export function readLiveRemoteSha(
   location?: string,
 ): string | null;
 export function readPushUrl(remote: string): string;
+export function readAssociatedPullRequest(
+  branch: string,
+  env?: NodeJS.ProcessEnv,
+  run?: (
+    command: string,
+    args: string[],
+    options?: unknown,
+  ) => {
+    status?: number | null;
+    stdout?: string;
+    stderr?: string;
+    error?: Error;
+  },
+): { state: 'OPEN' | 'MERGED' | 'CLOSED' | null; number: number | null };
 export function isAncestor(
   ancestor: string,
   descendant: string,
