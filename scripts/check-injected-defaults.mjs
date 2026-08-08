@@ -119,8 +119,11 @@
  * condition made checkable, offered as exactly that.
  *
  * It is also static. A default reached only through `spawnSync` of the script,
- * or through a re-export chain, is invisible here and will be reported
- * unreachable. Both are over-reports, in the direction chosen above.
+ * through a re-export chain, or through a renamed/re-assigned local alias of
+ * the root (`import { main as run } from './m.mjs'; run();`), is invisible
+ * here and will be reported unreachable. All three are over-reports, in the
+ * direction chosen above — see the note on `findCallSites` for why alias
+ * tracking was tried and deliberately reverted.
  */
 
 import { readFileSync } from 'node:fs';
@@ -258,37 +261,10 @@ export function importedFrom(ast, suitePath, modulePath) {
  * renamed import.
  *
  * `import { main as run } from './m.mjs'; run();` calls `main` under the
- * local name `run` — Ripley's review of #549 found that `findCallSites`
- * matched only the literal identifier `rootName`, so this call site was
- * invisible to it and a root the suite plainly does call was reported as
- * never driven. `rootName` itself is always included, which preserves the
- * direct, unaliased match this tool has always made — including the case
- * where the suite calls it without importing it at all (e.g. a same-file
- * fixture in this suite), which is not this function's business to police.
+ * local name `run`. Tried and DELIBERATELY REVERTED: see the note on
+ * `findCallSites` for why a flat name-based alias set is the wrong shape for
+ * this and was pulled out again.
  */
-export function resolveCallNames(ast, suitePath, modulePath, rootName) {
-  const target = path.resolve(modulePath);
-  const fromDir = path.dirname(path.resolve(suitePath));
-  const names = new Set([rootName]);
-  for (const node of ast.body) {
-    if (node.type !== 'ImportDeclaration') continue;
-    const specifier = node.source.value;
-    if (typeof specifier !== 'string' || !specifier.startsWith('.')) continue;
-    if (path.resolve(fromDir, specifier) !== target) continue;
-    for (const one of node.specifiers ?? []) {
-      if (
-        one.type === 'ImportSpecifier' &&
-        one.imported?.type === 'Identifier' &&
-        one.imported.name === rootName &&
-        one.local?.type === 'Identifier'
-      ) {
-        names.add(one.local.name);
-      }
-    }
-  }
-  return names;
-}
-
 /** The exported function `rootName`, or null. */
 export function findCompositionRoot(ast, rootName) {
   let found = null;
@@ -388,10 +364,27 @@ export function uniqueObjectBindings(ast) {
 }
 
 /**
- * Every call of any name in `names`, with the keys its argument supplies.
- * The underlying resolver `findCallSites` calls this with the single-name
- * set `{ rootName }`; `analyse` calls it with `resolveCallNames`'s wider set
- * so a renamed import's call site is not invisible to it (#549 / Ripley).
+ * Every call of `rootName`, by its literal identifier only, with the keys its
+ * argument supplies.
+ *
+ * Ripley's review of #549 found that this only matches the literal
+ * identifier `rootName`, so a renamed import (`import { main as run } from
+ * './m.mjs'; run();`) is invisible to it: the call is real, but the
+ * unaliased match here does not see it. A `resolveCallNames`/aliased-set
+ * variant was tried against that finding and reverted — Ripley's own
+ * follow-up review (a transitive `const alsoRun = run; alsoRun();` alias hop
+ * the wider set still missed) and Vasquez's follow-up (a local `const run =
+ * () => {}` REDECLARATION after `import { main as run }`, which the flat
+ * name set could not tell apart from the import and so counted as DRIVEN
+ * when `main` is never actually called) both showed that a name-based alias
+ * set cannot be partially correct here: it either needs full scope-aware
+ * binding resolution (tracking, for every identifier, which declaration it
+ * currently resolves to at the point of each call — a small type-checker,
+ * not a tool addition) or it reproduces the exact false-clean failure this
+ * file exists to prevent. The literal-name match over-reports an aliased
+ * call as unreachable — the same accepted, documented direction as the
+ * `spawnSync`/re-export-chain limitations above — rather than under-report a
+ * shadowed rebind as driven.
  *
  * resolution:
  *   'none'       called with no argument   -> every default runs
@@ -399,13 +392,13 @@ export function uniqueObjectBindings(ast) {
  *   'indirect'   an identifier or `x.y` resolved to a unique object literal
  *   'unresolved' anything else             -> settles nothing, in either direction
  */
-export function findCallSitesForNames(ast, names) {
+export function findCallSites(ast, rootName) {
   const bindings = uniqueObjectBindings(ast);
   const sites = [];
   walk(ast, (node) => {
     if (node.type !== 'CallExpression') return;
     const callee = node.callee;
-    if (!(callee.type === 'Identifier' && names.has(callee.name))) return;
+    if (!(callee.type === 'Identifier' && callee.name === rootName)) return;
     const line = node.loc?.start?.line ?? null;
     if (node.arguments.length === 0) {
       sites.push({ line, resolution: 'none', keys: new Set() });
@@ -443,11 +436,6 @@ export function findCallSitesForNames(ast, names) {
     );
   });
   return sites;
-}
-
-/** Every call of `rootName` alone, by its literal identifier. */
-export function findCallSites(ast, rootName) {
-  return findCallSitesForNames(ast, new Set([rootName]));
 }
 
 /**
@@ -603,8 +591,7 @@ export function analyse({
     throw new Error(`${rootName} is not defined in ${moduleFile}`);
   }
   const defaults = readInjectedDefaults(rootNode);
-  const callNames = resolveCallNames(suiteAst, suiteFile, moduleFile, rootName);
-  const sites = findCallSitesForNames(suiteAst, callNames);
+  const sites = findCallSites(suiteAst, rootName);
   if (sites.length === 0 && defaults.length === 0) {
     // #549: `rootName` exists — it parsed, it has a body — but the suite has
     // zero call sites that reach it, AND the root injects no defaults at all.

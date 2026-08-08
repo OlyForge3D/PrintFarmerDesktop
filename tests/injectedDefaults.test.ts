@@ -16,7 +16,6 @@ import {
   classifyDefaults,
   exitCodeFor,
   findCallSites,
-  findCallSitesForNames,
   findCompositionRoot,
   formatResult,
   importedFrom,
@@ -25,7 +24,6 @@ import {
   parseArgs,
   parseSource,
   readInjectedDefaults,
-  resolveCallNames,
   runMain,
   uniqueObjectBindings,
 } from '../scripts/check-injected-defaults.mjs';
@@ -286,56 +284,32 @@ describe('the import surface is matched by resolved path, not by specifier text'
   });
 });
 
-describe('resolveCallNames finds the local alias a renamed import binds the root to (#549 / Ripley)', () => {
-  it('always includes the root name itself, unaliased', () => {
-    const ast = parseSource("import { main } from './m.mjs';\nmain();", 's.ts');
-    const names = resolveCallNames(ast, 'tests/s.ts', 'tests/m.mjs', 'main');
-    expect([...names]).toEqual(['main']);
-  });
-
-  it('adds the local alias when the root is imported under a different name', () => {
+describe('findCallSites matches the root only by its literal identifier — an aliased import call is a documented over-report, not a bug (#549 / #641)', () => {
+  // Ripley's review of #641 found that an aliased import call
+  // (`import { main as run } from './m.mjs'; run();`) was invisible to
+  // findCallSites, and a `resolveCallNames`/aliased-name-set fix was tried
+  // against that finding. Two follow-up rounds of review — Ripley's own
+  // `const alsoRun = run; alsoRun();` transitive-alias miss, and Vasquez's
+  // `const run = () => {};` shadowing-rebind false positive — showed a flat
+  // name set cannot be partially correct: it needs full scope-aware binding
+  // resolution or it reproduces the exact false-clean failure this file
+  // exists to prevent. The fix was reverted; this is the resulting, accepted
+  // behaviour, in the same "over-report over under-report" direction as the
+  // existing `spawnSync`/re-export-chain limitations documented in the file
+  // banner.
+  it('an aliased call to the root is not seen — findCallSites reports zero sites for it', () => {
     const ast = parseSource(
       "import { main as run } from './m.mjs';\nrun();",
       's.ts',
     );
-    const names = resolveCallNames(ast, 'tests/s.ts', 'tests/m.mjs', 'main');
-    expect([...names].sort()).toEqual(['main', 'run']);
+    expect(findCallSites(ast, 'main')).toEqual([]);
   });
 
-  it('NEGATIVE CONTROL: an alias of a DIFFERENT export is not added', () => {
-    // Without this, the arm above could be satisfied by adding every local
-    // alias in the suite regardless of which export it renames.
-    const ast = parseSource(
-      "import { other as run } from './m.mjs';\nrun();",
-      's.ts',
-    );
-    const names = resolveCallNames(ast, 'tests/s.ts', 'tests/m.mjs', 'main');
-    expect([...names]).toEqual(['main']);
-  });
-
-  it('NEGATIVE CONTROL: an aliased import from a DIFFERENT module is not added', () => {
-    const ast = parseSource(
-      "import { main as run } from './other.mjs';\nrun();",
-      's.ts',
-    );
-    const names = resolveCallNames(ast, 'tests/s.ts', 'tests/m.mjs', 'main');
-    expect([...names]).toEqual(['main']);
-  });
-});
-
-describe('findCallSitesForNames matches a call under any name in the set, and findCallSites is the single-name case', () => {
-  it('finds a call under a second name in the set that the first name does not match', () => {
-    const ast = parseSource('run();', 's.ts');
-    expect(findCallSitesForNames(ast, new Set(['main', 'run']))).toEqual([
-      { line: 1, resolution: 'none', keys: new Set() },
-    ]);
-  });
-
-  it('findCallSites(ast, rootName) is exactly findCallSitesForNames(ast, {rootName})', () => {
+  it('a direct, unaliased call to the root is still seen (no regression)', () => {
     const ast = parseSource('main({ a: 1 });', 's.ts');
-    expect(findCallSites(ast, 'main')).toEqual(
-      findCallSitesForNames(ast, new Set(['main'])),
-    );
+    expect(findCallSites(ast, 'main')).toEqual([
+      { line: 1, resolution: 'literal', keys: new Set(['a']) },
+    ]);
   });
 });
 
@@ -888,14 +862,22 @@ describe('A WRONG-BUT-EXISTING ROOT IS NOT INDISTINGUISHABLE FROM A CLEAN ONE (#
     expect(exitCodeFor(result.classified)).toBe(EXIT_RELOCATED);
   });
 
-  it('ALIASED-IMPORT REGRESSION (Ripley review on #641): a renamed import of the root is still recognised as a call site, not reported as never-driven', () => {
+  it('ALIASED-IMPORT LIMITATION (Ripley review on #641), DOCUMENTED OVER-REPORT: a renamed import call to the root is not recognised as a call site, and is reported UNREACHABLE rather than DRIVEN', () => {
     // Ripley's review found that findCallSites matched only the literal
     // identifier `rootName`, so `import { main as run } from './m.mjs'; run()`
     // — the suite plainly driving `main` under a local alias — was invisible
-    // to it: sites.length was 0, defaults.length was > 0 (the `a = impl`
-    // default), and the tool reported UNREACHABLE / a false rejection instead
-    // of recognising the call. Renaming --root was impossible advice, because
-    // `run` is not a name that exists in the module at all.
+    // to it. A fix (`resolveCallNames`, a flat name-based alias set) was
+    // tried and then reverted: Ripley's own follow-up review found a further
+    // alias hop (`const alsoRun = run; alsoRun();`) the wider set still
+    // missed, and Vasquez's follow-up found a local shadowing rebind
+    // (`const run = () => {};` after the same import) that the flat set
+    // wrongly counted as DRIVEN even though `main` is never called. Closing
+    // this class of gap needs scope-aware binding resolution, not a name
+    // set — see the note on `findCallSites` in the source file. Until that
+    // exists, an aliased call is a documented, deliberate over-report, in the
+    // same direction as the `spawnSync`/re-export-chain limitations already
+    // in the file banner: UNREACHABLE / EXIT_RELOCATED, not a false DRIVEN
+    // and not a false ROOT_NOT_DRIVEN either.
     const result = analyse({
       moduleFile: 'm.mjs',
       suiteFile: 'm.test.ts',
@@ -906,35 +888,20 @@ describe('A WRONG-BUT-EXISTING ROOT IS NOT INDISTINGUISHABLE FROM A CLEAN ONE (#
         'm.test.ts': "import { main as run } from './m.mjs';\nrun();",
       }),
     });
-    expect(result.sites.length).toBe(1);
-    expect(verdictFor(result.classified, 'a')).toBe(VERDICT_DRIVEN);
-    expect(exitCodeFor(result.classified)).toBe(EXIT_OK);
-  });
-
-  it('ALIASED-IMPORT REGRESSION, NEGATIVE CONTROL: an alias of an unrelated import is not mistaken for a call to the root', () => {
-    // Without this, the arm above could be satisfied by a resolver that
-    // treats EVERY local alias in the suite as a name for the root, which
-    // would manufacture false DRIVEN verdicts out of unrelated calls — the
-    // exact overclaiming direction this file's own banner argues against.
-    const result = analyse({
-      moduleFile: 'm.mjs',
-      suiteFile: 'm.test.ts',
-      rootName: 'main',
-      readFile: sourcesOf({
-        'm.mjs':
-          'export function other() {}\nfunction impl() {}\nexport function main({ a = impl } = {}) {}',
-        'm.test.ts': "import { other as run } from './m.mjs';\nrun();",
-      }),
-    });
     expect(result.sites.length).toBe(0);
     expect(verdictFor(result.classified, 'a')).toBe(VERDICT_UNREACHABLE);
     expect(exitCodeFor(result.classified)).toBe(EXIT_RELOCATED);
   });
 
-  it('ALIASED-IMPORT REGRESSION, THIRD ARM: an aliased import from a DIFFERENT module is not mistaken for a call to this one', () => {
-    // resolveCallNames resolves the import specifier by path, exactly like
-    // importedFrom already does. This pins that a same-named export from a
-    // different file does not leak into the alias set.
+  it('SHADOWING-REBIND NEGATIVE CONTROL (Vasquez review on #641): a local redeclaration of an aliased import name must NOT be counted as DRIVEN', () => {
+    // Vasquez's finding, pinned directly: a name-based alias set cannot tell
+    // "this identifier is still bound to the import" apart from "this
+    // identifier was later rebound to something else". Because findCallSites
+    // never tracked aliases at all after the revert, this shape was never at
+    // risk of the false-DRIVEN failure Vasquez found — the call is invisible
+    // either way, and the (unrelated) default correctly reports UNREACHABLE.
+    // This test exists to pin that guarantee going forward: whatever alias
+    // handling is added in the future must keep this negative control green.
     const result = analyse({
       moduleFile: 'm.mjs',
       suiteFile: 'm.test.ts',
@@ -942,10 +909,10 @@ describe('A WRONG-BUT-EXISTING ROOT IS NOT INDISTINGUISHABLE FROM A CLEAN ONE (#
       readFile: sourcesOf({
         'm.mjs':
           'function impl() {}\nexport function main({ a = impl } = {}) {}',
-        'm.test.ts': "import { main as run } from './other.mjs';\nrun();",
+        'm.test.ts':
+          "import { main as run } from './m.mjs';\nconst run = () => {};\nrun();",
       }),
     });
-    expect(result.sites.length).toBe(0);
     expect(verdictFor(result.classified, 'a')).toBe(VERDICT_UNREACHABLE);
     expect(exitCodeFor(result.classified)).toBe(EXIT_RELOCATED);
   });
