@@ -206,6 +206,33 @@
 // is a judgement call, not a proof of completeness, and is open to
 // reconsideration if a further round finds another equivalent-class
 // bypass.
+//
+// A FOURTH REVIEW ROUND CONFIRMED ALL ROUND-3 FIXES AND FOUND TWO MORE
+// FINDINGS, BOTH THE SAME ROOT SHAPE -- Ralph explicitly asked both
+// reviewers to weigh proportionality (this gate is non-required,
+// defense-in-depth) and only block on material, easily-discoverable gaps.
+// Both did, and both findings turned out to be one missing step rather than
+// two more shapes to enumerate:
+//
+//   Vasquez (round 4): `node ./node_modules/.bin/vitest run -t x` -- an
+//   ordinary way to invoke a locally installed CLI -- was not recognised as
+//   a direct invocation, because the round-3 fix compared the invoked
+//   program token EXACTLY against `vitest`/`vitest.mjs` rather than by its
+//   basename.
+//
+//   Ripley (round 4): `echo '...' | /bin/bash` was not recognised as piping
+//   into an interpreter, while `| bash` was -- the identical gap, on the
+//   interpreter side of the pipeline check instead of the vitest side.
+//
+// Both are fixed by the same change: `resolveInvokedProgramBasename`
+// normalises to a basename before ANY program/interpreter identity
+// comparison in this file (vitest itself, a launcher, or a pipeline's
+// interpreter stage), instead of each comparison doing its own ad hoc
+// exact-match. This also picks up `env` (itself a launcher that takes more
+// assignments/flags before naming the real program, e.g.
+// `/usr/bin/env bash`, `env NODE_ENV=production vitest run`) for free,
+// since it is now just one more thing the shared resolver understands
+// rather than a third comparison site to patch separately.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
@@ -298,35 +325,84 @@ export function detectNarrowingFlag(tokens) {
  * `FOO=bar` environment assignments), or the token immediately after a
  * known launcher (`npx`, `node`, `pnpm`, `yarn`) that takes the real
  * program as its own next argument.
+ *
+ * Vasquez (review of this PR, round 4): even that fix compared the invoked
+ * program token EXACTLY, so a path-qualified vitest binary --
+ * `node ./node_modules/.bin/vitest run -t x`, an entirely ordinary way to
+ * invoke a locally installed CLI -- was not recognised (the token is
+ * `./node_modules/.bin/vitest`, not the bare word `vitest`). Ripley
+ * (round 4) found the same root shape from the other side:
+ * `echo '...' | /bin/bash` is not recognised as piping into an interpreter,
+ * while `| bash` is, because the interpreter check was ALSO an exact-token
+ * comparison. Both are the identical gap: program/interpreter identity was
+ * never basename-normalised. `resolveInvokedProgramBasename` fixes this
+ * once, in one place, for every comparison in this file that asks "which
+ * program is this" -- vitest itself, a launcher (`npx`/`node`/...), and a
+ * pipeline's interpreter stage all go through it, plus a launcher form this
+ * fix picks up for free: `env`, which itself accepts more `FOO=bar`
+ * assignments and flags before naming the real program
+ * (`/usr/bin/env bash`, `env NODE_ENV=production vitest run`).
  */
 export function isDirectVitestInvocation(tokens) {
-  let i = 0;
-  while (
-    i < tokens.length &&
-    typeof tokens[i] === 'string' &&
-    /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])
-  ) {
-    i += 1; // skip leading `FOO=bar` environment-variable assignments
-  }
-  const program = tokens[i];
-  if (isVitestProgramToken(program)) return true;
-  if (typeof program === 'string' && VITEST_LAUNCHERS.has(program)) {
-    return isVitestProgramToken(tokens[i + 1]);
+  const { index, basename } = resolveInvokedProgramBasename(tokens);
+  if (isVitestBasename(basename)) return true;
+  if (basename !== undefined && VITEST_LAUNCHERS.has(basename)) {
+    return isVitestProgramToken(tokens[index + 1]);
   }
   return false;
 }
 
 const VITEST_LAUNCHERS = new Set(['npx', 'node', 'pnpm', 'yarn']);
+const ENV_LAUNCHER = 'env';
+const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/**
+ * The last path segment of a token, using it as a bare program name would
+ * be used -- `/bin/bash` and `bash` name the same program, and neither this
+ * file nor a shell cares which one was typed. Works for both `/`- and
+ * `\`-separated paths so a Windows-style path behaves the same way.
+ */
+function basenameOf(token) {
+  if (typeof token !== 'string') return undefined;
+  const normalised = token.replaceAll('\\', '/');
+  const idx = normalised.lastIndexOf('/');
+  return idx === -1 ? normalised : normalised.slice(idx + 1);
+}
+
+function isVitestBasename(basename) {
+  return basename === 'vitest' || basename === 'vitest.mjs';
+}
+
+/**
+ * Find the token that names the actual invoked program in a tokenised
+ * command, skipping constructs that only launch another program rather
+ * than being the program themselves: leading `FOO=bar` environment
+ * assignments, and the `env` command itself (which, in turn, accepts more
+ * `FOO=bar` assignments and flags like `-i`/`-u` before naming the real
+ * program it runs). Returns both the token's own INDEX (so a caller can
+ * still look at what follows it, e.g. a launcher's own argument) and its
+ * basename (so identity comparisons are path-qualification-proof).
+ */
+function resolveInvokedProgramBasename(tokens) {
+  let i = 0;
+  while (i < tokens.length && ENV_ASSIGNMENT.test(String(tokens[i] ?? ''))) {
+    i += 1;
+  }
+  if (basenameOf(tokens[i]) === ENV_LAUNCHER) {
+    i += 1;
+    while (
+      i < tokens.length &&
+      typeof tokens[i] === 'string' &&
+      (ENV_ASSIGNMENT.test(tokens[i]) || tokens[i].startsWith('-'))
+    ) {
+      i += 1;
+    }
+  }
+  return { index: i, basename: basenameOf(tokens[i]) };
+}
 
 function isVitestProgramToken(token) {
-  if (typeof token !== 'string') return false;
-  if (token === 'vitest') return true;
-  const normalised = token.replaceAll('\\', '/');
-  return (
-    normalised === 'vitest.mjs' ||
-    normalised.endsWith('/vitest.mjs') ||
-    normalised.endsWith('/vitest/vitest.mjs')
-  );
+  return isVitestBasename(basenameOf(token));
 }
 
 const TEST_SCRIPT_NAME = /^test(:.*)?$/;
@@ -571,10 +647,12 @@ export function detectWrappedNarrowing(rawText) {
   if (typeof rawText !== 'string') return null;
   if (!/\bvitest\b/.test(rawText)) return null;
 
-  const leadingToken = tokenizeCommand(rawText)[0];
+  const { basename: leadingBasename } = resolveInvokedProgramBasename(
+    tokenizeCommand(rawText),
+  );
   if (
-    typeof leadingToken === 'string' &&
-    OUTPUT_ONLY_COMMANDS.has(leadingToken)
+    leadingBasename !== undefined &&
+    OUTPUT_ONLY_COMMANDS.has(leadingBasename)
   ) {
     return null;
   }
@@ -617,6 +695,16 @@ export function detectWrappedNarrowing(rawText) {
  * wrapped) on whatever text was being printed, exactly as if that text had
  * been the command all along -- because, once piped to an interpreter, it
  * is.
+ *
+ * Ripley (review of this PR, round 4): `echo '...' | /bin/bash` was not
+ * recognised -- only a bare `bash` was, because the interpreter stage was
+ * compared exactly rather than by its basename, the identical gap Vasquez
+ * found the same round in `isDirectVitestInvocation`. Both the interpreter
+ * check and the first stage's own program check now go through
+ * `resolveInvokedProgramBasename`, the same shared, basename-normalising
+ * resolver `isDirectVitestInvocation` uses -- one fix for one root cause,
+ * not two separate patches for what is the same gap seen from two call
+ * sites.
  */
 function detectNarrowingThroughPipeline(rawCommand) {
   if (typeof rawCommand !== 'string' || !rawCommand.includes('|')) {
@@ -629,24 +717,22 @@ function detectNarrowingThroughPipeline(rawCommand) {
   if (stages.length < 2) return null;
 
   const pipesIntoInterpreter = stages.slice(1).some((stage) => {
-    const program = tokenizeCommand(stage)[0];
-    return typeof program === 'string' && STDIN_INTERPRETERS.has(program);
+    const { basename } = resolveInvokedProgramBasename(tokenizeCommand(stage));
+    return basename !== undefined && STDIN_INTERPRETERS.has(basename);
   });
   if (!pipesIntoInterpreter) return null;
 
   const firstStageTokens = tokenizeCommand(stages[0]);
-  const firstProgram = firstStageTokens[0];
-  if (
-    typeof firstProgram !== 'string' ||
-    !OUTPUT_ONLY_COMMANDS.has(firstProgram)
-  ) {
+  const { index: firstIndex, basename: firstBasename } =
+    resolveInvokedProgramBasename(firstStageTokens);
+  if (firstBasename === undefined || !OUTPUT_ONLY_COMMANDS.has(firstBasename)) {
     // The first stage isn't a plain "produce text" command, so there is no
     // printed argument to recover here; `detectNarrowing`'s other checks
     // (direct invocation, wrapped-call forms) already run on the full text
     // independently of this function.
     return null;
   }
-  const printedArgument = firstStageTokens.slice(1).join(' ');
+  const printedArgument = firstStageTokens.slice(firstIndex + 1).join(' ');
   return detectNarrowing(printedArgument, { requireDirectInvocation: false });
 }
 

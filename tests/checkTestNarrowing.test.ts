@@ -156,6 +156,30 @@ describe('isDirectVitestInvocation', () => {
       isDirectVitestInvocation(tokenizeCommand('CI=true vitest run -t x')),
     ).toBe(true);
   });
+
+  it('POSITIVE CONTROL (Vasquez, review of this PR, round 4): recognises a path-qualified vitest binary, not just the bare word', () => {
+    // node ./node_modules/.bin/vitest is an entirely ordinary way to invoke
+    // a locally installed CLI. Round 3's fix compared the invoked program
+    // token EXACTLY against `vitest`/`vitest.mjs`, so a path-qualified form
+    // of the bare binary (as opposed to the already-handled
+    // `.../vitest/vitest.mjs` case) was still missed.
+    expect(
+      isDirectVitestInvocation(
+        tokenizeCommand('node ./node_modules/.bin/vitest run -t x'),
+      ),
+    ).toBe(true);
+  });
+
+  it('recognises vitest launched through `env`, including env assignments and flags before it', () => {
+    expect(
+      isDirectVitestInvocation(
+        tokenizeCommand('env NODE_ENV=production vitest run -t x'),
+      ),
+    ).toBe(true);
+    expect(
+      isDirectVitestInvocation(tokenizeCommand('/usr/bin/env vitest run -t x')),
+    ).toBe(true);
+  });
 });
 
 describe('HOME 1: package.json test/test:* scripts', () => {
@@ -692,6 +716,47 @@ describe('HOME 2: workflows invoking vitest directly', () => {
       "        run: echo \"spawnSync('vitest',['run','-t','only this arm']) is forbidden\" | cat",
     ].join('\n');
     expect(checkWorkflowText('ci.yml', contents)).toEqual([]);
+  });
+
+  it('POSITIVE CONTROL (Ripley, review of this PR, round 4): refuses a narrowing printed by echo and piped into a path-qualified interpreter', () => {
+    // Same shape as the round-3 control above, but `sh` is invoked by its
+    // full path (`/bin/bash`) rather than the bare word -- an entirely
+    // ordinary way to invoke a shell, and the round-3 fix compared the
+    // pipeline stage's program EXACTLY against STDIN_INTERPRETERS, so this
+    // slipped past.
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: echo \'vitest run -t "only this arm"\' | /bin/bash',
+    ].join('\n');
+    const violations = checkWorkflowText('ci.yml', contents);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('POSITIVE CONTROL (Vasquez, review of this PR, round 4): recognises a direct workflow invocation of a path-qualified vitest binary', () => {
+    // node ./node_modules/.bin/vitest is a fairly ordinary way to invoke a
+    // locally installed CLI from a workflow step, not an exotic corner case.
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: node ./node_modules/.bin/vitest run -t "only this arm"',
+    ].join('\n');
+    const violations = checkWorkflowText('ci.yml', contents);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '-t',
+      value: 'only this arm',
+    });
   });
 
   it('POSITIVE CONTROL (Ripley, review of this PR, round 3): reads a folded block scalar header with a chomping indicator and trailing comment', () => {
