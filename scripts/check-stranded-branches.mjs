@@ -10,12 +10,27 @@
 // about our own work.
 //
 // THE MEASUREMENT, precisely: for each local branch, which of its commits are
-// NOT an ancestor of any ref under refs/remotes/*? That is `git rev-list
-// <branch> --not --remotes` — reachability per commit, exactly as the issue's
-// own verification did (`git branch -r --contains <sha>`), not a comparison
-// of branch names. A branch named `feature` with a remote `origin/feature`
-// that is merely behind is not what this measures; a branch (named anything)
-// whose HEAD commit is unreachable from every remote ref is.
+// NOT an ancestor of any ref under refs/remotes/<remote>/*? That is `git
+// rev-list <branch> --not --remotes=<remote>` — reachability per commit,
+// scoped to the one remote this repo is actually configured with (`origin`).
+// A branch named `feature` with a remote `origin/feature` that is merely
+// behind is not what this measures; a branch (named anything) whose HEAD
+// commit is unreachable from every `origin` ref is.
+//
+// #289: an earlier version of this script scanned all of `refs/remotes`
+// (every namespace) and excluded via bare `--not --remotes` (every
+// remote-tracking ref, from any namespace). On a worktree carrying leftover
+// `pr/*`, `prns/*`, `probe*/*` refs from earlier fetch refspecs — none of
+// which correspond to a remote in `git remote -v` — that let a commit read
+// as "reachable, not stranded" off a local file with no server behind it.
+// The fix scopes both the count and the exclusion set to
+// `refs/remotes/${DEFAULT_REMOTE}` (via `for-each-ref refs/remotes/<remote>`
+// and `--remotes=<remote>`, matching git's own `<pattern>/*` expansion for
+// `--remotes=<pattern>`), and prunes that remote first so a branch deleted on
+// the server does not still count as "published" from a stale local ref —
+// exactly the correctly-scoped test the issue proposes:
+//   git fetch origin --prune
+//   git for-each-ref --contains <sha> --format='%(refname)' refs/remotes/origin
 //
 // THE FALSIFIER (#543, and repeated stronger in the follow-up comment):
 // deliberately create a local commit on a branch with no remote ref and
@@ -26,11 +41,12 @@
 // against a real repository, plus a positive control (a branch fully pushed
 // reports clean) and a control on the instrument itself (below).
 //
-// FAIL-CLOSED, not fail-silent: if this clone's `refs/remotes/*` namespace is
-// empty, `--not --remotes` excludes nothing, and EVERY local commit would
-// read as "stranded" — a false positive from an empty exclusion set, not a
-// true finding about unpushed work. That state is reported UNDETERMINED, not
-// clean and not a flood of findings; see `evaluateRemoteRefPresence`.
+// FAIL-CLOSED, not fail-silent: if this clone's `refs/remotes/<remote>`
+// namespace is empty, `--not --remotes=<remote>` excludes nothing, and EVERY
+// local commit would read as "stranded" — a false positive from an empty
+// exclusion set, not a true finding about unpushed work. That state is
+// reported UNDETERMINED, not clean and not a flood of findings; see
+// `evaluateRemoteRefPresence`.
 //
 // SCOPE, deliberately: this reports existence (a commit unreachable from any
 // remote ref), not value. The issue's own follow-up comment found that of
@@ -49,6 +65,13 @@ import { pathToFileURL } from 'node:url';
 export const EXIT_CLEAN = 0;
 export const EXIT_STRANDED = 1;
 export const EXIT_UNDETERMINED = 2;
+
+// #289: the only remote this repo is actually configured with. Scoping to
+// this name (rather than scanning every `refs/remotes/*` namespace or
+// excluding via every remote-tracking ref regardless of namespace) is the
+// difference between "published to a server we track" and "some local file
+// under a name that looks like a remote."
+export const DEFAULT_REMOTE = 'origin';
 
 const RECORD_SEPARATOR = '\x1f';
 const UNIT_SEPARATOR = '\x1e';
@@ -99,30 +122,36 @@ export function listLocalBranches(cwd) {
 }
 
 /**
- * Whether this clone has ANY remote-tracking ref at all. `--not --remotes`
- * excludes nothing when this is empty, which would make every local commit
- * on every branch read "stranded" — a false positive from an unfetched or
- * remote-less clone, not a finding about unpushed work. This is the control
- * that keeps the instrument from firing on a tree it cannot actually
- * evaluate.
+ * Whether this clone has ANY ref under `refs/remotes/<remote>` at all.
+ * `--not --remotes=<remote>` excludes nothing when this is empty, which
+ * would make every local commit on every branch read "stranded" — a false
+ * positive from an unfetched or remote-less clone, not a finding about
+ * unpushed work. This is the control that keeps the instrument from firing
+ * on a tree it cannot actually evaluate.
  */
-export function evaluateRemoteRefPresence(remoteRefCount) {
+export function evaluateRemoteRefPresence(remoteRefCount, remote = DEFAULT_REMOTE) {
   if (remoteRefCount > 0) {
     return { ok: true };
   }
   return {
     ok: false,
     reason:
-      'no refs/remotes/* found in this clone. `--not --remotes` would then ' +
-      'exclude nothing, and every local commit would read as stranded — a ' +
-      'false positive from an empty exclusion set, not a finding about ' +
-      'unpushed work. Fetch at least one remote (`git fetch --all`) before ' +
-      'running this check.',
+      `no refs/remotes/${remote}/* found in this clone. ` +
+      `\`--not --remotes=${remote}\` would then exclude nothing, and every ` +
+      'local commit would read as stranded — a false positive from an ' +
+      `empty exclusion set, not a finding about unpushed work. Fetch ` +
+      `${remote} (\`git fetch ${remote} --prune\`) before running this check.`,
   };
 }
 
-export function countRemoteRefs(cwd) {
-  const result = git(['for-each-ref', 'refs/remotes'], {
+/**
+ * #289: scoped to `refs/remotes/<remote>` — a single configured remote's
+ * namespace — not the bare `refs/remotes` that also counts leftover
+ * `pr`, `prns`, `probe`-family namespaces holding refs from earlier fetch
+ * refspecs that correspond to no remote in `git remote -v`.
+ */
+export function countRemoteRefs(cwd, remote = DEFAULT_REMOTE) {
+  const result = git(['for-each-ref', `refs/remotes/${remote}`], {
     cwd,
     allowFailure: true,
   });
@@ -130,6 +159,23 @@ export function countRemoteRefs(cwd) {
     return 0;
   }
   return result.stdout.split('\n').filter((line) => line.trim() !== '').length;
+}
+
+/**
+ * #289's proposed correctly-scoped test prunes before checking: `git fetch
+ * origin --prune` removes local `refs/remotes/origin/*` entries for branches
+ * already deleted on the server, so a commit whose only "publication" is a
+ * stale local ref is not mistaken for one that is actually reachable from
+ * `origin` today. Best-effort: a network-less environment (or a `remote`
+ * that does not exist) must not abort the whole check, so failures here are
+ * swallowed and the check proceeds against whatever `refs/remotes/<remote>`
+ * already holds.
+ */
+export function pruneRemote(cwd, remote = DEFAULT_REMOTE) {
+  return git(['fetch', '--quiet', remote, '--prune'], {
+    cwd,
+    allowFailure: true,
+  });
 }
 
 const ISSUE_REFERENCE_PATTERN = /#(\d+)/g;
@@ -149,19 +195,25 @@ export function extractIssueReferences(message) {
 
 /**
  * The commits reachable from `branch` that are NOT reachable from any
- * refs/remotes/* ref — reachability per commit, not a branch-name
- * comparison. `git rev-list <branch> --not --remotes` is exactly `git
- * branch -r --contains <sha> == 0` restated as a single set-difference walk
- * instead of one query per candidate commit; both answer the same question
- * this issue insists on: is this commit reachable from any published ref.
+ * `refs/remotes/<remote>/*` ref — reachability per commit, not a branch-name
+ * comparison, and scoped to the one remote this repo tracks (#289). `git
+ * rev-list <branch> --not --remotes=<remote>` is exactly `git for-each-ref
+ * --contains <sha> refs/remotes/<remote> == empty` restated as a single
+ * set-difference walk instead of one query per candidate commit; both answer
+ * the same question this issue insists on: is this commit reachable from
+ * `<remote>` today, not from a local file that merely looks like a remote.
+ * `--remotes=<remote>` is git's own scoped form: per `git-rev-list(1)`, a
+ * pattern without a wildcard has `/*` appended and is matched only within
+ * `refs/remotes`, so `--remotes=origin` walks `refs/remotes/origin/*` and
+ * nothing under `pr/*`, `prns/*`, or any other stray namespace.
  */
-export function listStrandedCommits(branch, cwd) {
+export function listStrandedCommits(branch, cwd, remote = DEFAULT_REMOTE) {
   const result = git(
     [
       'rev-list',
       branch,
       '--not',
-      '--remotes',
+      `--remotes=${remote}`,
       `--format=%H${RECORD_SEPARATOR}%s${UNIT_SEPARATOR}`,
     ],
     { cwd, allowFailure: true },
@@ -195,7 +247,7 @@ export function listStrandedCommits(branch, cwd) {
  * `branchesExamined`, matching the issue's own report shape ("worktree
  * branches examined -> 46").
  */
-export function evaluateStrandedBranches(branchResults) {
+export function evaluateStrandedBranches(branchResults, remote = DEFAULT_REMOTE) {
   const stranded = branchResults
     .filter((entry) => entry.commits.length > 0)
     .map((entry) => ({
@@ -207,6 +259,7 @@ export function evaluateStrandedBranches(branchResults) {
   return {
     branchesExamined: branchResults.length,
     stranded,
+    remote,
     exitCode: stranded.length > 0 ? EXIT_STRANDED : EXIT_CLEAN,
   };
 }
@@ -216,13 +269,13 @@ export function formatReport(result) {
   if (result.exitCode === EXIT_CLEAN) {
     lines.push(
       `[stranded-branches] CLEAN — ${result.branchesExamined} local branch(es) examined, ` +
-        'every commit on every one is reachable from some refs/remotes/* ref.',
+        `every commit on every one is reachable from some refs/remotes/${result.remote ?? DEFAULT_REMOTE}/* ref.`,
     );
     return lines.join('\n');
   }
   lines.push(
     `[stranded-branches] STRANDED — ${result.stranded.length} of ` +
-      `${result.branchesExamined} local branch(es) carry commits reachable from no remote ref:`,
+      `${result.branchesExamined} local branch(es) carry commits reachable from no ${result.remote ?? DEFAULT_REMOTE} ref:`,
   );
   for (const entry of result.stranded) {
     const issueNumbers = [
@@ -253,11 +306,17 @@ export function formatReport(result) {
 
 /**
  * @param {string} [cwd]
+ * @param {string} [remote]
  * @returns {{ exitCode: number, report: string }}
  */
-export function runCheck(cwd = process.cwd()) {
-  const remoteRefCount = countRemoteRefs(cwd);
-  const presence = evaluateRemoteRefPresence(remoteRefCount);
+export function runCheck(cwd = process.cwd(), remote = DEFAULT_REMOTE) {
+  // #289's own correctly-scoped test prunes before checking; do the same
+  // here so a branch deleted on the server isn't still counted "published"
+  // via a stale refs/remotes/<remote> entry this clone never dropped.
+  pruneRemote(cwd, remote);
+
+  const remoteRefCount = countRemoteRefs(cwd, remote);
+  const presence = evaluateRemoteRefPresence(remoteRefCount, remote);
   if (!presence.ok) {
     return {
       exitCode: EXIT_UNDETERMINED,
@@ -268,9 +327,9 @@ export function runCheck(cwd = process.cwd()) {
   const branches = listLocalBranches(cwd);
   const branchResults = branches.map((branch) => ({
     ...branch,
-    commits: listStrandedCommits(branch.name, cwd),
+    commits: listStrandedCommits(branch.name, cwd, remote),
   }));
-  const result = evaluateStrandedBranches(branchResults);
+  const result = evaluateStrandedBranches(branchResults, remote);
   return { exitCode: result.exitCode, report: formatReport(result) };
 }
 
