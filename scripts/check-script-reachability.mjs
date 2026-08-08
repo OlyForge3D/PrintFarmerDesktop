@@ -313,6 +313,34 @@ export const UNENFORCED_CHECKS = {
     "runner with read access to that shared checkout's branches (not a " +
     'GitHub-hosted, single-ref pull_request runner), wire it in on a cron and ' +
     'delete this entry.',
+  'check:test-narrowing':
+    'Its judgement IS enforced in CI: tests/checkTestNarrowing.test.ts drives ' +
+    'checkAllHomes, checkPackageJsonScripts, checkWorkflowText and every ' +
+    'detection helper (tokenizeCommand, isDirectVitestInvocation, ' +
+    'resolveScriptAliasTarget, detectWrappedNarrowing, ' +
+    'detectNarrowingThroughPipeline, and the vitest.config.ts resolver) over ' +
+    'plain fixtures, including a positive control per home (#537) and every ' +
+    'bypass ten review rounds surfaced, under `npm run test`. #537 itself ' +
+    '(acceptance criterion 3) requires this gate NOT become a required CI ' +
+    'context until its false-positive rate is measured, and #122 is the ' +
+    'deadlock a wrongly-required context here would reproduce. Wiring ' +
+    '`npm run check:test-narrowing` into ci.yml was considered and declined, ' +
+    "not skipped: every job ci.yml currently renders IS one of this repo's " +
+    'eight required contexts (see REQUIRED_CONTEXT_NAMES and ' +
+    "ciWorkflowTriggers.test.ts's byte-identical rendered-context pin), so " +
+    'adding an intentionally non-required job would be the first check run ' +
+    'this workflow has ever emitted without also requiring it -- entangling ' +
+    "SKILL.md's documented CI-gate list and the merge-queue classification " +
+    'tests for a change #537 already says must stay unrequired. ' +
+    'STATE THE WEAKNESS PLAINLY: until a maintainer decides how a ' +
+    "genuinely-advisory job should coexist with this repo's current " +
+    'render-implies-required convention, nothing runs this against a live ' +
+    'pull request, and the narrowing #537 describes could be committed and ' +
+    'merged without this gate ever seeing it. Discharge path: once that ' +
+    'convention question is resolved (a documented advisory-job precedent, ' +
+    'or a revisit of the rendered-contexts pin to allow a non-required ' +
+    'entry), wire `npm run check:test-narrowing` into ci.yml as a ' +
+    'continue-on-error/report-only step and delete this entry.',
 };
 
 // `check:citation-reachability` was here, with a four-condition discharge path.

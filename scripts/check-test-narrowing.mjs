@@ -72,12 +72,38 @@
 // tree to demonstrate a real narrowing (see
 // tests/checkTestNarrowing.test.ts).
 //
-// NOT WIRED AS A REQUIRED CI CONTEXT. Per the issue's explicit acceptance
-// criterion: a step beside `Closing-reference declaration` lands inside
-// `Desktop (matrix)`, two of the seven required contexts -- a false positive
-// there blocks every queued PR entry, reproducing #122's deadlock shape. This
-// gate's false-positive rate has not been measured, so it ships as a
-// standalone script with its own test suite and is not added to any workflow.
+// NOT WIRED AS A REQUIRED CI CONTEXT, AND DELIBERATELY NOT ADDED TO ci.yml AT
+// ALL (round 10, Ripley's reachability finding). Per the issue's explicit
+// acceptance criterion: a step beside `Closing-reference declaration` lands
+// inside `Desktop (matrix)`, two of the seven required contexts -- a false
+// positive there blocks every queued PR entry, reproducing #122's deadlock
+// shape. This gate's false-positive rate has not been measured, so it ships
+// as a standalone script with its own test suite.
+//
+// Ripley (round 10) found the standalone script was not merely non-required
+// but wholly UNREACHABLE: no npm script named it and no workflow invoked it.
+// `"check:test-narrowing"` in package.json now gives it the same stable,
+// discoverable entrypoint every other `check:*` script in this repo has
+// (`npm run check:test-narrowing`). Wiring that entrypoint into `ci.yml`
+// itself was considered and deliberately rejected, not skipped: this repo's
+// own tests (`ciWorkflowTriggers.test.ts`'s byte-identical rendered-context
+// pin, `.squad/skills/testing/SKILL.md`'s CI-gate transcription, and
+// `mergeQueueReadiness.test.ts`) treat "a job ci.yml renders" and "a
+// required, branch-protection-checked context" as the same thing for EVERY
+// job ci.yml currently has -- there is no existing example in this workflow
+// of a job that renders a check run without also being required. Adding one
+// would mean the first check run this repo has ever rendered from ci.yml
+// without requiring it, entangling far more than this script (SKILL.md's
+// documented list, three separate pinning tests, and the merge-queue
+// classification machinery) for a change the issue's own acceptance
+// criterion 3 already says must not be required. `check:test-narrowing` is
+// therefore recorded in `UNENFORCED_CHECKS`
+// (scripts/check-script-reachability.mjs) instead: its judgement is fully
+// exercised under `npm run test` (tests/checkTestNarrowing.test.ts), and its
+// main() is a deliberate, documented, tested absence rather than a silent
+// one -- exactly the shape `check:review-coverage` and `check:behind-base`
+// already use in that same allowlist for their own, differently-reasoned
+// unwired mains.
 //
 // THREE REVIEW ROUNDS FOUND HOLES IN THE FIRST TWO VERSIONS, ALL FIXED HERE:
 //
@@ -328,6 +354,62 @@
 // `vitest.mjs` (now `VITEST_LITERAL_NAMES`, a small named set instead of
 // two inline string comparisons, since it grew a member) -- same
 // mechanism, right list.
+//
+// A NINTH REVIEW ROUND split again -- Vasquez approved (confirmed the `.ps1`
+// fix, now living in `VITEST_LITERAL_NAMES`, closes round 8's false
+// positive and the `node.ps1` basename collision, without regressing any
+// prior Vasquez-reviewed case). Ripley rejected: the `.ps1` fix narrowed the
+// false-positive surface but did not eliminate it -- see
+// `VITEST_LITERAL_NAMES` below and `hasNodeModulesPathContext`, which was
+// added this round precisely because Ripley generalised the finding beyond
+// `.ps1`: literal-name matching by basename alone, with no path context,
+// was ALREADY wrong for `vitest.mjs` too, and this round closes it for both
+// uniformly rather than patching `.ps1` again in isolation.
+//
+// A TENTH REVIEW ROUND found two detection gaps (both Vasquez) and one
+// structural gap (Ripley) that is not about detection at all:
+//
+//   Vasquez (round 10): `checkPackageJsonScripts({ test: 'npm --silent run
+//   ci', ci: 'vitest run -t "only this arm"' })` returned no violation --
+//   the alias-chain resolver required the package-manager token and the
+//   `run` keyword to be textually ADJACENT, so any flag between them
+//   (`--silent`, `--quiet`, ...) broke the match and the chain was never
+//   followed into `ci`, silently treating a resolvable alias as an opaque,
+//   harmless string. `resolveScriptAliasTarget` replaces that regex with a
+//   tokenising resolver that explicitly skips flag tokens both before and
+//   after the `run`/`run-script` keyword -- the same "skip flag tokens"
+//   idiom this file already used for `env`'s own flags in
+//   `resolveInvokedProgramBasename`, applied here for the third time rather
+//   than invented a third way.
+//
+//   Vasquez (round 10): `npm exec vitest run -t "only this arm"` and `npx
+//   --yes vitest run -t "only this arm"` both passed `checkWorkflowText`
+//   silently. Two compounding gaps: `npm` was entirely absent from
+//   `VITEST_LAUNCHERS`, and even for launchers already recognised,
+//   `isDirectVitestInvocation` read the token IMMEDIATELY after the
+//   launcher as "the launched program", so a subcommand marker (`exec`) or
+//   a leading flag (`--yes`) in between meant the real target token was
+//   never reached. `findLauncherTargetToken` now skips both `-`-prefixed
+//   flags and a small `LAUNCHER_SUBCOMMAND_MARKERS` set (`exec`, `--`)
+//   before reading the target -- and `npm` joins `VITEST_LAUNCHERS`. A
+//   negative control (`npm run test` must still read as an ORDINARY script
+//   reference, not a direct invocation, now that `npm` is a launcher) pins
+//   that this widening does not reopen a false positive on the single most
+//   common command line in the whole repo.
+//
+//   Ripley (round 10): the gate was not reachable from any real execution
+//   path at all -- no npm script named it, and no workflow ran it, so nine
+//   rounds of hardening the DETECTION logic sat behind an entrypoint that
+//   nothing ever called. `"check:test-narrowing"` now exists in
+//   package.json, following this repo's own `check:*` naming convention.
+//   Wiring that script into `ci.yml` was considered and declined -- see the
+//   "NOT WIRED AS A REQUIRED CI CONTEXT" note above for the full reasoning
+//   -- and `check:test-narrowing` is instead recorded in
+//   `UNENFORCED_CHECKS` (scripts/check-script-reachability.mjs), the exact
+//   allowlist this repo already uses for every other check whose judgement
+//   is enforced under `npm run test` but whose CLI entrypoint is not yet
+//   wired to a live trigger, so the absence is documented and tested rather
+//   than silent.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
@@ -442,14 +524,45 @@ export function isDirectVitestInvocation(tokens) {
   const { index, basename } = resolveInvokedProgramBasename(tokens);
   if (isVitestBasename(basename, tokens[index])) return true;
   if (basename !== undefined && VITEST_LAUNCHERS.has(basename)) {
-    return isVitestProgramToken(tokens[index + 1]);
+    return isVitestProgramToken(findLauncherTargetToken(tokens, index + 1));
   }
   return false;
 }
 
-const VITEST_LAUNCHERS = new Set(['npx', 'node', 'pnpm', 'yarn']);
+const VITEST_LAUNCHERS = new Set(['npx', 'npm', 'node', 'pnpm', 'yarn']);
 const ENV_LAUNCHER = 'env';
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+// Vasquez (review of this PR, round 10): the launcher branch above only
+// recognised the launched program when it was the IMMEDIATE next token --
+// `npx vitest ...` matched, but `npx --yes vitest ...` and
+// `npm exec vitest ...` (both ordinary, common launcher spellings: `--yes`
+// suppresses npx's interactive install-confirmation prompt, and `exec` is
+// how npm/pnpm/yarn run a binary directly without it being a package.json
+// script) did not, because the token in between (`--yes`, `exec`) was
+// never skipped. `npm` itself was also missing from `VITEST_LAUNCHERS`
+// entirely -- only `npx`/`node`/`pnpm`/`yarn` were recognised as launchers,
+// so `npm exec vitest ...` failed at the very first step regardless.
+//
+// Fixed by (a) adding `npm` to `VITEST_LAUNCHERS`, and (b) skipping past
+// the launcher's own flags (`--yes`/`-y`/`--silent`/`-s`/etc., recognised
+// generically by a leading `-`, exactly as `env`'s own flags are already
+// skipped above) and the `exec`/`--` subcommand markers before reading the
+// actually-launched program token, rather than assuming it is always the
+// very next one.
+const LAUNCHER_SUBCOMMAND_MARKERS = new Set(['exec', '--']);
+
+function findLauncherTargetToken(tokens, startIndex) {
+  let i = startIndex;
+  while (
+    i < tokens.length &&
+    typeof tokens[i] === 'string' &&
+    (tokens[i].startsWith('-') || LAUNCHER_SUBCOMMAND_MARKERS.has(tokens[i]))
+  ) {
+    i += 1;
+  }
+  return tokens[i];
+}
 
 // Windows resolves a bare command name against `PATHEXT` by trying these
 // suffixes in turn -- `vitest`, `vitest.cmd`, and `.\node_modules\.bin\
@@ -639,8 +752,64 @@ function isVitestProgramToken(token) {
 
 const TEST_SCRIPT_NAME = /^test(:.*)?$/;
 
-const NPM_SCRIPT_REFERENCE =
-  /^(?:npm(?:\s+run(?:-script)?)?|yarn(?:\s+run)?|pnpm(?:\s+run)?)\s+(\S+)/;
+const NPM_SCRIPT_MANAGERS = new Set(['npm', 'yarn', 'pnpm']);
+const RUN_KEYWORDS = new Set(['run', 'run-script']);
+
+/**
+ * Skip past any run of flag tokens (anything starting with `-`) starting at
+ * `startIndex`, returning the index of the first non-flag token. Shared by
+ * both the launcher-target resolution above and the script-alias
+ * resolution below, since both need to see past a package manager's own
+ * options (`--yes`, `--silent`, `-s`, ...) to find the token that actually
+ * names a program or script.
+ */
+function skipFlagTokens(tokens, startIndex) {
+  let i = startIndex;
+  while (
+    i < tokens.length &&
+    typeof tokens[i] === 'string' &&
+    tokens[i].startsWith('-')
+  ) {
+    i += 1;
+  }
+  return i;
+}
+
+/**
+ * Resolve the script name an `npm`/`yarn`/`pnpm` command line refers to, if
+ * it is one of the "run another package.json script" forms this alias
+ * chain follows -- `npm run <name>`, `npm run-script <name>`,
+ * `yarn run <name>`, `pnpm run <name>`, or the bare `npm <name>` /
+ * `yarn <name>` / `pnpm <name>` shorthand (valid for `yarn`/`pnpm` always,
+ * and for `npm` on its handful of reserved lifecycle names such as
+ * `test`/`start`/`stop`). Returns `null` for anything else, including
+ * `npm exec`/`npx`, which invoke a binary directly rather than naming
+ * another script (that shape is a DIRECT invocation, handled by
+ * `isDirectVitestInvocation`/`VITEST_LAUNCHERS` instead).
+ *
+ * Vasquez (review of this PR, round 10): the previous regex-based version
+ * of this (`NPM_SCRIPT_REFERENCE`) required the package manager name and
+ * the `run` keyword to be adjacent, so `npm --silent run ci` -- an
+ * entirely ordinary way to quiet npm's own output while still running the
+ * `ci` script -- was not recognised as a reference to `ci` at all, letting
+ * a narrowing hide behind an alias exactly one option away from the
+ * already-handled `npm run ci` shape. Tokenising the command and skipping
+ * flag tokens (the same `-`-prefixed recognition already used for other
+ * launcher options in this file) before AND after the `run` keyword closes
+ * this the same way skipping flags before the actual program in
+ * `findLauncherTargetToken` does for direct invocations.
+ */
+function resolveScriptAliasTarget(command) {
+  const tokens = tokenizeCommand(command.trim());
+  if (tokens.length === 0) return null;
+  if (!NPM_SCRIPT_MANAGERS.has(basenameOf(tokens[0]))) return null;
+  let i = skipFlagTokens(tokens, 1);
+  if (i < tokens.length && RUN_KEYWORDS.has(tokens[i])) {
+    i = skipFlagTokens(tokens, i + 1);
+  }
+  const target = tokens[i];
+  return typeof target === 'string' ? target : null;
+}
 
 /**
  * Vasquez (review of this PR, round 2): a narrowing does not have to live in
@@ -661,10 +830,8 @@ function resolveNarrowingThroughAliasChain(scripts, command, visited) {
   if (typeof command !== 'string') return null;
   const direct = detectNarrowing(command, { requireDirectInvocation: false });
   if (direct !== null) return { narrowing: direct, command };
-  const match = NPM_SCRIPT_REFERENCE.exec(command.trim());
-  if (match === null) return null;
-  const target = match[1];
-  if (visited.has(target)) return null;
+  const target = resolveScriptAliasTarget(command);
+  if (target === null || visited.has(target)) return null;
   visited.add(target);
   return resolveNarrowingThroughAliasChain(scripts, scripts[target], visited);
 }

@@ -297,6 +297,34 @@ describe('isDirectVitestInvocation', () => {
       ),
     ).toBe(true);
   });
+
+  it('POSITIVE CONTROL (Vasquez, review of this PR, round 10): recognises `npm exec vitest` and `npx --yes vitest`, not just the bare launcher-then-vitest form', () => {
+    // `npm exec <binary>` runs a binary directly (bypassing package.json
+    // scripts entirely, the same as `npx`), and `npx --yes` is an ordinary
+    // way to suppress npx's interactive install-confirmation prompt --
+    // both are ordinary launcher spellings, not exotic ones. The previous
+    // version of this check only recognised `vitest` as the IMMEDIATE next
+    // token after the launcher, so the `exec` subcommand and the `--yes`
+    // flag in between both defeated it, and `npm` was not even in
+    // `VITEST_LAUNCHERS` to begin with.
+    expect(
+      isDirectVitestInvocation(tokenizeCommand('npm exec vitest run -t x')),
+    ).toBe(true);
+    expect(
+      isDirectVitestInvocation(tokenizeCommand('npx --yes vitest run -t x')),
+    ).toBe(true);
+  });
+
+  it('NEGATIVE CONTROL (Vasquez, review of this PR, round 10): `npm run <script>` is still not a direct invocation merely because `npm` is now a recognised launcher', () => {
+    // Adding `npm` to `VITEST_LAUNCHERS` (for `npm exec vitest`, above)
+    // must not make an ordinary `npm run <script-name>` -- which names a
+    // package.json script, not a program -- look like a direct invocation
+    // just because `npm` now matches the launcher set. That form is
+    // resolved through the alias chain (HOME 1's own tests), not here.
+    expect(isDirectVitestInvocation(tokenizeCommand('npm run test'))).toBe(
+      false,
+    );
+  });
 });
 
 describe('HOME 1: package.json test/test:* scripts', () => {
@@ -440,6 +468,25 @@ describe('HOME 1: package.json test/test:* scripts', () => {
       test: 'npm run does-not-exist',
     });
     expect(violations).toEqual([]);
+  });
+
+  it('POSITIVE CONTROL (Vasquez, review of this PR, round 10): follows an alias chain through a launcher flag between the package manager and `run`', () => {
+    // `npm --silent run ci` is an entirely ordinary way to quiet npm's own
+    // output while still running the `ci` script -- the previous
+    // regex-based alias resolver required `npm`/`run` to be adjacent, so
+    // this exact shape let a narrowing hide one option away from the
+    // already-covered `npm run ci` case above.
+    const violations = checkPackageJsonScripts({
+      test: 'npm --silent run ci',
+      ci: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
   });
 
   it('POSITIVE CONTROL (Vasquez, review of this PR, round 3): refuses a narrowing committed through a template-literal exec() wrapper', () => {
@@ -1010,6 +1057,38 @@ describe('HOME 2: workflows invoking vitest directly', () => {
       '        run: .\\scripts\\vitest.ps1 run -t "only this arm"',
     ].join('\n');
     expect(checkWorkflowText('ci.yml', contents)).toHaveLength(0);
+  });
+
+  it('POSITIVE CONTROL (Vasquez, review of this PR, round 10): recognises `npm exec vitest` and `npx --yes vitest` direct invocations in a workflow step', () => {
+    const execForm = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: npm exec vitest run -t "only this arm"',
+    ].join('\n');
+    const execViolations = checkWorkflowText('ci.yml', execForm);
+    expect(execViolations).toHaveLength(1);
+    expect(execViolations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '-t',
+      value: 'only this arm',
+    });
+
+    const yesFlagForm = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: npx --yes vitest run -t "only this arm"',
+    ].join('\n');
+    const yesFlagViolations = checkWorkflowText('ci.yml', yesFlagForm);
+    expect(yesFlagViolations).toHaveLength(1);
+    expect(yesFlagViolations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '-t',
+      value: 'only this arm',
+    });
   });
 
   it('POSITIVE CONTROL (Ripley, review of this PR, round 3): reads a folded block scalar header with a chomping indicator and trailing comment', () => {
