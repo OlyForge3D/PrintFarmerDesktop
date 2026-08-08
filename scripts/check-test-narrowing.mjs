@@ -78,6 +78,32 @@
 // there blocks every queued PR entry, reproducing #122's deadlock shape. This
 // gate's false-positive rate has not been measured, so it ships as a
 // standalone script with its own test suite and is not added to any workflow.
+//
+// TWO REVIEW ROUNDS FOUND HOLES IN THE FIRST VERSION, BOTH FIXED HERE:
+//
+//   Ripley: a workflow `run:` block was split into sub-commands on every
+//   newline BEFORE tokenising, so a direct invocation split across a shell
+//   line-continuation (`vitest run \` / `  -t "pattern"`) put the flag and
+//   its value on different "sub-commands" and neither tokenised to a
+//   complete `-t <value>` pair -- the one-line form of the identical command
+//   was caught, the continued form was not. `joinLineContinuations` now
+//   rejoins a trailing-`\` line with the line that follows it before any
+//   splitting happens, so a continued command reaches the tokeniser as the
+//   single logical line it always was.
+//
+//   Vasquez: a committed wrapper that invokes vitest programmatically --
+//   `node -e "spawnSync('vitest',['run','-t','only this arm'])"` -- passed
+//   both the package.json and workflow checks silently. The narrowing flag
+//   and its value are still committed as literal strings, only nested
+//   inside a JS string rather than separated by shell whitespace, so the
+//   whitespace tokeniser folded them into one opaque token and
+//   `isDirectVitestInvocation` never saw a bare `vitest` word to key off.
+//   `detectWrappedNarrowing` is a second, narrower instrument that requires
+//   the word `vitest` to appear anywhere in the command AND the flag to
+//   appear as a quoted string literal next to its value -- the shape an
+//   argument list takes when authored as data rather than typed as a shell
+//   command -- so it catches the wrapper without matching prose that merely
+//   mentions both words.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
@@ -184,8 +210,9 @@ export function checkPackageJsonScripts(scripts) {
   for (const [name, command] of Object.entries(scripts)) {
     if (!TEST_SCRIPT_NAME.test(name)) continue;
     if (typeof command !== 'string') continue;
-    const tokens = tokenizeCommand(command);
-    const narrowing = detectNarrowingFlag(tokens);
+    const narrowing = detectNarrowing(command, {
+      requireDirectInvocation: false,
+    });
     if (narrowing !== null) {
       violations.push({
         home: 'package.json',
@@ -196,6 +223,103 @@ export function checkPackageJsonScripts(scripts) {
     }
   }
   return violations;
+}
+
+/**
+ * Join shell line-continuations (a line ending in a bare trailing `\`) before
+ * a multi-line `run:` block is split into sub-commands.
+ *
+ * Ripley (review of this PR): splitting on every newline before tokenising
+ * meant a direct workflow narrowing written across a continued line --
+ *
+ *   run: |
+ *     vitest run \
+ *       -t "only this arm"
+ *
+ * -- put `-t` on one physical line and its value on the next, so neither line
+ * tokenised to a `-t <value>` pair and the one-line form of the identical
+ * command was the only one caught. This runs before line-splitting so a
+ * continued command reaches the tokeniser as the single logical line it is.
+ */
+export function joinLineContinuations(text) {
+  const lines = String(text).split(/\r?\n/);
+  const joined = [];
+  let buffer = null;
+  for (const line of lines) {
+    const trimmedEnd = line.replace(/[ \t]+$/, '');
+    const continues = trimmedEnd.endsWith('\\');
+    const withoutContinuation = continues
+      ? trimmedEnd.slice(0, -1)
+      : trimmedEnd;
+    if (buffer === null) {
+      buffer = withoutContinuation;
+    } else {
+      buffer += ` ${withoutContinuation.trim()}`;
+    }
+    if (!continues) {
+      joined.push(buffer);
+      buffer = null;
+    }
+  }
+  if (buffer !== null) joined.push(buffer);
+  return joined.join('\n');
+}
+
+const WRAPPED_FLAG_EQ_VALUE = /['"](--testNamePattern)=([^'"]*)['"]/;
+const WRAPPED_FLAG_THEN_VALUE =
+  /['"](-t|--testNamePattern)['"]\s*,\s*['"]([^'"]*)['"]/;
+
+/**
+ * Vasquez (review of this PR): a committed wrapper that invokes vitest
+ * *programmatically* rather than as a bare shell word --
+ *
+ *   node -e "spawnSync('vitest',['run','-t','only this arm'])"
+ *
+ * -- passed both `checkPackageJsonScripts` and `checkWorkflowText` silently.
+ * The flag and its value are still committed as literal string arguments,
+ * they are simply nested inside a JS string rather than separated by shell
+ * whitespace, so the whitespace tokeniser folds `-e`'s entire argument into
+ * one opaque token and `isDirectVitestInvocation` never sees a bare `vitest`
+ * word to key off either.
+ *
+ * This is a second, narrower instrument alongside the tokeniser rather than
+ * a replacement for it: it requires the literal word `vitest` to appear
+ * SOMEWHERE in the command (so it does not fire on `eslint . -t x`, which
+ * has a narrowing-shaped flag but never mentions vitest), and it requires
+ * the flag itself to appear as a QUOTED string literal immediately followed
+ * by its value (comma-separated, as an argv array element, or `=`-joined
+ * inside one quoted token) -- the shape an argument list actually takes when
+ * it is authored as data rather than typed as a shell command. That
+ * quoting requirement is what keeps this from matching ordinary prose that
+ * happens to mention both words (a comment reading "don't use vitest -t
+ * flags in CI" has no quoted `-t` next to a quoted value, so it does not
+ * match).
+ */
+export function detectWrappedNarrowing(rawText) {
+  if (typeof rawText !== 'string') return null;
+  if (!/\bvitest\b/.test(rawText)) return null;
+  const eqMatch = WRAPPED_FLAG_EQ_VALUE.exec(rawText);
+  if (eqMatch) return { flag: eqMatch[1], value: eqMatch[2] };
+  const pairMatch = WRAPPED_FLAG_THEN_VALUE.exec(rawText);
+  if (pairMatch) return { flag: pairMatch[1], value: pairMatch[2] };
+  return null;
+}
+
+/**
+ * Try the direct, shell-word tokenised detection first; fall back to the
+ * wrapped/programmatic detection only when the direct one finds nothing. A
+ * command that is direct never needs the fallback, and a command that only
+ * mentions vitest in passing (no narrowing flag at all) never matches
+ * either.
+ */
+function detectNarrowing(rawCommand, { requireDirectInvocation }) {
+  const tokens = tokenizeCommand(rawCommand);
+  const isDirect = isDirectVitestInvocation(tokens);
+  if (!requireDirectInvocation || isDirect) {
+    const direct = detectNarrowingFlag(tokens);
+    if (direct !== null) return direct;
+  }
+  return detectWrappedNarrowing(rawCommand);
 }
 
 /**
@@ -245,22 +369,25 @@ export function extractRunBlocks(contents) {
 }
 
 /**
- * Home 2: any workflow step whose `run:` body invokes vitest directly.
- * Splits a multi-line block on newlines and `&&`/`;` so each sub-command is
- * tokenised and checked independently -- a narrowing does not have to be the
- * only thing on its line.
+ * Home 2: any workflow step whose `run:` body invokes vitest directly, or
+ * invokes it through a programmatic wrapper (see `detectWrappedNarrowing`).
+ * Line-continuations are joined first (see `joinLineContinuations`) so a
+ * command split across physical lines with a trailing `\` is tokenised as
+ * the single logical command it is. Splits on newlines and `&&`/`;` so each
+ * sub-command is checked independently -- a narrowing does not have to be
+ * the only thing on its line.
  */
 export function checkWorkflowText(file, contents) {
   const violations = [];
   for (const { lineNumber, command } of extractRunBlocks(contents)) {
-    const subCommands = command
+    const subCommands = joinLineContinuations(command)
       .split(/\r?\n|&&|;/)
       .map((part) => part.trim())
       .filter((part) => part.length > 0 && !part.startsWith('#'));
     for (const subCommand of subCommands) {
-      const tokens = tokenizeCommand(subCommand);
-      if (!isDirectVitestInvocation(tokens)) continue;
-      const narrowing = detectNarrowingFlag(tokens);
+      const narrowing = detectNarrowing(subCommand, {
+        requireDirectInvocation: true,
+      });
       if (narrowing !== null) {
         violations.push({
           home: 'workflow',

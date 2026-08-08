@@ -29,6 +29,10 @@ export function detectNarrowingFlag(tokens: string[]): NarrowingMatch | null;
 
 export function isDirectVitestInvocation(tokens: string[]): boolean;
 
+export function joinLineContinuations(text: unknown): string;
+
+export function detectWrappedNarrowing(rawText: unknown): NarrowingMatch | null;
+
 export function checkPackageJsonScripts(scripts: unknown): Violation[];
 
 export function extractRunBlocks(contents: unknown): RunBlock[];

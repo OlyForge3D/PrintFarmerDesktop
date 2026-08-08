@@ -31,9 +31,11 @@ import {
   checkVitestConfig,
   checkWorkflowText,
   detectNarrowingFlag,
+  detectWrappedNarrowing,
   extractRunBlocks,
   formatReport,
   isDirectVitestInvocation,
+  joinLineContinuations,
   readWorkflowFiles,
   resolveVitestConfigNarrowing,
   tokenizeCommand,
@@ -192,6 +194,29 @@ describe('HOME 1: package.json test/test:* scripts', () => {
     });
     expect(violations).toEqual([]);
   });
+
+  it('POSITIVE CONTROL (Vasquez, review of this PR): refuses a narrowing committed through a programmatic wrapper', () => {
+    // node -e spawns vitest itself, rather than being invoked as a bare
+    // shell word -- the flag and value are still committed as literal
+    // strings, just nested inside the JS source rather than shell-separated.
+    const violations = checkPackageJsonScripts({
+      test: "node -e \"spawnSync('vitest',['run','-t','only this arm'])\"",
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('does not false-positive a wrapper-shaped script that never mentions vitest', () => {
+    const violations = checkPackageJsonScripts({
+      test: "node -e \"spawnSync('eslint',['.','-t','unrelated pattern'])\"",
+    });
+    expect(violations).toEqual([]);
+  });
 });
 
 describe('HOME 2: workflows invoking vitest directly', () => {
@@ -284,6 +309,108 @@ describe('HOME 2: workflows invoking vitest directly', () => {
       '    steps:',
       '      - name: Not vitest',
       '        run: eslint . -t "still not vitest"',
+    ].join('\n');
+    expect(checkWorkflowText('ci.yml', contents)).toEqual([]);
+  });
+
+  it('CONTROL: joinLineContinuations passes an unbroken command through unchanged', () => {
+    expect(joinLineContinuations('vitest run -t foo')).toBe(
+      'vitest run -t foo',
+    );
+  });
+
+  it('joinLineContinuations rejoins a trailing-backslash line with the next one', () => {
+    const continued = ['vitest run \\', '  -t "only this arm"'].join('\n');
+    expect(joinLineContinuations(continued)).toBe(
+      'vitest run  -t "only this arm"',
+    );
+  });
+
+  it('detectWrappedNarrowing (unit): matches the quoted eq-form flag directly', () => {
+    const violation = detectWrappedNarrowing(
+      'node -e "spawnSync(\'vitest\',[\'run\',\'--testNamePattern=only this arm\'])"',
+    );
+    expect(violation).toMatchObject({
+      flag: '--testNamePattern',
+      value: 'only this arm',
+    });
+  });
+
+  it('detectWrappedNarrowing (unit): matches the quoted comma-pair flag/value form', () => {
+    const violation = detectWrappedNarrowing(
+      'node -e "spawnSync(\'vitest\',[\'run\',\'-t\',\'only this arm\'])"',
+    );
+    expect(violation).toMatchObject({ flag: '-t', value: 'only this arm' });
+  });
+
+  it('detectWrappedNarrowing (unit): returns null when vitest is never mentioned', () => {
+    expect(
+      detectWrappedNarrowing(
+        'node -e "spawnSync(\'eslint\',[\'.\',\'-t\',\'unrelated\'])"',
+      ),
+    ).toBeNull();
+  });
+
+  it('detectWrappedNarrowing (unit): returns null for plain prose mentioning both words unquoted-together', () => {
+    expect(
+      detectWrappedNarrowing('echo "please do not narrow vitest with -t"'),
+    ).toBeNull();
+  });
+
+  it('POSITIVE CONTROL (Ripley, review of this PR): refuses a narrowing split across a shell line-continuation', () => {
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: |',
+      '          vitest run \\',
+      '            -t "only this arm"',
+    ].join('\n');
+    const violations = checkWorkflowText('ci.yml', contents);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('POSITIVE CONTROL (Vasquez, review of this PR): refuses a narrowing committed through a programmatic wrapper', () => {
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      "        run: node -e \"spawnSync('vitest',['run','-t','only this arm'])\"",
+    ].join('\n');
+    const violations = checkWorkflowText('ci.yml', contents);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('does not false-positive a wrapper-shaped step that never mentions vitest', () => {
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Not vitest',
+      "        run: node -e \"spawnSync('eslint',['.','-t','unrelated pattern'])\"",
+    ].join('\n');
+    expect(checkWorkflowText('ci.yml', contents)).toEqual([]);
+  });
+
+  it('does not false-positive on prose that mentions both words without a quoted flag/value pair', () => {
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Reminder',
+      '        run: echo "don\'t use vitest -t flags in CI"',
     ].join('\n');
     expect(checkWorkflowText('ci.yml', contents)).toEqual([]);
   });
