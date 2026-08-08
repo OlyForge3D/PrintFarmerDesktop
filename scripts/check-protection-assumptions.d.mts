@@ -20,6 +20,7 @@ export interface RepositoryFacts {
 
 export declare const REQUIRED_CONTEXT_NAMES: readonly string[];
 export declare const EXPECTED_COLLABORATORS: readonly Collaborator[];
+export declare const EXIT_SKIPPED_WITHOUT_CREDENTIALS_IN_CI: number;
 
 export declare function evaluateProtectionAssumptions(
   facts: RepositoryFacts,

@@ -61,6 +61,17 @@ export const EXPECTED_COLLABORATORS = Object.freeze([
   Object.freeze({ login: 'jpapiez', role: 'admin' }),
 ]);
 
+// A local, interactive run with no credential correctly exits 0: there is
+// nobody to fail, only a person at a keyboard who can read the printed
+// explanation. #492 is the case that reasoning does not cover -- CI reads the
+// exit code and nothing else, so a run that skipped the check because a secret
+// was rotated, expired, or never renewed is, on that one channel, identical to
+// a run that checked every fact and found nothing moved. Reserved rather than
+// reusing 1 (the "a premise moved" code) so the two failure classes -- "this
+// script did not run the check" and "the check ran and found drift" -- are
+// distinguishable by exit code alone, without reading the log.
+export const EXIT_SKIPPED_WITHOUT_CREDENTIALS_IN_CI = 3;
+
 const violation = (assumption, expected, actual, decision, consequence) => ({
   assumption,
   expected,
@@ -371,6 +382,15 @@ async function main() {
     console.log(
       'Every fact this guards is remote, so this run has NOT checked whether the premises of #111 and #151 still hold.',
     );
+    // #492: the printed text above is correct and unchanged for both branches
+    // below -- what differs is the only channel CI actually reads. Outside CI
+    // this stays exit 0, because failing a run with nothing to read teaches
+    // people to ignore the exit code, and that reasoning is unchanged. Inside
+    // CI, a skip must not be able to report green: it would make a rotated,
+    // expired, or unrenewed secret indistinguishable from a passing check.
+    if ((process.env.CI ?? '') !== '') {
+      process.exitCode = EXIT_SKIPPED_WITHOUT_CREDENTIALS_IN_CI;
+    }
     return;
   }
 

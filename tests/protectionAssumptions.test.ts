@@ -1,12 +1,21 @@
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   EXPECTED_COLLABORATORS,
+  EXIT_SKIPPED_WITHOUT_CREDENTIALS_IN_CI,
   REQUIRED_CONTEXT_NAMES,
   evaluateProtectionAssumptions,
   formatViolations,
   rulesetCoversFeatureBranches,
   statusCheckEnforcement,
 } from '../scripts/check-protection-assumptions.mjs';
+
+const repositoryRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+);
 
 // The baseline is the repository as measured on 2026-08-04T17:23 local, at the
 // API rather than from #151's transcription -- which had already decayed:
@@ -307,5 +316,73 @@ describe('the report names the decision, not just the drift', () => {
     expect(EXPECTED_COLLABORATORS).toEqual([
       { login: 'jpapiez', role: 'admin' },
     ]);
+  });
+});
+
+/**
+ * #492: a credential-less run degrades to a skip, which is correct for a
+ * human at a keyboard reading the printed explanation and wrong for CI, whose
+ * only channel is the exit code. Running the script as a subprocess is the
+ * only way to reach `main()` under both env shapes without also reaching the
+ * network -- both cases below return on the skip path before any fetch.
+ *
+ * `SKIP_CREDENTIAL_DISCOVERY` forces the absence explicit rather than ambient,
+ * the same reasoning tests/mergeQueueReadiness.test.ts records for the
+ * sibling script: on a machine where `gh` is already logged in, merely
+ * clearing the four GITHUB/GH token and repository variables would not stop
+ * `discoverToken`
+ * from finding a real credential and taking the other branch entirely.
+ */
+describe('a credential-less run cannot report green inside CI (#492)', () => {
+  const runOffline = (env: Record<string, string>) =>
+    execFileSync(
+      process.execPath,
+      [
+        path.join(
+          repositoryRoot,
+          'scripts',
+          'check-protection-assumptions.mjs',
+        ),
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          GITHUB_TOKEN: '',
+          GH_TOKEN: '',
+          GITHUB_REPOSITORY: '',
+          GITHUB_REPOSITORY_OWNER: '',
+          SKIP_CREDENTIAL_DISCOVERY: '1',
+          CI: '',
+          ...env,
+        },
+      },
+    );
+
+  it('exits 0 for an interactive local run with no CI env var', () => {
+    const output = runOffline({});
+    expect(output).toContain('Skipped the assumption check');
+  });
+
+  it('exits non-zero, on the reserved code, when CI is set', () => {
+    let status: number | null = null;
+    try {
+      runOffline({ CI: 'true' });
+    } catch (error) {
+      status = (error as { status: number | null }).status;
+    }
+    expect(status).toBe(EXIT_SKIPPED_WITHOUT_CREDENTIALS_IN_CI);
+  });
+
+  it('prints the identical diagnostic text whether or not CI is set', () => {
+    const local = runOffline({});
+    let inCi = '';
+    try {
+      runOffline({ CI: 'true' });
+    } catch (error) {
+      inCi = (error as { stdout: string }).stdout;
+    }
+    expect(inCi).toBe(local);
+    expect(inCi).not.toBe('');
   });
 });
