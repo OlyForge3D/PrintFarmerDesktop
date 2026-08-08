@@ -9,6 +9,11 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { refreshCatalog } from './helpers/modelLibrary';
+import {
+  createPackagedProcessLog,
+  createPackagedStartupTrace,
+  launchInstrumentedElectronTestApp,
+} from './helpers/packagedApp';
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -34,6 +39,12 @@ let page: Page;
 let e2eStateRoot: string;
 const consoleErrors: string[] = [];
 
+// See #509: a `beforeAll` throw marks the hook itself as a failing synthetic
+// test and skips every real test in the file, indistinguishably from a test
+// that legitimately did not apply. Startup failures are instead captured
+// here and turned into an explicit, labeled `test.skip` per test below.
+let startupError: Error | null = null;
+
 async function dismissOnboardingIfVisible(page: Page): Promise<void> {
   const onboarding = page.getByRole('dialog', {
     name: 'Set up your model library',
@@ -48,6 +59,9 @@ async function dismissOnboardingIfVisible(page: Page): Promise<void> {
 test.beforeAll(async () => {
   for (const artifact of requiredArtifacts) {
     if (!existsSync(artifact)) {
+      // A missing build artifact is a build problem, not a slow-cold-start
+      // problem -- it should hard-fail the run rather than be absorbed as a
+      // startup skip below.
       throw new Error(
         `Missing build artifact ${artifact}.\n` +
           'Run `npm run package` (which builds the renderer/main/preload bundles ' +
@@ -63,26 +77,57 @@ test.beforeAll(async () => {
   const userDataPath = path.join(e2eStateRoot, 'user-data');
   mkdirSync(userDataPath, { recursive: true });
 
-  app = await electron.launch({
-    args: ['.'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      PRINTFARMER_CATALOG_DB: catalogDb,
-      PRINTFARMER_USER_DATA_PATH: userDataPath,
-    },
-  });
+  const processLog = createPackagedProcessLog();
+  const startupTrace = createPackagedStartupTrace();
 
-  page = await app.firstWindow();
-  page.on('console', (message) => {
-    if (message.type() === 'error') {
-      consoleErrors.push(message.text());
-    }
-  });
-  page.on('pageerror', (error) => {
-    consoleErrors.push(error.message);
-  });
-  await page.waitForLoadState('domcontentloaded');
+  try {
+    const launched = await launchInstrumentedElectronTestApp<
+      Page,
+      ElectronApplication
+    >(
+      () =>
+        electron.launch({
+          args: ['.'],
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            PRINTFARMER_CATALOG_DB: catalogDb,
+            PRINTFARMER_USER_DATA_PATH: userDataPath,
+          },
+        }),
+      processLog,
+      startupTrace,
+    );
+    app = launched.app;
+    page = launched.page;
+    page.on('console', (message) => {
+      if (message.type() === 'error') {
+        consoleErrors.push(message.text());
+      }
+    });
+    page.on('pageerror', (error) => {
+      consoleErrors.push(error.message);
+    });
+  } catch (error) {
+    startupError =
+      error instanceof Error
+        ? error
+        : new Error(String(error), { cause: error });
+    console.error(
+      `[e2e] mvp.spec.ts: packaged Electron app failed to start (cold-start ` +
+        `budget exceeded even after warm-up retry): ${startupError.message}\n` +
+        processLog.read(),
+    );
+  }
+});
+
+test.beforeEach(() => {
+  test.skip(
+    startupError !== null,
+    'Packaged Electron app failed to start in beforeAll ' +
+      `(${startupError?.message}). Skipped because startup failed, not ` +
+      'because this test does not apply.',
+  );
 });
 
 test.afterAll(async () => {

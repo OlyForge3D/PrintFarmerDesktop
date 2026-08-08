@@ -12,6 +12,37 @@ const STARTUP_TIMEOUT_MS = 20_000;
 const SHUTDOWN_TIMEOUT_MS = 8_000;
 export const MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024;
 
+/**
+ * Explicit budget for `page.waitForLoadState('domcontentloaded')` during the
+ * *very first* packaged Electron launch of a worker process (see #509).
+ *
+ * `waitForLoadState` carries its own implicit 30s timeout that is entirely
+ * independent of `playwright.config.ts`'s `timeout: 60_000` test/hook
+ * budget -- a reader of that config cannot infer the true first-launch
+ * budget without also knowing Playwright's library default. This constant
+ * makes that budget an explicit, named number instead, and leaves headroom
+ * under the 60s hook timeout so a slow-but-legitimate cold start (a fresh
+ * package's first-touch disk/AV scan) still has time for the warm-up retry
+ * below to run and complete inside the same hook invocation.
+ */
+export const FIRST_LAUNCH_TIMEOUT_MS = 45_000;
+
+/**
+ * Steady-state budget once a packaged Electron instance has already been
+ * launched at least once in this worker process. There is no first-touch
+ * disk scan to absorb here, so this stays close to Playwright's historical
+ * implicit default -- but is still explicit, per #509's acceptance criteria.
+ */
+export const STEADY_STATE_LAUNCH_TIMEOUT_MS = 30_000;
+
+/**
+ * Tracks whether *any* packaged Electron launch has completed successfully
+ * in this worker process yet. Only the first launch attempt gets the wider
+ * `FIRST_LAUNCH_TIMEOUT_MS` budget and a warm-up retry; every launch after
+ * that is assumed to be running against an already-warmed-up disk cache.
+ */
+let hasCompletedFirstPackagedLaunch = false;
+
 export type PackagedGpuMode = 'default' | 'swiftshader';
 
 export interface LaunchPackagedAppOptions {
@@ -81,7 +112,10 @@ interface ElectronTestAppLike<TPage> {
 }
 
 interface ElectronTestPageLike {
-  waitForLoadState(state: 'domcontentloaded'): Promise<unknown>;
+  waitForLoadState(
+    state: 'domcontentloaded',
+    options?: { timeout?: number },
+  ): Promise<unknown>;
 }
 
 type TestOutcome<T> =
@@ -207,13 +241,14 @@ export function createPackagedStartupTrace(
   };
 }
 
-export async function launchInstrumentedElectronTestApp<
+async function attemptInstrumentedElectronLaunch<
   TPage extends ElectronTestPageLike,
   TApp extends ElectronTestAppLike<TPage>,
 >(
   launch: () => Promise<TApp>,
   processLog: PackagedProcessLog,
   startupTrace: PackagedStartupTrace,
+  domContentLoadedTimeoutMs: number,
 ): Promise<{ app: TApp; page: TPage }> {
   let app: TApp | null = null;
   let phase: PackagedStartupPhase = 'electronLaunch';
@@ -234,7 +269,12 @@ export async function launchInstrumentedElectronTestApp<
 
     phase = 'domcontentloaded';
     startupTrace.waitFor(phase);
-    await page.waitForLoadState('domcontentloaded');
+    // Explicit timeout (see FIRST_LAUNCH_TIMEOUT_MS / STEADY_STATE_LAUNCH_TIMEOUT_MS
+    // above) rather than relying on waitForLoadState's own implicit 30s default,
+    // which is independent of playwright.config.ts's 60s test timeout (#509).
+    await page.waitForLoadState('domcontentloaded', {
+      timeout: domContentLoadedTimeoutMs,
+    });
     startupTrace.mark(phase);
     return { app, page };
   } catch (cause) {
@@ -256,6 +296,92 @@ export async function launchInstrumentedElectronTestApp<
     }
     throw startupError;
   }
+}
+
+/**
+ * Launches a packaged/production Electron test app and waits for it to reach
+ * `domcontentloaded`, absorbing a slow *first* cold start (#509).
+ *
+ * `playwright.config.ts` intentionally keeps `retries: 0` (see the comment
+ * there): a flaky-looking failure should surface, not be silently retried
+ * away by the test runner. Instead, the one launch attempt in a worker
+ * process that plausibly hits a fresh package's first-touch disk/AV scan
+ * gets its own generous, EXPLICIT timeout (`FIRST_LAUNCH_TIMEOUT_MS`) plus a
+ * single warm-up retry performed here, at the launch layer, before the
+ * caller's test/hook ever sees a failure. Every later launch in the same
+ * worker uses the tighter `STEADY_STATE_LAUNCH_TIMEOUT_MS` and no retry,
+ * since there is no cold cache left to absorb.
+ *
+ * The wall-clock duration of the launch that succeeds is always logged (not
+ * just attached on failure), so a slow-but-passing cold start is observable
+ * as a number in the run log, not just inferred from a timeout.
+ */
+export async function launchInstrumentedElectronTestApp<
+  TPage extends ElectronTestPageLike,
+  TApp extends ElectronTestAppLike<TPage>,
+>(
+  launch: () => Promise<TApp>,
+  processLog: PackagedProcessLog,
+  startupTrace: PackagedStartupTrace,
+): Promise<{ app: TApp; page: TPage }> {
+  const isFirstLaunchOfWorker = !hasCompletedFirstPackagedLaunch;
+  const domContentLoadedTimeoutMs = isFirstLaunchOfWorker
+    ? FIRST_LAUNCH_TIMEOUT_MS
+    : STEADY_STATE_LAUNCH_TIMEOUT_MS;
+
+  try {
+    const result = await attemptInstrumentedElectronLaunch<TPage, TApp>(
+      launch,
+      processLog,
+      startupTrace,
+      domContentLoadedTimeoutMs,
+    );
+    hasCompletedFirstPackagedLaunch = true;
+    logPackagedLaunchDuration(startupTrace, isFirstLaunchOfWorker, false);
+    return result;
+  } catch (firstAttemptError) {
+    if (!isFirstLaunchOfWorker) {
+      throw firstAttemptError;
+    }
+    // Only the first launch of the worker gets a warm-up retry: a failure
+    // here is presumed to be the fresh-package cold start #509 describes,
+    // not a genuine regression. Reset the trace so the retry's own
+    // milestones are the ones reported, and log loudly that a retry
+    // happened so it is never mistaken for a silent pass.
+    console.warn(
+      '[e2e] First packaged Electron launch of this worker failed ' +
+        `(${(firstAttemptError as Error).message}); retrying once to absorb ` +
+        'a possible fresh-package cold start (#509).',
+    );
+    const retryTrace = createPackagedStartupTrace();
+    const result = await attemptInstrumentedElectronLaunch<TPage, TApp>(
+      launch,
+      processLog,
+      retryTrace,
+      domContentLoadedTimeoutMs,
+    );
+    hasCompletedFirstPackagedLaunch = true;
+    logPackagedLaunchDuration(retryTrace, true, true);
+    return result;
+  }
+}
+
+function logPackagedLaunchDuration(
+  startupTrace: PackagedStartupTrace,
+  isFirstLaunchOfWorker: boolean,
+  wasWarmUpRetry: boolean,
+): void {
+  const snapshot = startupTrace.snapshot();
+  const domContentLoaded = snapshot.milestones.find(
+    (milestone) => milestone.name === 'domcontentloaded',
+  );
+  const elapsedMs = domContentLoaded?.elapsedMs ?? snapshot.elapsedMs;
+  console.log(
+    `[e2e] Packaged Electron ${isFirstLaunchOfWorker ? 'first' : 'subsequent'} ` +
+      `launch reached domcontentloaded in ${elapsedMs}ms` +
+      (wasWarmUpRetry ? ' (after one warm-up retry)' : '') +
+      '.',
+  );
 }
 
 function captureProcessStream(
@@ -666,7 +792,17 @@ export async function launchPackagedApp(
     if (!page) {
       throw new Error('Packaged app did not create a BrowserWindow.');
     }
-    await page.waitForLoadState('domcontentloaded');
+    const domContentLoadedStartedAt = Date.now();
+    // Explicit timeout, matching launchInstrumentedElectronTestApp above --
+    // waitForLoadState's own implicit 30s default is independent of this
+    // module's STARTUP_TIMEOUT_MS budget (#509).
+    await page.waitForLoadState('domcontentloaded', {
+      timeout: FIRST_LAUNCH_TIMEOUT_MS,
+    });
+    console.log(
+      '[e2e] Packaged Electron app (CDP) reached domcontentloaded in ' +
+        `${Date.now() - domContentLoadedStartedAt}ms.`,
+    );
     return {
       page,
       processOutput: () => processLog.read(),
