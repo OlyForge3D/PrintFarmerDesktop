@@ -1264,6 +1264,67 @@ describe('main', () => {
     subjectSpies.error.mockRestore();
     subjectSpies.log.mockRestore();
   });
+
+  // #638 (Vasquez, PR review on #527's fix): the naive "always clear
+  // process.exitCode on success" version above is not safe for two `main`
+  // invocations racing in the same process. Repro pattern from the review
+  // comment: `Promise.all([main(failingDeps), main(delayedPassingDeps)])`.
+  // The failing call resolves first and sets `exitCode = 1`; the delayed
+  // passing call resolves afterward and, under the naive fix, clears it back
+  // to `undefined` -- erasing a real failure recorded by a DIFFERENT,
+  // concurrent invocation. This spec pins the guarded behavior: a success
+  // must not clear an `exitCode` set by a failure that happened anywhere
+  // during its own in-flight window, even from another `main` call.
+  it('does not let a concurrent success erase a failure recorded by another in-flight main() call', async () => {
+    const spies = silenced();
+    const failingDeps = {
+      run: ghStub([231, 999]),
+      readDeclaration: () => BODY,
+      // Resolves immediately, so this call finishes well before the delayed
+      // passing call below and gets a real chance to set exitCode = 1 first.
+      readClosures: () =>
+        Promise.resolve({
+          value: [231, 999],
+          reads: 13,
+          settled: true,
+          elapsedMs: 61000,
+        }),
+    };
+    const delayedPassingDeps = {
+      run: ghStub([231]),
+      readDeclaration: () => BODY,
+      // Delayed: still in flight when the failing call above completes and
+      // sets process.exitCode = 1, so this call's success return happens
+      // strictly after that failure was recorded -- the scenario the naive
+      // unconditional clear could not handle.
+      readClosures: () =>
+        new Promise((resolve) => {
+          setTimeout(
+            () =>
+              resolve({
+                value: [231],
+                reads: 13,
+                settled: true,
+                elapsedMs: 61000,
+              }),
+            10,
+          );
+        }),
+    };
+
+    const [failureResult, successResult] = await Promise.all([
+      main(['231'], failingDeps),
+      main(['231'], delayedPassingDeps),
+    ]);
+
+    expect(failureResult).toEqual({ ok: false, settled: true, stale: false });
+    expect(successResult).toEqual({ ok: true, settled: true, stale: false });
+    // The real assertion: the concurrent success must not have masked the
+    // concurrent failure. Before the epoch guard, this was `undefined`.
+    expect(process.exitCode).toBe(1);
+    spies.error.mockRestore();
+    spies.log.mockRestore();
+  });
 });
 
 /**
