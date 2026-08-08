@@ -166,7 +166,9 @@ export function formatReport(summary) {
         'worktree — the ownership signal itself may be unreliable on this clone:',
     );
     for (const [sha, paths] of summary.collisions) {
-      lines.push(`  ${sha.slice(0, 12)}  claimed by: ${[...new Set(paths)].join(', ')}`);
+      lines.push(
+        `  ${sha.slice(0, 12)}  claimed by: ${[...new Set(paths)].join(', ')}`,
+      );
     }
   }
   return lines.join('\n');
