@@ -307,6 +307,27 @@
 // visibility into by design (it reads workflow/package.json/config text,
 // not a spawned subprocess's own environment). Revisit if either shape is
 // ever found actually committed, rather than closing them pre-emptively.
+//
+// AN EIGHTH REVIEW ROUND split again -- Vasquez approved (confirmed the
+// round-7 `.ps1` fix works, does not reopen the round-6 `.js` false
+// positive, and that the documented residual-gaps approach above is
+// reasonable). Ripley rejected: round 7's own reasoning for where to put
+// `.ps1` was WRONG. `.ps1` is not an OS launcher-wrapper artifact the way
+// `.exe`/`.cmd`/`.bat` are (those are safe to blanket-strip because they
+// are never a meaningful part of a real script's identity) -- it is a
+// genuine PowerShell SCRIPTING extension, in the exact same category as
+// `.js`/`.mjs`/`.cjs`, which is precisely why blanket-stripping those
+// caused round 6's false positive and had to be reverted to an explicit
+// literal-name check instead. Grouping `.ps1` with `.cmd` reintroduced that
+// identical mistake one extension later: an arbitrary, unrelated
+// `.\scripts\vitest.ps1` would be misclassified as the real vitest binary.
+// Fixed exactly as Ripley suggested, mirroring round 6's own resolution:
+// `.ps1` is removed from `WINDOWS_WRAPPER_EXTENSIONS` (which now strips
+// only `.exe`/`.cmd`/`.bat` again), and `vitest.ps1` is added to the same
+// explicit-literal-name check `isVitestBasename` already used for
+// `vitest.mjs` (now `VITEST_LITERAL_NAMES`, a small named set instead of
+// two inline string comparisons, since it grew a member) -- same
+// mechanism, right list.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
@@ -462,12 +483,22 @@ const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 // Windows `.bin` shims include a `vitest.ps1` alongside `vitest`/
 // `vitest.cmd`, so `.\node_modules\.bin\vitest.ps1 run -t "only this arm"`
 // is a DIRECT invocation of the real vitest wrapper, not a wrapped/piped
-// shape, and was still missed. `.ps1` belongs with the other Windows
-// executable-wrapper extensions above (an OS/toolchain artifact, not a
-// deliberate node-ecosystem filename distinction the way `.js`/`.mjs` are),
-// so it is added to the same unconditionally-stripped set rather than
-// treated as a fourth mechanism.
-const WINDOWS_WRAPPER_EXTENSIONS = ['.exe', '.cmd', '.bat', '.ps1'];
+// shape, and was still missed.
+//
+// Ripley (review of this PR, round 8): the round-7 fix put `.ps1` in the
+// WRONG set. `.ps1` is not an OS launcher-wrapper artifact the way
+// `.exe`/`.cmd`/`.bat` are -- it is a genuine PowerShell SCRIPTING
+// extension, in the same category as `.js`/`.mjs`/`.cjs` (which is exactly
+// why blanket-stripping THOSE caused round 6's false positive, reverted to
+// an explicit-literal check instead). Blanket-stripping `.ps1` here
+// reintroduced that identical mistake one extension later:
+// `.\scripts\vitest.ps1` (an arbitrary, unrelated PowerShell script that
+// merely happens to be named similarly) would be misclassified as the real
+// vitest binary. `.ps1` is removed from this set; the real vitest wrapper's
+// specific name (`vitest.ps1`) is recognised instead via the same explicit
+// literal check `isVitestBasename` already uses for `vitest.mjs` -- the
+// right mechanism, just the right list.
+const WINDOWS_WRAPPER_EXTENSIONS = ['.exe', '.cmd', '.bat'];
 
 function stripKnownExecutableExtension(name) {
   const lower = name.toLowerCase();
@@ -513,8 +544,19 @@ function basenameOf(token) {
   return stripKnownExecutableExtension(base).toLowerCase();
 }
 
+// Known literal names for the real vitest binary/wrapper that are not
+// safe to derive by stripping an extension -- either because the
+// extension is a genuine node-ecosystem scripting extension that could
+// legitimately name an unrelated file (`.mjs`, and now `.ps1` -- see
+// Ripley, round 8, on `WINDOWS_WRAPPER_EXTENSIONS` above for why `.ps1`
+// moved here rather than being blanket-stripped), not an OS-launcher
+// artifact. Each of these is vitest's own real, documented Windows/Node
+// `.bin` shim name, checked by exact literal match rather than assumed
+// from a stripped extension.
+const VITEST_LITERAL_NAMES = new Set(['vitest', 'vitest.mjs', 'vitest.ps1']);
+
 function isVitestBasename(basename) {
-  return basename === 'vitest' || basename === 'vitest.mjs';
+  return VITEST_LITERAL_NAMES.has(basename);
 }
 
 /**

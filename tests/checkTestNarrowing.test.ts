@@ -236,8 +236,9 @@ describe('isDirectVitestInvocation', () => {
   it('POSITIVE CONTROL (Vasquez, review of this PR, round 7): recognises a direct .ps1 wrapper invocation', () => {
     // npm's own Windows `.bin` shims include a `vitest.ps1` alongside
     // `vitest`/`vitest.cmd` -- this is a DIRECT invocation of the real
-    // vitest wrapper, the same kind of OS-toolchain artifact as `.cmd`, not
-    // a distinguishing node-ecosystem filename the way `.js`/`.mjs` are.
+    // vitest wrapper, recognised (round 8) by an explicit literal-name
+    // check, the same mechanism used for `vitest.mjs`, not by blanket
+    // `.ps1` extension-stripping (see the negative control below for why).
     expect(
       isDirectVitestInvocation(
         tokenizeCommand(
@@ -245,6 +246,24 @@ describe('isDirectVitestInvocation', () => {
         ),
       ),
     ).toBe(true);
+  });
+
+  it('NEGATIVE CONTROL (Ripley, review of this PR, round 8): does not misidentify an arbitrary script merely because its name collides with a known launcher after extension-stripping', () => {
+    // Round 7's first version of this fix put `.ps1` in
+    // `WINDOWS_WRAPPER_EXTENSIONS` (the blanket-strip set), which meant a
+    // completely unrelated script literally named `node.ps1` (a PowerShell
+    // script that has nothing to do with Node.js -- it merely happens to
+    // share a name) would strip to `node`, collide with the real `node`
+    // launcher name, and cause its next argument to be inspected as if it
+    // were `node`'s own invocation of vitest. `.ps1` is a real PowerShell
+    // scripting extension (like `.js`/`.mjs`), not an OS-launcher-wrapper
+    // artifact (like `.cmd`/`.exe`/`.bat`), so arbitrarily-named `.ps1`
+    // files must not be blanket-stripped down to a bare name that can
+    // collide with `VITEST_LAUNCHERS`, `STDIN_INTERPRETERS`, or
+    // `isVitestBasename`.
+    expect(
+      isDirectVitestInvocation(tokenizeCommand('node.ps1 vitest run -t x')),
+    ).toBe(false);
   });
 });
 
@@ -928,6 +947,22 @@ describe('HOME 2: workflows invoking vitest directly', () => {
       flag: '-t',
       value: 'only this arm',
     });
+  });
+
+  it('NEGATIVE CONTROL (Ripley, review of this PR, round 8): does not misidentify an arbitrary script merely because its name collides with a known launcher after extension-stripping', () => {
+    // Round 7's first version of this fix put `.ps1` in the blanket-strip
+    // set, so a workflow step invoking a completely unrelated
+    // `node.ps1` script (nothing to do with Node.js) would strip to
+    // `node`, collide with the real `node` launcher, and cause its
+    // argument to be treated as `node`'s own invocation of vitest.
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: node.ps1 vitest run -t "only this arm"',
+    ].join('\n');
+    expect(checkWorkflowText('ci.yml', contents)).toHaveLength(0);
   });
 
   it('POSITIVE CONTROL (Ripley, review of this PR, round 3): reads a folded block scalar header with a chomping indicator and trailing comment', () => {
