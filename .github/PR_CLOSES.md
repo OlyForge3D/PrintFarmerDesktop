@@ -38,7 +38,7 @@ List every issue this PR is intended to close, one bare `#<number>` per
 line, inside a fenced block whose info string is exactly `closes`:
 
 ```closes
-#482
+#457
 ```
 
 An empty block (`\`\`\`closes`immediately followed by`\`\`\``) is a valid,
