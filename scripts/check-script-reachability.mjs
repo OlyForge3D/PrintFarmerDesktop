@@ -181,6 +181,25 @@ export const UNENFORCED_CHECKS = {
     'docs/closed-head-dispatch.md. Discharge path: a maintainer pastes that ' +
     'file in as-is and deletes this entry — the reachability check will then ' +
     'find it invoked for real.',
+  'check:direct-push-artifact':
+    'Its evaluator IS enforced in CI: tests/directPushArtifact.test.ts drives ' +
+    'findBareCommits, formatBareCommitEvidence, alreadyRecorded and the fetch ' +
+    'helpers over plain objects and a stubbed fetch/exec, under `npm run test`. ' +
+    "Its main() needs the same 'workflow' OAuth scope check:closed-head-dispatch " +
+    'above is blocked on: a push-triggered workflow file under ' +
+    '.github/workflows/ is what would invoke it automatically, and this ' +
+    "session's credential lacks 'workflow' scope for any diff touching that " +
+    'directory, measured the same way (#380, #388). ' +
+    'STATE THE WEAKNESS PLAINLY: until a maintainer with `workflow` scope adds ' +
+    'the trigger file, nothing runs this after a push lands, and the artifact ' +
+    'it exists to leave (#388 remedy 3, for the enforce_admins exemption) is ' +
+    'only posted when a human invokes it by hand. That is weaker than intended ' +
+    'and it is still a record where today there is none at all — the two known ' +
+    '2026-08-04 bypass commits were posted to #388 by hand as part of closing ' +
+    'that issue. Discharge path: the day a maintainer commits ' +
+    '.github/workflows/direct-push-artifact.yml (on: push, branches: ' +
+    '[development]) invoking `npm run check:direct-push-artifact -- --since ' +
+    '<previous head>`, this becomes enforced and this entry should be deleted.',
 };
 
 // `check:citation-reachability` was here, with a four-condition discharge path.
