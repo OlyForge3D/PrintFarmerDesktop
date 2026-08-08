@@ -616,9 +616,9 @@ only one of them is redacted:
   `AutoDispatchService.GetQueuedJobSelectionAsync()`, which considers not
   only jobs already assigned to this printer (`AssignedPrinterId == printerId`)
   but also **every farm-wide unassigned queued job** that the dispatch scorer
-  rates as a candidate for this printer (line ~1532–1566: `unassignedQuery`
-  filters only on `AssignedPrinterId == null`, with no creator/project/group
-  check). `QueueResourceAuthorizationService.CanAccessPrinterAsync()` — the
+  rates as a candidate for this printer (line ~1532–1566: the unassigned-jobs
+  query filters only on `AssignedPrinterId == null`, with no creator/project/
+  group check). `QueueResourceAuthorizationService.CanAccessPrinterAsync()` — the
   check gating `Printer-{printerId}` group membership
   (`PrinterHub.EnsurePrinterAccessAsync`) — authorizes only against that
   printer's `PrinterGroupAccess` rules, and never against the unassigned
