@@ -1,8 +1,15 @@
-# Closing-reference declaration
+# Closing-reference declaration (legacy, migration fallback)
 
 This file is the pinned-to-commit half of the closing-reference check
 (`scripts/check-closing-references.mjs`). It replaces the PR-body fenced
 `closes` block that check used to read.
+
+**#622: new PRs should declare in `.github/pr-closes/<branch-slug>.md`
+instead of here.** This file was a single slot shared by every open PR,
+which meant any two PRs open at once were guaranteed to conflict on it. It
+is kept only so PRs opened before #622 keep working unmigrated: a PR is read
+from here only when it has no file of its own under `.github/pr-closes/`.
+See `.github/pr-closes/README.md` for the new format and migration details.
 
 ## Why this file exists instead of a PR-body block (#415)
 

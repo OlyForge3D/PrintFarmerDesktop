@@ -1,11 +1,12 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   classifyClosingReferenceReadError,
   ClosingReferenceReadBudgetError,
   compareClosures,
+  declarationFilePathForBranch,
   DECLARATION_FILE_PATH,
   formatFailure,
   formatUnsettled,
@@ -15,9 +16,14 @@ import {
   parseCommitClosures,
   parseDeclaredClosures,
   parsePullRequestCommitResponse,
+  PR_CLOSES_DIR,
   readDeclarationFile,
+  readDeclarationForPullRequest,
   readPullRequestCommitClosures,
   readSettled,
+  resolveDeclarationPath,
+  resolveHeadBranchName,
+  slugifyBranchName,
   toGitHubCliError,
   witnessContradiction,
   witnessUnreadableBinding,
@@ -777,6 +783,155 @@ describe('readDeclarationFile', () => {
 
   it('defaults to DECLARATION_FILE_PATH, tracked in the commit tree', () => {
     expect(DECLARATION_FILE_PATH).toBe('.github/PR_CLOSES.md');
+  });
+});
+
+/**
+ * #622. Concurrent PRs conflicted because `DECLARATION_FILE_PATH` was one
+ * shared slot every PR edited. These specs pin the per-PR replacement: a
+ * branch-keyed path, a migration fallback to the legacy file, and the
+ * branch-name resolution that avoids a network call in the common case.
+ */
+describe('per-PR declaration files (#622)', () => {
+  it('slugifies a branch name into a safe, lowercase, hyphenated path segment', () => {
+    expect(slugifyBranchName('dev/jpapiez/squad-622-per-pr-closes')).toBe(
+      'dev-jpapiez-squad-622-per-pr-closes',
+    );
+    expect(slugifyBranchName('Feature/Foo_Bar.Baz')).toBe(
+      'feature-foo-bar-baz',
+    );
+    expect(slugifyBranchName('--weird//branch--')).toBe('weird-branch');
+  });
+
+  it('rejects a branch name with nothing usable in a file name', () => {
+    expect(() => slugifyBranchName('')).toThrow();
+    expect(() => slugifyBranchName('///')).toThrow();
+  });
+
+  it('builds the per-PR declaration path under PR_CLOSES_DIR', () => {
+    expect(declarationFilePathForBranch('dev/jpapiez/squad-622')).toBe(
+      `${PR_CLOSES_DIR}/dev-jpapiez-squad-622.md`,
+    );
+  });
+
+  it('resolves the head branch from GITHUB_HEAD_REF without calling run', () => {
+    const run = vi.fn();
+    const branch = resolveHeadBranchName('123', {
+      run,
+      environment: { GITHUB_HEAD_REF: 'dev/someone/thing' },
+    });
+    expect(branch).toBe('dev/someone/thing');
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('falls back to gh pr view when GITHUB_HEAD_REF is unset (merge_group)', () => {
+    const run = vi.fn().mockReturnValue('dev/someone/thing');
+    const branch = resolveHeadBranchName('123', { run, environment: {} });
+    expect(branch).toBe('dev/someone/thing');
+    expect(run).toHaveBeenCalledWith([
+      'pr',
+      'view',
+      '123',
+      '--json',
+      'headRefName',
+      '--jq',
+      '.headRefName',
+    ]);
+  });
+
+  it('resolves the declaration path for a PR from its head branch', () => {
+    const run = vi.fn();
+    const resolved = resolveDeclarationPath('123', {
+      run,
+      environment: { GITHUB_HEAD_REF: 'dev/jpapiez/squad-622' },
+    });
+    expect(resolved).toBe(`${PR_CLOSES_DIR}/dev-jpapiez-squad-622.md`);
+  });
+
+  describe('readDeclarationForPullRequest', () => {
+    let directory: string;
+    let originalCwd: string;
+
+    beforeEach(() => {
+      directory = mkdtempSync(path.join(tmpdir(), 'closing-decl-repo-'));
+      originalCwd = process.cwd();
+      process.chdir(directory);
+    });
+
+    afterEach(() => {
+      process.chdir(originalCwd);
+      rmSync(directory, { recursive: true, force: true });
+    });
+
+    it("reads a PR's own file when one exists, in preference to the legacy file", () => {
+      mkdirSync(PR_CLOSES_DIR, { recursive: true });
+      writeFileSync(
+        declarationFilePathForBranch('dev/jpapiez/squad-622'),
+        ['```closes', '#622', '```'].join('\n'),
+      );
+      writeFileSync(
+        DECLARATION_FILE_PATH,
+        ['```closes', '#464', '```'].join('\n'),
+      );
+
+      const content = readDeclarationForPullRequest('1', {
+        run: vi.fn(),
+        environment: { GITHUB_HEAD_REF: 'dev/jpapiez/squad-622' },
+      });
+      expect(parseDeclaredClosures(content)).toEqual({
+        hasBlock: true,
+        declared: [622],
+      });
+    });
+
+    it('falls back to the legacy shared file when the PR has no file of its own', () => {
+      mkdirSync(path.dirname(DECLARATION_FILE_PATH), { recursive: true });
+      writeFileSync(
+        DECLARATION_FILE_PATH,
+        ['```closes', '#464', '```'].join('\n'),
+      );
+
+      const content = readDeclarationForPullRequest('1', {
+        run: vi.fn(),
+        environment: { GITHUB_HEAD_REF: 'dev/unmigrated/branch' },
+      });
+      expect(parseDeclaredClosures(content)).toEqual({
+        hasBlock: true,
+        declared: [464],
+      });
+    });
+
+    it('treats an explicit empty per-PR block as "closes nothing", not a fallback', () => {
+      mkdirSync(PR_CLOSES_DIR, { recursive: true });
+      writeFileSync(
+        declarationFilePathForBranch('dev/jpapiez/squad-622'),
+        ['```closes', '```'].join('\n'),
+      );
+      writeFileSync(
+        DECLARATION_FILE_PATH,
+        ['```closes', '#464', '```'].join('\n'),
+      );
+
+      const content = readDeclarationForPullRequest('1', {
+        run: vi.fn(),
+        environment: { GITHUB_HEAD_REF: 'dev/jpapiez/squad-622' },
+      });
+      expect(parseDeclaredClosures(content)).toEqual({
+        hasBlock: true,
+        declared: [],
+      });
+    });
+
+    it('declares nothing when neither the per-PR nor the legacy file exists', () => {
+      const content = readDeclarationForPullRequest('1', {
+        run: vi.fn(),
+        environment: { GITHUB_HEAD_REF: 'dev/brand-new/branch' },
+      });
+      expect(parseDeclaredClosures(content)).toEqual({
+        hasBlock: false,
+        declared: [],
+      });
+    });
   });
 });
 

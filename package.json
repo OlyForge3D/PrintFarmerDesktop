@@ -53,6 +53,7 @@
     "check:required-contexts": "node scripts/check-required-contexts.mjs",
     "check:behind-base": "node scripts/check-behind-base.mjs",
     "check:stale-checkout-head": "node scripts/check-stale-checkout-head.mjs",
+    "check:dated-measurement": "node scripts/check-dated-measurement.mjs",
     "check:protection-assumptions": "node scripts/check-protection-assumptions.mjs",
     "check:script-reachability": "node scripts/check-script-reachability.mjs",
     "check:sequencing-hold": "node scripts/check-sequencing-hold.mjs",

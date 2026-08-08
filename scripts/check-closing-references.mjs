@@ -49,12 +49,36 @@
  * the PR declares nothing, so any armed closure is a mismatch. That is
  * deliberate and fail-closed: the hazard is a closure nobody intended, and a
  * check that treats silence as consent cannot see it.
+ *
+ * #622. `DECLARATION_FILE_PATH` was a single shared file every PR edited to
+ * declare its own closure, which meant every pair of concurrently-open PRs
+ * conflicted on it -- guaranteed by the design, not bad luck (12 of 20
+ * commits on `development` touched it; a live rotation caught #619, #610 and
+ * #620 each `CONFLICTING` in turn within one ten-minute window, purely on
+ * this file, with `git merge-tree` confirming no implementation-file
+ * conflict). The declaration now lives at one file PER PR, keyed by a
+ * sanitised slug of the head branch name (`declarationFilePathForBranch`), so
+ * concurrent PRs on different branches touch disjoint paths and cannot
+ * conflict with each other on this half of the check. Every #415 property is
+ * unchanged: the declaration still lives in the commit tree, at a path
+ * resolved from the branch of the exact head commit this run checks out
+ * (`GITHUB_HEAD_REF`, or `gh pr view --json headRefName` when that is unset,
+ * as on `merge_group`), so it still changes only via a commit and `synchronize`
+ * still re-runs the check when it changes.
+ *
+ * Migration: a PR whose branch has no file under `PR_CLOSES_DIR` falls back
+ * to reading the legacy shared `DECLARATION_FILE_PATH`, so every PR open
+ * before this change keeps working, unmigrated, exactly as before -- still
+ * subject to the old shared-file contention among the PRs that haven't moved,
+ * but not with any PR that has. A PR migrates simply by adding its own file
+ * under `PR_CLOSES_DIR`; nothing needs to delete the legacy file's content for
+ * that PR, because the per-branch file is checked first and wins outright.
  */
 
 import { pathToFileURL } from 'node:url';
 import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolvePullRequestNumber } from './check-pr-closure-scope.mjs';
 
 const RETRYABLE_TRANSPORT_CODES = new Set([
@@ -322,13 +346,87 @@ export class ClosingReferenceReadBudgetError extends Error {
 const DECLARATION_FENCE = /^```closes[^\S\n]*$([\s\S]*?)^```[^\S\n]*$/gm;
 
 /**
- * Where the declaration lives, relative to the repository root. Tracked in
- * the commit tree so `synchronize` -- an event every required-context
- * workflow already receives -- re-runs this check whenever the declaration
- * changes. See the module header (#415) for why this moved out of the PR
- * body.
+ * Legacy shared declaration file, from before #622. Tracked in the commit
+ * tree so `synchronize` -- an event every required-context workflow already
+ * receives -- re-runs this check whenever the declaration changes. See the
+ * module header (#415) for why this moved out of the PR body, and (#622) for
+ * why a single shared path was replaced by one file per PR.
+ *
+ * Kept only as a migration fallback: a PR opened before #622 that has not
+ * added its own file under `PR_CLOSES_DIR` is still read from here, so it
+ * keeps working unmigrated. Any PR with a file under `PR_CLOSES_DIR` never
+ * touches this path.
  */
 export const DECLARATION_FILE_PATH = '.github/PR_CLOSES.md';
+
+/**
+ * Directory holding one declaration file per PR (#622), keyed by a sanitised
+ * slug of the PR's head branch name. Concurrent PRs on different branches
+ * write to disjoint paths under this directory, so they cannot conflict with
+ * each other the way every pair sharing `DECLARATION_FILE_PATH` did.
+ */
+export const PR_CLOSES_DIR = '.github/pr-closes';
+
+/**
+ * Sanitises a branch name into a filesystem- and git-safe slug: lowercase,
+ * runs of anything other than `[a-z0-9]` collapsed to a single `-`, leading
+ * and trailing `-` trimmed. Two branches that differ only in case or in
+ * separator characters would otherwise collide on one file, silently
+ * reintroducing the shared-slot hazard this change removes.
+ */
+export function slugifyBranchName(branchName) {
+  if (typeof branchName !== 'string' || branchName.trim() === '') {
+    throw new Error(
+      `cannot derive a declaration file path from an empty branch name: ${JSON.stringify(branchName)}`,
+    );
+  }
+  const slug = branchName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  if (slug === '') {
+    throw new Error(
+      `branch name ${JSON.stringify(branchName)} has no characters usable in a file name`,
+    );
+  }
+  return slug;
+}
+
+/** Where a PR's declaration lives, given its head branch name. */
+export function declarationFilePathForBranch(branchName) {
+  return `${PR_CLOSES_DIR}/${slugifyBranchName(branchName)}.md`;
+}
+
+/**
+ * The head branch name for `prNumber`, without a network call in the common
+ * case. `GITHUB_HEAD_REF` is populated by GitHub Actions on every
+ * `pull_request` event without an API call; it is empty on `merge_group`
+ * (there the queue's own synthetic ref is what `GITHUB_HEAD_REF` would name,
+ * not the original branch), so that case falls back to asking `gh` directly.
+ */
+export function resolveHeadBranchName(
+  prNumber,
+  { run = gh, environment = process.env } = {},
+) {
+  const fromEvent = environment.GITHUB_HEAD_REF;
+  if (typeof fromEvent === 'string' && fromEvent.trim() !== '') {
+    return fromEvent;
+  }
+  return run([
+    'pr',
+    'view',
+    String(prNumber),
+    '--json',
+    'headRefName',
+    '--jq',
+    '.headRefName',
+  ]);
+}
+
+/** The declaration file path this PR is judged against. */
+export function resolveDeclarationPath(prNumber, options = {}) {
+  return declarationFilePathForBranch(resolveHeadBranchName(prNumber, options));
+}
 
 /**
  * Reads the declaration file from the checked-out worktree.
@@ -349,6 +447,22 @@ export function readDeclarationFile(filePath = DECLARATION_FILE_PATH) {
     }
     throw error;
   }
+}
+
+/**
+ * Reads the declaration for `prNumber`: its own file under `PR_CLOSES_DIR`
+ * when one exists, otherwise the legacy shared file (#622 migration path).
+ * `existsSync` is used rather than treating an ENOENT from `readDeclarationFile`
+ * as "fall back", because an existing-but-empty per-PR file is itself a valid
+ * declaration ("closes nothing") and must not be overridden by the legacy
+ * file's contents.
+ */
+export function readDeclarationForPullRequest(prNumber, options = {}) {
+  const path = resolveDeclarationPath(prNumber, options);
+  if (existsSync(path)) {
+    return readDeclarationFile(path);
+  }
+  return readDeclarationFile(DECLARATION_FILE_PATH);
 }
 
 /**
@@ -779,7 +893,8 @@ export function formatFailure({ unexpected, missing, hasBlock, prNumber }) {
   if (!hasBlock) {
     lines.push(
       '',
-      `  This PR has no declaration block in ${DECLARATION_FILE_PATH}. Add one,`,
+      `  This PR has no declaration file. Add one at ` +
+        `${PR_CLOSES_DIR}/<branch-slug>.md (see ${PR_CLOSES_DIR}/README.md),`,
       '  committed alongside the change, listing every issue it is meant to',
       '  close, or none at all:',
       '',
@@ -787,9 +902,11 @@ export function formatFailure({ unexpected, missing, hasBlock, prNumber }) {
       '      #123',
       '      ```',
       '',
-      '  The declaration is read from that tracked file, not the PR body (#415):',
-      '  a file in the commit tree is pinned to the head SHA, so editing the body',
-      '  alone can no longer change this verdict.',
+      `  A PR without its own file falls back to the legacy shared ` +
+        `${DECLARATION_FILE_PATH}.`,
+      '  Either way, the declaration is read from a tracked file, not the PR',
+      '  body (#415): a file in the commit tree is pinned to the head SHA, so',
+      '  editing the body alone can no longer change this verdict.',
     );
   }
   return lines.join('\n');
@@ -857,7 +974,7 @@ export async function main(argv, deps = {}) {
     run = gh,
     readClosures = readSettled,
     readCommitClosures = readPullRequestCommitClosures,
-    readDeclaration = readDeclarationFile,
+    readDeclaration = readDeclarationForPullRequest,
     environment = process.env,
   } = deps;
   const supplied = argv[0];
@@ -869,7 +986,11 @@ export async function main(argv, deps = {}) {
   // #415: read from the commit tree, not `gh pr view --json body`. The
   // checked-out worktree is pinned to the head commit this run is judging, so
   // this can no longer disagree with the SHA the check reports against.
-  const { declared, hasBlock } = parseDeclaredClosures(readDeclaration());
+  // #622: read from this PR's own file under PR_CLOSES_DIR (falling back to
+  // the legacy shared file), not from one path every PR shares.
+  const { declared, hasBlock } = parseDeclaredClosures(
+    readDeclaration(prNumber, { run, environment }),
+  );
   const commitClosures = readCommitClosures(prNumber, run);
 
   // Both fields out of ONE response. Fetched separately they cannot witness
