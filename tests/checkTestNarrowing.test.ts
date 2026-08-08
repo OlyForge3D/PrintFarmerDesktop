@@ -265,6 +265,38 @@ describe('isDirectVitestInvocation', () => {
       isDirectVitestInvocation(tokenizeCommand('node.ps1 vitest run -t x')),
     ).toBe(false);
   });
+
+  it('NEGATIVE CONTROL (Ripley, review of this PR, round 9): an unrelated script literally named vitest.ps1 outside a node_modules tree is not misidentified as the real vitest wrapper', () => {
+    // Round 8 moved `.ps1` from blanket-extension-stripping to an explicit
+    // literal-name match, which closed the false-positive surface for
+    // ARBITRARY `.ps1` filenames but not for a script that happens to be
+    // named EXACTLY `vitest.ps1` outside of a real install location --
+    // e.g. `.\scripts\vitest.ps1`, a project script with nothing to do
+    // with the real vitest binary. The real `vitest.ps1` (npm's own
+    // Windows `.bin` shim) always lives inside a `node_modules` tree, so
+    // requiring that path context before trusting the extension-qualified
+    // literal name closes this without narrowing the literal-name match
+    // itself.
+    expect(
+      isDirectVitestInvocation(
+        tokenizeCommand('.\\scripts\\vitest.ps1 run -t x'),
+      ),
+    ).toBe(false);
+  });
+
+  it('POSITIVE CONTROL (Ripley, review of this PR, round 9): still recognises vitest.mjs and vitest.ps1 through other real node_modules layouts, not just .bin', () => {
+    // The `node_modules` path-context requirement above must not become so
+    // narrow that it only recognises the `.bin` shim shape -- vitest's own
+    // package entry file living at `node_modules/vitest/vitest.mjs` (used
+    // elsewhere in this file) and a hypothetical nested `.ps1` wrapper
+    // under `node_modules` should both still count, since both genuinely
+    // sit inside a real install location.
+    expect(
+      isDirectVitestInvocation(
+        tokenizeCommand('node node_modules/vitest/dist/vitest.ps1 run -t x'),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('HOME 1: package.json test/test:* scripts', () => {
@@ -961,6 +993,21 @@ describe('HOME 2: workflows invoking vitest directly', () => {
       '    steps:',
       '      - name: Test',
       '        run: node.ps1 vitest run -t "only this arm"',
+    ].join('\n');
+    expect(checkWorkflowText('ci.yml', contents)).toHaveLength(0);
+  });
+
+  it('NEGATIVE CONTROL (Ripley, review of this PR, round 9): an unrelated script literally named vitest.ps1 outside a node_modules tree is not misidentified in a workflow step', () => {
+    // Round 8's literal-name match for `vitest.ps1` had no path context, so
+    // an arbitrary project script coincidentally named exactly that (not
+    // npm's real `.bin` shim, which always lives under `node_modules`)
+    // would still be misclassified as the real vitest binary.
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: .\\scripts\\vitest.ps1 run -t "only this arm"',
     ].join('\n');
     expect(checkWorkflowText('ci.yml', contents)).toHaveLength(0);
   });

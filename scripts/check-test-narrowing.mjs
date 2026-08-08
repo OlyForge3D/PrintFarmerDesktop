@@ -440,7 +440,7 @@ export function detectNarrowingFlag(tokens) {
  */
 export function isDirectVitestInvocation(tokens) {
   const { index, basename } = resolveInvokedProgramBasename(tokens);
-  if (isVitestBasename(basename)) return true;
+  if (isVitestBasename(basename, tokens[index])) return true;
   if (basename !== undefined && VITEST_LAUNCHERS.has(basename)) {
     return isVitestProgramToken(tokens[index + 1]);
   }
@@ -553,10 +553,56 @@ function basenameOf(token) {
 // artifact. Each of these is vitest's own real, documented Windows/Node
 // `.bin` shim name, checked by exact literal match rather than assumed
 // from a stripped extension.
+//
+// Ripley (review of this PR, round 9): moving `.ps1` here from
+// `WINDOWS_WRAPPER_EXTENSIONS` narrowed round 8's false-positive surface
+// but did not eliminate it -- matching `vitest.mjs`/`vitest.ps1` by
+// BASENAME ALONE, with no path context, still misclassifies any arbitrary
+// script that happens to be named exactly that (e.g. `.\scripts\vitest.ps1`,
+// a project script with nothing to do with the real vitest binary) as the
+// real thing. Ripley also flagged this as a pre-existing gap in the
+// mechanism itself, not new to `.ps1`: the same reasoning already applied,
+// unnoticed, to `vitest.mjs`.
+//
+// The bare name `vitest` is NOT in the same boat: it names the program by
+// however the OS/shell resolves it from `PATH` (or `PATHEXT`), exactly the
+// way `bash`/`node`/any other bare command name is invoked and resolved
+// throughout this whole file -- there is no "path" to sanity-check for a
+// bare command name, and treating an unqualified `vitest` invocation as
+// the real vitest binary is the plain, intended reading of that token, not
+// an assumption layered on top of it.
+//
+// `vitest.mjs`/`vitest.ps1`, by contrast, are only ever real as npm's own
+// `.bin` shims / the package's own entry file -- both of which always sit
+// inside a `node_modules` tree. A script coincidentally sharing that exact
+// filename OUTSIDE a `node_modules` path is not that shim. Requiring the
+// full invoked token's path to contain a `node_modules` path segment
+// before trusting an EXTENSION-QUALIFIED literal name closes this for
+// `.mjs` and `.ps1` alike, uniformly, rather than adding another
+// per-extension patch.
 const VITEST_LITERAL_NAMES = new Set(['vitest', 'vitest.mjs', 'vitest.ps1']);
 
-function isVitestBasename(basename) {
-  return VITEST_LITERAL_NAMES.has(basename);
+// Extension-qualified literal names are only trustworthy when the token
+// that carried them plausibly comes from a real npm/vitest install
+// location -- see the comment on `VITEST_LITERAL_NAMES` above. The bare
+// `vitest` name has no such requirement.
+const VITEST_LITERAL_NAMES_REQUIRING_NODE_MODULES_CONTEXT = new Set([
+  'vitest.mjs',
+  'vitest.ps1',
+]);
+
+function hasNodeModulesPathContext(token) {
+  if (typeof token !== 'string') return false;
+  const normalised = token.replaceAll('\\', '/').toLowerCase();
+  return normalised.split('/').includes('node_modules');
+}
+
+function isVitestBasename(basename, token) {
+  if (!VITEST_LITERAL_NAMES.has(basename)) return false;
+  if (!VITEST_LITERAL_NAMES_REQUIRING_NODE_MODULES_CONTEXT.has(basename)) {
+    return true;
+  }
+  return hasNodeModulesPathContext(token);
 }
 
 /**
@@ -588,7 +634,7 @@ function resolveInvokedProgramBasename(tokens) {
 }
 
 function isVitestProgramToken(token) {
-  return isVitestBasename(basenameOf(token));
+  return isVitestBasename(basenameOf(token), token);
 }
 
 const TEST_SCRIPT_NAME = /^test(:.*)?$/;
