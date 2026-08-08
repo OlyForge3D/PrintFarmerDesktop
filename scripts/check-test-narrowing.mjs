@@ -755,6 +755,21 @@ const TEST_SCRIPT_NAME = /^test(:.*)?$/;
 const NPM_SCRIPT_MANAGERS = new Set(['npm', 'yarn', 'pnpm']);
 const RUN_KEYWORDS = new Set(['run', 'run-script']);
 
+// npm's own, small, closed set of lifecycle scripts it will run bare, with
+// no `run`/`run-script` keyword at all -- `npm test`, `npm start`, `npm
+// stop`, `npm restart` are documented npm CLI shorthands for their
+// same-named package.json script. Every OTHER bare `npm <token>` (`ci`,
+// `install`, `publish`, `audit`, `config`, ...) names one of npm's OWN
+// built-in subcommands, which npm always resolves before ever considering
+// a package.json script of the same name -- there is no bare-shorthand
+// fallback to a script for any name outside this set.
+const NPM_BARE_LIFECYCLE_SCRIPTS = new Set([
+  'test',
+  'start',
+  'stop',
+  'restart',
+]);
+
 /**
  * Skip past any run of flag tokens (anything starting with `-`) starting at
  * `startIndex`, returning the index of the first non-flag token. Shared by
@@ -779,13 +794,15 @@ function skipFlagTokens(tokens, startIndex) {
  * Resolve the script name an `npm`/`yarn`/`pnpm` command line refers to, if
  * it is one of the "run another package.json script" forms this alias
  * chain follows -- `npm run <name>`, `npm run-script <name>`,
- * `yarn run <name>`, `pnpm run <name>`, or the bare `npm <name>` /
- * `yarn <name>` / `pnpm <name>` shorthand (valid for `yarn`/`pnpm` always,
- * and for `npm` on its handful of reserved lifecycle names such as
- * `test`/`start`/`stop`). Returns `null` for anything else, including
- * `npm exec`/`npx`, which invoke a binary directly rather than naming
- * another script (that shape is a DIRECT invocation, handled by
- * `isDirectVitestInvocation`/`VITEST_LAUNCHERS` instead).
+ * `yarn run <name>`, `pnpm run <name>`, or npm's OWN bare lifecycle
+ * shorthand (`npm test`/`start`/`stop`/`restart`, see
+ * `NPM_BARE_LIFECYCLE_SCRIPTS` above). Returns `null` for anything else,
+ * including `npm exec`/`npx` (a DIRECT invocation, handled by
+ * `isDirectVitestInvocation`/`VITEST_LAUNCHERS` instead), any other bare
+ * `npm <token>` (one of npm's own built-in subcommands, not a script
+ * alias), and a bare `yarn`/`pnpm <token>` with no `run` keyword (this file
+ * does not follow that shorthand at all -- see the false-positive note
+ * below).
  *
  * Vasquez (review of this PR, round 10): the previous regex-based version
  * of this (`NPM_SCRIPT_REFERENCE`) required the package manager name and
@@ -798,17 +815,50 @@ function skipFlagTokens(tokens, startIndex) {
  * launcher options in this file) before AND after the `run` keyword closes
  * this the same way skipping flags before the actual program in
  * `findLauncherTargetToken` does for direct invocations.
+ *
+ * Vasquez (review of PR #647, round 11): that same fix, read too broadly,
+ * treated ANY bare `npm <token>` (with no `run` keyword at all) as a
+ * script-alias reference -- `checkPackageJsonScripts({ test: 'npm ci', ci:
+ * 'vitest run -t "only this arm"' })` flagged a violation even though `npm
+ * ci` runs npm's OWN built-in `ci` subcommand (a clean-install command),
+ * never `scripts.ci`, regardless of whether a script by that name exists.
+ * npm resolves its fixed set of built-in subcommands FIRST, always -- a
+ * same-named script is never reached bare, only through `npm run ci`.  The
+ * only bare exception npm itself documents is a small, closed set of
+ * lifecycle shorthands (`test`, `start`, `stop`, `restart`); everything
+ * else bare is a built-in, not a fallback to a script. Rather than grow an
+ * ever-longer blocklist of npm's own built-ins (`ci`, `install`, `i`,
+ * `publish`, `audit`, `config`, `dedupe`, `exec`, `init`, `link`, ... --
+ * the same "one more shape" pattern that cost this file ten review rounds
+ * elsewhere), this narrows to an ALLOWLIST of the four names npm itself
+ * treats as bare script shorthand, which is provably complete rather than
+ * provably incomplete: npm defines no others. `yarn`/`pnpm` bare shorthand
+ * (`yarn foo` without `run`) is a real fallback those tools DO perform, but
+ * only after checking their own considerably larger built-in command sets
+ * first (`yarn install`, `yarn add`, `pnpm install`, ...) -- the identical
+ * false-positive shape this fix closes for npm. No review round has
+ * reproduced it for yarn/pnpm yet, and this file would rather state that
+ * plainly than patch it speculatively: bare `yarn`/`pnpm <token>` is
+ * therefore not followed as an alias at all (a real, intentional gap --
+ * `yarn <script>`/`pnpm <script>` without the `run` keyword still requires
+ * `yarn run <script>`/`pnpm run <script>` to be resolved by this file).
  */
 function resolveScriptAliasTarget(command) {
   const tokens = tokenizeCommand(command.trim());
   if (tokens.length === 0) return null;
-  if (!NPM_SCRIPT_MANAGERS.has(basenameOf(tokens[0]))) return null;
-  let i = skipFlagTokens(tokens, 1);
-  if (i < tokens.length && RUN_KEYWORDS.has(tokens[i])) {
-    i = skipFlagTokens(tokens, i + 1);
+  const manager = basenameOf(tokens[0]);
+  if (!NPM_SCRIPT_MANAGERS.has(manager)) return null;
+  const afterManager = skipFlagTokens(tokens, 1);
+  if (afterManager < tokens.length && RUN_KEYWORDS.has(tokens[afterManager])) {
+    const target = tokens[skipFlagTokens(tokens, afterManager + 1)];
+    return typeof target === 'string' ? target : null;
   }
-  const target = tokens[i];
-  return typeof target === 'string' ? target : null;
+  if (manager !== 'npm') return null;
+  const bareTarget = tokens[afterManager];
+  return typeof bareTarget === 'string' &&
+    NPM_BARE_LIFECYCLE_SCRIPTS.has(bareTarget)
+    ? bareTarget
+    : null;
 }
 
 /**

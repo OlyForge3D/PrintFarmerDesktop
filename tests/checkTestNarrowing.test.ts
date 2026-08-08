@@ -489,6 +489,66 @@ describe('HOME 1: package.json test/test:* scripts', () => {
     });
   });
 
+  it('NEGATIVE CONTROL (Vasquez, review of PR #647, round 11): bare `npm ci` is npm\'s own built-in subcommand, not a reference to a "ci" script', () => {
+    // Round 10 widened bare-shorthand alias resolution to any `npm <token>`
+    // with no `run` keyword, which over-reached: npm always resolves its
+    // OWN fixed set of built-in subcommands (`ci`, `install`, `publish`,
+    // `audit`, ...) first, regardless of whether a same-named script also
+    // exists -- `npm ci` never runs `scripts.ci` bare, only `npm run ci`
+    // does. `test: 'npm ci'` here must be read as literally running npm's
+    // clean-install command (no narrowing flag in it at all), NOT as a
+    // reference to the `ci` script below, which DOES carry a narrowing.
+    const violations = checkPackageJsonScripts({
+      test: 'npm ci',
+      ci: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("POSITIVE CONTROL (Vasquez, review of PR #647, round 11): npm's own bare lifecycle shorthand (`npm test`) still resolves to the `test` script", () => {
+    // Unlike `npm ci`/`npm install`/other built-ins, `npm test` IS one of
+    // npm's own documented bare shorthands for `npm run test` -- narrowing
+    // the round-11 fix to an allowlist of npm's real bare lifecycle names
+    // (test/start/stop/restart) must not also break this legitimate case.
+    const violations = checkPackageJsonScripts({
+      test: 'npm test',
+      pretest: 'echo unrelated',
+    });
+    expect(violations).toEqual([]);
+    const withNarrowing = checkPackageJsonScripts({
+      prepublish: 'npm test',
+      test: 'vitest run -t "only this arm"',
+    });
+    expect(withNarrowing).toHaveLength(1);
+    expect(withNarrowing[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('NEGATIVE CONTROL (Vasquez, review of PR #647, round 11): bare `yarn`/`pnpm <token>` (no `run` keyword) is not followed as a script alias', () => {
+    // yarn/pnpm DO fall back to running a same-named script for an
+    // unrecognised bare subcommand, but only after checking their own
+    // (considerably larger) built-in command sets first -- the identical
+    // false-positive shape `npm ci` just exposed. No review round has
+    // reproduced a concrete yarn/pnpm built-in collision yet, so this file
+    // does not follow bare yarn/pnpm shorthand at all rather than guess at
+    // an allowlist for tools whose bare-command semantics were not
+    // measured here; `run`/`run-script` still resolves it either way.
+    const bareYarn = checkPackageJsonScripts({
+      test: 'yarn build',
+      build: 'vitest run -t "only this arm"',
+    });
+    expect(bareYarn).toEqual([]);
+    const explicitYarnRun = checkPackageJsonScripts({
+      test: 'yarn run build',
+      build: 'vitest run -t "only this arm"',
+    });
+    expect(explicitYarnRun).toHaveLength(1);
+  });
+
   it('POSITIVE CONTROL (Vasquez, review of this PR, round 3): refuses a narrowing committed through a template-literal exec() wrapper', () => {
     // Round 2 added the single-string exec() shape (`'...'`/`"..."`); round
     // 3 found the identical call shape written as a template literal
