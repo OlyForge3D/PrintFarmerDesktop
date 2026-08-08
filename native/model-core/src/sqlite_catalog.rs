@@ -3527,11 +3527,12 @@ impl CatalogStore for SqliteCatalog {
             Option<String>,
             i64,
             String,
+            String,
         )> = self
             .conn
             .query_row(
                 "SELECT project_id, conflict_kind, entity_id, resolved_at, resolution,
-                        resolution_revision_id, server_revision, entity_type
+                        resolution_revision_id, server_revision, entity_type, created_at
                  FROM calibration_conflicts
                  WHERE profile_id = ?1 AND conflict_id = ?2",
                 params![params.profile_id, params.conflict_id],
@@ -3545,6 +3546,7 @@ impl CatalogStore for SqliteCatalog {
                         row.get(5)?,
                         row.get(6)?,
                         row.get(7)?,
+                        row.get(8)?,
                     ))
                 },
             )
@@ -3559,6 +3561,7 @@ impl CatalogStore for SqliteCatalog {
             stored_revision_id,
             server_revision,
             entity_type,
+            created_at,
         ) = row.ok_or_else(|| {
             format!(
                 "{}: no calibration conflict {} exists for profile {}",
@@ -3635,6 +3638,7 @@ impl CatalogStore for SqliteCatalog {
                 kind,
                 resolution: params.resolution,
                 resolved_at,
+                created_at,
                 revision_id: stored_revision_id,
                 supersedes_revision_id,
                 superseded_observations,
@@ -3756,6 +3760,7 @@ impl CatalogStore for SqliteCatalog {
             kind,
             resolution: params.resolution,
             resolved_at: now,
+            created_at,
             revision_id,
             supersedes_revision_id,
             superseded_observations,
@@ -6812,6 +6817,54 @@ mod tests {
             resolution,
             merged_fields: None,
         }
+    }
+
+    /// Issue #525: `created_at` must be the conflict's own detection instant,
+    /// read back from the stored row -- not the resolution instant reused
+    /// under a different name.
+    ///
+    /// The fixture backdates `created_at` to a value nothing in the resolve
+    /// path could otherwise produce, so if the returned `created_at` ever
+    /// reverts to being derived from `resolved_at` (i.e. `now_ts()` at
+    /// resolution time), this fails by returning a *different*, wrong value
+    /// rather than passing by coincidence.
+    #[test]
+    fn resolving_a_conflict_returns_its_own_recorded_created_at_not_the_resolution_instant() {
+        let mut store = SqliteCatalog::open_in_memory().unwrap();
+        let conflict_id = seed_conflict(
+            &mut store,
+            Some(CalibrationConflictKind::DeletionVsLocalEdit),
+            9,
+        );
+
+        const BACKDATED_CREATED_AT: &str = "1700000000";
+        store
+            .conn
+            .execute(
+                "UPDATE calibration_conflicts SET created_at = ?2
+                 WHERE profile_id = 'profile-1' AND conflict_id = ?1",
+                params![conflict_id, BACKDATED_CREATED_AT],
+            )
+            .unwrap();
+
+        let resolved = store
+            .resolve_calibration_conflict(&resolve_params(
+                &conflict_id,
+                CalibrationConflictResolutionKind::AcceptServer,
+            ))
+            .expect("acceptServer is permitted for a deletionVsLocalEdit conflict");
+
+        assert_eq!(
+            resolved.created_at, BACKDATED_CREATED_AT,
+            "created_at must be the value recorded when the conflict was \
+             detected, read back from the store"
+        );
+        assert_ne!(
+            resolved.created_at, resolved.resolved_at,
+            "a conflict backdated well before its resolution must not report \
+             the same instant for both fields -- that is exactly the \
+             fabrication this test exists to catch"
+        );
     }
 
     #[test]
