@@ -580,24 +580,65 @@ Source: `src/infra/Domain/PrintJob.cs`, `src/infra/Domain/PrinterDispatchState.c
 `src/infra/Services/Queue/JobQueueService.cs`,
 `src/api/Controllers/JobQueueController.cs`.
 
-### 10.5 Printer-{id} envelopes redact job state
+### 10.5 Printer-{id} redaction is scoped to `queueevent` envelopes only
 
-The SignalR group name is produced by `AuthorizedHubGroups.Printer(Guid)` →
-`"Printer-{printerId}"` (`src/infra/Security/AuthorizedHubGroups.cs` line 17
-at 9c1d7e4b). Envelopes delivered to that group are produced by
-`QueueEventEnvelope.RedactForPrinter()` (`src/infra/Services/SignalR/QueueEventEnvelope.cs`,
-both commits), which nulls `jobId`, `projectId`, `calibrationAttemptId`,
-`jobKind`, `jobRevision`, `dispatchStateRevision`, `attemptId`, `attemptNumber`,
-`attemptOutcome`, `bedClearState`, `bedClearCommandId`, `bedClearExpiresAtUtc`,
-`errorCode`, `failureCode`, `failureRetryable`, `failureRequiresReconciliation`,
-_payloadJson_, `jobLogicalRevision`, and `dispatchStateLogicalRevision`, and
-forces `eventType` to `"PrintFarmer.Queue.PrinterStateChanged.v1"`.
+The `Printer-{printerId}` SignalR group (`AuthorizedHubGroups.Printer(Guid)`,
+`src/infra/Security/AuthorizedHubGroups.cs` line 17 at 9c1d7e4b) is a general
+per-printer channel, not a queue-envelope-only channel. Three distinct
+message types are sent to it in `OlyForge3D/PrintFarmer` at 9c1d7e4b, and
+only one of them is redacted:
 
-**Never read job state, bed-clear state, or revision tokens from a printer-group
-envelope.** For full job data subscribe to `QueueJob-{jobId}` (symbol
-`AuthorizedHubGroups.QueueJob(Guid)`). PFD enforces this via the exported
-`isJobScopedEnvelope` helper (`src/shared/ipc.ts`) used by
-`CalibrationQueueDispatchPanel`.
+- **`queueevent`** — produced by `QueueEventEnvelope.RedactForPrinter()`
+  (`src/infra/Services/SignalR/QueueEventEnvelope.cs`, both commits), sent
+  from `QueueOutboxPublisherService.cs` line 203. `RedactForPrinter()` nulls
+  `jobId`, `projectId`, `calibrationAttemptId`, `jobKind`, `jobRevision`,
+  `dispatchStateRevision`, `attemptId`, `attemptNumber`, `attemptOutcome`,
+  `bedClearState`, `bedClearCommandId`, `bedClearExpiresAtUtc`, `errorCode`,
+  `failureCode`, `failureRetryable`, `failureRequiresReconciliation`,
+  _payloadJson_, `jobLogicalRevision`, and `dispatchStateLogicalRevision`, and
+  forces `eventType` to `"PrintFarmer.Queue.PrinterStateChanged.v1"`.
+- **`printerupdated`** — carries `PrinterStatusDto`
+  (`src/infra/Dtos/PrinterStatusDto.cs`), sent from
+  `SignalRPrinterStatusBroadcaster.cs` and the per-backend polling/websocket
+  adapters (FlashForge, Moonraker, OctoPrint, PrusaLink, Sdcp, TestEmulator)
+  and `PrinterHub.cs`. Every field on this DTO (`Id`, `IsOnline`, `State`,
+  `Progress`, `JobName`/`FileName`, position/temperature telemetry,
+  `SpoolInfo`, `MmuStatus`, etc.) describes only the printer the group is
+  keyed on; there is no other-printer or other-tenant identifier in the type.
+  Not redacted, but reviewed here and found in-scope for the group's printer.
+- **`autodispatchstatechanged`** — carries `AutoDispatchStatusDto`
+  (`src/infra/Services/AutoDispatch/AutoDispatchService.cs`, sent from 7 call
+  sites in the same file). **Not redacted, and not fully in-scope.** Most
+  fields (`PrinterId`, `PrinterName`, `Enabled`, `IsReady`, `CurrentJobName`,
+  `State`, `BedPreConfirmed`, ETags) describe only the group's own printer.
+  However, `NextJobId`, `NextJobName`, `NextJobKind`, and
+  `NextJobPrinterConfigRevision` are populated from
+  `AutoDispatchService.GetQueuedJobSelectionAsync()`, which considers not
+  only jobs already assigned to this printer (`AssignedPrinterId == printerId`)
+  but also **every farm-wide unassigned queued job** that the dispatch scorer
+  rates as a candidate for this printer (line ~1532–1566: `unassignedQuery`
+  filters only on `AssignedPrinterId == null`, with no creator/project/group
+  check). `QueueResourceAuthorizationService.CanAccessPrinterAsync()` — the
+  check gating `Printer-{printerId}` group membership
+  (`PrinterHub.EnsurePrinterAccessAsync`) — authorizes only against that
+  printer's `PrinterGroupAccess` rules, and never against the unassigned
+  job's `CreatorSubject` or `CalibrationProjectId`, which is the ownership
+  check `CanAccessJobAsync`/`FilterActorAccessibleJobIdsAsync` apply
+  elsewhere. **Net effect: a principal authorized only to view one printer
+  can receive the name of another user's/project's not-yet-assigned queue
+  job merely because the scorer favors their printer as a dispatch target,
+  with no job-level ownership or group check.** This is filed as
+  OlyForge3D/PrintFarmer#1324 (see that issue for the concrete leak); it is
+  not fixed here.
+
+**Never read job state, bed-clear state, or revision tokens from a
+`queueevent` printer-group envelope; never treat `NextJobName`/`NextJobId`
+from an `autodispatchstatechanged` envelope as scoped to the receiving
+principal's authorization.** For full, correctly-scoped job data subscribe to
+`QueueJob-{jobId}` (symbol `AuthorizedHubGroups.QueueJob(Guid)`). PFD enforces
+the `queueevent` rule via the exported `isJobScopedEnvelope` helper
+(`src/shared/ipc.ts`) used by `CalibrationQueueDispatchPanel`; PFD has no
+equivalent guard for `autodispatchstatechanged`'s `NextJob*` fields today.
 
 ### 10.5.1 Orchestration `status` and `currentStep` are forward-compatible strings
 
