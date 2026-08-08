@@ -107,16 +107,39 @@ describe('the premises of #111 and #151 are checked, not promised', () => {
     ]);
   });
 
-  it('words an absent-field violation differently from an unsafe-value violation', () => {
-    // The acceptance test requires the two to be distinguishable, not merely
-    // both non-empty.
+  it.each([
+    ['allow_force_pushes', { enabled: true }],
+    ['allow_deletions', { enabled: true }],
+    ['required_linear_history', { enabled: false }],
+    ['enforce_admins', { enabled: true }],
+  ] as const)(
+    'words an absent %s violation differently from its present-unsafe-value violation',
+    (field, unsafeValue) => {
+      // The acceptance test requires the two to be distinguishable, not merely
+      // both non-empty, for every one of the five named fields (#488).
+      const deletedFacts = baseline();
+      delete (deletedFacts.protection as Record<string, unknown>)[field];
+      const [deletedViolation] = evaluateProtectionAssumptions(deletedFacts);
+
+      const unsafeFacts = baseline();
+      (unsafeFacts.protection as Record<string, unknown>)[field] = unsafeValue;
+      const [unsafeViolation] = evaluateProtectionAssumptions(unsafeFacts);
+
+      expect(deletedViolation?.actual).not.toBe(unsafeViolation?.actual);
+      expect(deletedViolation?.consequence).not.toBe(
+        unsafeViolation?.consequence,
+      );
+    },
+  );
+
+  it('words an absent required_pull_request_reviews violation differently from its present-unsafe-value violation', () => {
     const deletedFacts = baseline();
     delete (deletedFacts.protection as Record<string, unknown>)
-      .allow_force_pushes;
+      .required_pull_request_reviews;
     const [deletedViolation] = evaluateProtectionAssumptions(deletedFacts);
 
     const unsafeFacts = baseline();
-    unsafeFacts.protection.allow_force_pushes = { enabled: true };
+    unsafeFacts.protection.required_pull_request_reviews.required_approving_review_count = 1;
     const [unsafeViolation] = evaluateProtectionAssumptions(unsafeFacts);
 
     expect(deletedViolation?.actual).not.toBe(unsafeViolation?.actual);

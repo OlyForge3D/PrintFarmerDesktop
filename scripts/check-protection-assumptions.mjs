@@ -144,7 +144,26 @@ export function evaluateProtectionAssumptions({
     'the trunk can be deleted outright, which no client-side guard sees',
   );
 
-  if (!enabled(protection.required_linear_history)) {
+  // Unlike the three fields above, this one's safe value is `true`, so an
+  // absent node already produced a violation before #488 -- `enabled()` reads
+  // it as `false`, and `!enabled(...)` fires. But it fired with the SAME
+  // wording as an explicit `{ enabled: false }` node, which fails the acceptance
+  // criterion that the absent case be distinguishable from the unsafe-value
+  // case. Split it the same way as the false-safe fields above.
+  if (
+    protection.required_linear_history === undefined ||
+    protection.required_linear_history === null
+  ) {
+    violations.push(
+      violation(
+        'development.required_linear_history',
+        'true (present and confirmed)',
+        '(field absent from the API response)',
+        '#149',
+        'the required_linear_history fact is missing from the response rather than confirmed false -- a deleted or unreadable field is not the same as GitHub reporting linear history is no longer required',
+      ),
+    );
+  } else if (!enabled(protection.required_linear_history)) {
     violations.push(
       violation(
         'development.required_linear_history',
