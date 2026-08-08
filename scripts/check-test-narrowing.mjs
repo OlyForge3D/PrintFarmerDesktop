@@ -247,6 +247,41 @@
 // segment, in the same single shared function every identity comparison in
 // this file already goes through -- one more normalisation step in the same
 // place, not a fourth comparison site.
+//
+// A SIXTH REVIEW ROUND confirmed round 5's three reproductions are fixed,
+// and found two new things, one from each reviewer, of DIFFERENT kinds:
+//
+//   Vasquez (round 6): round 5's extension-stripping was too broad -- it
+//   stripped `.js`/`.cjs`/`.mjs` unconditionally, so `node scripts/vitest.js
+//   run -t "only this arm"` (an ordinary project script that merely happens
+//   to be named `vitest.js`, not the real vitest binary) was misidentified
+//   as a direct invocation. This is a CORRECTNESS REGRESSION introduced by
+//   round 5's own fix, not a missing case -- fixed by narrowing which
+//   extensions are stripped unconditionally to the Windows executable
+//   WRAPPER extensions only (`.exe`/`.cmd`/`.bat`; see
+//   `WINDOWS_WRAPPER_EXTENSIONS`), since only those are OS-level artifacts
+//   rather than a real, distinguishing part of a node-ecosystem filename.
+//   The real vitest entry file (`vitest.mjs`) is still recognised, but via
+//   the pre-existing explicit literal check in `isVitestBasename`, not by
+//   assuming every similarly-named `.js`-family file is vitest.
+//
+//   Ripley (round 6): PowerShell as a wrapper/interpreter was still
+//   unrecognised -- `echo '...' | powershell.exe` (piped) and
+//   `pwsh -Command 'vitest run -t ...'` (handed a script directly via a
+//   flag, not piped) both reproduced as undetected. Given this repo's own
+//   CI runs on `windows-latest`, PowerShell is arguably a MORE natural
+//   Windows wrapper than `bash`/`sh`, not a stretch finding. Fixed by (a)
+//   adding `powershell`/`pwsh` to `STDIN_INTERPRETERS` (closes the piped
+//   form, reusing `detectNarrowingThroughPipeline` unchanged) and (b) a new,
+//   equally structural `detectNarrowingThroughInlineScriptArgument`, which
+//   recognises the OTHER shape these same interpreters share -- being
+//   handed a script directly via `-c`/`-Command`/`-e`/`--eval` rather than
+//   through stdin -- without enumerating vitest-specific wrapper shapes.
+//   Also folded in while touching identity comparisons: mixed-case program
+//   names (`Vitest.CMD`, `NPX.CMD`, `BASH.EXE`) are Windows-legal spellings
+//   of the same programs, so `basenameOf` now lower-cases its result, the
+//   same single shared point every comparison in this file already goes
+//   through.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
@@ -377,16 +412,31 @@ const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 // `windows-latest` (Ripley, review of this PR, round 5), so these are the
 // native Windows invocation form here, not an exotic corner case -- a gate
 // that only recognised the extension-less form would be blind on the
-// platform this repo actually tests against. `.mjs`/`.cjs`/`.js` are
-// included too because `node .../vitest.mjs` (already handled before this
-// round via an explicit `vitest.mjs` check) is naturally subsumed once
-// extension-stripping happens in the same shared place, rather than kept
-// as a separate special case.
-const EXECUTABLE_EXTENSIONS = ['.exe', '.cmd', '.bat', '.mjs', '.cjs', '.js'];
+// platform this repo actually tests against.
+//
+// Vasquez (review of this PR, round 6): round 5's first version of this set
+// ALSO included `.js`/`.cjs`/`.mjs`, on the theory that `node .../vitest.mjs`
+// (the real vitest package entry file) was "naturally subsumed" by the same
+// stripping. That reasoning does not hold for `.js`/`.cjs` the way it does
+// for `.exe`/`.cmd`/`.bat`: a Windows executable-wrapper extension is an OS
+// artifact, never a deliberate identity distinction a user makes, but a
+// `.js`/`.mjs`/`.cjs` suffix genuinely IS part of a file's name in the node
+// ecosystem -- `scripts/vitest.js` is a real, different file from `vitest`,
+// e.g. an ordinary project script that merely happens to be named that.
+// Stripping `.js` unconditionally therefore reintroduced exactly the kind of
+// false positive round 3 fixed for `echo vitest -t harmless` (a bare-token
+// match standing in for "is this actually the invoked program"), just one
+// layer down: `node scripts/vitest.js run -t "only this arm"` was
+// misidentified as invoking the real vitest binary. Only the Windows
+// executable-WRAPPER extensions are stripped unconditionally here; the real
+// vitest entry file's specific name (`vitest.mjs`) is still recognised, but
+// via the existing explicit literal check in `isVitestBasename` below, not
+// by assuming every `.js`-family file named similarly is vitest.
+const WINDOWS_WRAPPER_EXTENSIONS = ['.exe', '.cmd', '.bat'];
 
 function stripKnownExecutableExtension(name) {
   const lower = name.toLowerCase();
-  for (const ext of EXECUTABLE_EXTENSIONS) {
+  for (const ext of WINDOWS_WRAPPER_EXTENSIONS) {
     if (lower.endsWith(ext) && name.length > ext.length) {
       return name.slice(0, name.length - ext.length);
     }
@@ -406,14 +456,26 @@ function stripKnownExecutableExtension(name) {
  * `.\node_modules\.bin\vitest.cmd` were not recognised as the programs they
  * are. One more normalisation step in this same shared function closes it
  * for every comparison in the file at once, the same way path-prefix
- * stripping did in round 4.
+ * stripping did in round 4. (Round 6 narrowed which extensions this strips
+ * -- see `WINDOWS_WRAPPER_EXTENSIONS` above -- but the mechanism, one shared
+ * normalisation point, is unchanged.)
+ *
+ * Ripley (review of this PR, round 6): also noted mixed-case executable
+ * names (Windows program/path resolution is case-insensitive: `Vitest.CMD`,
+ * `NPX.CMD`, `BASH.EXE` all name the same programs as their lower-case
+ * spellings) were not recognised, since every identity comparison in this
+ * file (`isVitestBasename`, `VITEST_LAUNCHERS`, `STDIN_INTERPRETERS`,
+ * `OUTPUT_ONLY_COMMANDS`) is a case-sensitive Set lookup. Lower-casing the
+ * basename here, at the one shared point every one of those comparisons
+ * already flows through, fixes it for all of them at once rather than
+ * teaching each Set lookup to be case-insensitive separately.
  */
 function basenameOf(token) {
   if (typeof token !== 'string') return undefined;
   const normalised = token.replaceAll('\\', '/');
   const idx = normalised.lastIndexOf('/');
   const base = idx === -1 ? normalised : normalised.slice(idx + 1);
-  return stripKnownExecutableExtension(base);
+  return stripKnownExecutableExtension(base).toLowerCase();
 }
 
 function isVitestBasename(basename) {
@@ -582,9 +644,9 @@ const OUTPUT_ONLY_COMMANDS = new Set([
   'true',
   'false',
   ':',
-  'Write-Host',
-  'Write-Output',
-  'Write-Information',
+  'write-host',
+  'write-output',
+  'write-information',
 ]);
 
 // A small, closed set of programs whose whole purpose is to read a script
@@ -594,6 +656,16 @@ const OUTPUT_ONLY_COMMANDS = new Set([
 // enumeration is what round 2 and round 3 kept finding new members of); it
 // is an enumeration of the much smaller, much more stable set of things
 // capable of executing arbitrary text at all.
+//
+// Ripley (review of this PR, round 6): `powershell`/`pwsh` were missing --
+// on this repo's own `windows-latest` CI, PowerShell is arguably a MORE
+// natural wrapper/interpreter than `bash`/`sh`, not a stretch addition.
+// Reproduced both `echo '...' | powershell.exe` (piped, see
+// `detectNarrowingThroughPipeline`) and `pwsh -Command 'vitest run -t ...'`
+// (handed a script directly via a flag, not piped -- see
+// `detectNarrowingThroughInlineScriptArgument` below, a new, equally small
+// and structural check for that second shape, rather than one more
+// wrapper-shape regex).
 const STDIN_INTERPRETERS = new Set([
   'sh',
   'bash',
@@ -607,6 +679,8 @@ const STDIN_INTERPRETERS = new Set([
   'python3',
   'ruby',
   'perl',
+  'powershell',
+  'pwsh',
 ]);
 
 // Call-name-adjacent forms only: the flag/value pair must sit inside what
@@ -783,13 +857,69 @@ function detectNarrowingThroughPipeline(rawCommand) {
   return detectNarrowing(printedArgument, { requireDirectInvocation: false });
 }
 
+const INLINE_SCRIPT_FLAGS = new Set([
+  '-c',
+  '-command',
+  '--command',
+  '-e',
+  '--eval',
+]);
+
+/**
+ * Ripley (review of this PR, round 6): `pwsh -Command 'vitest run -t
+ * "only this arm"'` was not recognised. This is a sibling of
+ * `detectNarrowingThroughPipeline` above rather than the same case: nothing
+ * is piped here, an interpreter is simply handed the script it should run
+ * as one of its OWN arguments (`-c`, `-Command`, `-e`/`--eval` are the
+ * shapes `sh`/`bash`/`powershell`/`pwsh`/`node`/`python`/`ruby`/`perl` all
+ * share for "run this string as code"). The same structural idea applies:
+ * do not try to enumerate every wrapper shape, recognise the mechanism (an
+ * interpreter from `STDIN_INTERPRETERS`, handed an inline script via one of
+ * these flags) and re-run the full `detectNarrowing` on that argument,
+ * exactly as if it had been the command all along.
+ *
+ * PowerShell's own flag casing (`-Command`) is matched case-insensitively,
+ * consistent with `basenameOf`'s case-insensitive program-name handling
+ * added the same round (see its comment) -- Windows/PowerShell flag
+ * spelling is not meaningfully case-sensitive either.
+ *
+ * Deliberately tried LAST in `detectNarrowing` (after `detectWrappedNarrowing`):
+ * this function's own `tokenizeCommand`-based parse of the raw text can
+ * mis-split a nested same-character quote (e.g. `node -e
+ * "exec(\`vitest run -t "x"\`)"`, where the wrapped-call regexes below
+ * already handle the nesting correctly) and recover a truncated value.
+ * Trying the more nesting-tolerant wrapped-call check first means a command
+ * matching both never reaches this less tolerant one.
+ */
+function detectNarrowingThroughInlineScriptArgument(rawCommand) {
+  const tokens = tokenizeCommand(rawCommand);
+  const { index, basename } = resolveInvokedProgramBasename(tokens);
+  if (basename === undefined || !STDIN_INTERPRETERS.has(basename)) return null;
+  for (let i = index + 1; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (typeof token !== 'string') continue;
+    if (INLINE_SCRIPT_FLAGS.has(token.toLowerCase())) {
+      const inline = tokens[i + 1];
+      if (typeof inline !== 'string') continue;
+      const nested = detectNarrowing(inline, {
+        requireDirectInvocation: false,
+      });
+      if (nested !== null) return nested;
+    }
+  }
+  return null;
+}
+
 /**
  * Try the direct, shell-word tokenised detection first; then, if the
  * command pipes into an interpreter, recover what it actually prints and
- * check that; fall back to the wrapped/programmatic detection last. A
- * command that is direct never needs either fallback, and a command that
- * only mentions vitest in passing (no narrowing flag at all, not piped
- * anywhere) never matches any of the three.
+ * check that; then the wrapped/programmatic detection (`exec(...)` and
+ * friends); finally, if it hands an interpreter an inline script as one of
+ * its OWN arguments (`-c`/`-Command`/`-e`), recover that (tried last -- see
+ * that function's own comment for why). A command that is direct never
+ * needs any fallback, and a command that only mentions vitest in passing (no
+ * narrowing flag at all, not piped or handed inline anywhere) never matches
+ * any of the four.
  */
 function detectNarrowing(rawCommand, { requireDirectInvocation }) {
   const tokens = tokenizeCommand(rawCommand);
@@ -800,7 +930,17 @@ function detectNarrowing(rawCommand, { requireDirectInvocation }) {
   }
   const piped = detectNarrowingThroughPipeline(rawCommand);
   if (piped !== null) return piped;
-  return detectWrappedNarrowing(rawCommand);
+  // Wrapped-call detection (`exec('vitest run -t ...')`, and friends) is
+  // tried BEFORE the inline-script-argument check below, deliberately: it
+  // uses regexes built to survive a nested same-character quote (e.g. a
+  // template literal containing a doubly-quoted flag value), where
+  // `detectNarrowingThroughInlineScriptArgument`'s `tokenizeCommand`-based
+  // parse of the SAME raw text would mis-split on that nesting and recover
+  // a truncated value. Trying the more nesting-tolerant check first means a
+  // command matching both never falls through to the less tolerant one.
+  const wrapped = detectWrappedNarrowing(rawCommand);
+  if (wrapped !== null) return wrapped;
+  return detectNarrowingThroughInlineScriptArgument(rawCommand);
 }
 
 /**

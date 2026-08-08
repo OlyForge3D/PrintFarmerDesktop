@@ -202,6 +202,36 @@ describe('isDirectVitestInvocation', () => {
       ),
     ).toBe(true);
   });
+
+  it('NEGATIVE CONTROL (Vasquez, review of this PR, round 6): does not misidentify an ordinary project script merely named similarly to vitest', () => {
+    // Round 5's first version of extension-stripping stripped `.js`
+    // unconditionally, which made `scripts/vitest.js` -- a real, different
+    // file that just happens to share vitest's name minus the extension --
+    // indistinguishable from the actual vitest binary. Only the Windows
+    // executable-WRAPPER extensions (`.exe`/`.cmd`/`.bat`) are OS artifacts
+    // safe to strip unconditionally; `.js`/`.cjs` are a real part of a
+    // node-ecosystem filename and must not be assumed away.
+    expect(
+      isDirectVitestInvocation(
+        tokenizeCommand('node scripts/vitest.js run -t x'),
+      ),
+    ).toBe(false);
+  });
+
+  it('POSITIVE CONTROL (Ripley, review of this PR, round 6): recognises mixed-case Windows program/path spellings', () => {
+    // Windows program and path resolution is case-insensitive --
+    // `Vitest.CMD`, `NPX.CMD`, and `BASH.EXE` (used as a pipeline
+    // interpreter, see the workflow-level control below) name the exact
+    // same programs as their lower-case spellings.
+    expect(
+      isDirectVitestInvocation(tokenizeCommand('NPX.CMD vitest run -t x')),
+    ).toBe(true);
+    expect(
+      isDirectVitestInvocation(
+        tokenizeCommand('.\\node_modules\\.bin\\Vitest.CMD run -t x'),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('HOME 1: package.json test/test:* scripts', () => {
@@ -817,6 +847,53 @@ describe('HOME 2: workflows invoking vitest directly', () => {
       flag: '-t',
       value: 'only this arm',
     });
+  });
+
+  it('POSITIVE CONTROL (Ripley, review of this PR, round 6): recognises PowerShell as a pipeline interpreter and as an inline-script wrapper', () => {
+    // This repo's own CI runs on windows-latest -- PowerShell is arguably a
+    // MORE natural wrapper there than bash/sh, not a stretch case.
+    const pipedIntoPowershellExe = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: echo \'vitest run -t "only this arm"\' | powershell.exe',
+    ].join('\n');
+    const pipedViolations = checkWorkflowText('ci.yml', pipedIntoPowershellExe);
+    expect(pipedViolations).toHaveLength(1);
+    expect(pipedViolations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '-t',
+      value: 'only this arm',
+    });
+
+    // Not piped -- handed the script directly via `-Command`, the other
+    // shape sh/bash/powershell/node/python/ruby/perl all share.
+    const inlineCommand = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: pwsh -Command \'vitest run -t "only this arm"\'',
+    ].join('\n');
+    const inlineViolations = checkWorkflowText('ci.yml', inlineCommand);
+    expect(inlineViolations).toHaveLength(1);
+    expect(inlineViolations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('NEGATIVE CONTROL (Vasquez, review of this PR, round 6): does not misidentify an ordinary project script merely named similarly to vitest', () => {
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: node scripts/vitest.js run -t "only this arm"',
+    ].join('\n');
+    expect(checkWorkflowText('ci.yml', contents)).toHaveLength(0);
   });
 
   it('POSITIVE CONTROL (Ripley, review of this PR, round 3): reads a folded block scalar header with a chomping indicator and trailing comment', () => {
