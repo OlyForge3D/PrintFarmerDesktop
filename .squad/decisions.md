@@ -622,6 +622,7 @@ Full reasoning, citations, and the demonstration this issue asks for: `.squad/de
 **The one substantive adaptation.** `scripts/docs-only-change.mjs` exists to decide whether CI may stand down expensive steps, and `tests/docsOnlyChange.test.ts` pins `isDocumentationPath('.squad/agents/ralph/loop.md')` as `true`. That is correct for build compute and wrong for reviewer count: `.squad/**` is documentation by path while governing real autonomous behaviour, so a markdown edit there can decide whether an unattended agent may merge, force-push or delete. The canonical section therefore treats the classifier as **necessary but never sufficient**, and carves out any change that alters an agent's safety boundary, merge-safety rules or destructive-operation permissions — naming §1, §8 and §9 of `.squad/agents/ralph/loop.md` as the reference example, which take the full gate. The carve-out turns on what a change alters, not on which file holds it.
 
 **Nothing was weakened.** No gate for a non-documentation change moved, no reviewer charter or review methodology changed, and no workflow, script, test or manifest was touched by the change that recorded this.
+
 ## 2026-08-06 — `calibrationAssetManifest` follows symlinks only while asset paths are dialog-derived
 
 **By:** Ripley
