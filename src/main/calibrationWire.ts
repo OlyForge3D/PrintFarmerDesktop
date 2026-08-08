@@ -1718,9 +1718,15 @@ export type RemoteQueueEventEnvelope = z.infer<typeof RemoteQueueEventEnvelope>;
  * Response from GET /api/job-queue/changes?afterSequence=&limit=
  *
  * `events` are the QueueEventEnvelope records since the cursor.
- * `nextSequence` is the highest sequence seen; use it as `afterSequence` on
- * the next poll. A gap (nextSequence > events[-1].sequence + 1) means some
- * events were skipped — refetch the job state via REST.
+ * `nextSequence` is server-supplied and is meant to become `afterSequence` on
+ * the next poll, but nothing in this schema ties it to `events` — a value
+ * exceeding the highest delivered sequence would otherwise be adopted
+ * verbatim, letting the server steer the cursor across responses and skip
+ * events without detection (#487). That relationship (nextSequence must not
+ * exceed `events.at(-1)?.sequence ?? afterSequence`, and exceeding it means a
+ * gap) is enforced in `src/main/ipc.ts`'s `calibration:pollQueueChanges`
+ * handler, the only place with both the request cursor and this parsed page
+ * in scope.
  *
  * schemaVersion "3" is current (QueueEventSchemaVersions.Current = "3").
  */

@@ -49,6 +49,7 @@
     "check:stacked-base": "node scripts/check-stacked-base.mjs",
     "check:merge-queue-contexts": "node scripts/check-merge-queue-contexts.mjs",
     "check:merge-landed": "node scripts/check-merge-landed.mjs",
+    "check:gate-premises": "node scripts/check-gate-premises.mjs",
     "check:required-contexts": "node scripts/check-required-contexts.mjs",
     "check:behind-base": "node scripts/check-behind-base.mjs",
     "check:stale-checkout-head": "node scripts/check-stale-checkout-head.mjs",

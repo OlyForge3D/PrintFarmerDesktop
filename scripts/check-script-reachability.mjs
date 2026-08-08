@@ -105,6 +105,26 @@ export const UNENFORCED_CHECKS = {
     'Discharge path: invoke it from whatever performs the merge, and treat a ' +
     'non-zero exit as a refusal — at which point it becomes a gate and this ' +
     'entry should be deleted.',
+  'check:gate-premises':
+    'Its classification logic IS enforced in CI: tests/gatePremises.test.ts ' +
+    'drives classifyTerminalState, classifyPosition, classifyRoundBudget and ' +
+    'resolveRemoteBranchHead over plain objects and a stubbed git, including ' +
+    'the reflexive-comparison refusal and the loop-budget arm (#536). Its ' +
+    'main() additionally needs a specific PR number and a live GitHub read at ' +
+    'the moment of the call — this check exists to answer "is a gate still ' +
+    'owed on THIS pull request, right now", which is a question a per-PR CI ' +
+    'run cannot ask about itself without the same staleness this check is ' +
+    'built to catch. ' +
+    'STATE THE WEAKNESS PLAINLY: nothing forces a merge/coordination session ' +
+    'to run this instead of restating a remembered premise, so it does not ' +
+    'prevent the #423/#536 shape from recurring by itself. It gives that ' +
+    'session a single command that re-derives instead of a checklist it can ' +
+    'recite from memory, which is strictly better than the checklist and ' +
+    'strictly weaker than an enforced gate. Discharge path: `.squad/agents/' +
+    'ralph/loop.md` §9.2 instructs invoking it at the start of any merge-gate ' +
+    'decision; wiring it into an automated dispatcher would need the same ' +
+    'privileged, per-PR credential already unavailable to check:required-' +
+    'contexts above.',
   'check:squad-verdict':
     'Its verifier logic IS enforced in CI: tests/squadReviewVerdict.test.ts ' +
     'drives bindStatusToHead, verifySquadVerdict and selectSquadVerdict over ' +
