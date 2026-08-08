@@ -74,6 +74,7 @@ interface PollResult {
   status: string;
   gapDetected?: boolean;
   afterSequence?: number;
+  nextSequence?: number;
   error?: { code: string; message: string };
 }
 
@@ -95,6 +96,13 @@ async function poll(options: {
   cursor: number;
   sequences: number[];
   serverAfterSequence: number;
+  /**
+   * Overrides the `nextSequence` the stubbed server returns. Defaults to the
+   * honest value (highest delivered sequence, or `serverAfterSequence` for an
+   * empty page) when omitted. Set explicitly to simulate a server steering
+   * the cursor past what it actually delivered (#487).
+   */
+  serverNextSequence?: number;
 }): Promise<PollOutcome> {
   electronState.handlers.clear();
 
@@ -111,12 +119,13 @@ async function poll(options: {
           : input;
     const url = new URL(href);
     requestedCursor = url.searchParams.get('afterSequence');
+    const honestNextSequence =
+      options.sequences.length > 0
+        ? Math.max(...options.sequences)
+        : options.serverAfterSequence;
     const body = JSON.stringify({
       afterSequence: options.serverAfterSequence,
-      nextSequence:
-        options.sequences.length > 0
-          ? Math.max(...options.sequences)
-          : options.serverAfterSequence,
+      nextSequence: options.serverNextSequence ?? honestNextSequence,
       hasMore: false,
       events: options.sequences.map(wireEvent),
     });
@@ -334,26 +343,154 @@ describe('calibration:pollQueueChanges cursor-boundary gap detection', () => {
   });
 
   it('reports no gap for an empty page, whatever the server echoes', async () => {
-    // Characterization, and it records an absence rather than a delegation.
-    // With no first event there is no boundary to check, so this branch cannot
-    // apply. The trailing-edge rule the wire schema documents —
-    // `nextSequence > events[-1].sequence + 1` (`calibrationWire.ts:1718-1720`)
-    // — is implemented NOWHERE: not in this handler, and not in the only
-    // caller, which assigns `result.nextSequence` straight to its cursor
-    // (`CalibrationQueueDispatchPanel.tsx`). Saying it is "the caller's
-    // business" would be the failure #429 is about — documenting a guarantee
-    // that is not implemented, so the next reader stops checking. It is out of
-    // scope for a one-operand fix; pinned here so a change is deliberate.
+    // Characterization: with no first event there is no cursor-boundary or
+    // internal discontinuity to check, so `detectQueueChangeFeedGap` itself
+    // cannot see anything here. Server steering of `nextSequence` past what
+    // it delivered is now caught by a separate mechanism exercised in the
+    // "queue-cursor-steering" suite below (#487) — this test pins that the
+    // page-shape check alone stays silent on an empty, honestly-cursored page.
     const { result } = await poll({
       cursor: 10,
       sequences: [],
-      serverAfterSequence: 999,
+      serverAfterSequence: 10,
+      serverNextSequence: 10,
     });
 
     expect(result.status).toBe('ok');
     expect(
       result.gapDetected,
-      'empty page: no first event, so the cursor-boundary branch does not apply',
+      'empty page with an honest (unadvanced) nextSequence: no first event, ' +
+        'so the cursor-boundary branch does not apply, and nextSequence was ' +
+        'not steered past the cursor.',
     ).toBe(false);
+  });
+});
+
+describe('calibration:pollQueueChanges nextSequence cursor-steering (#487)', () => {
+  it('flags a gap and clamps the cursor when an empty page advances nextSequence', async () => {
+    // Poll with cursor 10. The server returns no events but an advanced
+    // nextSequence of 900 — the exact reproduction from the issue. Before the
+    // fix, `nextSequence: 900` was adopted verbatim and `gapDetected` stayed
+    // false because `detectQueueChangeFeedGap` never inspects `nextSequence`.
+    const { result } = await poll({
+      cursor: 10,
+      sequences: [],
+      serverAfterSequence: 10,
+      serverNextSequence: 900,
+    });
+
+    expect(result.status).toBe('ok');
+    expect(
+      result.gapDetected,
+      'an empty page whose nextSequence advances past the request cursor ' +
+        'must be flagged as a gap — no events were delivered to justify the jump.',
+    ).toBe(true);
+    expect(
+      result.nextSequence,
+      'the returned cursor must be clamped to the last sequence actually ' +
+        'delivered (here, the request cursor itself, since no events came ' +
+        'back), never adopted verbatim from the server.',
+    ).toBe(10);
+  });
+
+  it('flags a gap and clamps the cursor when a short page advances nextSequence beyond what it delivered', async () => {
+    // Poll with cursor 10. The server delivers only event 11 but claims
+    // nextSequence 900, hiding the skip of events 12-899 behind a page that
+    // is otherwise perfectly contiguous with the cursor (so the existing
+    // boundary/internal checks alone see nothing wrong).
+    const { result } = await poll({
+      cursor: 10,
+      sequences: [11],
+      serverAfterSequence: 10,
+      serverNextSequence: 900,
+    });
+
+    expect(result.status).toBe('ok');
+    expect(
+      result.gapDetected,
+      'a short page (one event) whose nextSequence advances far past the ' +
+        'last delivered sequence must be flagged as a gap.',
+    ).toBe(true);
+    expect(
+      result.nextSequence,
+      'the returned cursor must clamp to the highest sequence actually ' +
+        'delivered (11), not the server-claimed 900.',
+    ).toBe(11);
+  });
+
+  it('does not flag a gap for an honest page whose nextSequence matches the last delivered sequence (negative control)', async () => {
+    // Nothing hostile: nextSequence equals the last delivered sequence, which
+    // is the normal, honest shape of a response. If the steering check fired
+    // here it would prove nothing about the positive cases above.
+    const { result } = await poll({
+      cursor: 10,
+      sequences: [11, 12, 13],
+      serverAfterSequence: 10,
+    });
+
+    expect(result.status).toBe('ok');
+    expect(
+      result.gapDetected,
+      'negative control: nextSequence (13) equals the last delivered ' +
+        'sequence, so no cursor-steering gap should be reported.',
+    ).toBe(false);
+    expect(result.nextSequence).toBe(13);
+  });
+
+  it('boundary: nextSequence exactly equal to the last delivered sequence is not a gap, but one past it is', async () => {
+    // Pins the clamp boundary itself so an off-by-one (e.g. `>=` instead of
+    // `>`, or clamping to `lastDelivered - 1`) cannot pass. `first` is the
+    // last delivered sequence in both rows; only the claimed nextSequence
+    // differs by exactly one.
+    const exact = await poll({
+      cursor: 10,
+      sequences: [11, 12],
+      serverAfterSequence: 10,
+      serverNextSequence: 12,
+    });
+    expect(
+      exact.result.gapDetected,
+      'nextSequence exactly equal to the last delivered sequence (12) is the ' +
+        'honest shape and must not be flagged.',
+    ).toBe(false);
+    expect(exact.result.nextSequence).toBe(12);
+
+    const offByOne = await poll({
+      cursor: 10,
+      sequences: [11, 12],
+      serverAfterSequence: 10,
+      serverNextSequence: 13,
+    });
+    expect(
+      offByOne.result.gapDetected,
+      'nextSequence one past the last delivered sequence (13, when only up ' +
+        'to 12 was delivered) must be flagged — a clamp that permits an ' +
+        'off-by-one overshoot would miss exactly this case.',
+    ).toBe(true);
+    expect(
+      offByOne.result.nextSequence,
+      'even when flagged, the returned cursor must clamp to 12, not adopt ' +
+        'the server-claimed 13.',
+    ).toBe(12);
+  });
+
+  it('clamps a rewound cursor to the request cursor rather than adopting it', async () => {
+    // The server tries to rewind nextSequence below the cursor the client
+    // just sent, which would otherwise cause a redelivery loop on the next
+    // poll. This is not itself treated as a "gap" (no events were skipped),
+    // but the rewound value must never be adopted verbatim.
+    const { result } = await poll({
+      cursor: 10,
+      sequences: [11, 12],
+      serverAfterSequence: 10,
+      serverNextSequence: 3,
+    });
+
+    expect(result.status).toBe('ok');
+    expect(
+      result.nextSequence,
+      'a server-supplied nextSequence below the request cursor must be ' +
+        'clamped up to the request cursor, not adopted verbatim.',
+    ).toBe(10);
   });
 });
