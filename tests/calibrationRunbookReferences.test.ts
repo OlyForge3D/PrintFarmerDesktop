@@ -81,6 +81,21 @@
  * *hypothetical* channel or script will fail this test. That is the intended
  * trade — a hypothetical command in operator documentation is a bug report
  * waiting to happen — but it is a constraint on authors, so it is written down.
+ *
+ * ## Diagnose must name something relevant, not merely something real (#387)
+ *
+ * The Diagnose-section guard originally asked only "does this section name a
+ * known field, event or channel?" — existential, not relevance-based. Because
+ * a handful of fields (`correlationId`, `outcome`, `errorCode`, …) exist in
+ * essentially every runbook's vocabulary, a runbook could name one of those
+ * while diagnosing nothing about its own actual failure mode and still pass.
+ * `diagnoseRelevance` (below) additionally requires the named token to recur
+ * elsewhere in the *same* runbook's Trigger, Recover, Verify or "If this
+ * fails" section, which ties the requirement to that runbook's own incident
+ * rather than to the shared vocabulary at large — without hand-maintaining a
+ * per-runbook allowlist of "the right field for this one". See its doc
+ * comment for the full reasoning and the control test below for the
+ * anti-vacuity pair (a real-but-irrelevant field, and a nonexistent one).
  */
 
 import path from 'node:path';
@@ -458,6 +473,61 @@ export function definedValues(markdown: string): string[] {
   return values;
 }
 
+/**
+ * Whether a `Diagnose` section names something *relevant*, not merely
+ * something that exists (issue #387).
+ *
+ * The straightforward existential version of this check — "does Diagnose
+ * name at least one known field/event/channel?" — passes on any real token,
+ * including one that has nothing to do with the runbook's own failure mode.
+ * `correlationId` exists in the shared vocabulary and would satisfy that
+ * check in every runbook regardless of what it is actually diagnosing.
+ *
+ * A hand-maintained per-runbook allowlist of "the right field for this
+ * runbook" was considered and rejected: it only knows what someone
+ * remembered to type, and stops growing the moment the vocabulary does.
+ *
+ * Instead, relevance is derived from the runbook's own structure: a known
+ * token named in `Diagnose` counts as relevant only if it also **recurs**
+ * somewhere else in the same document — in `Trigger`, `Recover`, `Verify` or
+ * `If this fails`. Measured against all seven shipped runbooks, every one of
+ * them already satisfies this (see the PR description for the token-by-token
+ * table), because a runbook's other sections necessarily talk about the same
+ * signal Diagnose is supposed to be reading. This is not an allowlist: it is
+ * computed fresh from each document's own text and the same emitter-backed
+ * vocabulary functions (`knownFieldNames`, `knownDottedNames`,
+ * `knownChannels`) used by every other check in this file, so it grows
+ * automatically as the vocabulary and the runbooks do.
+ */
+export function diagnoseRelevance(
+  markdown: string,
+  fields: Set<string>,
+  dotted: Set<string>,
+  channels: Set<string>,
+): { known: string[]; relevant: string[] } | undefined {
+  const sections = markdown.split(/^## /m);
+  const diagnoseIndex = sections.findIndex((chunk) =>
+    chunk.startsWith('Diagnose'),
+  );
+  if (diagnoseIndex === -1) return undefined;
+  const knownTokens = (body: string): string[] => {
+    const refs = extractReferences(body);
+    return [
+      ...refs.fields.filter((token) => fields.has(token)),
+      ...refs.dotted.filter((token) => dotted.has(token)),
+      ...refs.channels.filter((token) => channels.has(token)),
+    ];
+  };
+  const known = [...new Set(knownTokens(sections[diagnoseIndex]!))];
+  const elsewhere = new Set(
+    knownTokens(
+      sections.filter((_, index) => index !== diagnoseIndex).join('\n'),
+    ),
+  );
+  const relevant = known.filter((token) => elsewhere.has(token));
+  return { known, relevant };
+}
+
 // --- Fixtures ---------------------------------------------------------------
 
 function read(file: string): string {
@@ -506,6 +576,82 @@ const PLANTED_DOC = [
   'invoke calibration:alsoBogusChannel',
   'echo \'{"calibrationSessionIdInFence": "sample", "sync.alsoNeverEmitted": 1}\'',
   '```',
+].join('\n');
+
+/**
+ * Fixtures for the Diagnose relevance guard (issue #387). Built the same way
+ * `PLANTED_DOC` is: small, self-contained, and driving `diagnoseRelevance`
+ * directly rather than the runbook loop, so a bug in the loop's reporting
+ * cannot mask a bug in the classification itself.
+ *
+ * `correlationId` and `sync.failed` are real tokens (present in
+ * `knownFieldNames()`/`knownDottedNames()`), so all three fixtures below
+ * exercise the *relevance* question, not the existence question — that one is
+ * already covered by `PLANTED_DOC` above.
+ */
+
+/**
+ * Arm A: an existing-but-irrelevant field. `correlationId` is real and is
+ * named in Diagnose, but never recurs anywhere else in the document — this
+ * is exactly the shape the issue demonstrated as a false pass under the old
+ * existential guard.
+ */
+const DIAGNOSE_IRRELEVANT_REAL_FIELD = [
+  '# Planted irrelevant',
+  '',
+  '## Trigger',
+  '',
+  'Something in the system is broken.',
+  '',
+  '## Diagnose',
+  '',
+  'Read `correlationId` from the record.',
+  '',
+  '## Recover',
+  '',
+  'Restart the affected process.',
+  '',
+  '## Verify',
+  '',
+  'Confirm the process is healthy again.',
+  '',
+  '## If this fails',
+  '',
+  'Escalate to the on-call engineer.',
+].join('\n');
+
+/** Arm B: the existing anti-vacuity control, restated as a fabricated token. */
+const DIAGNOSE_NONEXISTENT_FIELD = DIAGNOSE_IRRELEVANT_REAL_FIELD.replace(
+  'correlationId',
+  'definitelyNotARealFieldOrEvent',
+);
+
+/**
+ * Positive control: `sync.failed` is real *and* recurs in Trigger and
+ * Verify, so it is the token this runbook's own narrative is actually about.
+ */
+const DIAGNOSE_RELEVANT_FIELD = [
+  '# Planted relevant',
+  '',
+  '## Trigger',
+  '',
+  'A `sync.failed` record appears in the structured log.',
+  '',
+  '## Diagnose',
+  '',
+  'Read the `sync.failed` record and check its error code.',
+  '',
+  '## Recover',
+  '',
+  'Retry the sync operation.',
+  '',
+  '## Verify',
+  '',
+  'Confirm a `sync.failed` record no longer appears on retry.',
+  '',
+  '## If this fails',
+  '',
+  'Escalate with the record contents.',
 ].join('\n');
 
 describe('calibration documentation reference integrity', () => {
@@ -754,32 +900,89 @@ describe('calibration documentation reference integrity', () => {
     ).toEqual([]);
   });
 
-  it('gives every recovery runbook a Diagnose step naming something that exists', () => {
+  it('gives every recovery runbook a Diagnose step naming something real and relevant to its own failure mode', () => {
+    // #387: naming *something that exists* is not enough — `correlationId`
+    // exists in every runbook's vocabulary and would satisfy that alone
+    // regardless of what the runbook is actually diagnosing. `diagnoseRelevance`
+    // additionally requires the named token to recur elsewhere in the same
+    // runbook (Trigger/Recover/Verify/If this fails), which ties the check to
+    // this runbook's own incident rather than to the vocabulary at large. See
+    // `diagnoseRelevance`'s doc comment for why this is not a hand-maintained
+    // per-runbook allowlist.
     const fields = knownFieldNames();
     const dotted = knownDottedNames();
     const channels = knownChannels();
     const thin: string[] = [];
     for (const name of RUNBOOKS) {
       const source = read(runbookPath(name));
-      const body = source
-        .split(/^## /m)
-        .find((chunk) => chunk.startsWith('Diagnose'));
-      if (body === undefined) {
+      const result = diagnoseRelevance(source, fields, dotted, channels);
+      if (result === undefined) {
         thin.push(`docs/runbooks/${name}: no Diagnose section`);
         continue;
       }
-      const refs = extractReferences(body);
-      const named = [
-        ...refs.fields.filter((token) => fields.has(token)),
-        ...refs.dotted.filter((token) => dotted.has(token)),
-        ...refs.channels.filter((token) => channels.has(token)),
-      ];
-      if (named.length === 0) {
+      if (result.known.length === 0) {
         thin.push(
           `docs/runbooks/${name}: Diagnose names no log field, structured event or diagnostics channel that exists`,
+        );
+      } else if (result.relevant.length === 0) {
+        thin.push(
+          `docs/runbooks/${name}: Diagnose names only real values (${result.known.join(', ')}) that do not recur anywhere else in the runbook — naming something that exists is not enough; it must be tied to this runbook's own Trigger/Recover/Verify/If-this-fails narrative`,
         );
       }
     }
     expect(thin, thin.join('\n  ')).toEqual([]);
+  });
+
+  it('control: the Diagnose relevance guard rejects an irrelevant real field and a nonexistent one, but accepts a relevant one', () => {
+    // Positive control + anti-vacuity pair (issue #387), run through the same
+    // `diagnoseRelevance` helper the loop above uses, on fixtures independent
+    // of any shipped runbook — proving the guard cannot pass vacuously in
+    // either direction and that a genuinely relevant reference does pass.
+    const fields = knownFieldNames();
+    const dotted = knownDottedNames();
+    const channels = knownChannels();
+
+    // Arm A: a real field named only in Diagnose, tied to nothing else in the
+    // document. This is exactly the false pass the issue demonstrated under
+    // the old existential guard.
+    const irrelevant = diagnoseRelevance(
+      DIAGNOSE_IRRELEVANT_REAL_FIELD,
+      fields,
+      dotted,
+      channels,
+    );
+    expect(irrelevant).toBeDefined();
+    expect(irrelevant?.known).toEqual(['correlationId']);
+    expect(
+      irrelevant?.relevant,
+      'a real field named only in Diagnose, with no recurrence elsewhere in the document, must not count as relevant',
+    ).toEqual([]);
+
+    // Arm B: the same shape, but the token does not exist at all. Confirms
+    // the relevance requirement did not quietly relax the existence check.
+    const nonexistent = diagnoseRelevance(
+      DIAGNOSE_NONEXISTENT_FIELD,
+      fields,
+      dotted,
+      channels,
+    );
+    expect(nonexistent).toBeDefined();
+    expect(nonexistent?.known).toEqual([]);
+    expect(nonexistent?.relevant).toEqual([]);
+
+    // Positive control: a real field that recurs in Trigger and Verify must
+    // be reported as relevant, so the guard is not simply rejecting everything.
+    const relevant = diagnoseRelevance(
+      DIAGNOSE_RELEVANT_FIELD,
+      fields,
+      dotted,
+      channels,
+    );
+    expect(relevant).toBeDefined();
+    expect(relevant?.known).toContain('sync.failed');
+    expect(
+      relevant?.relevant,
+      'a field that recurs in Trigger/Verify must be reported as relevant',
+    ).toContain('sync.failed');
   });
 });
