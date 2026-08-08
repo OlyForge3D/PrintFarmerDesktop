@@ -256,6 +256,15 @@ const HARNESS = 'scripts/check-citation-reachability.mjs';
 // the same module with its own scan roots and its own floor: share the
 // mechanism, never the number, because the two corpora are disjoint.
 const CORPUS_MODULE = 'scripts/citation-corpus.mjs';
+// The documentation classifier the harness imports to choose self-test subjects. One definition
+// of "documentation" is shared with the CI fast path in `.github/workflows/ci.yml` so the two
+// cannot drift into disagreeing about what a documentation change is.
+const DOCS_ONLY_MODULE = 'scripts/docs-only-change.mjs';
+// Everything a fixture has to stage for the harness to load at all. A named list rather than a
+// literal at each site: the note at the third fixture below records that #495's extraction of the
+// refusal mechanism reached three of the four and missed the one that named its file inline, and
+// a missing import is invisible in an arm that asserts a non-zero exit.
+const HARNESS_MODULES = [HARNESS, CORPUS_MODULE, DOCS_ONLY_MODULE];
 const SCRIPT_NAME = 'check:citation-reachability';
 
 /**
@@ -848,7 +857,7 @@ describe('a declared twin is checked for being a twin', () => {
     execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
     mkdirSync(path.join(dir, 'scripts'), { recursive: true });
     mkdirSync(path.join(dir, '.squad', 'fact-checker'), { recursive: true });
-    for (const script of [HARNESS, CORPUS_MODULE]) {
+    for (const script of HARNESS_MODULES) {
       copyFileSync(
         path.join(repositoryRoot, script),
         path.join(dir, script.replace(/\//g, path.sep)),
@@ -1027,7 +1036,7 @@ describe('a declared twin is checked for being a twin', () => {
     // Both files, because the harness imports the second one. This fixture named its
     // single file literally while its three siblings copy a list, so #495's extraction
     // of the refusal mechanism reached them and not this one.
-    for (const script of [HARNESS, CORPUS_MODULE])
+    for (const script of HARNESS_MODULES)
       copyFileSync(
         path.join(repositoryRoot, script),
         path.join(dir, script.replace(/\//g, path.sep)),
@@ -1092,7 +1101,7 @@ describe('a declared twin is checked for being a twin', () => {
     execFileSync('git', ['-C', dir, 'config', 'user.name', 'T']);
     mkdirSync(path.join(dir, 'scripts'), { recursive: true });
     mkdirSync(path.join(dir, '.squad', 'fact-checker'), { recursive: true });
-    for (const script of [HARNESS, CORPUS_MODULE]) {
+    for (const script of HARNESS_MODULES) {
       copyFileSync(
         path.join(repositoryRoot, script),
         path.join(dir, script.replace(/\//g, path.sep)),
@@ -1182,6 +1191,67 @@ describe('a declared twin is checked for being a twin', () => {
     expect(out).not.toContain('NOT EXERCISED');
     expect(status).toBe(0);
   });
+
+  /**
+   * #577. The control's subject selection was "the two latest non-merge revisions", which is
+   * whatever happened to land last, and documentation work lands in runs. A `style: format
+   * loop.md` commit that added exactly one blank line produced the added-line set `{"+"}`, the
+   * commit before it had also added blank lines to the same file, so the newer set was a SUBSET
+   * of the older one. `contains(linesA, linesB)` was therefore true, the control reported that
+   * the comparison could not separate two distinct revisions, and the harness withheld its
+   * verdict with exit 2 -- blocking a correct documentation change and forcing a squash and
+   * force-push to get around it.
+   *
+   * The instrument was fine. The subject was not: a commit that adds no content cannot
+   * demonstrate that a content comparison separates content. So the repair is in selection, and
+   * this arm holds it to the exact history that produced the false red.
+   */
+  it('ARM H: a run of whitespace-only documentation commits does not withhold the verdict', () => {
+    const { dir, cited, genuineTwin } = fixture();
+
+    const guide = path.join(dir, 'guide.md');
+    writeFileSync(guide, 'a heading\n\nfirst paragraph\n');
+    commit(dir, 'docs: add a guide');
+    writeFileSync(guide, 'a heading\n\nfirst paragraph\n\n');
+    commit(dir, 'style: format guide.md');
+    writeFileSync(guide, 'a heading\n\nfirst paragraph\n\n\n');
+    commit(dir, 'style: format guide.md again');
+
+    ledger(dir, cited, genuineTwin);
+
+    // The premise, or the arm proves nothing. Both of the revisions the OLD rule would have
+    // chosen must add nothing but blank lines -- that is what made the newer one's added set a
+    // subset of the older one's, and it is the entire mechanism of the false red.
+    const addedOf = (rev: string) =>
+      run(dir, ['show', rev, '--format=', '--unified=0'])
+        .split('\n')
+        .filter((l) => l.startsWith('+') && !l.startsWith('+++'));
+    const previousTwo = run(dir, [
+      'rev-list',
+      '--no-merges',
+      '-n',
+      '2',
+      'HEAD',
+    ]).split('\n');
+    expect(previousTwo).toHaveLength(2);
+    for (const rev of previousTwo) {
+      const added = addedOf(rev);
+      expect(added.length).toBeGreaterThan(0);
+      expect(added.every((l) => l.slice(1).trim() === '')).toBe(true);
+    }
+
+    const { status, out } = runHarness(dir);
+
+    // Exercised, not merely un-failed. A selection that gave up and printed NOT EXERCISED would
+    // satisfy "does not block" while leaving the comparison unmeasured, which is the silence
+    // this whole file treats as indistinguishable from success.
+    expect(out).toContain(
+      'control: the twin comparison separates two distinct revisions true',
+    );
+    expect(out).not.toContain('NOT EXERCISED');
+    expect(out).not.toContain('verdict withheld');
+    expect(status).toBe(0);
+  });
 });
 
 /**
@@ -1214,7 +1284,7 @@ describe('the harness refuses to publish a verdict it cannot support', () => {
   const stage = (dir: string) => {
     mkdirSync(path.join(dir, 'scripts'), { recursive: true });
     mkdirSync(path.join(dir, '.squad', 'fact-checker'), { recursive: true });
-    for (const script of [HARNESS, CORPUS_MODULE]) {
+    for (const script of HARNESS_MODULES) {
       copyFileSync(
         path.join(repositoryRoot, script),
         path.join(dir, script.replace(/\//g, path.sep)),

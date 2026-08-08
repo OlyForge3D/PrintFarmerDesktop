@@ -58,6 +58,7 @@
 //
 // Run:  node scripts/check-citation-reachability.mjs
 import { execFileSync } from 'node:child_process';
+import { isDocumentationPath } from './docs-only-change.mjs';
 import {
   collectCitations,
   loadCorpus,
@@ -425,17 +426,93 @@ if (someTwinned) {
 // skipped this whole block in silence, printed nothing, and let the run pass. A control that
 // cannot run in the repository it ships in is not a weaker control; it is an absent one, and its
 // silence is indistinguishable from success.
-// The `?? ''` is load-bearing: `git()` returns null when the command fails, and on a repository
-// whose HEAD is unborn `rev-list` fails. Splitting null throws, which exits 1 - and 1 is the
-// code for "orphans found", not for "the instrument broke". The pre-existing unborn-HEAD test
-// caught exactly that: crashing here would have replaced a withheld verdict with a wrong one.
-const [controlRevA, controlRevB] = (
-  git(['rev-list', '--no-merges', '-n', '2', 'HEAD']) ?? ''
-).split('\n');
-const linesA = controlRevA ? addedLinesOf(controlRevA) : null;
-const linesB = controlRevB ? addedLinesOf(controlRevB) : null;
+//
+// --no-merges alone was still the wrong subject set, and the cost was paid on real work. The two
+// LATEST non-merge revisions are whatever happened to land last, and documentation work lands in
+// runs: `style: format loop.md` added exactly one blank line to a file whose previous commit had
+// also added blank lines, so the newer revision's added-line set was {"+"} and the older one's
+// contained it. Subset, so `contains(linesA, linesB)` was true, so the control "failed", so the
+// harness withheld its verdict with exit 2 and blocked #577 on a correct change. That red was
+// about the SUBJECT, not the instrument: a commit that adds no content cannot demonstrate that a
+// content comparison separates content, and neither can two commits that only reformat.
+//
+// The fix is to choose subjects that can carry the signal, not to relax the assertion. A revision
+// qualifies only if it adds at least one line with non-whitespace content: a commit that adds no
+// content cannot demonstrate that a content comparison separates content, and two commits that
+// only reformat cannot either. That predicate is independent of the comparison being tested -- it
+// asks "does this revision contain real content" and never "do these two revisions differ" -- so
+// it selects a fair subject rather than manufacturing a pass. The assertion itself is unchanged
+// and still fails loudly if the comparator cannot separate two genuine changes.
+//
+// Among the qualifying revisions, ones that touch something outside documentation are PREFERRED,
+// because "the control still proves it works on real content changes" is the point of having it,
+// and documentation work is where the near-duplicate added lines that make a fair test hard tend
+// to cluster. Preferred, not required, and the difference is the same principle the paragraph
+// above turns on. A hard requirement makes the control unrunnable in a checkout whose recent
+// history is all prose -- which is a real state of this repository and the ordinary state of the
+// fixtures under tests/citationReachability.test.ts -- and a control that cannot run is not a
+// stricter control, it is an absent one whose silence reads as a pass. So the search takes the
+// best two subjects available and says in the transcript which grade it got.
+//
+// `isDocumentationPath` is imported rather than restated so this file and the CI fast path cannot
+// drift into two different meanings of "documentation".
+const SELF_TEST_WINDOW = 100;
+
+// Added lines with something in them. The keys addedLinesOf builds are `<diff header>\0+<text>`,
+// so the added text is everything after the NUL and the leading `+`.
+const substantiveAddedLinesOf = (rev) => {
+  const lines = addedLinesOf(rev);
+  if (!lines) return null;
+  const kept = new Set(
+    [...lines].filter(
+      (entry) => entry.slice(entry.indexOf('\u0000') + 2).trim() !== '',
+    ),
+  );
+  return kept.size ? kept : null;
+};
+
+const changedPathsOf = (rev) => {
+  // `-z` because core.quotePath would C-escape a non-ASCII path, and an escaped path matches no
+  // suffix rule - so it would read as source, which is the safe direction for this decision.
+  const out = git(['show', rev, '--format=', '--name-only', '-z']);
+  return out === null ? null : out.split('\0').filter(Boolean);
+};
+
+const substantive = [];
+for (const rev of (
+  git(['rev-list', '--no-merges', '-n', String(SELF_TEST_WINDOW), 'HEAD']) ?? ''
+)
+  .split('\n')
+  .filter(Boolean)) {
+  const lines = substantiveAddedLinesOf(rev);
+  if (!lines) continue;
+  const paths = changedPathsOf(rev);
+  const touchesSource =
+    paths !== null &&
+    paths.length > 0 &&
+    !paths.every((p) => isDocumentationPath(p));
+  substantive.push({ rev, lines, touchesSource });
+  // Nothing later in history can improve on two preferred subjects, so stop walking. The window
+  // is the only other bound, and it is what keeps a long prose-only stretch from walking the
+  // whole graph.
+  if (substantive.filter((s) => s.touchesSource).length === 2) break;
+}
+
+const preferred = substantive.filter((s) => s.touchesSource);
+const usingPreferred = preferred.length === 2;
+const selfTestSubjects = (usingPreferred ? preferred : substantive).slice(0, 2);
+
+const [subjectA, subjectB] = selfTestSubjects;
+const linesA = subjectA?.lines ?? null;
+const linesB = subjectB?.lines ?? null;
 if (linesA && linesB) {
   const contains = (a, b) => [...a].every((l) => b.has(l));
+  console.log(
+    `control: twin-comparison subjects ${subjectA.rev.slice(0, 8)} and ${subjectB.rev.slice(0, 8)}` +
+      (usingPreferred
+        ? ' (both change non-documentation content)'
+        : ' (documentation only; no two non-documentation revisions in the window)'),
+  );
   console.log(
     'control: the twin comparison separates two distinct revisions',
     !contains(linesA, linesB),
@@ -457,7 +534,7 @@ if (linesA && linesB) {
   // narrow checkout, not a broken instrument, and reddening it would be the false red this
   // whole change exists to avoid. But the run must not read as though the arm had passed.
   console.log(
-    'control: the twin comparison was NOT EXERCISED - this reader holds fewer than two non-merge revisions',
+    `control: the twin comparison was NOT EXERCISED - the last ${SELF_TEST_WINDOW} non-merge revisions hold fewer than two that add non-whitespace content`,
   );
 }
 
