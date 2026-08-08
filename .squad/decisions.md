@@ -580,6 +580,7 @@ question, and neither is secondary. The decision order in `push-guard.mjs` makes
 **Comment-only verdicts remain advisory**, unchanged from #206/#187 and restated in `.squad/skills/agent-collaboration/SKILL.md`: the mechanism reads a label, not free text, which is exactly why it is the one that can be evaluated by a required check.
 
 Full reasoning, citations, and the demonstration this issue asks for: `.squad/decisions/inbox/ripley-480-sequencing-hold-required-context.md`.
+
 ## 2026-08-08 — #361: a positive control validates the instrument, not the operationalisation
 
 **By:** Vasquez
