@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import { writeFile, mkdtemp, rm } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   computeInstallPath,
   getWindowsOrcaInstallRoot,
@@ -271,7 +271,7 @@ describe('canonicalizeSaveTarget', () => {
 import {
   installOrcaProfileWindows,
   restoreOrcaProfileWindows,
-  findBackupByHash,
+  findBackupByOperationId,
 } from '../src/main/orcaProfileInstall.js';
 
 describe('installOrcaProfileWindows', () => {
@@ -280,12 +280,22 @@ describe('installOrcaProfileWindows', () => {
     if (process.platform !== 'win32') {
       // Non-Windows: throws unsupportedPlatform before any other check
       await expect(
-        installOrcaProfileWindows(content, 'a'.repeat(64), 'test.json'),
+        installOrcaProfileWindows(
+          content,
+          'a'.repeat(64),
+          'test.json',
+          randomUUID(),
+        ),
       ).rejects.toMatchObject({ code: 'unsupportedPlatform' });
     } else {
       // Windows: rejects when hash does not match the provided content
       await expect(
-        installOrcaProfileWindows(content, 'b'.repeat(64), 'test_profile.json'),
+        installOrcaProfileWindows(
+          content,
+          'b'.repeat(64),
+          'test_profile.json',
+          randomUUID(),
+        ),
       ).rejects.toMatchObject({ code: 'verificationFailed' });
     }
   });
@@ -310,7 +320,10 @@ describe('restoreOrcaProfileWindows', () => {
     async () => {
       const tmpDir = await makeTempDir();
       try {
-        const backupPath = path.join(tmpDir, 'profile.json.bak-2024-01-01T00-00-00-000Z');
+        const backupPath = path.join(
+          tmpDir,
+          'profile.json.bak-2024-01-01T00-00-00-000Z',
+        );
         await writeFile(backupPath, '{"name":"real"}');
         await expect(
           restoreOrcaProfileWindows(backupPath, 'f'.repeat(64), 'profile.json'),
@@ -323,18 +336,31 @@ describe('restoreOrcaProfileWindows', () => {
 });
 
 // ---------------------------------------------------------------------------
-// findBackupByHash — cache-independent backup lookup (#208)
+// findBackupByOperationId — durable, cache-independent backup identity (#208)
 //
 // Restore used to be gated on `getCachedProfile(operationId)`, an in-memory,
 // process-lifetime, 50-entry LRU cache. That made a durable, hash-verified
 // restore fail after a restart or after 50 subsequent installs evicted the
 // original entry, even though the backup file on disk was untouched.
-// findBackupByHash replaces the cache-gated lookup with a scan keyed by the
-// caller-supplied SHA-256 hash — the same hash that was always the actual
-// safety check — and derives safeFilename from the matched file's own name.
+//
+// A first fix attempt widened the lookup to scan the install directory for
+// any backup file whose *content hash* matched what the caller supplied.
+// That was itself unsafe: two different profiles can have byte-identical
+// prior content (and therefore the same SHA-256 hash), which would let
+// restore silently pick the wrong profile's backup. Reverse-parsing
+// `safeFilename` back out of the backup's own filename was also unsafe: a
+// generated profile's filename can legitimately contain the literal
+// substring `.bak-` (see generateProfileIdentity), which corrupts that
+// parse.
+//
+// findBackupByOperationId instead resolves identity from a durable metadata
+// record written once, at backup-creation time, keyed by `operationId` —
+// never by content hash or filename parsing. The content hash remains the
+// separate safety check, enforced by restoreOrcaProfileWindows before any
+// write.
 // ---------------------------------------------------------------------------
 
-describe('findBackupByHash', () => {
+describe('findBackupByOperationId', () => {
   let tmpDir: string;
   beforeEach(async () => {
     tmpDir = await makeTempDir();
@@ -345,64 +371,17 @@ describe('findBackupByHash', () => {
 
   it('returns null when the install directory does not exist', async () => {
     const missing = path.join(tmpDir, 'does-not-exist');
-    expect(await findBackupByHash(missing, 'a'.repeat(64))).toBeNull();
+    expect(await findBackupByOperationId(missing, randomUUID())).toBeNull();
   });
 
-  it('returns null when no backup file matches the hash', async () => {
-    await writeFile(
-      path.join(tmpDir, 'profile.json.bak-2024-01-01T00-00-00-000Z'),
-      'unrelated content',
-    );
-    expect(await findBackupByHash(tmpDir, 'a'.repeat(64))).toBeNull();
+  it('returns null when there is no metadata record for this operationId', async () => {
+    expect(await findBackupByOperationId(tmpDir, randomUUID())).toBeNull();
   });
 
-  it('ignores files that are not timestamped backups', async () => {
-    const content = '{"name":"not a backup"}';
-    await writeFile(path.join(tmpDir, 'profile.json'), content);
-    expect(await findBackupByHash(tmpDir, sha256(content))).toBeNull();
-  });
-
-  it('locates a backup by content hash and derives safeFilename from its own name', async () => {
-    const content = '{"name":"restored"}';
-    const hash = sha256(content);
-    const backupName = 'my_profile.json.bak-2024-01-01T00-00-00-000Z';
-    await writeFile(path.join(tmpDir, backupName), content);
-
-    const located = await findBackupByHash(tmpDir, hash);
-    expect(located).toEqual({
-      backupPath: path.join(tmpDir, backupName),
-      safeFilename: 'my_profile.json',
-    });
-  });
-
-  it('does not consult or require any profileCache entry', async () => {
-    // Simulate a fresh process: the cache is empty and stays empty.
-    clearProfileCache();
-    const content = '{"name":"post-restart"}';
-    const hash = sha256(content);
-    const backupName = 'never_cached.json.bak-2024-06-01T00-00-00-000Z';
-    await writeFile(path.join(tmpDir, backupName), content);
-
-    const located = await findBackupByHash(tmpDir, hash);
-    expect(located?.safeFilename).toBe('never_cached.json');
-    expect(getCachedProfile('any-operation-id')).toBeUndefined();
-  });
-
-  it('finds the correct match among multiple unrelated backup files', async () => {
-    const decoyContent = '{"name":"decoy"}';
-    const targetContent = '{"name":"target"}';
-    await writeFile(
-      path.join(tmpDir, 'decoy.json.bak-2024-01-01T00-00-00-000Z'),
-      decoyContent,
-    );
-    const targetName = 'target.json.bak-2024-02-02T00-00-00-000Z';
-    await writeFile(path.join(tmpDir, targetName), targetContent);
-
-    const located = await findBackupByHash(tmpDir, sha256(targetContent));
-    expect(located).toEqual({
-      backupPath: path.join(tmpDir, targetName),
-      safeFilename: 'target.json',
-    });
+  it('rejects a malformed (non-UUID) operationId rather than guessing', async () => {
+    expect(
+      await findBackupByOperationId(tmpDir, 'not-a-uuid; ../../escape'),
+    ).toBeNull();
   });
 });
 
@@ -410,8 +389,8 @@ describe('findBackupByHash', () => {
 // End-to-end: restore survives restart and cache eviction (#208)
 //
 // These exercise the real install -> (simulated restart / cache eviction) ->
-// findBackupByHash -> restoreOrcaProfileWindows pipeline against a sandboxed
-// APPDATA so no real OrcaSlicer install directory is touched.
+// findBackupByOperationId -> restoreOrcaProfileWindows pipeline against a
+// sandboxed APPDATA so no real OrcaSlicer install directory is touched.
 // ---------------------------------------------------------------------------
 
 describe('restore pipeline is independent of profileCache state (#208)', () => {
@@ -437,7 +416,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
   it.runIf(process.platform === 'win32')(
     'restores after a simulated restart clears the in-memory cache',
     async () => {
-      const operationId = 'restart-op-001';
+      const operationId = randomUUID();
       const safeFilename = 'restart_profile.json';
       const original = '{"name":"v1"}';
       const updated = '{"name":"v2"}';
@@ -447,6 +426,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         original,
         sha256(original),
         safeFilename,
+        randomUUID(),
       );
       cacheGeneratedProfile(operationId, {
         generatedJson: updated,
@@ -459,6 +439,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         updated,
         sha256(updated),
         safeFilename,
+        operationId,
       );
       expect(getCachedProfile(operationId)).toBeDefined();
 
@@ -468,11 +449,9 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
       expect(getCachedProfile(operationId)).toBeUndefined();
 
       const installRoot = getWindowsOrcaInstallRoot();
-      const located = await findBackupByHash(
-        installRoot,
-        installResult.backupHash,
-      );
+      const located = await findBackupByOperationId(installRoot, operationId);
       expect(located).not.toBeNull();
+      expect(located?.safeFilename).toBe(safeFilename);
       const restoreResult = await restoreOrcaProfileWindows(
         located!.backupPath,
         installResult.backupHash,
@@ -485,7 +464,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
   it.runIf(process.platform === 'win32')(
     'restores after 50+ installs evict the original cache entry',
     async () => {
-      const operationId = 'evicted-op-001';
+      const operationId = randomUUID();
       const safeFilename = 'evicted_profile.json';
       const original = '{"name":"v1-evict"}';
       const updated = '{"name":"v2-evict"}';
@@ -494,6 +473,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         original,
         sha256(original),
         safeFilename,
+        randomUUID(),
       );
       cacheGeneratedProfile(operationId, {
         generatedJson: updated,
@@ -506,6 +486,7 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         updated,
         sha256(updated),
         safeFilename,
+        operationId,
       );
       expect(getCachedProfile(operationId)).toBeDefined();
 
@@ -524,11 +505,9 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
       expect(getCachedProfile(operationId)).toBeUndefined();
 
       const installRoot = getWindowsOrcaInstallRoot();
-      const located = await findBackupByHash(
-        installRoot,
-        installResult.backupHash,
-      );
+      const located = await findBackupByOperationId(installRoot, operationId);
       expect(located).not.toBeNull();
+      expect(located?.safeFilename).toBe(safeFilename);
       const restoreResult = await restoreOrcaProfileWindows(
         located!.backupPath,
         installResult.backupHash,
@@ -539,8 +518,9 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
   );
 
   it.runIf(process.platform === 'win32')(
-    'still refuses a tampered backup located via the widened, cache-free scan',
+    'still refuses a tampered backup even when correctly located by operationId',
     async () => {
+      const operationId = randomUUID();
       const safeFilename = 'tamper_profile.json';
       const original = '{"name":"v1-tamper"}';
       const updated = '{"name":"v2-tamper"}';
@@ -549,11 +529,13 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         original,
         sha256(original),
         safeFilename,
+        randomUUID(),
       );
       const installResult = await installOrcaProfileWindows(
         updated,
         sha256(updated),
         safeFilename,
+        operationId,
       );
 
       // Tamper with the backup file on disk after it was created. Its
@@ -562,14 +544,147 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
       await writeFile(installResult.backupPath, '{"name":"tampered!"}');
 
       const installRoot = getWindowsOrcaInstallRoot();
-      const located = await findBackupByHash(
-        installRoot,
-        installResult.backupHash,
+      // Identity resolution still finds the record — that part does not
+      // depend on content — but the hash-verifying write itself must still
+      // refuse, so widening past the cache never weakens the safety check.
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      await expect(
+        restoreOrcaProfileWindows(
+          located!.backupPath,
+          installResult.backupHash,
+          located!.safeFilename,
+        ),
+      ).rejects.toMatchObject({ code: 'verificationFailed' });
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'resolves the correct profile by operationId even when two profiles share a backupHash (hash collision)',
+    async () => {
+      // Two different profiles whose *prior* on-disk content happens to be
+      // byte-identical — so their backups share the same SHA-256 hash. A
+      // hash-only lookup cannot distinguish which backup belongs to which
+      // profile; operationId must.
+      const sharedPriorContent = '{"name":"identical-prior-content"}';
+      const updatedA = '{"name":"profile-a-v2"}';
+      const updatedB = '{"name":"profile-b-v2"}';
+      const safeFilenameA = 'profile_a.json';
+      const safeFilenameB = 'profile_b.json';
+      const operationIdA = randomUUID();
+      const operationIdB = randomUUID();
+
+      await installOrcaProfileWindows(
+        sharedPriorContent,
+        sha256(sharedPriorContent),
+        safeFilenameA,
+        randomUUID(),
       );
-      // The widened scan is still hash-keyed: a tampered file's hash no
-      // longer equals the expected hash, so it is correctly not found —
-      // widening the scan did not weaken the verification.
-      expect(located).toBeNull();
+      await installOrcaProfileWindows(
+        sharedPriorContent,
+        sha256(sharedPriorContent),
+        safeFilenameB,
+        randomUUID(),
+      );
+
+      const installResultA = await installOrcaProfileWindows(
+        updatedA,
+        sha256(updatedA),
+        safeFilenameA,
+        operationIdA,
+      );
+      const installResultB = await installOrcaProfileWindows(
+        updatedB,
+        sha256(updatedB),
+        safeFilenameB,
+        operationIdB,
+      );
+
+      // Both backups are byte-identical, so their hashes collide.
+      expect(installResultA.backupHash).toBe(installResultB.backupHash);
+      expect(installResultA.backupHash).toBe(sha256(sharedPriorContent));
+
+      const installRoot = getWindowsOrcaInstallRoot();
+
+      const locatedA = await findBackupByOperationId(
+        installRoot,
+        operationIdA,
+      );
+      const locatedB = await findBackupByOperationId(
+        installRoot,
+        operationIdB,
+      );
+      expect(locatedA).not.toBeNull();
+      expect(locatedB).not.toBeNull();
+      // Each operationId must resolve to its own profile's safeFilename and
+      // its own distinct backup file — not to whichever hash-matching file
+      // a scan happened to find first.
+      expect(locatedA?.safeFilename).toBe(safeFilenameA);
+      expect(locatedB?.safeFilename).toBe(safeFilenameB);
+      expect(locatedA?.backupPath).not.toBe(locatedB?.backupPath);
+
+      const restoredA = await restoreOrcaProfileWindows(
+        locatedA!.backupPath,
+        installResultA.backupHash,
+        locatedA!.safeFilename,
+      );
+      const restoredB = await restoreOrcaProfileWindows(
+        locatedB!.backupPath,
+        installResultB.backupHash,
+        locatedB!.safeFilename,
+      );
+      expect(restoredA.restoredHash).toBe(sha256(sharedPriorContent));
+      expect(restoredB.restoredHash).toBe(sha256(sharedPriorContent));
+
+      const destA = computeInstallPath(safeFilenameA, installRoot);
+      const destB = computeInstallPath(safeFilenameB, installRoot);
+      const { readFile } = await import('node:fs/promises');
+      expect((await readFile(destA, 'utf8'))).toBe(sharedPriorContent);
+      expect((await readFile(destB, 'utf8'))).toBe(sharedPriorContent);
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'resolves identity correctly even when safeFilename itself contains the literal substring ".bak-"',
+    async () => {
+      // generateProfileIdentity only strips path-reserved characters, so a
+      // base profile name containing ".bak-" produces a safeFilename that
+      // legitimately contains that substring too. Reverse-parsing the
+      // backup's own filename to recover safeFilename (the previous
+      // approach) breaks on names like this; reading it from durable
+      // metadata does not.
+      const safeFilename = 'PLA.bak-test_[PFD-abc12345].json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-bak-substring"}';
+      const updated = '{"name":"v2-bak-substring"}';
+
+      await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        updated,
+        sha256(updated),
+        safeFilename,
+        operationId,
+      );
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      // The correct safeFilename is recovered whole, including the literal
+      // ".bak-" substring it contains — not truncated at the first
+      // occurrence of that substring.
+      expect(located?.safeFilename).toBe(safeFilename);
+
+      const restoreResult = await restoreOrcaProfileWindows(
+        located!.backupPath,
+        installResult.backupHash,
+        located!.safeFilename,
+      );
+      expect(restoreResult.restoredHash).toBe(installResult.backupHash);
     },
   );
 });

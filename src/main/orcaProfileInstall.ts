@@ -37,7 +37,6 @@ import {
   lstat,
   mkdir,
   realpath,
-  readdir,
 } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -308,12 +307,19 @@ export interface InstallResult {
  * Transactionally install `generatedJson` to the canonical OrcaSlicer
  * user-data filament directory.
  *
+ * `operationId` identifies the install operation durably: if a backup is
+ * created, a metadata record keyed by `operationId` is written alongside it
+ * (see `writeBackupMeta`) so a later restore can recover exactly which
+ * backup this operation produced, without depending on `profileCache` or on
+ * reverse-parsing the backup's own filename (#208).
+ *
  * Throws OrcaProfileOperationError (or re-throws as-is) on failure.
  */
 export async function installOrcaProfileWindows(
   generatedJson: string,
   expectedHash: string,
   safeFilename: string,
+  operationId: string,
 ): Promise<InstallResult> {
   if (process.platform !== 'win32') {
     throw makeError(
@@ -393,6 +399,15 @@ export async function installOrcaProfileWindows(
     const priorBytes = await readFile(destPath);
     await writeFile(backupPath, priorBytes, { flag: 'wx' }); // exclusive create
     backupHash = sha256(priorBytes);
+    // Durably record which operation produced this backup and what its
+    // original safeFilename was, so restore can find it later without
+    // depending on profileCache or on parsing the backup's own filename.
+    await writeBackupMeta(installRoot, operationId, {
+      safeFilename,
+      backupFileName: path.basename(backupPath),
+      backupHash,
+      createdAt: Date.now(),
+    });
   }
 
   // 6. Write to a temp file in the same directory (same-directory = same FS for rename).
@@ -471,56 +486,123 @@ export interface LocatedBackup {
 }
 
 /**
- * Locate a `.bak-<timestamp>` file directly under `installRoot` whose SHA-256
- * content hash equals `expectedHash`.
+ * Directory (inside the install root) holding one durable identity record
+ * per install operation that produced a backup, keyed by `operationId`.
  *
- * This is deliberately independent of `profileCache`: the hash is what
- * actually identifies a backup (it is supplied by the caller and re-verified
- * before any write), while the cache only ever supplied a filename-prefix
- * optimization for narrowing this same scan. Gating restore on the cache
- * made a durable, content-addressed operation fail after a restart or after
- * `MAX_CACHE_ENTRIES` more installs evicted the original entry, even though
- * the backup file itself was untouched (#208). Scanning by hash means
- * restore works as long as the backup file exists on disk, regardless of
- * process lifetime or cache state.
+ * Restore used to be gated on `profileCache` (`getCachedProfile`), an
+ * in-memory, process-lifetime, `MAX_CACHE_ENTRIES`-bounded LRU map, so it
+ * failed after a restart or after enough later installs evicted the
+ * original entry — even though the backup file on disk was untouched
+ * (#208). Scanning the install directory for *any* backup whose content
+ * hash matched the caller-supplied hash was tried and rejected: two
+ * different profiles can have byte-identical prior content (and therefore
+ * the same SHA-256 `backupHash`), which would let restore silently pick the
+ * wrong profile's backup. Reverse-parsing `safeFilename` back out of the
+ * backup's own filename was also rejected: a generated profile's filename
+ * can legitimately contain the literal substring `.bak-` (see
+ * `generateProfileIdentity` in orcaProfileGenerator.ts, which only strips
+ * path-reserved characters), which corrupts that parse.
  *
- * The original `safeFilename` is derived from the matched file's own name —
- * backups are always written as `${safeFilename}.bak-${timestamp}` by
- * `installOrcaProfileWindows` — so callers never need to look it up
- * separately.
+ * Instead, each backup gets its own durable metadata record on disk, keyed
+ * by the `operationId` that created it. This is written once, at backup
+ * creation time, and read back at restore time — no in-memory state and no
+ * content- or filename-based inference is involved in resolving identity.
+ * The backup's content hash is still verified independently before any
+ * write happens (see `restoreOrcaProfileWindows`); metadata never bypasses
+ * that check, it only recovers *which* file to check.
  */
-export async function findBackupByHash(
+const BACKUP_META_DIR = '.pfd-backup-meta';
+
+const OPERATION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+interface BackupMetaRecord {
+  readonly safeFilename: string;
+  readonly backupFileName: string;
+  readonly backupHash: string;
+  readonly createdAt: number;
+}
+
+function backupMetaPath(installRoot: string, operationId: string): string {
+  if (!OPERATION_ID_PATTERN.test(operationId)) {
+    throw makeError(
+      'pathRestricted',
+      'Invalid operationId; expected a UUID.',
+    );
+  }
+  return path.join(installRoot, BACKUP_META_DIR, `${operationId}.json`);
+}
+
+/**
+ * Durably record which backup file a given install operation produced.
+ * Overwrites any prior record for the same `operationId`: if an operation
+ * is retried and produces a newer backup, that newer backup is the one
+ * restore should recover.
+ */
+async function writeBackupMeta(
   installRoot: string,
-  expectedHash: string,
+  operationId: string,
+  record: BackupMetaRecord,
+): Promise<void> {
+  const metaPath = backupMetaPath(installRoot, operationId);
+  await mkdir(path.dirname(metaPath), { recursive: true });
+  await writeFile(metaPath, JSON.stringify(record), 'utf8');
+}
+
+/**
+ * Resolve the backup that a specific install operation produced, purely
+ * from the durable on-disk metadata record for `operationId`. Returns null
+ * if there is no record, the record is malformed, or the backup file it
+ * points to no longer exists.
+ */
+export async function findBackupByOperationId(
+  installRoot: string,
+  operationId: string,
 ): Promise<LocatedBackup | null> {
-  let entries: import('node:fs').Dirent[];
+  let metaPath: string;
   try {
-    entries = await readdir(installRoot, {
-      withFileTypes: true,
-      encoding: 'utf8',
-    });
+    metaPath = backupMetaPath(installRoot, operationId);
   } catch {
-    return null; // Directory not accessible.
+    return null;
   }
-  for (const entry of entries) {
-    if (!entry.isFile()) continue;
-    const bakIndex = entry.name.indexOf('.bak-');
-    if (bakIndex <= 0) continue;
-    const candidatePath = path.join(installRoot, entry.name);
-    let bytes: Buffer;
-    try {
-      bytes = await readFile(candidatePath);
-    } catch {
-      continue; // Skip unreadable files.
-    }
-    if (sha256(bytes) === expectedHash) {
-      return {
-        backupPath: candidatePath,
-        safeFilename: entry.name.slice(0, bakIndex),
-      };
-    }
+  let raw: string;
+  try {
+    raw = await readFile(metaPath, 'utf8');
+  } catch {
+    return null; // No record for this operationId (never installed, or pre-#208-fix backup).
   }
-  return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null; // Corrupt metadata; treat as not found rather than guessing.
+  }
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    typeof (parsed as Record<string, unknown>)['safeFilename'] !== 'string' ||
+    typeof (parsed as Record<string, unknown>)['backupFileName'] !== 'string'
+  ) {
+    return null;
+  }
+  const record = parsed as BackupMetaRecord;
+  // Reject any backupFileName containing path separators — this record is
+  // read back from disk and must never be trusted to escape installRoot.
+  if (
+    record.backupFileName.includes('/') ||
+    record.backupFileName.includes('\\') ||
+    record.backupFileName.includes('\0')
+  ) {
+    return null;
+  }
+  const backupPath = path.join(installRoot, record.backupFileName);
+  try {
+    const info = await lstat(backupPath);
+    if (info.isSymbolicLink()) return null; // Never follow a symlink here.
+  } catch {
+    return null; // The backup file itself is gone.
+  }
+  return { backupPath, safeFilename: record.safeFilename };
 }
 
 /**
