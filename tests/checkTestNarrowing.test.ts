@@ -232,6 +232,20 @@ describe('isDirectVitestInvocation', () => {
       ),
     ).toBe(true);
   });
+
+  it('POSITIVE CONTROL (Vasquez, review of this PR, round 7): recognises a direct .ps1 wrapper invocation', () => {
+    // npm's own Windows `.bin` shims include a `vitest.ps1` alongside
+    // `vitest`/`vitest.cmd` -- this is a DIRECT invocation of the real
+    // vitest wrapper, the same kind of OS-toolchain artifact as `.cmd`, not
+    // a distinguishing node-ecosystem filename the way `.js`/`.mjs` are.
+    expect(
+      isDirectVitestInvocation(
+        tokenizeCommand(
+          '.\\node_modules\\.bin\\vitest.ps1 run -t "only this arm"',
+        ),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('HOME 1: package.json test/test:* scripts', () => {
@@ -894,6 +908,26 @@ describe('HOME 2: workflows invoking vitest directly', () => {
       '        run: node scripts/vitest.js run -t "only this arm"',
     ].join('\n');
     expect(checkWorkflowText('ci.yml', contents)).toHaveLength(0);
+  });
+
+  it('POSITIVE CONTROL (Vasquez, review of this PR, round 7): recognises a direct .ps1 wrapper invocation in a workflow step', () => {
+    // npm's own Windows `.bin` shims include a `vitest.ps1` alongside
+    // `vitest`/`vitest.cmd` -- this is a direct invocation, not a wrapper
+    // shape, so it is checked here rather than only at the unit level.
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: .\\node_modules\\.bin\\vitest.ps1 run -t "only this arm"',
+    ].join('\n');
+    const violations = checkWorkflowText('ci.yml', contents);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '-t',
+      value: 'only this arm',
+    });
   });
 
   it('POSITIVE CONTROL (Ripley, review of this PR, round 3): reads a folded block scalar header with a chomping indicator and trailing comment', () => {

@@ -282,6 +282,31 @@
 //   of the same programs, so `basenameOf` now lower-cases its result, the
 //   same single shared point every comparison in this file already goes
 //   through.
+//
+// A SEVENTH REVIEW ROUND split again -- Ripley approved (confirmed both
+// round-6 fixes hold), Vasquez rejected on one new finding, judged material
+// because it is a DIRECT-invocation gap rather than one more wrapper shape:
+// `.\node_modules\.bin\vitest.ps1 run -t "only this arm"` -- npm's own
+// Windows `.bin` shims include a `.ps1` alongside `vitest`/`vitest.cmd` --
+// was not recognised. `.ps1` is the same kind of OS/toolchain wrapper
+// artifact as `.exe`/`.cmd`/`.bat` (not a deliberate node-ecosystem filename
+// distinction the way `.js`/`.mjs` are, per the round-6 finding above), so
+// it is added to the same `WINDOWS_WRAPPER_EXTENSIONS` set rather than
+// treated as new mechanism.
+//
+// Ripley (round 7) also reproduced two further gaps --
+// `powershell -EncodedCommand ...` and `wsl bash -c 'vitest run -t ...'` --
+// but explicitly classed both as non-blocking given this gate's
+// non-required, defense-in-depth role (#537 acceptance criterion 3). They
+// are recorded here, deliberately, as a KNOWN, ACCEPTED GAP rather than left
+// implicit: `-EncodedCommand` takes a base64-encoded script, which this
+// gate's text-based scan cannot decode without materially expanding scope
+// (a PowerShell-script-of-arbitrary-encoding is a different kind of problem
+// than pattern-matching a plaintext command line), and `wsl <cmd>` runs the
+// rest of its argv inside a separate Linux environment this gate has no
+// visibility into by design (it reads workflow/package.json/config text,
+// not a spawned subprocess's own environment). Revisit if either shape is
+// ever found actually committed, rather than closing them pre-emptively.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
@@ -432,7 +457,17 @@ const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 // vitest entry file's specific name (`vitest.mjs`) is still recognised, but
 // via the existing explicit literal check in `isVitestBasename` below, not
 // by assuming every `.js`-family file named similarly is vitest.
-const WINDOWS_WRAPPER_EXTENSIONS = ['.exe', '.cmd', '.bat'];
+//
+// Vasquez (review of this PR, round 7): `.ps1` was missing -- npm's own
+// Windows `.bin` shims include a `vitest.ps1` alongside `vitest`/
+// `vitest.cmd`, so `.\node_modules\.bin\vitest.ps1 run -t "only this arm"`
+// is a DIRECT invocation of the real vitest wrapper, not a wrapped/piped
+// shape, and was still missed. `.ps1` belongs with the other Windows
+// executable-wrapper extensions above (an OS/toolchain artifact, not a
+// deliberate node-ecosystem filename distinction the way `.js`/`.mjs` are),
+// so it is added to the same unconditionally-stripped set rather than
+// treated as a fourth mechanism.
+const WINDOWS_WRAPPER_EXTENSIONS = ['.exe', '.cmd', '.bat', '.ps1'];
 
 function stripKnownExecutableExtension(name) {
   const lower = name.toLowerCase();
