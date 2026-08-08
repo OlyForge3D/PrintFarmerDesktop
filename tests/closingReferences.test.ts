@@ -28,6 +28,7 @@ import {
   witnessContradiction,
   witnessUnreadableBinding,
 } from '../scripts/check-closing-references.mjs';
+import type { InjectedSettledRead } from '../scripts/check-closing-references.mjs';
 
 /**
  * #231. See the header of scripts/check-closing-references.mjs for the
@@ -1298,7 +1299,7 @@ describe('main', () => {
       // strictly after that failure was recorded -- the scenario the naive
       // unconditional clear could not handle.
       readClosures: () =>
-        new Promise((resolve) => {
+        new Promise<InjectedSettledRead>((resolve) => {
           setTimeout(
             () =>
               resolve({
