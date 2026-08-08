@@ -38,6 +38,7 @@ import type {
 import {
   RemoteCalibrationApplySuccess,
   RemoteCalibrationApplyConflict,
+  RemoteCalibrationProblemDetails,
   RemoteCalibrationChangesPage as ChangesPageSchema,
   RemoteCalibrationCapabilities as CapabilitiesSchema,
   RemoteCalibrationProject as ProjectSchema,
@@ -225,6 +226,23 @@ export class CalibrationHttpError extends Error {
      * read here, in process, rather than rendered or logged.
      */
     readonly serverDetail: string | null = null,
+    /**
+     * The backend's ProblemDetails `instance`, verbatim and untrusted.
+     *
+     * Carried for parity with `serverDetail` now that `statusError` validates
+     * the response against `RemoteCalibrationProblemDetails` (issue #370),
+     * but deliberately **not** wired into the #177 opaque reference here --
+     * that remains the conditional the #177 ruling reserved, contingent on
+     * confirming the backend actually populates this field. Same
+     * in-process-only disposition as `serverDetail`: never logged, never
+     * reaches `message` or the renderer.
+     */
+    readonly serverInstance: string | null = null,
+    /**
+     * The backend's ProblemDetails `errorCode` extension field, verbatim and
+     * untrusted. Same in-process-only disposition as `serverDetail`.
+     */
+    readonly serverErrorCode: string | null = null,
   ) {
     super(message);
     this.name = 'CalibrationHttpError';
@@ -1510,18 +1528,29 @@ export class CalibrationHttpClient {
     // Read ProblemDetails for operator context. This text is server-controlled
     // and never becomes the error's `message` -- see issue #177 and the
     // `serverDetail` docblock on CalibrationHttpError.
+    //
+    // Parsed through `RemoteCalibrationProblemDetails` (issue #370) rather
+    // than a hand-rolled cast, so `instance` and `errorCode` are preserved
+    // and the schema's own per-field bounds (`detail` <= 4096 chars, etc.)
+    // apply -- not a bound on the whole JSON body, which would reject a
+    // contract-legal maximal `detail` before it could be read. The body-size
+    // check here is a coarse DoS guard only, reusing the client's configured
+    // response cap; it is not a stand-in for the schema's field validation.
     let detail: string | null = null;
+    let instance: string | null = null;
+    let errorCode: string | null = null;
     try {
       const body = await response.text();
-      if (body.length > 0 && body.length < 4096) {
-        const parsed = JSON.parse(body) as {
-          detail?: string;
-          title?: string;
-          errorCode?: string;
-        };
-        // `title` is as server-controlled as `detail`; both are untrusted and
-        // both are carried on `serverDetail` only.
-        detail = parsed.detail ?? parsed.title ?? null;
+      if (body.length > 0 && body.length <= this.maxResponseBytes) {
+        const json: unknown = JSON.parse(body);
+        const parsed = RemoteCalibrationProblemDetails.safeParse(json);
+        if (parsed.success) {
+          // `title` is as server-controlled as `detail`; both are untrusted
+          // and both are carried on `serverDetail` only.
+          detail = parsed.data.detail ?? parsed.data.title ?? null;
+          instance = parsed.data.instance ?? null;
+          errorCode = parsed.data.errorCode ?? null;
+        }
       }
     } catch {
       // Non-JSON error body; ignore
@@ -1548,6 +1577,8 @@ export class CalibrationHttpClient {
         retryAfterMs,
         isAmbiguous,
         detail,
+        instance,
+        errorCode,
       );
 
     // HTTP semantic mapping (issue #52 contract)
