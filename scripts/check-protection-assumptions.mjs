@@ -91,29 +91,58 @@ export function evaluateProtectionAssumptions({
   const violations = [];
   const enabled = (node) => node?.enabled === true;
 
-  if (enabled(protection.allow_force_pushes)) {
-    violations.push(
-      violation(
-        'development.allow_force_pushes',
-        'false',
-        'true',
-        '#81 / #149',
-        'the server-side half of the force-push protection is gone, leaving only the client-side guard, which --no-verify bypasses',
-      ),
-    );
-  }
+  // The three fields above whose safe value is `false` share a hazard `enabled`
+  // cannot see: `node?.enabled === true` reads an ABSENT node and an explicit
+  // `{ enabled: false }` node identically, as `false`. That is fine for the two
+  // uses of `enabled` above -- both want "not literally true" -- but it is wrong
+  // here, because "the field was never returned" and "the field was returned and
+  // says false" are different facts. The first means the API stopped reporting
+  // the setting (deleted key, truncated response, renamed field); the second
+  // means GitHub confirmed the setting is off. Collapsing them lets a payload
+  // that omits `allow_force_pushes` entirely report the trunk as refusing force
+  // pushes, which is the defect #488 exists to close. `guardField` keeps the two
+  // apart and raises a violation, worded differently, for each.
+  const guardField = (
+    node,
+    assumption,
+    decision,
+    absentConsequence,
+    enabledConsequence,
+  ) => {
+    if (node === undefined || node === null) {
+      violations.push(
+        violation(
+          assumption,
+          'false (present and confirmed)',
+          '(field absent from the API response)',
+          decision,
+          absentConsequence,
+        ),
+      );
+      return;
+    }
+    if (node.enabled === true) {
+      violations.push(
+        violation(assumption, 'false', 'true', decision, enabledConsequence),
+      );
+    }
+  };
 
-  if (enabled(protection.allow_deletions)) {
-    violations.push(
-      violation(
-        'development.allow_deletions',
-        'false',
-        'true',
-        '#81 / #149',
-        'the trunk can be deleted outright, which no client-side guard sees',
-      ),
-    );
-  }
+  guardField(
+    protection.allow_force_pushes,
+    'development.allow_force_pushes',
+    '#81 / #149',
+    'the allow_force_pushes fact is missing from the response rather than confirmed false -- a deleted or unreadable field is not the same as GitHub reporting the trunk still refuses force pushes',
+    'the server-side half of the force-push protection is gone, leaving only the client-side guard, which --no-verify bypasses',
+  );
+
+  guardField(
+    protection.allow_deletions,
+    'development.allow_deletions',
+    '#81 / #149',
+    'the allow_deletions fact is missing from the response rather than confirmed false -- a deleted or unreadable field is not the same as GitHub reporting the trunk cannot be deleted',
+    'the trunk can be deleted outright, which no client-side guard sees',
+  );
 
   if (!enabled(protection.required_linear_history)) {
     violations.push(
@@ -158,7 +187,20 @@ export function evaluateProtectionAssumptions({
   // #111 decided both of these deliberately and they are NOT wrong. The
   // violation is not "this is misconfigured" -- it is "the premise moved, go
   // re-read #111", which is why the consequence is phrased as a re-examination.
-  if (enabled(protection.enforce_admins)) {
+  if (
+    protection.enforce_admins === undefined ||
+    protection.enforce_admins === null
+  ) {
+    violations.push(
+      violation(
+        'development.enforce_admins',
+        'false (decided in #111, present and confirmed)',
+        '(field absent from the API response)',
+        '#111',
+        'enforce_admins is missing from the response rather than confirmed false -- a deleted or unreadable field is not the same as GitHub reporting the #111 exemption still holds, and this check cannot tell whether it was overtaken',
+      ),
+    );
+  } else if (enabled(protection.enforce_admins)) {
     violations.push(
       violation(
         'development.enforce_admins',
@@ -170,18 +212,33 @@ export function evaluateProtectionAssumptions({
     );
   }
 
-  const reviewCount =
-    protection.required_pull_request_reviews?.required_approving_review_count;
-  if (reviewCount !== undefined && reviewCount !== 0) {
+  if (
+    protection.required_pull_request_reviews === undefined ||
+    protection.required_pull_request_reviews === null
+  ) {
     violations.push(
       violation(
         'development.required_approving_review_count',
-        '0 (decided in #111)',
-        String(reviewCount),
+        '0 (decided in #111, present and confirmed)',
+        '(field absent from the API response)',
         '#111',
-        'requiring a review was declined because GitHub forbids self-approval and jpapiez is the sole collaborator; a non-zero value means that constraint has changed',
+        'required_pull_request_reviews is missing from the response rather than confirmed at 0 -- a deleted or unreadable field is not the same as GitHub reporting the #111 self-approval reasoning still holds',
       ),
     );
+  } else {
+    const reviewCount =
+      protection.required_pull_request_reviews.required_approving_review_count;
+    if (reviewCount !== undefined && reviewCount !== 0) {
+      violations.push(
+        violation(
+          'development.required_approving_review_count',
+          '0 (decided in #111)',
+          String(reviewCount),
+          '#111',
+          'requiring a review was declined because GitHub forbids self-approval and jpapiez is the sole collaborator; a non-zero value means that constraint has changed',
+        ),
+      );
+    }
   }
 
   // The stated revisit trigger for both #111 and #151, and the only one of these
