@@ -338,7 +338,7 @@ describe('SidecarCalibrationAdapter', () => {
     expect(replay).toHaveBeenCalledWith(PROFILE_ID, OP_ID);
   });
 
-  it('recordCalibrationConflict delegates entity type, reason, revision', async () => {
+  it('recordCalibrationConflict delegates entity type, reason, revision, and conflict kind', async () => {
     const record = vi.fn().mockResolvedValue(undefined);
     const sidecarClient = { recordCalibrationConflict: record } as any;
     const adapter = new SidecarCalibrationAdapter(sidecarClient);
@@ -347,6 +347,7 @@ describe('SidecarCalibrationAdapter', () => {
       entityId: PROJECT_ID,
       reason: 'Concurrent edit',
       serverRevision: 7,
+      conflictKind: 'projectMetadata',
     });
 
     expect(record).toHaveBeenCalledWith(
@@ -356,6 +357,30 @@ describe('SidecarCalibrationAdapter', () => {
       PROJECT_ID,
       'Concurrent edit',
       7,
+      'projectMetadata',
+    );
+  });
+
+  it('recordCalibrationConflict passes undefined conflict kind through for unclassified entity types', async () => {
+    const record = vi.fn().mockResolvedValue(undefined);
+    const sidecarClient = { recordCalibrationConflict: record } as any;
+    const adapter = new SidecarCalibrationAdapter(sidecarClient);
+    await adapter.recordCalibrationConflict(PROFILE_ID, OP_ID, {
+      entityType: 'CalibrationPhoto',
+      entityId: PROJECT_ID,
+      reason: 'Concurrent edit',
+      serverRevision: 7,
+      conflictKind: null,
+    });
+
+    expect(record).toHaveBeenCalledWith(
+      PROFILE_ID,
+      OP_ID,
+      'CalibrationPhoto',
+      PROJECT_ID,
+      'Concurrent edit',
+      7,
+      undefined,
     );
   });
 
@@ -398,13 +423,14 @@ describe('SidecarCalibrationAdapter', () => {
     );
   });
 
-  it('listCalibrationConflicts maps entity type to conflict kind', async () => {
+  it('listCalibrationConflicts reads the ratified kind from conflictKind, not entityType', async () => {
     const raw = [
       {
         conflictId: '66666666-6666-4666-8666-666666666666',
         profileId: PROFILE_ID,
         projectId: PROJECT_ID,
-        kind: 'CalibrationStep',
+        entityType: 'CalibrationStep',
+        conflictKind: 'stepDraft',
         entityId: STEP_ID,
         operationId: OP_ID,
         serverRevision: 3,
@@ -444,7 +470,8 @@ describe('SidecarCalibrationAdapter', () => {
         conflictId: '66666666-6666-4666-8666-666666666666',
         profileId: PROFILE_ID,
         projectId: PROJECT_ID,
-        kind: 'CalibrationStep',
+        entityType: 'CalibrationStep',
+        conflictKind: 'stepDraft',
         entityId: STEP_ID,
         operationId: OP_ID,
         localPayload: { displayName: 'Local name' },
@@ -478,7 +505,8 @@ describe('SidecarCalibrationAdapter', () => {
         conflictId: '66666666-6666-4666-8666-666666666666',
         profileId: PROFILE_ID,
         projectId: PROJECT_ID,
-        kind: 'CalibrationProject',
+        entityType: 'CalibrationProject',
+        conflictKind: 'projectMetadata',
         entityId: PROJECT_ID,
         operationId: OP_ID,
         localPayload: { note: 'x'.repeat(8000) },

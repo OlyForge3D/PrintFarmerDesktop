@@ -27,12 +27,13 @@ import type {
 } from './calibrationEngine.js';
 import { ServerProfileService } from './serverProfiles.js';
 import type { SidecarClient } from './sidecar.js';
-import type {
-  CalibrationConflict,
-  CalibrationConflictKind,
-  CalibrationConflictResolution,
-  CalibrationResolveConflictRequest,
-  CalibrationResolveConflictResponse,
+import {
+  CalibrationConflictKind as CalibrationConflictKindSchema,
+  type CalibrationConflict,
+  type CalibrationConflictKind,
+  type CalibrationConflictResolution,
+  type CalibrationResolveConflictRequest,
+  type CalibrationResolveConflictResponse,
 } from '@shared/ipc';
 import { z } from 'zod';
 
@@ -117,13 +118,29 @@ const CalibrationConflictWire = z
     conflictId: z.string(),
     profileId: z.string(),
     projectId: z.string(),
-    kind: z.string(),
+    /**
+     * The conflicted row's entity type (e.g. `CalibrationProject`), sourced
+     * from the store's `entity_type` column. Renamed from `kind` (issue
+     * #365): this field never carried a conflict kind, and naming it `kind`
+     * invited exactly the defect this issue fixes -- parsing it against the
+     * six-value `CalibrationConflictKind` enum, which no entity type is ever
+     * a member of.
+     */
+    entityType: z.string(),
     entityId: z.string(),
     operationId: z.string().nullable().default(null),
     localPayload: z.unknown().nullable().default(null),
     serverPayload: z.unknown().nullable().default(null),
     serverRevision: z.number().int(),
     createdAt: z.string(),
+    /**
+     * The ratified conflict kind, when the store classified this conflict at
+     * record time. This -- not `entityType` -- is the IPC contract's source
+     * for `CalibrationConflict.kind` (issue #365). `null` means unclassified;
+     * the list path below refuses to guess a kind for it rather than
+     * fabricating one.
+     */
+    conflictKind: z.string().nullable().default(null),
   })
   .passthrough();
 
@@ -313,44 +330,29 @@ export function supportsConflictResolution(
 // ---------------------------------------------------------------------------
 
 /**
- * Displayed kind for a conflict this adapter could not classify.
+ * Maps the raw entity type string from a sync conflict to the ratified
+ * `CalibrationConflictKind` it should be recorded under, or `null` when no
+ * entity type in this switch names it.
  *
- * This is a *rendering* fallback and deliberately not a classification: it
- * exists only because `CalibrationConflictKind` has no `unclassified` member,
- * and widening a shared IPC enum decides renderer behaviour for every consumer.
- * That belongs in an issue where the contract owner can see it (#219), not in
- * this diff. Nothing may derive a permission from it -- see
- * `classifyCalibrationConflictKind`.
+ * **This is a write-time classifier (issue #365), not a display helper.**
+ * `calibrationEngine.ts`'s push loop calls it to compute the `conflictKind`
+ * passed to `recordCalibrationConflict` alongside `entityType`, which
+ * `SidecarCalibrationAdapter` forwards unchanged. The list path no longer
+ * calls this function at all: it reads `conflict_kind` back from the store
+ * as the contract's source of truth, because re-deriving a kind from
+ * `entity_type` on read is exactly the guessing this issue removes (see
+ * `classifyCalibrationConflictKind`, deleted with it).
+ *
+ * `null` is still the point of the `default` arm. `stepOrdering` and
+ * `deletionVsLocalEdit` are unreachable from any entity type and are not
+ * added here -- `deletionVsLocalEdit` in particular cannot be derived from an
+ * entity type at all, it is a property of the sync *operation*. A conflict
+ * classified `null` here is recorded with `conflict_kind = NULL`: the store
+ * already refuses to resolve it (`CALIBRATION_CONFLICT_KIND_UNCLASSIFIED`),
+ * and the list path now refuses to advertise it as classified rather than
+ * guessing a display kind for it (issue #219's residual default arm).
  */
-const UNCLASSIFIED_CONFLICT_DISPLAY_KIND = 'projectMetadata' as const;
-
-/**
- * Maps the raw entity type string from the sidecar to a CalibrationConflictKind,
- * or `null` when this adapter has no mapping for it.
- *
- * **`null` is the point of this function.** It previously returned
- * `projectMetadata` for anything unrecognised, and `projectMetadata` is one of
- * exactly two kinds that grant `manualFieldMerge`. Four of the eight entity
- * types the sync engine handles -- `CalibrationEvent`, `CalibrationObservation`,
- * `CalibrationPhoto` and `CalibrationProfileRevision` -- reached that arm, so
- * **the unclassified case advertised the widest permission to the types the
- * ratified policy most clearly excludes.** A conflicted `CalibrationProfileRevision`
- * is exact profile JSON, named in the schema doc's exclusion list, and arrived
- * at the renderer advertised as textually mergeable.
- *
- * The store already refuses these: `resolve_calibration_conflict` fails with
- * `CALIBRATION_CONFLICT_KIND_UNCLASSIFIED`. Returning a fabricated kind here
- * made the advertisement and the enforcement disagree, which is strictly worse
- * than either being wrong alone -- the UI offers a button the store rejects and
- * nobody can tell whether the policy or the button is the defect.
- *
- * `stepOrdering` and `deletionVsLocalEdit` are unreachable from any entity type
- * and are not added here. `deletionVsLocalEdit` in particular cannot be derived
- * from an entity type at all -- it is a property of the sync *operation*, not of
- * the entity. That is a defect in this function's input, not a missing arm, and
- * it is recorded on #219 rather than papered over with a guess.
- */
-function mapCalibrationConflictKind(
+export function mapCalibrationConflictKind(
   entityType: string,
 ): CalibrationConflictKind | null {
   switch (entityType) {
@@ -365,26 +367,6 @@ function mapCalibrationConflictKind(
     default:
       return null;
   }
-}
-
-/**
- * The conflict's displayed kind and the resolutions it may advertise.
- *
- * These are two different questions and conflating them is what #219 is about.
- * The display needs *a* member of the shared enum; the permission needs the
- * truth about whether we classified the conflict at all. Deriving both from one
- * fabricated kind meant an unclassifiable conflict was indistinguishable from a
- * project-metadata one at exactly the point where the difference decides which
- * destructive actions the user is offered.
- */
-export function classifyCalibrationConflictKind(entityType: string): {
-  readonly kind: CalibrationConflictKind;
-  readonly classified: boolean;
-} {
-  const kind = mapCalibrationConflictKind(entityType);
-  return kind === null
-    ? { kind: UNCLASSIFIED_CONFLICT_DISPLAY_KIND, classified: false }
-    : { kind, classified: true };
 }
 
 /**
@@ -517,6 +499,7 @@ export class SidecarCalibrationAdapter implements CalibrationSidecar {
       entityId: string;
       reason: string;
       serverRevision: number;
+      conflictKind: string | null;
     },
   ): Promise<void> {
     await this.sidecar.recordCalibrationConflict(
@@ -526,6 +509,7 @@ export class SidecarCalibrationAdapter implements CalibrationSidecar {
       conflict.entityId,
       conflict.reason,
       conflict.serverRevision,
+      conflict.conflictKind ?? undefined,
     );
   }
 
@@ -587,14 +571,25 @@ export class SidecarCalibrationAdapter implements CalibrationSidecar {
       profileId,
       projectId,
     );
-    return raw.map((item) => {
+    // The IPC contract's `kind` is sourced from `conflict_kind`, never
+    // re-derived from `entityType` (issue #365). A conflict whose
+    // `conflictKind` is null or not a member of the six-value enum is
+    // refused here -- excluded from the returned list -- rather than
+    // advertised under a guessed kind: the store already refuses to
+    // *resolve* an unclassified conflict with
+    // CALIBRATION_CONFLICT_KIND_UNCLASSIFIED, so listing it as classified
+    // would offer a button the store rejects.
+    const conflicts: CalibrationConflict[] = [];
+    for (const item of raw) {
       const parsed = CalibrationConflictWire.parse(item);
-      // The sidecar's `kind` column carries the *entity type*, not a conflict
-      // kind (#219). `classified` records whether we could map it; it is not
-      // recoverable from `kind` afterwards, because the display fallback is
-      // itself a valid enum member.
-      const { kind, classified } = classifyCalibrationConflictKind(parsed.kind);
-      return {
+      const kindResult = CalibrationConflictKindSchema.safeParse(
+        parsed.conflictKind,
+      );
+      if (!kindResult.success) {
+        continue;
+      }
+      const kind = kindResult.data;
+      conflicts.push({
         conflictId: parsed.conflictId,
         profileId: parsed.profileId,
         projectId: parsed.projectId,
@@ -603,19 +598,13 @@ export class SidecarCalibrationAdapter implements CalibrationSidecar {
         localPayloadSummary: summarizeConflictPayload(parsed.localPayload),
         serverPayloadSummary: summarizeConflictPayload(parsed.serverPayload),
         serverRevision: parsed.serverRevision,
-        // Derived from the transport's capability (see conflictResolutionsFor),
-        // and gated on having actually classified the conflict. An unclassified
-        // conflict advertises nothing, because the store refuses it with
-        // CALIBRATION_CONFLICT_KIND_UNCLASSIFIED -- the offer and the refusal
-        // have to agree or neither can be debugged.
-        availableResolutions: classified
-          ? conflictResolutionsFor(this, kind)
-          : [],
+        availableResolutions: conflictResolutionsFor(this, kind),
         createdAt: sidecarTimestampToIso(parsed.createdAt, 'createdAt'),
         resolution: null,
         resolvedAt: null,
-      };
-    });
+      });
+    }
+    return conflicts;
   }
 
   async countCalibrationPendingOperations(
