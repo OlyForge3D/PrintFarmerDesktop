@@ -15,9 +15,7 @@ export const FABRICATED_LATER_TIMESTAMP: string;
 export interface MeasurementFreshnessResult {
   readonly verdict: MeasurementVerdict;
   readonly exitCode:
-    | typeof EXIT_OK
-    | typeof EXIT_STALE
-    | typeof EXIT_UNVERIFIABLE;
+    typeof EXIT_OK | typeof EXIT_STALE | typeof EXIT_UNVERIFIABLE;
   readonly reason: string;
 }
 
@@ -61,6 +59,9 @@ export function main(
   argv?: string[],
   deps?: {
     readFile?: (path: string) => string;
-    fetchLive?: (input: { repo: string; number: number }) => string | Promise<string>;
+    fetchLive?: (input: {
+      repo: string;
+      number: number;
+    }) => string | Promise<string>;
   },
 ): Promise<void>;

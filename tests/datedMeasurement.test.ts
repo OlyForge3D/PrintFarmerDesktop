@@ -209,9 +209,11 @@ describe('parsing ```measured citations out of a report', () => {
   });
 
   it('reports a block missing a required field as incomplete rather than dropping it', () => {
-    const text = ['```measured', 'repo: OlyForge3D/PrintFarmerDesktop', '```'].join(
-      '\n',
-    );
+    const text = [
+      '```measured',
+      'repo: OlyForge3D/PrintFarmerDesktop',
+      '```',
+    ].join('\n');
     const citations = parseMeasurementCitations(text);
     expect(citations).toHaveLength(1);
     expect(citations[0]?.incomplete).toBe(true);
