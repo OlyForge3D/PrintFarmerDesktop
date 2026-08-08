@@ -62,6 +62,14 @@ GitHub issue and comment authorship identifies the shared account, not the squad
 
 This does not change commit-revision ownership or the rejection rule below. Those operate on branch and commit work, not on a GitHub comment's shared-account author field.
 
+## Cross-session message markers are not provenance either
+
+The agent emoji/name marker on a cross-session message (e.g. `🏗️` for Ripley) is authored prose, not an envelope field — it can be copied, summarised, or inherited when a hub session that received traffic from several agents compacts its state into a first-person checkpoint. #372 recorded a concrete case: a message reached one session bearing another agent's marker over four claims that agent states he never made, traced to exactly this mechanism. Provenance is lost at compaction, not at send.
+
+**When refuting or correcting a cross-session claim, quote the sentence you are refuting, with its sender line** — do not address a rebuttal to an identity inferred only from a message's leading marker or sign-off. The quote is checkable against the sending session's stored turns; the marker alone is not. This is the same rule as above, applied to chat instead of GitHub comments: cite the artifact (the quoted text), not an inferred author.
+
+Stamping origin in the envelope and preserving attribution across compaction are known, unresolved remedies (#372) — they need a platform-level change this repo does not control. Do not build a marker-based attribution detector as a substitute; `ripley-attribution-carries-no-bits.md` already showed that a field which is occasionally right (like `%an`) is trusted and therefore worse than one that is never right.
+
 ## Freeze the branch during review
 
 Once a review is dispatched, the branch is frozen. Any push invalidates the verdict, because the reviewer's conclusions no longer describe the commit that would be merged. Push your fix, report the new SHA, then stop until released.
