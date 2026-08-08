@@ -80,6 +80,34 @@ const violation = (assumption, expected, actual, decision, consequence) => ({
   consequence,
 });
 
+// Reads a `{ enabled: <bool> }`-shaped node into a fact that is either
+// "confirmed true", "confirmed false", or "not confirmed either way". A
+// plain `node?.enabled === true` check answers a narrower question -- "is
+// this literally true?" -- which would be exactly right for fields whose
+// safe value is `true` (an absent node correctly reads as not-true, i.e. a
+// violation), but wrong for fields whose safe value is `false`: it cannot
+// tell "GitHub confirmed this is off" from "GitHub said nothing about this
+// at all", and a payload that omits the key, or a payload that returns the
+// node but as `{}` or with `enabled` set to something other than a literal
+// boolean (a malformed-but-present shape), all collapse to the same silent
+// "not true" reading. Vasquez's review of #489's first pass (#488, and its
+// own re-application below) found exactly that hole in two places:
+// `allow_force_pushes: {}` produced no violation, and separately
+// `adminExemptibleSettingEnforcement` narrated a missing field as if it were
+// a confirmed, explicit unsafe value. `readEnabledFact` treats every
+// non-boolean shape the same as a fully missing node, at module scope, so
+// every reader of it -- `guardField` below and
+// `adminExemptibleSettingEnforcement` further down -- shares one place that
+// can go wrong instead of two.
+function readEnabledFact(node) {
+  if (node === undefined || node === null || typeof node !== 'object') {
+    return { confirmed: false };
+  }
+  if (node.enabled === true) return { confirmed: true, value: true };
+  if (node.enabled === false) return { confirmed: true, value: false };
+  return { confirmed: false };
+}
+
 /**
  * Pure. Takes the four reads and returns what has moved.
  *
@@ -101,32 +129,7 @@ export function evaluateProtectionAssumptions({
 
   const violations = [];
 
-  // Reads a `{ enabled: <bool> }`-shaped node into a fact that is either
-  // "confirmed true", "confirmed false", or "not confirmed either way".
-  // A plain `node?.enabled === true` check answers a narrower question --
-  // "is this literally true?" -- which would be exactly right for the fields
-  // whose safe value is `true` (an absent node correctly reads as not-true,
-  // i.e. a violation), but wrong for the fields below whose safe value is
-  // `false`: it cannot tell "GitHub confirmed this is off" from "GitHub said
-  // nothing about
-  // this at all", and a payload that omits the key, or a payload that
-  // returns the node but as `{}` or with `enabled` set to something other
-  // than a literal boolean (a malformed-but-present shape), all collapse to
-  // the same silent "not true" reading. Vasquez's review of this PR (#488)
-  // found exactly that hole: `allow_force_pushes: {}` produced no violation.
-  // `readEnabledFact` treats every one of those non-boolean shapes the same
-  // as a fully missing node, so `guardField` below raises the absent-field
-  // violation for all of them, not only for `undefined`/`null`.
-  const readEnabledFact = (node) => {
-    if (node === undefined || node === null || typeof node !== 'object') {
-      return { confirmed: false };
-    }
-    if (node.enabled === true) return { confirmed: true, value: true };
-    if (node.enabled === false) return { confirmed: true, value: false };
-    return { confirmed: false };
-  };
-
-  // The three fields above whose safe value is `false` share this hazard.
+  // The three fields below whose safe value is `false` share this hazard.
   // `guardField` raises a distinctly-worded violation when the fact is not
   // confirmed at all (missing node, or a present node that does not confirm
   // `enabled` as a literal boolean), and the existing present-unsafe-value
@@ -347,6 +350,12 @@ export function evaluateProtectionAssumptions({
  * it is configured correctly but `enforce_admins: false` exempts admins from
  * it, and `binding` only when it is configured correctly AND admins are not
  * exempt.
+ *
+ * The `present` argument must already distinguish "confirmed not configured
+ * the protective way" from "cannot be confirmed at all" -- collapsing those
+ * two into one boolean is exactly the hole #488 fixed for the violation
+ * checks above, and callers below split it back out via `readEnabledFact`
+ * rather than a plain `?.enabled === x` comparison.
  */
 function adminExemptionReading({
   present,
@@ -420,37 +429,74 @@ export function statusCheckEnforcement(protection) {
  * still bind nobody when the only account that can push or merge is an admin.
  * Returns one `{ state, why }` reading per setting, in the same
  * `binding` / `bypassable` / `absent` vocabulary as `statusCheckEnforcement`.
+ *
+ * The three `{ enabled: <bool> }`-shaped settings below are read through
+ * `readEnabledFact` rather than a plain `?.enabled === x` comparison, so a
+ * missing or malformed node reads as `absent` with wording that says the
+ * field could not be confirmed, distinct from a node that GitHub confirmed
+ * as the explicit unsafe value. Collapsing those two into one `why` narration
+ * -- reporting an unconfirmed field as though it were a confirmed unsafe
+ * setting -- is the same hole #488 fixed for the violation checks above, and
+ * reappearing here in the enforcement-reporting path was exactly what
+ * Vasquez's own review of this generalisation caught.
  */
 export function adminExemptibleSettingEnforcement(protection) {
   const adminsExempt = protection?.enforce_admins?.enabled !== true;
 
+  const enabledNodeReading = ({
+    node,
+    protectiveValue,
+    missingWhy,
+    explicitUnsafeWhy,
+    bypassableWhy,
+    bindingWhy,
+  }) => {
+    const fact = readEnabledFact(node);
+    if (!fact.confirmed) {
+      return { state: 'absent', why: missingWhy };
+    }
+    return adminExemptionReading({
+      present: fact.value === protectiveValue,
+      adminsExempt,
+      absentWhy: explicitUnsafeWhy,
+      bypassableWhy,
+      bindingWhy,
+    });
+  };
+
   return {
     strict: statusCheckEnforcement(protection),
-    allow_force_pushes: adminExemptionReading({
-      present: protection?.allow_force_pushes?.enabled === false,
-      adminsExempt,
-      absentWhy:
-        'allow_force_pushes is enabled, so force pushes are not restricted for anyone, administrator or not',
+    allow_force_pushes: enabledNodeReading({
+      node: protection?.allow_force_pushes,
+      protectiveValue: false,
+      missingWhy:
+        'allow_force_pushes is missing or malformed in the response rather than confirmed either way, so whether force pushes are restricted cannot be read from this field',
+      explicitUnsafeWhy:
+        'allow_force_pushes is confirmed enabled, so force pushes are not restricted for anyone, administrator or not',
       bindingWhy:
         'force pushes are disallowed by configuration and administrators are not exempt, so the restriction binds every pusher',
       bypassableWhy:
         'force pushes are disallowed by configuration but administrators are exempt, and the only account that can push is an administrator — do not rely on the server-side force-push guard; the client-side hook, which --no-verify bypasses, is what actually holds',
     }),
-    allow_deletions: adminExemptionReading({
-      present: protection?.allow_deletions?.enabled === false,
-      adminsExempt,
-      absentWhy:
-        'allow_deletions is enabled, so the branch can be deleted by anyone, administrator or not',
+    allow_deletions: enabledNodeReading({
+      node: protection?.allow_deletions,
+      protectiveValue: false,
+      missingWhy:
+        'allow_deletions is missing or malformed in the response rather than confirmed either way, so whether deletion is restricted cannot be read from this field',
+      explicitUnsafeWhy:
+        'allow_deletions is confirmed enabled, so the branch can be deleted by anyone, administrator or not',
       bindingWhy:
         'deletion is disallowed by configuration and administrators are not exempt, so the restriction binds every account',
       bypassableWhy:
         'deletion is disallowed by configuration but administrators are exempt, and the only account with push access is an administrator — do not rely on the server-side deletion guard',
     }),
-    required_linear_history: adminExemptionReading({
-      present: protection?.required_linear_history?.enabled === true,
-      adminsExempt,
-      absentWhy:
-        'required_linear_history is not enabled, so merge commits are not restricted for anyone, administrator or not',
+    required_linear_history: enabledNodeReading({
+      node: protection?.required_linear_history,
+      protectiveValue: true,
+      missingWhy:
+        'required_linear_history is missing or malformed in the response rather than confirmed either way, so whether linear history is required cannot be read from this field',
+      explicitUnsafeWhy:
+        'required_linear_history is confirmed not enabled, so merge commits are not restricted for anyone, administrator or not',
       bindingWhy:
         'linear history is required by configuration and administrators are not exempt, so it binds every merger',
       bypassableWhy:

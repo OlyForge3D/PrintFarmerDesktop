@@ -477,6 +477,62 @@ describe('#489: the admin-exemption reading generalises beyond strict', () => {
       bindingClaimPattern,
     );
   });
+
+  // A regression test for a defect the fresh reviewer caught in this PR's
+  // first pass: `adminExemptibleSettingEnforcement` narrated a missing or
+  // malformed `{ enabled }` node as though GitHub had confirmed the explicit
+  // unsafe value, rather than saying the field could not be confirmed at
+  // all -- exactly the absent-vs-explicit-unsafe conflation #488 fixed for
+  // the violation checks, reappearing in the enforcement-reporting path.
+  it('reads a missing or malformed enabled node as unconfirmed, not as a confirmed unsafe value', () => {
+    const missingFieldPattern = /missing or malformed/;
+    const confirmedUnsafePattern = /is (confirmed )?enabled\b/;
+
+    const missingEverything = adminExemptibleSettingEnforcement({
+      enforce_admins: { enabled: false },
+    });
+    expect(missingEverything.allow_force_pushes.state).toBe('absent');
+    expect(missingEverything.allow_force_pushes.why).toMatch(
+      missingFieldPattern,
+    );
+    expect(missingEverything.allow_force_pushes.why).not.toMatch(
+      confirmedUnsafePattern,
+    );
+
+    expect(missingEverything.allow_deletions.state).toBe('absent');
+    expect(missingEverything.allow_deletions.why).toMatch(missingFieldPattern);
+    expect(missingEverything.allow_deletions.why).not.toMatch(
+      confirmedUnsafePattern,
+    );
+
+    expect(missingEverything.required_linear_history.state).toBe('absent');
+    expect(missingEverything.required_linear_history.why).toMatch(
+      missingFieldPattern,
+    );
+
+    // A malformed-but-present node (empty object, no `enabled` key) must read
+    // the same as a fully absent one.
+    const malformed = adminExemptibleSettingEnforcement({
+      enforce_admins: { enabled: false },
+      allow_force_pushes: {},
+    });
+    expect(malformed.allow_force_pushes.state).toBe('absent');
+    expect(malformed.allow_force_pushes.why).toMatch(missingFieldPattern);
+
+    // An explicitly confirmed unsafe value must still read distinctly from
+    // the missing-field case, and its wording must say so is confirmed.
+    const explicitlyUnsafe = adminExemptibleSettingEnforcement({
+      enforce_admins: { enabled: false },
+      allow_force_pushes: { enabled: true },
+    });
+    expect(explicitlyUnsafe.allow_force_pushes.state).toBe('absent');
+    expect(explicitlyUnsafe.allow_force_pushes.why).toMatch(
+      confirmedUnsafePattern,
+    );
+    expect(explicitlyUnsafe.allow_force_pushes.why).not.toMatch(
+      missingFieldPattern,
+    );
+  });
 });
 
 describe('a ruleset matters only when it is enabled and reaches a feature branch', () => {
