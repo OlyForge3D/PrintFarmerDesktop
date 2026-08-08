@@ -20,6 +20,49 @@ A PR merges only with **unanimous reviewer approval** plus **green CI**. The aut
 
 Reviews are run as independent agents against an **exact commit SHA and branch-contribution range**, not "the PR" and not a bare commit diff. Always pin both in the review request and require the reviewer to confirm them.
 
+## Documentation-Only Changes: One Reviewer
+
+**This section is the single definition of the documentation-only reviewer rule. Anywhere else that mentions it points here and does not restate it.**
+
+The gate above requires **unanimous reviewer approval**. A documentation-only pull request requires **exactly one reviewer** instead.
+
+This reduces reviewer **count**, not review **rigour**. The single reviewer runs a real review against a pinned SHA and range and ends with a `VERDICT:` line like anyone else, and every other rule in this file still holds: the author still does not merge, the branch is still frozen once review is dispatched, the verdict still has to be recorded on the pull request, and green CI still authorises nothing on its own. Rule 9 of `.squad/routing.md` is untouched — an author-opened squad PR still needs a human GitHub approval or a verified `squad/pre-pr-verdict` status, because one reviewer is still not zero reviewers and still is not the author.
+
+### What documentation-only means
+
+**Every** changed path must be prose or agent-instruction content. That set is already defined executably in this repo by `isDocumentationPath` in `scripts/docs-only-change.mjs`. Read it there rather than keeping a second list here — two lists drift, and the whole point of one canonical definition is that they cannot. As it stands today it recognises:
+
+- any path ending `.md`, anywhere in the tree — this is how `.squad/**` prose qualifies, since `.squad/` is deliberately **not** registered as a directory prefix there;
+- anything under `docs/**`, `.github/agents/**` or `.github/instructions/**` — of those three only `docs/**` exists in this repo today, and the other two are provisioned for rather than present;
+- the root `LICENSE` file.
+
+Everything else is source: TypeScript, Rust, tests, workflow YAML, scripts, assets, and every dependency manifest. Manifests are matched by **basename**, so a nested `packages/foo/package.json` cannot slip through as prose.
+
+Two consequences to state plainly, because both have been argued the wrong way:
+
+- **A pull request touching one markdown file and one source file is not documentation-only.** The test is "every path", not "mostly prose". Full gate.
+- **An empty or unreadable changed-file list is not documentation-only.** "Nothing changed" and "the diff could not be computed" arrive as the same value, and only one of them is safe to act on.
+
+### The CI classifier is necessary, never sufficient
+
+`scripts/docs-only-change.mjs` answers a narrower question than this one: may CI stand down the expensive steps a prose edit cannot affect. Its `docs_only=true` output is **not** authority to drop to one reviewer and must never be quoted as such. A change qualifies only when it is documentation-only by that classifier **and** clear of every carve-out below.
+
+The gap is concrete, and this repo already pins it: `tests/docsOnlyChange.test.ts` asserts that `isDocumentationPath('.squad/agents/ralph/loop.md')` is `true`. That is the right answer for build compute and the wrong answer for reviewer count — see carve-out 3.
+
+### Carve-outs that keep the full gate even when only markdown changed
+
+1. **Anything under `.github/workflows/**`.** Workflow YAML is not documentation to the classifier either; it is named here so the two answers cannot be argued apart later.
+2. **Security policy, threat model, licensing, provenance and published contract documents** — `docs/security/THREAT_MODEL.md`, `docs/adr/0001-printer-calibration-source-provenance.md`, `docs/compliance/**`, `docs/scene-contract.md`, `LICENSE` and `THIRD_PARTY_NOTICES.md`. Several of these are already CODEOWNER-gated in `.github/CODEOWNERS`; this carve-out is the reviewer-count half of the same intent.
+3. **Any change that alters an agent's safety boundary, merge-safety rules, or destructive-operation permissions.** This is the carve-out that matters most in this repo, because `.squad/**` is documentation by path while governing real autonomous behaviour. A markdown edit here decides whether an unattended agent may merge, force-push, delete a branch, or write outside its own worktree. That is not low-risk prose, whatever its file extension says.
+
+Reference example for carve-out 3: `.squad/agents/ralph/loop.md` §1 (Safety Boundary), §8 (Session Lifecycle and Reaping) and §9 (Merge Safety). A pull request that changes what Ralph is permitted to merge, push or remove takes the **full gate**, even though the file is a single `.md` and CI will correctly classify the change as documentation.
+
+The carve-out turns on what a change **alters**, not on which file it lives in. Fixing a typo in that same file's §10 reporting format alters no permission and is documentation-only. Adding, relaxing or deleting a clause in §1, §8 or §9 is not. When the two readings are close, take the full gate: an extra reviewer on prose costs minutes, and a rule loosened without review is how an unattended merge goes wrong, which is the incident class `.squad/decisions.md` already records.
+
+### Routing the single reviewer
+
+Pick by domain from `.squad/routing.md`, and pick someone listed Active in `.squad/team.md`. Where the domain is unclear or the change is cross-cutting, the default is this repo's Lead, **🏗️ Ripley**.
+
 ## Generate the review target; do not select one by hand
 
 Immediately before every dispatch, run:
@@ -93,6 +136,26 @@ The rejection-lockout rule (requiring a _different_ author to revise rejected wo
 **Go beyond the author's tests.** Their tests prove the cases they thought of. Your job is the ones they did not — craft hostile inputs yourself, in `$env:TEMP`, never in the repo.
 
 Reviews are **read-only**. End with exactly one line: `VERDICT: APPROVE` or `VERDICT: REJECT`. A review without a verdict line cannot gate a merge and must be re-run.
+
+## Read-Only Agents Are `task` Calls, Never Sessions
+
+**This section is the single definition of the spawning rule. Anywhere else that mentions it points here and does not restate it.**
+
+The deciding factor is **whether the agent writes**. Nothing else.
+
+- **An agent that writes** — one that produces commits, or that must mutate a working tree — is spawned with `create_session`, which provisions an isolated worktree. One issue, one branch, one session.
+- **Every read-only agent** — pure analysis, coordination, research, verification, and above all **code review** — is spawned with the `task` tool, `agent_type: general-purpose`, `mode: background`. A read-only agent needs no worktree, so it must not be handed one.
+
+**Code Reviewers are ALWAYS spawned with `task` and NEVER with `create_session`.** A reviewer produces a verdict, not commits — reviews are read-only and terminate in a single `VERDICT:` line, as stated above. No reviewer in this repo needs a branch.
+
+**Session visibility never justifies a sub-session.** "I want to watch it in the sidebar" is not a write requirement. It is the reason this mistake keeps recurring, and it is explicitly not an exception.
+
+Two costs, both measured and both already paid here:
+
+1. **Reviewer sessions consume implementation dispatch slots.** Ralph runs a hard cap of **5 active sessions** (`.squad/agents/ralph/loop.md` §4, which counts analysis sessions against the same five). A reviewer occupying one of those slots is capacity the backlog driver cannot spend on implementation, so review activity starves the queue it exists to serve.
+2. **They strand worktrees that a human has to clear by hand.** There is no automated archival path — §8 of the same file establishes that `archive_session` cannot reach another round's session and that a session cannot archive itself. On 2026-08-08 a manual sweep removed **118 orphaned worktree directories totalling roughly 3.8 GB**, **26 of them in this repo**, caused by exactly this mistake.
+
+**This holds unchanged for a multi-reviewer round.** When a change needs several reviewers, spawn them **all** with `task`, in parallel, in one turn. There is no exception for visibility, for the size of the review, or for the number of reviewers.
 
 ## Delegating work
 

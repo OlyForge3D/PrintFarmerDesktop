@@ -227,4 +227,4 @@ The `Copilot-Session` value is the full UUID from the **cloud Copilot-session na
 
 ## Do not merge your own work
 
-Authors do not merge. The Technical Lead owns review and merge, gated on unanimous reviewer approval plus green CI. See `../agent-collaboration/SKILL.md`.
+Authors do not merge. The Technical Lead owns review and merge, gated on unanimous reviewer approval plus green CI. A documentation-only change is the one exception to unanimity — it takes exactly one reviewer, subject to carve-outs that are defined, with the rest of the gate, in `../agent-collaboration/SKILL.md`. See that file.
