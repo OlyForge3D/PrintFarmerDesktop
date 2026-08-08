@@ -180,6 +180,22 @@ export const UNENFORCED_CHECKS = {
     'unenforced for. Discharge path: invoke it by hand (or from whatever reads ' +
     'a shared checkout before quoting a head) whenever a session is about to ' +
     'report a PR head from a local branch that was not just freshly cloned.',
+  'check:dated-measurement':
+    'Its judgement IS enforced in CI: tests/datedMeasurement.test.ts drives ' +
+    'normalizeTimestamp, classifyMeasurementFreshness, evaluateControls, ' +
+    'parseMeasurementCitations, fetchLiveUpdatedAt and main over plain objects ' +
+    'and injected deps, including both control arms, under `npm run test`. ' +
+    'Its main() answers "does THIS cited updated_at still match the object\'s ' +
+    'live one, right now", which is a question asked by whoever is ABOUT TO ' +
+    'CITE a measurement of a mutable GitHub object at the moment they cite it ' +
+    '(#462) — the same shape check:stale-checkout-head is unenforced for above, ' +
+    'and for the identical reason: freshness of a read is a property of the ' +
+    'moment someone is about to act on it, not a property a commit can assert ' +
+    'about itself once and for all. Discharge path: invoke it by hand (or from ' +
+    'whatever composes a report citing a mutable object) whenever a citation is ' +
+    'about to be published, and re-invoke it against the object again after the ' +
+    'write-up lands, since the write-up is itself a measurement subject to the ' +
+    'same staleness (#462 repair 6).',
   'check:closed-head-dispatch':
     'Its judgement IS enforced in CI: tests/closedHeadDispatch.test.ts drives ' +
     'normalizeSha, classifyDispatch, evaluateControls and formatResult over ' +
