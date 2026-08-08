@@ -12,7 +12,7 @@
 // directly rather than mocking it.
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -124,11 +124,11 @@ describe('listing worktrees for a real repo', () => {
 
     const paths = listWorktreePaths(repoPath);
 
-    expect(paths.some((p) => path.resolve(p) === path.resolve(repoPath))).toBe(
+    expect(paths.some((p) => realpathSync(p) === realpathSync(repoPath))).toBe(
       true,
     );
     expect(
-      paths.some((p) => path.resolve(p) === path.resolve(linkedPath)),
+      paths.some((p) => realpathSync(p) === realpathSync(linkedPath)),
     ).toBe(true);
   });
 });
