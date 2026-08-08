@@ -282,7 +282,8 @@ describe('npm-ci-strict main orchestration', () => {
       '',
       'Do not rerun this job directly. Follow docs/npm-cleanup-recovery.md;',
       'the discharge workflow requires a justification, preserves the failed job',
-      'reference on #274, and refuses to rerun mixed or policy failures.',
+      'reference on the durable cleanup tracking issue, and refuses to rerun',
+      'mixed or policy failures.',
       '',
     ]);
     expect(harness.readProductionTree).not.toHaveBeenCalled();

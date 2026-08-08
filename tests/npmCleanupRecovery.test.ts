@@ -10,7 +10,9 @@ import {
   createCleanupEvidence,
 } from '../scripts/npm-ci-strict.mjs';
 import {
+  CLEANUP_TRACKING_ISSUE,
   MAXIMUM_EVIDENCE_ARTIFACT_BYTES,
+  assertTrackingIssueOpen,
   discoverCleanupEvidenceArtifacts,
   formatCleanupEvidenceComment,
   markArtifactDiscovery,
@@ -91,14 +93,81 @@ function requestBody(init: RequestInit | undefined): string {
   return parsed.body;
 }
 
+function openIssueResponse(issueNumber: number): Response {
+  return response({ number: issueNumber, state: 'open' });
+}
+
+function closedIssueResponse(issueNumber: number): Response {
+  return response({ number: issueNumber, state: 'closed' });
+}
+
+describe('cleanup tracking issue liveness guard', () => {
+  it('passes for an open-issue fixture', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(openIssueResponse(626));
+
+    await expect(
+      assertTrackingIssueOpen({
+        owner: 'OlyForge3D',
+        repo: 'PrintFarmerDesktop',
+        issueNumber: 626,
+        token: 'token',
+        fetchImpl,
+      }),
+    ).resolves.toMatchObject({ state: 'open' });
+  });
+
+  it('hard-fails for a closed-issue fixture instead of silently succeeding', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(closedIssueResponse(274));
+
+    await expect(
+      assertTrackingIssueOpen({
+        owner: 'OlyForge3D',
+        repo: 'PrintFarmerDesktop',
+        issueNumber: 274,
+        token: 'token',
+        fetchImpl,
+      }),
+    ).rejects.toThrow(
+      'cleanup tracking issue #274 is closed, not open; refusing to publish durable evidence into an unreachable issue',
+    );
+  });
+
+  it('hard-fails explicitly when the issue cannot be read at all', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        response({}, { ok: false, status: 404, statusText: 'Not Found' }),
+      );
+
+    await expect(
+      assertTrackingIssueOpen({
+        owner: 'OlyForge3D',
+        repo: 'PrintFarmerDesktop',
+        issueNumber: 999999,
+        token: 'token',
+        fetchImpl,
+      }),
+    ).rejects.toThrow(
+      'could not verify cleanup tracking issue #999999 is open: 404 Not Found',
+    );
+  });
+});
+
 describe('durable cleanup evidence publication', () => {
   it('publishes the exact anchor and failed attempt reference', async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(
-      response({
-        html_url:
-          'https://github.com/OlyForge3D/PrintFarmerDesktop/issues/274#issuecomment-1',
-      }),
-    );
+    const fetchImpl = vi.fn<
+      (url: string | URL, init?: RequestInit) => Promise<Response>
+    >((url) => {
+      const target = String(url);
+      if (target.endsWith(`/issues/${CLEANUP_TRACKING_ISSUE}`)) {
+        return Promise.resolve(openIssueResponse(CLEANUP_TRACKING_ISSUE));
+      }
+      return Promise.resolve(
+        response({
+          html_url: `https://github.com/OlyForge3D/PrintFarmerDesktop/issues/${CLEANUP_TRACKING_ISSUE}#issuecomment-1`,
+        }),
+      );
+    });
 
     const url = await publishCleanupEvidence({
       owner: 'OlyForge3D',
@@ -109,12 +178,38 @@ describe('durable cleanup evidence publication', () => {
     });
 
     expect(url).toContain('issuecomment-1');
-    const body = requestBody(
-      fetchImpl.mock.calls[0]?.[1] as RequestInit | undefined,
+    const commentCall = fetchImpl.mock.calls.find(([callUrl]) =>
+      String(callUrl).endsWith('/comments'),
     );
+    const body = requestBody(commentCall?.[1]);
     expect(body).toContain(CLEANUP_FAILURE_ANCHOR);
     expect(body).toContain('/actions/runs/12345/attempts/1');
     expect(body).toContain('Do not rerun');
+  });
+
+  it('refuses to publish into a closed tracking issue rather than succeeding silently', async () => {
+    const fetchImpl = vi.fn((url: string | URL) => {
+      const target = String(url);
+      if (target.endsWith(`/issues/${CLEANUP_TRACKING_ISSUE}`)) {
+        return Promise.resolve(closedIssueResponse(CLEANUP_TRACKING_ISSUE));
+      }
+      throw new Error(`write request must not occur: ${target}`);
+    });
+
+    await expect(
+      publishCleanupEvidence({
+        owner: 'OlyForge3D',
+        repo: 'PrintFarmerDesktop',
+        token: 'token',
+        evidence,
+        fetchImpl,
+      }),
+    ).rejects.toThrow(
+      `cleanup tracking issue #${CLEANUP_TRACKING_ISSUE} is closed, not open`,
+    );
+    expect(
+      fetchImpl.mock.calls.some(([url]) => String(url).endsWith('/comments')),
+    ).toBe(false);
   });
 
   it('rejects evidence carrying a neighbouring or constant-positive anchor', () => {
@@ -127,17 +222,23 @@ describe('durable cleanup evidence publication', () => {
   });
 
   it('fails publication explicitly when GitHub does not record the comment', async () => {
+    const fetchImpl = vi.fn((url: string | URL) => {
+      const target = String(url);
+      if (target.endsWith(`/issues/${CLEANUP_TRACKING_ISSUE}`)) {
+        return Promise.resolve(openIssueResponse(CLEANUP_TRACKING_ISSUE));
+      }
+      return Promise.resolve(
+        response({}, { ok: false, status: 403, statusText: 'Forbidden' }),
+      );
+    });
+
     await expect(
       publishCleanupEvidence({
         owner: 'OlyForge3D',
         repo: 'PrintFarmerDesktop',
         token: 'token',
         evidence,
-        fetchImpl: vi
-          .fn()
-          .mockResolvedValue(
-            response({}, { ok: false, status: 403, statusText: 'Forbidden' }),
-          ),
+        fetchImpl,
       }),
     ).rejects.toThrow(
       'GitHub REST could not publish cleanup evidence: 403 Forbidden',
@@ -147,7 +248,7 @@ describe('durable cleanup evidence publication', () => {
   it('formats a durable record even after the tracking issue closes', () => {
     const body = formatCleanupEvidenceComment(evidence);
     expect(body).toContain('npm-cleanup-failure run=12345 attempt=1');
-    expect(body).toContain('issue #274');
+    expect(body).toContain(`issue #${CLEANUP_TRACKING_ISSUE}`);
   });
 
   it('derives links from validated identity and rejects injected runner metadata', () => {
@@ -317,13 +418,15 @@ describe('justified cleanup discharge', () => {
           response({}, { text: `diagnostic: ${CLEANUP_FAILURE_ANCHOR}` }),
         );
       }
-      if (target.endsWith('/issues/274/comments')) {
+      if (target.endsWith(`/issues/${CLEANUP_TRACKING_ISSUE}`)) {
+        return Promise.resolve(openIssueResponse(CLEANUP_TRACKING_ISSUE));
+      }
+      if (target.endsWith(`/issues/${CLEANUP_TRACKING_ISSUE}/comments`)) {
         operations.push('comment');
         expect(requestBody(init)).toContain(CLEANUP_FAILURE_ANCHOR);
         return Promise.resolve(
           response({
-            html_url:
-              'https://github.com/OlyForge3D/PrintFarmerDesktop/issues/274#issuecomment-2',
+            html_url: `https://github.com/OlyForge3D/PrintFarmerDesktop/issues/${CLEANUP_TRACKING_ISSUE}#issuecomment-2`,
           }),
         );
       }
@@ -343,6 +446,40 @@ describe('justified cleanup discharge', () => {
 
     expect(result.failedJobIds).toEqual([7001]);
     expect(operations).toEqual(['comment', 'rerun']);
+  });
+
+  it('refuses to discharge into a closed tracking issue rather than succeeding silently', async () => {
+    const fetchImpl = vi.fn((url: string | URL) => {
+      const target = String(url);
+      if (target.endsWith('/actions/runs/12345')) {
+        return Promise.resolve(response(run));
+      }
+      if (target.includes('/attempts/1/jobs')) {
+        return Promise.resolve(
+          response({ total_count: 1, jobs: [cleanupJob] }),
+        );
+      }
+      if (target.endsWith('/actions/jobs/7001/logs')) {
+        return Promise.resolve(response({}, { text: CLEANUP_FAILURE_ANCHOR }));
+      }
+      if (target.endsWith(`/issues/${CLEANUP_TRACKING_ISSUE}`)) {
+        return Promise.resolve(closedIssueResponse(CLEANUP_TRACKING_ISSUE));
+      }
+      throw new Error(`write request must not occur: ${target}`);
+    });
+
+    await expect(
+      dischargeCleanupFailure({ ...request, fetchImpl }),
+    ).rejects.toThrow(
+      `cleanup tracking issue #${CLEANUP_TRACKING_ISSUE} is closed, not open`,
+    );
+    expect(
+      fetchImpl.mock.calls.some(
+        ([url]) =>
+          String(url).endsWith('/comments') ||
+          String(url).endsWith('/rerun-failed-jobs'),
+      ),
+    ).toBe(false);
   });
 
   it('refuses the entire discharge when any failed job lacks the anchor', async () => {
@@ -399,7 +536,10 @@ describe('justified cleanup discharge', () => {
       if (target.endsWith('/actions/jobs/7001/logs')) {
         return response({}, { text: CLEANUP_FAILURE_ANCHOR });
       }
-      if (target.endsWith('/issues/274/comments')) {
+      if (target.endsWith(`/issues/${CLEANUP_TRACKING_ISSUE}`)) {
+        return openIssueResponse(CLEANUP_TRACKING_ISSUE);
+      }
+      if (target.endsWith(`/issues/${CLEANUP_TRACKING_ISSUE}/comments`)) {
         return response(
           {},
           { ok: false, status: 500, statusText: 'Server Error' },
@@ -465,11 +605,13 @@ describe('justified cleanup discharge', () => {
       if (target.endsWith('/actions/jobs/7001/logs')) {
         return response({}, { text: CLEANUP_FAILURE_ANCHOR });
       }
-      if (target.endsWith('/issues/274/comments')) {
+      if (target.endsWith(`/issues/${CLEANUP_TRACKING_ISSUE}`)) {
+        return openIssueResponse(CLEANUP_TRACKING_ISSUE);
+      }
+      if (target.endsWith(`/issues/${CLEANUP_TRACKING_ISSUE}/comments`)) {
         expect(init?.method).toBe('POST');
         return response({
-          html_url:
-            'https://github.com/OlyForge3D/PrintFarmerDesktop/issues/274#issuecomment-3',
+          html_url: `https://github.com/OlyForge3D/PrintFarmerDesktop/issues/${CLEANUP_TRACKING_ISSUE}#issuecomment-3`,
         });
       }
       throw new Error(`rerun must not occur: ${target}`);
