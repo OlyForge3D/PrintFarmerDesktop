@@ -1206,6 +1206,64 @@ describe('main', () => {
     expect(message).toContain('It is not reported as a result');
     expect(message).toContain('reading too early');
   });
+
+  // #527: `main` writes `process.exitCode = 1` on every failure branch but
+  // never clears it on success. The suite-wide `afterEach` above resets
+  // `process.exitCode` between every `it()`, which means no cross-spec test
+  // can ever observe that -- only a single spec calling `main` twice, inside
+  // one `it()`, can. This is that spec.
+  it('clears process.exitCode on a successful call that follows a failed one, within a single spec', async () => {
+    const passingDeps = {
+      run: ghStub([231]),
+      readDeclaration: () => BODY,
+      readClosures: () =>
+        Promise.resolve({
+          value: [231],
+          reads: 13,
+          settled: true,
+          elapsedMs: 61000,
+        }),
+    };
+    const failingDeps = {
+      run: ghStub([231, 999]),
+      readDeclaration: () => BODY,
+      readClosures: () =>
+        Promise.resolve({
+          value: [231, 999],
+          reads: 13,
+          settled: true,
+          elapsedMs: 61000,
+        }),
+    };
+
+    // POSITIVE CONTROL, same block: the success arm alone, run first, must
+    // leave `process.exitCode` clear. Without this arm a green result below
+    // would be produced just as easily by a `main` whose success path never
+    // actually ran (or that always leaves `exitCode` undefined regardless of
+    // history) -- the control is what proves this spec can fail.
+    silenced();
+    const controlResult = await main(['231'], passingDeps);
+    expect(controlResult).toEqual({ ok: true, settled: true, stale: false });
+    expect(process.exitCode).toBeUndefined();
+
+    // ARM 1: a failing call in the same process, matching the defect report.
+    const spies = silenced();
+    const failureResult = await main(['231'], failingDeps);
+    expect(failureResult).toEqual({ ok: false, settled: true, stale: false });
+    expect(process.exitCode).toBe(1);
+    spies.error.mockRestore();
+    spies.log.mockRestore();
+
+    // SUBJECT: a successful call, in the SAME process, right after the
+    // failure above. Before the fix this stayed `1`, reporting failure for a
+    // run whose own result was `ok: true`.
+    const subjectSpies = silenced();
+    const successResult = await main(['231'], passingDeps);
+    expect(successResult).toEqual({ ok: true, settled: true, stale: false });
+    expect(process.exitCode).toBeUndefined();
+    subjectSpies.error.mockRestore();
+    subjectSpies.log.mockRestore();
+  });
 });
 
 /**

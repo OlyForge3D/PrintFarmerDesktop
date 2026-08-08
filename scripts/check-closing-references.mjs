@@ -1098,6 +1098,13 @@ export async function main(argv, deps = {}) {
   }
 
   console.log(`Closing references match the declaration. ${summary}`);
+  // #527: clear a failure recorded by an earlier `main` call in the same
+  // process. The CLI entry point below only ever calls `main` once, so this
+  // costs nothing there -- but leaving `exitCode` at whatever the previous
+  // failure branch set it to means a successful call reports failure to
+  // anything that inspects `process.exitCode` afterward, which is the
+  // opposite overclaim this module exists to refuse.
+  process.exitCode = undefined;
   return { ok: true, settled: true, stale: suspect };
 }
 
