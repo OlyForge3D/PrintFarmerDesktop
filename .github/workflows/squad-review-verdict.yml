@@ -1,0 +1,149 @@
+name: Record squad review verdict
+
+# merge-queue: publication
+#
+# This workflow never runs on pull_request or merge_group -- it is
+# workflow_dispatch-only, invoked by hand by a non-author repository
+# administrator once the squad panel has reached a consensus verdict on a
+# specific PR head. Requiring its context in branch protection would deadlock
+# every merge, because nobody dispatches it automatically. See
+# scripts/verify-squad-verdict.mjs and
+# .squad/decisions/inbox/vasquez-187-squad-verdict-evidence.md for why that is
+# a deliberate, documented choice rather than an oversight.
+#
+# Ported from OlyForge3D/PrintFarmer's .github/workflows/squad-review-verdict.yml
+# (PR #1187, fixing PrintFarmer issue #1116), which solved the identical
+# problem this repository's issue #187 raises: one GitHub account
+# authenticates every squad session, so GitHub 422s self-review and a
+# `reviews: []` PR is indistinguishable from an unreviewed one. This workflow
+# does not attempt native GitHub review. It posts a commit status whose
+# provenance is the workflow run itself -- not author-attested, not
+# forgeable by a comment, and checkable independently by
+# scripts/verify-squad-verdict.mjs.
+
+run-name: 'Squad verdict ${{ inputs.verdict }} for PR #${{ inputs.pr_number }} @ ${{ inputs.reviewed_head_sha }} by ${{ github.actor }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number
+        required: true
+        type: string
+      reviewed_head_sha:
+        description: Exact 40-character PR head SHA reviewed by the squad panel
+        required: true
+        type: string
+      verdict:
+        description: Bishop, Hicks, and Vasquez consensus verdict
+        required: true
+        type: choice
+        options:
+          - APPROVE
+          - CHANGES_REQUESTED
+          - REJECT
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  record:
+    name: Record SHA-pinned verdict
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate provenance and record verdict
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REVIEWED_HEAD_SHA: ${{ inputs.reviewed_head_sha }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          VERDICT: ${{ inputs.verdict }}
+        with:
+          script: |
+            const prNumberInput = process.env.PR_NUMBER;
+            const prNumber = Number.parseInt(prNumberInput, 10);
+            const reviewedHeadSha = process.env.REVIEWED_HEAD_SHA;
+            const runAttempt = process.env.RUN_ATTEMPT;
+            const triggeringActor = process.env.TRIGGERING_ACTOR;
+            const verdict = process.env.VERDICT;
+            const actor = context.actor;
+
+            if (runAttempt !== '1' || triggeringActor.toLowerCase() !== actor.toLowerCase()) {
+              core.setFailed('Verdict workflow reruns are not trusted. Dispatch a new run.');
+              return;
+            }
+            if (!/^[1-9]\d*$/.test(prNumberInput) || !Number.isSafeInteger(prNumber)) {
+              core.setFailed('pr_number must be a positive integer.');
+              return;
+            }
+            if (!/^[0-9a-f]{40}$/.test(reviewedHeadSha)) {
+              core.setFailed(
+                'reviewed_head_sha must be an exact lowercase 40-character commit SHA.',
+              );
+              return;
+            }
+
+            const { data: pull } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            if (pull.state !== 'open') {
+              core.setFailed(`PR #${prNumber} is not open.`);
+              return;
+            }
+            if (pull.head.repo?.full_name !== context.payload.repository.full_name) {
+              core.setFailed('Squad verdict recording supports same-repository PRs only.');
+              return;
+            }
+            if (pull.user.login.toLowerCase() === actor.toLowerCase()) {
+              core.setFailed('The PR author cannot record their own squad verdict.');
+              return;
+            }
+
+            const { data: actorPermission } =
+              await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: actor,
+              });
+            if (actorPermission.permission !== 'admin') {
+              core.setFailed('The recorder must be a repository administrator.');
+              return;
+            }
+            if (pull.head.sha.toLowerCase() !== reviewedHeadSha) {
+              core.setFailed(
+                `Stale verdict: PR head is ${pull.head.sha}, not ${reviewedHeadSha}.`,
+              );
+              return;
+            }
+
+            const state = verdict === 'APPROVE' ? 'success' : 'failure';
+            const description = `${verdict} @ ${reviewedHeadSha.slice(0, 12)} by ${actor}`;
+            const targetUrl =
+              `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}` +
+              `/actions/runs/${context.runId}`;
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: reviewedHeadSha,
+              state,
+              context: 'squad/pre-pr-verdict',
+              description,
+              target_url: targetUrl,
+            });
+
+            await core.summary
+              .addHeading('Squad pre-PR verdict')
+              .addTable([
+                [{ data: 'Field', header: true }, { data: 'Value', header: true }],
+                ['PR', `#${prNumber}`],
+                ['Reviewed head', reviewedHeadSha],
+                ['Verdict', verdict],
+                ['Recorded by', actor],
+              ])
+              .write();
