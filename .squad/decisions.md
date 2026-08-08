@@ -562,6 +562,25 @@ question, and neither is secondary. The decision order in `push-guard.mjs` makes
 
 **What follows from measuring Hole 2 already closed.** `REQUIRED_CONTEXT_NAMES` in `scripts/check-protection-assumptions.mjs` was pinned at the earlier 8-name set that already includes `Closing-reference declaration`, so no change was needed there; it was re-verified against the live branch protection as part of this decision, not assumed from an earlier issue comment (the whole caution this issue itself opens with).
 
+## 2026-08-08 — #480: `Sequencing hold` chosen as the one enforcement channel for a blocking verdict; not yet live, two owner-only prerequisites named
+
+**By:** Ripley
+
+**What was decided.** Of the two channels #480 names, `required_approving_review_count >= 1` is ruled out categorically (unchanged conclusion from #111/#151/#206/#187: self-review is `422`'d, `jpapiez` is the sole collaborator). `"Sequencing hold"` becoming a required status context on `development` is adopted instead — it is content/operation-based (reads a `hold:*` label) rather than identity-based, so it does not hit the self-review wall.
+
+**Correction to #388's remedy 1, narrowly.** #388 (above) declined adding `Sequencing hold` to required contexts because its workflow does not report under `merge_group`. That remains true of the workflow **as it exists today** and #480 does not reverse it — a required context with no `merge_group` emitter still hangs a queued entry rather than failing it (#122). What #480 found is that the underlying check logic (`scripts/check-sequencing-hold.mjs`'s `resolvePullRequestNumber`, shared with `check-pr-closure-scope.mjs`) already parses a merge-queue head ref into a PR number, so the `merge_group` gap is a **workflow trigger declaration**, not a property of the check itself. Closing it (`# merge-queue: advisory` → `reports`, add `merge_group:` to `on:`) is the first of two remaining prerequisites, not yet done.
+
+**Two prerequisites, neither performed by this session, both named exactly:**
+
+1. `sequencing-hold.yml` needs `merge_group:` added to `on:` and reclassification to `# merge-queue: reports` — needs a credential with the `workflow` OAuth scope; the active session credential was measured (a scratch push) to lack it.
+2. The repository owner adds `"Sequencing hold"` to `development`'s `required_status_checks.contexts` (exact `gh api -X PUT` call in the decision doc below) — a branch-protection admin write withheld from the agent session by design, not by capability (`gh api repos/.../permissions` shows `admin: true`, unused).
+
+**Artifact.** `scripts/check-hold-gate-readiness.mjs` (`npm run check:hold-gate-readiness`) reads live branch protection, rulesets, and the on-disk workflow, and reports exactly which of the two prerequisites remain plus an urgent escalation if the unsafe combination (required + advisory + queue active) is ever true. `tests/holdGateReadiness.test.ts` pins it against the real `sequencing-hold.yml` — currently NOT ready. Not wired into a workflow (same missing `workflow` scope); recorded in `check-script-reachability.mjs`'s `UNENFORCED_CHECKS` with the same shape as the two existing entries there.
+
+**Comment-only verdicts remain advisory**, unchanged from #206/#187 and restated in `.squad/skills/agent-collaboration/SKILL.md`: the mechanism reads a label, not free text, which is exactly why it is the one that can be evaluated by a required check.
+
+Full reasoning, citations, and the demonstration this issue asks for: `.squad/decisions/inbox/ripley-480-sequencing-hold-required-context.md`.
+
 ## 2026-08-08 — #361: a positive control validates the instrument, not the operationalisation
 
 **By:** Vasquez
