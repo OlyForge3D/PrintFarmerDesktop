@@ -10,6 +10,8 @@ export interface MergeSurvivalFacts {
   /** The base side of the merge or squash. `null` when it could not be read. */
   parent: string | null;
   base: string | null;
+  /** Whether the repository is shallow. Read only when no merge base was found. */
+  repositoryShallow: boolean | null;
   /** `null` means the diff could not be read, which is not the same as "empty". */
   branchEmpty: boolean | null;
   mergeEmpty: boolean | null;
@@ -39,6 +41,14 @@ export function diffIsEmpty(
 ): boolean | null;
 export function firstParent(sha: string, cwd?: string): string | null;
 export function mergeBase(a: string, b: string, cwd?: string): string | null;
+export function repositoryIsShallow(cwd?: string): boolean | null;
+/** Throws when git cannot read the path-scoped three-dot diff. */
+export function changedPaths(
+  base: string,
+  head: string,
+  pathspecs: readonly string[],
+  cwd?: string,
+): string[];
 export function classify(facts: MergeSurvivalFacts): MergeSurvivalResult;
 export function evaluateMergeSurvival(
   head: string,

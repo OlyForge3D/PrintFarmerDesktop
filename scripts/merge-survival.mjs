@@ -175,6 +175,33 @@ export function mergeBase(a, b, cwd) {
   }
 }
 
+/** Whether this repository is shallow, or `null` when git could not answer. */
+export function repositoryIsShallow(cwd) {
+  try {
+    const answer = git(
+      ['rev-parse', '--is-shallow-repository'],
+      cwd ? { cwd } : {},
+    ).trim();
+    if (answer === 'true') return true;
+    if (answer === 'false') return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * List paths changed from a merge base to a head. Git failures deliberately
+ * propagate: an exit 128 is not an empty diff.
+ */
+export function changedPaths(base, head, pathspecs, cwd) {
+  const output = git(
+    ['diff', '--name-only', `${base}...${head}`, '--', ...pathspecs],
+    cwd ? { cwd } : {},
+  ).trim();
+  return output === '' ? [] : output.split(/\r?\n/);
+}
+
 /**
  * Classify from facts already gathered, so every verdict — including the ones that
  * need git to fail — is reachable in a test without arranging a broken repository.
@@ -184,6 +211,7 @@ export function mergeBase(a, b, cwd) {
  *   mergeKnown: boolean,
  *   parent: string | null,
  *   base: string | null,
+ *   repositoryShallow: boolean | null,
  *   branchEmpty: boolean | null,
  *   mergeEmpty: boolean | null,
  *   branchPatchId: string | null,
@@ -215,6 +243,22 @@ export function classify(facts) {
     };
   }
   if (facts.base === null) {
+    if (facts.repositoryShallow === true) {
+      return {
+        verdict: 'INDETERMINATE',
+        code: EXIT_INDETERMINATE,
+        reason:
+          'repository history is incomplete because this is a shallow clone; run `git fetch --unshallow` and retry',
+      };
+    }
+    if (facts.repositoryShallow !== false) {
+      return {
+        verdict: 'INDETERMINATE',
+        code: EXIT_INDETERMINATE,
+        reason:
+          'a merge base could not be determined, and repository history completeness could not be read',
+      };
+    }
     return {
       verdict: 'INDETERMINATE',
       code: EXIT_INDETERMINATE,
@@ -285,6 +329,8 @@ export function evaluateMergeSurvival(head, merge, cwd) {
   const mergeKnown = commitExists(merge, cwd);
   const parent = headKnown && mergeKnown ? firstParent(merge, cwd) : null;
   const base = parent ? mergeBase(head, parent, cwd) : null;
+  const repositoryShallow =
+    parent && base === null ? repositoryIsShallow(cwd) : null;
   const branchEmpty = base ? diffIsEmpty(base, head, cwd) : null;
   const mergeEmpty = parent ? diffIsEmpty(parent, merge, cwd) : null;
   const branchPatchId =
@@ -297,6 +343,7 @@ export function evaluateMergeSurvival(head, merge, cwd) {
     mergeKnown,
     parent,
     base,
+    repositoryShallow,
     branchEmpty,
     mergeEmpty,
     branchPatchId,
