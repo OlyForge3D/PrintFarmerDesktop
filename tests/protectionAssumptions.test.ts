@@ -1,12 +1,22 @@
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   EXPECTED_COLLABORATORS,
+  EXIT_SKIPPED_WITHOUT_CREDENTIALS_IN_CI,
   REQUIRED_CONTEXT_NAMES,
+  adminExemptibleSettingEnforcement,
   evaluateProtectionAssumptions,
   formatViolations,
   rulesetCoversFeatureBranches,
   statusCheckEnforcement,
 } from '../scripts/check-protection-assumptions.mjs';
+
+const repositoryRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+);
 
 // The baseline is the repository as measured on 2026-08-04T17:23 local, at the
 // API rather than from #151's transcription -- which had already decayed:
@@ -362,6 +372,169 @@ describe('strict status checks are present and bind nobody', () => {
   });
 });
 
+describe('#489: the admin-exemption reading generalises beyond strict', () => {
+  // `enforce_admins: false` exempts administrators from allow_force_pushes,
+  // allow_deletions and required_linear_history exactly as it exempts them
+  // from strict. #390 applied that insight to strict alone and asserted the
+  // other three as if they bound the sole admin collaborator.
+  it('reads allow_force_pushes as bypassable under the live facts, binding once enforce_admins is on', () => {
+    const facts = baseline();
+    expect(
+      adminExemptibleSettingEnforcement(facts.protection).allow_force_pushes
+        .state,
+    ).toBe('bypassable');
+
+    facts.protection.enforce_admins = { enabled: true };
+    expect(
+      adminExemptibleSettingEnforcement(facts.protection).allow_force_pushes
+        .state,
+    ).toBe('binding');
+  });
+
+  it('reads allow_deletions as bypassable under the live facts, binding once enforce_admins is on', () => {
+    const facts = baseline();
+    expect(
+      adminExemptibleSettingEnforcement(facts.protection).allow_deletions.state,
+    ).toBe('bypassable');
+
+    facts.protection.enforce_admins = { enabled: true };
+    expect(
+      adminExemptibleSettingEnforcement(facts.protection).allow_deletions.state,
+    ).toBe('binding');
+  });
+
+  it('reads required_linear_history as bypassable under the live facts, binding once enforce_admins is on', () => {
+    const facts = baseline();
+    expect(
+      adminExemptibleSettingEnforcement(facts.protection)
+        .required_linear_history.state,
+    ).toBe('bypassable');
+
+    facts.protection.enforce_admins = { enabled: true };
+    expect(
+      adminExemptibleSettingEnforcement(facts.protection)
+        .required_linear_history.state,
+    ).toBe('binding');
+  });
+
+  it('reads a setting as absent when it is not configured the protective way at all, regardless of enforce_admins', () => {
+    const facts = baseline();
+    facts.protection.allow_force_pushes = { enabled: true };
+    facts.protection.allow_deletions = { enabled: true };
+    facts.protection.required_linear_history = { enabled: false };
+
+    const readings = adminExemptibleSettingEnforcement(facts.protection);
+    expect(readings.allow_force_pushes.state).toBe('absent');
+    expect(readings.allow_deletions.state).toBe('absent');
+    expect(readings.required_linear_history.state).toBe('absent');
+  });
+
+  it('agrees with statusCheckEnforcement on strict, since the generalised reading wraps it rather than duplicating it', () => {
+    const facts = baseline();
+    expect(adminExemptibleSettingEnforcement(facts.protection).strict).toEqual(
+      statusCheckEnforcement(facts.protection),
+    );
+  });
+
+  // The defect #489 reports: the violation text for these three settings
+  // described them as currently binding the sole admin, when the same
+  // enforce_admins:false exemption that #390 named for strict applies to them
+  // too. A violation fires only once the setting has drifted further than the
+  // baseline, but its wording must not claim the pre-drift configuration was
+  // a binding protection for the admin who is the only account able to push.
+  it('never describes an admin-exemptible setting as currently binding in its violation text', () => {
+    const bindingClaimPattern =
+      /\bis (currently )?binding\b|\bcurrently binds\b|\bcurrently enforced for (every|the) admin/i;
+
+    const forcePushFacts = baseline();
+    forcePushFacts.protection.allow_force_pushes = { enabled: true };
+    const forcePushViolation = evaluateProtectionAssumptions(
+      forcePushFacts,
+    ).find((v) => v.assumption === 'development.allow_force_pushes');
+    expect(forcePushViolation?.consequence).toBeDefined();
+    expect(forcePushViolation?.consequence).toMatch(/already exempt/);
+    expect(forcePushViolation?.consequence).not.toMatch(bindingClaimPattern);
+
+    const deletionFacts = baseline();
+    deletionFacts.protection.allow_deletions = { enabled: true };
+    const deletionViolation = evaluateProtectionAssumptions(deletionFacts).find(
+      (v) => v.assumption === 'development.allow_deletions',
+    );
+    expect(deletionViolation?.consequence).toBeDefined();
+    expect(deletionViolation?.consequence).toMatch(/already exempt/);
+    expect(deletionViolation?.consequence).not.toMatch(bindingClaimPattern);
+
+    const linearHistoryFacts = baseline();
+    linearHistoryFacts.protection.required_linear_history = {
+      enabled: false,
+    };
+    const linearHistoryViolation = evaluateProtectionAssumptions(
+      linearHistoryFacts,
+    ).find((v) => v.assumption === 'development.required_linear_history');
+    expect(linearHistoryViolation?.consequence).toBeDefined();
+    expect(linearHistoryViolation?.consequence).toMatch(/already exempt/);
+    expect(linearHistoryViolation?.consequence).not.toMatch(
+      bindingClaimPattern,
+    );
+  });
+
+  // A regression test for a defect the fresh reviewer caught in this PR's
+  // first pass: `adminExemptibleSettingEnforcement` narrated a missing or
+  // malformed `{ enabled }` node as though GitHub had confirmed the explicit
+  // unsafe value, rather than saying the field could not be confirmed at
+  // all -- exactly the absent-vs-explicit-unsafe conflation #488 fixed for
+  // the violation checks, reappearing in the enforcement-reporting path.
+  it('reads a missing or malformed enabled node as unconfirmed, not as a confirmed unsafe value', () => {
+    const missingFieldPattern = /missing or malformed/;
+    const confirmedUnsafePattern = /is (confirmed )?enabled\b/;
+
+    const missingEverything = adminExemptibleSettingEnforcement({
+      enforce_admins: { enabled: false },
+    });
+    expect(missingEverything.allow_force_pushes.state).toBe('absent');
+    expect(missingEverything.allow_force_pushes.why).toMatch(
+      missingFieldPattern,
+    );
+    expect(missingEverything.allow_force_pushes.why).not.toMatch(
+      confirmedUnsafePattern,
+    );
+
+    expect(missingEverything.allow_deletions.state).toBe('absent');
+    expect(missingEverything.allow_deletions.why).toMatch(missingFieldPattern);
+    expect(missingEverything.allow_deletions.why).not.toMatch(
+      confirmedUnsafePattern,
+    );
+
+    expect(missingEverything.required_linear_history.state).toBe('absent');
+    expect(missingEverything.required_linear_history.why).toMatch(
+      missingFieldPattern,
+    );
+
+    // A malformed-but-present node (empty object, no `enabled` key) must read
+    // the same as a fully absent one.
+    const malformed = adminExemptibleSettingEnforcement({
+      enforce_admins: { enabled: false },
+      allow_force_pushes: {},
+    });
+    expect(malformed.allow_force_pushes.state).toBe('absent');
+    expect(malformed.allow_force_pushes.why).toMatch(missingFieldPattern);
+
+    // An explicitly confirmed unsafe value must still read distinctly from
+    // the missing-field case, and its wording must say so is confirmed.
+    const explicitlyUnsafe = adminExemptibleSettingEnforcement({
+      enforce_admins: { enabled: false },
+      allow_force_pushes: { enabled: true },
+    });
+    expect(explicitlyUnsafe.allow_force_pushes.state).toBe('absent');
+    expect(explicitlyUnsafe.allow_force_pushes.why).toMatch(
+      confirmedUnsafePattern,
+    );
+    expect(explicitlyUnsafe.allow_force_pushes.why).not.toMatch(
+      missingFieldPattern,
+    );
+  });
+});
+
 describe('a ruleset matters only when it is enabled and reaches a feature branch', () => {
   it('ignores the live disabled development-only merge queue ruleset', () => {
     expect(rulesetCoversFeatureBranches(baseline().rulesets[0])).toBe(false);
@@ -448,5 +621,73 @@ describe('the report names the decision, not just the drift', () => {
     expect(EXPECTED_COLLABORATORS).toEqual([
       { login: 'jpapiez', role: 'admin' },
     ]);
+  });
+});
+
+/**
+ * #492: a credential-less run degrades to a skip, which is correct for a
+ * human at a keyboard reading the printed explanation and wrong for CI, whose
+ * only channel is the exit code. Running the script as a subprocess is the
+ * only way to reach `main()` under both env shapes without also reaching the
+ * network -- both cases below return on the skip path before any fetch.
+ *
+ * `SKIP_CREDENTIAL_DISCOVERY` forces the absence explicit rather than ambient,
+ * the same reasoning tests/mergeQueueReadiness.test.ts records for the
+ * sibling script: on a machine where `gh` is already logged in, merely
+ * clearing the four GITHUB/GH token and repository variables would not stop
+ * `discoverToken`
+ * from finding a real credential and taking the other branch entirely.
+ */
+describe('a credential-less run cannot report green inside CI (#492)', () => {
+  const runOffline = (env: Record<string, string>) =>
+    execFileSync(
+      process.execPath,
+      [
+        path.join(
+          repositoryRoot,
+          'scripts',
+          'check-protection-assumptions.mjs',
+        ),
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          GITHUB_TOKEN: '',
+          GH_TOKEN: '',
+          GITHUB_REPOSITORY: '',
+          GITHUB_REPOSITORY_OWNER: '',
+          SKIP_CREDENTIAL_DISCOVERY: '1',
+          CI: '',
+          ...env,
+        },
+      },
+    );
+
+  it('exits 0 for an interactive local run with no CI env var', () => {
+    const output = runOffline({});
+    expect(output).toContain('Skipped the assumption check');
+  });
+
+  it('exits non-zero, on the reserved code, when CI is set', () => {
+    let status: number | null = null;
+    try {
+      runOffline({ CI: 'true' });
+    } catch (error) {
+      status = (error as { status: number | null }).status;
+    }
+    expect(status).toBe(EXIT_SKIPPED_WITHOUT_CREDENTIALS_IN_CI);
+  });
+
+  it('prints the identical diagnostic text whether or not CI is set', () => {
+    const local = runOffline({});
+    let inCi = '';
+    try {
+      runOffline({ CI: 'true' });
+    } catch (error) {
+      inCi = (error as { stdout: string }).stdout;
+    }
+    expect(inCi).toBe(local);
+    expect(inCi).not.toBe('');
   });
 });
