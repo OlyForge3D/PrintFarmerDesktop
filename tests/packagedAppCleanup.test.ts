@@ -10,6 +10,7 @@ import {
   createPackagedProcessLog,
   createPackagedStartupTrace,
   decodeBoundedUtf8Tail,
+  FIRST_LAUNCH_TIMEOUT_MS,
   launchInstrumentedElectronTestApp,
   MAX_PROCESS_OUTPUT_BYTES,
   runWithPackagedTestCleanup,
@@ -255,7 +256,9 @@ describe('packaged test failure cleanup', () => {
     );
 
     expect(launched.page).toBe(page);
-    expect(waitForLoadState).toHaveBeenCalledWith('domcontentloaded');
+    expect(waitForLoadState).toHaveBeenCalledWith('domcontentloaded', {
+      timeout: FIRST_LAUNCH_TIMEOUT_MS,
+    });
     expect(startupTrace.snapshot()).toEqual({
       startedAtUtc: '2026-08-05T10:00:00.000Z',
       elapsedMs: 23,
