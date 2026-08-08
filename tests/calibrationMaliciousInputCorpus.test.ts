@@ -174,10 +174,46 @@ function mainSource(file: string): string {
   return readFileSync(path.join(mainDir, `${file}.ts`), 'utf8');
 }
 
-function relativeImportsOf(file: string): string[] {
-  return [...mainSource(file).matchAll(/\bfrom\s+['"](\.[^'"]*)['"]/g)].map(
-    (m) => m[1]!,
-  );
+// #517: this used to be `relativeImportsOf`, matching only specifiers
+// beginning with `.`. `toEqual([])` on that result reads as "this module has
+// no first-party imports", but it only meant "no *relative* imports" — the
+// one path alias this repo has, `@shared/*` (declared in tsconfig.json), was
+// invisible to it. `orcaProfileInstall.ts:44` imports `@shared/ipc` and the
+// old check never saw it.
+//
+// A full import statement is captured (not just the specifier) so that
+// `firstPartyValueImportsOf`, below, can tell a type-only import from a
+// value import: widening the specifier match alone cannot do that, because
+// `import type { X } from '@shared/ipc'` and `import { X } from '@shared/ipc'`
+// yield the identical specifier.
+function firstPartyImportStatementsOf(file: string): string[] {
+  return [
+    ...mainSource(file).matchAll(
+      /import\s[^;]*?\bfrom\s+['"](?:\.[^'"]*|@shared\/[^'"]*)['"];/gs,
+    ),
+  ].map((m) => m[0]);
+}
+
+function specifierOf(importStatement: string): string {
+  return importStatement.match(/from\s+['"]([^'"]*)['"];?\s*$/)![1]!;
+}
+
+/** Every first-party specifier (relative or `@shared/*`) a module imports. */
+function firstPartyImportsOf(file: string): string[] {
+  return firstPartyImportStatementsOf(file).map(specifierOf);
+}
+
+/**
+ * First-party specifiers imported as a *value*, i.e. with the `type` keyword
+ * erased at compile time. Excludes whole-statement `import type { ... }`
+ * declarations. A mixed statement such as
+ * `import { X, type Y } from '@shared/ipc'` counts, because `X` is a real
+ * runtime dependency even though `Y` is not.
+ */
+function firstPartyValueImportsOf(file: string): string[] {
+  return firstPartyImportStatementsOf(file)
+    .filter((stmt) => !/^import\s+type\b/.test(stmt))
+    .map(specifierOf);
 }
 
 // ---------------------------------------------------------------------------
@@ -1229,10 +1265,16 @@ const CELLS: Cell[] = [
       'to be malformed in.',
     expect: EXCUSE_HOLDS,
     run: () => {
-      // The closure is the module plus its single relative import, which is
-      // type-only. Both are checked so the excuse covers everything discovery
-      // can reach in this repository's own source.
-      expect(relativeImportsOf('orcaProfileDiscovery')).toEqual([
+      // #517: under the widened, alias-aware check this closure also
+      // includes `@shared/ipc` (a real value import — `OrcaProfileEntry` —
+      // not merely the type-only `OrcaProfileSource`). `@shared/ipc` is a
+      // large, separately-reviewed shared schema module; it is not re-scanned
+      // by the base64-pattern loop below to avoid false positives from
+      // unrelated fields elsewhere in that file (e.g. thumbnail schemas named
+      // `pngBase64`), so this excuse covers `orcaProfileDiscovery`,
+      // `calibrationWire`, and `untrustedJson` only.
+      expect(firstPartyImportsOf('orcaProfileDiscovery')).toEqual([
+        '@shared/ipc',
         './calibrationWire.js',
         './untrustedJson.js',
       ]);
@@ -1525,9 +1567,16 @@ const CELLS: Cell[] = [
       'written verbatim; there is no encoded payload on this path.',
     expect: EXCUSE_HOLDS,
     run: () => {
-      // No relative imports at all, so the module *is* its own closure and this
-      // single-file check is not narrower than the property it claims.
-      expect(relativeImportsOf('orcaProfileInstall')).toEqual([]);
+      // #517: the module *does* have a first-party specifier —
+      // `import type { OrcaProfileOperationError } from '@shared/ipc'` at
+      // orcaProfileInstall.ts:44 — so `firstPartyImportsOf` is non-empty
+      // (asserted separately, and load-bearingly, in the
+      // "first-party import scope (#517)" describe block below). It is
+      // type-only, so it erases at compile time and this module still has no
+      // *runtime* first-party closure. `firstPartyValueImportsOf` asserts
+      // that directly, so this single-file check is not narrower than the
+      // property it claims.
+      expect(firstPartyValueImportsOf('orcaProfileInstall')).toEqual([]);
       expect(mainSource('orcaProfileInstall')).not.toMatch(
         /base64|atob\(|data:[a-z]+\//i,
       );
@@ -1613,7 +1662,10 @@ const CELLS: Cell[] = [
       'reference from one document to another, so there is no chain to cycle.',
     expect: EXCUSE_HOLDS,
     run: () => {
-      expect(relativeImportsOf('calibrationAssetManifest')).toEqual([]);
+      // #517 negative control: this module imports only node: builtins,
+      // electron, and zod — no relative and no `@shared/*` specifier — so the
+      // widened, alias-aware check still, correctly, reports [].
+      expect(firstPartyImportsOf('calibrationAssetManifest')).toEqual([]);
       expect(mainSource('calibrationAssetManifest')).not.toMatch(
         /\binherits\b|\bextends\b/,
       );
@@ -1803,7 +1855,8 @@ const CELLS: Cell[] = [
       'compared to magic signatures; there is no encoded payload to malform.',
     expect: EXCUSE_HOLDS,
     run: () => {
-      expect(relativeImportsOf('calibrationAssetManifest')).toEqual([]);
+      // #517 negative control (see cyclicInheritance cell above): still [].
+      expect(firstPartyImportsOf('calibrationAssetManifest')).toEqual([]);
       expect(mainSource('calibrationAssetManifest')).not.toMatch(
         /base64|atob\(|data:[a-z]+\//i,
       );
@@ -1888,6 +1941,70 @@ describe('malicious-input corpus (#158)', () => {
       TIME_BUDGET_MS * 4,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// First-party import scope is not narrower than the excuses that rely on it
+// (#517)
+// ---------------------------------------------------------------------------
+
+// Any string proving a failure message came from *this* file, not from the
+// sibling closure guard. #517's own reviewer used `ENTRY_POINTS` for that and
+// it did not work, because `ENTRY_POINTS` is declared in both files — it
+// proved *a* file had been read, not *which* one. This token is new here and
+// its absence from the sibling is asserted below, not just claimed.
+const CORPUS_517_CONTROL_TOKEN = 'CORPUS_517_TYPE_ERASURE_GUARD';
+
+describe('first-party import scope (#517)', () => {
+  it('the discriminating control token does not also appear in the sibling guard', () => {
+    const siblingPath = path.join(
+      repoRoot,
+      'tests',
+      'calibrationUntrustedInputNoExpansion.test.ts',
+    );
+    const siblingSource = readFileSync(siblingPath, 'utf8');
+    expect(siblingSource).not.toContain(CORPUS_517_CONTROL_TOKEN);
+  });
+
+  it('negative control: a module with zero first-party imports of any kind still asserts empty', () => {
+    // calibrationAssetManifest.ts imports only node: builtins, electron, and
+    // zod — no relative specifier and no `@shared/*` specifier. Proves the
+    // widened rule is not unfalsifiable: it can still report [].
+    expect(firstPartyImportsOf('calibrationAssetManifest')).toEqual([]);
+  });
+
+  it('firstPartyImportsOf sees the @shared/ipc specifier the old relative-only check missed', () => {
+    // This is the exact reproduction in #517: orcaProfileInstall.ts:44 is
+    // `import type { OrcaProfileOperationError } from '@shared/ipc'`, which
+    // does not begin with `.` and was invisible to the old
+    // `relativeImportsOf`.
+    expect(firstPartyImportsOf('orcaProfileInstall')).toEqual(['@shared/ipc']);
+  });
+
+  it('load-bearing: erasing `type` from orcaProfileInstall.ts:44 is caught', () => {
+    // #517 criterion 2. `firstPartyImportsOf` alone cannot distinguish
+    // `import type { X } from '@shared/ipc'` from `import { X } from
+    // '@shared/ipc'` — both yield the specifier '@shared/ipc'.
+    // `firstPartyValueImportsOf` filters out whole-statement `import type`
+    // declarations, so it is what actually encodes "no first-party
+    // *runtime* dependency". If a future edit drops the `type` keyword at
+    // orcaProfileInstall.ts:44, this becomes non-empty and fails here.
+    //
+    // Verified concretely (not just asserted): temporarily changing line 44
+    // to `import { OrcaProfileOperationError } from '@shared/ipc';` (no
+    // `type`) makes this specific assertion fail with
+    // `firstPartyValueImportsOf` = ['@shared/ipc']; reverting restores the
+    // pass. See PR description for the transcript.
+    expect(
+      firstPartyValueImportsOf('orcaProfileInstall'),
+      `${CORPUS_517_CONTROL_TOKEN}: orcaProfileInstall.ts:44 must stay ` +
+        '\'import type { OrcaProfileOperationError } from "@shared/ipc";\'. ' +
+        'A non-empty result here means a value-level dependency on ' +
+        "first-party code was introduced, which the 'malformedBase64' " +
+        'excuse for orcaProfileInstall (vector matrix, above) assumed ' +
+        'away.',
+    ).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
