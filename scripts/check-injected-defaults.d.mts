@@ -13,6 +13,15 @@
 export const EXIT_OK: 0;
 export const EXIT_RELOCATED: 1;
 export const EXIT_UNDETERMINED: 2;
+export const EXIT_ROOT_NOT_DRIVEN: 3;
+
+/**
+ * Thrown by analyse() when --root names a function that exists in the module
+ * but the suite has zero call sites reaching it. Distinct from a plain Error
+ * so main() can tell "root missing" apart from "root exists, never driven"
+ * (#549) and return a different exit code for each.
+ */
+export class RootNotDrivenError extends Error {}
 
 export const VERDICT_DRIVEN: 'DRIVEN';
 export const VERDICT_DIRECT: 'DIRECT';
@@ -123,5 +132,5 @@ export function formatResult(
 ): string;
 export function parseArgs(argv: string[]): ParsedArgs;
 export function analyse(options: AnalyseOptions): AnalysisResult;
-export function runMain(argv: string[], io?: Io): 0 | 1 | 2;
-export function main(argv: string[], io?: Io): 0 | 1 | 2;
+export function runMain(argv: string[], io?: Io): 0 | 1 | 2 | 3;
+export function main(argv: string[], io?: Io): 0 | 1 | 2 | 3;
