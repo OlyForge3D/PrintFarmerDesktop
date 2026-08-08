@@ -115,11 +115,18 @@ export function importedFrom(
   modulePath: string,
 ): Set<string>;
 export function findCompositionRoot(ast: Ast, rootName: string): AstNode | null;
+export function resolveCallNames(
+  ast: Ast,
+  suitePath: string,
+  modulePath: string,
+  rootName: string,
+): Set<string>;
 export function readInjectedDefaults(
   rootNode: AstNode | null,
 ): InjectedDefault[];
 export function uniqueObjectBindings(ast: Ast): Map<string, AstNode>;
 export function findCallSites(ast: Ast, rootName: string): CallSite[];
+export function findCallSitesForNames(ast: Ast, names: Set<string>): CallSite[];
 export function classifyDefaults(input: ClassifyInput): ClassifiedDefault[];
 export function exitCodeFor(
   classified: Pick<ClassifiedDefault, 'verdict'>[],

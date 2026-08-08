@@ -253,6 +253,42 @@ export function importedFrom(ast, suitePath, modulePath) {
   return names;
 }
 
+/**
+ * Local names in the suite that can invoke `rootName`, accounting for a
+ * renamed import.
+ *
+ * `import { main as run } from './m.mjs'; run();` calls `main` under the
+ * local name `run` — Ripley's review of #549 found that `findCallSites`
+ * matched only the literal identifier `rootName`, so this call site was
+ * invisible to it and a root the suite plainly does call was reported as
+ * never driven. `rootName` itself is always included, which preserves the
+ * direct, unaliased match this tool has always made — including the case
+ * where the suite calls it without importing it at all (e.g. a same-file
+ * fixture in this suite), which is not this function's business to police.
+ */
+export function resolveCallNames(ast, suitePath, modulePath, rootName) {
+  const target = path.resolve(modulePath);
+  const fromDir = path.dirname(path.resolve(suitePath));
+  const names = new Set([rootName]);
+  for (const node of ast.body) {
+    if (node.type !== 'ImportDeclaration') continue;
+    const specifier = node.source.value;
+    if (typeof specifier !== 'string' || !specifier.startsWith('.')) continue;
+    if (path.resolve(fromDir, specifier) !== target) continue;
+    for (const one of node.specifiers ?? []) {
+      if (
+        one.type === 'ImportSpecifier' &&
+        one.imported?.type === 'Identifier' &&
+        one.imported.name === rootName &&
+        one.local?.type === 'Identifier'
+      ) {
+        names.add(one.local.name);
+      }
+    }
+  }
+  return names;
+}
+
 /** The exported function `rootName`, or null. */
 export function findCompositionRoot(ast, rootName) {
   let found = null;
@@ -352,7 +388,10 @@ export function uniqueObjectBindings(ast) {
 }
 
 /**
- * Every call of `rootName`, with the keys its argument supplies.
+ * Every call of any name in `names`, with the keys its argument supplies.
+ * The underlying resolver `findCallSites` calls this with the single-name
+ * set `{ rootName }`; `analyse` calls it with `resolveCallNames`'s wider set
+ * so a renamed import's call site is not invisible to it (#549 / Ripley).
  *
  * resolution:
  *   'none'       called with no argument   -> every default runs
@@ -360,13 +399,13 @@ export function uniqueObjectBindings(ast) {
  *   'indirect'   an identifier or `x.y` resolved to a unique object literal
  *   'unresolved' anything else             -> settles nothing, in either direction
  */
-export function findCallSites(ast, rootName) {
+export function findCallSitesForNames(ast, names) {
   const bindings = uniqueObjectBindings(ast);
   const sites = [];
   walk(ast, (node) => {
     if (node.type !== 'CallExpression') return;
     const callee = node.callee;
-    if (!(callee.type === 'Identifier' && callee.name === rootName)) return;
+    if (!(callee.type === 'Identifier' && names.has(callee.name))) return;
     const line = node.loc?.start?.line ?? null;
     if (node.arguments.length === 0) {
       sites.push({ line, resolution: 'none', keys: new Set() });
@@ -404,6 +443,11 @@ export function findCallSites(ast, rootName) {
     );
   });
   return sites;
+}
+
+/** Every call of `rootName` alone, by its literal identifier. */
+export function findCallSites(ast, rootName) {
+  return findCallSitesForNames(ast, new Set([rootName]));
 }
 
 /**
@@ -559,7 +603,8 @@ export function analyse({
     throw new Error(`${rootName} is not defined in ${moduleFile}`);
   }
   const defaults = readInjectedDefaults(rootNode);
-  const sites = findCallSites(suiteAst, rootName);
+  const callNames = resolveCallNames(suiteAst, suiteFile, moduleFile, rootName);
+  const sites = findCallSitesForNames(suiteAst, callNames);
   if (sites.length === 0 && defaults.length === 0) {
     // #549: `rootName` exists — it parsed, it has a body — but the suite has
     // zero call sites that reach it, AND the root injects no defaults at all.

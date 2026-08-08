@@ -16,6 +16,7 @@ import {
   classifyDefaults,
   exitCodeFor,
   findCallSites,
+  findCallSitesForNames,
   findCompositionRoot,
   formatResult,
   importedFrom,
@@ -24,6 +25,7 @@ import {
   parseArgs,
   parseSource,
   readInjectedDefaults,
+  resolveCallNames,
   runMain,
   uniqueObjectBindings,
 } from '../scripts/check-injected-defaults.mjs';
@@ -281,6 +283,59 @@ describe('the import surface is matched by resolved path, not by specifier text'
   it('ignores bare package specifiers', () => {
     const ast = parseSource("import { parse } from 'some-package';", 's.ts');
     expect([...importedFrom(ast, 'tests/s.ts', 'scripts/x.mjs')]).toEqual([]);
+  });
+});
+
+describe('resolveCallNames finds the local alias a renamed import binds the root to (#549 / Ripley)', () => {
+  it('always includes the root name itself, unaliased', () => {
+    const ast = parseSource("import { main } from './m.mjs';\nmain();", 's.ts');
+    const names = resolveCallNames(ast, 'tests/s.ts', 'tests/m.mjs', 'main');
+    expect([...names]).toEqual(['main']);
+  });
+
+  it('adds the local alias when the root is imported under a different name', () => {
+    const ast = parseSource(
+      "import { main as run } from './m.mjs';\nrun();",
+      's.ts',
+    );
+    const names = resolveCallNames(ast, 'tests/s.ts', 'tests/m.mjs', 'main');
+    expect([...names].sort()).toEqual(['main', 'run']);
+  });
+
+  it('NEGATIVE CONTROL: an alias of a DIFFERENT export is not added', () => {
+    // Without this, the arm above could be satisfied by adding every local
+    // alias in the suite regardless of which export it renames.
+    const ast = parseSource(
+      "import { other as run } from './m.mjs';\nrun();",
+      's.ts',
+    );
+    const names = resolveCallNames(ast, 'tests/s.ts', 'tests/m.mjs', 'main');
+    expect([...names]).toEqual(['main']);
+  });
+
+  it('NEGATIVE CONTROL: an aliased import from a DIFFERENT module is not added', () => {
+    const ast = parseSource(
+      "import { main as run } from './other.mjs';\nrun();",
+      's.ts',
+    );
+    const names = resolveCallNames(ast, 'tests/s.ts', 'tests/m.mjs', 'main');
+    expect([...names]).toEqual(['main']);
+  });
+});
+
+describe('findCallSitesForNames matches a call under any name in the set, and findCallSites is the single-name case', () => {
+  it('finds a call under a second name in the set that the first name does not match', () => {
+    const ast = parseSource('run();', 's.ts');
+    expect(findCallSitesForNames(ast, new Set(['main', 'run']))).toEqual([
+      { line: 1, resolution: 'none', keys: new Set() },
+    ]);
+  });
+
+  it('findCallSites(ast, rootName) is exactly findCallSitesForNames(ast, {rootName})', () => {
+    const ast = parseSource('main({ a: 1 });', 's.ts');
+    expect(findCallSites(ast, 'main')).toEqual(
+      findCallSitesForNames(ast, new Set(['main'])),
+    );
   });
 });
 
@@ -826,6 +881,68 @@ describe('A WRONG-BUT-EXISTING ROOT IS NOT INDISTINGUISHABLE FROM A CLEAN ONE (#
         'm.mjs':
           'function impl() {}\nexport function main({ a = impl } = {}) {}',
         'm.test.ts': "import { main } from './m.mjs';\nconst x = 1;",
+      }),
+    });
+    expect(result.sites.length).toBe(0);
+    expect(verdictFor(result.classified, 'a')).toBe(VERDICT_UNREACHABLE);
+    expect(exitCodeFor(result.classified)).toBe(EXIT_RELOCATED);
+  });
+
+  it('ALIASED-IMPORT REGRESSION (Ripley review on #641): a renamed import of the root is still recognised as a call site, not reported as never-driven', () => {
+    // Ripley's review found that findCallSites matched only the literal
+    // identifier `rootName`, so `import { main as run } from './m.mjs'; run()`
+    // — the suite plainly driving `main` under a local alias — was invisible
+    // to it: sites.length was 0, defaults.length was > 0 (the `a = impl`
+    // default), and the tool reported UNREACHABLE / a false rejection instead
+    // of recognising the call. Renaming --root was impossible advice, because
+    // `run` is not a name that exists in the module at all.
+    const result = analyse({
+      moduleFile: 'm.mjs',
+      suiteFile: 'm.test.ts',
+      rootName: 'main',
+      readFile: sourcesOf({
+        'm.mjs':
+          'function impl() {}\nexport function main({ a = impl } = {}) {}',
+        'm.test.ts': "import { main as run } from './m.mjs';\nrun();",
+      }),
+    });
+    expect(result.sites.length).toBe(1);
+    expect(verdictFor(result.classified, 'a')).toBe(VERDICT_DRIVEN);
+    expect(exitCodeFor(result.classified)).toBe(EXIT_OK);
+  });
+
+  it('ALIASED-IMPORT REGRESSION, NEGATIVE CONTROL: an alias of an unrelated import is not mistaken for a call to the root', () => {
+    // Without this, the arm above could be satisfied by a resolver that
+    // treats EVERY local alias in the suite as a name for the root, which
+    // would manufacture false DRIVEN verdicts out of unrelated calls — the
+    // exact overclaiming direction this file's own banner argues against.
+    const result = analyse({
+      moduleFile: 'm.mjs',
+      suiteFile: 'm.test.ts',
+      rootName: 'main',
+      readFile: sourcesOf({
+        'm.mjs':
+          'export function other() {}\nfunction impl() {}\nexport function main({ a = impl } = {}) {}',
+        'm.test.ts': "import { other as run } from './m.mjs';\nrun();",
+      }),
+    });
+    expect(result.sites.length).toBe(0);
+    expect(verdictFor(result.classified, 'a')).toBe(VERDICT_UNREACHABLE);
+    expect(exitCodeFor(result.classified)).toBe(EXIT_RELOCATED);
+  });
+
+  it('ALIASED-IMPORT REGRESSION, THIRD ARM: an aliased import from a DIFFERENT module is not mistaken for a call to this one', () => {
+    // resolveCallNames resolves the import specifier by path, exactly like
+    // importedFrom already does. This pins that a same-named export from a
+    // different file does not leak into the alias set.
+    const result = analyse({
+      moduleFile: 'm.mjs',
+      suiteFile: 'm.test.ts',
+      rootName: 'main',
+      readFile: sourcesOf({
+        'm.mjs':
+          'function impl() {}\nexport function main({ a = impl } = {}) {}',
+        'm.test.ts': "import { main as run } from './other.mjs';\nrun();",
       }),
     });
     expect(result.sites.length).toBe(0);
