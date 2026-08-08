@@ -86,7 +86,10 @@ function listingSidecar(
   } as unknown as SidecarClient;
 }
 
-function resolvingSidecar(resolvedAt: unknown, createdAt: unknown): SidecarClient {
+function resolvingSidecar(
+  resolvedAt: unknown,
+  createdAt: unknown,
+): SidecarClient {
   return {
     resolveCalibrationConflict: () =>
       Promise.resolve({
