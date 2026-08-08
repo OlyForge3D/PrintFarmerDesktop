@@ -31,6 +31,7 @@ import {
   formatReport,
   listLocalBranches,
   listStrandedCommits,
+  pruneRemote,
   runCheck,
 } from '../scripts/check-stranded-branches.mjs';
 
@@ -259,5 +260,130 @@ describe('the falsifier (#543): a real repo with a real unpushed commit', () => 
     expect(stranded).toHaveLength(1);
     expect(stranded[0]?.subject).toBe('direct-read work');
     expect(countRemoteRefs(repoPath)).toBeGreaterThan(0);
+  });
+
+  it('THE #289 FALSIFIER — a stray non-origin remote-tracking ref must not mask a stranded commit', () => {
+    // #289: `git branch -r --contains <sha>` (and an unscoped `--not
+    // --remotes`) counts refs from remote-tracking namespaces that
+    // correspond to no configured remote at all — leftover `pr/*`,
+    // `prns/*`, `probe*/*` refs from earlier fetch refspecs. Fabricate
+    // exactly that: a `refs/remotes/pr/68` entry pointing at the stranded
+    // commit, with `origin` remaining the only configured remote. An
+    // unscoped exclusion set (`--not --remotes`, `refs/remotes` bare) would
+    // treat that stray ref as "published" and wrongly report CLEAN; the
+    // #289-scoped check (`--remotes=origin`, `refs/remotes/origin`) must
+    // still report STRANDED, because nothing under `refs/remotes/origin/*`
+    // reaches the commit.
+    tempRoot = mkdtempSync(path.join(os.tmpdir(), 'pfd-stranded-289-'));
+    const repoPath = makeRepoWithOrigin(tempRoot);
+
+    git(['checkout', '-q', '-b', 'squad/289-decoy'], repoPath);
+    commit(repoPath, 'decoy.txt', 'work only a stray ref points at (#289)');
+    const strandedSha = git(['rev-parse', 'HEAD'], repoPath);
+
+    // No configured remote named "pr" exists — `git remote -v` still shows
+    // only `origin` — yet this ref lives under refs/remotes/pr/, exactly
+    // the orphaned-namespace shape the issue measured.
+    git(['update-ref', 'refs/remotes/pr/68', strandedSha], repoPath);
+
+    // Confirm the fixture actually reproduces the issue's own contrast: the
+    // unscoped instrument says "reachable", the origin-scoped one says
+    // "not reachable".
+    const unscoped = git(
+      ['for-each-ref', '--contains', strandedSha, 'refs/remotes'],
+      repoPath,
+    );
+    expect(unscoped).toContain('refs/remotes/pr/68');
+    const scoped = git(
+      ['for-each-ref', '--contains', strandedSha, 'refs/remotes/origin'],
+      repoPath,
+    );
+    expect(scoped).toBe('');
+
+    const outcome = runCheck(repoPath);
+
+    expect(outcome.exitCode).toBe(EXIT_STRANDED);
+    expect(outcome.report).toContain('squad/289-decoy');
+    expect(outcome.report).toContain('#289');
+  });
+
+  it('scopes to the given remote name and ignores refs under other remote-tracking namespaces', () => {
+    tempRoot = mkdtempSync(path.join(os.tmpdir(), 'pfd-stranded-scope-'));
+    const repoPath = makeRepoWithOrigin(tempRoot);
+    git(['checkout', '-q', '-b', 'squad/289-scoped'], repoPath);
+    commit(repoPath, 'scoped.txt', 'scoped-remote work');
+    const sha = git(['rev-parse', 'HEAD'], repoPath);
+    git(['update-ref', 'refs/remotes/probeP/68', sha], repoPath);
+
+    // Scoped to "origin" (the only real remote): still stranded.
+    expect(
+      listStrandedCommits('squad/289-scoped', repoPath, 'origin'),
+    ).toHaveLength(1);
+
+    // Scoped to the decoy namespace name itself: the commit reads as
+    // "published" under that (nonexistent) remote, proving the scoping
+    // parameter — not some other side effect — drives the result.
+    expect(
+      listStrandedCommits('squad/289-scoped', repoPath, 'probeP'),
+    ).toHaveLength(0);
+  });
+
+  it('FAIL-CLOSED (Ripley, #643 review) — a failed prune must not evaluate against stale refs/remotes/origin', () => {
+    // Reproduces the exact scenario from the PR #643 review: push a branch,
+    // delete it on the server, then break the remote URL so `git fetch
+    // origin --prune` cannot run. Without a fail-closed path, the script
+    // would silently evaluate against the still-cached, now-stale
+    // `refs/remotes/origin/<branch>` ref and report CLEAN — recreating the
+    // exact false-negative #289 was fixed to remove. `check-merge-landed.mjs`
+    // already answers "fetch failed" with UNVERIFIABLE rather than guessing;
+    // this check must do the same rather than trust unpruned state.
+    tempRoot = mkdtempSync(path.join(os.tmpdir(), 'pfd-stranded-fetchfail-'));
+    const repoPath = makeRepoWithOrigin(tempRoot);
+    const originPath = path.join(tempRoot, 'origin.git');
+
+    git(['checkout', '-q', '-b', 'squad/643-deleted-upstream'], repoPath);
+    commit(
+      repoPath,
+      'deleted-upstream.txt',
+      'work whose upstream gets deleted (#643)',
+    );
+    git(['push', '-q', '-u', 'origin', 'squad/643-deleted-upstream'], repoPath);
+
+    // Delete the branch on "the server" (the bare origin) directly, the way
+    // a merge/cleanup would, without this clone ever fetching --prune.
+    execFileSync('git', [
+      '-C',
+      originPath,
+      '-c',
+      'safe.bareRepository=all',
+      'update-ref',
+      '-d',
+      'refs/heads/squad/643-deleted-upstream',
+    ]);
+
+    // Break the remote URL so `git fetch origin --prune` cannot succeed —
+    // the stale refs/remotes/origin/squad/643-deleted-upstream tracking ref
+    // is still sitting in this clone, unpruned.
+    const missingOriginPath = path.join(tempRoot, 'origin-does-not-exist.git');
+    git(['remote', 'set-url', 'origin', missingOriginPath], repoPath);
+
+    const pruneResult = pruneRemote(repoPath, 'origin');
+    expect(pruneResult.code).not.toBe(0);
+
+    const outcome = runCheck(repoPath);
+
+    // The old, non-fail-closed behavior would report CLEAN here (masked by
+    // the stale tracking ref). The fix must refuse to guess instead.
+    expect(outcome.exitCode).toBe(EXIT_UNDETERMINED);
+    expect(outcome.report).toContain('UNDETERMINED');
+    expect(outcome.report).not.toContain('CLEAN');
+    expect(outcome.report).not.toContain('squad/643-deleted-upstream');
+
+    // Restore the remote and re-run: prune now succeeds, drops the stale
+    // ref, and the same repo correctly flips to STRANDED.
+    git(['remote', 'set-url', 'origin', originPath], repoPath);
+    const restoredOutcome = runCheck(repoPath);
+    expect(restoredOutcome.exitCode).toBe(EXIT_STRANDED);
+    expect(restoredOutcome.report).toContain('squad/643-deleted-upstream');
   });
 });
