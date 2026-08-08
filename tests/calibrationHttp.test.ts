@@ -607,6 +607,118 @@ describe('CalibrationHttpClient HTTP status mapping', () => {
     // getOptional returns null for 404 — check a raw get endpoint
   });
 
+  it('preserves instance and errorCode from a validated ProblemDetails body (issue #370)', async () => {
+    // 503 is a transient status and `get` retries with the same mocked
+    // response object; use mockImplementation so each attempt gets a fresh
+    // Response (a Response body can only be read once).
+    const fetchMock = vi.fn().mockImplementation(() =>
+      json(
+        {
+          type: 'https://errors.example/calibration/worker-offline',
+          title: 'Service Unavailable',
+          status: 503,
+          detail: 'Generation worker offline.',
+          instance: '/calibration/jobs/abc123',
+          errorCode: 'worker_offline',
+        },
+        503,
+      ),
+    );
+    const client = makeClient(fetchMock);
+
+    let error: CalibrationHttpError | undefined;
+    try {
+      await client.getChanges(
+        PROFILE_ID,
+        BASE_URL,
+        null,
+        null,
+        10,
+        AbortSignal.timeout(5000),
+      );
+    } catch (err) {
+      error = err as CalibrationHttpError;
+    }
+
+    expect(error).toBeInstanceOf(CalibrationHttpError);
+    expect(error?.serverDetail).toBe('Generation worker offline.');
+    expect(error?.serverInstance).toBe('/calibration/jobs/abc123');
+    expect(error?.serverErrorCode).toBe('worker_offline');
+    // #177's opaque reference is untouched by this: `instance` must not leak
+    // into the renderer-facing message or the catalogued string.
+    expect(error?.message).not.toContain('/calibration/jobs/abc123');
+  });
+
+  it('preserves a maximal (schema-legal) 4096-char detail instead of dropping it', async () => {
+    // A contract-legal maximal `detail` (RemoteCalibrationProblemDetails caps
+    // it at 4096 chars) makes the full JSON body >= 4109 bytes -- comfortably
+    // over the old, wrongly-scoped `body.length < 4096` gate that used to
+    // silently drop it. This is the falsifier the issue asks for.
+    const maximalDetail = 'x'.repeat(4096);
+    const fetchMock = vi.fn().mockImplementation(() =>
+      json(
+        {
+          title: 'Service Unavailable',
+          detail: maximalDetail,
+        },
+        503,
+      ),
+    );
+    const client = makeClient(fetchMock);
+
+    let error: CalibrationHttpError | undefined;
+    try {
+      await client.getChanges(
+        PROFILE_ID,
+        BASE_URL,
+        null,
+        null,
+        10,
+        AbortSignal.timeout(5000),
+      );
+    } catch (err) {
+      error = err as CalibrationHttpError;
+    }
+
+    expect(error).toBeInstanceOf(CalibrationHttpError);
+    expect(error?.serverDetail).toBe(maximalDetail);
+    expect(error?.serverDetail?.length).toBe(4096);
+  });
+
+  it('degrades to a null serverDetail (no throw) when the body fails schema validation', async () => {
+    // detail over the schema's 4096-char max fails RemoteCalibrationProblemDetails
+    // validation. Adopting the schema in `statusError` is scoped to *parsing*
+    // only (issue #370): a malformed/over-limit body must still fall back to
+    // null rather than surfacing a new error type.
+    const overLimitDetail = 'x'.repeat(4097);
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(() =>
+        json({ title: 'Service Unavailable', detail: overLimitDetail }, 503),
+      );
+    const client = makeClient(fetchMock);
+
+    let error: CalibrationHttpError | undefined;
+    try {
+      await client.getChanges(
+        PROFILE_ID,
+        BASE_URL,
+        null,
+        null,
+        10,
+        AbortSignal.timeout(5000),
+      );
+    } catch (err) {
+      error = err as CalibrationHttpError;
+    }
+
+    expect(error).toBeInstanceOf(CalibrationHttpError);
+    expect(error?.code).toBe('workerUnavailable');
+    expect(error?.serverDetail).toBeNull();
+    expect(error?.serverInstance).toBeNull();
+    expect(error?.serverErrorCode).toBeNull();
+  });
+
   it('404 on getProject returns null (not an error)', async () => {
     const fetchMock = vi
       .fn()
