@@ -139,6 +139,23 @@ describe('isDirectVitestInvocation', () => {
       ),
     ).toBe(true);
   });
+
+  it('ROOT CAUSE FIX (Vasquez, review of this PR, round 3): a bare `vitest` word that is merely an ARGUMENT to another program is not a direct invocation', () => {
+    // Only the invoked PROGRAM counts, not any token that happens to equal
+    // `vitest` -- here `echo` is what actually runs, and `vitest` is just
+    // one of its arguments (identical in shape to the "printed message"
+    // case elsewhere in this file, but this is the tokeniser-level check
+    // itself, independent of any wrapper).
+    expect(
+      isDirectVitestInvocation(tokenizeCommand('echo vitest -t harmless')),
+    ).toBe(false);
+  });
+
+  it('still recognises vitest preceded by an environment-variable assignment', () => {
+    expect(
+      isDirectVitestInvocation(tokenizeCommand('CI=true vitest run -t x')),
+    ).toBe(true);
+  });
 });
 
 describe('HOME 1: package.json test/test:* scripts', () => {
@@ -280,6 +297,36 @@ describe('HOME 1: package.json test/test:* scripts', () => {
   it('does not false-positive when an alias points at a script that does not exist', () => {
     const violations = checkPackageJsonScripts({
       test: 'npm run does-not-exist',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it('POSITIVE CONTROL (Vasquez, review of this PR, round 3): refuses a narrowing committed through a template-literal exec() wrapper', () => {
+    // Round 2 added the single-string exec() shape (`'...'`/`"..."`); round
+    // 3 found the identical call shape written as a template literal
+    // (backtick-delimited) still bypassed detection.
+    const violations = checkPackageJsonScripts({
+      test: 'node -e "exec(`vitest run -t "only this arm"`)"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('does NOT false-positive (Vasquez, review of this PR, round 3): an exec() wrapper whose inner string only prints, never invokes, vitest', () => {
+    // The wrapped string is itself `echo vitest -t harmless` -- `echo`
+    // still only prints, so the "-t harmless" it prints is never executed
+    // by anything, exactly like an unwrapped `echo vitest -t harmless`
+    // would be. Round 3 found this false-positived because the OLD
+    // `isDirectVitestInvocation` treated any bare `vitest` token as a
+    // direct invocation, so the nested check misclassified `echo`'s
+    // argument as if `echo` itself were vitest.
+    const violations = checkPackageJsonScripts({
+      test: 'node -e "exec(\'echo vitest -t harmless\')"',
     });
     expect(violations).toEqual([]);
   });
@@ -445,6 +492,19 @@ describe('HOME 2: workflows invoking vitest directly', () => {
     expect(violation).toMatchObject({ flag: '-t', value: 'only this arm' });
   });
 
+  it('detectWrappedNarrowing (unit, round 3): matches the template-literal exec() call shape', () => {
+    const violation = detectWrappedNarrowing(
+      'exec(`vitest run -t "only this arm"`)',
+    );
+    expect(violation).toMatchObject({ flag: '-t', value: 'only this arm' });
+  });
+
+  it('detectWrappedNarrowing (unit, round 3): does not false-positive on an exec() wrapper that only prints, never invokes, vitest', () => {
+    expect(
+      detectWrappedNarrowing("exec('echo vitest -t harmless')"),
+    ).toBeNull();
+  });
+
   it('POSITIVE CONTROL (Ripley, review of this PR): refuses a narrowing split across a shell line-continuation', () => {
     const contents = [
       'jobs:',
@@ -601,6 +661,103 @@ describe('HOME 2: workflows invoking vitest directly', () => {
     expect(files.some((f: { file: string }) => f.file.endsWith('ci.yml'))).toBe(
       true,
     );
+  });
+
+  it('POSITIVE CONTROL (Ripley, review of this PR, round 3): refuses a narrowing printed by echo and piped into sh', () => {
+    // `echo` alone only ever prints -- OUTPUT_ONLY_COMMANDS correctly
+    // exempts it in isolation. Piped into `sh`, the printed text stops
+    // being inert: `sh` executes it.
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: echo \'vitest run -t "only this arm"\' | sh',
+    ].join('\n');
+    const violations = checkWorkflowText('ci.yml', contents);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('does NOT false-positive (round 3): echo piped into a program that is not a known script interpreter', () => {
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Not an interpreter',
+      "        run: echo \"spawnSync('vitest',['run','-t','only this arm']) is forbidden\" | cat",
+    ].join('\n');
+    expect(checkWorkflowText('ci.yml', contents)).toEqual([]);
+  });
+
+  it('POSITIVE CONTROL (Ripley, review of this PR, round 3): reads a folded block scalar header with a chomping indicator and trailing comment', () => {
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: >- # narrow the suite',
+      '          vitest run',
+      '          -t "only this arm"',
+    ].join('\n');
+    const violations = checkWorkflowText('ci.yml', contents);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('POSITIVE CONTROL (Ripley, review of this PR, round 3): reads a folded block scalar header with the indentation digit before the chomping indicator', () => {
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: >2-',
+      '          vitest run',
+      '          -t "only this arm"',
+    ].join('\n');
+    const violations = checkWorkflowText('ci.yml', contents);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('POSITIVE CONTROL (Vasquez, review of this PR, round 3): refuses a narrowing committed through a template-literal exec() wrapper', () => {
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: node -e "exec(`vitest run -t "only this arm"`)"',
+    ].join('\n');
+    const violations = checkWorkflowText('ci.yml', contents);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('does NOT false-positive (Vasquez, review of this PR, round 3): an exec() wrapper whose inner string only prints, never invokes, vitest', () => {
+    const contents = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Not narrowed',
+      '        run: node -e "exec(\'echo vitest -t harmless\')"',
+    ].join('\n');
+    expect(checkWorkflowText('ci.yml', contents)).toEqual([]);
   });
 });
 

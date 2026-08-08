@@ -141,6 +141,71 @@
 //   into whichever script it names, repeatedly (a `visited` set stops a
 //   cycle rather than looping), until it finds a narrowing or runs out of
 //   script to follow.
+//
+// A THIRD REVIEW ROUND FOUND FOUR MORE HOLES -- Ralph (work-monitor) flagged
+// that three straight rounds each surfacing a new equivalent-class bypass
+// (line continuation -> folded scalar -> chomping/comment header;
+// spawnSync -> exec-string -> exec-template-literal) looks like the same
+// "the population is not enumerable" trap #537's own body warns about, and
+// invited (without mandating) a structurally different design. The choice
+// made here: keep the static-analysis shape, but stop adding one more
+// shape-specific regex per finding and instead fix the ROOT CAUSE that let
+// several of round 3's findings through, plus add two small, CLOSED,
+// bounded mechanisms (not open-ended enumerations) -- see the reasoning at
+// the end of this note for why that is expected to narrow, not eliminate,
+// future whack-a-mole risk.
+//
+//   Ripley (round 3): `OUTPUT_ONLY_COMMANDS` correctly refuses to scan a
+//   command whose leading word can only print -- but
+//   `echo "spawnSync(...) is forbidden" | sh` pipes that printed text into
+//   `sh`, which DOES execute it; the gate never looked past the first
+//   pipeline stage. `detectNarrowingThroughPipeline` recognises when a
+//   later pipeline stage names one of a small, closed set of programs whose
+//   whole purpose is to execute a script handed to them
+//   (`STDIN_INTERPRETERS`: `sh`, `bash`, `node`, `python`, ...), and if the
+//   first stage is an OUTPUT_ONLY_COMMANDS command, recovers what it prints
+//   and recurses `detectNarrowing` on that text -- because once piped to an
+//   interpreter, printed text is no longer inert.
+//
+//   Ripley (round 3): the block-scalar header regex only accepted a
+//   chomping indicator BEFORE an indentation digit and no trailing comment,
+//   so valid YAML headers like `run: >- # comment` and `run: >2-` (digit
+//   before chomping) were misread as inline commands, silently dropping the
+//   entire multi-line body. The header regex now accepts either order plus
+//   an optional trailing comment, matching what YAML itself accepts.
+//
+//   Vasquez (round 3): `exec(\`vitest run -t "..."\`)` -- a template
+//   literal -- still bypassed `CALL_STRING_FORM`, which only accepted `'`/
+//   `"` as the call's string delimiter. Widened to accept a backtick too:
+//   the call shape is identical, only the JS string syntax differs.
+//
+//   Vasquez (round 3): `exec('echo vitest -t harmless')` false-positived.
+//   Root cause: `isDirectVitestInvocation` asked "does ANY token equal
+//   `vitest`", not "IS `vitest` the invoked program" -- so `vitest` as a
+//   bare argument TO `echo` counted as if `echo` were vitest itself. This
+//   is a real bug independent of wrappers (it also means a bare
+//   `echo vitest -t harmless` typed directly, unwrapped, would have been
+//   misclassified) and is what let the round-2 nested-string check for
+//   `exec('...')` treat the extracted `echo vitest -t harmless` as a direct
+//   invocation. Fixed at the root: only the token in the INVOKED-PROGRAM
+//   position counts (the first token, skipping leading `FOO=bar`
+//   assignments, or the token after a launcher like `npx`/`node`). The
+//   nested-string check in `CALL_STRING_FORM` now also calls the full,
+//   recursive `detectNarrowing` (which applies this fixed check AND the
+//   OUTPUT_ONLY_COMMANDS gate) instead of a narrower ad hoc re-scan, so this
+//   class of false positive cannot recur through that path either.
+//
+// Why continue patching statically rather than pivot to a canary-run/
+// dynamic design: the two round-3 additions are deliberately CLOSED,
+// SMALL, STABLE sets (a handful of script interpreters; a handful of
+// print-only builtins) rather than enumerations of JS call shapes or shell
+// wrapper idioms, which is what kept growing every round. The
+// nested-string check is also now recursive through one shared instrument
+// (`detectNarrowing`) instead of being re-derived per wrapper shape.
+// Together this should meaningfully narrow future bypass classes -- but it
+// is a judgement call, not a proof of completeness, and is open to
+// reconsideration if a further round finds another equivalent-class
+// bypass.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
@@ -215,21 +280,53 @@ export function detectNarrowingFlag(tokens) {
 
 /**
  * Does this tokenised command invoke vitest directly? True for `vitest run`,
- * `npx vitest`, or a direct call to `.../vitest/vitest.mjs`. False for a
- * command that merely mentions vitest in passing (e.g. `npm run test`,
- * which is the package.json home checked separately).
+ * `npx vitest`, `node .../vitest.mjs`, or a direct call to
+ * `.../vitest/vitest.mjs`. False for a command that merely mentions vitest
+ * in passing (e.g. `npm run test`, which is the package.json home checked
+ * separately, or `echo vitest -t harmless`, where "vitest" is just an
+ * argument to a program that isn't vitest at all).
+ *
+ * Vasquez (review of this PR, round 3): the original check asked "does ANY
+ * token equal `vitest`", not "is `vitest` the invoked program" -- so
+ * `echo vitest -t harmless` counted as a direct invocation purely because
+ * the bare word `vitest` happened to appear as one of `echo`'s arguments,
+ * which is a false-positive root cause in its own right and is what let
+ * `exec('echo vitest -t harmless')` (nested one level inside a wrapper)
+ * slip through as a false NARROWING match once the wrapped value was
+ * recursively re-checked with the old, looser definition. Only the
+ * INVOKED PROGRAM matters: the first token (after skipping any leading
+ * `FOO=bar` environment assignments), or the token immediately after a
+ * known launcher (`npx`, `node`, `pnpm`, `yarn`) that takes the real
+ * program as its own next argument.
  */
 export function isDirectVitestInvocation(tokens) {
-  return tokens.some((token) => {
-    if (typeof token !== 'string') return false;
-    if (token === 'vitest') return true;
-    const normalised = token.replaceAll('\\', '/');
-    return (
-      normalised === 'vitest.mjs' ||
-      normalised.endsWith('/vitest.mjs') ||
-      normalised.endsWith('/vitest/vitest.mjs')
-    );
-  });
+  let i = 0;
+  while (
+    i < tokens.length &&
+    typeof tokens[i] === 'string' &&
+    /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])
+  ) {
+    i += 1; // skip leading `FOO=bar` environment-variable assignments
+  }
+  const program = tokens[i];
+  if (isVitestProgramToken(program)) return true;
+  if (typeof program === 'string' && VITEST_LAUNCHERS.has(program)) {
+    return isVitestProgramToken(tokens[i + 1]);
+  }
+  return false;
+}
+
+const VITEST_LAUNCHERS = new Set(['npx', 'node', 'pnpm', 'yarn']);
+
+function isVitestProgramToken(token) {
+  if (typeof token !== 'string') return false;
+  if (token === 'vitest') return true;
+  const normalised = token.replaceAll('\\', '/');
+  return (
+    normalised === 'vitest.mjs' ||
+    normalised.endsWith('/vitest.mjs') ||
+    normalised.endsWith('/vitest/vitest.mjs')
+  );
 }
 
 const TEST_SCRIPT_NAME = /^test(:.*)?$/;
@@ -340,16 +437,20 @@ const WRAPPED_FLAG_THEN_VALUE =
 
 // A committed narrowing can only ever take effect if the text is CODE that
 // runs -- it cannot take effect merely by appearing, verbatim, inside a
-// string that some other command prints. `echo`/`printf`/`cat`/... are pure
-// text-output commands: whatever they are given, including a fragment that
-// happens to look exactly like a wrapper call, is a message, never an
+// string that some other command prints AND NOTHING DOWNSTREAM EVER READS
+// AS CODE. `echo`/`printf`/`cat`/... are pure text-output commands: on
+// their own, whatever they are given -- including a fragment that happens
+// to look exactly like a wrapper call -- is a message, never an
 // invocation. Gating on the command's own leading word (not on whether the
 // wrapper-shaped text appears anywhere) is what tells "someone typed this
 // call" apart from "someone quoted this call in a warning". New executors
 // (a shell, an interpreter, a task runner) are deliberately NOT enumerated
 // here -- only the closed, small set of commands that can never execute
 // anything is excluded, so an unlisted executor is still checked rather than
-// silently trusted the way an allow-list would trust it.
+// silently trusted the way an allow-list would trust it. See
+// `detectNarrowingThroughPipeline` below for the one place this exemption is
+// deliberately NOT applied: piped into an interpreter, the printed text
+// stops being inert.
 const OUTPUT_ONLY_COMMANDS = new Set([
   'echo',
   'print',
@@ -363,6 +464,28 @@ const OUTPUT_ONLY_COMMANDS = new Set([
   'Write-Information',
 ]);
 
+// A small, closed set of programs whose whole purpose is to read a script
+// from somewhere (stdin, `-c`, `-e`/`--eval`) and RUN it. This set is what
+// makes a piped-in or handed-in string stop being inert text -- it is
+// deliberately not an enumeration of every way vitest could be wrapped (that
+// enumeration is what round 2 and round 3 kept finding new members of); it
+// is an enumeration of the much smaller, much more stable set of things
+// capable of executing arbitrary text at all.
+const STDIN_INTERPRETERS = new Set([
+  'sh',
+  'bash',
+  'zsh',
+  'ksh',
+  'dash',
+  'csh',
+  'tcsh',
+  'node',
+  'python',
+  'python3',
+  'ruby',
+  'perl',
+]);
+
 // Call-name-adjacent forms only: the flag/value pair must sit inside what
 // reads as an actual `child_process` call naming `vitest`, not merely
 // anywhere in the text. Two shapes are distinguished because they are the
@@ -372,12 +495,16 @@ const OUTPUT_ONLY_COMMANDS = new Set([
 //   exec/execSync take a single, shell-parsed command STRING -- the flag and
 //   its value live inside one quoted string, shell-separated by a space, not
 //   a comma (CALL_STRING_FORM); that inner string is itself a command line,
-//   so it is handed back to the same tokeniser/`detectNarrowingFlag` this
-//   file already uses for the direct-invocation case.
+//   so it is handed back to the same `detectNarrowing` this file already
+//   uses for the direct-invocation case, rather than a bespoke re-scan --
+//   see the round-3 fix note below for why that recursion matters.
+// Both accept a single, double, OR BACKTICK (template-literal) quote as the
+// delimiter -- the call shape is what is being matched, not which of JS's
+// three string syntaxes was used to write the literal.
 const CALL_ARRAY_FORM =
   /\b(?:spawnSync|spawn|execFile|execFileSync)\s*\(\s*['"]vitest['"]\s*,\s*\[([^\]]*)\]/;
 const CALL_STRING_FORM =
-  /\b(?:exec|execSync|spawnSync|spawn|execFile|execFileSync)\s*\(\s*(['"])((?:(?!\1)[\s\S])*?)\1/;
+  /\b(?:exec|execSync|spawnSync|spawn|execFile|execFileSync)\s*\(\s*(['"`])((?:(?!\1)[\s\S])*?)\1/;
 
 /**
  * Vasquez (review of this PR): a committed wrapper that invokes vitest
@@ -392,30 +519,53 @@ const CALL_STRING_FORM =
  * one opaque token and `isDirectVitestInvocation` never sees a bare `vitest`
  * word to key off either.
  *
- * Round 2 found two more holes in this instrument, both fixed here:
+ * Rounds 2 and 3 kept finding a new SHAPE of wrapper (an `echo` message
+ * quoting the call, a single-string `exec()`, a template literal, an `echo`
+ * piped into `sh`). Enumerating one more shape every round is exactly the
+ * "population is not enumerable" trap #537 itself warns about for narrowing
+ * homes generally -- so round 3 stops adding shape-specific regexes as the
+ * primary fix and instead corrects the root cause that let each new shape
+ * slip past what was already here:
  *
- *   Ripley: a command whose top-level word is a pure text-output command --
- *   `echo "spawnSync('vitest',['run','-t','only this arm']) is forbidden"`
- *   -- tripped the gate, because the wrapper-shaped text was matched
- *   wherever it appeared, without asking whether the surrounding command
- *   could ever execute it. `echo` only ever prints its argument; the
- *   OUTPUT_ONLY_COMMANDS gate above refuses to scan a command whose leading
- *   word can only produce text, never run it.
+ *   Ripley (round 2): `echo "spawnSync(...) is forbidden"` tripped the gate
+ *   -- fixed by OUTPUT_ONLY_COMMANDS (a command that can only print can
+ *   never execute what it prints).
  *
- *   Vasquez: `exec('vitest run -t "only this arm"')` -- the single-string
- *   call shape `child_process.exec` actually takes -- was missed entirely;
- *   only the comma-separated argv-array shape (`spawnSync`) was recognised.
- *   CALL_STRING_FORM now extracts that inner string and re-runs the exact
- *   direct-invocation tokeniser/detector on it, so a flag/value pair
- *   authored as one shell-like string inside the call is caught the same
- *   way it would be if it were typed directly on a command line.
+ *   Ripley (round 3): `echo "...vitest run -t ..." | sh` still slipped past
+ *   OUTPUT_ONLY_COMMANDS, because piped into `sh` the echoed text IS
+ *   executed -- by `sh`, not by `echo`. OUTPUT_ONLY_COMMANDS was correct
+ *   about `echo` in isolation and wrong about a `echo | sh` PIPELINE, which
+ *   is a different, checkable question: does any later pipeline stage name
+ *   one of the small set of programs whose job is to execute a script
+ *   (STDIN_INTERPRETERS)? `detectNarrowingThroughPipeline` asks exactly
+ *   that, and if so, treats the first stage's own printed argument as a
+ *   command line in its own right -- recursing into `detectNarrowing`
+ *   rather than re-deriving the wrapped/direct split a second time.
  *
- * The original, looser quoted-flag/value scan remains as a final fallback
- * for wrapper shapes that don't name a recognised `child_process` function
- * at all -- keeping this robust to an unnamed/unknown wrapper -- but it now
- * only runs once the OUTPUT_ONLY_COMMANDS gate has already cleared the
- * command, so it can no longer fire on a message some other command merely
- * prints.
+ *   Vasquez (round 2): `exec('vitest run -t "only this arm"')` -- the
+ *   single-string call shape -- was missed; only the argv-array shape
+ *   (`spawnSync`) was recognised. Fixed by CALL_STRING_FORM.
+ *
+ *   Vasquez (round 3): `exec(\`vitest run -t ...\`)` (a template literal)
+ *   still bypassed CALL_STRING_FORM, which only accepted `'`/`"` as the
+ *   call's string delimiter. CALL_STRING_FORM now accepts a backtick too --
+ *   the call shape didn't change, only which of JS's three string syntaxes
+ *   was used to write it, so this is a widened quote-character class, not a
+ *   new enumerated shape.
+ *
+ *   Vasquez (round 3): the round-2 fix for `exec('...')` re-scanned the
+ *   extracted inner string with the bare tokeniser/`detectNarrowingFlag`,
+ *   which used the OLD, looser `isDirectVitestInvocation` (see that
+ *   function's own comment) -- so `exec('echo vitest -t harmless')`
+ *   false-positived: the extracted inner string `echo vitest -t harmless`
+ *   has `vitest` as a bare TOKEN, and the old check treated any token
+ *   matching as a direct invocation. That root cause is fixed on
+ *   `isDirectVitestInvocation` itself (only the INVOKED PROGRAM counts, so
+ *   `echo`'s own argument no longer counts), and the extracted inner string
+ *   is now re-checked with the full, recursive `detectNarrowing` (which
+ *   applies that same fixed check, AND the OUTPUT_ONLY_COMMANDS gate, AND
+ *   can recurse into a further wrapper) instead of a narrower ad hoc
+ *   re-scan -- one shared, correct instrument instead of two.
  */
 export function detectWrappedNarrowing(rawText) {
   if (typeof rawText !== 'string') return null;
@@ -442,8 +592,8 @@ export function detectWrappedNarrowing(rawText) {
   if (stringMatch) {
     const inner = stringMatch[2];
     if (/\bvitest\b/.test(inner)) {
-      const direct = detectNarrowingFlag(tokenizeCommand(inner));
-      if (direct !== null) return direct;
+      const nested = detectNarrowing(inner, { requireDirectInvocation: true });
+      if (nested !== null) return nested;
     }
   }
 
@@ -455,11 +605,58 @@ export function detectWrappedNarrowing(rawText) {
 }
 
 /**
- * Try the direct, shell-word tokenised detection first; fall back to the
- * wrapped/programmatic detection only when the direct one finds nothing. A
- * command that is direct never needs the fallback, and a command that only
- * mentions vitest in passing (no narrowing flag at all) never matches
- * either.
+ * Ripley (review of this PR, round 3): a command whose OWN leading word is
+ * pure text output (`echo`, `printf`, ...) is exempted by
+ * OUTPUT_ONLY_COMMANDS above -- correctly, in isolation. Piped into an
+ * interpreter (`| sh`, `| bash`, `| node`, ...), that exemption stops being
+ * correct: the text is no longer merely printed to a terminal, it becomes
+ * the SCRIPT that interpreter runs. This is deliberately narrow and
+ * structural rather than one more wrapper shape to enumerate: it does not
+ * try to name every way vitest could be invoked once piped, it recognises
+ * the pipe itself and re-runs the full `detectNarrowing` (direct AND
+ * wrapped) on whatever text was being printed, exactly as if that text had
+ * been the command all along -- because, once piped to an interpreter, it
+ * is.
+ */
+function detectNarrowingThroughPipeline(rawCommand) {
+  if (typeof rawCommand !== 'string' || !rawCommand.includes('|')) {
+    return null;
+  }
+  const stages = rawCommand
+    .split('|')
+    .map((stage) => stage.trim())
+    .filter((stage) => stage.length > 0);
+  if (stages.length < 2) return null;
+
+  const pipesIntoInterpreter = stages.slice(1).some((stage) => {
+    const program = tokenizeCommand(stage)[0];
+    return typeof program === 'string' && STDIN_INTERPRETERS.has(program);
+  });
+  if (!pipesIntoInterpreter) return null;
+
+  const firstStageTokens = tokenizeCommand(stages[0]);
+  const firstProgram = firstStageTokens[0];
+  if (
+    typeof firstProgram !== 'string' ||
+    !OUTPUT_ONLY_COMMANDS.has(firstProgram)
+  ) {
+    // The first stage isn't a plain "produce text" command, so there is no
+    // printed argument to recover here; `detectNarrowing`'s other checks
+    // (direct invocation, wrapped-call forms) already run on the full text
+    // independently of this function.
+    return null;
+  }
+  const printedArgument = firstStageTokens.slice(1).join(' ');
+  return detectNarrowing(printedArgument, { requireDirectInvocation: false });
+}
+
+/**
+ * Try the direct, shell-word tokenised detection first; then, if the
+ * command pipes into an interpreter, recover what it actually prints and
+ * check that; fall back to the wrapped/programmatic detection last. A
+ * command that is direct never needs either fallback, and a command that
+ * only mentions vitest in passing (no narrowing flag at all, not piped
+ * anywhere) never matches any of the three.
  */
 function detectNarrowing(rawCommand, { requireDirectInvocation }) {
   const tokens = tokenizeCommand(rawCommand);
@@ -468,6 +665,8 @@ function detectNarrowing(rawCommand, { requireDirectInvocation }) {
     const direct = detectNarrowingFlag(tokens);
     if (direct !== null) return direct;
   }
+  const piped = detectNarrowingThroughPipeline(rawCommand);
+  if (piped !== null) return piped;
   return detectWrappedNarrowing(rawCommand);
 }
 
@@ -498,6 +697,18 @@ function detectNarrowing(rawCommand, { requireDirectInvocation }) {
  * now reproduces the fold: consecutive non-blank lines join with a space,
  * and a blank line still starts a new paragraph, matching what vitest's own
  * YAML-consuming runner (`actions/runner`) would hand to the shell.
+ *
+ * Ripley (review of this PR, round 3): the block-scalar HEADER regex only
+ * accepted a chomping indicator before an indentation digit (`>-`, `>+2`)
+ * and no trailing comment, but valid YAML allows the indentation indicator
+ * and chomping indicator in EITHER order (`>2-` is exactly as valid as
+ * `>-2`) and a trailing `# comment`. A header the regex didn't recognise --
+ * `run: >- # comment` or `run: >2-` -- fell through to the "inline command
+ * on the same line as `run:`" branch instead, silently dropping the entire
+ * multi-line body (including any narrowing inside it) rather than reading
+ * it as the block scalar it actually is. The widened regex accepts the
+ * indicator and digit in either order plus an optional trailing comment,
+ * matching what YAML itself accepts.
  */
 export function extractRunBlocks(contents) {
   const lines = String(contents).split(/\r?\n/);
@@ -510,7 +721,7 @@ export function extractRunBlocks(contents) {
     const rest = match[2].trim();
     const lineNumber = i + 1;
 
-    if (rest.length > 0 && !/^[|>][+-]?\d*$/.test(rest)) {
+    if (rest.length > 0 && !/^[|>][+-]?\d?[+-]?(?:\s*#.*)?$/.test(rest)) {
       // Inline command on the same line as `run:`.
       blocks.push({ lineNumber, command: rest });
       continue;
