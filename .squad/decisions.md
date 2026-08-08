@@ -622,3 +622,20 @@ Full reasoning, citations, and the demonstration this issue asks for: `.squad/de
 **The one substantive adaptation.** `scripts/docs-only-change.mjs` exists to decide whether CI may stand down expensive steps, and `tests/docsOnlyChange.test.ts` pins `isDocumentationPath('.squad/agents/ralph/loop.md')` as `true`. That is correct for build compute and wrong for reviewer count: `.squad/**` is documentation by path while governing real autonomous behaviour, so a markdown edit there can decide whether an unattended agent may merge, force-push or delete. The canonical section therefore treats the classifier as **necessary but never sufficient**, and carves out any change that alters an agent's safety boundary, merge-safety rules or destructive-operation permissions — naming §1, §8 and §9 of `.squad/agents/ralph/loop.md` as the reference example, which take the full gate. The carve-out turns on what a change alters, not on which file holds it.
 
 **Nothing was weakened.** No gate for a non-documentation change moved, no reviewer charter or review methodology changed, and no workflow, script, test or manifest was touched by the change that recorded this.
+
+## 2026-08-06 — `calibrationAssetManifest` permits linked parent directories only while asset paths are dialog-derived
+
+**By:** Ripley
+
+**Decision:** `CalibrationAssetManifestService.validateFile` rejects a selected asset when the final path component is a symlink, junction, or other non-regular file: `readBoundedRegularAsset` checks the leaf with `lstat` and opens it with `O_NOFOLLOW` where available. It does not reject symlinks or junctions in the selected file's parent path. That parent-directory resolution may continue because the path originates only from the user's selection in the operating-system file dialog. The validator is read-only, the user already has permission to read the selected target, no resolved path is returned across IPC, no write occurs, and the read is bounded. Following dialog-derived parent directories therefore crosses no privilege boundary; rejecting them would break legitimate symlinked project directories without adding security. The residual existence signal concerns the user's own filesystem.
+
+This is **not** a general ruling that link-bearing paths are safe. The allowance for linked parent directories inverts immediately if a path reaching the validator can originate from any of these attacker-influenced inputs:
+
+- an archive entry;
+- a manifest field;
+- a restored backup; or
+- a path supplied by the renderer over IPC.
+
+Any of those sources removes the dialog-derived-path premise and requires rejecting link traversal throughout the path before it is read. `tests/calibrationAssetManifestReachability.test.ts` keeps that premise reviewable by enumerating the exact current production reference set for `validateFile` across `src`, failing on empty discovery, and naming any unexpected site. It recognizes direct property and element calls plus property extraction, object destructuring, and `Reflect.get`; fully dynamic property-name construction remains outside static enumeration and must not be introduced as a validator route. A new reachability site is a prompt to re-read this decision, not evidence that the new route is safe.
+
+**Why:** The selected leaf is already link-refusing. The narrower parent-directory behaviour is safe because of where the path comes from, not because following links is intrinsically safe. A conditional exception without a detector can outlive the condition that justified it while still looking like a considered security decision.
