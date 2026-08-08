@@ -17,6 +17,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
+// `fs.realpathSync` (JS implementation) does not always resolve a Windows
+// 8.3 short name to the same canonical path as its long-name counterpart;
+// `safe-worktree-remove.mjs`'s own `filesystemRealpath` hits the same
+// distinction and picks `realpathSync.native` on win32 for exactly this
+// reason. `git worktree list` and a freshly `mkdtemp`'d path can disagree on
+// short-vs-long spelling for the same directory on Windows CI runners, so
+// this suite normalizes through the native resolver rather than the
+// JS one.
+const canonicalPath =
+  process.platform === 'win32' ? realpathSync.native : realpathSync;
+
 import {
   formatReport,
   listWorktreePaths,
@@ -124,11 +135,11 @@ describe('listing worktrees for a real repo', () => {
 
     const paths = listWorktreePaths(repoPath);
 
-    expect(paths.some((p) => realpathSync(p) === realpathSync(repoPath))).toBe(
-      true,
-    );
     expect(
-      paths.some((p) => realpathSync(p) === realpathSync(linkedPath)),
+      paths.some((p) => canonicalPath(p) === canonicalPath(repoPath)),
+    ).toBe(true);
+    expect(
+      paths.some((p) => canonicalPath(p) === canonicalPath(linkedPath)),
     ).toBe(true);
   });
 });
