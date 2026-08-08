@@ -64,6 +64,7 @@
     "check:stranded-branches": "node scripts/check-stranded-branches.mjs",
     "check:squad-verdict": "node scripts/verify-squad-verdict.mjs",
     "check:hold-gate-readiness": "node scripts/check-hold-gate-readiness.mjs",
+    "census:ownership-evidence": "node scripts/census-ownership-evidence.mjs",
     "review:target": "node scripts/prepare-review-target.mjs",
     "instrument:probe": "node scripts/instrument-probe.mjs",
     "report:pr-snapshot": "node scripts/pr-snapshot-report.mjs",
