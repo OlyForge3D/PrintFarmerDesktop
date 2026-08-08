@@ -623,19 +623,19 @@ Full reasoning, citations, and the demonstration this issue asks for: `.squad/de
 
 **Nothing was weakened.** No gate for a non-documentation change moved, no reviewer charter or review methodology changed, and no workflow, script, test or manifest was touched by the change that recorded this.
 
-## 2026-08-06 — `calibrationAssetManifest` follows symlinks only while asset paths are dialog-derived
+## 2026-08-06 — `calibrationAssetManifest` permits linked parent directories only while asset paths are dialog-derived
 
 **By:** Ripley
 
-**Decision:** `CalibrationAssetManifestService.validateFile` may continue to follow symlinks and junctions when it reads a staged calibration asset. The current path originates only from the user's selection in the operating-system file dialog. The validator is read-only, the user already has permission to read the selected target, no resolved path is returned across IPC, no write occurs, and the read is bounded. Following that dialog-derived path therefore crosses no privilege boundary; rejecting it would break legitimate symlinked project directories without adding security. The residual existence signal concerns the user's own filesystem.
+**Decision:** `CalibrationAssetManifestService.validateFile` rejects a selected asset when the final path component is a symlink, junction, or other non-regular file: `readBoundedRegularAsset` checks the leaf with `lstat` and opens it with `O_NOFOLLOW` where available. It does not reject symlinks or junctions in the selected file's parent path. That parent-directory resolution may continue because the path originates only from the user's selection in the operating-system file dialog. The validator is read-only, the user already has permission to read the selected target, no resolved path is returned across IPC, no write occurs, and the read is bounded. Following dialog-derived parent directories therefore crosses no privilege boundary; rejecting them would break legitimate symlinked project directories without adding security. The residual existence signal concerns the user's own filesystem.
 
-This is **not** a general ruling that symlinks are safe. It inverts immediately if a path reaching the validator can originate from any of these attacker-influenced inputs:
+This is **not** a general ruling that link-bearing paths are safe. The allowance for linked parent directories inverts immediately if a path reaching the validator can originate from any of these attacker-influenced inputs:
 
 - an archive entry;
 - a manifest field;
 - a restored backup; or
 - a path supplied by the renderer over IPC.
 
-Any of those sources removes the dialog-derived-path premise and requires symlink rejection before the path is read. `tests/calibrationAssetManifestReachability.test.ts` keeps that premise reviewable by enumerating the exact current production call-site set for `validateFile`, failing on empty discovery, and naming any unexpected site. A new reachability site is a prompt to re-read this decision, not evidence that the new route is safe.
+Any of those sources removes the dialog-derived-path premise and requires rejecting link traversal throughout the path before it is read. `tests/calibrationAssetManifestReachability.test.ts` keeps that premise reviewable by enumerating the exact current production reference set for `validateFile` across `src`, failing on empty discovery, and naming any unexpected site. It recognizes direct property and element calls plus property extraction, object destructuring, and `Reflect.get`; fully dynamic property-name construction remains outside static enumeration and must not be introduced as a validator route. A new reachability site is a prompt to re-read this decision, not evidence that the new route is safe.
 
-**Why:** The current behaviour is safe because of where the path comes from, not because following links is intrinsically safe. A conditional exception without a detector can outlive the condition that justified it while still looking like a considered security decision.
+**Why:** The selected leaf is already link-refusing. The narrower parent-directory behaviour is safe because of where the path comes from, not because following links is intrinsically safe. A conditional exception without a detector can outlive the condition that justified it while still looking like a considered security decision.

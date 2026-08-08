@@ -9,7 +9,7 @@ type SourceFile = {
   contents: string;
 };
 
-type CallSite = {
+type ReachabilitySite = {
   file: string;
   receiver: string;
   line: number;
@@ -19,7 +19,7 @@ const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
 );
-const mainRoot = path.join(repositoryRoot, 'src', 'main');
+const productionRoot = path.join(repositoryRoot, 'src');
 
 function collectTypeScriptFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -63,8 +63,44 @@ function validatorReceiver(
   return null;
 }
 
-function findManifestValidatorCallSites(files: SourceFile[]): CallSite[] {
-  const sites: CallSite[] = [];
+function reflectedValidatorReceiver(
+  node: ts.CallExpression,
+  sourceFile: ts.SourceFile,
+): string | null {
+  const target = unwrapExpression(node.expression);
+  if (
+    !ts.isPropertyAccessExpression(target) ||
+    target.expression.getText(sourceFile) !== 'Reflect' ||
+    target.name.text !== 'get' ||
+    node.arguments.length < 2
+  ) {
+    return null;
+  }
+  const property = node.arguments[1];
+  if (!property || !ts.isStringLiteralLike(property)) return null;
+  return property.text === 'validateFile'
+    ? (node.arguments[0]?.getText(sourceFile) ?? 'unknown receiver')
+    : null;
+}
+
+function destructuredValidatorReceiver(
+  node: ts.BindingElement,
+  sourceFile: ts.SourceFile,
+): string | null {
+  const property = node.propertyName ?? node.name;
+  if (!ts.isIdentifier(property) || property.text !== 'validateFile') {
+    return null;
+  }
+  const declaration = node.parent.parent;
+  return ts.isVariableDeclaration(declaration) && declaration.initializer
+    ? declaration.initializer.getText(sourceFile)
+    : 'destructured receiver';
+}
+
+function findManifestValidatorReferences(
+  files: SourceFile[],
+): ReachabilitySite[] {
+  const sites: ReachabilitySite[] = [];
   for (const file of files) {
     const sourceFile = ts.createSourceFile(
       file.path,
@@ -75,7 +111,29 @@ function findManifestValidatorCallSites(files: SourceFile[]): CallSite[] {
     );
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node)) {
-        const receiver = validatorReceiver(node.expression, sourceFile);
+        const receiver =
+          validatorReceiver(node.expression, sourceFile) ??
+          reflectedValidatorReceiver(node, sourceFile);
+        if (receiver !== null) {
+          const { line } = sourceFile.getLineAndCharacterOfPosition(
+            node.getStart(sourceFile),
+          );
+          sites.push({ file: file.path, receiver, line: line + 1 });
+        }
+      } else if (
+        (ts.isPropertyAccessExpression(node) ||
+          ts.isElementAccessExpression(node)) &&
+        !(ts.isCallExpression(node.parent) && node.parent.expression === node)
+      ) {
+        const receiver = validatorReceiver(node, sourceFile);
+        if (receiver !== null) {
+          const { line } = sourceFile.getLineAndCharacterOfPosition(
+            node.getStart(sourceFile),
+          );
+          sites.push({ file: file.path, receiver, line: line + 1 });
+        }
+      } else if (ts.isBindingElement(node)) {
+        const receiver = destructuredValidatorReceiver(node, sourceFile);
         if (receiver !== null) {
           const { line } = sourceFile.getLineAndCharacterOfPosition(
             node.getStart(sourceFile),
@@ -95,12 +153,12 @@ function findManifestValidatorCallSites(files: SourceFile[]): CallSite[] {
   );
 }
 
-function siteIdentity(site: CallSite): string {
+function siteIdentity(site: ReachabilitySite): string {
   return `${site.file}:${site.receiver}.validateFile`;
 }
 
-function assertExactCallSites(
-  discovered: CallSite[],
+function assertExactReferences(
+  discovered: ReachabilitySite[],
   expected: readonly string[],
 ): void {
   if (discovered.length === 0) {
@@ -110,7 +168,7 @@ function assertExactCallSites(
   }
 
   const remainingExpected = [...expected];
-  const unexpected: CallSite[] = [];
+  const unexpected: ReachabilitySite[] = [];
   for (const site of discovered) {
     const identity = siteIdentity(site);
     const expectedIndex = remainingExpected.indexOf(identity);
@@ -130,10 +188,12 @@ function assertExactCallSites(
   }
 }
 
-const productionSources = collectTypeScriptFiles(mainRoot).map((absolute) => ({
-  path: path.relative(repositoryRoot, absolute).replaceAll('\\', '/'),
-  contents: readFileSync(absolute, 'utf8'),
-}));
+const productionSources = collectTypeScriptFiles(productionRoot).map(
+  (absolute) => ({
+    path: path.relative(repositoryRoot, absolute).replaceAll('\\', '/'),
+    contents: readFileSync(absolute, 'utf8'),
+  }),
+);
 
 const expectedCallSites = [
   'src/main/ipc.ts:calibrationAssetManifest.validateFile',
@@ -141,36 +201,36 @@ const expectedCallSites = [
 
 describe('calibrationAssetManifest validator reachability', () => {
   it('equals the explicit current production call-site set', () => {
-    const discovered = findManifestValidatorCallSites(productionSources);
+    const discovered = findManifestValidatorReferences(productionSources);
     expect(() =>
-      assertExactCallSites(discovered, expectedCallSites),
+      assertExactReferences(discovered, expectedCallSites),
     ).not.toThrow();
     expect(discovered.map(siteIdentity)).toEqual(expectedCallSites);
   });
 
   it('fails closed when discovery returns no call sites', () => {
-    expect(() => assertExactCallSites([], expectedCallSites)).toThrow(
+    expect(() => assertExactReferences([], expectedCallSites)).toThrow(
       'discovery returned zero call sites',
     );
   });
 
   it('names a fabricated attacker-influenced call site', () => {
-    const discovered = findManifestValidatorCallSites([
+    const discovered = findManifestValidatorReferences([
       ...productionSources,
       {
-        path: 'src/main/fabricatedArchiveImport.ts',
+        path: 'src/preload/fabricatedArchiveImport.ts',
         contents:
           "attackerInfluencedManifest['validateFile'](approvalId, method);",
       },
     ]);
 
-    expect(() => assertExactCallSites(discovered, expectedCallSites)).toThrow(
-      'unexpected call site src/main/fabricatedArchiveImport.ts:attackerInfluencedManifest.validateFile',
+    expect(() => assertExactReferences(discovered, expectedCallSites)).toThrow(
+      'unexpected call site src/preload/fabricatedArchiveImport.ts:attackerInfluencedManifest.validateFile',
     );
   });
 
-  it('ignores formatting while retaining distinct calls', () => {
-    const discovered = findManifestValidatorCallSites([
+  it('ignores formatting while retaining direct and indirect reachability', () => {
+    const discovered = findManifestValidatorReferences([
       {
         path: 'src/main/formatted.ts',
         contents: [
@@ -180,6 +240,9 @@ describe('calibrationAssetManifest validator reachability', () => {
           '    method,',
           '  );',
           "service ['validateFile'] (approvalId, method);",
+          'const bound = service.validateFile.bind(service);',
+          'const { validateFile: detached } = otherService;',
+          "const reflected = Reflect.get(thirdService, 'validateFile');",
         ].join('\n'),
       },
     ]);
@@ -187,6 +250,9 @@ describe('calibrationAssetManifest validator reachability', () => {
     expect(discovered.map(siteIdentity)).toEqual([
       'src/main/formatted.ts:service.validateFile',
       'src/main/formatted.ts:service.validateFile',
+      'src/main/formatted.ts:service.validateFile',
+      'src/main/formatted.ts:otherService.validateFile',
+      'src/main/formatted.ts:thirdService.validateFile',
     ]);
   });
 });
