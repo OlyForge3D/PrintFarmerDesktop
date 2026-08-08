@@ -220,6 +220,29 @@ export const UNENFORCED_CHECKS = {
     '.github/workflows/direct-push-artifact.yml (on: push, branches: ' +
     '[development]) invoking `npm run check:direct-push-artifact -- --since ' +
     '<previous head>`, this becomes enforced and this entry should be deleted.',
+  'check:stranded-branches':
+    'Its judgement IS enforced in CI: tests/strandedBranches.test.ts drives ' +
+    'listLocalBranches, listStrandedCommits, evaluateRemoteRefPresence and ' +
+    'evaluateStrandedBranches over a real git repository, including the ' +
+    '#543 falsifier (a branch with no remote ref must be reported STRANDED) ' +
+    'and a positive control (a fully pushed branch reports CLEAN), under ' +
+    '`npm run test`. Its main() answers a question about THE CLONE IT RUNS ' +
+    'IN — which local branches carry commits reachable from no remote ref — ' +
+    'and a pull_request workflow checks out exactly one branch at one commit; ' +
+    'there is no second local branch for it to find, stranded or otherwise. ' +
+    'Running it per-PR would report CLEAN on every PR, forever, which is not ' +
+    'a weaker signal than intended — it is a category error, the same one ' +
+    '#543 names for `git worktree list`: enumerating the wrong surface. ' +
+    'STATE THE WEAKNESS PLAINLY: the defect #543 describes is specifically ' +
+    'that stranded commits live on developer machines and shared checkouts ' +
+    'that CI never sees, so no per-PR or per-push GitHub Actions trigger can ' +
+    'reach the clone this needs to inspect. It is invoked by hand (or from a ' +
+    'session-shutdown hook) against a shared checkout that holds multiple ' +
+    "worktrees' branches, which is the only place this question is askable. " +
+    'Discharge path: the day a scheduled workflow runs on a self-hosted ' +
+    "runner with read access to that shared checkout's branches (not a " +
+    'GitHub-hosted, single-ref pull_request runner), wire it in on a cron and ' +
+    'delete this entry.',
 };
 
 // `check:citation-reachability` was here, with a four-condition discharge path.
