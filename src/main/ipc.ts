@@ -2569,16 +2569,38 @@ export function registerIpcHandlers(
         // check that exists to catch a skipped page could never fire (#429).
         // The same signature is produced by a merely truncated or
         // mis-paginated response, so this is not only a hostile-server concern.
-        const gapDetected = detectQueueChangeFeedGap(
+        const cursorBoundaryGap = detectQueueChangeFeedGap(
           page.events,
           request.afterSequence,
+        );
+        // `page.nextSequence` is server-supplied and, until here, was adopted
+        // by the caller verbatim as the *next* poll cursor with nothing tying
+        // it to `page.events`. A server can advance it arbitrarily far beyond
+        // the last event actually delivered on this page, silently steering
+        // the cursor across responses so the next poll starts well past
+        // events that were never sent — and the boundary check above cannot
+        // see it, because it only inspects *this* page (#487). Clamp to the
+        // highest sequence this response actually delivered (falling back to
+        // the request cursor for an empty page), per the rule documented at
+        // calibrationWire.ts's `RemoteJobQueueChangeFeedPage` but never
+        // enforced. Also refuse to rewind the cursor backward past the one we
+        // sent, which would otherwise cause a redelivery loop.
+        const lastDeliveredSequence =
+          page.events.at(-1)?.sequence ?? request.afterSequence;
+        const sequenceAdvancedBeyondDelivered =
+          page.nextSequence > lastDeliveredSequence;
+        const gapDetected =
+          cursorBoundaryGap || sequenceAdvancedBeyondDelivered;
+        const nextSequence = Math.min(
+          Math.max(page.nextSequence, request.afterSequence),
+          lastDeliveredSequence,
         );
         return ipcSchemas[
           IpcChannel.CalibrationPollQueueChanges
         ].response.parse({
           status: 'ok',
           afterSequence: page.afterSequence,
-          nextSequence: page.nextSequence,
+          nextSequence,
           hasMore: page.hasMore,
           gapDetected,
           events: page.events,
