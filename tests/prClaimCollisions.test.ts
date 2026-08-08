@@ -615,7 +615,7 @@ describe('population discrimination and advisory output', () => {
       .mockReturnValueOnce(
         JSON.stringify({
           data: {
-            repository: { n100: { __typename: 'Issue' } },
+            repository: { n100: { __typename: 'Issue', closed: false } },
           },
         }),
       );
@@ -698,7 +698,10 @@ describe('population discrimination and advisory output', () => {
             repository: Object.fromEntries(
               numbers
                 .slice(0, 50)
-                .map((number) => [`n${number}`, { __typename: 'Issue' }]),
+                .map((number) => [
+                  `n${number}`,
+                  { __typename: 'Issue', closed: false },
+                ]),
             ),
           },
         }),
@@ -725,7 +728,7 @@ describe('population discrimination and advisory output', () => {
     const run = vi.fn<(args: string[]) => string>(() =>
       JSON.stringify({
         data: {
-          repository: { n481: { __typename: 'Issue' } },
+          repository: { n481: { __typename: 'Issue', closed: false } },
         },
       }),
     );
@@ -877,6 +880,40 @@ describe('closed-issue claims (#520 AC2)', () => {
       },
     });
     expect(parseBranchIssueClosedNumbers(raw, [701, 702, 703])).toEqual([701]);
+  });
+
+  it('refuses to report "not closed" when an Issue candidate is missing its closed field (partial response)', () => {
+    // Regression for a REJECT finding on this PR: a partial GraphQL payload
+    // where an `Issue` alias has `__typename` but no `closed` field must
+    // fail as "cannot determine", not silently resolve to "not closed" and
+    // let a real closed-issue claim slip past the detector unreported.
+    const raw = JSON.stringify({
+      data: { repository: { n701: { __typename: 'Issue' } } },
+    });
+    expect(() => parseBranchIssueClosedNumbers(raw, [701])).toThrow(
+      /omitted its closed state/,
+    );
+  });
+
+  it('propagates the partial-response failure through evaluateClaimCollisions rather than reporting a clean board', () => {
+    const raw = JSON.stringify({
+      data: { repository: { n701: { __typename: 'Issue' } } },
+    });
+    expect(() => {
+      const closedIssueNumbers = parseBranchIssueClosedNumbers(raw, [701]);
+      evaluateClaimCollisions(
+        [
+          pr({
+            number: 1,
+            headRefName: 'branch-701',
+            closingIssueNumbers: [],
+          }),
+        ],
+        [701],
+        REPOSITORY,
+        closedIssueNumbers,
+      );
+    }).toThrow(/omitted its closed state/);
   });
 
   it('resolves issue numbers and closed numbers from one batched round trip', () => {

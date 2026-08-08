@@ -354,8 +354,15 @@ export function parseBranchIssueClosedNumbers(raw, expectedNumbers) {
       continue;
     }
     const record = asRecord(value);
-    if (record?.__typename === 'Issue' && record.closed === true) {
-      closedNumbers.push(number);
+    if (record?.__typename === 'Issue') {
+      if (typeof record.closed !== 'boolean') {
+        throw new TypeError(
+          `branch issue candidate #${number} is an Issue but the response omitted its closed state; refusing to report "not closed" from a partial response`,
+        );
+      }
+      if (record.closed === true) {
+        closedNumbers.push(number);
+      }
     }
   }
   return closedNumbers;
