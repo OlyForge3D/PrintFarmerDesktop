@@ -89,19 +89,37 @@ export function evaluateProtectionAssumptions({
   }
 
   const violations = [];
-  const enabled = (node) => node?.enabled === true;
 
-  // The three fields above whose safe value is `false` share a hazard `enabled`
-  // cannot see: `node?.enabled === true` reads an ABSENT node and an explicit
-  // `{ enabled: false }` node identically, as `false`. That is fine for the two
-  // uses of `enabled` above -- both want "not literally true" -- but it is wrong
-  // here, because "the field was never returned" and "the field was returned and
-  // says false" are different facts. The first means the API stopped reporting
-  // the setting (deleted key, truncated response, renamed field); the second
-  // means GitHub confirmed the setting is off. Collapsing them lets a payload
-  // that omits `allow_force_pushes` entirely report the trunk as refusing force
-  // pushes, which is the defect #488 exists to close. `guardField` keeps the two
-  // apart and raises a violation, worded differently, for each.
+  // Reads a `{ enabled: <bool> }`-shaped node into a fact that is either
+  // "confirmed true", "confirmed false", or "not confirmed either way".
+  // A plain `node?.enabled === true` check answers a narrower question --
+  // "is this literally true?" -- which would be exactly right for the fields
+  // whose safe value is `true` (an absent node correctly reads as not-true,
+  // i.e. a violation), but wrong for the fields below whose safe value is
+  // `false`: it cannot tell "GitHub confirmed this is off" from "GitHub said
+  // nothing about
+  // this at all", and a payload that omits the key, or a payload that
+  // returns the node but as `{}` or with `enabled` set to something other
+  // than a literal boolean (a malformed-but-present shape), all collapse to
+  // the same silent "not true" reading. Vasquez's review of this PR (#488)
+  // found exactly that hole: `allow_force_pushes: {}` produced no violation.
+  // `readEnabledFact` treats every one of those non-boolean shapes the same
+  // as a fully missing node, so `guardField` below raises the absent-field
+  // violation for all of them, not only for `undefined`/`null`.
+  const readEnabledFact = (node) => {
+    if (node === undefined || node === null || typeof node !== 'object') {
+      return { confirmed: false };
+    }
+    if (node.enabled === true) return { confirmed: true, value: true };
+    if (node.enabled === false) return { confirmed: true, value: false };
+    return { confirmed: false };
+  };
+
+  // The three fields above whose safe value is `false` share this hazard.
+  // `guardField` raises a distinctly-worded violation when the fact is not
+  // confirmed at all (missing node, or a present node that does not confirm
+  // `enabled` as a literal boolean), and the existing present-unsafe-value
+  // violation only when the fact is confirmed `true`.
   const guardField = (
     node,
     assumption,
@@ -109,19 +127,20 @@ export function evaluateProtectionAssumptions({
     absentConsequence,
     enabledConsequence,
   ) => {
-    if (node === undefined || node === null) {
+    const fact = readEnabledFact(node);
+    if (!fact.confirmed) {
       violations.push(
         violation(
           assumption,
           'false (present and confirmed)',
-          '(field absent from the API response)',
+          '(field absent or does not confirm a boolean enabled value)',
           decision,
           absentConsequence,
         ),
       );
       return;
     }
-    if (node.enabled === true) {
+    if (fact.value === true) {
       violations.push(
         violation(assumption, 'false', 'true', decision, enabledConsequence),
       );
@@ -132,7 +151,7 @@ export function evaluateProtectionAssumptions({
     protection.allow_force_pushes,
     'development.allow_force_pushes',
     '#81 / #149',
-    'the allow_force_pushes fact is missing from the response rather than confirmed false -- a deleted or unreadable field is not the same as GitHub reporting the trunk still refuses force pushes',
+    'the allow_force_pushes fact is missing or malformed in the response rather than confirmed false -- an absent field, an empty node, or a non-boolean enabled value is not the same as GitHub reporting the trunk still refuses force pushes',
     'the server-side half of the force-push protection is gone, leaving only the client-side guard, which --no-verify bypasses',
   );
 
@@ -140,39 +159,37 @@ export function evaluateProtectionAssumptions({
     protection.allow_deletions,
     'development.allow_deletions',
     '#81 / #149',
-    'the allow_deletions fact is missing from the response rather than confirmed false -- a deleted or unreadable field is not the same as GitHub reporting the trunk cannot be deleted',
+    'the allow_deletions fact is missing or malformed in the response rather than confirmed false -- an absent field, an empty node, or a non-boolean enabled value is not the same as GitHub reporting the trunk cannot be deleted',
     'the trunk can be deleted outright, which no client-side guard sees',
   );
 
-  // Unlike the three fields above, this one's safe value is `true`, so an
-  // absent node already produced a violation before #488 -- `enabled()` reads
-  // it as `false`, and `!enabled(...)` fires. But it fired with the SAME
-  // wording as an explicit `{ enabled: false }` node, which fails the acceptance
-  // criterion that the absent case be distinguishable from the unsafe-value
-  // case. Split it the same way as the false-safe fields above.
-  if (
-    protection.required_linear_history === undefined ||
-    protection.required_linear_history === null
-  ) {
-    violations.push(
-      violation(
-        'development.required_linear_history',
-        'true (present and confirmed)',
-        '(field absent from the API response)',
-        '#149',
-        'the required_linear_history fact is missing from the response rather than confirmed false -- a deleted or unreadable field is not the same as GitHub reporting linear history is no longer required',
-      ),
-    );
-  } else if (!enabled(protection.required_linear_history)) {
-    violations.push(
-      violation(
-        'development.required_linear_history',
-        'true',
-        'false',
-        '#149',
-        'squash-only history is what makes `--is-ancestor <head>` a known false negative rather than an unknown one',
-      ),
-    );
+  // Unlike the three false-safe fields, this one's safe value is `true`, so
+  // an unconfirmed fact (absent node, empty node, non-boolean enabled value)
+  // must be reported as unsafe here too -- but with wording distinct from an
+  // explicit `{ enabled: false }` node, per #488's acceptance criterion.
+  {
+    const fact = readEnabledFact(protection.required_linear_history);
+    if (!fact.confirmed) {
+      violations.push(
+        violation(
+          'development.required_linear_history',
+          'true (present and confirmed)',
+          '(field absent or does not confirm a boolean enabled value)',
+          '#149',
+          'the required_linear_history fact is missing or malformed in the response rather than confirmed false -- an absent field, an empty node, or a non-boolean enabled value is not the same as GitHub reporting linear history is no longer required',
+        ),
+      );
+    } else if (fact.value !== true) {
+      violations.push(
+        violation(
+          'development.required_linear_history',
+          'true',
+          'false',
+          '#149',
+          'squash-only history is what makes `--is-ancestor <head>` a known false negative rather than an unknown one',
+        ),
+      );
+    }
   }
 
   if (protection.required_status_checks?.strict !== true) {
@@ -206,48 +223,40 @@ export function evaluateProtectionAssumptions({
   // #111 decided both of these deliberately and they are NOT wrong. The
   // violation is not "this is misconfigured" -- it is "the premise moved, go
   // re-read #111", which is why the consequence is phrased as a re-examination.
-  if (
-    protection.enforce_admins === undefined ||
-    protection.enforce_admins === null
-  ) {
-    violations.push(
-      violation(
-        'development.enforce_admins',
-        'false (decided in #111, present and confirmed)',
-        '(field absent from the API response)',
-        '#111',
-        'enforce_admins is missing from the response rather than confirmed false -- a deleted or unreadable field is not the same as GitHub reporting the #111 exemption still holds, and this check cannot tell whether it was overtaken',
-      ),
-    );
-  } else if (enabled(protection.enforce_admins)) {
-    violations.push(
-      violation(
-        'development.enforce_admins',
-        'false (decided in #111)',
-        'true',
-        '#111',
-        'enforce_admins was declined because the sole admin would be unable to merge; if it is now on, that reasoning has been overtaken and #111 and #151 should be re-read together',
-      ),
-    );
-  }
+  guardField(
+    protection.enforce_admins,
+    'development.enforce_admins',
+    '#111',
+    'enforce_admins is missing or malformed in the response rather than confirmed false -- an absent field, an empty node, or a non-boolean enabled value is not the same as GitHub reporting the #111 exemption still holds, and this check cannot tell whether it was overtaken',
+    'enforce_admins was declined because the sole admin would be unable to merge; if it is now on, that reasoning has been overtaken and #111 and #151 should be re-read together',
+  );
 
-  if (
-    protection.required_pull_request_reviews === undefined ||
-    protection.required_pull_request_reviews === null
-  ) {
-    violations.push(
-      violation(
-        'development.required_approving_review_count',
-        '0 (decided in #111, present and confirmed)',
-        '(field absent from the API response)',
-        '#111',
-        'required_pull_request_reviews is missing from the response rather than confirmed at 0 -- a deleted or unreadable field is not the same as GitHub reporting the #111 self-approval reasoning still holds',
-      ),
-    );
-  } else {
+  // `required_pull_request_reviews` carries its fact as a count, not an
+  // `enabled` boolean, so it needs its own version of the same distinction:
+  // an absent node, or a present node whose count is not itself a confirmed
+  // number, must not silently read as "confirmed 0".
+  {
+    const reviewsNode = protection.required_pull_request_reviews;
     const reviewCount =
-      protection.required_pull_request_reviews.required_approving_review_count;
-    if (reviewCount !== undefined && reviewCount !== 0) {
+      reviewsNode !== undefined && reviewsNode !== null
+        ? reviewsNode.required_approving_review_count
+        : undefined;
+    if (
+      reviewsNode === undefined ||
+      reviewsNode === null ||
+      typeof reviewsNode !== 'object' ||
+      reviewCount === undefined
+    ) {
+      violations.push(
+        violation(
+          'development.required_approving_review_count',
+          '0 (decided in #111, present and confirmed)',
+          '(field absent or does not confirm a review count in the API response)',
+          '#111',
+          'required_pull_request_reviews is missing or malformed in the response rather than confirmed at 0 -- an absent field or a node with no required_approving_review_count is not the same as GitHub reporting the #111 self-approval reasoning still holds',
+        ),
+      );
+    } else if (reviewCount !== 0) {
       violations.push(
         violation(
           'development.required_approving_review_count',

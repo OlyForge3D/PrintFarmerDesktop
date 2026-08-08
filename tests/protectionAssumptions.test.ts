@@ -148,6 +148,58 @@ describe('the premises of #111 and #151 are checked, not promised', () => {
     );
   });
 
+  // #488, caught in review: a present-but-empty node (`{}`, missing the
+  // `enabled` key entirely rather than the node itself being deleted or
+  // `enabled: false`) is a different shape from both cases the tests above
+  // cover, and it fell through the earlier fix silently -- the guard only
+  // treated `undefined`/`null` nodes as unconfirmed, so `{}` read as "not
+  // literally true" and produced no violation, exactly like a legitimate
+  // `{ enabled: false }`. This is the same silent-false-safe hole #488 opened
+  // with, one level deeper: it is not enough to check the node exists, the
+  // node has to actually confirm `enabled` as a literal boolean.
+  it.each([
+    'allow_force_pushes',
+    'allow_deletions',
+    'required_linear_history',
+    'enforce_admins',
+  ] as const)(
+    'fires when %s is present but malformed (an empty node, not absent or false)',
+    (field) => {
+      const facts = baseline();
+      (facts.protection as Record<string, unknown>)[field] = {};
+
+      expect(assumptionsOf(facts)).toEqual([`development.${field}`]);
+    },
+  );
+
+  it('fires when required_pull_request_reviews is present but malformed (no required_approving_review_count)', () => {
+    const facts = baseline();
+    (
+      facts.protection as unknown as Record<string, unknown>
+    ).required_pull_request_reviews = {};
+
+    expect(assumptionsOf(facts)).toEqual([
+      'development.required_approving_review_count',
+    ]);
+  });
+
+  it.each([
+    'allow_force_pushes',
+    'allow_deletions',
+    'required_linear_history',
+    'enforce_admins',
+  ] as const)(
+    'fires when %s has a non-boolean enabled value, not just true/false',
+    (field) => {
+      const facts = baseline();
+      (facts.protection as Record<string, unknown>)[field] = {
+        enabled: 'yes',
+      };
+
+      expect(assumptionsOf(facts)).toEqual([`development.${field}`]);
+    },
+  );
+
   it('fires when the trunk stops refusing force pushes', () => {
     const facts = baseline();
     facts.protection.allow_force_pushes = { enabled: true };
