@@ -61,14 +61,34 @@
  *
  * EXIT CODES
  *
- *   0  OK            every injected default is DRIVEN or DIRECT
- *   1  RELOCATED     at least one injected default is provably unreachable
- *   2  UNDETERMINED  nothing was proven unreachable and something is unresolved
+ *   0  OK               every injected default is DRIVEN or DIRECT
+ *   1  RELOCATED        at least one injected default is provably unreachable
+ *   2  UNDETERMINED     nothing was proven unreachable and something is unresolved
+ *   3  ROOT_NOT_DRIVEN  --root names a function that exists, but the suite has
+ *                       zero call sites reaching it
  *
  * RELOCATED outranks UNDETERMINED. The reasoning is the one pinned in
  * check-merge-landed.mjs: a dependency this tool could not resolve says nothing
  * about a dependency it proved unreachable. A proven finding is not weakened by
  * an adjacent unknown. This ordering is asserted by a test, not left to reading.
+ *
+ * WHY ROOT_NOT_DRIVEN IS ITS OWN CODE (#549)
+ *
+ * `--root` defaults to `main`, and a module can genuinely define a `main` that
+ * exists, is syntactically well-formed, and is simply not the composition root
+ * the suite drives — `scripts/sign-macos-release.mjs` is exactly this: its
+ * `main()` takes no injected parameters at all, so zero call sites for `main`
+ * in the suite reported `0 call site(s), 0 resolved` at exit 0, indistinguishable
+ * from a module with nothing to report. The real root, `signMacRelease`, has
+ * three UNREACHABLE defaults under the same suite.
+ *
+ * A root that does not exist already fails loudly, at exit 2, by throwing out of
+ * `findCompositionRoot`. Zero call sites for a root that DOES exist is a
+ * different fact and must not collapse into the same code: it says the suite
+ * never drives this root, not merely that something about it could not be
+ * resolved. That is exit 3, and it names the root and the module in the
+ * message, so the fix is "point --root at what the suite calls", not "add an
+ * override somewhere".
  *
  * PARSER CHOICE
  *
@@ -99,6 +119,22 @@ import { parse } from '@typescript-eslint/parser';
 export const EXIT_OK = 0;
 export const EXIT_RELOCATED = 1;
 export const EXIT_UNDETERMINED = 2;
+export const EXIT_ROOT_NOT_DRIVEN = 3;
+
+/**
+ * Thrown by analyse() when --root names a function that EXISTS in the module
+ * but the suite has zero call sites reaching it. This is deliberately a
+ * distinct class from a plain Error: `main()` catches both, but a missing root
+ * (findCompositionRoot returns null) is a different fact from an existing root
+ * the suite never drives, and the two must not share an exit code (#549) or a
+ * reader loses the one piece of information that tells them what to fix.
+ */
+export class RootNotDrivenError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'RootNotDrivenError';
+  }
+}
 
 export const VERDICT_DRIVEN = 'DRIVEN';
 export const VERDICT_DIRECT = 'DIRECT';
@@ -492,6 +528,7 @@ const USAGE = [
   '  exit 0  every injected default is driven by a call that omits it, or imported directly',
   '  exit 1  at least one injected default is provably unreachable from the suite',
   '  exit 2  nothing proven unreachable and at least one call site could not be resolved',
+  '  exit 3  --root names a function that exists, but the suite never calls it',
 ].join('\n');
 
 export function analyse({
@@ -510,6 +547,22 @@ export function analyse({
   }
   const defaults = readInjectedDefaults(rootNode);
   const sites = findCallSites(suiteAst, rootName);
+  if (sites.length === 0) {
+    // #549: `rootName` exists — it parsed, it has a body — but the suite has
+    // zero call sites that reach it. That is NOT the same fact as "nothing was
+    // proven unreachable": it means this run proves nothing about the module
+    // at all, because the suite never drives the function this run was told to
+    // walk. Left unchecked, `defaults` here is also `[]` whenever the wrong
+    // root happens to take no injected parameters, and classifyDefaults() over
+    // an empty list is EXIT_OK — a clean bill for a module nobody exercised
+    // under this root. Refuse that result instead of returning it.
+    throw new RootNotDrivenError(
+      `${rootName} exists in ${moduleFile}, but ${suiteFile} has 0 call sites ` +
+        `that reach it. Zero call sites is not evidence ${rootName} is clean — ` +
+        'the suite never drives this root at all. Pass --root naming the ' +
+        'function the suite actually calls.',
+    );
+  }
   const classified = classifyDefaults({
     defaults,
     exports: namedExports(moduleAst),
@@ -549,10 +602,20 @@ export function runMain(
  * only by running it against an unresolvable input.
  */
 export function main(argv, io) {
+  const error = io?.error ?? console.error;
   try {
     return runMain(argv, io);
   } catch (caught) {
-    (io?.error ?? console.error)(`check-injected-defaults: ${caught.message}`);
+    error(`check-injected-defaults: ${caught.message}`);
+    // A RootNotDrivenError is a different fact from every other throw here — a
+    // missing root, a bad argument, an unreadable file — which all say "this
+    // run proved nothing, for a reason unrelated to the root's reachability".
+    // ROOT_NOT_DRIVEN says specifically "the root exists and the suite never
+    // reaches it", and #549 is exactly the defect of collapsing that into the
+    // same code as everything else, so it must not share EXIT_UNDETERMINED.
+    if (caught instanceof RootNotDrivenError) {
+      return EXIT_ROOT_NOT_DRIVEN;
+    }
     return EXIT_UNDETERMINED;
   }
 }

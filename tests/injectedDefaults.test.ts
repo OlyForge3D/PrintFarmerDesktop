@@ -5,7 +5,9 @@ import { describe, expect, it } from 'vitest';
 import {
   EXIT_OK,
   EXIT_RELOCATED,
+  EXIT_ROOT_NOT_DRIVEN,
   EXIT_UNDETERMINED,
+  RootNotDrivenError,
   VERDICT_DIRECT,
   VERDICT_DRIVEN,
   VERDICT_UNDETERMINED,
@@ -626,6 +628,144 @@ describe('AN EXCEPTION IS NOT A FINDING', () => {
     expect(main(['--nope'], { log: () => {}, error: () => {} })).toBe(
       EXIT_UNDETERMINED,
     );
+  });
+});
+
+describe('A WRONG-BUT-EXISTING ROOT IS NOT INDISTINGUISHABLE FROM A CLEAN ONE (#549)', () => {
+  // #549: `check-injected-defaults.mjs` reported `0 call site(s), 0 resolved`,
+  // exit 0, on scripts/sign-macos-release.mjs when told to walk its DEFAULT
+  // root `main` — because `main` genuinely exists and genuinely has zero
+  // injected defaults reachable via that name. The suite never calls `main`;
+  // it calls `signMacRelease`, which has three UNREACHABLE defaults under the
+  // very same suite. An absent root already fails loudly at exit 2. This is
+  // the positive control proving the measured defect is fixed: the SAME pair
+  // that used to return a false-clean 0 must now refuse the result instead.
+  const SIGN_MACOS_RELEASE = path.join(
+    REPO_ROOT,
+    'scripts',
+    'sign-macos-release.mjs',
+  );
+  const RELEASE_SIGNING_SUITE = path.join(
+    REPO_ROOT,
+    'tests',
+    'releaseSigning.test.ts',
+  );
+
+  it('MEASURED DEFECT, NOW FIXED: main is 0 call sites on sign-macos-release.mjs, and analyse() refuses that instead of returning an empty clean result', () => {
+    expect(() =>
+      analyse({
+        moduleFile: SIGN_MACOS_RELEASE,
+        suiteFile: RELEASE_SIGNING_SUITE,
+        rootName: 'main',
+      }),
+    ).toThrow(RootNotDrivenError);
+  });
+
+  it('names the root walked and the module, and says the suite never reached it', () => {
+    expect(() =>
+      analyse({
+        moduleFile: SIGN_MACOS_RELEASE,
+        suiteFile: RELEASE_SIGNING_SUITE,
+        rootName: 'main',
+      }),
+    ).toThrow(/main.*sign-macos-release\.mjs/s);
+  });
+
+  it('main(), the CLI entry point, exits ROOT_NOT_DRIVEN (3), distinct from UNDETERMINED (2)', () => {
+    const code = main(
+      [
+        '--module',
+        SIGN_MACOS_RELEASE,
+        '--suite',
+        RELEASE_SIGNING_SUITE,
+        '--root',
+        'main',
+      ],
+      { log: () => {}, error: () => {} },
+    );
+    expect(code).toBe(EXIT_ROOT_NOT_DRIVEN);
+    expect(code).not.toBe(EXIT_UNDETERMINED);
+  });
+
+  it('POSITIVE CONTROL: the root the suite actually drives, signMacRelease, has call sites and reports RELOCATED', () => {
+    // Without this the fix above could be satisfied by a resolver that always
+    // throws RootNotDrivenError regardless of which root is named.
+    const result = analyse({
+      moduleFile: SIGN_MACOS_RELEASE,
+      suiteFile: RELEASE_SIGNING_SUITE,
+      rootName: 'signMacRelease',
+    });
+    expect(result.sites.length).toBeGreaterThan(0);
+    expect(exitCodeFor(result.classified)).toBe(EXIT_RELOCATED);
+  });
+
+  it('DISCRIMINATES from a missing root: a name that does not exist at all still throws a plain Error at exit 2, never ROOT_NOT_DRIVEN', () => {
+    // The existing behaviour this fix must not disturb: an absent root is a
+    // different fact from an existing-but-undriven one, and must keep its own
+    // exit code.
+    expect(() =>
+      analyse({
+        moduleFile: SIGN_MACOS_RELEASE,
+        suiteFile: RELEASE_SIGNING_SUITE,
+        rootName: 'zzzNoSuchRoot',
+      }),
+    ).toThrow(/zzzNoSuchRoot is not defined/);
+    const code = main(
+      [
+        '--module',
+        SIGN_MACOS_RELEASE,
+        '--suite',
+        RELEASE_SIGNING_SUITE,
+        '--root',
+        'zzzNoSuchRoot',
+      ],
+      { log: () => {}, error: () => {} },
+    );
+    expect(code).toBe(EXIT_UNDETERMINED);
+    expect(code).not.toBe(EXIT_ROOT_NOT_DRIVEN);
+  });
+
+  it('MINIMAL FIXTURE: a root with NO injected defaults at all and zero call sites is refused, not passed clean', () => {
+    // This isolates the exact shape of the defect: `defaults` here is `[]`
+    // (main takes no destructured parameter), so classifyDefaults() over an
+    // empty list is vacuously EXIT_OK. Before the fix this reached
+    // `formatResult`/`exitCodeFor` and printed a false clean bill.
+    expect(() =>
+      analyse({
+        moduleFile: 'm.mjs',
+        suiteFile: 'm.test.ts',
+        rootName: 'main',
+        readFile: sourcesOf({
+          'm.mjs': [
+            'export function realRoot({ a = impl } = {}) {}',
+            'export function main() { realRoot(); }',
+            'function impl() {}',
+          ].join('\n'),
+          'm.test.ts': "import { realRoot } from './m.mjs';\nrealRoot();",
+        }),
+      }),
+    ).toThrow(RootNotDrivenError);
+  });
+
+  it('MINIMAL FIXTURE, POSITIVE CONTROL: the same suite against the root it actually calls resolves normally', () => {
+    const result = analyse({
+      moduleFile: 'm.mjs',
+      suiteFile: 'm.test.ts',
+      rootName: 'realRoot',
+      readFile: sourcesOf({
+        'm.mjs': [
+          'export function realRoot({ a = impl } = {}) {}',
+          'export function main() { realRoot(); }',
+          'function impl() {}',
+        ].join('\n'),
+        'm.test.ts': "import { realRoot } from './m.mjs';\nrealRoot();",
+      }),
+    });
+    expect(result.sites.length).toBeGreaterThan(0);
+    // realRoot() is called with no argument, so `a`'s default runs — DRIVEN,
+    // not UNREACHABLE. The point of this control is only that a root the
+    // suite DOES call resolves and reports normally instead of throwing.
+    expect(exitCodeFor(result.classified)).toBe(EXIT_OK);
   });
 });
 
