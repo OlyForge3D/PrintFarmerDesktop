@@ -561,3 +561,13 @@ question, and neither is secondary. The decision order in `push-guard.mjs` makes
 **Remedy 4 — `required_approving_review_count` stays `0`.** Untouched, per the issue's own instruction: it is unusable while `jpapiez` is the sole collaborator and GitHub refuses self-approval (422, measured by Fact Checker on this issue), so building anything on top of it would be building on a control nobody can satisfy.
 
 **What follows from measuring Hole 2 already closed.** `REQUIRED_CONTEXT_NAMES` in `scripts/check-protection-assumptions.mjs` was pinned at the earlier 8-name set that already includes `Closing-reference declaration`, so no change was needed there; it was re-verified against the live branch protection as part of this decision, not assumed from an earlier issue comment (the whole caution this issue itself opens with).
+
+## 2026-08-08 — #361: a positive control validates the instrument, not the operationalisation
+
+**By:** Vasquez
+
+**What was decided.** The zero-result-needs-a-positive-control rule (`.squad/skills/testing/SKILL.md`) is amended, not replaced. A positive control answers only "can the instrument speak?" It cannot answer "is the searched artifact a place this evidence would necessarily appear?" — nothing in "run a control that fires" examines the mapping from the claim under test to the instrument chosen to test it. `.squad/skills/testing/SKILL.md` now states both questions explicitly, requires naming the mechanism by which evidence would arrive at the searched artifact before any zero is reported, and records three worked instances from #361 (a CI-log grep for a dependency-tree-level platform constraint; an `npm ls` run against a package never installed on disk; a reconstruction characterised from analogy rather than from the lockfile that defines the case) as illustrations of a firing control paired with a worthless null.
+
+**Corollary recorded alongside it:** an unsound-operationalisation zero is worse than an uncontrolled one, because the passing control lends it authority — it reads as diligence and stops the next reader from ever asking whether the artifact could have shown the signal at all.
+
+**Why:** #361 documents that this exact failure survived being written down and enforced on others, in the same session, by the person enforcing it — the control alone does not catch it because the control and the error operate at different levels: the control validates the instrument, the error is one level up, in the choice of instrument for the claim. Recording the second question in the same file as the first closes that gap where the rule is actually read, rather than leaving it as a standalone observation that nothing routes people to.
