@@ -180,6 +180,28 @@ describe('isDirectVitestInvocation', () => {
       isDirectVitestInvocation(tokenizeCommand('/usr/bin/env vitest run -t x')),
     ).toBe(true);
   });
+
+  it('POSITIVE CONTROL (Vasquez/Ripley, review of this PR, round 5): recognises Windows executable-extension-qualified launcher and binary forms', () => {
+    // This repo's own CI runs on windows-latest -- `.cmd`/`.exe` suffixes
+    // are the native Windows invocation form here, not an exotic corner
+    // case. `npx.cmd`, `node.exe`, and a `.bin\vitest.cmd` path are all the
+    // same programs as their extension-less equivalents.
+    expect(
+      isDirectVitestInvocation(tokenizeCommand('npx.cmd vitest run -t x')),
+    ).toBe(true);
+    expect(
+      isDirectVitestInvocation(
+        tokenizeCommand('node.exe node_modules/vitest/vitest.mjs run -t x'),
+      ),
+    ).toBe(true);
+    expect(
+      isDirectVitestInvocation(
+        tokenizeCommand(
+          '.\\node_modules\\.bin\\vitest.cmd run -t "only this arm"',
+        ),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('HOME 1: package.json test/test:* scripts', () => {
@@ -751,6 +773,44 @@ describe('HOME 2: workflows invoking vitest directly', () => {
       '        run: node ./node_modules/.bin/vitest run -t "only this arm"',
     ].join('\n');
     const violations = checkWorkflowText('ci.yml', contents);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'workflow',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
+  it('POSITIVE CONTROL (Vasquez/Ripley, review of this PR, round 5): recognises Windows executable-extension-qualified forms in a workflow step', () => {
+    // This repo's required contexts include windows-latest -- `.cmd` is the
+    // native Windows form of a locally installed npm binary, not a corner
+    // case, and `npx.cmd`/`bash.exe` are equally ordinary on that platform.
+    const npxCmd = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: npx.cmd vitest run -t "only this arm"',
+    ].join('\n');
+    expect(checkWorkflowText('ci.yml', npxCmd)).toHaveLength(1);
+
+    const binCmd = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: .\\node_modules\\.bin\\vitest.cmd run -t "only this arm"',
+    ].join('\n');
+    expect(checkWorkflowText('ci.yml', binCmd)).toHaveLength(1);
+
+    const pipedIntoBashExe = [
+      'jobs:',
+      '  desktop:',
+      '    steps:',
+      '      - name: Test',
+      '        run: echo \'vitest run -t "only this arm"\' | bash.exe',
+    ].join('\n');
+    const violations = checkWorkflowText('ci.yml', pipedIntoBashExe);
     expect(violations).toHaveLength(1);
     expect(violations[0]).toMatchObject({
       home: 'workflow',

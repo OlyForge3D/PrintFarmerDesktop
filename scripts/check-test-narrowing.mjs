@@ -233,6 +233,20 @@
 // `/usr/bin/env bash`, `env NODE_ENV=production vitest run`) for free,
 // since it is now just one more thing the shared resolver understands
 // rather than a third comparison site to patch separately.
+//
+// A FIFTH REVIEW ROUND SPLIT -- Vasquez approved (confirmed the round-4
+// centralisation is genuine and correct), Ripley rejected: both
+// independently found the SAME further gap in `basenameOf` (a path prefix
+// was stripped, but not an executable-extension SUFFIX -- `node.exe`,
+// `vitest.cmd`, `.\node_modules\.bin\vitest.cmd`, `bash.exe`), and differed
+// only on whether it was material. Given this repo's own required CI
+// contexts include `windows-latest`, `.cmd`/`.exe` are this repo's native
+// Windows invocation form, not a corner case, so this is fixed as material:
+// `basenameOf` now also strips a known executable extension
+// (`.exe`/`.cmd`/`.bat`/`.mjs`/`.cjs`/`.js`) after taking the path's last
+// segment, in the same single shared function every identity comparison in
+// this file already goes through -- one more normalisation step in the same
+// place, not a fourth comparison site.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
@@ -356,17 +370,50 @@ const VITEST_LAUNCHERS = new Set(['npx', 'node', 'pnpm', 'yarn']);
 const ENV_LAUNCHER = 'env';
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
+// Windows resolves a bare command name against `PATHEXT` by trying these
+// suffixes in turn -- `vitest`, `vitest.cmd`, and `.\node_modules\.bin\
+// vitest.cmd` are the SAME program, exactly as `/bin/bash` and `bash` are
+// the same program on any platform. This repo's own CI runs on
+// `windows-latest` (Ripley, review of this PR, round 5), so these are the
+// native Windows invocation form here, not an exotic corner case -- a gate
+// that only recognised the extension-less form would be blind on the
+// platform this repo actually tests against. `.mjs`/`.cjs`/`.js` are
+// included too because `node .../vitest.mjs` (already handled before this
+// round via an explicit `vitest.mjs` check) is naturally subsumed once
+// extension-stripping happens in the same shared place, rather than kept
+// as a separate special case.
+const EXECUTABLE_EXTENSIONS = ['.exe', '.cmd', '.bat', '.mjs', '.cjs', '.js'];
+
+function stripKnownExecutableExtension(name) {
+  const lower = name.toLowerCase();
+  for (const ext of EXECUTABLE_EXTENSIONS) {
+    if (lower.endsWith(ext) && name.length > ext.length) {
+      return name.slice(0, name.length - ext.length);
+    }
+  }
+  return name;
+}
+
 /**
  * The last path segment of a token, using it as a bare program name would
  * be used -- `/bin/bash` and `bash` name the same program, and neither this
  * file nor a shell cares which one was typed. Works for both `/`- and
  * `\`-separated paths so a Windows-style path behaves the same way.
+ *
+ * Vasquez (review of this PR, round 5) and Ripley (round 5) independently
+ * found the identical further gap: this stripped a PATH PREFIX but not an
+ * EXECUTABLE EXTENSION, so `node.exe`, `vitest.cmd`, and
+ * `.\node_modules\.bin\vitest.cmd` were not recognised as the programs they
+ * are. One more normalisation step in this same shared function closes it
+ * for every comparison in the file at once, the same way path-prefix
+ * stripping did in round 4.
  */
 function basenameOf(token) {
   if (typeof token !== 'string') return undefined;
   const normalised = token.replaceAll('\\', '/');
   const idx = normalised.lastIndexOf('/');
-  return idx === -1 ? normalised : normalised.slice(idx + 1);
+  const base = idx === -1 ? normalised : normalised.slice(idx + 1);
+  return stripKnownExecutableExtension(base);
 }
 
 function isVitestBasename(basename) {
