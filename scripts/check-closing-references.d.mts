@@ -150,6 +150,11 @@ export class ClosingReferenceReadBudgetError extends Error {
 
 export function parseDeclaredClosures(body: string): DeclaredClosures;
 
+/** Relative path (from the repository root) of the tracked declaration file. */
+export const DECLARATION_FILE_PATH: string;
+
+export function readDeclarationFile(filePath?: string): string;
+
 export function parseBoundClosures(body: string): number[];
 
 export function parseCommitClosures(messages: string[]): number[];
@@ -199,6 +204,7 @@ export interface MainDeps {
     prNumber: number | string,
     run: (args: string[]) => string,
   ) => number[];
+  readDeclaration?: () => string;
   environment?: Record<string, string | undefined>;
   readClosures?: (
     read: () => number[] | Promise<number[]>,

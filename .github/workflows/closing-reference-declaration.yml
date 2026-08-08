@@ -24,8 +24,19 @@ jobs:
     name: Closing-reference declaration
     runs-on: ubuntu-latest
     steps:
+      # On pull_request, actions/checkout@v4 defaults to the ephemeral
+      # refs/pull/<n>/merge test-merge commit, not the PR's literal head
+      # tree. #415's declaration file must be judged against the exact head
+      # commit the PR reports as its head, not a merge of it with whatever
+      # development has advanced to since; pin the ref explicitly so a
+      # concurrent, non-conflicting edit to the shared declaration file on
+      # another PR can never be folded into what this job reads. merge_group
+      # is intentionally left on its default ref: that ref *is* the queue's
+      # own multi-PR merge commit, which is what a merge-queue run must
+      # judge.
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - uses: actions/setup-node@v4

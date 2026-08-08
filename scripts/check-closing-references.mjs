@@ -9,29 +9,52 @@
  * This check compares what a PR *declares* it closes against what GitHub has
  * actually armed, and fails when they differ.
  *
- * The declaration has to live somewhere the closing parser does not read.
- * Measured on a live pull request, with a bare keyword as the positive control:
+ * #415. The declaration used to be read out of the PR body -- a fenced block
+ * chosen (see below) because it is inert to GitHub's closing-keyword parser.
+ * That made the declaration a second, *independent* mutable input: the body
+ * can be edited without touching the head commit, so a check result pinned to
+ * a SHA said nothing about the declaration in place when it ran, or at merge
+ * time. #400 merged with seven green contexts, every one of which had judged
+ * a body that had since been replaced twice.
+ *
+ * A check cannot be all three of body-sensitive, required, and re-run on
+ * every body edit (job-level `if:` is banned -- a skipped job reports success
+ * -- so a required context can never be conditioned on an event a `push` or
+ * `merge_group` entry does not carry). The fix is to stop the declaration half
+ * from being a body input at all: it is now read from `DECLARATION_FILE_PATH`,
+ * a file tracked in the commit tree, via `readDeclarationFile`. `synchronize`
+ * already re-runs this check whenever the head commit changes, so "green at
+ * SHA X" becomes a true statement about the declaration -- nothing needs to
+ * subscribe to `edited` for the declaration half, and editing the body can no
+ * longer silently invalidate a passing gate.
+ *
+ * Arming stays in the body: GitHub's own closing-keyword parser reads the
+ * body and that is not ours to change. `parseBoundClosures` below, and the
+ * witness machinery around it, are therefore unchanged -- only the source of
+ * `declared` moved. Measured on a live pull request, with a bare keyword as
+ * the positive control, at a time when the declaration was still read from
+ * the body and had to hide from this same parser:
  *
  *   bare        closes #N        -> closingIssuesReferences = [N]   BINDS
  *   fenced      ```closes #N```  -> []                              inert
  *   inline code `closes #N`      -> []                              inert
  *   no reference                 -> []                              inert
  *
- * So a fenced block is a safe declaration site, and it is what this parser
- * reads. (The inline-code result also corrects a standing belief that
- * backticking "does not reliably help": it helps when the backticks enclose the
- * reference as well as the keyword. The reported failure had them on a
- * different word than the one that fired.)
+ * The declaration file reuses the fenced-block format purely for continuity
+ * with that convention and the parser tested against it; nothing in the file
+ * is read by GitHub's closing-keyword parser, because GitHub does not scan
+ * repository file contents for closing keywords at all.
  *
- * Absence of a declaration block means the PR declares nothing, so any armed
- * closure is a mismatch. That is deliberate and fail-closed: the hazard is a
- * closure nobody intended, and a check that treats silence as consent cannot
- * see it.
+ * Absence of a declaration (no file, or a file with no fenced block) means
+ * the PR declares nothing, so any armed closure is a mismatch. That is
+ * deliberate and fail-closed: the hazard is a closure nobody intended, and a
+ * check that treats silence as consent cannot see it.
  */
 
 import { pathToFileURL } from 'node:url';
 import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { resolvePullRequestNumber } from './check-pr-closure-scope.mjs';
 
 const RETRYABLE_TRANSPORT_CODES = new Set([
@@ -299,7 +322,38 @@ export class ClosingReferenceReadBudgetError extends Error {
 const DECLARATION_FENCE = /^```closes[^\S\n]*$([\s\S]*?)^```[^\S\n]*$/gm;
 
 /**
- * Reads the declared closure set out of a PR body.
+ * Where the declaration lives, relative to the repository root. Tracked in
+ * the commit tree so `synchronize` -- an event every required-context
+ * workflow already receives -- re-runs this check whenever the declaration
+ * changes. See the module header (#415) for why this moved out of the PR
+ * body.
+ */
+export const DECLARATION_FILE_PATH = '.github/PR_CLOSES.md';
+
+/**
+ * Reads the declaration file from the checked-out worktree.
+ *
+ * A missing file is not an error: it means the PR declares nothing, which
+ * `parseDeclaredClosures` already renders as `{ hasBlock: false, declared: [] }`
+ * -- the same fail-closed state a body with no fenced block produced before
+ * #415. Any other read failure (permissions, a directory at that path) is not
+ * swallowed, because that is not "no declaration", it is "declaration
+ * unreadable", and the two must not be reported identically.
+ */
+export function readDeclarationFile(filePath = DECLARATION_FILE_PATH) {
+  try {
+    return readFileSync(filePath, 'utf8');
+  } catch (error) {
+    if (asRecord(error)?.code === 'ENOENT') {
+      return '';
+    }
+    throw error;
+  }
+}
+
+/**
+ * Reads the declared closure set out of the declaration source (#415: the
+ * tracked file at `DECLARATION_FILE_PATH`, not the PR body).
  *
  * `hasBlock` is reported separately from an empty set because they are
  * different states with the same list: "declares nothing" and "declares
@@ -725,15 +779,17 @@ export function formatFailure({ unexpected, missing, hasBlock, prNumber }) {
   if (!hasBlock) {
     lines.push(
       '',
-      '  This PR has no declaration block. Add one, listing every issue it is',
-      '  meant to close, or none at all:',
+      `  This PR has no declaration block in ${DECLARATION_FILE_PATH}. Add one,`,
+      '  committed alongside the change, listing every issue it is meant to',
+      '  close, or none at all:',
       '',
       '      ```closes',
       '      #123',
       '      ```',
       '',
-      '  The block is inert to the closing parser (measured), so it declares',
-      '  intent without performing it.',
+      '  The declaration is read from that tracked file, not the PR body (#415):',
+      '  a file in the commit tree is pinned to the head SHA, so editing the body',
+      '  alone can no longer change this verdict.',
     );
   }
   return lines.join('\n');
@@ -801,6 +857,7 @@ export async function main(argv, deps = {}) {
     run = gh,
     readClosures = readSettled,
     readCommitClosures = readPullRequestCommitClosures,
+    readDeclaration = readDeclarationFile,
     environment = process.env,
   } = deps;
   const supplied = argv[0];
@@ -809,8 +866,10 @@ export async function main(argv, deps = {}) {
   }
   const prNumber = supplied ?? String(resolvePullRequestNumber(environment));
 
-  const body = run(['pr', 'view', prNumber, '--json', 'body', '--jq', '.body']);
-  const { declared, hasBlock } = parseDeclaredClosures(body);
+  // #415: read from the commit tree, not `gh pr view --json body`. The
+  // checked-out worktree is pinned to the head commit this run is judging, so
+  // this can no longer disagree with the SHA the check reports against.
+  const { declared, hasBlock } = parseDeclaredClosures(readDeclaration());
   const commitClosures = readCommitClosures(prNumber, run);
 
   // Both fields out of ONE response. Fetched separately they cannot witness
