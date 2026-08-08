@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   attachPackagedFailureDiagnostics,
   cleanupPackagedApp,
@@ -394,6 +394,118 @@ describe('packaged test failure cleanup', () => {
     });
     expect(attached.get('packaged-process.log')?.toString('utf8')).toBe(
       '[stderr] controlled failure',
+    );
+  });
+});
+
+describe('first-launch warm-up retry (#509)', () => {
+  beforeEach(() => {
+    // Each spec below depends on the module-level "has any packaged Electron
+    // launch completed in this worker yet" flag starting false, so it must
+    // get its own fresh module instance rather than share the one the
+    // `describe` block above already advanced past its first launch.
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it('propagates the retried attempt into the caller-held startupTrace, not the discarded failed first attempt', async () => {
+    const {
+      createPackagedProcessLog,
+      createPackagedStartupTrace,
+      launchInstrumentedElectronTestApp,
+    } = await import('../e2e/helpers/packagedApp.js');
+    const processLog = createPackagedProcessLog();
+    const startupTrace = createPackagedStartupTrace();
+    const close = vi.fn(() => Promise.resolve());
+    let attempt = 0;
+
+    const launched = await launchInstrumentedElectronTestApp(
+      () => {
+        attempt += 1;
+        if (attempt === 1) {
+          return Promise.reject(new Error('controlled cold-start failure'));
+        }
+        return Promise.resolve({
+          process: () => ({
+            stdout: new PassThrough(),
+            stderr: new PassThrough(),
+          }),
+          firstWindow: () =>
+            Promise.resolve({
+              waitForLoadState: () => Promise.resolve(),
+            }),
+          close,
+        });
+      },
+      processLog,
+      startupTrace,
+    );
+
+    expect(attempt).toBe(2);
+    expect(launched.app).not.toBeNull();
+
+    // The SAME startupTrace object the caller passed in -- the one it would
+    // later read via `.snapshot()` for e.g. failure diagnostics -- must
+    // reflect the retry that actually produced this result, not the
+    // discarded failed first attempt.
+    const snapshot = startupTrace.snapshot();
+    expect(snapshot.waitingFor).toBeNull();
+    expect(snapshot.milestones.map((milestone) => milestone.name)).toEqual([
+      'spawn',
+      'electronLaunch',
+      'firstWindow',
+      'domcontentloaded',
+    ]);
+  });
+
+  it('does not retry launches after the first in the same worker', async () => {
+    const {
+      createPackagedProcessLog,
+      createPackagedStartupTrace,
+      launchInstrumentedElectronTestApp,
+    } = await import('../e2e/helpers/packagedApp.js');
+    const processLog = createPackagedProcessLog();
+    const close = vi.fn(() => Promise.resolve());
+    const successfulLaunch = () =>
+      Promise.resolve({
+        process: () => ({
+          stdout: new PassThrough(),
+          stderr: new PassThrough(),
+        }),
+        firstWindow: () =>
+          Promise.resolve({ waitForLoadState: () => Promise.resolve() }),
+        close,
+      });
+
+    // Warm the "first launch already completed" flag for this module
+    // instance so the second launch below is treated as steady-state.
+    await launchInstrumentedElectronTestApp(
+      successfulLaunch,
+      processLog,
+      createPackagedStartupTrace(),
+    );
+
+    let secondAttempt = 0;
+    const thrown = await captureError(
+      launchInstrumentedElectronTestApp(
+        () => {
+          secondAttempt += 1;
+          return Promise.reject(new Error('controlled steady-state failure'));
+        },
+        processLog,
+        createPackagedStartupTrace(),
+      ),
+    );
+
+    expect(secondAttempt).toBe(1);
+    expect(thrown).toEqual(
+      expect.objectContaining({
+        message:
+          'Packaged Electron startup failed while waiting for electronLaunch.',
+      }),
     );
   });
 });

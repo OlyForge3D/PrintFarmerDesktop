@@ -40,9 +40,12 @@ let e2eStateRoot: string;
 const consoleErrors: string[] = [];
 
 // See #509: a `beforeAll` throw marks the hook itself as a failing synthetic
-// test and skips every real test in the file, indistinguishably from a test
-// that legitimately did not apply. Startup failures are instead captured
-// here and turned into an explicit, labeled `test.skip` per test below.
+// test and skips every real test in the file without attributing that skip
+// to startup, indistinguishably from a test that legitimately did not
+// apply. Startup failures are instead captured here and turned into an
+// explicit per-test failure below (each test still fails the run -- a
+// startup regression must stay visible, never pass as skipped/green -- but
+// with a message that clearly attributes it to beforeAll startup).
 let startupError: Error | null = null;
 
 async function dismissOnboardingIfVisible(page: Page): Promise<void> {
@@ -122,12 +125,20 @@ test.beforeAll(async () => {
 });
 
 test.beforeEach(() => {
-  test.skip(
-    startupError !== null,
-    'Packaged Electron app failed to start in beforeAll ' +
-      `(${startupError?.message}). Skipped because startup failed, not ` +
-      'because this test does not apply.',
-  );
+  // A startup failure must still fail the suite -- #509 exists to make cold
+  // starts *visible*, not to let a real regression through as green/skipped.
+  // Throwing here (rather than `test.skip`) fails each test explicitly, with
+  // a message that clearly attributes the failure to beforeAll startup
+  // rather than to this test's own assertions -- distinguishable in the
+  // report from both a normal assertion failure and a legitimate skip,
+  // without ever masking the failure as a pass.
+  if (startupError !== null) {
+    throw new Error(
+      'Packaged Electron app failed to start in beforeAll ' +
+        `(cold-start budget exceeded even after warm-up retry): ${startupError.message}`,
+      { cause: startupError },
+    );
+  }
 });
 
 test.afterAll(async () => {

@@ -103,6 +103,14 @@ export interface PackagedStartupTrace {
   mark(name: 'spawn' | PackagedStartupPhase): void;
   waitFor(phase: PackagedStartupPhase): void;
   snapshot(): PackagedStartupSnapshot;
+  /**
+   * Clears all recorded milestones and restarts the elapsed-time clock from
+   * now. Used by `launchInstrumentedElectronTestApp`'s warm-up retry so the
+   * trace a caller holds a reference to (and later reads via `.snapshot()`,
+   * e.g. for failure diagnostics) always reflects the attempt that actually
+   * determined the outcome, not a stale first attempt (#509).
+   */
+  reset(): void;
 }
 
 interface ElectronTestAppLike<TPage> {
@@ -211,8 +219,8 @@ export function createPackagedProcessLog(): PackagedProcessLog {
 export function createPackagedStartupTrace(
   now: () => number = Date.now,
 ): PackagedStartupTrace {
-  const startedAt = now();
-  const milestones: PackagedStartupMilestone[] = [];
+  let startedAt = now();
+  let milestones: PackagedStartupMilestone[] = [];
   let waitingFor: PackagedStartupPhase | null = null;
 
   return {
@@ -237,6 +245,11 @@ export function createPackagedStartupTrace(
         waitingFor,
         milestones: milestones.map((milestone) => ({ ...milestone })),
       };
+    },
+    reset() {
+      startedAt = now();
+      milestones = [];
+      waitingFor = null;
     },
   };
 }
@@ -345,23 +358,28 @@ export async function launchInstrumentedElectronTestApp<
     }
     // Only the first launch of the worker gets a warm-up retry: a failure
     // here is presumed to be the fresh-package cold start #509 describes,
-    // not a genuine regression. Reset the trace so the retry's own
-    // milestones are the ones reported, and log loudly that a retry
-    // happened so it is never mistaken for a silent pass.
+    // not a genuine regression. Log the failed first attempt's milestones
+    // before resetting -- nothing is silently lost from the run log -- then
+    // reset and reuse the SAME startupTrace object the caller holds a
+    // reference to, so that if the retry also fails (or a later test step
+    // fails and attaches this trace to failure diagnostics), `.snapshot()`
+    // reflects the attempt that actually determined the outcome rather than
+    // the stale, already-failed first attempt.
     console.warn(
       '[e2e] First packaged Electron launch of this worker failed ' +
-        `(${(firstAttemptError as Error).message}); retrying once to absorb ` +
-        'a possible fresh-package cold start (#509).',
+        `(${(firstAttemptError as Error).message}); first-attempt trace: ` +
+        `${JSON.stringify(startupTrace.snapshot())}. Retrying once to ` +
+        'absorb a possible fresh-package cold start (#509).',
     );
-    const retryTrace = createPackagedStartupTrace();
+    startupTrace.reset();
     const result = await attemptInstrumentedElectronLaunch<TPage, TApp>(
       launch,
       processLog,
-      retryTrace,
+      startupTrace,
       domContentLoadedTimeoutMs,
     );
     hasCompletedFirstPackagedLaunch = true;
-    logPackagedLaunchDuration(retryTrace, true, true);
+    logPackagedLaunchDuration(startupTrace, true, true);
     return result;
   }
 }
