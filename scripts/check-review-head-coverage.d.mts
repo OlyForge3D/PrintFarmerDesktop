@@ -82,8 +82,14 @@ export function fetchMergedPulls(input: {
   limit?: number;
 }): Promise<Array<Record<string, unknown>>>;
 
+export function filterReviewsByState(
+  reviews: ReviewRecord[] | undefined,
+  state?: string | null,
+): ReviewRecord[];
+
 export function fetchReviews(input: {
   repository: string;
   token?: string;
   prNumber: number;
+  state?: string;
 }): Promise<ReviewRecord[]>;
