@@ -160,6 +160,27 @@ export const UNENFORCED_CHECKS = {
     'unenforced for. Discharge path: invoke it by hand (or from whatever reads ' +
     'a shared checkout before quoting a head) whenever a session is about to ' +
     'report a PR head from a local branch that was not just freshly cloned.',
+  'check:closed-head-dispatch':
+    'Its judgement IS enforced in CI: tests/closedHeadDispatch.test.ts drives ' +
+    'normalizeSha, classifyDispatch, evaluateControls and formatResult over ' +
+    'plain objects, including the "query failure is not the same as silent" ' +
+    'control, under `npm run test`. #380: PR #281 closed at two heads with ' +
+    'total_count: 0 workflow runs and nothing noticed; this check reads a ' +
+    "closed PR's head sha from the close event itself and fails loudly on " +
+    'that shape. Its workflow (.github/workflows/closed-head-dispatch.yml, ' +
+    'fully written and covered by the same test file) is NOT yet committed — ' +
+    "not a design choice, a measured one: the authoring session's git " +
+    'credential is bound to a fixed OAuth App token that GitHub itself ' +
+    'rejects for any push touching `.github/workflows/*` ("refusing to allow ' +
+    'an OAuth App to create or update workflow ... without `workflow` ' +
+    'scope"), independent of which `gh auth` account is active locally. ' +
+    'STATE THE WEAKNESS PLAINLY: until a maintainer with `workflow` scope ' +
+    'adds the file, nothing dispatches this check automatically and it is ' +
+    'exactly as invisible as the failure mode it exists to catch. Full ' +
+    'workflow text and the exact rejection is recorded in ' +
+    'docs/closed-head-dispatch.md. Discharge path: a maintainer pastes that ' +
+    'file in as-is and deletes this entry — the reachability check will then ' +
+    'find it invoked for real.',
 };
 
 // `check:citation-reachability` was here, with a four-condition discharge path.
