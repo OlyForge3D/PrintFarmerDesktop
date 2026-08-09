@@ -31,7 +31,45 @@ pub const MAX_XML_DEPTH: usize = 64;
 
 /// Maximum number of XML events processed for a single package part. Bounds the
 /// work a maximally-sized part can cause even when every element is empty.
-pub const MAX_XML_EVENTS: u64 = 200_000_000;
+///
+/// Sized from the real fixture corpus rather than a single synthetic grid
+/// (#165, following up on #127 / PR #154). Bisecting the actual budget every
+/// well-formed fixture under `native/model-core/tests/fixtures/threemf/`
+/// needs to parse — via `smallest_event_budget_that_parses`, the same helper
+/// `threemf_security.rs` uses for its own tests — and dividing each part's
+/// model-XML byte length by that budget gives:
+///
+/// | fixture              | model part bytes | events  | bytes/event |
+/// | --------------------- | ----------------: | -------: | ------------: |
+/// | `unit_inch.3mf`        |              1,293 |       76 |        17.01 |
+/// | `transform_chain.3mf`  |              1,533 |       88 |        17.42 |
+/// | `multi_plate.3mf`      |              2,366 |      134 |        17.66 |
+/// | `multi_part.3mf`       |              3,394 |      192 |        17.68 |
+/// | `color_material.3mf`   |              2,282 |      126 |        18.11 |
+/// | `large_grid.3mf`       |          4,305,044 |  174,118 |        24.72 |
+/// | 361×361 stress grid (`a_realistically_large_model_is_accepted_within_the_default_budget`) | 20,418,403 | 779,072 | 26.21 |
+///
+/// The worst (densest) case is `unit_inch.3mf` at ~17.01 bytes/event — small,
+/// mostly-metadata packages are denser than large geometry-dominated ones,
+/// because vertex/triangle elements carry more bytes per event than the
+/// wrapper and header elements around them. Extrapolated to the 512 MiB
+/// `MAX_MODEL_XML_BYTES` ceiling (`threemf::MAX_MODEL_XML_BYTES`), a
+/// legitimate document built entirely out of the densest observed material
+/// would need `536,870,912 / 17.01 ≈ 31,556,218` events — this repo's actual
+/// worst-case legitimate figure, in place of the ~20.5M a single synthetic
+/// grid implied.
+///
+/// 50,000,000 keeps roughly 58% headroom over that worst case (a margin
+/// comparable to the ~56% the same reasoning would give against the older
+/// 20.5M estimate), while being small enough that a hostile document
+/// reaching it — `<a/>x`, the densest construct quick-xml emits, at 2.5
+/// bytes/event — is only ~119 MiB, letting
+/// `the_shipped_budget_rejects_and_admits_at_the_exact_line` in
+/// `threemf_security.rs` drive the real, shipped value end-to-end instead of
+/// a reduced stand-in. See `docs/security/THREAT_MODEL.md` T2.1 for the full
+/// writeup, including the caveat that this fixture corpus is hand-authored
+/// rather than a survey of actual vendor slicer output.
+pub const MAX_XML_EVENTS: u64 = 50_000_000;
 
 /// Maximum accepted `uncompressed / compressed` ratio for one archive entry.
 /// DEFLATE tops out near 1032:1 on real data, so a ratio above this can only be
