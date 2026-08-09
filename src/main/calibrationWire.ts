@@ -689,6 +689,18 @@ export const REQUIRED_FIRMWARE_FAMILY = 'Klipper';
  */
 const AdvertisedFlag = z.boolean().optional().default(false);
 
+/**
+ * Same wire contract as {@link AdvertisedFlag} — boolean or absent, wrong
+ * type still fails validation — but *without* defaulting absence to `false`.
+ *
+ * Used only for the raw fields that back the negotiated calibration
+ * `flags` (#493): the "not advertised at all" fact must survive parsing so it
+ * can be reported as `unknown` rather than being silently indistinguishable
+ * from an explicit `false`. `AdvertisedFlag`'s eager default would erase that
+ * distinction before it ever reaches the transform below.
+ */
+const AdvertisedFlagRaw = z.boolean().optional();
+
 const RemoteSlicerEngineCapability = z
   .object({
     type: z.string().max(128).optional().default(''),
@@ -697,6 +709,38 @@ const RemoteSlicerEngineCapability = z
     supported: AdvertisedFlag,
   })
   .passthrough();
+
+/**
+ * Maps each end-to-end calibration capability flag to the raw
+ * `PlatformCapabilitiesDto` field that backs it.
+ *
+ * This is the single production source of truth for "what capability flags
+ * exist" (#493 AC1): both the `flags`/`flagAdvertisement` reduction below and
+ * the split-deployment test suite read the flag names from here, so a flag
+ * added to this map is automatically covered by the test — nothing needs to
+ * be hand-copied into `tests/`.
+ */
+export const CALIBRATION_FLAG_SOURCES = {
+  calibrationApiEnabled: 'calibrationPersistenceEnabled',
+  calibrationChangeFeedEnabled: 'calibrationSyncEnabled',
+  calibrationOfflineDraftEnabled: 'calibrationSyncEnabled',
+  calibrationPhotoUploadEnabled: 'calibrationPhotosEnabled',
+  calibrationGenerationEnabled: 'calibrationGenerationEnabled',
+} as const;
+
+/** Name of one of the negotiated end-to-end calibration capability flags. */
+export type CalibrationFlagName = keyof typeof CALIBRATION_FLAG_SOURCES;
+
+/**
+ * Whether the server advertised a value for a capability flag's backing
+ * field at all — distinct from whether that value was `true` or `false`.
+ *
+ * `'unknown'` means the field was absent from the response, so availability
+ * cannot be determined from what the server sent (#493 AC4). It must never be
+ * treated as `'true'`; production code and the tests both fail closed to
+ * `false` for `flags` when this is `'unknown'`.
+ */
+export type CalibrationFlagAdvertisement = 'true' | 'false' | 'unknown';
 
 /**
  * Remote capability-negotiation response from
@@ -728,13 +772,13 @@ export const RemoteCalibrationCapabilities = z
       .nullish()
       .transform((value) => value ?? null),
     /** Calibration project persistence is implemented and enabled. */
-    calibrationPersistenceEnabled: AdvertisedFlag,
+    calibrationPersistenceEnabled: AdvertisedFlagRaw,
     /** Calibration synchronisation (change feed + offline draft push). */
-    calibrationSyncEnabled: AdvertisedFlag,
+    calibrationSyncEnabled: AdvertisedFlagRaw,
     /** Calibration photo capture and upload. */
-    calibrationPhotosEnabled: AdvertisedFlag,
+    calibrationPhotosEnabled: AdvertisedFlagRaw,
     /** Calibration command generation and G-code promotion. */
-    calibrationGenerationEnabled: AdvertisedFlag,
+    calibrationGenerationEnabled: AdvertisedFlagRaw,
     /** Firmware families the calibration contract supports. */
     supportedFirmwareFamilies: z
       .array(z.string().max(64))
@@ -764,31 +808,65 @@ export const RemoteCalibrationCapabilities = z
       .transform((value) => value ?? []),
   })
   .passthrough()
-  .transform((value) => ({
-    /** Negotiated calibration API version, or null when not advertised. */
-    apiVersion: value.calibrationApiVersion,
-    /** Negotiated calibration schema version, or null when not advertised. */
-    schemaVersion: value.calibrationSchemaVersion,
-    /** Server-wide API contract version. */
-    apiContractVersion: value.apiContractVersion,
-    /** Permissions the current token actually grants. */
-    grantedScopes: value.effectivePermissions,
-    supportedFirmwareFamilies: value.supportedFirmwareFamilies,
-    supportedGcodeDialects: value.supportedGcodeDialects,
-    supportedSlicerEngines: value.supportedSlicerEngines,
-    /**
-     * End-to-end capability flags the calibration feature gate requires.
-     * Offline drafts are pushed through the calibration sync endpoint, so they
-     * are gated by the same server switch as the change feed.
-     */
-    flags: {
-      calibrationApiEnabled: value.calibrationPersistenceEnabled,
-      calibrationChangeFeedEnabled: value.calibrationSyncEnabled,
-      calibrationOfflineDraftEnabled: value.calibrationSyncEnabled,
-      calibrationPhotoUploadEnabled: value.calibrationPhotosEnabled,
+  .transform((value) => {
+    /** Raw per-field advertisement, keyed by the DTO field name — before
+     * defaulting absence away, so `undefined` here is still observable. */
+    const rawFields: Record<
+      (typeof CALIBRATION_FLAG_SOURCES)[CalibrationFlagName],
+      boolean | undefined
+    > = {
+      calibrationPersistenceEnabled: value.calibrationPersistenceEnabled,
+      calibrationSyncEnabled: value.calibrationSyncEnabled,
+      calibrationPhotosEnabled: value.calibrationPhotosEnabled,
       calibrationGenerationEnabled: value.calibrationGenerationEnabled,
-    },
-  }));
+    };
+    const flags = {} as Record<CalibrationFlagName, boolean>;
+    const flagAdvertisement = {} as Record<
+      CalibrationFlagName,
+      CalibrationFlagAdvertisement
+    >;
+    for (const [flagName, sourceField] of Object.entries(
+      CALIBRATION_FLAG_SOURCES,
+    ) as [
+      CalibrationFlagName,
+      (typeof CALIBRATION_FLAG_SOURCES)[CalibrationFlagName],
+    ][]) {
+      const raw = rawFields[sourceField];
+      // Fail-closed: absent or explicit `false` both leave the flag
+      // unavailable. Only `flagAdvertisement` distinguishes them (#493 AC4).
+      flags[flagName] = raw === true;
+      flagAdvertisement[flagName] =
+        raw === undefined ? 'unknown' : raw ? 'true' : 'false';
+    }
+    return {
+      /** Negotiated calibration API version, or null when not advertised. */
+      apiVersion: value.calibrationApiVersion,
+      /** Negotiated calibration schema version, or null when not advertised. */
+      schemaVersion: value.calibrationSchemaVersion,
+      /** Server-wide API contract version. */
+      apiContractVersion: value.apiContractVersion,
+      /** Permissions the current token actually grants. */
+      grantedScopes: value.effectivePermissions,
+      supportedFirmwareFamilies: value.supportedFirmwareFamilies,
+      supportedGcodeDialects: value.supportedGcodeDialects,
+      supportedSlicerEngines: value.supportedSlicerEngines,
+      /**
+       * End-to-end capability flags the calibration feature gate requires.
+       * Offline drafts are pushed through the calibration sync endpoint, so
+       * they are gated by the same server switch as the change feed. Absent
+       * server fields fail closed to `false` here — see `flagAdvertisement`
+       * for whether that `false` was advertised or merely not observed.
+       */
+      flags,
+      /**
+       * Per-flag advertisement state: whether the server said `true`,
+       * explicitly said `false`, or said nothing at all (`'unknown'`). Added
+       * for #493 — `flags` alone cannot prove a capability's unavailability
+       * was actually reported by the server rather than defaulted.
+       */
+      flagAdvertisement,
+    };
+  });
 export type RemoteCalibrationCapabilities = z.infer<
   typeof RemoteCalibrationCapabilities
 >;
@@ -846,6 +924,22 @@ export function disabledCalibrationFeatures(
     capabilities,
     OPTIONAL_CALIBRATION_FEATURE_FLAGS,
   );
+}
+
+/**
+ * Names the capability flags whose availability the server response did not
+ * actually determine — the backing field was absent, not `false` (#493 AC4).
+ *
+ * A flag can appear here and still read `false` in `flags`, because `flags`
+ * fails closed on `unknown` too; this is the only place that distinguishes
+ * "the server said no" from "the server said nothing".
+ */
+export function unknownCalibrationFlags(
+  capabilities: RemoteCalibrationCapabilities,
+): string[] {
+  return (
+    Object.keys(CALIBRATION_FLAG_SOURCES) as CalibrationFlagName[]
+  ).filter((flag) => capabilities.flagAdvertisement[flag] === 'unknown');
 }
 
 /** True when the server supports Klipper firmware *and* the Klipper dialect. */

@@ -29,7 +29,10 @@
  * @module calibrationDiagnostics
  */
 
-import type { RemoteCalibrationCapabilities } from './calibrationWire.js';
+import type {
+  CalibrationFlagAdvertisement,
+  RemoteCalibrationCapabilities,
+} from './calibrationWire.js';
 import type { CalibrationLogErrorCode } from './calibrationLog.js';
 
 export interface CalibrationCapabilitySnapshot {
@@ -43,6 +46,18 @@ export interface CalibrationCapabilitySnapshot {
     calibrationPhotoUploadEnabled: boolean;
     calibrationGenerationEnabled: boolean;
   };
+  /**
+   * Per-flag advertisement state (#493): whether the server explicitly said
+   * `true`/`false` for each flag's backing field, or said nothing at all
+   * (`'unknown'`). `flags` alone fails closed on `'unknown'` to `false`, so a
+   * flag can read `false` above yet be `'unknown'` here — this is the only
+   * place a support engineer can tell "the server said no" apart from "the
+   * server never said".
+   */
+  flagAdvertisement: Record<
+    keyof CalibrationCapabilitySnapshot['flags'],
+    CalibrationFlagAdvertisement
+  >;
   grantedScopes: string[];
   /** ISO 8601 UTC of the negotiation this snapshot came from. */
   negotiatedAt: string;
@@ -140,6 +155,7 @@ export class CalibrationDiagnosticsStore {
       negotiatedSchemaVersion: capabilities.schemaVersion,
       apiContractVersion: capabilities.apiContractVersion,
       flags: { ...capabilities.flags },
+      flagAdvertisement: { ...capabilities.flagAdvertisement },
       grantedScopes: [...capabilities.grantedScopes],
       negotiatedAt: this.now().toISOString(),
     };
@@ -248,7 +264,18 @@ export function formatCalibrationDiagnostics(
       '  flags:',
     );
     for (const [flag, enabled] of Object.entries(capability.flags)) {
-      lines.push(`    ${flag}: ${String(enabled)}`);
+      const advertisement =
+        capability.flagAdvertisement[
+          flag as keyof typeof capability.flagAdvertisement
+        ];
+      // `false` is ambiguous on its own: it means either "the server said no"
+      // or "the server said nothing" (#493). Naming the unknown case here is
+      // what makes this report truthful rather than merely fail-closed.
+      const suffix =
+        advertisement === 'unknown'
+          ? ' (unknown — not advertised by server)'
+          : '';
+      lines.push(`    ${flag}: ${String(enabled)}${suffix}`);
     }
     lines.push(
       `  grantedScopes: ${
