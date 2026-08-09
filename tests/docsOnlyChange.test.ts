@@ -3,7 +3,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  classifyDocsAndTests,
   classifyPaths,
+  isDocsOrTestPath,
   isDocumentationPath,
 } from '../scripts/docs-only-change.mjs';
 
@@ -93,5 +95,118 @@ describe('the docs-only fast path resolves uncertainty toward the full build', (
     ]);
     expect(verdict.docsOnly).toBe(true);
     expect(verdict.offenders).toEqual([]);
+  });
+});
+
+// The docs-and-tests tier (#623) is a SUPERSET of docs-only: every path the docs-only predicate
+// admits, this one admits too, plus anything under `tests/`. It exists so a PR like #620 -- three
+// files, none of them source, one of them a new test -- gets `Sidecar`, `Release package` and
+// `Dependency advisories` standing down without losing the test run those checks never covered
+// anyway. The same asymmetry as docs-only applies: calling a source path docs-and-tests would
+// remove real coverage from three required checks while they still report green.
+describe('the docs-and-tests fast path recognises documentation and tests', () => {
+  it('admits everything the docs-only predicate admits', () => {
+    expect(isDocsOrTestPath('.squad/agents/ralph/loop.md')).toBe(true);
+    expect(isDocsOrTestPath('README.md')).toBe(true);
+    expect(isDocsOrTestPath('docs/security/THREAT_MODEL.md')).toBe(true);
+    expect(isDocsOrTestPath('LICENSE')).toBe(true);
+  });
+
+  it('admits a test file under tests/', () => {
+    // PR #620: exactly this shape, plus two documentation files.
+    expect(
+      isDocsOrTestPath('tests/calibrationAssetManifestReachability.test.ts'),
+    ).toBe(true);
+    expect(isDocsOrTestPath('tests/citationReachability.test.ts')).toBe(true);
+  });
+
+  it('refuses a test-shaped path outside tests/, such as an e2e spec', () => {
+    // `e2e/` is a sibling directory, not a `tests/` prefix, and this predicate is intentionally
+    // narrow to the prefix named in the issue -- widening it to "anything that looks like a test"
+    // would admit `native/src/lib.rs`'s own unit tests via `#[cfg(test)]`, which is source.
+    expect(isDocsOrTestPath('e2e/release.gpu.spec.ts')).toBe(false);
+  });
+
+  it('refuses source, workflows and scripts', () => {
+    for (const file of [
+      'src/main/index.ts',
+      '.github/workflows/ci.yml',
+      'scripts/docs-only-change.mjs',
+      'native/src/lib.rs',
+    ]) {
+      expect(isDocsOrTestPath(file)).toBe(false);
+    }
+  });
+
+  it('refuses dependency manifests wherever they sit, including under tests/', () => {
+    // The load-bearing case: the manifest denylist must win before the `tests/` allowance is
+    // consulted, or a fixture manifest under `tests/fixtures/package.json` would qualify.
+    for (const file of [
+      'package.json',
+      'package-lock.json',
+      'native/Cargo.toml',
+      'tests/fixtures/package.json',
+    ]) {
+      expect(isDocsOrTestPath(file)).toBe(false);
+    }
+  });
+
+  it('refuses a path shape it cannot reason about', () => {
+    expect(isDocsOrTestPath('/etc/passwd.md')).toBe(false);
+    expect(isDocsOrTestPath('../outside/notes.md')).toBe(false);
+    expect(isDocsOrTestPath('')).toBe(false);
+  });
+});
+
+describe('the docs-and-tests fast path resolves uncertainty toward the full build', () => {
+  it('passes a change confined to documentation and tests (#620 shape)', () => {
+    const verdict = classifyDocsAndTests([
+      '.github/PR_CLOSES.md',
+      '.squad/decisions.md',
+      'tests/calibrationAssetManifestReachability.test.ts',
+    ]);
+    expect(verdict.docsAndTests).toBe(true);
+    expect(verdict.offenders).toEqual([]);
+  });
+
+  it('passes a change that is documentation-only, too, since docs-and-tests is a superset', () => {
+    const verdict = classifyDocsAndTests([
+      '.squad/agents/ralph/loop.md',
+      'docs/README.md',
+    ]);
+    expect(verdict.docsAndTests).toBe(true);
+  });
+
+  it('passes a test-only change with no documentation at all', () => {
+    const verdict = classifyDocsAndTests([
+      'tests/citationReachability.test.ts',
+    ]);
+    expect(verdict.docsAndTests).toBe(true);
+    expect(verdict.offenders).toEqual([]);
+  });
+
+  it('treats a change that also touches source as not docs-and-tests', () => {
+    const verdict = classifyDocsAndTests([
+      'tests/citationReachability.test.ts',
+      'src/main/index.ts',
+    ]);
+    expect(verdict.docsAndTests).toBe(false);
+    expect(verdict.offenders).toEqual(['src/main/index.ts']);
+  });
+
+  it('rejects package.json even though it would otherwise be the only offender', () => {
+    // The manifest denylist must win outright: a PR touching `package.json` is rejected by this
+    // tier and runs the full matrix, exactly as the docs-only tier already rejects it.
+    const verdict = classifyDocsAndTests([
+      'tests/citationReachability.test.ts',
+      'package.json',
+    ]);
+    expect(verdict.docsAndTests).toBe(false);
+    expect(verdict.offenders).toEqual(['package.json']);
+  });
+
+  it('treats an empty or unreadable file list as not docs-and-tests (fail-safe)', () => {
+    expect(classifyDocsAndTests([]).docsAndTests).toBe(false);
+    expect(classifyDocsAndTests(null).docsAndTests).toBe(false);
   });
 });
