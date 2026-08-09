@@ -11,6 +11,7 @@ import {
   formatFailure,
   formatUnsettled,
   main,
+  MalformedClosingReferenceResponseError,
   parseBoundClosures,
   parseClosingReferenceResponse,
   parseCommitClosures,
@@ -21,6 +22,7 @@ import {
   readDeclarationForPullRequest,
   readPullRequestCommitClosures,
   readSettled,
+  reportCliOutcome,
   resolveDeclarationPath,
   resolveHeadBranchName,
   slugifyBranchName,
@@ -1364,13 +1366,15 @@ describe('main', () => {
     };
 
     // Mirrors scripts/check-closing-references.mjs's own CLI entry point:
-    // `main(...).catch((error) => { console.error(...); process.exitCode = 1; })`.
-    // That assignment happens entirely outside `main`, after it has already
-    // rejected -- so it can only be correct here if `main` itself already
-    // recorded the failure against `failureEpoch` before this handler runs.
+    // `main(...).catch((error) => { console.error(...); process.exitCode = 2; })`
+    // (#563: a throw out of `main` is a "could not look" failure, so this is
+    // `2`, not `1`). That assignment happens entirely outside `main`, after
+    // it has already rejected -- so it can only be correct here if `main`
+    // itself already recorded the failure against `failureEpoch` before this
+    // handler runs.
     const rejectingCall = main(['231'], rejectingDeps).catch((error) => {
       expect(error).toBe(rejectionError);
-      process.exitCode = 1;
+      process.exitCode = 2;
     });
 
     const [, successResult] = await Promise.all([
@@ -1382,9 +1386,156 @@ describe('main', () => {
     // The real assertion: a rejection -- not just a `{ ok: false }` return --
     // must also survive a concurrent success. Before wrapping `main` in
     // try/catch, this was `undefined`.
-    expect(process.exitCode).toBe(1);
+    expect(process.exitCode).toBe(2);
     spies.error.mockRestore();
     spies.log.mockRestore();
+  });
+});
+
+/**
+ * #563. Before this fix, `main`'s own `catch` set `process.exitCode = 1` for
+ * every thrown error -- indistinguishable from a genuine declared-vs-armed
+ * mismatch. These pin exit code 2 for the two "could not look at all" shapes
+ * named in the issue: no resolvable PR/git context, and a `gh` response this
+ * parser cannot read as `{ body, refs }`.
+ *
+ * Each spec is a control on the OTHER exit-1 specs above: mutating `main`'s
+ * `catch` back to `process.exitCode = 1` flips only these two, never the
+ * mismatch or unsettled-read specs (which never throw), because those decide
+ * their exit code on a `return`, not via this `catch` at all. Mutating
+ * `resolvePullRequestNumber` to swallow its usage error (returning some
+ * fallback number instead of throwing) flips only the no-context spec, since
+ * the malformed-response spec never calls it -- argv already supplies a PR
+ * number. Mutating `parseClosingReferenceResponse`'s shape check to accept a
+ * response missing `body`/`refs` flips only the malformed-response spec.
+ */
+describe('main: exit code 2 for "could not look" failures', () => {
+  function silenced() {
+    return {
+      log: vi.spyOn(console, 'log').mockImplementation(() => undefined),
+      error: vi.spyOn(console, 'error').mockImplementation(() => undefined),
+    };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    process.exitCode = undefined;
+  });
+
+  it('reports exit code 2, not 1, when no PR number can be resolved -- no git/PR context', async () => {
+    silenced();
+    // No argv PR number, no PR_NUMBER, no GITHUB_EVENT_PATH: exactly the
+    // shape of running this script outside a pull_request/merge_group
+    // workflow context, e.g. a bare local invocation outside a git repo.
+    let thrown: unknown;
+    try {
+      await main([], { environment: {} });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain(
+      'no pull request number available',
+    );
+    // Distinct from both the mismatch and the unsettled-read message: this
+    // is neither, and must not be read as either.
+    expect((thrown as Error).message).not.toContain(
+      'do not match its declaration',
+    );
+    expect((thrown as Error).message).not.toContain(
+      'Could not read the closing references',
+    );
+    expect(process.exitCode).toBe(2);
+  });
+
+  it('reports exit code 2, not 1, when gh returns a response this parser cannot read as { body, refs }', async () => {
+    silenced();
+    const run = (args: string[]) => {
+      if (args[0] === 'api') {
+        // Zero commits, one page: keeps the commit-closure read from being
+        // the thing that fails, so this spec isolates the witness read.
+        return JSON.stringify([[]]);
+      }
+      // Valid JSON, `refs` is well-formed, but `body` is not a string --
+      // isolates the `body`-shape check specifically. (`{foo:'bar'}` would
+      // also fail the `refs` check, so a mutation that relaxed only the
+      // `refs` check could leave that fixture failing for the wrong reason
+      // and still flip this spec red; this fixture only breaks if the
+      // `body` check itself is skipped.)
+      return JSON.stringify({ body: 42, refs: [231] });
+    };
+
+    let thrown: unknown;
+    try {
+      await main(['231'], {
+        run,
+        readDeclaration: () => ['```closes', '#231', '```'].join('\n'),
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(MalformedClosingReferenceResponseError);
+    expect((thrown as Error).message).toContain(
+      'malformed closing-reference response',
+    );
+    expect((thrown as Error).message).not.toContain(
+      'do not match its declaration',
+    );
+    expect((thrown as Error).message).not.toContain(
+      'Could not read the closing references',
+    );
+    expect(process.exitCode).toBe(2);
+  });
+});
+
+/**
+ * #563 (Hicks & Vasquez, round 1): `import.meta.url === pathToFileURL(...)`
+ * is only `true` when this script is the process entry point, which it
+ * never is under the test runner -- so nothing above actually calls the
+ * CLI's own `.catch` handler, and a test that merely re-typed its logic
+ * would keep passing even if the real handler regressed (both reviewers
+ * demonstrated this independently: mutating the real handler to
+ * `exitCode = 1` and to `exitCode = 0` both left the suite green).
+ * `reportCliOutcome` is that handler, exported so it can be exercised
+ * directly, with no process spawn and no hand-copied logic to drift out of
+ * sync with the source of truth.
+ */
+describe("reportCliOutcome: the CLI entry point's own rejection handler", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    process.exitCode = undefined;
+  });
+
+  it('sets exit code 2 and prints a NO VERDICT message distinct from a mismatch or unsettled read', () => {
+    const errorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
+    reportCliOutcome(new Error('no pull request number available: boom'));
+
+    expect(process.exitCode).toBe(2);
+    const printed = errorSpy.mock.calls.map((call) => String(call[0]));
+    expect(printed.some((line) => line.includes('NO VERDICT'))).toBe(true);
+    expect(
+      printed.some((line) => line.includes('no pull request number available')),
+    ).toBe(true);
+    expect(
+      printed.some((line) => line.includes('do not match its declaration')),
+    ).toBe(false);
+    expect(
+      printed.some((line) =>
+        line.includes('Could not read the closing references'),
+      ),
+    ).toBe(false);
+  });
+
+  it('stringifies a non-Error rejection rather than throwing on error.message', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    expect(() => reportCliOutcome('a bare string rejection')).not.toThrow();
+    expect(process.exitCode).toBe(2);
   });
 });
 
