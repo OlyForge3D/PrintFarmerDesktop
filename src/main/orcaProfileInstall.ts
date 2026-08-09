@@ -817,6 +817,27 @@ export function __setFindBackupByOperationIdPreRevalidateHookForTests(
 }
 
 /**
+ * Test-only hook invoked by `restoreOrcaProfileWindows` immediately after
+ * the backup bytes have been read and hash-verified (via the read-side
+ * `canonicalInstallRoot`/`readFileWithRootPin`), but before this function's
+ * own write-side re-validation (`writeCanonicalInstallRoot` +
+ * `verifyAncestorMatchesInstallRoot(destPath)`, see round-8 finding in this
+ * function's doc comment). Lets a regression test swap `installRoot` for a
+ * junction at exactly the point a real attacker would need to hit — after
+ * the read succeeded through the genuine root, but before anything trusts
+ * `installRoot`/`destPath` again for the write. No-op in production; never
+ * set outside tests.
+ */
+let restoreWriteRevalidateHookForTests: (() => Promise<void> | void) | null =
+  null;
+
+export function __setRestoreWriteRevalidateHookForTests(
+  hook: (() => Promise<void> | void) | null,
+): void {
+  restoreWriteRevalidateHookForTests = hook;
+}
+
+/**
  * Read `filePath`'s bytes in a way that cannot be defeated by a symlink
  * swapped in and back out again around the read (a "swap-in/swap-back"
  * TOCTOU).
@@ -930,15 +951,56 @@ export function __setReadFileWithRootPinRaceHookForTests(
 }
 
 /**
+ * Verify that `filePath`'s actual parent directory has the same on-disk
+ * identity (device+inode) as `canonicalInstallRoot`, at the moment this
+ * function runs — i.e. that `filePath` genuinely lives directly inside the
+ * validated install root right now, not merely that it did when
+ * `canonicalInstallRoot` was computed. Shared by the read side
+ * (`readFileWithRootPin`) and the restore write side
+ * (`restoreOrcaProfileWindows`), both of which need the same protection:
+ * a validation performed once, then reused across a later `await`
+ * boundary, is exactly the TOCTOU shape every prior round in this file
+ * closed one call site at a time.
+ */
+async function verifyAncestorMatchesInstallRoot(
+  canonicalInstallRoot: string,
+  filePath: string,
+): Promise<boolean> {
+  let rootStat: { dev: bigint; ino: bigint };
+  try {
+    const stat = await lstat(canonicalInstallRoot, { bigint: true });
+    if (stat.isSymbolicLink()) return false;
+    rootStat = { dev: stat.dev, ino: stat.ino };
+  } catch {
+    return false;
+  }
+
+  if (readFileWithRootPinRaceHookForTests) {
+    await readFileWithRootPinRaceHookForTests();
+  }
+
+  let parentStat: { dev: bigint; ino: bigint };
+  try {
+    const stat = await lstat(path.dirname(filePath), { bigint: true });
+    if (stat.isSymbolicLink()) return false;
+    parentStat = { dev: stat.dev, ino: stat.ino };
+  } catch {
+    return false;
+  }
+  return parentStat.dev === rootStat.dev && parentStat.ino === rootStat.ino;
+}
+
+/**
  * Read `filePath`'s bytes, refusing to trust them unless (a) the
  * directory that actually contains `filePath` has the same on-disk
  * identity (device+inode) as `canonicalInstallRoot` at the moment this
- * function runs, and (b) the leaf file's own identity survives a
- * swap-in/swap-back around the read (`readFileWithIdentityPin`). Used for
- * both the durable backup-metadata record and the backup file itself at
- * restore time — both need exactly this protection, and both used to
- * duplicate it (as `readBackupFileWithRootPin`, restore-only) until a
- * round-7 finding showed the metadata-read call site needed it too.
+ * function runs (`verifyAncestorMatchesInstallRoot`), and (b) the leaf
+ * file's own identity survives a swap-in/swap-back around the read
+ * (`readFileWithIdentityPin`). Used for both the durable backup-metadata
+ * record and the backup file itself at restore time — both need exactly
+ * this protection, and both used to duplicate it (as
+ * `readBackupFileWithRootPin`, restore-only) until a round-7 finding
+ * showed the metadata-read call site needed it too.
  *
  * Round-6 reviewer finding (Vasquez): the previous approach validated the
  * ancestor directory in the *caller* — via a separately computed
@@ -993,31 +1055,9 @@ async function readFileWithRootPin(
   canonicalInstallRoot: string,
   filePath: string,
 ): Promise<Buffer | null> {
-  let rootStat: { dev: bigint; ino: bigint };
-  try {
-    const stat = await lstat(canonicalInstallRoot, { bigint: true });
-    if (stat.isSymbolicLink()) return null;
-    rootStat = { dev: stat.dev, ino: stat.ino };
-  } catch {
-    return null;
-  }
-
-  if (readFileWithRootPinRaceHookForTests) {
-    await readFileWithRootPinRaceHookForTests();
-  }
-
-  let parentStat: { dev: bigint; ino: bigint };
-  try {
-    const stat = await lstat(path.dirname(filePath), { bigint: true });
-    if (stat.isSymbolicLink()) return null;
-    parentStat = { dev: stat.dev, ino: stat.ino };
-  } catch {
-    return null;
-  }
-  if (parentStat.dev !== rootStat.dev || parentStat.ino !== rootStat.ino) {
-    // filePath's actual parent is not, in fact, the validated install
-    // root — whether due to a swap or a miscomputed path. Refuse without
-    // ever touching the leaf file.
+  if (
+    !(await verifyAncestorMatchesInstallRoot(canonicalInstallRoot, filePath))
+  ) {
     return null;
   }
   return await readFileWithIdentityPin(filePath);
@@ -1189,6 +1229,19 @@ export async function findBackupByOperationId(
  * identity-based (device+inode) rather than string-based, and it is
  * issued immediately before the leaf's own identity-pinned read with no
  * caller logic able to run in between.
+ *
+ * Round-8 reviewer finding (Ripley): all of the above only protected the
+ * *read* side of this function (fetching and verifying `backupBytes`).
+ * The *write* side — computing `destPath`, checking it is not a symlink,
+ * and the temp-write/rename onto it — still reused the read-side
+ * `canonicalInstallRoot`/raw `installRoot` from before `readFileWithRootPin`
+ * ran, i.e. from before a real, awaited I/O operation an attacker's swap
+ * could land in. This now re-validates `installRoot` fresh
+ * (`writeCanonicalInstallRoot`) and re-confirms `destPath`'s ancestor
+ * identity (`verifyAncestorMatchesInstallRoot`, the same primitive
+ * `readFileWithRootPin` uses) immediately before the write sequence,
+ * rather than trusting the read-side validation performed a genuine
+ * scheduling opportunity earlier.
  */
 export async function restoreOrcaProfileWindows(
   backupPath: string,
@@ -1231,6 +1284,41 @@ export async function restoreOrcaProfileWindows(
   }
 
   const destPath = computeInstallPath(safeFilename, installRoot);
+
+  if (restoreWriteRevalidateHookForTests) {
+    await restoreWriteRevalidateHookForTests();
+  }
+
+  // Re-validate installRoot immediately before the write sequence below.
+  // The read-side validation above (`canonicalInstallRoot`, used for
+  // `readFileWithRootPin`) is now several `await`s stale — that read
+  // itself was real, awaited I/O, a genuine scheduling point at which
+  // installRoot could have been swapped for a junction since. Reusing
+  // that earlier validation for the write, as before, is exactly the
+  // validate-then-reuse-across-an-await shape every prior TOCTOU finding
+  // in this file has had; it now gets the same immediately-before-use
+  // treatment already applied to every read in this module.
+  let writeCanonicalInstallRoot: string;
+  try {
+    writeCanonicalInstallRoot =
+      await ensureInstallRootSafeCanonical(installRoot);
+  } catch {
+    throw makeError(
+      'pathRestricted',
+      'Install root became unsafe before restore could write.',
+    );
+  }
+  if (
+    !(await verifyAncestorMatchesInstallRoot(
+      writeCanonicalInstallRoot,
+      destPath,
+    ))
+  ) {
+    throw makeError(
+      'pathRestricted',
+      'Install root was swapped before restore could write; refused.',
+    );
+  }
 
   // Reject if destination is a symlink.
   try {

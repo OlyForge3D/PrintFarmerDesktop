@@ -336,6 +336,7 @@ import {
   __setIdentityPinPostOpenHookForTests,
   __setFindBackupByOperationIdPreRevalidateHookForTests,
   __setReadFileWithRootPinRaceHookForTests,
+  __setRestoreWriteRevalidateHookForTests,
 } from '../src/main/orcaProfileInstall.js';
 
 describe('installOrcaProfileWindows', () => {
@@ -1271,6 +1272,80 @@ describe('restore pipeline is independent of profileCache state (#208)', () => {
         ).toEqual([path.basename(backupPath)]);
       } finally {
         __setReadFileWithRootPinRaceHookForTests(null);
+        await rm(installRoot, { recursive: true, force: true });
+        await mkdir(installRoot, { recursive: true });
+        await writeFile(backupPath, realBackupBytes, { flag: 'w' });
+        await rm(escapeDir, { recursive: true, force: true });
+      }
+    },
+    15_000, // extra installs + junction-swap instrumentation add I/O overhead
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'restoreOrcaProfileWindows refuses to write through an install root swapped after the read succeeded but before the write-side re-validation (round-8 read-to-write TOCTOU)',
+    async () => {
+      // Reviewer finding (Ripley, round 8): every fix through round 7
+      // only re-validated installRoot on the *read* side of this
+      // function (fetching/hashing backupBytes). The write side —
+      // computing destPath, the symlink lstat on it, and the
+      // temp-write/rename sequence — still reused the read-side
+      // canonicalInstallRoot/raw installRoot from before
+      // readFileWithRootPin's own await, i.e. from before a genuine
+      // scheduling opportunity an attacker's swap could land in. This
+      // test injects the swap via a dedicated hook that fires exactly
+      // after the read+hash-verify succeed but before the new write-side
+      // ensureInstallRootSafeCanonical/verifyAncestorMatchesInstallRoot
+      // check runs, proving that check (not the earlier read-side one)
+      // is what catches this.
+      const safeFilename = 'toctou_write_revalidate_profile.json';
+      const operationId = randomUUID();
+      const original = '{"name":"v1-toctou-write-revalidate"}';
+
+      const installRoot = getWindowsOrcaInstallRoot();
+      const escapeDir = path.join(
+        sandboxAppData,
+        '..',
+        `write-revalidate-escape-${operationId}`,
+      );
+      await mkdir(escapeDir, { recursive: true });
+
+      const seed = '{"name":"v0-toctou-write-revalidate-seed"}';
+      await installOrcaProfileWindows(
+        seed,
+        sha256(seed),
+        safeFilename,
+        randomUUID(),
+      );
+      const installResult = await installOrcaProfileWindows(
+        original,
+        sha256(original),
+        safeFilename,
+        operationId,
+      );
+
+      const located = await findBackupByOperationId(installRoot, operationId);
+      expect(located).not.toBeNull();
+      const backupPath = located!.backupPath;
+      const realBackupBytes = await readFile(backupPath);
+
+      __setRestoreWriteRevalidateHookForTests(async () => {
+        await rm(installRoot, { recursive: true, force: true });
+        await makeDirReparsePoint(escapeDir, installRoot);
+      });
+      try {
+        await expect(
+          restoreOrcaProfileWindows(
+            backupPath,
+            installResult.backupHash,
+            located!.safeFilename,
+          ),
+        ).rejects.toMatchObject({ code: 'pathRestricted' });
+        expect(
+          await readdir(escapeDir),
+          'restore wrote through an install root swapped after the read but before the write-side re-validation',
+        ).toEqual([]);
+      } finally {
+        __setRestoreWriteRevalidateHookForTests(null);
         await rm(installRoot, { recursive: true, force: true });
         await mkdir(installRoot, { recursive: true });
         await writeFile(backupPath, realBackupBytes, { flag: 'w' });
