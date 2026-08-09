@@ -20,9 +20,16 @@ export interface LabelIndexAllowlistedEntry {
   reason: string;
 }
 
+export interface LabelIndexNeedsReviewEntry {
+  path: string;
+  name: string;
+  snippet: string;
+}
+
 export interface ScanLabelIndexUsageResult {
   violations: LabelIndexViolation[];
   allowlisted: LabelIndexAllowlistedEntry[];
+  needsReview: LabelIndexNeedsReviewEntry[];
 }
 
 export interface LabelIndexAllowlistEntryConfig {
@@ -48,6 +55,15 @@ export function flattenGhArgvInvocations(
 
 export function flattenIndirectLabelQueryConstruction(contents: string): string;
 
+export interface UnresolvedGhWrapperCall {
+  name: string;
+  snippet: string;
+}
+
+export function findUnresolvedGhWrapperCalls(
+  contents: string,
+): UnresolvedGhWrapperCall[];
+
 export function findGhWrapperNames(contents: string): Set<string>;
 
 export function collectProjectGhWrapperNames(
@@ -60,6 +76,8 @@ export function scanLabelIndexUsage(input?: {
 }): ScanLabelIndexUsageResult;
 
 export function formatViolation(violation: LabelIndexViolation): string;
+
+export function formatNeedsReview(entry: LabelIndexNeedsReviewEntry): string;
 
 export interface CollectScannedFilesResult {
   files: ScannedFile[];

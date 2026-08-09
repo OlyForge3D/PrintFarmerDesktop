@@ -362,14 +362,46 @@ export function flattenIndirectLabelQueryConstruction(contents) {
  * the length change a stripped line-comment produces cannot desync a
  * position a caller holds against the ORIGINAL text.
  */
+// Extracts every quoted string TOKEN from inside an array-literal's body
+// text (the part between `[` and `]`) -- e.g. `'pr', 'list', "--label"` ->
+// `['pr', 'list', '--label']`. A pure, contents-independent helper, so it
+// is hoisted to module scope and shared by `flattenGhArgvInvocations` and
+// `findUnresolvedGhWrapperCalls` (round 12) rather than duplicated.
+function tokensFromArrayBody(arrayBody) {
+  return [...arrayBody.matchAll(/['"`]([^'"`]*)['"`]/g)].map(
+    (tokenMatch) => tokenMatch[1],
+  );
+}
+
+// Splits a call's argument-list text on TOP-LEVEL commas only (depth-0
+// relative to the argument list itself), so a nested array/object/call
+// argument's internal commas are not mistaken for argument separators. A
+// pure, contents-independent helper, hoisted to module scope for the same
+// reason as `tokensFromArrayBody`.
+function splitTopLevelArguments(argsText) {
+  const args = [];
+  let depth = 0;
+  let current = '';
+  for (const character of argsText) {
+    if (character === '(' || character === '[' || character === '{') {
+      depth++;
+    } else if (character === ')' || character === ']' || character === '}') {
+      depth--;
+    }
+    if (character === ',' && depth === 0) {
+      args.push(current);
+      current = '';
+    } else {
+      current += character;
+    }
+  }
+  if (current.trim() !== '') args.push(current);
+  return args;
+}
+
 export function flattenGhArgvInvocations(rawContents, extraWrapperNames = []) {
   const flattened = [];
   const contents = stripCommentsForWrapperBodyScan(rawContents);
-
-  const tokensFromArrayBody = (arrayBody) =>
-    [...arrayBody.matchAll(/['"`]([^'"`]*)['"`]/g)].map(
-      (tokenMatch) => tokenMatch[1],
-    );
 
   // Resolves an identifier to its most recent array-literal assignment
   // (`NAME = [...]`) BEFORE `beforeIndex` in the file -- the reassignment-
@@ -427,30 +459,6 @@ export function flattenGhArgvInvocations(rawContents, extraWrapperNames = []) {
     }
   };
 
-  // Splits a call's argument-list text on TOP-LEVEL commas only (depth-0
-  // relative to the argument list itself), so a nested array/object/call
-  // argument's internal commas are not mistaken for argument separators.
-  const splitTopLevelArguments = (argsText) => {
-    const args = [];
-    let depth = 0;
-    let current = '';
-    for (const character of argsText) {
-      if (character === '(' || character === '[' || character === '{') {
-        depth++;
-      } else if (character === ')' || character === ']' || character === '}') {
-        depth--;
-      }
-      if (character === ',' && depth === 0) {
-        args.push(current);
-        current = '';
-      } else {
-        current += character;
-      }
-    }
-    if (current.trim() !== '') args.push(current);
-    return args;
-  };
-
   // Shape 3 (Ripley, round 5): a wrapper's argv is not always its FIRST
   // parameter -- a real repo-style wrapper like `runGh(run, args, env)`
   // takes it second. Rather than assuming a fixed position, this finds
@@ -477,9 +485,20 @@ export function flattenGhArgvInvocations(rawContents, extraWrapperNames = []) {
   // for `extraWrapperNames` -- nested/cross-file/aliased names this
   // function cannot itself classify by definition shape, since they were
   // resolved from a project-wide pass rather than this file's own text).
+  //
+  // Vasquez (round 12): the comma-operator indirect-call idiom --
+  // `(0, runGh)([...])`, a well-known pattern for stripping a call's `this`
+  // binding -- neither `.` precedes it (so it fails a `'method'`-mode
+  // check) nor does the bare identifier appear directly before `(` (so it
+  // fails a `'bare'`-mode check too): `runGh` sits inside its own group,
+  // followed by `)`, THEN `(`. This is scanned as a SEPARATE header
+  // pattern, alongside whichever direct pattern `matchMode` already
+  // selects, since a wrapper legitimately called directly could ALSO be
+  // called this way elsewhere in the same file -- both call shapes must be
+  // found, not just one.
   const flattenArgvAcrossCallArguments = (wrapperName, matchMode = 'any') => {
     const escapedName = wrapperName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const callHeaderPattern =
+    const directHeaderPattern =
       matchMode === 'bare'
         ? new RegExp(`(?<!\\.)\\b${escapedName}\\s*\\(`, 'g')
         : matchMode === 'method'
@@ -488,43 +507,53 @@ export function flattenGhArgvInvocations(rawContents, extraWrapperNames = []) {
               'g',
             )
           : new RegExp(`\\b${escapedName}\\s*\\(`, 'g');
-    let header;
-    while ((header = callHeaderPattern.exec(contents)) !== null) {
-      const callIndex = header.index;
-      const argsStart = header.index + header[0].length;
+    const commaOperatorHeaderPattern = new RegExp(
+      `\\(\\s*0\\s*,\\s*${escapedName}\\s*\\)\\s*\\(`,
+      'g',
+    );
 
-      let depth = 1;
-      let index = argsStart;
-      for (; index < contents.length && depth > 0; index++) {
-        if (contents[index] === '(') depth++;
-        else if (contents[index] === ')') depth--;
-      }
-      if (depth !== 0) continue; // unbalanced -- do not guess.
-      const argsText = contents.slice(argsStart, index - 1);
+    const processHeaderPattern = (headerPattern) => {
+      let header;
+      while ((header = headerPattern.exec(contents)) !== null) {
+        const callIndex = header.index;
+        const argsStart = header.index + header[0].length;
 
-      for (const rawArgument of splitTopLevelArguments(argsText)) {
-        const argument = rawArgument.trim();
-        if (argument === '') continue;
-
-        const arrayLiteralMatch = /^\[([\s\S]*)]$/.exec(argument);
-        if (arrayLiteralMatch) {
-          const tokens = tokensFromArrayBody(arrayLiteralMatch[1]);
-          if (tokens.length > 0) flattened.push(`gh ${tokens.join(' ')}`);
-          continue;
+        let depth = 1;
+        let index = argsStart;
+        for (; index < contents.length && depth > 0; index++) {
+          if (contents[index] === '(') depth++;
+          else if (contents[index] === ')') depth--;
         }
+        if (depth !== 0) continue; // unbalanced -- do not guess.
+        const argsText = contents.slice(argsStart, index - 1);
 
-        const identifierMatch = /^([A-Za-z_$][\w$]*)$/.exec(argument);
-        if (identifierMatch) {
-          const tokens = resolveVariableArrayBefore(
-            identifierMatch[1],
-            callIndex,
-          );
-          if (tokens && tokens.length > 0) {
-            flattened.push(`gh ${tokens.join(' ')}`);
+        for (const rawArgument of splitTopLevelArguments(argsText)) {
+          const argument = rawArgument.trim();
+          if (argument === '') continue;
+
+          const arrayLiteralMatch = /^\[([\s\S]*)]$/.exec(argument);
+          if (arrayLiteralMatch) {
+            const tokens = tokensFromArrayBody(arrayLiteralMatch[1]);
+            if (tokens.length > 0) flattened.push(`gh ${tokens.join(' ')}`);
+            continue;
+          }
+
+          const identifierMatch = /^([A-Za-z_$][\w$]*)$/.exec(argument);
+          if (identifierMatch) {
+            const tokens = resolveVariableArrayBefore(
+              identifierMatch[1],
+              callIndex,
+            );
+            if (tokens && tokens.length > 0) {
+              flattened.push(`gh ${tokens.join(' ')}`);
+            }
           }
         }
       }
-    }
+    };
+
+    processHeaderPattern(directHeaderPattern);
+    processHeaderPattern(commaOperatorHeaderPattern);
   };
 
   // Ripley (round 9): a wrapper whose SOLE parameter is a REST parameter
@@ -640,6 +669,128 @@ export function flattenGhArgvInvocations(rawContents, extraWrapperNames = []) {
   }
 
   return flattened.join('\n');
+}
+
+/**
+ * Companion to `flattenGhArgvInvocations`'s Shape-4 (rest-param wrapper)
+ * resolution. Ripley + Vasquez (round 12): when a rest-param wrapper call's
+ * argv canNOT be statically resolved -- e.g. one of its positional
+ * arguments is a DYNAMIC/computed value, not a string/array literal and not
+ * resolvable to a preceding array assignment (`runGh('pr', 'list',
+ * '--label', dynamicLabel)`) -- `flattenArgvFromRestParams` deliberately
+ * discards the WHOLE call site rather than guessing a half-formed command
+ * (see that function's own comment). But that discard is itself silent:
+ * `scanLabelIndexUsage`'s caller has no way to tell "this call was checked
+ * and found safe" apart from "this call could not be checked at all" --
+ * both currently look identical (no violation reported). Reproduced
+ * locally: a rest-param wrapper call with one dynamic argument produced
+ * `{ violations: [], allowlisted: [] }`, exactly as if the call never
+ * existed.
+ *
+ * This function independently re-scans every rest-param-wrapper call site
+ * (found the same way `flattenArgvFromRestParams` finds them) and reports
+ * `{ name, snippet }` for each one whose argv could not be fully resolved,
+ * so `scanLabelIndexUsage` can surface it as a THIRD, distinct category --
+ * `needsReview` -- neither a silent pass nor a definite violation (the
+ * unresolved argument may well be innocuous; the point is a human, not the
+ * mechanical check, must be the one to decide that).
+ *
+ * Deliberately scoped to the same rest-param-wrapper shape
+ * `flattenArgvFromRestParams` already resolves (same-file only, not
+ * project-wide) -- widening this to every possible unresolvable argument
+ * shape across the whole file (e.g. `flattenArgvAcrossCallArguments`'s
+ * per-argument scan, which also silently skips an argument it cannot
+ * resolve) is a larger change than what was reported and reproduced this
+ * round; left for a future round if a reviewer demonstrates a concrete gap
+ * there too.
+ */
+export function findUnresolvedGhWrapperCalls(rawContents) {
+  const contents = stripCommentsForWrapperBodyScan(rawContents);
+  const needsReview = [];
+
+  const resolveVariableArrayBefore = (varName, beforeIndex) => {
+    const assignmentPattern = new RegExp(
+      `\\b${varName}\\s*=\\s*\\[([\\s\\S]*?)]`,
+      'g',
+    );
+    let assignment;
+    let mostRecentBefore = null;
+    while ((assignment = assignmentPattern.exec(contents)) !== null) {
+      if (assignment.index >= beforeIndex) break;
+      mostRecentBefore = assignment;
+    }
+    return mostRecentBefore ? tokensFromArrayBody(mostRecentBefore[1]) : null;
+  };
+
+  for (const wrapperName of findRestParamGhWrapperNames(contents)) {
+    const escapedName = wrapperName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const callHeaderPattern = new RegExp(
+      `(?<!\\.)\\b${escapedName}\\s*\\(`,
+      'g',
+    );
+
+    let header;
+    while ((header = callHeaderPattern.exec(contents)) !== null) {
+      const callIndex = header.index;
+
+      // The bare-call pattern also matches this wrapper's OWN definition
+      // header (`function runGh(...args)`), since "runGh(" there is
+      // syntactically identical to a real call site "runGh(" -- the only
+      // form where this happens, since an arrow-function wrapper's name is
+      // followed by `=`, not directly by `(`. Skip it: a definition's own
+      // rest-parameter list (`...args`) is never itself a "call this
+      // lint could not verify," it is simply how the wrapper receives its
+      // arguments.
+      const precedingText = contents.slice(
+        Math.max(0, header.index - 20),
+        header.index,
+      );
+      if (/\bfunction\s*$/.test(precedingText)) continue;
+
+      const argsStart = header.index + header[0].length;
+
+      let depth = 1;
+      let index = argsStart;
+      for (; index < contents.length && depth > 0; index++) {
+        if (contents[index] === '(') depth++;
+        else if (contents[index] === ')') depth--;
+      }
+      if (depth !== 0) continue; // unbalanced -- do not guess.
+      const argsText = contents.slice(argsStart, index - 1);
+
+      let hasAnyArgument = false;
+      let unresolved = false;
+      for (const rawArgument of splitTopLevelArguments(argsText)) {
+        const argument = rawArgument.trim();
+        if (argument === '') continue;
+        hasAnyArgument = true;
+
+        if (/^['"`][^'"`]*['"`]$/.test(argument)) continue;
+        if (/^\[[\s\S]*]$/.test(argument)) continue;
+
+        const identifierMatch = /^([A-Za-z_$][\w$]*)$/.exec(argument);
+        if (identifierMatch) {
+          const resolved = resolveVariableArrayBefore(
+            identifierMatch[1],
+            callIndex,
+          );
+          if (resolved && resolved.length > 0) continue;
+        }
+
+        unresolved = true;
+      }
+
+      if (hasAnyArgument && unresolved) {
+        const snippetEnd = Math.min(contents.length, index, header.index + 160);
+        needsReview.push({
+          name: wrapperName,
+          snippet: contents.slice(header.index, snippetEnd).trim(),
+        });
+      }
+    }
+  }
+
+  return needsReview;
 }
 
 /**
@@ -1112,6 +1263,63 @@ function findDefaultImportBindings(contents) {
 }
 
 /**
+ * Extends wrapper detection to a DESTRUCTURED property binding -- `const {
+ * runGh: rg } = someObj;` (renamed) or `const { runGh } = someObj;`
+ * (bare) -- where `runGh` is already known as a wrapper (typically a
+ * class/object METHOD-shorthand property, since that is what destructuring
+ * pulls a value off of). Vasquez (round 12): this is a different shape
+ * from `findAliasedGhWrapperNames` (a plain `NAME = OTHER_NAME` reference
+ * assignment, no braces) -- a destructured binding names the SOURCE
+ * property inside `{ ... }` on the left of `=`, not the whole right-hand
+ * expression, so neither that pass nor `findNestedGhWrapperNames` (which
+ * looks for a CALL, not a binding) recognizes it. `rg([...])`, once bound
+ * this way, is called exactly like any other bare wrapper reference --
+ * `collectProjectGhWrapperNames`'s fixed-point loop feeds the resulting
+ * name in as an ordinary known name, resolved with `'any'` matchMode like
+ * every other project-wide-resolved alias.
+ *
+ * Deliberately narrow: only a SINGLE-LEVEL destructuring pattern is
+ * parsed (`const { a, b: c } = expr;`), matching this file's other
+ * import/alias-parsing limits -- nested destructuring (`const { a: { b }
+ * } = expr;`), default values (`const { a = fallback } = expr;`), and rest
+ * elements (`const { a, ...rest } = expr;`) are not specially handled and
+ * simply do not match either sub-pattern below, so they are silently
+ * skipped rather than mis-parsed.
+ */
+function findDestructuredGhWrapperNames(contents, knownWrapperNames) {
+  const destructured = new Set();
+  if (knownWrapperNames.size === 0) return destructured;
+
+  const destructurePattern = /\b(?:const|let|var)\s*\{([^}]*)}\s*=/g;
+
+  let destructureMatch;
+  while ((destructureMatch = destructurePattern.exec(contents)) !== null) {
+    for (const rawProperty of destructureMatch[1].split(',')) {
+      const trimmed = rawProperty.trim();
+      if (trimmed === '') continue;
+
+      const renameMatch = /^([A-Za-z_$][\w$]*)\s*:\s*([A-Za-z_$][\w$]*)$/.exec(
+        trimmed,
+      );
+      if (renameMatch) {
+        const [, sourceName, localName] = renameMatch;
+        if (
+          knownWrapperNames.has(sourceName) &&
+          !knownWrapperNames.has(localName)
+        ) {
+          destructured.add(localName);
+        }
+      }
+      // A bare (no-rename) destructured property (`const { runGh } = obj;`)
+      // binds a local name IDENTICAL to the source name -- already in
+      // `knownWrapperNames` if it is a wrapper, so no new name is produced.
+    }
+  }
+
+  return destructured;
+}
+
+/**
  * Matches a wrapper whose SOLE parameter is a rest parameter --
  * `function runGh(...args) { execFileSync('gh', args); }`, `const runGh =
  * (...args) => execFileSync('gh', args)` -- and whose own body directly
@@ -1264,6 +1472,21 @@ function resolveRelativeModulePath(fromPath, specifier, knownPaths) {
  *      makeGhRunner();`, a CALL to an already-known wrapper whose return
  *      value (not the wrapper itself) is the one actually invoked later --
  *      is resolved the same way, via `findFactoryReturnedGhWrapperNames`.
+ *      A DESTRUCTURED-PROPERTY variant -- `const { runGh: rg } = someObj;`
+ *      -- binding a NEW local name to an already-known wrapper's PROPERTY
+ *      (typically a class/object method-shorthand), rather than to the
+ *      whole right-hand expression, is resolved the same way too, via
+ *      `findDestructuredGhWrapperNames`. The no-rename form (`const {
+ *      runGh } = someObj;`) intentionally produces no NEW name (the local
+ *      binding is identical to the already-known source name), and remains
+ *      out of scope for the same reason a bare call to an existing
+ *      method-classified name already is: closing it would require
+ *      widening that name's call-site scan beyond `'method'` mode
+ *      (`.runGh(`/`['runGh'](`) to also match a BARE call
+ *      (`runGh(...)`), which risks reintroducing the exact
+ *      unrelated-bare-identifier false positive `'method'`-mode scoping
+ *      was added to prevent (round 9/Vasquez) -- left for a future round
+ *      if a reviewer demonstrates this specific shape.
  *   3. CROSS-FILE wrappers: a wrapper defined in one scanned file and
  *      imported OR RE-EXPORTED (by name, with an optional alias) into
  *      another -- `import { invokeGh } from './gh-utils.mjs';
@@ -1343,6 +1566,16 @@ export function collectProjectGhWrapperNames(files) {
       )) {
         if (!known.has(factoryAliasedName)) {
           known.add(factoryAliasedName);
+          changed = true;
+        }
+      }
+
+      for (const destructuredName of findDestructuredGhWrapperNames(
+        file.contents,
+        known,
+      )) {
+        if (!known.has(destructuredName)) {
+          known.add(destructuredName);
           changed = true;
         }
       }
@@ -1448,10 +1681,17 @@ export function scanLabelIndexUsage({ files, allowlist } = {}) {
   const known = allowlist ?? ALLOWED_LABEL_INDEX_USAGE;
   const violations = [];
   const allowlisted = [];
+  const needsReview = [];
   const fileList = files ?? [];
   const projectWrapperNames = collectProjectGhWrapperNames(fileList);
 
   for (const file of fileList) {
+    for (const { name, snippet } of findUnresolvedGhWrapperCalls(
+      file.contents,
+    )) {
+      needsReview.push({ path: file.path, name, snippet });
+    }
+
     const searchText = [
       file.contents,
       flattenGhArgvInvocations(
@@ -1540,7 +1780,19 @@ export function scanLabelIndexUsage({ files, allowlist } = {}) {
     });
   }
 
-  return { violations, allowlisted };
+  return { violations, allowlisted, needsReview };
+}
+
+export function formatNeedsReview({ path: filePath, name, snippet }) {
+  return [
+    `  ${filePath}`,
+    `    wrapper: ${name}(...)`,
+    `    could not statically verify this call's argv: ${snippet}`,
+    '    #299: an unresolvable call to a known gh-wrapper is never assumed ' +
+      'safe by this check — read the call site by hand and confirm it does ' +
+      'not feed a label-search-index query, then add an allowlist entry (or ' +
+      'rewrite the call so its argv is statically visible) to clear this.',
+  ].join('\n');
 }
 
 export function formatViolation({ path: filePath, matches, reason }) {
@@ -1644,7 +1896,9 @@ export function collectScannedFiles({
 
 async function main() {
   const { files, refusedSymlinks } = collectScannedFiles();
-  const { violations, allowlisted } = scanLabelIndexUsage({ files });
+  const { violations, allowlisted, needsReview } = scanLabelIndexUsage({
+    files,
+  });
 
   for (const entry of allowlisted) {
     console.log(
@@ -1676,7 +1930,23 @@ async function main() {
     process.exitCode = 1;
   }
 
-  if (refusedSymlinks.length > 0 || violations.length > 0) {
+  if (needsReview.length > 0) {
+    console.error(
+      `[label-index-usage] ${needsReview.length} call(s) to a known gh-wrapper ` +
+        'could not be statically verified and need manual review (#299: an ' +
+        'unresolvable call is never assumed safe):\n',
+    );
+    for (const entry of needsReview) {
+      console.error(formatNeedsReview(entry));
+    }
+    process.exitCode = 1;
+  }
+
+  if (
+    refusedSymlinks.length > 0 ||
+    violations.length > 0 ||
+    needsReview.length > 0
+  ) {
     return;
   }
 

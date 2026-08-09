@@ -7,8 +7,10 @@ import {
   collectProjectGhWrapperNames,
   collectScannedFiles,
   findGhWrapperNames,
+  findUnresolvedGhWrapperCalls,
   flattenGhArgvInvocations,
   flattenIndirectLabelQueryConstruction,
+  formatNeedsReview,
   formatViolation,
   scanLabelIndexUsage,
 } from '../scripts/check-label-index-usage.mjs';
@@ -384,6 +386,67 @@ helpers['invokeGh'](['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequ
 const GH_WRAPPER_REGEX_LITERAL_SAME_LINE_SNIPPET = String.raw`
 function invokeGh(args) { const isHttps = /^https:\/\//.test('x'); return execFileSync('gh', args); }
 invokeGh(['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
+// Ripley + Vasquez (round 12): a rest-param wrapper call whose argv
+// contains a DYNAMIC/computed value cannot be statically resolved --
+// previously this caused the whole call site to be silently discarded,
+// with no signal at all that it was even considered.
+const GH_REST_PARAM_UNRESOLVABLE_ARGV_SNIPPET = `
+function runGh(...args) { return execFileSync('gh', args); }
+const dynamicLabel = computeLabelSomehow();
+runGh('pr', 'list', '--label', dynamicLabel);
+`;
+
+// Negative control: the same rest-param wrapper shape, but every argument
+// IS statically resolvable -- must still be flagged as an ordinary
+// violation (not `needsReview`), exactly as before this round's change.
+const GH_REST_PARAM_RESOLVABLE_ARGV_VIOLATION_SNIPPET = `
+function runGh(...args) { return execFileSync('gh', args); }
+runGh('pr', 'list', '--label', 'hold:sequenced');
+`;
+
+// Negative control: a fully resolvable, SAFE rest-param call (no banned
+// pattern at all) -- must produce neither a violation nor a needsReview
+// entry.
+const GH_REST_PARAM_RESOLVABLE_ARGV_SAFE_SNIPPET = `
+function runGh(...args) { return execFileSync('gh', args); }
+runGh('repos', 'owner/repo', 'pulls', '5', 'labels');
+`;
+
+// Vasquez (round 12): the comma-operator indirect-call idiom -- `(0,
+// runGh)([...])`, used to strip a call's \`this\` binding -- evaded both
+// the \`'bare'\`-mode (identifier not immediately followed by \`(\`) and
+// \`'method'\`-mode (no preceding \`.\`) call-site patterns.
+const GH_WRAPPER_COMMA_OPERATOR_CALL_SNIPPET = `
+function runGh(args) { return execFileSync('gh', args); }
+(0, runGh)(['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
+// Negative control: the comma-operator idiom applied to an UNRELATED
+// function that never shells out to \`gh\` -- must not be flagged.
+const NON_WRAPPER_COMMA_OPERATOR_CALL_SNIPPET = `
+function safeHelper(args) { return args.join(' '); }
+(0, safeHelper)(['not', 'a', 'gh', 'call', '--label']);
+`;
+
+// Vasquez (round 12): a destructured, RENAMED method-wrapper binding --
+// \`const { runGh: rg } = someObj;\` -- where \`runGh\` is an object
+// method-shorthand wrapper -- produces a new bare-callable local name
+// (\`rg\`) that neither the plain-alias pass (no braces) nor the nested-call
+// pass (looks for a call, not a binding) recognized.
+const GH_WRAPPER_DESTRUCTURED_RENAME_SNIPPET = `
+const someObj = { runGh(args) { return execFileSync('gh', args); } };
+const { runGh: rg } = someObj;
+rg(['pr', 'list', '--repo', 'owner/repo', '--label', 'hold:sequenced']);
+`;
+
+// Negative control: destructuring-with-rename applied to an UNRELATED
+// method that never shells out to \`gh\` -- must not be flagged.
+const NON_WRAPPER_DESTRUCTURED_RENAME_SNIPPET = `
+const someObj = { safeThing(args) { return args.join(' '); } };
+const { safeThing: st } = someObj;
+st(['not', 'a', 'gh', 'call', '--label']);
 `;
 
 describe('scanLabelIndexUsage', () => {
@@ -1076,6 +1139,118 @@ execFileSync('gh', [
     expect(violations).toHaveLength(1);
     expect(violations[0]!.matches).toContain('gh pr list --label');
   });
+
+  // Ripley + Vasquez (round 12): a rest-param wrapper call whose argv
+  // cannot be statically resolved must surface as a distinct `needsReview`
+  // finding, never as a silent pass -- previously it was indistinguishable
+  // from a call the check had verified as safe.
+  it('reports an unresolvable rest-param wrapper call as needsReview, not a silent pass', () => {
+    const result = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_REST_PARAM_UNRESOLVABLE_ARGV_SNIPPET,
+        },
+      ],
+    });
+    expect(result.violations).toHaveLength(0);
+    expect(result.needsReview).toHaveLength(1);
+    expect(result.needsReview[0]).toMatchObject({
+      path: 'scripts/example.mjs',
+      name: 'runGh',
+    });
+    expect(result.needsReview[0]!.snippet).toContain('dynamicLabel');
+  });
+
+  // Negative control: a resolvable rest-param call that DOES match a
+  // banned pattern must still be reported as an ordinary violation, not
+  // needsReview -- the new category must not swallow a real violation.
+  it('still flags a resolvable rest-param wrapper call as an ordinary violation', () => {
+    const result = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_REST_PARAM_RESOLVABLE_ARGV_VIOLATION_SNIPPET,
+        },
+      ],
+    });
+    expect(result.violations).toHaveLength(1);
+    expect(result.violations[0]!.matches).toContain('gh pr list --label');
+    expect(result.needsReview).toHaveLength(0);
+  });
+
+  // Negative control: a fully resolvable, SAFE rest-param call must
+  // produce neither a violation nor a needsReview entry.
+  it('does not flag a fully resolvable, safe rest-param wrapper call', () => {
+    const result = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_REST_PARAM_RESOLVABLE_ARGV_SAFE_SNIPPET,
+        },
+      ],
+    });
+    expect(result.violations).toHaveLength(0);
+    expect(result.needsReview).toHaveLength(0);
+  });
+
+  // Vasquez (round 12): end-to-end, the comma-operator indirect-call idiom
+  // must be traced back to a known wrapper the same as a direct call.
+  it('flags a call through the comma-operator indirect-call idiom', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_WRAPPER_COMMA_OPERATOR_CALL_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh pr list --label');
+  });
+
+  // Negative control: the comma-operator idiom applied to a function that
+  // never shells out to `gh` must not be flagged.
+  it('does not flag a comma-operator call to an unrelated function', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: NON_WRAPPER_COMMA_OPERATOR_CALL_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(0);
+  });
+
+  // Vasquez (round 12): end-to-end, a destructured-and-RENAMED reference
+  // to a method-shorthand wrapper must be traced back to it.
+  it('flags a call through a destructured, renamed method-wrapper binding', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: GH_WRAPPER_DESTRUCTURED_RENAME_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.matches).toContain('gh pr list --label');
+  });
+
+  // Negative control: destructuring-with-rename applied to an unrelated
+  // method that never shells out to `gh` must not be flagged.
+  it('does not flag a destructured, renamed binding to an unrelated method', () => {
+    const { violations } = scanLabelIndexUsage({
+      files: [
+        {
+          path: 'scripts/example.mjs',
+          contents: NON_WRAPPER_DESTRUCTURED_RENAME_SNIPPET,
+        },
+      ],
+    });
+    expect(violations).toHaveLength(0);
+  });
 });
 
 describe('flattenGhArgvInvocations', () => {
@@ -1287,6 +1462,72 @@ describe('flattenGhArgvInvocations', () => {
     expect(flattened).toContain('gh pr list');
     expect(flattened).toContain('--label');
     expect(flattened).toContain('hold:sequenced');
+  });
+
+  // Vasquez (round 12): the comma-operator indirect-call idiom (`(0,
+  // runGh)([...])`) must resolve exactly as a direct bare call would.
+  it('resolves a wrapper called through the comma-operator indirect-call idiom', () => {
+    const flattened = flattenGhArgvInvocations(
+      GH_WRAPPER_COMMA_OPERATOR_CALL_SNIPPET,
+    );
+    expect(flattened).toContain('gh pr list');
+    expect(flattened).toContain('--label');
+    expect(flattened).toContain('hold:sequenced');
+  });
+
+  it('does not resolve a comma-operator call to an unrelated function', () => {
+    expect(
+      flattenGhArgvInvocations(NON_WRAPPER_COMMA_OPERATOR_CALL_SNIPPET),
+    ).toBe('');
+  });
+});
+
+describe('findUnresolvedGhWrapperCalls', () => {
+  // Ripley + Vasquez (round 12): a rest-param wrapper call whose argv
+  // contains a value that cannot be statically resolved must be reported
+  // here, not silently discarded.
+  it('reports a rest-param wrapper call whose argv cannot be statically resolved', () => {
+    const entries = findUnresolvedGhWrapperCalls(
+      GH_REST_PARAM_UNRESOLVABLE_ARGV_SNIPPET,
+    );
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.name).toBe('runGh');
+    expect(entries[0]!.snippet).toContain('dynamicLabel');
+  });
+
+  it('does not report a rest-param wrapper call whose argv is fully resolvable', () => {
+    expect(
+      findUnresolvedGhWrapperCalls(
+        GH_REST_PARAM_RESOLVABLE_ARGV_VIOLATION_SNIPPET,
+      ),
+    ).toHaveLength(0);
+    expect(
+      findUnresolvedGhWrapperCalls(GH_REST_PARAM_RESOLVABLE_ARGV_SAFE_SNIPPET),
+    ).toHaveLength(0);
+  });
+
+  // A rest-param wrapper's own DEFINITION header (`function runGh(...args)
+  // { ... }`) must never itself be reported -- only actual CALL sites with
+  // unresolvable arguments.
+  it('does not report a rest-param wrapper definition with no call sites at all', () => {
+    expect(
+      findUnresolvedGhWrapperCalls(
+        'function runGh(...args) { return execFileSync("gh", args); }',
+      ),
+    ).toHaveLength(0);
+  });
+});
+
+describe('formatNeedsReview', () => {
+  it('includes the file path, wrapper name, and snippet', () => {
+    const formatted = formatNeedsReview({
+      path: 'scripts/example.mjs',
+      name: 'runGh',
+      snippet: "runGh('pr', 'list', '--label', dynamicLabel)",
+    });
+    expect(formatted).toContain('scripts/example.mjs');
+    expect(formatted).toContain('runGh');
+    expect(formatted).toContain('dynamicLabel');
   });
 });
 
