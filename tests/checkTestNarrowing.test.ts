@@ -775,6 +775,55 @@ describe('HOME 1: package.json test/test:* scripts', () => {
     });
   });
 
+  it('NEGATIVE CONTROL (Vasquez, review of PR #647, round 17): `postrestart` is not reached when `restart` itself is defined but aliases to a script that does not exist', () => {
+    // `restart` has its own script here, so this is NOT the stop/start
+    // fallback path at all -- it is a plain aliased script like any other.
+    // But that alias target (`ci`) does not exist, so real npm errors
+    // partway through resolving `restart` and never reaches `postrestart`.
+    // Round 16's fix only handled the fallback branch's own `start`
+    // existing-as-a-key check; it didn't account for a main script whose
+    // OWN alias target turns out to be unreachable.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      restart: 'npm run ci',
+      postrestart: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("NEGATIVE CONTROL (Vasquez, review of PR #647, round 17): `postrestart` is not reached when the fallback's `start` key exists but aliases to a script that does not exist", () => {
+    // `start` is present as a key (so round 16's existence check passes),
+    // but it aliases to a `ci` script that is not defined -- real npm
+    // errors while running the aliased-to command, so the fallback chain
+    // never completes and `postrestart` never fires.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      start: 'npm run ci',
+      postrestart: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("POSITIVE CONTROL (Vasquez, review of PR #647, round 17): a narrowing inside the missing alias target's own command is irrelevant, but a narrowing that IS reached before the break is still caught", () => {
+    // Sanity check alongside the two negative controls above: `prerestart`
+    // fires unconditionally (before any alias resolution is attempted for
+    // `restart` or the fallback), so a narrowing there must still be
+    // caught even though `restart` itself goes on to alias to a missing
+    // script.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      prerestart: 'vitest run -t "only this arm"',
+      restart: 'npm run ci',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
   it('POSITIVE CONTROL (Vasquez, review of PR #647, round 15): a `--` end-of-options marker before a dash-prefixed script alias name still resolves it', () => {
     // `--` is npm's (and getopt-style CLIs generally) canonical "end of
     // options" marker -- everything after it is positional, even a token

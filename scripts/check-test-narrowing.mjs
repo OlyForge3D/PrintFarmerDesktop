@@ -927,7 +927,28 @@ function resolveScriptAliasTarget(command) {
  * here rather than a table with one row, but the shape is intentionally
  * factored so a genuine second irregular chain could be added as a
  * sibling branch without restructuring the pre/post wrapping itself.
+ *
+ * Vasquez (review of PR #647, round 17): a script can be "missing" not
+ * just directly (no `scripts[name]` at all, round 14's finding) but
+ * transitively -- `restart: "npm run ci"` with no `ci` script aliases to
+ * something that doesn't exist, so real npm errors partway through
+ * `restart` itself and `postrestart` never fires, even though
+ * `scripts.restart` IS a string. The previous model only distinguished
+ * "narrowing found" from "no narrowing found", collapsing "ran clean" and
+ * "never actually ran because what it aliased to doesn't exist" into the
+ * same `null`. That made it impossible for a caller (the restart fallback
+ * checking whether `start` completed before consulting `postrestart`) to
+ * tell those apart. `SCRIPT_UNREACHABLE` is the third outcome threaded
+ * through the whole resolution graph -- returned whenever a script name or
+ * an alias target turns out not to exist -- so any caller gating a
+ * subsequent pre/post hook on "did the thing it hooks actually complete"
+ * can check for it explicitly, at every layer (a script's own missing
+ * name, an aliased-to name that's missing, and a hook whose own alias
+ * target is missing), rather than re-deriving that answer ad hoc per call
+ * site as each new shape of this was found across rounds 14/16/17.
  */
+const SCRIPT_UNREACHABLE = Symbol('script-unreachable');
+
 function resolveNarrowingForScript(scripts, name, visited) {
   if (visited.has(name)) return null;
   visited.add(name);
@@ -949,9 +970,12 @@ function resolveNarrowingForScript(scripts, name, visited) {
   // resolves to -- ITS OWN script if defined, or the stop/start fallback
   // if not -- so a missing `scripts.restart` does not mean "nothing runs
   // here" the way a missing `scripts.ci` does.
-  if (!isRestartFallback && typeof scripts[name] !== 'string') return null;
+  if (!isRestartFallback && typeof scripts[name] !== 'string') {
+    return SCRIPT_UNREACHABLE;
+  }
 
   const preResult = checkLifecycleHook(scripts, `pre${name}`, visited);
+  if (preResult === SCRIPT_UNREACHABLE) return SCRIPT_UNREACHABLE;
   if (preResult !== null) return preResult;
 
   if (isRestartFallback) {
@@ -972,9 +996,12 @@ function resolveNarrowingForScript(scripts, name, visited) {
     // the subsequent `postrestart` check is conditioned on `start`
     // actually existing.
     const stopResult = resolveNarrowingForScript(scripts, 'stop', visited);
-    if (stopResult !== null) return stopResult;
-    if (typeof scripts.start !== 'string') return null;
+    if (stopResult !== null && stopResult !== SCRIPT_UNREACHABLE) {
+      return stopResult;
+    }
+    if (typeof scripts.start !== 'string') return SCRIPT_UNREACHABLE;
     const startResult = resolveNarrowingForScript(scripts, 'start', visited);
+    if (startResult === SCRIPT_UNREACHABLE) return SCRIPT_UNREACHABLE;
     if (startResult !== null) return startResult;
     return checkLifecycleHook(scripts, 'postrestart', visited);
   }
@@ -984,6 +1011,12 @@ function resolveNarrowingForScript(scripts, name, visited) {
     scripts[name],
     visited,
   );
+  // Vasquez (review of PR #647, round 17): `mainResult` being
+  // `SCRIPT_UNREACHABLE` means `<name>`'s own command aliased to a script
+  // that doesn't exist -- npm errors partway through `<name>` and never
+  // reaches `post<name>`, so that must propagate rather than falling
+  // through to the post-hook check below.
+  if (mainResult === SCRIPT_UNREACHABLE) return SCRIPT_UNREACHABLE;
   if (mainResult !== null) return mainResult;
 
   return checkLifecycleHook(scripts, `post${name}`, visited);
@@ -995,6 +1028,13 @@ function resolveNarrowingForScript(scripts, name, visited) {
  * hooks, a hook itself gets no further pre/post wrapping of its own (npm
  * has no `prepretest`) -- it is just another command line that may
  * directly narrow or alias elsewhere.
+ *
+ * A hook that is simply absent is not `SCRIPT_UNREACHABLE` -- npm silently
+ * skips a `pre*`/`post*` hook that was never defined, that is not an
+ * error. `SCRIPT_UNREACHABLE` is only returned when the hook IS defined
+ * but its own command aliases to something that does not exist, so the
+ * hook itself would fail to run -- which callers need to distinguish from
+ * "ran clean" the same way they distinguish it for a main script.
  */
 function checkLifecycleHook(scripts, hookName, visited) {
   if (visited.has(hookName)) return null;
@@ -1008,7 +1048,9 @@ function checkLifecycleHook(scripts, hookName, visited) {
  * command itself, or one hop further through whatever script it aliases to
  * (which is then checked with its own full pre/main/post resolution via
  * `resolveNarrowingForScript`, so a narrowing behind an aliased script's
- * OWN lifecycle hooks is still reached).
+ * OWN lifecycle hooks is still reached, and so an alias target that turns
+ * out not to exist propagates as `SCRIPT_UNREACHABLE` rather than being
+ * silently treated as "ran clean, no narrowing").
  */
 function checkScriptCommandForNarrowing(scripts, command, visited) {
   if (typeof command !== 'string') return null;
@@ -1033,7 +1075,7 @@ export function checkPackageJsonScripts(scripts) {
     if (!TEST_SCRIPT_NAME.test(name)) continue;
     if (typeof scripts[name] !== 'string') continue;
     const result = resolveNarrowingForScript(scripts, name, new Set());
-    if (result !== null) {
+    if (result !== null && result !== SCRIPT_UNREACHABLE) {
       violations.push({
         home: 'package.json',
         location: `scripts.${name}`,
