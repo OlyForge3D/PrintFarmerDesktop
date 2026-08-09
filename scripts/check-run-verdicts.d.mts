@@ -30,8 +30,6 @@ export interface LatestCheckRun {
   status: string;
   startedAt: string | null;
   completedAt: string | null;
-  /** Always non-null: GitHub sets this the moment a run is created. */
-  createdAt: string;
   id: number;
 }
 
