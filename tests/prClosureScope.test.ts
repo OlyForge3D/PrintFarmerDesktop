@@ -6,6 +6,7 @@ import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import {
+  ClosingIssuesIndeterminateError,
   EXPECTED_PROTECTED_GATE_ISSUE_COUNT,
   PROTECTED_GATE_ISSUES,
   PROTECTED_LABELS,
@@ -17,6 +18,7 @@ import {
   fetchPullRequestCommits,
   formatCommitViolations,
   formatViolations,
+  resolveClosingIssuesConfidently,
   resolvePullRequestNumber,
   resolveRepository,
 } from '../scripts/check-pr-closure-scope.mjs';
@@ -290,6 +292,145 @@ describe('fetchClosingIssues', () => {
         fetchImpl: respondWith({}, false, 502),
       }),
     ).rejects.toThrow(/502/);
+  });
+});
+
+describe('resolveClosingIssuesConfidently', () => {
+  // A synthetic clock and sleep so the tests run instantly and deterministically
+  // instead of waiting out a real 45-second floor.
+  function fakeClock() {
+    let elapsed = 0;
+    return {
+      now: () => elapsed,
+      sleep: (ms: number) => {
+        elapsed += ms;
+        return Promise.resolve();
+      },
+    };
+  }
+
+  const CHILD_ISSUES: ClosingIssue[] = [
+    { number: 161, title: 'child', labels: ['documentation'] },
+  ];
+
+  // "I read the field and it is empty" — a genuinely unarmed pull request
+  // must pass without waiting out the full budget once the floor is cleared.
+  it('confirms empty once the elapsed floor is cleared, without more polling than necessary', async () => {
+    const clock = fakeClock();
+    let reads = 0;
+    const read = () => {
+      reads += 1;
+      return Promise.resolve([]);
+    };
+
+    const result = await resolveClosingIssuesConfidently(read, {
+      minEmptyFloorMs: 45000,
+      delayMs: 5000,
+      maxReads: 11,
+      now: clock.now,
+      sleep: clock.sleep,
+    });
+
+    expect(result.confirmedEmpty).toBe(true);
+    expect(result.value).toEqual([]);
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(45000);
+    // 10 delays of 5000ms land exactly on the floor: reads at t=0..45000.
+    expect(reads).toBe(10);
+  });
+
+  // "I read the field and it has no value yet" — the exact #319 shape: the
+  // very first read is empty, but a later read (still inside the budget)
+  // reveals the pull request is armed. The early empty read must not be
+  // trusted, and the eventual non-empty read must be returned immediately
+  // rather than waited out further.
+  it('does not trust an early empty read and reports arming once it appears', async () => {
+    const clock = fakeClock();
+    const responses = [[], [], [], CHILD_ISSUES];
+    let reads = 0;
+    const read = () => {
+      const value = responses[reads] ?? CHILD_ISSUES;
+      reads += 1;
+      return Promise.resolve(value);
+    };
+
+    const result = await resolveClosingIssuesConfidently(read, {
+      minEmptyFloorMs: 45000,
+      delayMs: 5000,
+      maxReads: 11,
+      now: clock.now,
+      sleep: clock.sleep,
+    });
+
+    expect(result.confirmedEmpty).toBe(false);
+    expect(result.value).toEqual(CHILD_ISSUES);
+    expect(reads).toBe(4);
+    // Returned well before the empty-floor budget would have elapsed: an
+    // armed pull request must never be masked by waiting for more reads.
+    expect(result.elapsedMs).toBeLessThan(45000);
+  });
+
+  // The distinction the issue names directly: an indeterminate read (never
+  // reaches the floor while empty, never sees a non-empty value either) must
+  // fail closed with a distinguishable error, not silently report a pass.
+  it('fails closed with a distinct error when the budget is exhausted before the floor', async () => {
+    const clock = fakeClock();
+    const read = () => Promise.resolve([]);
+
+    await expect(
+      resolveClosingIssuesConfidently(read, {
+        minEmptyFloorMs: 45000,
+        delayMs: 5000,
+        maxReads: 3, // 3 reads spans only 10s, short of the 45s floor.
+        now: clock.now,
+        sleep: clock.sleep,
+      }),
+    ).rejects.toThrow(ClosingIssuesIndeterminateError);
+  });
+
+  it('never resolves an indeterminate timeout to an empty, passing result', async () => {
+    const clock = fakeClock();
+    const read = () => Promise.resolve([]);
+
+    let caught: unknown;
+    try {
+      await resolveClosingIssuesConfidently(read, {
+        minEmptyFloorMs: 45000,
+        delayMs: 5000,
+        maxReads: 3,
+        now: clock.now,
+        sleep: clock.sleep,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ClosingIssuesIndeterminateError);
+    const error = caught as InstanceType<typeof ClosingIssuesIndeterminateError>;
+    expect(error.reads).toBe(3);
+    expect(error.elapsedMs).toBeLessThan(45000);
+    expect(error.message).toMatch(/not necessarily finished computing/);
+  });
+
+  it('trusts a non-empty first read immediately, with no polling at all', async () => {
+    const clock = fakeClock();
+    let reads = 0;
+    const read = () => {
+      reads += 1;
+      return Promise.resolve(CHILD_ISSUES);
+    };
+
+    const result = await resolveClosingIssuesConfidently(read, {
+      minEmptyFloorMs: 45000,
+      delayMs: 5000,
+      maxReads: 11,
+      now: clock.now,
+      sleep: clock.sleep,
+    });
+
+    expect(result.confirmedEmpty).toBe(false);
+    expect(result.reads).toBe(1);
+    expect(result.elapsedMs).toBe(0);
+    expect(reads).toBe(1);
   });
 });
 

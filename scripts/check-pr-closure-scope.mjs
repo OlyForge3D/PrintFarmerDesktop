@@ -397,6 +397,99 @@ export async function fetchClosingIssues({
   }));
 }
 
+/**
+ * Raised when polling exhausts its budget while `closingIssuesReferences`
+ * has stayed empty for less than the required floor.
+ *
+ * Deliberately a distinct type from every other error `main()` can throw:
+ * a caller must be able to tell "GitHub answered and the answer was empty"
+ * from "the read timed out before an empty answer could be trusted" without
+ * parsing prose. Both fail closed identically today (`process.exitCode = 1`
+ * from the catch in `main()`'s invocation), but the distinction still has to
+ * exist in the type so a future caller does not have to reintroduce it.
+ */
+export class ClosingIssuesIndeterminateError extends Error {
+  constructor({ reads, elapsedMs }) {
+    super(
+      `closingIssuesReferences read empty ${reads} time(s) over ${elapsedMs}ms, ` +
+        'which is less than the population floor. GitHub had not necessarily ' +
+        'finished computing the field yet, so this is refusing to report ' +
+        '"nothing is armed" from a value that may simply not have arrived.',
+    );
+    this.name = 'ClosingIssuesIndeterminateError';
+    this.reads = reads;
+    this.elapsedMs = elapsedMs;
+  }
+}
+
+// Measured directly against this API: an edit to a pull request body takes
+// roughly 38-45 seconds to be reflected in `closingIssuesReferences` (see the
+// comment on `readSettled` in check-closing-references.mjs, which polled the
+// same field on this same repository to get that number). A freshly created
+// pull request exercises the same derivation path, so nothing here justifies
+// assuming the initial-population case is faster than the edit-settle case.
+// The floor is set at the measured worst case rather than the `opened`
+// event's incidental checkout/npm latency (~14s, and unowned by this script),
+// because that latency is not a guarantee: a faster runner or a cache hit
+// closes the window this check depends on.
+const DEFAULT_MIN_EMPTY_FLOOR_MS = 45000;
+const DEFAULT_POLL_DELAY_MS = 5000;
+const DEFAULT_MAX_READS = 11; // 11 reads * 5s = 50s of headroom over the 45s floor.
+
+/**
+ * Resolve `closingIssuesReferences` with the confidence the guard needs:
+ * distinguish "read the field and it is empty" from "read the field and it
+ * has no value yet".
+ *
+ * A non-empty read is trusted immediately and returned without waiting out
+ * the rest of the budget: GitHub does not populate a phantom reference, and
+ * the case this guard exists to catch (arming) must never be masked by
+ * polling for a later read that disagrees. An empty read is trusted only
+ * once it has held for at least `minEmptyFloorMs` of elapsed wall-clock time,
+ * because a value that has not arrived yet is indistinguishable, on a single
+ * read, from a value that arrived and is genuinely empty — only elapsed time
+ * against a measured settling window separates "not yet" from "never".
+ *
+ * If the budget is exhausted while still under the floor, this throws
+ * `ClosingIssuesIndeterminateError` rather than returning an empty result:
+ * fail closed, do not report a guess as a verdict.
+ *
+ * `read` is a zero-argument function returning a promise of the closing
+ * issues array, so this has no knowledge of GraphQL, fetch, or credentials
+ * and can be tested with a synthetic sequence of answers.
+ */
+export async function resolveClosingIssuesConfidently(read, options = {}) {
+  const {
+    maxReads = DEFAULT_MAX_READS,
+    delayMs = DEFAULT_POLL_DELAY_MS,
+    minEmptyFloorMs = DEFAULT_MIN_EMPTY_FLOOR_MS,
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now = () => Date.now(),
+  } = options;
+
+  const start = now();
+  let reads = 0;
+
+  for (let i = 0; i < maxReads; i += 1) {
+    if (i > 0) {
+      await sleep(delayMs);
+    }
+    reads += 1;
+    const value = await read();
+
+    if (value.length > 0) {
+      return { value, confirmedEmpty: false, reads, elapsedMs: now() - start };
+    }
+
+    const elapsedMs = now() - start;
+    if (elapsedMs >= minEmptyFloorMs) {
+      return { value, confirmedEmpty: true, reads, elapsedMs };
+    }
+  }
+
+  throw new ClosingIssuesIndeterminateError({ reads, elapsedMs: now() - start });
+}
+
 export async function fetchPullRequestCommits({
   owner,
   repo,
@@ -504,18 +597,29 @@ async function main() {
 
   const { owner, repo } = resolveRepository(process.env);
   const prNumber = resolvePullRequestNumber(process.env);
-  const closingIssues = await fetchClosingIssues({
-    owner,
-    repo,
-    prNumber,
-    token,
-  });
+
+  // `closingIssuesReferences` is not populated synchronously when a pull
+  // request is created (see the class doc on `ClosingIssuesIndeterminateError`
+  // and `resolveClosingIssuesConfidently`). An empty read here can mean either
+  // "this pull request arms nothing" or "the field has not populated yet",
+  // and those two must not take the same code path: only the former is
+  // allowed to pass.
+  const { value: closingIssues, confirmedEmpty, reads, elapsedMs } =
+    await resolveClosingIssuesConfidently(() =>
+      fetchClosingIssues({ owner, repo, prNumber, token }),
+    );
 
   const { ok, violations } = evaluateClosureScope(closingIssues);
   const armed = closingIssues.map((issue) => `#${issue.number}`).join(', ');
   console.log(
     `Pull request #${prNumber} is armed to close: ${armed || '(nothing)'}`,
   );
+  if (confirmedEmpty) {
+    console.log(
+      `(confirmed empty across ${reads} read(s) spanning ${elapsedMs}ms, ` +
+        'clearing the population floor)',
+    );
+  }
 
   // Second channel. Checked unconditionally, not as an else-branch of the
   // first: the gate was closed by a pull request whose body channel was clean,
