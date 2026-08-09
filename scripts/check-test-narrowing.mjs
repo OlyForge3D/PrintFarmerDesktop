@@ -995,9 +995,25 @@ function resolveNarrowingForScript(scripts, name, visited) {
     // executes before the abort), so it must still be checked first; only
     // the subsequent `postrestart` check is conditioned on `start`
     // actually existing.
-    const stopResult = resolveNarrowingForScript(scripts, 'stop', visited);
-    if (stopResult !== null && stopResult !== SCRIPT_UNREACHABLE) {
-      return stopResult;
+    //
+    // Vasquez (review of PR #647, round 18): `stop` itself needs the same
+    // absent-vs-unreachable distinction that `start` already gets, not
+    // just the "no narrowing found" collapse. npm's `--if-present`
+    // leniency for `stop` only covers `stop` being ABSENT -- if `stop` IS
+    // defined but its own command aliases to a script that doesn't exist
+    // (e.g. `stop: "npm run missing-alias"`), real npm attempts `stop`,
+    // that attempt fails, and the whole `restart` aborts right there --
+    // `start`/`postrestart` never run, same as when `start` itself is
+    // unreachable. So the presence check has to happen at THIS call site
+    // (on `scripts.stop` directly) rather than trusting
+    // `resolveNarrowingForScript`'s return value alone, because that
+    // return value can't distinguish "stop absent" from "stop present but
+    // its alias target is missing" -- both currently surface as
+    // `SCRIPT_UNREACHABLE`.
+    if (typeof scripts.stop === 'string') {
+      const stopResult = resolveNarrowingForScript(scripts, 'stop', visited);
+      if (stopResult === SCRIPT_UNREACHABLE) return SCRIPT_UNREACHABLE;
+      if (stopResult !== null) return stopResult;
     }
     if (typeof scripts.start !== 'string') return SCRIPT_UNREACHABLE;
     const startResult = resolveNarrowingForScript(scripts, 'start', visited);

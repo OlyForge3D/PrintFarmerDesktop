@@ -824,6 +824,44 @@ describe('HOME 1: package.json test/test:* scripts', () => {
     });
   });
 
+  it('NEGATIVE CONTROL (Vasquez, review of PR #647, round 18): `postrestart` is not reached when `stop` is defined but aliases to a script that does not exist', () => {
+    // `stop`'s `--if-present` leniency only covers `stop` being ABSENT --
+    // if `stop` IS defined but its own command aliases to a missing
+    // script, real npm attempts `stop`, that attempt fails, and the whole
+    // `restart` aborts right there, before `start`/`postrestart` ever run.
+    // Round 17's fix only propagated `SCRIPT_UNREACHABLE` for `start`'s
+    // own unreachability; `stop`'s unreachability (as opposed to `stop`
+    // being simply absent) still fell into the same "treat as skip and
+    // continue" bucket.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      stop: 'npm run missing-alias',
+      postrestart: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toEqual([]);
+  });
+
+  it("POSITIVE CONTROL (Vasquez, review of PR #647, round 18): `stop`'s own narrowing is still caught even though `stop` itself also goes on to alias to a missing script", () => {
+    // Direct narrowing in `stop`'s command is detected before alias
+    // resolution is even attempted for `stop`'s own command, so a direct
+    // narrowing there is unaffected by the abort-vs-skip distinction --
+    // this only matters when `stop` itself has no direct narrowing but
+    // goes on to unreachably alias elsewhere. Included as a sanity check
+    // that the round-16 positive control (stop narrows directly, no
+    // start) still passes under the new stop-presence-gated logic.
+    const violations = checkPackageJsonScripts({
+      test: 'npm restart',
+      stop: 'vitest run -t "only this arm"',
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({
+      home: 'package.json',
+      location: 'scripts.test',
+      flag: '-t',
+      value: 'only this arm',
+    });
+  });
+
   it('POSITIVE CONTROL (Vasquez, review of PR #647, round 15): a `--` end-of-options marker before a dash-prefixed script alias name still resolves it', () => {
     // `--` is npm's (and getopt-style CLIs generally) canonical "end of
     // options" marker -- everything after it is positional, even a token
