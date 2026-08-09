@@ -677,6 +677,7 @@ Any of those sources removes the dialog-derived-path premise and requires reject
 **Rule, added to `.squad/fact-checker/policy.md` Hard Rules — and it narrows, it does not relax, the existing rule at 2026-07-25 above ("Grep for the expression, not the line"):** when citing a file not yet on `development`, cite a heading or a quoted phrase — both survive a rebase and stay greppable — and name the PR that carries the file, so the reader knows the target is provisional. A line number is acceptable only if marked "as of `<commit>`" with the expectation that it will rot. For a file already on `development`, a bare line number is usable for a citation checked immediately against the current head, but the 2026-07-25 rule still governs anything meant to survive future edits: prefer the greppable expression or heading there too, because a merged file's line numbers decay on the next unrelated edit above them exactly as an unmerged file's do, only less often.
 
 **Scope.** Documentation and protocol only — no production code, no test changes. Full instance write-up: `.squad/decisions/inbox/bishop-199-unmerged-file-citation.md`.
+
 ## 2026-08-09 — #186: AC1 strengthened — a half-cited dispatch constraint is worse than an uncited one; AC2/AC3 unchanged
 
 **By:** Ripley.
